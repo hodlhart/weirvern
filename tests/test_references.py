@@ -31,9 +31,23 @@ ALLOWED_MISSING = {
     ".env",
 }
 
-# The CHANGELOG narrates history, including removals, so a reference to something
-# that no longer exists is the intended content rather than a defect.
-SKIP_FILES = {"CHANGELOG.md"}
+# Files whose CONTENT is legitimately about paths that do not exist.
+#
+# CHANGELOG.md narrates history, including removals, so naming a since-deleted
+# file is correct there.
+#
+# this test file itself holds fixtures: paths planted specifically to be absent,
+# and docstring narration of files that were removed. It cannot pass its own check
+# without exempting itself, which is exactly the self-exemption pattern that
+# produced a useless guard earlier in this project (a rename guard that exempted
+# itself and then scanned nothing while reporting success).
+#
+# So the exemption is bounded two ways, and both are asserted below:
+#   * test_check_is_not_accidentally_empty asserts the scan covers >25 files, so
+#     the exemption cannot grow into "everything is skipped"
+#   * test_skip_list_is_exactly_these_two_files fails if a third entry is added
+#     without a decision being recorded here
+SKIP_FILES = {"CHANGELOG.md", "test_references.py"}
 
 # Extensions that mean "this is a file path worth resolving".
 PATH_RE = re.compile(
@@ -162,6 +176,43 @@ def test_the_check_skips_the_changelog():
     ever dropped from SKIP_FILES, its historical mentions would fail CI and the
     likely 'fix' would be to delete accurate history."""
     assert "CHANGELOG.md" in SKIP_FILES
+
+
+def test_skip_list_is_exactly_these_two_files():
+    """Bound the self-exemption.
+
+    This file must skip itself (it holds deliberately-absent fixture paths), and
+    CHANGELOG.md must be skipped (it narrates removals). Those are the only two
+    reasons, so the set is pinned. A third entry silently narrows the check, and
+    the whole point of this file is that a narrowing check still passes.
+
+    To add a third: change this assertion deliberately, and record why in the
+    SKIP_FILES comment above.
+    """
+    assert SKIP_FILES == {"CHANGELOG.md", "test_references.py"}, (
+        f"the skip list changed to {sorted(SKIP_FILES)}; every entry is a hole in "
+        f"the dangling-reference check"
+    )
+
+
+def test_the_fixtures_are_still_exercised_despite_the_self_exemption():
+    """The self-exemption means the REAL tree is not scanned for this file's
+    fixture paths. That must not hide a broken check: the planted-reference and
+    valid-reference tests build their own git trees, so they exercise the same
+    code the real scan uses without depending on this file being scanned.
+    """
+    import inspect
+
+    src = inspect.getsource(find_dangling_references)
+    assert "git" in src and "ls-files" in src, (
+        "find_dangling_references no longer walks a git tree, so the synthetic-tree "
+        "tests are no longer testing the same thing the real scan does"
+    )
+    # Both synthetic tests must exist, or the exemption above is unbounded in
+    # practice (nothing would prove the checker can fail).
+    names = {n for n in globals() if n.startswith("test_")}
+    assert "test_the_dangling_reference_check_detects_a_planted_reference" in names
+    assert "test_the_check_reports_a_real_reference_as_present" in names
 
 
 def test_check_is_not_accidentally_empty():

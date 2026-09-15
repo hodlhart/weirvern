@@ -52,20 +52,35 @@ class AlertState:
 
 
 def format_message(verdict: dict) -> str:
-    """Single-message-per-verdict; compact but complete for Pushover (1024 limit)."""
+    """Single-message-per-verdict; compact but complete for Pushover (1024 limit).
+
+    Includes the WHY. An alert that says only "score 0.91" tells an operator
+    something is wrong but not what, which is the difference between an alert they
+    can act on and one they learn to ignore.
+    """
     model_scores = (
         f"IF:{verdict['isolation_forest_score']:.2f} "
         f"GB:{verdict['gradient_boosting_score']:.2f} "
         f"DB:{verdict['dbscan_score']:.2f} "
         f"BL:{verdict['baseline_score']:.2f}"
     )
-    return (
-        f"⚠️ {verdict['severity'].upper()} anomaly — {verdict['src_addr']}\n"
-        f"score {verdict['anomaly_score']:.2f} (agreement {verdict['model_agreement']:.0%})\n"
-        f"models: {model_scores}\n"
-        f"by: {verdict['detected_by_models']}\n"
-        f"window {verdict['window_start']} ({verdict.get('duration_minutes', 5)}min)"
-    )
+    lines = [
+        f"⚠️ {verdict['severity'].upper()} anomaly — {verdict['src_addr']}",
+        f"score {verdict['anomaly_score']:.2f} (agreement {verdict['model_agreement']:.0%})",
+        f"models: {model_scores}",
+        f"by: {verdict['detected_by_models']}",
+        f"window {verdict['window_start']} ({verdict.get('duration_minutes', 5)}min)",
+    ]
+    # The explanation block. `baseline_comparison` is a prebuilt human sentence;
+    # fall back to the structured fields if it is absent, and omit the block
+    # entirely rather than print an empty "why:" when there is nothing to say.
+    why = verdict.get("baseline_comparison") or ""
+    if not why and verdict.get("primary_deviation_feature"):
+        why = (f"{verdict['primary_deviation_feature']} at "
+               f"z={verdict.get('primary_deviation_zscore', 0.0)}")
+    if why:
+        lines.append(f"why: {why}")
+    return "\n".join(lines)
 
 
 def push_alert(verdict: dict, settings: Settings, state: AlertState,

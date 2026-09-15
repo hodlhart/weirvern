@@ -22,6 +22,7 @@ from clickhouse_connect.driver.client import Client
 from weirvern import db, ensemble
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
+from weirvern.explain import explain
 from weirvern.ingester import tail_forever
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
@@ -199,16 +200,39 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     rows = []
     fresh: list[dict] = []
+    # The per-host baseline lives on the AdaptiveBaselineDetector, which already
+    # computes mean/stddev/percentiles per host. Reach for it once rather than per
+    # anomaly row.
+    baseline_det = next(
+        (d for d in detectors if getattr(d, "name", "") == "Adaptive Baseline"), None)
+    baselines = getattr(baseline_det, "baselines", None) or {}
     for v in verdicts:
         if (v["window_start"], v["src_addr"]) in existing:
             continue
         fresh.append(v)
         f = flow_by_key.get((v["window_start"], v["src_addr"]), {})
+        # Real explainability instead of the placeholders this used to write
+        # (0.0, 0.0, "{}", "") — see weirvern/explain.py for why the deviation is
+        # measured against the host's own baseline.
+        exp = explain(f, baselines.get(v["src_addr"]))
+        # Attach the explanation to the verdict as well as the row. The alert
+        # formatter reads baseline_comparison to say WHY, and the DB row must
+        # carry the same values: an alert that explains an anomaly differently
+        # from the stored row is worse than no explanation at all.
+        v.update({
+            "primary_deviation_feature": exp["primary_deviation_feature"],
+            "primary_deviation_zscore": exp["primary_deviation_zscore"],
+            "deviation_magnitude": exp["deviation_magnitude"],
+            "feature_contributions": exp["feature_contributions"],
+            "baseline_comparison": exp["baseline_comparison"],
+        })
         rows.append([
             datetime.now(), v["window_start"], f.get("window_end"), v["src_addr"],
             v["anomaly_score"], v["confidence"], v["isolation_forest_score"],
             v["gradient_boosting_score"], v["dbscan_score"], v["baseline_score"],
-            v["model_agreement"], _explain_primary(f, v), 0.0, 0.0, "{}", "",
+            v["model_agreement"], exp["primary_deviation_feature"],
+            exp["primary_deviation_zscore"], exp["deviation_magnitude"],
+            exp["feature_contributions"], exp["baseline_comparison"],
             v["detected_by_models"], v["severity"],
         ])
     skipped = len(verdicts) - len(fresh)
@@ -230,10 +254,15 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     return fresh
 
 
-def _explain_primary(flow: dict, verdict: dict) -> str:
-    """Cheap explainability: name the feature that dominated (baseline path
-    would compute true z-scores; this is the model-path summary)."""
-    return verdict.get("detected_by_models", "").split(",")[0] if verdict.get("detected_by_models") else "unknown"
+# _explain_primary was REMOVED here, deliberately rather than left unused.
+#
+# Its docstring said it named "the feature that dominated", and it returned
+# `verdict["detected_by_models"].split(",")[0]` — a DETECTOR name. That value was
+# written into netflow_anomalies.primary_deviation_feature, so the column held
+# "Adaptive Baseline" where a feature belonged, and four sibling columns were
+# hardcoded zeros. It is deleted rather than deprecated because a plausible-looking
+# helper next to the real one is how the placeholder got reintroduced the first
+# time. The replacement is weirvern/explain.py.
 
 
 def main() -> None:
