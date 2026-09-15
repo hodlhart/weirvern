@@ -41,22 +41,28 @@ resources:
   # - 70-networkpolicy.yaml
 
 configMapGenerator:
-  # Generated from the repository files, so the cluster always runs the policy
+  # Generated from the repository file, so the cluster always runs the policy
   # that is under version control.
+  #
+  # WHAT IS NOT HERE, AND WHY: an earlier version also generated a
+  # `zeekctl.cfg`. It was deleted because nothing reads it — the container runs
+  # the `zeek` binary directly rather than via `zeekctl`, so a zeekctl
+  # configuration file has no effect, and its INI syntax is not valid Zeek script
+  # either. Rotation and the log directory are set on the zeek command line in
+  # 32-zeek.yaml, which is where they actually take effect.
   #
   # MECHANICS: kustomize refuses to read files outside its own directory (a
   # deliberate security boundary — a manifest must not be able to pull arbitrary
-  # host files into a ConfigMap). The Zeek policy therefore lives in k8s/zeek/
-  # and is read from there. If a future refactor moves it back out, kustomize
-  # reports "security; file ... is not in or below".
+  # host files into a ConfigMap). The Zeek policy therefore lives in k8s/zeek/.
+  # If a future refactor moves it back out, kustomize reports
+  # "security; file ... is not in or below".
   #
-  # A name hash is appended (default), and kustomize rewrites the DaemonSet's
+  # A name hash is appended (default) and kustomize rewrites the DaemonSet's
   # reference to match — so editing the policy changes the ConfigMap name and
   # triggers a rolling restart of the sensor automatically.
   - name: zeek-site
     files:
       - zeek/weirvern-local.zeek
-      - zeek/zeekctl.cfg
 
 # SECRETS ARE DELIBERATELY NOT MANAGED HERE.
 #

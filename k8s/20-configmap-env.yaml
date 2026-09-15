@@ -4,8 +4,10 @@
 # read by weirvern/config.py with the same names as the .env file, so a local
 # run and a cluster run are configured identically.
 #
-# Secrets (PUSHOVER_* keys, CLICKHOUSE_PASSWORD) do NOT belong here — a
-# ConfigMap is not confidential. See 21-secrets.yaml.
+# Secrets (PUSHOVER_* credentials, CLICKHOUSE_PASSWORD) do NOT belong here — a
+# ConfigMap is not confidential. They live in a Secret that is created out of
+# band by the operator, deliberately NOT managed by kustomize; see the SECRETS
+# block in k8s/kustomization.yaml and step 4 of the README.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -40,6 +42,17 @@ data:
   MIN_AGREEMENT: "0.33"
 
   # ── Alerting ───────────────────────────────────────────────────────────────
+  # PUSHOVER_ENABLED is the master switch for real push delivery, and it MUST be
+  # set here: the key was previously absent, so config.py defaulted it to False
+  # and the deployment could never send an alert — it detected anomalies and
+  # silently logged them. For an alerting system that is the worst possible
+  # failure shape, and it was invisible in every health check.
+  #
+  # Leave it at "0" for a first run (log-only), then set "1" once the secret
+  # exists. Note config.validate(): with this ON, empty credentials are a HARD
+  # startup failure, which is the honest behaviour — better to crash loudly than
+  # to run believing alerts are being delivered.
+  PUSHOVER_ENABLED: "0"
   PUSHOVER_COOLDOWN_S: "1800"
   PUSHOVER_MAX_PER_HOUR: "20"
 

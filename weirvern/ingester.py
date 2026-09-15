@@ -438,11 +438,22 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
     `state` maps filename -> ZeekTailState; pass the returned dict back on the
     next pass so only new records are read.
 
-    Rotation handling: Zeek rotates hourly and names the finished files
-    `conn.1.log`, `conn.2.log`, ... while `conn.log` stays current. Reading only
-    the current file silently misses every record written to a file that rotated
-    between passes, so each rotated sibling is tailed too (bounded by
-    `ZEEK_ROTATION_DEPTH` to avoid unbounded growth over a long run).
+    ROTATION HANDLING — the naming matters and was previously wrong. Zeek
+    rotates hourly and names the finished file by TIMESTAMP:
+
+        conn.log                        <- current
+        conn.2026-09-15-00-00-00.log    <- rotated
+
+    Verified against Zeek's own source: `Log::default_rotation_date_format =
+    "%Y-%m-%d-%H-%M-%S"` (scripts/base/frameworks/logging/main.zeek:170, used at
+    :719). The previous implementation globbed `conn.1.log`, `conn.2.log`, ...,
+    which Zeek never produces — so on a real sensor every rotated file was
+    ignored and only whatever happened to be in the live file at each 5s pass was
+    ingested. With hourly rotation that is very close to nothing.
+
+    Ordering: rotated files are read OLDEST FIRST so records land in roughly
+    chronological order, which matters because the materialized views window on
+    the flow/connection time.
     """
     state = state if state is not None else {}
     total = 0
@@ -458,19 +469,56 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
     return total, state
 
 
-def _zeek_log_names(log_dir: str, log_type: str, depth: int = 5) -> list[str]:
-    """Existing files for a log type: current first, then rotated siblings.
+def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
+    """Existing files for a log type: rotated siblings first (oldest first),
+    then the live file.
 
-    Zeek's rotation naming is `<type>.log`, `<type>.1.log`, `<type>.2.log`, ...
-    with the highest number being the OLDEST retained file.
+    Matches Zeek's real rotation naming (`<type>.<timestamp>.log`) AND the
+    `.log.json` variant that `@load tuning/json-logs` would produce, because
+    guessing wrong here silently ingests nothing.
+
+    `depth` bounds how many rotated files are read per pass. Zeek rotates hourly
+    and the shipped retention is 24h, so ~24 is the working set; the default of
+    50 leaves headroom without being unbounded.
     """
-    names: list[str] = []
-    if os.path.exists(os.path.join(log_dir, f"{log_type}.log")):
-        names.append(f"{log_type}.log")
-    for i in range(1, depth + 1):
-        candidate = f"{log_type}.{i}.log"
-        if os.path.exists(os.path.join(log_dir, candidate)):
-            names.append(candidate)
+    rotated: list[tuple[float, str]] = []
+    try:
+        entries = os.listdir(log_dir)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        logger.warning("Cannot list Zeek log dir %s: %s", log_dir, exc)
+        return []
+
+    live_variants = {f"{log_type}.log", f"{log_type}.log.json"}
+    for name in entries:
+        if name in live_variants:
+            continue
+        # <type>.<something>.log  or  <type>.<something>.log.json
+        if not name.startswith(f"{log_type}."):
+            continue
+        rest = name[len(log_type) + 1:]
+        if not (rest.endswith(".log") or rest.endswith(".log.json")):
+            continue
+        # Guard against matching a different log type's prefix, e.g. "conn" vs
+        # "conn_summary": the character after the type must be a digit (the
+        # timestamp) — the shipped types are all lowercase words followed by a
+        # date, so anything else is not ours.
+        if not rest[:1].isdigit():
+            continue
+        path = os.path.join(log_dir, name)
+        try:
+            rotated.append((os.path.getmtime(path), name))
+        except OSError:
+            continue
+
+    rotated.sort()                      # oldest mtime first
+    rotated = rotated[-depth:]          # keep the most recent `depth`
+    names = [n for _mtime, n in rotated]
+
+    for live in (f"{log_type}.log", f"{log_type}.log.json"):
+        if os.path.exists(os.path.join(log_dir, live)):
+            names.append(live)
     return names
 
 

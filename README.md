@@ -237,8 +237,23 @@ weirvern status
 weirvern tui
 ```
 
-Then point your exporter at the sensor node's UDP ports **2055** (NetFlow) and
-**6343** (sFlow). Within a couple of minutes `weirvern status` should show
+Then point your exporter at the sensor node's **NodePort** UDP ports — **32055**
+(NetFlow) and **32063** (sFlow):
+
+```
+netflow destination: <sensor-node-ip>:32055
+sflow   destination: <sensor-node-ip>:32063
+```
+
+> **These are the NodePorts, not 2055/6343.** The Service is `type: NodePort`, so
+> the port that actually listens on the node's IP is the `nodePort`
+> (k8s/31-goflow2.yaml). 2055 and 6343 are the *container* ports — they are only
+> reachable from inside the cluster. An exporter aimed at UDP 2055 on the node
+> sends its packets nowhere, and the only symptom is `ingest_freshness` staying
+> red while every pod reports Running. Confirm what is bound with
+> `ss -lunp | grep -E '32055|32063'` on the sensor node.
+
+Within a couple of minutes `weirvern status` should show
 `ingest_freshness` green, meaning flows are arriving and being aggregated.
 
 ### Optional: the CLI and TUI
@@ -577,7 +592,9 @@ Work through these in order — the first two account for most reports.
    weirvern status        # look for ingest_freshness
    ```
    Red or "no flow data yet" means the exporter is not reaching the collector.
-   Confirm the exporter points at the sensor node's IP on UDP 2055, and that the
+   Confirm the exporter points at the sensor node's IP on UDP **32055**
+   (the NodePort — not 2055, which is the container port and is cluster-internal
+   only), and that the
    Service is `externalTrafficPolicy: Local` (it is, by design — see
    `k8s/31-goflow2.yaml`; with the default policy, kube-proxy on another node
    can accept and misroute the UDP packets).

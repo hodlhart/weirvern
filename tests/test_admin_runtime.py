@@ -6,6 +6,7 @@ operator: it must work from any cwd, must not invent a cluster that isn't there,
 and must never run a destructive command that could delete data or hang waiting
 for input.
 """
+import json
 import re
 from pathlib import Path
 
@@ -254,38 +255,163 @@ def test_daemonset_cannot_be_scaled_to_zero(tmp_path, monkeypatch):
     """Kubernetes rejects replicas:0 on a DaemonSet. If this ever regresses to a
     `scale` call, stop would fail at runtime against a real cluster."""
     b = _backend(tmp_path)
-    seen = _capture(monkeypatch)
+
+    # stop() now READS the DaemonSet first and decides from its state, so the
+    # stub must answer the get with a real object (no nodeSelector, matching the
+    # shipped manifest) rather than blanket-failing every call.
+    calls = []
+
+    def fake_run(args, cwd, timeout=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if " get " in joined or args[3:4] == ["get"]:
+            if "jsonpath" in joined:
+                return rt.CommandResult(ok=True, stdout="", code=0)
+            return rt.CommandResult(ok=True, stdout='{"spec":{"template":{"spec":{}}}}', code=0)
+        return rt.CommandResult(ok=True, stdout="", code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
     b.stop(["zeek"])
-    joined = " ".join(seen[0]["args"])
+    patch_calls = [c for c in calls if "patch" in c]
+    assert patch_calls, "stop should patch the DaemonSet"
+    joined = " ".join(patch_calls[0])
     assert "scale" not in joined
-    assert "patch" in joined
     assert "daemonset" in joined
 
 
-def test_suspend_uses_a_json_patch_that_can_be_reversed(tmp_path, monkeypatch):
-    """stop must ADD a key and start must REMOVE it, so resuming restores the
-    manifest's own selector rather than overwriting it with a guess."""
-    b = _backend(tmp_path)
-    seen = _capture(monkeypatch)
-    b.stop(["zeek"])
-    assert seen[0]["args"][-2] == "-p"
-    stop_patch = seen[0]["args"][-1]
-    assert '"op": "add"' in stop_patch
+def test_suspend_creates_the_missing_nodeSelector_parent(tmp_path, monkeypatch):
+    """THE BUG: RFC 6902 requires a JSON-patch path's PARENT to exist, and the
+    shipped manifest has NO nodeSelector (it ships commented out). A single
+    `add` on /spec/template/spec/nodeSelector/<key> therefore failed with a
+    "missing path" error against every default deployment, so `weirvern stop`
+    reported FAILED for the sensor.
 
-    seen.clear()
+    The patch must create nodeSelector first, then add the suspension key.
+    """
+    b = _backend(tmp_path)
+    calls = []
+
+    def fake_run(args, cwd, timeout=None):
+        calls.append(args)
+        if "jsonpath" in " ".join(args):
+            return rt.CommandResult(ok=True, stdout="", code=0)  # no selector yet
+        return rt.CommandResult(ok=True, stdout='{"spec":{"template":{"spec":{}}}}', code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+    b.stop(["zeek"])
+
+    patch_calls = [c for c in calls if "patch" in c]
+    assert patch_calls, "expected a patch call"
+    patch = json.loads(patch_calls[0][patch_calls[0].index("-p") + 1])
+    ops = {op["op"]: op for op in patch}
+    assert "add" in ops
+    # The parent must be created before the key can be added to it.
+    paths = [op["path"] for op in patch]
+    assert "/spec/template/spec/nodeSelector" in paths, (
+        f"the parent nodeSelector is not created, so the child add fails: {paths}"
+    )
+    assert paths.index("/spec/template/spec/nodeSelector") < paths.index(
+        b._SUSPEND_KEY_PATH), "parent must be added before the child"
+    assert patch[-1]["value"] == "true"
+
+
+def test_suspend_does_not_recreate_an_existing_nodeSelector(tmp_path, monkeypatch):
+    """When a nodeSelector IS present (the documented sensor-node label), adding
+    the parent again would wipe any other selector keys."""
+    b = _backend(tmp_path)
+    calls = []
+
+    def fake_run(args, cwd, timeout=None):
+        calls.append(args)
+        if "jsonpath" in " ".join(args):
+            return rt.CommandResult(
+                ok=True, stdout='{"weirvern.io/sensor-node":"true"}', code=0)
+        return rt.CommandResult(
+            ok=True,
+            stdout='{"spec":{"template":{"spec":{"nodeSelector":{"weirvern.io/sensor-node":"true"}}}}}',
+            code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+    b.stop(["zeek"])
+    patch = json.loads(
+        [c for c in calls if "patch" in c][0][
+            [c for c in calls if "patch" in c][0].index("-p") + 1])
+    paths = [op["path"] for op in patch]
+    assert paths == [b._SUSPEND_KEY_PATH], (
+        f"an existing nodeSelector must not be re-added (it would drop its keys): {paths}"
+    )
+
+
+def test_resume_removes_only_the_suspension_key(tmp_path, monkeypatch):
+    """`start` must REMOVE the suspension key, never overwrite the whole
+    selector — that would discard the sensor-node label and break scheduling."""
+    b = _backend(tmp_path)
+    calls = []
+
+    def fake_run(args, cwd, timeout=None):
+        calls.append(args)
+        return rt.CommandResult(
+            ok=True,
+            stdout='{"spec":{"template":{"spec":{"nodeSelector":{"weirvern.io/suspended":"true","weirvern.io/sensor-node":"true"}}}}}',
+            code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
     b.start(["zeek"])
-    start_patch = seen[0]["args"][-1]
-    assert '"op": "remove"' in start_patch
-    # The same path must be used in both directions.
-    assert rt.K8sBackend._SUSPEND_KEY in stop_patch
-    assert rt.K8sBackend._SUSPEND_KEY in start_patch
+    patch = json.loads(
+        [c for c in calls if "patch" in c][0][
+            [c for c in calls if "patch" in c][0].index("-p") + 1])
+    assert patch == [{"op": "remove", "path": b._SUSPEND_KEY_PATH}], (
+        f"resume must remove exactly one key, got: {patch}"
+    )
+
+
+def test_start_reports_failure_for_a_missing_daemonset(tmp_path, monkeypatch):
+    """THE BUG: start() treated any error containing the substring "not found"
+    as 'already running', so a DaemonSet that does not exist was reported as a
+    success. An operator who deleted the sensor was told it was running."""
+    b = _backend(tmp_path)
+    monkeypatch.setattr(rt, "_run", lambda *a, **k: rt.CommandResult(
+        ok=False,
+        stderr='Error from server (NotFound): daemonsets.apps "zeek" not found',
+        code=1))
+    result = b.start(["zeek"])
+    assert result.ok is False, "a missing DaemonSet must be a failure"
+    assert "FAILED" in result.text
+    assert "already running" not in result.text
+
+
+def test_start_is_idempotent_when_not_suspended(tmp_path, monkeypatch):
+    """When the sensor is already capturing, start is a no-op SUCCESS (the
+    desired end state holds) — but it must say so from the object's state, not
+    from guessing at an error string."""
+    b = _backend(tmp_path)
+    calls = []
+
+    def fake_run(args, cwd, timeout=None):
+        calls.append(args)
+        return rt.CommandResult(
+            ok=True, stdout='{"spec":{"template":{"spec":{"nodeSelector":{}}}}}', code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+    result = b.start(["zeek"])
+    assert result.ok is True
+    assert "already running" in result.text
+    assert not [c for c in calls if "patch" in c], "no patch needed when already running"
 
 
 def test_stop_of_zeek_says_it_is_suspended_not_stopped(tmp_path, monkeypatch):
     """An operator who thinks the sensor is off when it is only suspended would
     misread their own network coverage."""
     b = _backend(tmp_path)
-    _capture(monkeypatch)
+
+    def fake_run(args, cwd, timeout=None):
+        if "jsonpath" in " ".join(args):
+            return rt.CommandResult(ok=True, stdout="", code=0)
+        if " get " in " ".join(args):
+            return rt.CommandResult(ok=True, stdout='{"spec":{"template":{"spec":{}}}}', code=0)
+        return rt.CommandResult(ok=True, stdout="", code=0)
+
+    monkeypatch.setattr(rt, "_run", fake_run)
     result = b.stop(["zeek"])
     assert "SUSPEND" in result.text.upper()
     assert "cannot be scaled to zero" in result.text
@@ -332,11 +458,48 @@ def test_down_with_volumes_says_what_was_lost(tmp_path, monkeypatch):
 
 # --- observation -------------------------------------------------------------
 def test_ps_reports_missing_workload_without_crashing(tmp_path, monkeypatch):
+    """An absent object is reported as missing — but ONLY when the error really
+    says it is absent.
+
+    This test previously stubbed a blanket failure for every call and asserted
+    every state was 'missing', which pinned the bug where an RBAC denial or an
+    unreachable API server was also reported as a missing deployment.
+    """
     b = _backend(tmp_path)
-    _capture(monkeypatch, ok=False)
+    monkeypatch.setattr(rt, "_run", lambda *a, **k: rt.CommandResult(
+        ok=False, stderr='Error from server (NotFound): deployments.apps "x" not found',
+        code=1))
     states = b.ps()
     assert len(states) == len(rt.WORKLOADS)
     assert all(s.state == "missing" for s in states)
+
+
+def test_ps_distinguishes_rbac_denial_from_missing(tmp_path, monkeypatch):
+    """A permission problem must NOT look like 'not applied' — otherwise the
+    operator re-applies correct manifests and stays stuck."""
+    b = _backend(tmp_path)
+    monkeypatch.setattr(rt, "_run", lambda *a, **k: rt.CommandResult(
+        ok=False,
+        stderr='Error from server (Forbidden): deployments.apps "goflow2" is forbidden: '
+               'User "system:serviceaccount:weirvern:weirvern-viewer" cannot get resource "deployments"',
+        code=1))
+    states = {s.name: s for s in b.ps()}
+    assert states["goflow2"].state == "forbidden"
+    assert "permission denied" in states["goflow2"].detail.lower()
+    assert "not found" not in states["goflow2"].detail.lower()
+
+
+def test_ps_distinguishes_unreachable_api_server(tmp_path, monkeypatch):
+    """A cluster that cannot be reached is a different problem from a missing
+    deployment, and needs a different fix."""
+    b = _backend(tmp_path)
+    monkeypatch.setattr(rt, "_run", lambda *a, **k: rt.CommandResult(
+        ok=False,
+        stderr="Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
+        code=1))
+    states = {s.name: s for s in b.ps()}
+    assert states["goflow2"].state == "unreachable"
+    assert "unreachable" in states["goflow2"].detail.lower()
 
 
 def test_ps_parses_workload_ready_replicas(tmp_path, monkeypatch):

@@ -70,6 +70,25 @@ WORKLOAD_LABELS: dict[str, str] = {
 }
 
 
+def _condense(text: str, limit: int = 90) -> str:
+    """Shorten a driver/CLI error for a one-line display.
+
+    Kept local to this module rather than imported from the TUI: the runtime
+    backend must not depend on the optional admin UI, and `weirvern status` (CLI
+    only, no Textual installed) needs it too.
+    """
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    for noise in ("Max retries exceeded with url:", "?query_id="):
+        idx = text.find(noise)
+        if idx != -1:
+            text = text[:idx].rstrip(" ,:") + " (unreachable)"
+            break
+    text = text.replace("Error HTTPConnectionPool", "HTTPConnectionPool")
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 @dataclass
 class CommandResult:
     ok: bool
@@ -209,6 +228,9 @@ class Backend(Protocol):
     def apply(self, dry_run: bool = False) -> CommandResult: ...
     def wait_ready(self, timeout_s: int = 300) -> CommandResult: ...
     def stats(self) -> dict[str, str]: ...
+    # Optional: implementations that can distinguish a failed fetch from empty
+    # output provide this, and the CLI prefers it (see cmd_logs).
+    def logs_result(self, service: str = "", tail: int = 200) -> tuple[str, bool]: ...
 
 
 def _run(args: list[str], cwd: str | Path, timeout: int = DEFAULT_TIMEOUT) -> CommandResult:
@@ -255,32 +277,78 @@ class K8sBackend:
         return [(n, k) for n, k in WORKLOADS if n in wanted]
 
     # -- lifecycle ---------------------------------------------------------
-    # SUSPENDING A DAEMONSET: Kubernetes rejects `replicas: 0` on a DaemonSet,
-    # so a suspended state is represented by a nodeSelector key that no node
-    # carries. `stop` ADDS the key and `start` REMOVES it with a JSON patch
-    # remove-op, so resuming restores the manifest's own selector exactly rather
-    # than overwriting it with a guess. Verified round-trip: stop -> start leaves
-    # the object as kustomize defines it.
-    _SUSPEND_KEY = "/spec/template/spec/nodeSelector/weirvern.io~1suspended"
+    # SUSPENDING A DAEMONSET
+    #
+    # Kubernetes rejects `replicas: 0` on a DaemonSet (its whole purpose is one
+    # pod per node), so a suspended state is represented by a nodeSelector key no
+    # node carries. `stop` adds the key; `start` removes it, restoring the
+    # manifest's own selector exactly rather than overwriting it with a guess.
+    #
+    # THE BUG THIS REPLACES, and why the logic now reads state instead of error
+    # strings: RFC 6902 requires a JSON-patch path's PARENT to exist, and the
+    # shipped manifest has NO nodeSelector (it ships commented out). So both
+    # `add` and `remove` on /spec/template/spec/nodeSelector/<key> failed with a
+    # "missing path" error, which `stop` reported as FAILED and `start` matched
+    # against the substring "not found" — reporting SUCCESS ("already running")
+    # for any NotFound error, including a DaemonSet that does not exist at all.
+    # An operator who deleted the sensor was told it was running.
+    #
+    # So: read the DaemonSet first, decide what to do from its actual state, and
+    # only ever patch a path we know exists.
+    _SUSPEND_KEY_PATH = "/spec/template/spec/nodeSelector/weirvern.io~1suspended"
+    _SUSPEND_LABEL = "weirvern.io/suspended"
+
+    def _daemonset_state(self, name: str) -> tuple[bool, bool, str]:
+        """(exists, is_suspended, error_text) — the source of truth for stop/start."""
+        r = self._kubectl("get", "daemonset", name, "-o", "json", timeout=20)
+        if not r.ok:
+            return False, False, r.text
+        try:
+            obj = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return False, False, "unreadable API response"
+        selector = (
+            obj.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("nodeSelector", {})
+        ) or {}
+        return True, selector.get(self._SUSPEND_LABEL) == "true", ""
 
     def _suspend_daemonset(self, name: str) -> CommandResult:
-        return self._kubectl(
-            "patch", "daemonset", name, "--type=json",
-            "-p", json.dumps([
-                {"op": "add", "path": self._SUSPEND_KEY, "value": "true"},
-            ]),
-            timeout=60,
-        )
+        """Add the suspension selector, creating the parent if it is absent."""
+        exists, suspended, err = self._daemonset_state(name)
+        if not exists:
+            return CommandResult(ok=False, stderr=f"daemonset {name}: {err[:160]}", code=1)
+        if suspended:
+            return CommandResult(ok=True, stdout="already suspended")
+
+        ops: list[dict] = []
+        # The parent must exist before a child can be added (RFC 6902), and the
+        # shipped manifest has no nodeSelector at all.
+        r = self._kubectl("get", "daemonset", name,
+                          "-o", "jsonpath={.spec.template.spec.nodeSelector}", timeout=20)
+        if not (r.stdout or "").strip():
+            ops.append({"op": "add", "path": "/spec/template/spec/nodeSelector", "value": {}})
+        ops.append({"op": "add", "path": self._SUSPEND_KEY_PATH, "value": "true"})
+        return self._kubectl("patch", "daemonset", name, "--type=json",
+                             "-p", json.dumps(ops), timeout=60)
 
     def _resume_daemonset(self, name: str) -> CommandResult:
-        # `remove` fails if the key is absent, so tolerate that specific case and
-        # treat it as already-resumed.
-        r = self._kubectl(
+        """Remove the suspension selector, leaving any other selector intact."""
+        exists, suspended, err = self._daemonset_state(name)
+        if not exists:
+            return CommandResult(ok=False, stderr=f"daemonset {name}: {err[:160]}", code=1)
+        if not suspended:
+            # Nothing to lift: report success, because the desired end state
+            # (capturing) is what the caller asked for and it already holds.
+            return CommandResult(ok=True, stdout="not suspended")
+
+        return self._kubectl(
             "patch", "daemonset", name, "--type=json",
-            "-p", json.dumps([{"op": "remove", "path": self._SUSPEND_KEY}]),
+            "-p", json.dumps([{"op": "remove", "path": self._SUSPEND_KEY_PATH}]),
             timeout=60,
         )
-        return r
 
     def start(self, services: list[str] | None = None, build: bool = False) -> CommandResult:
         """Scale workloads back up. `build` is meaningless here and reported."""
@@ -290,10 +358,8 @@ class K8sBackend:
             if kind == "daemonset":
                 r = self._resume_daemonset(name)
                 if r.ok:
-                    results.append(f"{name}: resumed")
-                elif "not found" in r.text.lower() or "missing value" in r.text.lower():
-                    # The suspend key was not present: already running.
-                    results.append(f"{name}: already running (no suspension to lift)")
+                    detail = "already running" if "not suspended" in (r.stdout or "") else "resumed"
+                    results.append(f"{name}: {detail}")
                 else:
                     ok = False
                     results.append(f"{name}: FAILED — {r.text[:160]}")
@@ -398,8 +464,30 @@ class K8sBackend:
         for name, kind in WORKLOADS:
             r = self._kubectl("get", kind, name, "-o", "json", timeout=20)
             if not r.ok:
-                states.append(ServiceState(name=name, state="missing",
-                                           detail=f"not found in namespace '{self.ns}'"))
+                # Distinguish "the object does not exist" from every other reason
+                # kubectl can fail. Previously ANY failure was reported as
+                # 'not found in namespace ...', with stderr discarded — so an RBAC
+                # denial or an unreachable API server looked like a missing
+                # deployment, and the operator went off to re-apply manifests that
+                # were already correct. That is the single most valuable
+                # diagnostic line in `weirvern status`, so it must not lie.
+                err = (r.text or "").strip()
+                if "not found" in err.lower():
+                    states.append(ServiceState(
+                        name=name, state="missing",
+                        detail=f"not found in namespace '{self.ns}'"))
+                elif "forbidden" in err.lower() or "unauthorized" in err.lower():
+                    states.append(ServiceState(
+                        name=name, state="forbidden",
+                        detail=f"permission denied by RBAC — {_condense(err, 70)}"))
+                elif "unable to connect" in err.lower() or "timeout" in err.lower():
+                    states.append(ServiceState(
+                        name=name, state="unreachable",
+                        detail=f"API server unreachable — {_condense(err, 70)}"))
+                else:
+                    states.append(ServiceState(
+                        name=name, state="unknown",
+                        detail=_condense(err, 90) or "kubectl failed with no output"))
                 continue
             try:
                 obj = json.loads(r.stdout)
@@ -423,7 +511,7 @@ class K8sBackend:
             selector = (spec.get("template", {}).get("spec", {}) or {}).get("nodeSelector", {}) or {}
             # A suspended DaemonSet keeps desiredNumberScheduled at 0 forever;
             # distinguish that from "no node matches the selector".
-            if selector.get("weirvern.io/suspended") == "true":
+            if selector.get(self._SUSPEND_LABEL) == "true":
                 return ServiceState(name=name, state="suspended",
                                     detail="suspended — not capturing")
             if desired == 0:
@@ -460,29 +548,49 @@ class K8sBackend:
                 out[parts[0]] = f"{parts[1]} cpu / {parts[2]} mem"
         return out
 
+    def logs_result(self, service: str = "", tail: int = 200) -> tuple[str, bool]:
+        """(text, ok) — logs plus whether the fetch actually succeeded.
+
+        The tuple exists because `logs()` returned `.text`, which falls back to
+        STDERR when stdout is empty. A failed kubectl therefore returned its error
+        message AS the log string, and `weirvern logs` exited 0 because the string
+        was non-empty — so a connection error was displayed as though it were log
+        output, with no marker, and the command could not be used in a script or a
+        CI check. Callers that only want the text can use `logs()`.
+        """
+        if service and service not in WORKLOAD_LABELS:
+            return (f"unknown service '{service}'. "
+                    f"Known: {', '.join(WORKLOAD_LABELS)}"), False
+
+        def fetch(label: str, n: int) -> tuple[str, bool]:
+            # --no-color=true avoids ANSI escapes that would corrupt the TUI pane.
+            r = self._kubectl("logs", "-l", label, "--tail", str(n),
+                              "--no-color=true", timeout=LOGS_TIMEOUT)
+            if r.ok:
+                return (r.stdout.rstrip() or "(no log output)"), True
+            return f"! could not read logs: {_condense(r.text, 200)}", False
+
+        if service:
+            return fetch(WORKLOAD_LABELS[service], tail)
+
+        chunks: list[str] = []
+        ok = True
+        per = max(1, tail // len(WORKLOAD_LABELS))
+        for name in WORKLOAD_LABELS:
+            text, this_ok = fetch(WORKLOAD_LABELS[name], per)
+            if not this_ok:
+                ok = False
+            if text and text != "(no log output)":
+                chunks.append(f"=== {name} ===\n{text}")
+        return ("\n\n".join(chunks) if chunks else "(no log output from any workload)"), ok
+
     def logs(self, service: str = "", tail: int = 200) -> str:
         """Recent logs for a workload, by label so it works across rollouts.
 
-        `--all-containers` is deliberately NOT used: it interleaves init and
-        main container output, which makes the timeline unreadable. The selector
-        targets one pod, chosen deterministically by `--prefix=false`.
+        `--all-containers` is deliberately NOT used: it interleaves init and main
+        container output, which makes the timeline unreadable.
         """
-        if service:
-            if service not in WORKLOAD_LABELS:
-                return (f"unknown service '{service}'. "
-                        f"Known: {', '.join(WORKLOAD_LABELS)}")
-            args = ["logs", "-l", WORKLOAD_LABELS[service], "--tail", str(tail), "--no-color=true"]
-            # --no-color=true avoids ANSI escapes that would corrupt the pane.
-            return self._kubectl(*args, timeout=LOGS_TIMEOUT).text or "(no log output)"
-
-        chunks: list[str] = []
-        for name in WORKLOAD_LABELS:
-            r = self._kubectl("logs", "-l", WORKLOAD_LABELS[name],
-                              "--tail", str(max(1, tail // len(WORKLOAD_LABELS))),
-                              "--no-color=true", timeout=LOGS_TIMEOUT)
-            if r.ok and r.stdout.strip():
-                chunks.append(f"=== {name} ===\n{r.stdout.rstrip()}")
-        return "\n\n".join(chunks) if chunks else "(no log output from any workload)"
+        return self.logs_result(service, tail)[0]
 
     # -- cluster-level operations -----------------------------------------
     def apply(self, dry_run: bool = False) -> CommandResult:
@@ -549,6 +657,10 @@ class LocalBackend:
 
     def logs(self, service: str = "", tail: int = 200) -> str:
         return self._unavailable("read service logs").stderr
+
+    def logs_result(self, service: str = "", tail: int = 200) -> tuple[str, bool]:
+        """(text, False): there is no cluster, so this is never a success."""
+        return self.logs(service, tail), False
 
     def ps(self) -> list[ServiceState]:
         return []

@@ -246,13 +246,30 @@ def main() -> None:
     db.apply_schema(client, settings)
     logger.info("Schema ready — starting Weirvern worker")
 
-    # Ingest thread: tail goflow2 sink continuously (legacy: inline heredoc pod).
+    # Ingest thread: tail goflow2's sink continuously (legacy: inline heredoc pod).
     # v20 fix: tail_forever tracks file offsets so rows are never re-inserted.
+    #
+    # settings.zeek_log_dir is passed as the 4th argument. It was previously
+    # omitted, so tail_forever's `zeek_dir` defaulted to "" and the Zeek branch
+    # never ran: zeek_conn/dns/ssl/notice stayed empty forever while
+    # ZEEK_LOG_DIR was configured in the ConfigMap and the Zeek DaemonSet burned
+    # CPU. The second sensor — most of the value for DNS tunnelling, JA3 C2 and
+    # slow beaconing — contributed nothing, and `weirvern status` still looked
+    # clean because the zeek_freshness probe only registers when rows exist.
     ingest_thread = threading.Thread(
-        target=tail_forever, args=(client, settings.tail_file, 5.0), daemon=True, name="ingest-thread"
+        target=tail_forever,
+        args=(client, settings.tail_file, 5.0, settings.zeek_log_dir),
+        daemon=True,
+        name="ingest-thread",
     )
     ingest_thread.start()
-    logger.info("Ingest thread started on %s", settings.tail_file)
+    if settings.zeek_log_dir:
+        logger.info("Ingest thread started: flows=%s zeek=%s",
+                    settings.tail_file, settings.zeek_log_dir)
+    else:
+        logger.info("Ingest thread started on %s (Zeek ingest DISABLED: "
+                    "ZEEK_LOG_DIR is empty — set it to enable the packet sensor)",
+                    settings.tail_file)
 
     detectors = build_detectors(settings, cfg)
     alert_state = AlertState()

@@ -33,9 +33,29 @@ from weirvern.admin.runtime import (
     get_backend,
 )
 
-# Resolve the project directory as the repo containing this package, so the CLI
-# works from any cwd (an operator will not be standing in the checkout).
-PROJECT_DIR = find_project_dir()
+# The project directory is resolved LAZILY, not at import time.
+#
+# Resolving it here crashed the `weirvern init-db` entry point inside the
+# container image: the Containerfile copies only pyproject/README/LICENSE and the
+# package, so the image has neither k8s/ nor .env.example, and find_project_dir()
+# raised at IMPORT — before argparse could run. The schema Job runs the exact
+# command `weirvern init-db`, so it died instantly, retried, and the deployment
+# created ZERO TABLES while the README said the schema was applied automatically.
+#
+# Only commands that genuinely need a checkout (install, apply, down, tune, tui)
+# pay for resolution, and only when they run. `init-db` needs a database, not a
+# checkout.
+_CACHED_PROJECT_DIR: Path | None = None
+
+
+def project_dir() -> Path:
+    """Resolve the project directory on first use (see the note above)."""
+    global _CACHED_PROJECT_DIR
+    if _CACHED_PROJECT_DIR is None:
+        _CACHED_PROJECT_DIR = find_project_dir()
+    return _CACHED_PROJECT_DIR
+
+
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOTREADY = 0, 1, 2, 3
 
 
@@ -60,7 +80,7 @@ def _warn(msg: str) -> None:
 
 
 def env_path() -> Path:
-    return PROJECT_DIR / ".env"
+    return project_dir() / ".env"
 
 
 def _connect(settings):
@@ -94,7 +114,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             backup = config_io.EnvFile.load(target).backup(".bak")
             _warn(f"overwriting existing .env (backup: {backup})")
         try:
-            env = config_io.EnvFile.from_example(PROJECT_DIR / ".env.example", target)
+            env = config_io.EnvFile.from_example(project_dir() / ".env.example", target)
             env.save()
             _ok(f"created {target} from .env.example")
         except FileNotFoundError as exc:
@@ -106,7 +126,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         _warn(f"duplicate keys in .env (last wins): {', '.join(env.duplicates())}")
 
     # 2. Kubernetes tooling.
-    caps = detect_capabilities(PROJECT_DIR)
+    caps = detect_capabilities(project_dir())
     if caps.kubectl:
         _ok("kubectl found")
     else:
@@ -156,7 +176,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     if caps.cluster_available:
         for key in ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN"):
             r = _run(["kubectl", "-n", NAMESPACE, "get", "secret", "weirvern-secrets",
-                      "-o", f"jsonpath={{.data.{key}}}"], PROJECT_DIR, timeout=20)
+                      "-o", f"jsonpath={{.data.{key}}}"], project_dir(), timeout=20)
             value = (r.stdout or "").strip()
             # A base64-encoded empty string is ""; anything else is a real value.
             if r.ok and value and value != '""':
@@ -224,8 +244,8 @@ def cmd_init_db(args: argparse.Namespace) -> int:
 # lifecycle
 # ---------------------------------------------------------------------------
 def _backend():
-    caps = detect_capabilities(PROJECT_DIR)
-    return get_backend(PROJECT_DIR, caps), caps
+    caps = detect_capabilities(project_dir())
+    return get_backend(project_dir(), caps), caps
 
 
 def _lifecycle(action: str, args: argparse.Namespace) -> int:
@@ -262,9 +282,19 @@ def _lifecycle(action: str, args: argparse.Namespace) -> int:
 
 def cmd_logs(args: argparse.Namespace) -> int:
     backend, caps = _backend()
-    out = backend.logs(args.service or "", tail=args.tail)
+    # Base the exit code on whether the fetch SUCCEEDED, not on whether a string
+    # came back: a failed kubectl returns its error text, so `out` was always
+    # truthy and this command exited 0 even with no cluster at all — unusable as a
+    # script or CI check.
+    if hasattr(backend, "logs_result"):
+        out, ok = backend.logs_result(args.service or "", tail=args.tail)
+    else:
+        out = backend.logs(args.service or "", tail=args.tail)
+        ok = bool(out)
     print(out or _c("dim", "(no log output)"))
-    return EXIT_OK if out else EXIT_NOTREADY
+    if ok:
+        return EXIT_OK
+    return EXIT_FAIL if caps.cluster_available else EXIT_NOTREADY
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -536,16 +566,16 @@ def cmd_tui(args: argparse.Namespace) -> int:
         _bad(f"TUI unavailable: {exc}")
         print(_c("dim", "  install the optional extra: pip install 'weirvern[admin]'"))
         return EXIT_FAIL
-    return run_tui(PROJECT_DIR, refresh_s=args.refresh)
+    return run_tui(project_dir(), refresh_s=args.refresh)
 
 
 def cmd_version(args: argparse.Namespace) -> int:
     from weirvern import __version__
     print(f"weirvern {__version__}")
-    print(f"project: {PROJECT_DIR}")
-    caps = detect_capabilities(PROJECT_DIR)
+    print(f"project: {project_dir()}")
+    caps = detect_capabilities(project_dir())
     if caps.cluster_available:
-        ctx = _run(["kubectl", "config", "current-context"], PROJECT_DIR, timeout=15).text
+        ctx = _run(["kubectl", "config", "current-context"], project_dir(), timeout=15).text
         print(f"cluster: {ctx or '(context name unavailable)'}  namespace: {NAMESPACE}")
     else:
         print(f"cluster: unavailable — {caps.reason or 'unknown'}")

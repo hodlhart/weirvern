@@ -25,8 +25,9 @@ public or production-deployed.
 - The worker runs with **no inbound network exposure** by design (outbound
   only to ClickHouse, Pushover). Do not publish port 8080 of the worker to
   the internet.
-- Collector ports (2055/6343 UDP) are intentionally published on the LAN.
-  Restrict at the firewall to your exporters' IPs.
+- Collector ports (NodePort 32055/32063 UDP) are intentionally published on the
+  LAN. Restrict at the firewall to your exporters' IPs. The container ports
+  (2055/6343) are cluster-internal and are not reachable from outside.
 - `.env` contains Pushover tokens — `chmod 600` and keep out of git.
 - ClickHouse HTTP port (8123) should not be exposed outside the cluster
   network.

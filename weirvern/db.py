@@ -99,6 +99,7 @@ def apply_schema(client: Client, settings: Settings) -> None:
         )
 
     applied = []
+    failures: list[tuple[str, str]] = []
     for sql_path in sql_files:
         statements = [s.strip() for s in _SQL_SPLIT.split(sql_path.read_text()) if s.strip()]
         for stmt in statements:
@@ -109,8 +110,24 @@ def apply_schema(client: Client, settings: Settings) -> None:
             except Exception as exc:  # noqa: BLE001
                 if "already exists" in str(exc).lower():
                     continue
-                logger.warning("Schema statement failed (continuing): %s\n  %s", stmt.splitlines()[0][:90], exc)
+                first_line = stmt.splitlines()[0][:90]
+                failures.append((first_line, str(exc)[:200]))
+                logger.warning("Schema statement failed: %s\n  %s", first_line, exc)
         applied.append(sql_path.name)
+
+    # Fail loudly if ANY statement failed, for the same reason an empty schema
+    # directory is fatal: this function previously logged and continued past every
+    # error, so a schema that created zero tables returned successfully and
+    # `weirvern init-db` printed "schema applied — N objects" from whatever it
+    # found. The schema Job then reported Completed with an empty database.
+    # A schema bootstrap that cannot say "I failed" is worse than one that crashes.
+    if failures:
+        detail = "; ".join(f"{stmt}: {err}" for stmt, err in failures[:3])
+        raise RuntimeError(
+            f"{len(failures)} schema statement(s) failed; refusing to report "
+            f"success. First failures: {detail}"
+        )
+
     logger.info("Applied schema files: %s", ", ".join(applied))
     try:
         client.command(

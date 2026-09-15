@@ -134,9 +134,15 @@ def test_apply_schema_records_a_version(monkeypatch, tmp_path):
     assert any("schema_versions" in c for c in fake.commands)
 
 
-def test_apply_schema_continues_past_a_failing_statement(monkeypatch, tmp_path):
-    """One bad statement must not abandon the remaining tables — a partially
-    created schema is worse than a logged warning."""
+def test_apply_schema_fails_loudly_when_a_statement_fails(monkeypatch, tmp_path):
+    """THE BUG: apply_schema used to log and CONTINUE past every failed
+    statement, so a schema that created nothing returned successfully and
+    `weirvern init-db` printed 'schema applied — N objects' from whatever tables
+    happened to exist. The schema Job then reported Completed against an empty
+    database.
+
+    A schema bootstrap that cannot say "I failed" is worse than one that crashes.
+    """
     class OneFail(FakeCH):
         def command(self, sql, **kwargs):
             self.commands.append(sql)
@@ -144,8 +150,12 @@ def test_apply_schema_continues_past_a_failing_statement(monkeypatch, tmp_path):
                 raise RuntimeError("syntax error near 'bad'")
 
     fake = OneFail()
-    _apply(monkeypatch, tmp_path, fake, {"001_test.sql": (
-        "CREATE TABLE IF NOT EXISTS bad (x Int8);\n"
-        "CREATE TABLE IF NOT EXISTS good (y Int8);\n"
-    )})
-    assert any("good" in c for c in fake.commands)
+    with pytest.raises(RuntimeError, match=r"schema statement\(s\) failed"):
+        _apply(monkeypatch, tmp_path, fake, {"001_test.sql": (
+            "CREATE TABLE IF NOT EXISTS bad (x Int8);\n"
+            "CREATE TABLE IF NOT EXISTS good (y Int8);\n"
+        )})
+    # One bad statement must not abandon the rest: apply what we can, then report.
+    assert any("good" in c for c in fake.commands), (
+        "remaining statements must still be attempted before failing"
+    )
