@@ -2,36 +2,27 @@
 #
 # WHAT IS ON A PVC vs A hostPath, and why:
 #
-#   PVC  — data that must survive a pod moving to another node:
-#          ClickHouse's data directory, and the trained model artifacts.
+#   PVC  — data that must survive a pod moving to another node: the trained model
+#          artifacts, and ClickHouse's data directory.
 #
 #   hostPath — data that is inherently node-local: the flow JSONL that goflow2
 #          writes and the Zeek logs. These are produced by *node-level sensors*
 #          (a packet sniffer sees only its own node's traffic), so a network
-#          filesystem would add no portability and real latency. The reader
-#          (the worker) is pinned to the same node via nodeAffinity; see
-#          33-worker.yaml.
+#          filesystem would add no portability and real latency. The reader (the
+#          worker) is pinned to the same node via nodeAffinity; see 33-worker.yaml.
 #
-# `storageClassName: local-path` is the default dynamic provisioner on both
-# k0s and k3s. On a cluster with a different provisioner, change this one
-# field — nothing else in the manifests depends on it. Leave it as the empty
-# string ("") to use the cluster's default StorageClass.
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: clickhouse-data
-  namespace: weirvern
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: local-path
-  resources:
-    requests:
-      # Size for the retention policy in weirvern/schema/001_weirvern.sql and
-      # the ingest rate you expect. A homelab LAN is single-digit GB/day; a
-      # production deployment with per-type retention wants far more. ClickHouse
-      # will not gracefully stop at the limit — size it with headroom.
-      storage: 50Gi
+# ── THE STORAGE CLASS ────────────────────────────────────────────────────────
+# `local-path` is the default dynamic provisioner on **k3s**. It is NOT a k0s
+# default: k0s ships no provisioner, and its documentation lists third-party CSI
+# drivers (Rook-Ceph, Longhorn, ...) instead. On a bare k0s cluster both claims
+# below stay Pending forever and ClickHouse never starts.
+#
+# The value appears in THREE places, not one:
+#   * here, twice (models and, historically, clickhouse-data)
+#   * k8s/30-clickhouse.yaml, in the StatefulSet's volumeClaimTemplate
+#
+# Change all three together, or set the value to "" to use the cluster's default
+# StorageClass (which is what a cluster with exactly one provisioner wants).
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -43,6 +34,18 @@ spec:
   storageClassName: local-path
   resources:
     requests:
-      # Trained model artifacts are small (a few MB); this is the working set
-      # for retrains plus the version history that makes rollback possible.
+      # Trained model artifacts are small (a few MB); this is the working set for
+      # retrains plus the version history that makes rollback possible.
       storage: 5Gi
+---
+# NOTE: there is deliberately NO `clickhouse-data` PVC here.
+#
+# There used to be, and it was a trap: it duplicated the StatefulSet's own
+# `volumeClaimTemplates` entry of the same name (k8s/30-clickhouse.yaml), so it
+# was mounted by nothing while still requesting 50Gi — on a cluster with a
+# default StorageClass it binds a real volume that nothing ever writes to, and an
+# operator reading this file reasonably concludes it is the database's volume.
+#
+# ClickHouse's storage is declared where it is actually used, as a
+# volumeClaimTemplate on the StatefulSet, so it is named after the pod that owns
+# it and is resized in one obvious place.

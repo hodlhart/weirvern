@@ -238,7 +238,27 @@ def detect_flows(
         detected_by = [n for n, s in scores.items() if s > 0.20]
         active = len([d for d in detectors if d.is_ready()])
         agreement = len(detected_by) / active if active else 0.0
-        min_agreement = 0.33 if final_score < 0.6 else 0.25
+
+        # The agreement gate now reads settings.min_agreement (MIN_AGREEMENT)
+        # instead of hardcoding the value.
+        #
+        # THE BUG: this line used to be `min_agreement = 0.33 if final_score < 0.6
+        # else 0.25`, while config.py parsed and validated a MIN_AGREEMENT setting
+        # that NOTHING read. So the setting was documented in the README table,
+        # shipped in .env.example, and surfaced in `weirvern tune` — and changing
+        # it did nothing at all, silently. An operator tuning it would see no
+        # effect and have no way to tell whether the value was applied.
+        #
+        # The two-tier behaviour is preserved EXACTLY rather than approximated:
+        # the original hardcoded pair was 0.33 / 0.25, a 0.08 offset, so the
+        # high-score tier is `MIN_AGREEMENT - margin` (see the config comments for
+        # why a multiplier would have shifted the default path by 0.0025). Raising
+        # MIN_AGREEMENT now raises both tiers, and the floor keeps a silly value
+        # from disabling the gate.
+        min_agreement = (
+            settings.min_agreement if final_score < 0.6
+            else max(cfg.min_agreement_floor, settings.min_agreement - cfg.min_agreement_margin)
+        )
         if agreement < min_agreement:
             continue
 

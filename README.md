@@ -127,11 +127,23 @@ depends on it.
 | Storage class | dynamic | Defaults to `local-path` (k0s/k3s). Change one field for others |
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
-**Cluster sizing.** The shipped resource requests total roughly 1.5 CPU / 2 GB
-of requests and 7 CPU / 8 GB of limits, driven by ClickHouse and by the
-worker's in-memory model training. A 4-core / 8 GB node is a comfortable
-single-node homelab deployment; ClickHouse will use whatever memory you give it,
-so do not set its limit below 2 GB.
+**Cluster sizing.** Measured from the rendered manifests (not estimated), the
+shipped workloads total **1.63 CPU / 3.09 GiB of requests** and **8.40 CPU /
+12.25 GiB of limits**.
+
+Sizing rule: **a node must satisfy the limits**, not the requests, because the
+scheduler admits on requests but the kernel enforces limits. So the practical
+requirement for a single node is a machine that can actually give out ~8 cores
+and ~12 GiB, even though the shipped requests look like a Raspberry Pi job. That
+asymmetry is deliberately generous on CPU (bursty training) and is the first thing
+to tune downward if you are capacity-constrained: ClickHouse and the worker are
+the two that matter, and both have slack in their limits.
+
+A 4-core / 8 GB node will run Weirvern, but it will be tight and ClickHouse will
+be the first thing to suffer. 8 cores / 16 GB is a more honest single-node
+homelab target. Do not set ClickHouse's memory limit below 2 GB; it uses whatever
+you give it, and below that its own memory-tracking starts refusing queries.
+
 
 **Sensor node.** The node that carries the mirrored/SPAN traffic (and therefore
 runs goflow2, Zeek and the worker) needs:

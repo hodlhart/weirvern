@@ -10,7 +10,7 @@
 #   * the tailer tracks a file offset in memory, so two replicas would both read
 #     the same records and insert duplicates.
 # Scaling the worker requires externalising alert state and moving ingest to a
-# shared transport first — see k8s/README.md, "Scaling out".
+# shared transport first — see k8s/README.md, "Scaling and limits".
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,6 +46,8 @@ spec:
         runAsGroup: 10001
         runAsNonRoot: true
         fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       # Wait for the database before starting. Without this the worker's connect
       # bootstrap retries for ~30s and then exits; `restartPolicy: Always` would
       # eventually recover it, but only after a crash loop that makes the first
@@ -87,6 +89,7 @@ spec:
             limits:
               cpu: "100m"
               memory: "64Mi"
+      automountServiceAccountToken: false
       containers:
         - name: worker
           image: weirvern-worker:0.4.0

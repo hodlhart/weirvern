@@ -44,6 +44,8 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       # Wait for the database rather than failing fast: on a fresh cluster the
       # StatefulSet and this Job are applied together and ClickHouse takes tens
       # of seconds to accept queries. Without this the Job burns its backoff
@@ -80,6 +82,7 @@ spec:
             limits:
               cpu: "100m"
               memory: "64Mi"
+      automountServiceAccountToken: false
       containers:
         - name: init-db
           image: weirvern-worker:0.4.0

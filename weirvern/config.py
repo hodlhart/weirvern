@@ -170,6 +170,26 @@ class ModelConfig:
     port_scan_min_ports: int = 50
     port_scan_min_entropy: float = 4.0
 
+    # ── Agreement gate (see ensemble.detection_sweep) ────────────────────────
+    # A detection whose fused score is high (>= 0.6) is allowed a lower agreement
+    # bar, because its score already carries the evidence. This margin shapes that
+    # relaxation. Both knobs are internal derivations rather than operator
+    # tunables, which is why neither is in .env.example.
+    #
+    # A SUBTRACTIVE margin, not a multiplier: the original hardcoded pair was
+    # exactly 0.33 (low score) and 0.25 (high score), i.e. a 0.08 offset. A
+    # multiplier of 0.75 against the 0.33 default yields 0.2475, which would have
+    # silently shifted every high-scoring detection's agreement bar by 0.0025 on
+    # the default path. The offset reproduces the original exactly and still
+    # tracks MIN_AGREEMENT upward.
+    #
+    # min_agreement_margin: subtracted from MIN_AGREEMENT for the high-score tier
+    #   (0.08 with the default MIN_AGREEMENT of 0.33 gives exactly 0.25).
+    # min_agreement_floor: the subtraction can never push the bar below this, so a
+    #   badly chosen MIN_AGREEMENT cannot disable the gate entirely.
+    min_agreement_margin: float = 0.08
+    min_agreement_floor: float = 0.20
+
     # Score normalization parameters
     z_activation_k: float = 0.4
     z_activation_shift: float = 2.5

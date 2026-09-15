@@ -221,3 +221,94 @@ def test_sweep_skips_already_recorded_windows(monkeypatch):
 
     assert inserted_rows == [], "duplicate anomaly row was re-inserted"
     assert verdicts == [], "already-recorded window must not be re-returned for alerting"
+
+
+def test_min_agreement_setting_actually_gates_detections(monkeypatch):
+    """MIN_AGREEMENT was documented, validated, and surfaced in `weirvern tune`,
+    but NOTHING read it: ensemble.py hardcoded `0.33 if score < 0.6 else 0.25`.
+    An operator raising MIN_AGREEMENT to demand broader detector agreement saw no
+    change at all, with no way to tell the setting was inert.
+
+    This test fails if the gate ever stops consulting settings.min_agreement.
+
+    Configuration, measured rather than assumed: 4 detectors, 1 firing at 0.5, so
+    agreement = 1/4 = 0.25 and the score (0.5) is below 0.6, i.e. this exercises
+    the LOW-score tier. Both sides have real margin: 0.25 vs the 0.33 default
+    (suppressed by 0.08), and 0.25 vs a relaxed 0.18 (passes by 0.07). An earlier
+    version of this test used a case that landed exactly ON a tier boundary --
+    agreement 0.25 against a high-score tier of 0.25 -- which asserted nothing
+    useful because the comparison is strict.
+    """
+    detectors = [StubDetector(0.5), StubDetector(0.01), StubDetector(0.01),
+                 StubDetector(0.01)]
+
+    # Default MIN_AGREEMENT (0.33): a lone-detector 0.25 agreement is suppressed.
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, rows = _capturing_client()
+    assert detection_sweep(fake_ch, detectors, Settings(), ModelConfig()) == [], \
+        "a 0.25 agreement must not pass the default 0.33 gate"
+    assert rows == []
+
+    # Relax MIN_AGREEMENT below 0.25: the same window must now pass. If the
+    # setting is inert, this assertion is what fails.
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch2, rows2 = _capturing_client()
+    verdicts = detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.18),
+                              ModelConfig())
+    assert len(verdicts) == 1, (
+        "MIN_AGREEMENT=0.18 did not let a 0.25-agreement detection through, "
+        "which means the setting is not being read"
+    )
+    assert len(rows2) == 1
+    assert verdicts[0]["model_agreement"] == 0.25
+
+
+def test_min_agreement_also_gates_the_high_score_tier(monkeypatch):
+    """The high-score tier (score >= 0.6) is MIN_AGREEMENT minus the margin. It
+    must respond to MIN_AGREEMENT too, not stay pinned at its default.
+
+    Measured: 5 detectors, 1 firing at 0.92 -> agreement = 0.2. The default high
+    tier is 0.25, so 0.2 is suppressed; relaxing MIN_AGREEMENT to 0.18 moves the
+    tier to the floor (0.20) and lets it through.
+    """
+    detectors = [StubDetector(0.92)] + [StubDetector(0.01)] * 4
+
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, _ = _capturing_client()
+    assert detection_sweep(fake_ch, detectors, Settings(), ModelConfig()) == [], \
+        "a 0.2 agreement must not pass the default 0.25 high-score tier"
+
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch2, _ = _capturing_client()
+    relaxed = detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.18),
+                              ModelConfig())
+    assert len(relaxed) == 1, "the high-score tier ignored MIN_AGREEMENT"
+
+
+def test_default_agreement_gate_reproduces_the_original_hardcoded_pair():
+    """The gate replaced `0.33 if score < 0.6 else 0.25` with values derived from
+    MIN_AGREEMENT. Those derivations must reproduce the original pair EXACTLY at
+    the default, or every detection's agreement bar shifts on the default path.
+
+    This is why the relaxation is a subtractive margin (0.08) and not a
+    multiplier: 0.33 * 0.75 = 0.2475, which would have moved the high-score bar
+    by 0.0025 without anyone noticing.
+    """
+    mc = ModelConfig()
+    settings = Settings()
+    low_tier = settings.min_agreement
+    high_tier = max(mc.min_agreement_floor, settings.min_agreement - mc.min_agreement_margin)
+    assert low_tier == 0.33, f"low-score tier drifted to {low_tier}"
+    assert abs(high_tier - 0.25) < 1e-12, f"high-score tier drifted to {high_tier}"
+
+    # Both tiers must rise together when the operator raises the setting.
+    raised = Settings(min_agreement=0.60)
+    assert raised.min_agreement > low_tier
+    high_raised = max(mc.min_agreement_floor, raised.min_agreement - mc.min_agreement_margin)
+    assert high_raised > high_tier
+    # ...and the floor must hold against an absurdly low value.
+    silly = Settings(min_agreement=0.05)
+    assert max(mc.min_agreement_floor, silly.min_agreement - mc.min_agreement_margin) \
+        == mc.min_agreement_floor
+
+

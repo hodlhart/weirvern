@@ -14,7 +14,7 @@
 # This is the homelab-correct shape and it is also an honest statement of the
 # limitation: file-tail ingest does not horizontally scale. To run multiple
 # collector nodes, each needs its own worker, or the transport must change to a
-# broker (see k8s/README.md, "Scaling out").
+# broker (see k8s/README.md, "Scaling and limits").
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,6 +42,9 @@ spec:
         weirvern.io/sensor-node: "true"
       securityContext:
         fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: goflow2
           image: netsampler/goflow2:v2.2.6

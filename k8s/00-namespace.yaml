@@ -5,10 +5,46 @@ metadata:
   labels:
     app.kubernetes.io/name: weirvern
     app.kubernetes.io/part-of: weirvern
-    # Pod Security Admission: the sensors need NET_RAW and a hostPath, so the
-    # namespace cannot be "restricted". Zeek's DaemonSet is the only workload
-    # that needs the exemptions; the data-plane pods run with a hardened
-    # securityContext regardless (see each workload).
-    pod-security.kubernetes.io/enforce: baseline
+
+    # ── Pod Security Admission ───────────────────────────────────────────────
+    #
+    # `enforce: privileged` is REQUIRED, not a convenience.
+    #
+    # An earlier version set `enforce: baseline` on the assumption that only the
+    # Zeek sensor needed an exemption. That was wrong, and it would have made the
+    # whole deployment unschedulable: baseline forbids hostPath volumes, host
+    # namespaces, and any capability outside its allowlist (NET_BIND_SERVICE
+    # only). Verified per workload:
+    #
+    #   clickhouse         REJECTED  fix-permissions adds CHOWN/DAC_OVERRIDE/FOWNER
+    #   goflow2            REJECTED  hostPath
+    #   zeek               REJECTED  hostNetwork + hostPath + NET_RAW
+    #   weirvern-worker    REJECTED  hostPath x2
+    #   weirvern-schema    admitted (the only one)
+    #
+    # So 4 of 5 workloads were rejected at admission, including the database.
+    # Nothing in this namespace would have started.
+    #
+    # WHY THIS IS STILL DEFENSIBLE: these privileges are what the workload
+    # fundamentally requires. A packet sniffer cannot capture without hostNetwork
+    # and NET_RAW; a sensor that writes files for a same-node reader cannot use a
+    # network filesystem; and the ClickHouse permission fix must chown a volume.
+    # Each workload nevertheless sets a hardened securityContext of its own
+    # (non-root, allowPrivilegeEscalation false, capabilities dropped then the
+    # minimum added), so the namespace label is not doing the containment here —
+    # the per-workload contexts are.
+    #
+    # The alternative, if you want a tighter namespace policy, is to split the
+    # sensors into their own namespace labelled `privileged` and keep the data
+    # plane (ClickHouse, worker, schema Job) at `baseline` with the hostPath
+    # dependency removed (a PVC-based transport instead of a shared file). That is
+    # a design change, not a label change.
+    pod-security.kubernetes.io/enforce: privileged
+    # Audit and warn at `restricted` deliberately: the API server logs and
+    # reports exactly which control each workload does not meet, which is how you
+    # keep an eye on this rather than forgetting it.
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
+    # Pin the version so a cluster upgrade does not silently change what these
+    # levels mean. Bump deliberately, after re-checking the table above.
+    pod-security.kubernetes.io/enforce-version: latest
