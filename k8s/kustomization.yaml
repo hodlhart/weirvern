@@ -1,0 +1,92 @@
+# kustomize entry point — apply the whole project with:
+#
+#     kubectl apply -k k8s/
+#
+# WHY KUSTOMIZE rather than plain manifests:
+#   configMapGenerator reads zeek/weirvern-local.zeek and zeek/zeekctl.cfg from
+#   the repository directly. Those files are the single source of truth for the
+#   sensor policy, so there is no hand-maintained copy inside a manifest to drift
+#   out of date. kustomize also rewrites the Deployment's reference to the
+#   generated ConfigMap name automatically, so editing the Zeek policy changes
+#   the ConfigMap hash and triggers a rolling restart of the sensor — which is
+#   exactly the behaviour you want, and which plain manifests cannot express.
+#
+# IMAGE TAGS: set them here rather than editing every manifest.
+#     kubectl apply -k k8s/                      # uses the tags below
+#     kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:v0.4.0
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace is declared in 00-namespace.yaml and set here so every namespaced
+# resource lands in it even when a manifest omits `namespace:`.
+namespace: weirvern
+
+resources:
+  - 00-namespace.yaml
+  - 10-storage.yaml
+  - 20-configmap-env.yaml
+  # NOTE: deliberately NO Secret here. A Secret manifest with placeholder values
+  # is overwritten with empty strings on every apply — verified, and it silently
+  # disables all alerting. The Secret is created by the operator out of band; see
+  # the SECRETS block below and k8s/secrets.env.example.
+  - 30-clickhouse.yaml
+  - 31-goflow2.yaml
+  - 32-zeek.yaml
+  - 33-worker.yaml
+  - 50-schema-job.yaml
+  - 60-rbac.yaml
+  # NetworkPolicy is OPTIONAL and commented out by default: it only takes effect
+  # on a CNI that enforces policy, and an incomplete allow-list would silently
+  # cut the worker off from Pushover. Read the file before enabling it.
+  # - 70-networkpolicy.yaml
+
+configMapGenerator:
+  # Generated from the repository files, so the cluster always runs the policy
+  # that is under version control.
+  #
+  # MECHANICS: kustomize refuses to read files outside its own directory (a
+  # deliberate security boundary — a manifest must not be able to pull arbitrary
+  # host files into a ConfigMap). The Zeek policy therefore lives in k8s/zeek/
+  # and is read from there. If a future refactor moves it back out, kustomize
+  # reports "security; file ... is not in or below".
+  #
+  # A name hash is appended (default), and kustomize rewrites the DaemonSet's
+  # reference to match — so editing the policy changes the ConfigMap name and
+  # triggers a rolling restart of the sensor automatically.
+  - name: zeek-site
+    files:
+      - zeek/weirvern-local.zeek
+      - zeek/zeekctl.cfg
+
+# SECRETS ARE DELIBERATELY NOT MANAGED HERE.
+#
+# The cluster Secret is created by the operator, out of band:
+#     kubectl -n weirvern create secret generic weirvern-secrets \
+#       --from-literal=PUSHOVER_USER_KEY=... --from-literal=PUSHOVER_API_TOKEN=...
+#
+# WHY NOT a secretGenerator or a Secret manifest (both were tried/rejected):
+#
+#   * A committed Secret manifest cannot work. With placeholder values, every
+#     `kubectl apply -k` OVERWRITES the real credentials with empty strings —
+#     verified: PUSHOVER_USER_KEY went from '<real key>' to "" — silently
+#     disabling all alerting with no error anywhere. With real values, the
+#     credentials are in git, which is worse.
+#
+#   * A secretGenerator reading a gitignored `secrets.env` fixes the wipe but
+#     makes `kustomize build` FAIL on a fresh clone and in CI, because the file
+#     does not exist yet. That breaks `--dry-run` inspection, which is how an
+#     operator decides whether to deploy at all.
+#
+# So this kustomization manages everything EXCEPT the Secret, and applying it can
+# never damage credentials. For declarative secret management, commit the
+# ENCRYPTED form via SealedSecrets or SOPS rather than either of the above.
+
+generatorOptions:
+  labels:
+    app.kubernetes.io/part-of: weirvern
+
+images:
+  # Pin the worker image. Override for your registry:
+  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.4.0
+  - name: weirvern-worker
+    newTag: "0.4.0"

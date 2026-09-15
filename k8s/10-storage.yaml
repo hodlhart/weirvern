@@ -1,0 +1,48 @@
+# Persistent storage.
+#
+# WHAT IS ON A PVC vs A hostPath, and why:
+#
+#   PVC  — data that must survive a pod moving to another node:
+#          ClickHouse's data directory, and the trained model artifacts.
+#
+#   hostPath — data that is inherently node-local: the flow JSONL that goflow2
+#          writes and the Zeek logs. These are produced by *node-level sensors*
+#          (a packet sniffer sees only its own node's traffic), so a network
+#          filesystem would add no portability and real latency. The reader
+#          (the worker) is pinned to the same node via nodeAffinity; see
+#          33-worker.yaml.
+#
+# `storageClassName: local-path` is the default dynamic provisioner on both
+# k0s and k3s. On a cluster with a different provisioner, change this one
+# field — nothing else in the manifests depends on it. Leave it as the empty
+# string ("") to use the cluster's default StorageClass.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: weirvern
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      # Size for the retention policy in weirvern/schema/001_weirvern.sql and
+      # the ingest rate you expect. A homelab LAN is single-digit GB/day; a
+      # production deployment with per-type retention wants far more. ClickHouse
+      # will not gracefully stop at the limit — size it with headroom.
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+  namespace: weirvern
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      # Trained model artifacts are small (a few MB); this is the working set
+      # for retrains plus the version history that makes rollback possible.
+      storage: 5Gi

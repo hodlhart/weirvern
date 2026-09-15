@@ -1,0 +1,104 @@
+# Schema application — replaces the initdb-directory mechanism.
+#
+# WHAT THIS REPLACES AND WHY IT MATTERS:
+#   The single-host setup applied the schema by mounting it into the database
+#   image's initdb directory, which only runs on a FIRST start against an EMPTY
+#   data directory. Two consequences: the schema never updated when the
+#   SQL changed and the volume persisted (a real cause of the version-skew
+#   problems this rebuild exists to fix), and there was no way to apply it to a
+#   running database.
+#
+#   This Job runs the application's own code path — weirvern.db.apply_schema —
+#   which is the SAME function `weirvern init-db` calls. Every statement is
+#   CREATE ... IF NOT EXISTS, so it is idempotent and safe to re-run against a
+#   live database.
+#
+# WHEN IT RUNS: this is a Job (not a CronJob) applied with the rest of the
+# manifests, so a schema change ships with the code that needs it. Re-running is
+# a deliberate act (`kubectl apply -f k8s/50-schema-job.yaml` after deleting the
+# old Job, or `weirvern init-db` against the Service).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: weirvern-schema
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-schema
+    app.kubernetes.io/part-of: weirvern
+spec:
+  # Clean up the completed pod after an hour: the logs are useful during a
+  # rollout, but a long-lived Succeeded pod is clutter that hides real failures.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirvern-schema
+    spec:
+      # Uncomment to pull the worker image from a private registry (see
+      # k8s/33-worker.yaml for the secret-creation command).
+      # imagePullSecrets:
+      #   - name: regcred
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+      # Wait for the database rather than failing fast: on a fresh cluster the
+      # StatefulSet and this Job are applied together and ClickHouse takes tens
+      # of seconds to accept queries. Without this the Job burns its backoff
+      # limit and the operator sees a failure that resolves itself.
+      initContainers:
+        - name: wait-for-clickhouse
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              host="${CLICKHOUSE_HOST:-clickhouse}"
+              port="${CLICKHOUSE_PORT:-8123}"
+              for i in $(seq 1 90); do
+                if wget -q -O- "http://$host:$port/ping" 2>/dev/null | grep -q Ok; then
+                  echo "clickhouse is up"; exit 0
+                fi
+                sleep 2
+              done
+              echo "clickhouse not ready after 180s" >&2; exit 1
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # See k8s/33-worker.yaml: init containers get requests so a quota-
+          # enforcing namespace does not reject the Pod.
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+      containers:
+        - name: init-db
+          image: weirvern-worker:0.4.0
+          imagePullPolicy: IfNotPresent
+          # The CLI entry point, so the schema path is identical to a local run.
+          command: ["weirvern", "init-db"]
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            - secretRef:
+                name: weirvern-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

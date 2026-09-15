@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern
+    app.kubernetes.io/part-of: weirvern
+    # Pod Security Admission: the sensors need NET_RAW and a hostPath, so the
+    # namespace cannot be "restricted". Zeek's DaemonSet is the only workload
+    # that needs the exemptions; the data-plane pods run with a hardened
+    # securityContext regardless (see each workload).
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

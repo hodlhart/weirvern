@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[admin,dev]"
+      - name: Lint
+        run: ruff check weirvern tests
+      - name: Type check
+        run: mypy weirvern --ignore-missing-imports
+      - name: Test
+        run: pytest
+
+  # The manifests are a deployment artifact, so validate them like one: schema
+  # correctness AND assembly. kustomize build catches a class of error that
+  # per-file validation cannot — a reference to a ConfigMap or volume that no
+  # manifest declares only appears once everything is assembled.
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Install kustomize
+        run: |
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.5.0/kustomize_v5.5.0_linux_amd64.tar.gz" \
+            | tar xz kustomize
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Validate manifests against Kubernetes schemas
+        run: kubeconform -strict -summary -ignore-missing-schemas k8s/
+
+      - name: Assemble the manifests
+        run: kustomize build k8s/ > /tmp/rendered.yaml
+
+      - name: Verify the schema ships inside the package
+        run: |
+          # The schema Job runs `weirvern init-db` from the built image, so the
+          # .sql file must be present in an INSTALLED (non-editable) package.
+          # This caught a real bug: it used to resolve outside the package, so the
+          # Job applied nothing and reported success.
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q .
+          /tmp/venv/bin/python - <<'PY'
+          from weirvern import db
+          files = sorted(db.SCHEMA_DIR.glob("*.sql"))
+          assert files, f"schema missing from installed package: {db.SCHEMA_DIR}"
+          text = files[0].read_text()
+          assert "CREATE TABLE" in text, "schema file looks empty"
+          print(f"schema present in installed package: {[p.name for p in files]}")
+          PY
+
+      - name: Check rendered references resolve
+        run: |
+          # Every ConfigMap/Secret/volume the rendered output points at must
+          # exist, or the pod is rejected at admission time on a real cluster.
+          pip install -q pyyaml
+          python - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
+          cms = {d["metadata"]["name"] for d in docs if d.get("kind") == "ConfigMap"}
+          secrets = {d["metadata"]["name"] for d in docs if d.get("kind") == "Secret"}
+          pvcs = {d["metadata"]["name"] for d in docs if d.get("kind") == "PersistentVolumeClaim"}
+
+          def refs(o):
+              if isinstance(o, dict):
+                  for k, v in o.items():
+                      if k in ("configMap", "configMapRef", "secretRef", "secretKeyRef") \
+                              and isinstance(v, dict) and "name" in v:
+                          yield v["name"]
+                      yield from refs(v)
+              elif isinstance(o, list):
+                  for i in o:
+                      yield from refs(i)
+
+          problems = []
+          for d in docs:
+              kind, name = d.get("kind"), d.get("metadata", {}).get("name")
+              spec = d.get("spec", {})
+              tmpl = spec.get("template", {}).get("spec", {}) if spec.get("template") else spec
+              if not tmpl:
+                  continue
+              for r in refs(d):
+                  if r not in cms | secrets:
+                      problems.append(f"{kind}/{name}: unresolved reference {r}")
+              declared = {v["name"] for v in tmpl.get("volumes") or [] if "name" in v}
+              for vct in spec.get("volumeClaimTemplates") or []:
+                  declared.add(vct["metadata"]["name"])
+              for c in list(tmpl.get("containers") or []) + list(tmpl.get("initContainers") or []):
+                  for m in c.get("volumeMounts") or []:
+                      if m["name"] not in declared:
+                          problems.append(f"{kind}/{name}: mount {m['name']} has no volume")
+              for v in tmpl.get("volumes") or []:
+                  pvc = v.get("persistentVolumeClaim")
+                  if pvc and pvc["claimName"] not in pvcs:
+                      problems.append(f"{kind}/{name}: PVC {pvc['claimName']} not declared")
+
+          if problems:
+              print("Manifest reference problems:")
+              for p in problems:
+                  print(" ", p)
+              sys.exit(1)
+          print(f"all references resolve across {len(docs)} resources")
+          PY

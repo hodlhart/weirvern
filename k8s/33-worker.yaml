@@ -1,0 +1,147 @@
+# The worker: tails the sensor output, runs the ML ensemble, sends alerts.
+#
+# NODE-PINNED FOR THE SAME REASON AS THE COLLECTOR: it reads flow JSONL and Zeek
+# logs from hostPaths written by node-level sensors. It must run on the sensor
+# node or it reads empty files and reports a healthy, silent pipeline.
+#
+# REPLICAS MUST STAY 1. This is not a capacity choice:
+#   * alert state (cooldown, hourly cap) lives in-process, so a second replica
+#     would alert independently and double every notification;
+#   * the tailer tracks a file offset in memory, so two replicas would both read
+#     the same records and insert duplicates.
+# Scaling the worker requires externalising alert state and moving ingest to a
+# shared transport first — see k8s/README.md, "Scaling out".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirvern-worker
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-worker
+    app.kubernetes.io/part-of: weirvern
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weirvern-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirvern-worker
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      nodeSelector:
+        weirvern.io/sensor-node: "true"
+      # Uncomment to pull the worker image from a private registry. A private
+      # registry needs a secret of type kubernetes.io/dockerconfigjson:
+      #   kubectl -n weirvern create secret docker-registry regcred \
+      #     --docker-server=<registry> --docker-username=<user> --docker-password=<token>
+      # imagePullSecrets:
+      #   - name: regcred
+      securityContext:
+        # Matches the uid baked into the worker image.
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      # Wait for the database before starting. Without this the worker's connect
+      # bootstrap retries for ~30s and then exits; `restartPolicy: Always` would
+      # eventually recover it, but only after a crash loop that makes the first
+      # `weirvern status` look broken.
+      initContainers:
+        - name: wait-for-clickhouse
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              host="${CLICKHOUSE_HOST:-clickhouse}"
+              port="${CLICKHOUSE_PORT:-8123}"
+              echo "waiting for $host:$port"
+              for i in $(seq 1 60); do
+                if wget -q -O- "http://$host:$port/ping" 2>/dev/null | grep -q Ok; then
+                  echo "clickhouse is up"
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "clickhouse did not become ready in 120s" >&2
+              exit 1
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # Requests are declared even for a short-lived init container: a
+          # namespace with a ResourceQuota requiring requests rejects the Pod
+          # outright, and a missing request also lets this poller be scheduled on
+          # a full node and starve the workload it is gating.
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+      containers:
+        - name: worker
+          image: weirvern-worker:0.4.0
+          # A cluster cannot build an image, so the tag must be resolvable from
+          # every node. Set imagePullPolicy explicitly rather than relying on the
+          # default, which flips to Always only for :latest — this tag is
+          # versioned, so IfNotPresent is correct and avoids pulling on restart.
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            - secretRef:
+                name: weirvern-secrets
+          volumeMounts:
+            - name: flow-data
+              mountPath: /data
+              readOnly: true
+            - name: zeek-logs
+              mountPath: /zeek/logs
+              readOnly: true
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              # Training the ensemble is the memory spike: IsolationForest plus
+              # GradientBoosting over a 3-day window. Too low a limit manifests
+              # as an OOM kill mid-retrain, which silently stops retraining and
+              # leaves the models stale.
+              cpu: "2"
+              memory: "4Gi"
+          livenessProbe:
+            # The worker has no HTTP server, so liveness is a process check. An
+            # exec probe distinguishes "python is alive" from "the container is
+            # up but the loop has died", which is the failure this catches.
+            exec:
+              command: ["python", "-c", "import weirvern.worker; print('ok')"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: flow-data
+          hostPath:
+            path: /var/lib/weirvern/flows
+            type: DirectoryOrCreate
+        - name: zeek-logs
+          hostPath:
+            path: /var/lib/weirvern/zeek
+            type: DirectoryOrCreate
+        - name: models
+          persistentVolumeClaim:
+            claimName: models

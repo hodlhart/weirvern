@@ -1,0 +1,89 @@
+# NetworkPolicy — OPTIONAL hardening. NOT enabled by default.
+#
+# READ THIS BEFORE ENABLING (uncomment it in kustomization.yaml):
+#
+#   1. It only takes effect on a CNI that ENFORCES NetworkPolicy. On a cluster
+#      whose CNI ignores policy (e.g. k3s with the default flannel), applying
+#      this changes nothing — no error, no effect. Verify your CNI first.
+#
+#   2. NetworkPolicy does NOT apply to pods using hostNetwork. The Zeek sensor
+#      and (by design) the goflow2 collector are exempt, so this cannot be used
+#      to restrict their traffic. That is a Kubernetes limitation, not an
+#      oversight — the sensor's exposure is managed by node placement and the
+#      interface it sniffs.
+#
+#   3. The allow-lists below are deliberately complete. If you tighten them,
+#      the failure mode is a container that cannot reach what it needs, which
+#      shows up as a timeout rather than a clear error. In particular the worker
+#      MUST keep egress to Pushover (HTTPS) or alerts stop silently.
+---
+# Default deny for ingress within the namespace; egress stays open at the pod
+# level except where a policy below narrows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: weirvern
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# ClickHouse accepts connections only from pods in this namespace (the worker
+# and the schema Job). This is the important one: it keeps the database off the
+# network even if a Service of type NodePort is enabled later.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clickhouse-ingress
+  namespace: weirvern
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8123
+        - protocol: TCP
+          port: 9000
+---
+# The worker needs egress for exactly two things: DNS, and HTTPS to Pushover.
+# Everything else is denied, so a compromised dependency cannot exfiltrate the
+# flow data it has access to.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-egress
+  namespace: weirvern
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: weirvern-worker
+  policyTypes: [Egress]
+  egress:
+    # ClickHouse, in-namespace.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clickhouse
+      ports:
+        - protocol: TCP
+          port: 8123
+    # DNS. Without this every name resolution fails and even the ClickHouse
+    # connection above breaks, because it is addressed by Service name.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Pushover. Restricted to HTTPS; Pushover has no fixed IP range that is safe
+    # to pin, so this is destination-port-based rather than address-based.
+    # If alerts stop after enabling this file, this rule is the first suspect.
+    - ports:
+        - protocol: TCP
+          port: 443

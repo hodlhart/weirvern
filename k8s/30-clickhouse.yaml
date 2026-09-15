@@ -1,0 +1,182 @@
+# ClickHouse — the storage layer.
+#
+# StatefulSet rather than Deployment: the data PVC and the pod identity must be
+# stable across restarts. A Deployment would let two pods mount the same
+# ReadWriteOnce volume during a rolling update, which corrupts ClickHouse's
+# data directory.
+#
+# SINGLE REPLICA BY DESIGN. This is a single-node ClickHouse, which is correct
+# for a homelab and for a small production deployment. Scaling out needs
+# ClickHouse Keeper and a replicated schema, which is a schema change, not a
+# replicas change — do not simply raise `replicas` here.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: weirvern
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clickhouse
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      securityContext:
+        # The upstream image runs as uid 101. Setting it here means the
+        # permission-fix initContainer below and the main container agree.
+        runAsUser: 101
+        runAsGroup: 101
+        runAsNonRoot: true
+        fsGroup: 101
+      initContainers:
+        # A dynamically provisioned volume is usually owned by root, and
+        # ClickHouse cannot write its data directory as uid 101. This makes the
+        # mount usable. Cheap, idempotent, and only touches the two paths the
+        # container actually needs.
+        - name: fix-permissions
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              chown -R 101:101 /var/lib/clickhouse /var/log/clickhouse-server
+              echo "permissions set"
+          securityContext:
+            # chown requires root, so this container alone runs as root. It does
+            # no network I/O and exits immediately.
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+          volumeMounts:
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
+            - name: clickhouse-logs
+              mountPath: /var/log/clickhouse-server
+          # Declared so a namespace with a ResourceQuota requiring requests does
+          # not reject the Pod. This container only chowns two paths and exits.
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:26.8
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: weirvern-secrets
+                  key: CLICKHOUSE_PASSWORD
+          volumeMounts:
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
+            - name: clickhouse-logs
+              mountPath: /var/log/clickhouse-server
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            # ClickHouse is memory-hungry for aggregation; a limit that is too
+            # low turns a large query into an OOM kill that looks like a crash.
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          # /ping returns 200 as soon as the HTTP port is serving, which is the
+          # earliest correct readiness signal — TCP acceptance is not enough,
+          # because the server accepts before it can run queries.
+          readinessProbe:
+            httpGet: {path: /ping, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: {path: /ping, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            # Generous threshold: a heavy query can briefly starve the probe and
+            # restarting the database mid-query is far worse than a slow ping.
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        # ClickHouse's own server log needs a writable path, but it is a cache of
+        # diagnostics — not data — so it is an emptyDir: it survives a container
+        # restart within the pod (which is when the log is most useful), and does
+        # not consume the persistent volume or block rescheduling.
+        - name: clickhouse-logs
+          emptyDir:
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    # NOTE: this template applies only to a NEWLY created StatefulSet. Changing
+    # it for an existing one has no effect on the already-bound claim.
+    - metadata:
+        name: clickhouse-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 50Gi
+---
+# Headless Service for the StatefulSet's stable network identity.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: weirvern
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native
+---
+# Optional external access to ClickHouse, for `weirvern status` from a
+# workstation or for a browser-based query UI. Disabled by default because
+# exposing a database to the LAN is a decision, not a convenience.
+#
+# To enable: uncomment `type: NodePort` AND uncomment the nodePort lines.
+# `nodePort` is only valid on NodePort/LoadBalancer services — leaving it on a
+# ClusterIP service makes the manifest invalid and the whole file fails to
+# apply.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-external
+  namespace: weirvern
+  annotations:
+    weirvern.io/note: "disabled by default; uncomment type: NodePort to enable"
+spec:
+  # type: NodePort
+  selector:
+    app.kubernetes.io/name: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+      # nodePort: 30123

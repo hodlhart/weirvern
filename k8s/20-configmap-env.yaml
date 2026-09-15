@@ -1,0 +1,47 @@
+# Environment for every Weirvern workload.
+#
+# These are the NON-SECRET settings, mirroring .env.example. The values are
+# read by weirvern/config.py with the same names as the .env file, so a local
+# run and a cluster run are configured identically.
+#
+# Secrets (PUSHOVER_* keys, CLICKHOUSE_PASSWORD) do NOT belong here — a
+# ConfigMap is not confidential. See 21-secrets.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weirvern-env
+  namespace: weirvern
+data:
+  # ── ClickHouse ─────────────────────────────────────────────────────────────
+  # The Service name below resolves in-cluster, so no NodePort is required for
+  # pod-to-pod traffic.
+  CLICKHOUSE_HOST: "clickhouse"
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_DB: "weirvern"
+  CLICKHOUSE_USER: "default"
+  TZ: "America/Chicago"
+
+  # ── Collector ──────────────────────────────────────────────────────────────
+  NETFLOW_PORT: "2055"
+  SFLOW_PORT: "6343"
+
+  # ── Sensors ────────────────────────────────────────────────────────────────
+  # Zeek sniffs a node's interface, so this is the *node* NIC, not a cluster
+  # resource. Set it per deployment; see 32-zeek.yaml for the caveats.
+  ZEEK_IFACE: "eth0"
+  ZEEK_LOG_DIR: "/zeek/logs"
+  TAIL_FILE: "/data/flows.jsonl"
+
+  # ── Detection loop ─────────────────────────────────────────────────────────
+  DETECT_INTERVAL_S: "300"
+  RETRAIN_EVERY_H: "6"
+  RETRAIN_WINDOW_H: "72"
+  BASE_THRESHOLD: "0.35"
+  MIN_AGREEMENT: "0.33"
+
+  # ── Alerting ───────────────────────────────────────────────────────────────
+  PUSHOVER_COOLDOWN_S: "1800"
+  PUSHOVER_MAX_PER_HOUR: "20"
+
+  # ── Models ─────────────────────────────────────────────────────────────────
+  MODEL_DIR: "/models"

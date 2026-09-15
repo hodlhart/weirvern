@@ -1,0 +1,51 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# NOTE: the pattern must be `.env*`, not `*.env`. `*.env` only matches names
+# ENDING in ".env", so it silently MISSES `.env.bak`, `.env.local`, `.env.prod`
+# and every other suffixed variant. The admin CLI itself writes `.env.bak`
+# backups, so that gap would have committed Pushover tokens and the ClickHouse
+# password to git history.
+.env
+.env.*
+*.env
+!.env.example
+
+# ── Runtime state ────────────────────────────────────────────────────────────
+# Model artifacts (pickled detectors), flow data, and collector logs are
+# machine-specific and can be large; none of it belongs in version control.
+/data/
+/models/
+*.jsonl
+*.pkl
+zeek/logs/
+zeek/spool/
+*.log
+*.log.*
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Local scratch ────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+!weirvern/tools/*.py

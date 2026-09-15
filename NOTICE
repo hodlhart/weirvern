@@ -1,0 +1,51 @@
+Weirvern Third-Party Notices
+=============================
+
+Weirvern (this repository) is original work by Samuel Hart, licensed under
+the MIT License (see LICENSE). It builds on several third-party components.
+Their licenses are reproduced or referenced below as required. Nothing in
+these notices grants rights beyond the respective component licenses.
+
+Runtime components
+------------------
+
+| Component | Version (pinned) | License | Upstream |
+|---|---|---|---|
+| GoFlow2 (netflow/sflow collector) | v2.2.6 | Apache License 2.0 | https://github.com/netsampler/goflow2 |
+| Zeek (packet/protocol sensor) | lts (7.x) | BSD-3-Clause | https://github.com/zeek/zeek |
+| ClickHouse (columnar store) | 26.8.x LTS | Apache License 2.0 | https://github.com/ClickHouse/ClickHouse |
+| python:3.11-slim base image | 3.11 | PSF / Debian licenses | https://www.python.org/ |
+
+Python dependencies (installed by pip from the project's pinned
+requirements; see pyproject.toml for exact versions)
+-----------------------------------------------------------
+
+| Package | License | Upstream |
+|---|---|---|
+| scikit-learn | BSD-3-Clause | https://github.com/scikit-learn/scikit-learn |
+| numpy | BSD-3-Clause | https://github.com/numpy/numpy |
+| clickhouse-connect | Apache License 2.0 | https://github.com/ClickHouse/clickhouse-connect |
+| requests | Apache License 2.0 | https://github.com/psf/requests |
+| PyYAML | MIT | https://github.com/yaml/pyyaml |
+
+External services
+-----------------
+
+- Pushover (pushover.net) — alert push notifications. You must comply with
+  Pushover's Terms of Service. Free tier limits apply.
+- Your container registry — image distribution. The registry operator's terms
+  apply.
+
+Data provenance
+---------------
+
+- The synthetic traffic generator (weirvern/tools/demo_flows.py) produces
+  entirely synthetic, randomly generated flow records. It contains no
+  real-world network data.
+
+No warranty
+-----------
+
+This project includes no components under the GPL/AGPL; the combination is
+MIT + Apache-2.0 + BSD-3 + Python-2.0 compatible. If you vendor this project,
+retain this NOTICE and the LICENSE file alongside.

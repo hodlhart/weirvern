@@ -1,0 +1,132 @@
+# Flow collector (NetFlow v5/v9/IPFIX + sFlow) — the primary sensor.
+#
+# NODE-PINNED, FILE-BASED, SINGLE REPLICA. Read this before changing anything:
+#
+#   goflow2 writes JSONL to a hostPath (/var/lib/weirvern/flows) and the worker
+#   TAILS that file. So the writer and the reader must be on the SAME NODE. That
+#   is enforced with a nodeSelector on a node label, not left to scheduling luck
+#   — if the two land on different nodes the worker silently reads an empty file
+#   and the system looks healthy while detecting nothing.
+#
+#   Label the sensor node once:
+#       kubectl label node <node> weirvern.io/sensor-node=true
+#
+# This is the homelab-correct shape and it is also an honest statement of the
+# limitation: file-tail ingest does not horizontally scale. To run multiple
+# collector nodes, each needs its own worker, or the transport must change to a
+# broker (see k8s/README.md, "Scaling out").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goflow2
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: goflow2
+    app.kubernetes.io/part-of: weirvern
+spec:
+  replicas: 1
+  # `Recreate` avoids two collectors appending to the same file during an
+  # update, which interleaves records and corrupts the tailer's offset tracking.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goflow2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goflow2
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      nodeSelector:
+        weirvern.io/sensor-node: "true"
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: goflow2
+          image: netsampler/goflow2:v2.2.6
+          args:
+            - -listen
+            - netflow://:2055,sflow://:6343
+            - -format
+            - json
+            - -transport
+            - file
+            - -transport.file
+            - /data/flows.jsonl
+          ports:
+            - name: netflow
+              containerPort: 2055
+              protocol: UDP
+            - name: sflow
+              containerPort: 6343
+              protocol: UDP
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: flow-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # TCP is not a valid probe for a UDP-only collector, so readiness is
+          # the metrics endpoint, which is the only listener that proves the
+          # process is up and serving.
+          readinessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: flow-data
+          hostPath:
+            path: /var/lib/weirvern/flows
+            # Created by the cluster if absent. The kubelet makes it owned by
+            # root; the worker only READS here, and goflow2 writes as its own
+            # uid, so make the directory group-writable on the node:
+            #   install -d -m 0775 -g 10001 /var/lib/weirvern/flows
+            type: DirectoryOrCreate
+---
+# NetFlow/sFlow intake from the LAN.
+#
+# `externalTrafficPolicy: Local` is REQUIRED, not a tuning choice: the collector
+# runs on one specific node, and with the default policy the kube-proxy on any
+# other node may accept the UDP packets and forward them to the wrong place (or
+# drop them). Local pins the intake to the node actually running goflow2.
+apiVersion: v1
+kind: Service
+metadata:
+  name: goflow2
+  namespace: weirvern
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: goflow2
+  ports:
+    - name: netflow
+      protocol: UDP
+      port: 2055
+      targetPort: netflow
+      nodePort: 32055
+    - name: sflow
+      protocol: UDP
+      port: 6343
+      targetPort: sflow
+      nodePort: 32063
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: metrics
