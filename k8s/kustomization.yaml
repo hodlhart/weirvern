@@ -3,9 +3,9 @@
 #     kubectl apply -k k8s/
 #
 # WHY KUSTOMIZE rather than plain manifests:
-#   configMapGenerator reads zeek/weirvern-local.zeek and zeek/zeekctl.cfg from
-#   the repository directly. Those files are the single source of truth for the
-#   sensor policy, so there is no hand-maintained copy inside a manifest to drift
+#   configMapGenerator reads zeek/weirvern-local.zeek from the repository
+#   directly. That file is the single source of truth for the sensor policy, so
+#   there is no hand-maintained copy inside a manifest to drift
 #   out of date. kustomize also rewrites the Deployment's reference to the
 #   generated ConfigMap name automatically, so editing the Zeek policy changes
 #   the ConfigMap hash and triggers a rolling restart of the sensor — which is
@@ -28,7 +28,7 @@ resources:
   # NOTE: deliberately NO Secret here. A Secret manifest with placeholder values
   # is overwritten with empty strings on every apply — verified, and it silently
   # disables all alerting. The Secret is created by the operator out of band; see
-  # the SECRETS block below and k8s/secrets.env.example.
+  # the SECRETS block below.
   - 30-clickhouse.yaml
   - 31-goflow2.yaml
   - 32-zeek.yaml

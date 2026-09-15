@@ -17,7 +17,7 @@ Applied with `kubectl apply -k k8s/` (kustomize). 20 resources:
 | `00-namespace.yaml` | Namespace with Pod Security Admission labels (`baseline` enforce, `restricted` audit/warn) |
 | `10-storage.yaml` | `clickhouse-data` and `models` PVCs; storage class configurable in one place |
 | `20-configmap-env.yaml` | Non-secret settings, mirroring `.env.example` |
-| `21-secrets.yaml` | Template with the imperative `kubectl create secret` alternative |
+| the `weirvern-secrets` Secret | Created imperatively by the operator; deliberately not a manifest |
 | `30-clickhouse.yaml` | StatefulSet, headless Service, optional external Service |
 | `31-goflow2.yaml` | Collector Deployment + UDP NodePort Service, node-pinned |
 | `32-zeek.yaml` | **DaemonSet** with `hostNetwork` and `NET_RAW` |
@@ -201,8 +201,11 @@ benign), which is unreachable from flow records.
 - Zeek TSV parser (`parse_zeek_header`, `map_zeek_*`) driven by the `#fields`
   header rather than a hardcoded column order — Zeek's field set varies by build
   and version, and a positional assumption silently shifts every value.
-- `k8s/zeek/weirvern-local.zeek` and `k8s/zeek/zeekctl.cfg` site policy (scan
-  detection, hourly rotation, no mail, noisy notices suppressed).
+- `k8s/zeek/weirvern-local.zeek` site policy (hourly rotation, no mail, noisy
+  notices suppressed). Two corrections since: the `policy/misc/scan` load was
+  removed (deleted upstream in Zeek 6.1+), and `k8s/zeek/zeekctl.cfg` was deleted
+  because nothing read it — the container runs the `zeek` binary, and that file's
+  INI syntax is not Zeek script.
 
 ### Bugs found while building this (both caught only by running real inputs)
 

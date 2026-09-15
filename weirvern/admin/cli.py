@@ -27,6 +27,7 @@ from weirvern.admin import status as status_mod
 from weirvern.admin.runtime import (
     NAMESPACE,
     WORKLOADS,
+    _condense,
     _run,
     detect_capabilities,
     find_project_dir,
@@ -171,6 +172,15 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     # 5. Secrets. Checked against the CLUSTER secret (that is what the pod reads),
     #    falling back to reporting that it cannot be verified.
+    #
+    #    NOTE ON RBAC: this check reads the Secret, so it needs `get` on `secrets`
+    #    in this namespace. The shipped weirvern-viewer Role deliberately does NOT
+    #    grant that (so an identity that displays health cannot exfiltrate the
+    #    alert credentials), which means under the viewer role this check cannot
+    #    complete. That is handled honestly below: a 403 is reported as "cannot
+    #    read", which is a different statement from "not set". Reporting a
+    #    permission error as a missing credential would send an operator hunting
+    #    for a Pushover problem that does not exist.
     print()
     alerts_on = (env.get("PUSHOVER_ENABLED") or "0") in {"1", "true", "yes"}
     if caps.cluster_available:
@@ -178,12 +188,28 @@ def cmd_install(args: argparse.Namespace) -> int:
             r = _run(["kubectl", "-n", NAMESPACE, "get", "secret", "weirvern-secrets",
                       "-o", f"jsonpath={{.data.{key}}}"], project_dir(), timeout=20)
             value = (r.stdout or "").strip()
-            # A base64-encoded empty string is ""; anything else is a real value.
+            err = (r.stderr or "").lower()
+            # Distinguish three states, because they collapse into one warning
+            # here and that is the misreporting class this project keeps finding:
+            # a permission failure then looks like a configuration failure.
+            #   set              -> ok
+            #   readable, empty  -> genuinely not set
+            #   not readable     -> RBAC; say so, do not imply the key is missing
             if r.ok and value and value != '""':
                 _ok(f"{key} is set in the cluster secret")
-            else:
+            elif r.ok:
                 _warn(f"{key} is NOT set in the cluster secret"
                       + (" — alerts will fail" if alerts_on else " (fine while disabled)"))
+            elif "forbidden" in err or "cannot get" in err or "access denied" in err:
+                print(_c("dim", f"    {key}: cannot read the secret with these "
+                                f"credentials (RBAC). The shipped viewer role has no "
+                                f"secret access by design; use the operator kubeconfig "
+                                f"or check it with kubectl directly."))
+            elif "not found" in err:
+                _warn("secret weirvern-secrets not found — create it (README step 4)"
+                      + ("; alerts will FAIL" if alerts_on else ""))
+            else:
+                _warn(f"could not verify {key}: {_condense(r.text)}")
     else:
         _warn("cannot verify Pushover credentials without a cluster connection")
     if alerts_on:
@@ -201,7 +227,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     # The sensor needs a labelled node; say so up front because it is the single
     # most common reason a first deployment captures nothing.
     steps.append("label the sensor node:  kubectl label node <node> weirvern.io/sensor-node=true")
-    steps.append("review k8s/20-configmap-env.yaml (ZEEK_IFACE, TZ) and k8s/21-secrets.yaml")
+    steps.append(
+        "review k8s/20-configmap-env.yaml (ZEEK_IFACE, TZ), then create the "
+        "weirvern-secrets Secret (see README step 4)"
+    )
     steps.append("deploy:  weirvern apply")
     steps.append("verify:  weirvern status")
     steps.append("control panel:  weirvern tui")

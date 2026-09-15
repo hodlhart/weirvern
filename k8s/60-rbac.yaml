@@ -18,6 +18,15 @@
 # Note what is NOT granted anywhere: secrets. The status tooling does not read
 # the Pushover token, so an account that displays health cannot exfiltrate the
 # alert credentials.
+#
+# EXCEPTION, stated because the previous version of this comment overstated it:
+# `weirvern install` DOES read the secret, to verify the Pushover keys are
+# present before you rely on alerting. Under the viewer role that check cannot
+# complete, and cmd_install reports it as "cannot read (RBAC)" rather than as a
+# missing credential — a permission failure and a configuration failure are
+# different problems and must not be conflated. Use the operator kubeconfig, or
+# grant a narrow `get` on this one secret, if you want the install check to
+# verify credentials.
 ---
 apiVersion: v1
 kind: ServiceAccount

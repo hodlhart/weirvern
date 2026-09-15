@@ -469,7 +469,7 @@ There are two configuration surfaces, and the distinction matters:
 
 | Surface | Applies to | Where |
 |---|---|---|
-| **Cluster** | What the deployment actually runs | `k8s/20-configmap-env.yaml` (+ `21-secrets.yaml`) |
+| **Cluster** | What the deployment actually runs | `k8s/20-configmap-env.yaml` (+ the out-of-band `weirvern-secrets` Secret) |
 | **Local** | The CLI, `init-db`, `tune`, and the TUI's config tab | `.env` (created from `.env.example`) |
 
 Changing `.env` does **not** change the running deployment. After editing the
