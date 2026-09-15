@@ -189,10 +189,15 @@ def test_skip_list_is_exactly_these_two_files():
     To add a third: change this assertion deliberately, and record why in the
     SKIP_FILES comment above.
     """
-    assert SKIP_FILES == {"CHANGELOG.md", "test_references.py"}, (
+    # Membership + cardinality rather than a set comparison: the comparison form
+    # trips ruff's SIM300 (constant on one side), and its suggested rewrite is a
+    # Yoda condition that reads worse than either.
+    assert len(SKIP_FILES) == 2, (
         f"the skip list changed to {sorted(SKIP_FILES)}; every entry is a hole in "
         f"the dangling-reference check"
     )
+    assert "CHANGELOG.md" in SKIP_FILES
+    assert "test_references.py" in SKIP_FILES
 
 
 def test_the_fixtures_are_still_exercised_despite_the_self_exemption():
