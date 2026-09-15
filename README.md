@@ -1,5 +1,9 @@
 # Weirvern
 
+<p align="left">
+  <img src="docs/logo.png" alt="Weirvern" width="220">
+</p>
+
 Network flow anomaly detection for Kubernetes. Weirvern ingests NetFlow/sFlow
 from your network, captures packet-level protocol behaviour with Zeek, stores
 both in ClickHouse, and runs an ensemble of machine-learning detectors to flag
