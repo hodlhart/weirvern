@@ -36,6 +36,17 @@ TEXT_SUFFIXES = {
     ".txt", ".zeek", ".json",
 }
 
+# Files exempt from the scan, because naming the old name is their PURPOSE.
+#
+# This file is the guard: it must be able to say "the old name must not appear",
+# which is impossible without containing the string. Exempting it is not a
+# loophole — the assertions below still verify every OTHER file, and this file is
+# reviewed by a human precisely because it defines what "renamed" means.
+#
+# (A guard that scanned itself and failed would be worse than useless: it would be
+# "fixed" by deleting it.)
+SELF_EXEMPT = {"tests/test_naming.py"}
+
 
 def _tracked_files() -> list[Path]:
     out = subprocess.run(
@@ -45,9 +56,16 @@ def _tracked_files() -> list[Path]:
 
 
 def test_no_stale_old_name_in_any_tracked_file():
-    """The single most valuable rename test: nothing may still say the old name."""
+    """The single most valuable rename test: nothing may still say the old name.
+
+    Scans `git ls-files`, so it sees exactly what a user would get from a clone.
+    Anything tracked that is not this guard file must be clean.
+    """
     problems: list[str] = []
     for path in _tracked_files():
+        rel = str(path.relative_to(ROOT))
+        if rel in SELF_EXEMPT:
+            continue
         if not path.is_file():
             continue
         if path.suffix.lower() not in TEXT_SUFFIXES and path.suffix != "":
@@ -61,12 +79,30 @@ def test_no_stale_old_name_in_any_tracked_file():
                 continue
             if ALLOWED_HISTORICAL.search(line):
                 continue
-            problems.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()[:100]}")
+            problems.append(f"{rel}:{lineno}: {line.strip()[:100]}")
 
     assert not problems, (
         "the old project name survives in the tree; a partial rename ships a "
         "broken install or a broken deployment:\n  " + "\n  ".join(problems)
     )
+
+
+def test_the_guard_actually_scans_the_tree():
+    """A guard that silently scans nothing always passes.
+
+    This is the failure mode that let the rename ship broken once: the scan
+    listed only TRACKED files, so while this test was itself untracked it had
+    nothing to complain about. Assert the scan is actually looking at files.
+    """
+    scanned = [
+        p for p in _tracked_files()
+        if str(p.relative_to(ROOT)) not in SELF_EXEMPT and p.is_file()
+    ]
+    assert len(scanned) > 40, f"guard is scanning only {len(scanned)} files"
+
+    # And the scan must be capable of detecting a violation. If this string were
+    # ever absent from the tree, the guard could not be proven to work.
+    assert OLD, "the guard has no pattern to look for"
 
 
 def test_no_file_or_directory_named_after_the_old_project():

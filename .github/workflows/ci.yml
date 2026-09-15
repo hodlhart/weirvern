@@ -77,37 +77,47 @@ jobs:
 
       - name: Check rendered references resolve
         run: |
-          # Every ConfigMap/Secret/volume the rendered output points at must
-          # exist, or the pod is rejected at admission time on a real cluster.
+          # Every ConfigMap/volume the rendered output points at must exist, or
+          # the pod is rejected at admission time on a real cluster.
+          #
+          # Secret EXCEPTION: Weirvern's Secret is deliberately NOT part of the
+          # kustomization — a committed Secret manifest would overwrite real
+          # credentials with placeholders on every apply (see the SECRETS note in
+          # k8s/kustomization.yaml). It is created out of band by the operator, so
+          # its absence from the render is correct. Secret references are checked
+          # for NAME CONSISTENCY instead, which is the part that can actually go
+          # wrong: three manifests must all reference the same Secret name.
           pip install -q pyyaml
           python - <<'PY'
           import sys, yaml
           docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
           cms = {d["metadata"]["name"] for d in docs if d.get("kind") == "ConfigMap"}
-          secrets = {d["metadata"]["name"] for d in docs if d.get("kind") == "Secret"}
           pvcs = {d["metadata"]["name"] for d in docs if d.get("kind") == "PersistentVolumeClaim"}
 
           def refs(o):
               if isinstance(o, dict):
                   for k, v in o.items():
-                      if k in ("configMap", "configMapRef", "secretRef", "secretKeyRef") \
-                              and isinstance(v, dict) and "name" in v:
-                          yield v["name"]
+                      if k in ("configMap", "configMapRef") and isinstance(v, dict) and "name" in v:
+                          yield ("configmap", v["name"])
+                      if k in ("secretRef", "secretKeyRef") and isinstance(v, dict) and "name" in v:
+                          yield ("secret", v["name"])
                       yield from refs(v)
               elif isinstance(o, list):
                   for i in o:
                       yield from refs(i)
 
-          problems = []
+          problems, secret_names = [], set()
           for d in docs:
               kind, name = d.get("kind"), d.get("metadata", {}).get("name")
               spec = d.get("spec", {})
               tmpl = spec.get("template", {}).get("spec", {}) if spec.get("template") else spec
               if not tmpl:
                   continue
-              for r in refs(d):
-                  if r not in cms | secrets:
-                      problems.append(f"{kind}/{name}: unresolved reference {r}")
+              for rtype, ref in refs(d):
+                  if rtype == "configmap" and ref not in cms:
+                      problems.append(f"{kind}/{name}: unresolved ConfigMap {ref}")
+                  if rtype == "secret":
+                      secret_names.add(ref)
               declared = {v["name"] for v in tmpl.get("volumes") or [] if "name" in v}
               for vct in spec.get("volumeClaimTemplates") or []:
                   declared.add(vct["metadata"]["name"])
@@ -120,10 +130,24 @@ jobs:
                   if pvc and pvc["claimName"] not in pvcs:
                       problems.append(f"{kind}/{name}: PVC {pvc['claimName']} not declared")
 
+          # Consistency: exactly one Secret name must be referenced everywhere.
+          if len(secret_names) != 1:
+              problems.append(
+                  f"manifests reference {len(secret_names)} different Secret names "
+                  f"{sorted(secret_names)}; the operator creates exactly one"
+              )
+          # And it must match what the docs tell the operator to create.
+          readme = open("README.md").read()
+          only = next(iter(secret_names), None)
+          if only and f"generic {only}" not in readme:
+              problems.append(
+                  f"README does not tell the operator to create Secret '{only}'"
+              )
+
           if problems:
               print("Manifest reference problems:")
               for p in problems:
                   print(" ", p)
               sys.exit(1)
-          print(f"all references resolve across {len(docs)} resources")
+          print(f"references resolve across {len(docs)} resources; secret '{only}' consistent")
           PY
