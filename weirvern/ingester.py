@@ -481,7 +481,9 @@ def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
     and the shipped retention is 24h, so ~24 is the working set; the default of
     50 leaves headroom without being unbounded.
     """
-    rotated: list[tuple[float, str]] = []
+    # (timestamp-from-name, mtime, filename). The name's timestamp is the sort
+    # key; mtime is only a tiebreaker for same-second rotations.
+    rotated: list[tuple[str, float, str]] = []
     try:
         entries = os.listdir(log_dir)
     except FileNotFoundError:
@@ -508,13 +510,26 @@ def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
             continue
         path = os.path.join(log_dir, name)
         try:
-            rotated.append((os.path.getmtime(path), name))
+            mtime = os.path.getmtime(path)
         except OSError:
             continue
+        # Sort key: the TIMESTAMP IN THE NAME, with mtime only as a tiebreaker.
+        #
+        # The name is authoritative because Zeek embeds the rotation time in it
+        # ('conn.2026-09-15-01-00-00.log'). mtime happens to correlate on a live
+        # sensor, but it breaks the moment the directory is copied, restored from
+        # backup, or rsynced: the names are preserved and the mtimes are not. An
+        # mtime sort then reads the newest file first, which pushes records into
+        # ClickHouse out of order and can close a window before its records
+        # arrive. The timestamp format is fixed-width and zero-padded, so plain
+        # lexicographic order IS chronological order.
+        ts = rest[: len("2026-09-15-00-00-00")]
+        rotated.append((ts, mtime, name))
+        continue
 
-    rotated.sort()                      # oldest mtime first
-    rotated = rotated[-depth:]          # keep the most recent `depth`
-    names = [n for _mtime, n in rotated]
+    rotated.sort(key=lambda t: (t[0], t[1]))   # oldest first, by name then mtime
+    rotated = rotated[-depth:]                 # keep the newest `depth`
+    names = [n for _ts, _mtime, n in rotated]
 
     for live in (f"{log_type}.log", f"{log_type}.log.json"):
         if os.path.exists(os.path.join(log_dir, live)):
