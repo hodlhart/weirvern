@@ -127,11 +127,41 @@ spec:
             # The worker has no HTTP server, so liveness is a process check. An
             # exec probe distinguishes "python is alive" from "the container is
             # up but the loop has died", which is the failure this catches.
+            #
+            # ── WHY THIS DOES NOT IMPORT THE WORKER, AND WHY timeoutSeconds IS 5 ──
+            #
+            # This probe used to run `python -c "import weirvern.worker"` with
+            # timeoutSeconds: 1, and it was KILLING A HEALTHY WORKER every ~3
+            # minutes on a 3-CPU box:
+            #
+            #   Liveness probe failed: command timed out:
+            #   "python -c import weirvern.worker; print('ok')" timed out after 1s
+            #
+            # Measured in the pod: 1.10-1.29s. Importing the worker pulls in numpy
+            # and scikit-learn, which alone costs ~0.9s even on an idle machine,
+            # so on a loaded node the probe exceeded its 1s deadline roughly every
+            # other attempt. Three consecutive failures then restarted it, mid
+            # ingest, over and over: restartCount 7 within 20 minutes.
+            #
+            # Two changes, and the first is the substantive one:
+            #
+            #   1. The probe no longer imports the ML stack. A liveness probe
+            #      answers "is this process able to work", not "are the libraries
+            #      healthy" -- a missing module would fail at startup, where the
+            #      container would crash-loop honestly. Importing only the
+            #      lightweight config module keeps the check meaningful (it proves
+            #      the interpreter and the package on disk both work) for a
+            #      fraction of the cost.
+            #   2. timeoutSeconds is 5 rather than 1. Even a cheap probe can be
+            #      starved on a busy node, and a liveness probe that fires under
+            #      load is worse than no probe: it restarts the process precisely
+            #      when throughput matters most.
             exec:
-              command: ["python", "-c", "import weirvern.worker; print('ok')"]
+              command: ["python", "-c", "import weirvern.config; print('ok')"]
             initialDelaySeconds: 30
             periodSeconds: 60
             failureThreshold: 3
+            timeoutSeconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
