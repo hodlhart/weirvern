@@ -87,8 +87,11 @@ spec:
       priorityClassName: system-node-critical
       terminationGracePeriodSeconds: 30
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
+        # The POD-level uid is deliberately NOT set here: the zeek container must
+        # run as root for NET_RAW to survive (see its securityContext for the
+        # verified reason), while the pod-level fsGroup is still useful for the
+        # log volume. Setting runAsUser here would be inherited by the container
+        # and silently reintroduce the capture failure.
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
@@ -118,17 +121,42 @@ spec:
             - |
               set -eu
               IFACE="${ZEEK_IFACE:-eth0}"
-              if ! ip link show "$IFACE" >/dev/null 2>&1; then
+              # Interface existence check WITHOUT `ip`.
+              #
+              # `ip` is not in the zeek/zeek image (verified: the guard below ran
+              # and reported "/bin/sh: ip: not found"), so the check itself failed
+              # in a way that looked like the interface was missing. Use the same
+              # sysfs view the kernel exposes, which is always present:
+              #   /sys/class/net/<iface>  exists iff the interface exists.
+              # It also needs no privileges beyond what the container already has.
+              if [ ! -e "/sys/class/net/$IFACE" ]; then
                 echo "[zeek] FATAL: interface '$IFACE' does not exist on this node." >&2
                 echo "[zeek] Set ZEEK_IFACE in the weirvern-env ConfigMap to a real" >&2
                 echo "[zeek] interface (the mirror/span port). Available interfaces:" >&2
-                ip -o link show | awk -F': ' '{print "  " $2}' >&2
+                for d in /sys/class/net/*; do echo "  $(basename "$d")" >&2; done
+                exit 1
+              fi
+              # Verify CAP_NET_RAW is actually EFFECTIVE before handing control to
+              # Zeek. This is the failure that cost the most time to diagnose: with
+              # runAsUser != 0, Kubernetes silently drops the added capability, so
+              # Zeek dies with "pcap_error: socket: Operation not permitted" and
+              # the message reads like a bad interface. Checking here turns a
+              # confusing crash loop into one clear line of diagnosis.
+              caps=$(grep CapEff /proc/self/status | awk '{print $2}')
+              if [ "$caps" = "0000000000000000" ] || [ -z "$caps" ]; then
+                echo "[zeek] FATAL: no effective capabilities (CapEff=$caps)." >&2
+                echo "[zeek] Packet capture needs CAP_NET_RAW in the effective set." >&2
+                echo "[zeek] Most likely cause: the container is running as a" >&2
+                echo "[zeek] non-root uid, because Kubernetes DROPS added" >&2
+                echo "[zeek] capabilities for non-root containers. The zeek" >&2
+                echo "[zeek] container must run as uid 0 (see 32-zeek.yaml)." >&2
+                echo "[zeek] Running as uid $(id -u)." >&2
                 exit 1
               fi
               # hostPath volumes are NOT chowned by the kubelet (fsGroup does not
-              # apply to hostPath), so the log directory may be root-owned while
-              # this container runs as uid 10001. Probe writability and say so
-              # plainly rather than dying on an opaque permission error.
+              # apply to hostPath), so the log directory may not be writable by the
+              # uid this container runs as. Probe writability and say so plainly
+              # rather than dying on an opaque permission error.
               if ! touch /zeek/logs/.writetest 2>/dev/null; then
                 echo "[zeek] FATAL: /zeek/logs is not writable by uid $(id -u)." >&2
                 echo "[zeek] Run this on the node:" >&2
@@ -137,7 +165,7 @@ spec:
                 exit 1
               fi
               rm -f /zeek/logs/.writetest
-              echo "[zeek] sniffing $IFACE, writing logs to /zeek/logs"
+              echo "[zeek] sniffing $IFACE (uid $(id -u), caps $caps), logs to /zeek/logs"
               # Bare script path => loaded as a script (see the note above).
               exec zeek -i "$IFACE" \
                    -C \
@@ -160,17 +188,45 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-              # NET_RAW is the capability packet capture genuinely requires.
+              # ── WHY THIS CONTAINER RUNS AS ROOT ──────────────────────────────
               #
-              # NET_ADMIN is NOT granted: it would be needed to put the interface
-              # into promiscuous mode, and that must already be configured on the
-              # mirror/SPAN port by whoever set the node up. Granting it here would
-              # widen the most privileged workload in the project for no benefit.
+              # VERIFIED ON A REAL CLUSTER, and it contradicts what this file used
+              # to claim:
               #
-              # NET_BIND_SERVICE was previously granted too and was removed: this
-              # container binds no privileged port (Zeek listens on nothing; it
-              # captures passively).
+              #   runAsUser=0      -> CapEff 0x2000 (CAP_NET_RAW) -> capture WORKS
+              #   runAsUser=10001  -> CapEff 0x0    (nothing)      -> capture FAILS
+              #
+              # Kubernetes DROPS added capabilities for non-root containers. The
+              # `add: ["NET_RAW"]` list only takes effect when the container runs
+              # as uid 0. So an earlier version of this file ran Zeek as uid 10001
+              # with `add: ["NET_RAW"]` and the grant was purely decorative: Zeek
+              # started, tried to open the interface, and died with
+              #
+              #   fatal error: problem with interface eth0
+              #   (pcap_error: socket: Operation not permitted (pcap_activate))
+              #
+              # A crash loop that looks like a bad ZEEK_IFACE but is actually a
+              # capability that was never held. libpcap needs CAP_NET_RAW in the
+              # EFFECTIVE set to open a raw socket, and there is no way to give a
+              # non-root container one (it is not a matter of the PSA level, and
+              # not specific to LXC -- `tcpdump` as root with cap_net_admin dropped
+              # captures fine, which is what isolated this).
+              #
+              # So this is the ONE workload that runs as root, and the blast radius
+              # is contained by the rest of this securityContext rather than by the
+              # uid: capabilities dropped then only NET_RAW re-added, no privilege
+              # escalation, seccomp RuntimeDefault, and no service-account token.
+              # A packet sniffer that cannot capture packets has no value, so the
+              # alternative (a non-root sensor) is not a real option here.
+              #
+              # NET_ADMIN is deliberately NOT granted: it would be needed to put the
+              # interface into promiscuous mode, which must already be configured on
+              # the mirror/SPAN port by whoever set the node up.
               add: ["NET_RAW"]
+            # Root, for the capability to be effective. See above: this is not a
+            # convenience, it is the only way NET_RAW survives into the container.
+            runAsUser: 0
+            runAsGroup: 0
           resources:
             requests:
               cpu: "250m"

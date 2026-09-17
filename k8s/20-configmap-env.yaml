@@ -20,7 +20,27 @@ data:
   CLICKHOUSE_HOST: "clickhouse"
   CLICKHOUSE_PORT: "8123"
   CLICKHOUSE_DB: "weirvern"
-  CLICKHOUSE_USER: "default"
+  # MUST NOT BE "default".
+  #
+  # The official ClickHouse entrypoint locks the `default` user to localhost
+  # unless a NON-default user (or a non-empty password) is configured, so other
+  # pods are refused by a network filter and the error misleadingly blames the
+  # password ("Authentication failed: password is incorrect, or there is no user
+  # with such name"). Reading the entrypoint, the condition is:
+  #
+  #   if (CLICKHOUSE_USER is set AND != "default") OR (CLICKHOUSE_PASSWORD
+  #      is non-empty) OR (CLICKHOUSE_ACCESS_MANAGEMENT != 0)
+  #       -> generate that user with <networks><ip>::/0</ip></networks>
+  #          and remove `default`
+  #   else
+  #       -> "disabling network access for user 'default'"
+  #
+  # So with USER=default and an empty password the database is unreachable from
+  # any other pod. That is what shipped, and it is why the worker and schema Job
+  # retried forever while `kubectl exec` into the pod worked (source 127.0.0.1).
+  # This is a named user for that reason, and the password in the Secret must be
+  # non-empty (see the SECRETS note in k8s/kustomization.yaml).
+  CLICKHOUSE_USER: "weirvern"
   TZ: "America/Chicago"
 
   # ── Collector ──────────────────────────────────────────────────────────────

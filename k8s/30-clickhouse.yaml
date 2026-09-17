@@ -51,7 +51,22 @@ spec:
           securityContext:
             # chown requires root, so this container alone runs as root. It does
             # no network I/O and exits immediately.
+            #
+            # runAsNonRoot MUST be overridden to false HERE, not just
+            # runAsUser: 0. kubelet rejects the container outright otherwise:
+            #
+            #   Error: container's runAsUser breaks non-root policy
+            #
+            # The pod-level runAsNonRoot: true is inherited by every container
+            # including this one, and it is a positive assertion that must hold,
+            # so setting runAsUser: 0 alongside it is a contradiction kubelet
+            # resolves by refusing to create the container. The result was
+            # ClickHouse stuck in Init:CreateContainerConfigError and the database
+            # never starting. This is not a Pod Security Admission issue -- the
+            # namespace enforces `privileged' -- kubelet applies runAsNonRoot
+            # itself, so raising the PSA level does NOT help.
             runAsUser: 0
+            runAsNonRoot: false
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
@@ -88,6 +103,39 @@ spec:
                 secretKeyRef:
                   name: weirvern-secrets
                   key: CLICKHOUSE_PASSWORD
+            # ── THIS IS WHAT MAKES THE DATABASE REACHABLE FROM OTHER PODS ────────
+            #
+            # Verified on a real cluster by reading the official entrypoint:
+            #
+            #   if CLICKHOUSE_USER is set and != "default" (or a password is set),
+            #     the entrypoint GENERATES users.d/default-user.xml containing
+            #     <default remove="remove"/> plus the named user with
+            #     <networks><ip>::/0</ip></networks>
+            #
+            #   else  ->  "disabling network access for user 'default'" and writes
+            #             localhost-only networks
+            #
+            # So with neither variable set -- which is how this shipped -- ClickHouse
+            # deliberately locks `default` down to 127.0.0.1/::1. Every other pod is
+            # refused by the NETWORK FILTER, before the password is examined, so the
+            # error blames the credential:
+            #
+            #   Code: 194. DB::Exception: default: Authentication failed:
+            #   password is incorrect, or there is no user with such name
+            #
+            # That message is actively misleading, and it is why the same query run
+            # via `kubectl exec` into the pod SUCCEEDS (source 127.0.0.1) while the
+            # worker and schema Job retry forever. The deployment could not reach its
+            # own database, and the failure looked like a bad password.
+            #
+            # Setting the user name here is the supported, upstream-intended fix. Do
+            # NOT hand-write a users.d file: the entrypoint overwrites
+            # default-user.xml at startup, so a mounted one would be ignored.
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: CLICKHOUSE_USER
           volumeMounts:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse

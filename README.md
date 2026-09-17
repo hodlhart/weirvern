@@ -215,8 +215,18 @@ kubectl apply -k k8s/
 # (A Secret manifest in the kustomization would be re-applied with placeholder
 # values on every later apply, silently wiping these — see the SECRETS note in
 # k8s/kustomization.yaml.)
+#
+# CLICKHOUSE_PASSWORD MUST BE NON-EMPTY. The official ClickHouse image locks the
+# `default` user to localhost unless a non-default user or a non-empty password
+# is configured, and an empty password puts it in that locked branch. The failure
+# is misleading: every other pod is refused by a network filter and the error
+# blames the password ("Authentication failed: password is incorrect"), while the
+# same query works via `kubectl exec` (source 127.0.0.1). Generate one:
+#
+#   CLICKHOUSE_PASSWORD="$(openssl rand -base64 24)"
+#
 kubectl -n weirvern create secret generic weirvern-secrets \
-  --from-literal=CLICKHOUSE_PASSWORD='' \
+  --from-literal=CLICKHOUSE_PASSWORD="$(openssl rand -base64 24)" \
   --from-literal=PUSHOVER_USER_KEY='<your user key>' \
   --from-literal=PUSHOVER_API_TOKEN='<your app token>'
 
