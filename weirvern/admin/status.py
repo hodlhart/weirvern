@@ -119,7 +119,16 @@ def collect_health(client, settings) -> HealthReport:
     age_s, ms, err = _timed(freshness)
     if err is None:
         if age_s is None:
-            report.add(Probe("ingest_freshness", ok=False, detail="no flow data yet", latency_ms=ms))
+            report.add(Probe(
+                "ingest_freshness", ok=False, latency_ms=ms,
+                detail=(
+                    "no flow data yet. The most common cause is an exporter "
+                    "pointing at the CONTAINER port instead of the NodePort: send "
+                    "NetFlow to <node-ip>:32055 and sFlow to :32063, NOT 2055/6343 "
+                    "(those are cluster-internal). Check with: "
+                    "tcpdump -i <iface> -nn 'udp and port 2055'"
+                ),
+            ))
         else:
             age_s = float(age_s)
             report.add(Probe(

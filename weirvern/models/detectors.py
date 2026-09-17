@@ -145,7 +145,7 @@ class IsolationForestDetector(BaseDetector):
                 "calibration": {k: round(v, 6) for k, v in self.calibration.items()},
             },
             metrics={"anomaly_rate": round(ar, 4)},
-            window_start=str(start_dt), window_end=str(end_dt), sample_count=len(Xs),
+            window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
         )
         logger.info(
             "✅ %s trained on %d samples (anomaly rate %.3f%%, calibration p50=%.3f p05=%.3f p01=%.3f)",
@@ -235,7 +235,7 @@ class GradientBoostingDetector(BaseDetector):
                 "calibration": {k: round(v, 6) for k, v in self.calibration.items()},
             },
             metrics={"f1_score": round(f1, 4)},
-            window_start=str(start_dt), window_end=str(end_dt), sample_count=len(Xtr),
+            window_start=start_dt, window_end=end_dt, sample_count=len(Xtr),
         )
         logger.info(
             "✅ %s trained. F1: %.3f (class weight %.1f, calibration p50=%.3f p90=%.3f p94=%.3f)",
@@ -308,7 +308,7 @@ class DBSCANDetector(BaseDetector):
             feature_columns=DBSCAN_FEATURES,
             params={"eps": self.cfg.dbscan_eps, "min_samples": self.cfg.dbscan_min_samples, "n_samples": len(Xs)},
             metrics={"clusters": n_clusters, "outliers": n_outliers},
-            window_start=str(start_dt), window_end=str(end_dt), sample_count=len(Xs),
+            window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
         )
         logger.info("✅ %s trained: %d clusters, %d outliers", self.name, n_clusters, n_outliers)
         self.save()
@@ -381,7 +381,7 @@ class AdaptiveBaselineDetector(BaseDetector):
             model_type=self.name, duration_seconds=time.time() - st,
             params={"min_obs": self.cfg.baseline_min_obs},
             metrics={"baseline_count": len(self.baselines)},
-            window_start=str(start_dt), window_end=str(end_dt), sample_count=len(self.baselines),
+            window_start=start_dt, window_end=end_dt, sample_count=len(self.baselines),
         )
         logger.info("✅ Baselines computed for %d hosts", len(self.baselines))
         self.save()

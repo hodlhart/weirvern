@@ -40,6 +40,23 @@ spec:
     spec:
       nodeSelector:
         weirvern.io/sensor-node: "true"
+      # ── hostNetwork, for the same reason Zeek has it ────────────────────────
+      #
+      # Without this the collector runs in the cluster network and its UDP socket
+      # is reachable ONLY through the Service's NodePort DNAT. That works for a
+      # correctly-configured exporter, but it fails silently and confusingly when
+      # an exporter targets the CONTAINER port (2055) instead of the NodePort
+      # (32055): the packets arrive at the node, match nothing, and are dropped.
+      # A real router was observed doing exactly this -- sending 300-byte NetFlow
+      # to 192.168.2.159:2055 while the listener was at 32055 -- with the result
+      # that the database stayed empty and NOTHING logged an error, because from
+      # the collector's point of view no packets were ever sent.
+      #
+      # With hostNetwork the container binds 2055/6343 in the node's own network
+      # namespace, so BOTH the conventional port and the NodePort work. For a
+      # collector that receives unsolicited UDP from LAN devices, that is the
+      # difference between a working sensor and an invisible one.
+      hostNetwork: true
       securityContext:
         fsGroup: 10001
         seccompProfile:

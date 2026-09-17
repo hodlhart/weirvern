@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import logging
 import pickle  # noqa: S403 - trusted local MODEL_DIR artifacts only (never untrusted input)
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,20 +25,52 @@ class ModelMetadata:
     """Everything a training run should record — written to ml_models."""
 
     model_type: str
-    trained_at: float = field(default_factory=time.time)
+    # A datetime, not a float epoch.
+    #
+    # THE BUG: this was `float = field(default_factory=time.time)` while the
+    # ml_models.trained_at column is DateTime, so clickhouse-connect failed on
+    # every insert with:
+    #
+    #   Error serializing column `trained_at` into data type `DateTime`
+    #   AttributeError: 'float' object has no attribute 'timestamp'
+    #
+    # The insert is wrapped in a try/except that logs a warning, so training
+    # "succeeded" and then silently recorded NOTHING about it: no model
+    # provenance, no metrics history, and `weirvern status` unable to report the
+    # last training run. Caught only by running against a real ClickHouse.
+    trained_at: datetime = field(default_factory=datetime.now)
     duration_seconds: float = 0.0
     feature_columns: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
-    window_start: str = ""
-    window_end: str = ""
+    # datetimes, not strings: the schema declares these as DateTime and
+    # clickhouse-connect serialises a DateTime column by calling .timestamp() on
+    # each value, so a str raised
+    #   AttributeError: 'str' object has no attribute 'timestamp'
+    # and the whole metadata row was lost (the insert's except only warns). These
+    # were populated with str(start_dt) / str(end_dt), so every model recorded
+    # nothing about the window it trained on.
+    #
+    # NOT Optional, and this took two attempts to get right: None is ALSO
+    # rejected, because clickhouse-connect calls .timestamp() on every value
+    # before checking for nulls:
+    #   AttributeError: 'NoneType' object has no attribute 'timestamp'
+    # A DateTime column with no DEFAULT therefore needs a real datetime. `now` is
+    # the honest fallback: a detector that did not report its window was trained
+    # at approximately now, and recording that keeps the row rather than losing it.
+    #
+    # The schema would be better with these nullable (DateTime has no DEFAULT, so
+    # the DDL already allows NULL) -- the limitation is in the client library, not
+    # ClickHouse. If a future version fixes it, these can become Optional again.
+    window_start: datetime = field(default_factory=datetime.now)
+    window_end: datetime = field(default_factory=datetime.now)
     sample_count: int = 0
 
     def to_row(self) -> dict[str, Any]:
         import json
 
         return {
-            "model_id": f"{self.model_type.lower().replace(' ', '_')}_{int(self.trained_at)}",
+            "model_id": f"{self.model_type.lower().replace(' ', '_')}_{int(self.trained_at.timestamp())}",
             "model_type": self.model_type,
             "trained_at": self.trained_at,
             "training_duration_seconds": int(self.duration_seconds),

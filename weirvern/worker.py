@@ -51,10 +51,21 @@ def build_detectors(settings, cfg: ModelConfig):
     ]
 
 
-def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> None:
+def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> bool:
     """Warm start from persisted artifacts; otherwise train cold (lesson:
     v14 deployed while v19 sat on disk — the persisted artifact is the
-    source of truth, and each training run records metadata to ml_models)."""
+    source of truth, and each training run records metadata to ml_models).
+
+    Returns True when the detectors are usable afterwards, False when they are
+    not (no data yet). THE BUG THIS FIXES: this used to return None in both
+    cases, so the caller could not distinguish "warm" from "we had nothing to
+    train on". On a fresh deployment the worker starts before any traffic has
+    arrived, training fails with "Not enough data for Isolation Forest (0 rows)",
+    and the caller then stamped last_full_train = now() as though it had
+    succeeded. The next full retrain was therefore deferred by the ENTIRE
+    retrain_every_h window, so a deployment that boots to an empty database
+    detects nothing for up to 6 hours while every pod reports healthy.
+    """
     if_model, gb_model, db_model, bl_model = detectors
     any_loaded = 0
     for d in detectors:
@@ -62,15 +73,27 @@ def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> None
             any_loaded += 1
     if any_loaded == len(detectors):
         logger.info("All detectors loaded from disk — warm start")
-        return
+        return True
 
     end_dt, start_dt = datetime.now(), datetime.now() - timedelta(hours=settings.retrain_window_h)
+    trained_any = False
     if if_model.train(start_dt, end_dt, client) and if_model.X_train_unscaled is not None:
         gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client)
-    db_model.train(start_dt, end_dt, client)
-    bl_model.train(start_dt, end_dt, client)
-    bl_model.persist_history(client, settings.retrain_window_h)
+        trained_any = True
+    if db_model.train(start_dt, end_dt, client):
+        trained_any = True
+    if bl_model.train(start_dt, end_dt, client):
+        trained_any = True
+        bl_model.persist_history(client, settings.retrain_window_h)
     _record_model_metadata(client, detectors)
+
+    if not trained_any:
+        logger.warning(
+            "Cold start found no data to train on — detection stays idle until "
+            "the next cycle. This is expected on a fresh deployment and clears "
+            "once flows arrive."
+        )
+    return trained_any
 
 
 def train_if_due(
@@ -285,9 +308,25 @@ def main() -> None:
     # CPU. The second sensor — most of the value for DNS tunnelling, JA3 C2 and
     # slow beaconing — contributed nothing, and `weirvern status` still looked
     # clean because the zeek_freshness probe only registers when rows exist.
+    #
+    # ── ITS OWN CLIENT, NOT THE MAIN ONE ────────────────────────────────────────
+    #
+    # The ingest thread previously received the SAME clickhouse-connect client as
+    # the detection loop, and the driver refuses that outright:
+    #
+    #   Attempt to execute concurrent queries within the same session.
+    #   Please use a separate client instance per thread/process.
+    #
+    # It surfaced as "Ingest pass failed" on the very first pass, and because
+    # clickhouse-connect sessions are not thread-safe, the failure is
+    # intermittent rather than deterministic: it appears only when the two
+    # threads overlap, so a quiet deployment can look perfectly healthy and start
+    # losing ingest passes the moment traffic picks up. One client per thread is
+    # the driver's documented requirement, not a workaround.
+    ingest_client = db.connect(settings)
     ingest_thread = threading.Thread(
         target=tail_forever,
-        args=(client, settings.tail_file, 5.0, settings.zeek_log_dir),
+        args=(ingest_client, settings.tail_file, 5.0, settings.zeek_log_dir),
         daemon=True,
         name="ingest-thread",
     )
@@ -309,9 +348,17 @@ def main() -> None:
         cycle_start = time.time()
         try:
             if not trained_once:
-                load_or_train(client, detectors, settings, cfg)
-                trained_once = True
-                last_full_train = datetime.now()
+                # Only latch `trained_once` when training actually produced
+                # usable detectors. On a fresh deployment the worker starts
+                # before traffic arrives, so the cold train finds 0 rows and
+                # returns False; retrying every cycle then picks it up within
+                # detect_interval_s instead of waiting out retrain_every_h.
+                if load_or_train(client, detectors, settings, cfg):
+                    trained_once = True
+                    last_full_train = datetime.now()
+                else:
+                    logger.info("No data to train on yet — will retry next cycle "
+                                "(this clears automatically once flows arrive)")
             else:
                 last_full_train = train_if_due(client, detectors, settings, cfg, last_full_train)
 
