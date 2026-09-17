@@ -49,10 +49,31 @@ SELF_EXEMPT = {"tests/test_naming.py"}
 
 
 def _tracked_files() -> list[Path]:
-    out = subprocess.run(
-        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.split()
-    return [ROOT / f for f in out]
+    """Files to scan: `git ls-files` where possible, else a filesystem walk.
+
+    The fallback exists because the code is copied onto an ISOLATED test box with
+    no remote and often no .git at all. `git ls-files` fails outright there and
+    took the whole suite with it (6 tests failed) -- on the box where we most need
+    the suite to run. git is still preferred because it honours .gitignore; the
+    walk applies the same exclusions by hand.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.split()
+        return [ROOT / f for f in out]
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        skip = {".git", ".venv", "build", "dist", "__pycache__", ".ruff_cache",
+                ".mypy_cache", ".pytest_cache", "node_modules", ".env"}
+        found = []
+        for path in sorted(ROOT.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(ROOT)
+            if set(rel.parts) & skip or rel.name in skip or rel.name.startswith(".env."):
+                continue
+            found.append(path)
+        return found
 
 
 def test_no_stale_old_name_in_any_tracked_file():

@@ -66,17 +66,41 @@ SKIP_DIRS = {".git", ".venv", "build", "dist", "__pycache__", ".ruff_cache",
              ".mypy_cache", ".pytest_cache", "node_modules", "site-packages"}
 
 
+
+def _tracked_files(root: Path) -> list[str]:
+    """Files to scan: `git ls-files` where possible, else a filesystem walk.
+
+    WHY THE FALLBACK EXISTS: the code is copied onto an isolated test box with no
+    git remote (and often no .git at all), and `git ls-files` then fails outright,
+    taking the whole suite with it. Six tests failed that way before this was added.
+    `git ls-files` is still preferred because it respects .gitignore, which a walk
+    cannot: the walk must therefore apply the same exclusions by hand.
+    """
+    try:
+        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
+                             cwd=root, check=True).stdout
+        return out.split()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        found: list[str] = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root)
+            if set(rel.parts) & SKIP_DIRS:
+                continue
+            found.append(str(rel))
+        return found
+
+
 def find_dangling_references(root: Path) -> list[str]:
     """Every reference to a repository path that does not exist.
 
     Split out from the test so the test can feed it a planted file and prove it
     actually detects one. A guard that cannot be shown to fail is not a guard.
     """
-    out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                         cwd=root, check=True).stdout
     problems: list[str] = []
 
-    for rel in out.split():
+    for rel in _tracked_files(root):
         path = Path(rel)
         if path.name in SKIP_FILES:
             continue
@@ -126,8 +150,8 @@ def test_the_dangling_reference_check_detects_a_planted_reference(tmp_path):
         "See k8s/definitely-not-a-real-file-9f3a.yaml for details.\n"
         "See k8s/real.yaml for the real thing.\n"
     )
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    # No git init: _tracked_files falls back to a walk, which is what the
+    # isolated test box does, so these exercise that path too.
 
     problems = find_dangling_references(tmp_path)
 
@@ -149,21 +173,39 @@ def test_the_check_reports_a_real_reference_as_present(tmp_path):
         "Edit k8s/20-configmap-env.yaml and weirvern/worker.py.\n"
         "Read README.md, SECURITY.md and .env.example.\n"
     )
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    # No git init: _tracked_files falls back to a walk, which is what the
+    # isolated test box does, so these exercise that path too.
 
     assert find_dangling_references(tmp_path) == []
 
 
 def test_allowed_missing_entries_are_still_absent():
-    """The allow-list must not rot.
+    """`.env` is the only dangling-reference exemption, and it is exempt because the
+    CLI GENERATES it from .env.example rather than committing it.
 
-    `.env` is the only exemption, and it is exempt because the CLI GENERATES it
-    from .env.example rather than committing it. If it ever appears in the tree,
-    the exemption hides a real problem (a committed environment file).
+    The real risk is a COMMITTED .env, which would carry Pushover tokens and
+    database passwords. Checked two ways, because neither alone is sufficient:
+
+      * git says whether it is tracked -- authoritative, but git is absent on the
+        isolated test box, where this check was crashing with CalledProcessError.
+      * in a tree with no repository, the equivalent statement is that .env is not
+        part of the shipped source, so its presence is checked against the
+        filesystem-walk exclusion list instead.
     """
-    tracked = subprocess.run(["git", "ls-files", ".env"], capture_output=True,
-                             text=True, check=True).stdout.strip()
+    try:
+        tracked = subprocess.run(["git", "ls-files", ".env"], capture_output=True,
+                                 text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # No repository (the isolated test box). The equivalent guarantee there is
+        # that .env is NOT part of the scanned source set, so the exemption cannot
+        # be hiding a shipped secrets file. Without this branch the exemption would
+        # go unverified exactly where the tree is about to be copied somewhere new.
+        scanned = [Path(p).name for p in _tracked_files(Path.cwd())]
+        assert ".env" not in scanned, (
+            ".env is included in the scanned set on a box with no git, so the "
+            "dangling-reference exemption is hiding a secrets file"
+        )
+        return
     assert not tracked, (
         ".env is TRACKED and is exempt from the dangling-reference check, so the "
         "check is blind to a committed environment file (which would carry "
@@ -203,16 +245,24 @@ def test_skip_list_is_exactly_these_two_files():
 def test_the_fixtures_are_still_exercised_despite_the_self_exemption():
     """The self-exemption means the REAL tree is not scanned for this file's
     fixture paths. That must not hide a broken check: the planted-reference and
-    valid-reference tests build their own git trees, so they exercise the same
-    code the real scan uses without depending on this file being scanned.
+    valid-reference tests build their own trees, so they exercise the same code
+    the real scan uses without depending on this file being scanned.
     """
     import inspect
 
     src = inspect.getsource(find_dangling_references)
-    assert "git" in src and "ls-files" in src, (
-        "find_dangling_references no longer walks a git tree, so the synthetic-tree "
-        "tests are no longer testing the same thing the real scan does"
+    assert "_tracked_files" in src, (
+        "find_dangling_references no longer goes through _tracked_files, so the "
+        "synthetic-tree tests are no longer testing the same path the real scan does"
     )
+    # _tracked_files must still PREFER git (it respects .gitignore, which a walk
+    # cannot) while falling back to a walk on a box with no repository. Asserting
+    # both halves: dropping the git path would silently change what "tracked"
+    # means in CI, and dropping the fallback breaks the isolated test box.
+    tsrc = inspect.getsource(_tracked_files)
+    assert "ls-files" in tsrc, "the git path was dropped; .gitignore is no longer honoured"
+    assert "rglob" in tsrc, "the filesystem fallback was dropped; a box with no .git will fail"
+
     # Both synthetic tests must exist, or the exemption above is unbounded in
     # practice (nothing would prove the checker can fail).
     names = {n for n in globals() if n.startswith("test_")}
@@ -223,8 +273,7 @@ def test_the_fixtures_are_still_exercised_despite_the_self_exemption():
 def test_check_is_not_accidentally_empty():
     """A scan that finds no files always passes. Assert it actually walks the
     tree, the same way test_naming.py guards its own scan."""
-    out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                         check=True).stdout.split()
+    out = _tracked_files(Path.cwd())
     scanned = [p for p in out
                if Path(p).suffix in CHECKED_SUFFIXES
                and not set(Path(p).parts) & SKIP_DIRS
