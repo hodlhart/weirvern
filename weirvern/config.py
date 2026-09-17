@@ -205,8 +205,82 @@ class ModelConfig:
         }
 
 
+def _load_env_file() -> None:
+    """Load a local `.env` into os.environ, WITHOUT overriding real env vars.
+
+    THE BUG THIS FIXES: `weirvern install` GENERATES `.env` from `.env.example`,
+    and `config`/`tune` read and write it — but nothing ever loaded it into the
+    environment, and every Settings field reads os.environ at construction. So
+    `.env` had no effect on any runtime setting: editing CLICKHOUSE_USER or
+    PUSHOVER_ENABLED appeared to work and silently did nothing.
+
+    It surfaced on a live box where `.env` said CLICKHOUSE_USER=default while the
+    cluster had been reconfigured to a named user, so `weirvern status` reported
+    an authentication failure that the `.env` file made impossible to fix.
+
+    Precedence: real environment variables WIN. That ordering matters in
+    Kubernetes, where the ConfigMap and Secret are injected as environment
+    variables and must not be shadowed by a stale `.env` that happened to be
+    copied into the image. This only fills in values that are not already set.
+
+    Deliberately no python-dotenv dependency: the format needed here is
+    KEY=value with optional `export`, comments and surrounding quotes, which is a
+    dozen lines and avoids adding a runtime dependency to the worker image.
+    """
+    import os
+    from pathlib import Path
+
+    candidates: list[Path] = []
+    explicit = os.environ.get("WEIRVERN_ENV_FILE")
+    if explicit:
+        candidates.append(Path(explicit))
+    else:
+        # WEIRVERN_HOME, then the current directory. Both are checked because the
+        # CLI is often run from the project root while the worker runs from an
+        # installed package location.
+        home = os.environ.get("WEIRVERN_HOME")
+        if home:
+            candidates.append(Path(home) / ".env")
+        candidates.append(Path.cwd() / ".env")
+
+    for path in candidates:
+        try:
+            text = path.read_text()
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            continue
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            # Strip an inline comment, but only when it follows whitespace, so a
+            # value like `abc#def` is preserved. .env.example ships
+            # `PUSHOVER_ENABLED=0             # 1 = real pushes`, which would
+            # otherwise be parsed as a value with the comment attached.
+            value = value.strip()
+            for quote in ('"', "'"):
+                if value.startswith(quote) and value.endswith(quote) and len(value) > 1:
+                    value = value[1:-1]
+                    break
+            else:
+                hash_idx = value.find(" #")
+                if hash_idx != -1:
+                    value = value[:hash_idx].rstrip()
+            # Real environment wins -- see the docstring.
+            os.environ.setdefault(key, value)
+        return  # first readable file wins; do not merge several
+
+
 def get_settings() -> Settings:
     """Validated settings singleton (call once; cheap enough to call per-test)."""
+    _load_env_file()
     s = Settings()
     s.validate()
     return s

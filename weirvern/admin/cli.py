@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from weirvern.admin import config_io
@@ -87,6 +88,39 @@ def env_path() -> Path:
 def _connect(settings):
     from weirvern import db
     return db.connect(settings, retries=2, delay_s=1)
+
+
+@contextmanager
+def admin_client(settings):
+    """A ClickHouse client for control-plane commands, tunnelling if needed.
+
+    WHY THIS EXISTS: `weirvern status` and the TUI run on the OPERATOR's machine,
+    but CLICKHOUSE_HOST defaults to `clickhouse` — a cluster-internal name that
+    cannot resolve outside the cluster, and the `clickhouse-external` Service ships
+    as ClusterIP with its NodePort commented out. So there was no route from the
+    host at all, and the TUI showed every workload healthy while its Health and
+    Anomalies panels reported a connection error. That reads like a broken
+    deployment rather than an unreachable one.
+
+    The tunnel opens only when the configured host actually looks cluster-internal,
+    so a deployment that deliberately exposed ClickHouse — or an operator already
+    running their own port-forward — is never second-guessed.
+    """
+    from dataclasses import replace
+
+    from weirvern import db
+    from weirvern.admin import tunnel
+
+    if not tunnel.is_cluster_internal_host(settings.clickhouse_host):
+        yield db.connect(settings, retries=2, delay_s=1)
+        return
+
+    with tunnel.clickhouse_tunnel(NAMESPACE) as local_port:
+        # Point the client at the tunnel. `replace` keeps every other setting
+        # (credentials, database) exactly as configured.
+        tunnelled = replace(settings, clickhouse_host="127.0.0.1",
+                            clickhouse_port=local_port)
+        yield db.connect(tunnelled, retries=2, delay_s=1)
 
 
 # ---------------------------------------------------------------------------
@@ -378,23 +412,25 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print()
     print(_c("bold", "Health"))
+    from weirvern.config import get_settings
+    settings = get_settings()
     try:
-        from weirvern.config import get_settings
-        settings = get_settings()
-        client = _connect(settings)
+        # `admin_client` opens a port-forward automatically when the configured
+        # host is cluster-internal (the default), so `weirvern status` works from
+        # a workstation without the operator setting one up by hand.
+        with admin_client(settings) as client:
+            report = status_mod.collect_health(client, settings)
     except Exception as exc:  # noqa: BLE001
-        _bad(f"cannot reach ClickHouse: {str(exc)[:120]}")
-        print(_c("dim", "    Inside the cluster the database is reachable at "
-                        "clickhouse.weirvern.svc:8123; from a workstation, "
-                        "port-forward it:"))
+        _bad(f"cannot reach ClickHouse: {_condense(str(exc), 160)}")
+        print(_c("dim", "    Tried to tunnel to svc/clickhouse automatically. "
+                        "If that failed, check:"))
+        print(_c("dim", "      kubectl -n weirvern get pods -l app.kubernetes.io/name=clickhouse"))
         print(_c("dim", "      kubectl -n weirvern port-forward svc/clickhouse 8123:8123"))
         return EXIT_NOTREADY
 
-    report = status_mod.collect_health(client, settings)
     for p in report.probes:
         marker = _c("green", "✓") if p.ok else _c("red", "✗")
         print(f"  {marker} {p.name:<18} {p.detail}")
-    client.close()
     return EXIT_OK if report.ok else EXIT_FAIL
 
 

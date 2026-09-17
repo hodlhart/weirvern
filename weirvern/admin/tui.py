@@ -230,20 +230,23 @@ class WeirvernTUI(App):
             error = f"services: {exc}"
 
         try:
-            from weirvern import db
+            from weirvern.admin.cli import admin_client
             from weirvern.config import get_settings
 
             settings = get_settings()
-            client = db.connect(settings, retries=1, delay_s=0)
-            report = collect_health(client, settings)
-            probes = report.probes
-            if not error:
-                anomalies = recent_anomalies(client)
-                talkers = top_talkers(client)
-            client.close()
+            # `admin_client` opens a port-forward when the configured host is
+            # cluster-internal. Without it the TUI reported "Could not connect to
+            # ClickHouse at http://clickhouse:8123" while every workload showed
+            # healthy, because a workstation cannot resolve a cluster DNS name.
+            with admin_client(settings) as client:
+                report = collect_health(client, settings)
+                probes = report.probes
+                if not error:
+                    anomalies = recent_anomalies(client)
+                    talkers = top_talkers(client)
         except Exception as exc:  # noqa: BLE001
             if not error:
-                error = str(exc)[:160]
+                error = _condense(str(exc), 160)
 
         self.post_message(HealthUpdated(services, probes, anomalies, talkers, self.caps, error))
 
