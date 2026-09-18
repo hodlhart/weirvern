@@ -139,3 +139,107 @@ def test_the_gate_reads_the_cluster_not_the_repository():
         "no check that a cluster is reachable; an unreachable cluster must not be read as "
         "'capabilities present'"
     )
+
+
+# ── local vs cluster ────────────────────────────────────────────────────────────
+#
+# The TUI Config tab edits the LOCAL .env, but a Kubernetes deployment reads the
+# ConfigMap. Those can disagree, and the panel previously showed only the local file --
+# so it displayed ZEEK_IFACE=eth0 while the sensor was capturing on eth1, with nothing
+# indicating the setting had no effect. A config panel that misrepresents which values are
+# in force is worse than one that shows nothing, because it invites action that does
+# nothing.
+
+
+def _config_note(tmp_path, monkeypatch, local: str, cluster: dict[str, str], why: str = ""):
+    """Render the Config table and return the cluster-note for ZEEK_IFACE.
+
+    WHY THIS WRITES A FIXTURE .env INTO THE RESOLVED PROJECT DIR: `WeirvernTUI.__init__`
+    calls `find_project_dir(project_dir)`, which OVERRIDES an explicit path and returns the
+    real repository. Passing a tmp_path is therefore ignored, and a test that only writes
+    to tmp_path silently reads the repository's own .env -- which is how an earlier version
+    of these tests agreed with itself while exercising nothing.
+    """
+    from textual.widgets import DataTable
+
+    real = tmp_path / ".env"
+
+    async def go():
+        app = WeirvernTUI(project_dir=tmp_path)
+        # The app resolved its own project_dir; write the fixture where it will look.
+        (app.project_dir / ".env").write_text(f"ZEEK_IFACE={local}\n")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "_cluster_env", lambda: (cluster, why))
+            app._render_config()
+            await pilot.pause()
+            tbl = app.query_one("#config-list", DataTable)
+            for i in range(tbl.row_count):
+                row = tbl.get_row_at(i)
+                if str(row[0]) == "ZEEK_IFACE":
+                    return str(row[2])
+            return ""
+
+    try:
+        return _run(go())
+    finally:
+        real.unlink(missing_ok=True)
+
+
+def test_the_config_table_has_a_cluster_column(tmp_path):
+    from textual.widgets import DataTable
+
+    async def go():
+        app = WeirvernTUI(project_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tbl = app.query_one("#config-list", DataTable)
+            return [str(c.label) for c in tbl.columns.values()]
+
+    cols = _run(go())
+    assert any("cluster" in c.lower() for c in cols), (
+        f"no cluster column, so the panel cannot show that a local edit has no effect: {cols}"
+    )
+    assert any("local" in c.lower() for c in cols), (
+        "the value column must be labelled as LOCAL, or the distinction is invisible"
+    )
+
+
+def test_a_divergence_is_flagged_not_hidden(tmp_path, monkeypatch):
+    """The exact case found on the test box: local eth0 vs cluster eth1."""
+    note = _config_note(tmp_path, monkeypatch, local="eth0", cluster={"ZEEK_IFACE": "eth1"})
+    assert "eth1" in note, f"the divergence was not surfaced; note was {note!r}"
+    assert "matches" not in note
+
+
+def test_an_unreadable_cluster_says_so_rather_than_implying_agreement(tmp_path, monkeypatch):
+    """With no cluster the panel must not look like everything is in sync."""
+    note = _config_note(tmp_path, monkeypatch, local="eth0", cluster={},
+                        why="no cluster — local file only")
+    assert "no cluster" in note.lower()
+    assert "matches" not in note.lower(), (
+        "no cluster data must never be rendered as agreement"
+    )
+
+
+def test_a_matching_value_is_reported_as_matching(tmp_path, monkeypatch):
+    note = _config_note(tmp_path, monkeypatch, local="eth1", cluster={"ZEEK_IFACE": "eth1"})
+    assert "matches" in note.lower(), f"equal values were not reported as matching: {note!r}"
+
+
+def test_find_project_dir_overrides_an_explicit_path():
+    """Documented because it silently broke three tests.
+
+    Passing a directory to WeirvernTUI does NOT scope it: find_project_dir returns the real
+    repository. Anything relying on project_dir for isolation is therefore reading the
+    wrong .env, which makes a confident test assert nothing.
+    """
+    import tempfile
+
+    from weirvern.admin.runtime import find_project_dir
+
+    tmp = Path(tempfile.mkdtemp())
+    assert find_project_dir(tmp) != tmp, (
+        "find_project_dir now honours an explicit path; tests relying on the override "
+        "behaviour need revisiting"
+    )

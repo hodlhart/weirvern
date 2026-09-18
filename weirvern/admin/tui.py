@@ -253,7 +253,7 @@ class WeirvernTUI(App):
         talk.add_columns("Source", "Bytes", "Flows", "Destinations")
 
         cfg = self.query_one("#config-list", DataTable)
-        cfg.add_columns("Key", "Value", "Notes")
+        cfg.add_columns("Key", "Local (.env)", "Cluster")
 
     # -- data collection (threaded) ----------------------------------------
     def _refresh(self) -> None:
@@ -363,14 +363,65 @@ class WeirvernTUI(App):
         self._render_config()
 
     def _render_config(self) -> None:
+        """Show each key's value AND whether the running cluster agrees.
+
+        WHY THIS COLUMN EXISTS: editing `.env` here does NOT change a Kubernetes
+        deployment -- the cluster reads the ConfigMap, so the two can disagree and the TUI
+        previously showed only the local file. That made the panel actively misleading: it
+        displayed ZEEK_IFACE=eth0 while the sensor was capturing on eth1, with nothing to
+        indicate that the setting had no effect.
+
+        A row that says `local != cluster` is the whole point. Reading the ConfigMap is
+        best-effort: with no cluster reachable the column says so rather than implying the
+        values match.
+        """
         table = self.query_one("#config-list", DataTable)
         table.clear()
         env = config_io.EnvFile.load(self.project_dir / ".env")
+        live, why = self._cluster_env()
+
         for key in env.keys():  # noqa: SIM118 - EnvFile is not a dict
             val = env.get(key) or ""
             shown = config_io.mask(val) if config_io.is_secret(key) else val
-            table.add_row(key, shown or "(unset)",
-                          "[dim]secret[/dim]" if config_io.is_secret(key) else "")
+
+            if config_io.is_secret(key):
+                note = "[dim]secret[/dim]"
+            elif why:
+                # No cluster value available: say WHY, do not imply agreement.
+                note = f"[dim]{why}[/dim]"
+            elif key not in live:
+                note = "[dim]not in the cluster ConfigMap[/dim]"
+            elif live[key] == val:
+                note = "[green]matches cluster[/green]"
+            else:
+                # The important state: this edit will have no effect as written.
+                other = config_io.mask(live[key]) if config_io.is_secret(key) else live[key]
+                note = f"[yellow]cluster: {other}[/yellow]"
+            table.add_row(key, shown or "(unset)", note)
+
+    def _cluster_env(self) -> tuple[dict[str, str], str]:
+        """The ConfigMap the sensor actually reads, or ({}, reason it is unavailable)."""
+        from weirvern.admin.runtime import detect_capabilities
+
+        caps = detect_capabilities(self.project_dir)
+        if not (caps.kubectl and caps.cluster_available):
+            return {}, "no cluster — local file only"
+        try:
+            proc = subprocess.run(
+                ["kubectl", "-n", "weirvern", "get", "configmap", "weirvern-env",
+                 "-o", "jsonpath={.data}"],
+                capture_output=True, text=True, timeout=20, cwd=str(self.project_dir),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {}, f"could not read ConfigMap: {exc}"
+        if proc.returncode != 0:
+            return {}, "ConfigMap unavailable"
+        try:
+            import json
+            data = json.loads(proc.stdout or "{}")
+        except ValueError:
+            return {}, "ConfigMap unreadable"
+        return {str(k): str(v) for k, v in data.items()}, ""
 
     def _help_markdown(self) -> str:
         return (
@@ -502,7 +553,30 @@ class WeirvernTUI(App):
         env.backup(".bak")
         env.set(str(key), value)
         env.save()
-        self.notify(f"{key} saved — restart the worker to apply", timeout=5)
+
+        # Say plainly whether this changed anything, because on Kubernetes it usually did
+        # not: the cluster reads the ConfigMap, not this file. Silence here is how an
+        # operator ends up believing a setting took effect when the sensor is still using
+        # the old value.
+        live, why = self._cluster_env()
+        if why:
+            self.notify(f"{key} saved locally. {why}.", timeout=8)
+        elif key in live and live[key] != value:
+            self.notify(
+                f"{key} saved LOCALLY, but the running cluster uses "
+                f"{key}={live[key]}. To change the deployment, update the ConfigMap: "
+                f"kubectl -n weirvern patch configmap weirvern-env --type merge "
+                f"-p '{{\"data\":{{\"{key}\":\"{value}\"}}}}' && "
+                f"kubectl -n weirvern rollout restart ds/zeek",
+                severity="warning", timeout=20,
+            )
+        elif key in live:
+            self.notify(f"{key} saved — cluster already matches", timeout=5)
+        else:
+            self.notify(
+                f"{key} saved locally, but it is not in the cluster ConfigMap, so the "
+                f"deployment does not read it.", severity="warning", timeout=12,
+            )
         self.query_one("#config-value", Input).value = ""
         self._refresh()
 
