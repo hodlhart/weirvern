@@ -596,10 +596,18 @@ def test_the_cli_exposes_hosts():
 
 @pytest.fixture(autouse=True)
 def _stub_forwarding_path(monkeypatch):
-    monkeypatch.setattr(ic, "forwarding_path_problems",
-                        lambda _i, _g, **_kw: [])
-    monkeypatch.setattr(ic, "ensure_forwarding_path",
-                        lambda _i, _g, **_kw: [])
+    """Keep the real `ip` commands out of the suite.
+
+    `ensure_forwarding_path` / `remove_forwarding_path` shell out and MODIFY the host's
+    routing, so they are stubbed by default and driven explicitly by the tests that care.
+
+    `forwarding_path_problems` is deliberately NOT stubbed: preflight no longer calls it
+    (the route is installed by start(), so demanding it beforehand deadlocked the command).
+    Stubbing a function nothing calls only hides when that changes -- and when it moved out
+    of this module, this fixture kept patching a name that no longer existed and errored 53
+    tests on the attribute.
+    """
+    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g, **_kw: [])
     monkeypatch.setattr(ic, "remove_forwarding_path", lambda _i: None)
     yield
 
@@ -619,27 +627,34 @@ def _stub_forwarding_path(monkeypatch):
 # error, so it is checked rather than assumed.
 
 
-def test_preflight_does_not_demand_a_route_that_start_installs(monkeypatch):
+def test_preflight_does_not_demand_a_route_that_start_installs():
     """A prerequisite the command creates for itself must not be preflighted.
 
-    THE DEADLOCK THIS GUARDS: preflight required the policy route, and `start()` is what
+    THE DEADLOCK THIS GUARDS: preflight required the policy route, and start() is what
     installs it. So `weirvern intercept` refused on every host, telling the operator to fix
     something that was never their job, and could never reach the code that would have fixed
-    it. Measured live -- the dry run reported the missing route as BLOCKED, which returns
-    before start() is ever called.
+    it. Measured live: the dry run reported the missing route as BLOCKED, and that path
+    returns before start() is ever called.
 
-    What preflight gates on is what the OPERATOR owns: ip_forward and the sysctls a container
-    cannot set. Installing the route is ours.
+    Asserted on the SOURCE rather than via a stub, because the fix is the ABSENCE of a call:
+    a stub-based test passes whether or not the call returns.
     """
-    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g, **_kw: [
-        "a FORWARDED packet arriving on eth1 would leave via a different interface",
-    ])
-    icpt = ic.Intercept(_plan(), sender=RecordingSender())
-    problems = icpt.preflight()
-    assert not any("leave via a different interface" in p for p in problems), (
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "intercept.py").read_text()
+    body = src[src.index("def preflight"):]
+    nxt = body.find("\n    def ", 10)
+    body = body[:nxt] if nxt > 0 else body
+    code = "\n".join(ln.split("#")[0] for ln in body.splitlines())
+    assert "forwarding_path_problems" not in code, (
         "preflight demands the forwarding route, which start() installs -- so the command "
         "would refuse every run and never reach the code that fixes it"
     )
+    assert "check_forwarding" in code, (
+        "preflight must still gate on ip_forward and the sysctls, which the OPERATOR owns"
+    )
+    # And the observable behaviour: a healthy plan preflights clean.
+    assert ic.Intercept(_plan(), sender=RecordingSender(), forwarding=READY).preflight() == []
 
 
 def test_a_broken_forwarding_path_aborts_before_sending_any_poison():
