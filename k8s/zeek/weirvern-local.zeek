@@ -35,12 +35,20 @@
 # the restriction real. Verified: ja4 populated 28/28, ja4+ populated 0/28.
 @load packages/ja4-zeek-scripts/config
 
+#
+# EVERY option in the FoxIO section of the package's config.zeek is listed, not just the
+# ones that default to T. Some default to F today (JA4X_enabled, JA4S_raw, JA4H_raw), and
+# relying on a default is how a package update silently turns a licensed feature back on:
+# the option name does not change, only its default, and nothing here would notice.
 redef FINGERPRINT::JA4S_enabled   = F;
+redef FINGERPRINT::JA4S_raw       = F;   # unhashed JA4S components
 redef FINGERPRINT::JA4H_enabled   = F;
+redef FINGERPRINT::JA4H_raw       = F;   # unhashed JA4H components
 redef FINGERPRINT::JA4L_enabled   = F;
 redef FINGERPRINT::JA4SSH_enabled = F;
 redef FINGERPRINT::JA4T_enabled   = F;
 redef FINGERPRINT::JA4TS_enabled  = F;
+redef FINGERPRINT::JA4X_enabled   = F;
 redef FINGERPRINT::JA4D_enabled   = F;
 
 @load packages
