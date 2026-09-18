@@ -33,6 +33,7 @@ resources:
   - 31-goflow2.yaml
   - 32-zeek.yaml
   - 33-worker.yaml
+  - 34-gui.yaml
   - 50-schema-job.yaml
   - 60-rbac.yaml
   # NetworkPolicy is OPTIONAL and commented out by default: it only takes effect

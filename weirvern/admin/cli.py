@@ -18,7 +18,10 @@ Exit codes: 0 ok, 1 failure, 2 usage error, 3 environment not ready.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,8 +84,117 @@ def _warn(msg: str) -> None:
     print(f"{_c('yellow', '!')} {msg}")
 
 
+def _probe_cluster_dns(timeout: int = 45) -> tuple[bool, str]:
+    """Can pods resolve Service names?
+
+    Runs a throwaway pod and asks it to resolve a name that ALWAYS exists in a healthy
+    cluster (`kubernetes.default`), so a failure means DNS is broken rather than that a
+    particular Service is missing.
+
+    WHY THIS IS WORTH A PROBE: the underlying fault
+    (`net.bridge.bridge-nf-call-iptables=0` on a node) makes DNS *content* look fine --
+    a raw query to the CoreDNS ClusterIP answers immediately -- while glibc's connect()
+    based resolver silently drops the mismatched source address. Everything downstream
+    then reports "cannot reach ClickHouse", so an operator debugs ClickHouse. One cheap
+    probe at install time replaces that whole hunt.
+
+    Returns (ok, detail). A cluster with no cluster-admin cannot run the probe pod, and
+    that is reported as unverifiable rather than as a failure: claiming DNS is broken
+    when we simply could not look would be its own misdiagnosis.
+    """
+    r = _run(["kubectl", "run", "weirvern-dnscheck", "-n", NAMESPACE,
+              "--rm", "-i", "--restart=Never", "--quiet",
+              "--image", PROBE_IMAGE,
+              "--overrides", json.dumps({"spec": {"dnsPolicy": "ClusterFirst",
+                                                  "automountServiceAccountToken": False}}),
+              "--", "nslookup", "kubernetes.default.svc.cluster.local"],
+             project_dir(), timeout=timeout)
+    return _interpret_dns_probe(f"{r.stdout or ''}\n{r.stderr or ''}", r.ok)
+
+
+def _interpret_dns_probe(text: str, ok: bool) -> tuple[bool, str]:
+    """Judge a probe result. Split out so the wordings are testable.
+
+    ORDER MATTERS, and an earlier version got it wrong: it accepted any output
+    containing "Address" as success, so a reply reading
+    `Server: 10.43.0.10 Address: 10.43.0.10:53` followed by
+    `** server can't find kubernetes.default: NXDOMAIN` was reported as
+    "DNS resolves". The Server/Address header is echoed even on failure, so the
+    FAILURE wordings must be checked first.
+
+    NXDOMAIN also tells us something useful: the resolver ANSWERED, so the transport is
+    fine and only the name is missing -- a different problem from DNS being unreachable.
+    """
+    low = text.lower()
+
+    # 1. Failures first. These are the signals that the transport is broken, which is the
+    #    bridge-nf fault.
+    if "temporary failure in name resolution" in low:
+        return False, "pods cannot resolve Service names (resolver timed out)"
+    if "no servers could be reached" in low or "connection timed out" in low:
+        return False, "pods cannot reach the cluster DNS service at all"
+    # 2. The resolver answered but has no such name. Transport is healthy; this is a
+    #    cluster-content problem, not DNS reachability, so it must NOT be reported as a
+    #    DNS failure.
+    if "nxdomain" in low or "can't find" in low or "servfail" in low:
+        return True, "cluster DNS answered (name not found, transport is healthy)"
+    # 3. Our own limitations.
+    if "forbidden" in low or "cannot create" in low or "unauthorized" in low:
+        return True, "could not verify (no permission to run a probe pod)"
+    if "executable file not found" in low or "command not found" in low:
+        return True, "could not verify (probe image has no nslookup)"
+    # 4. A real answer, with an address that is not just the server's own.
+    if ok and re.search(r"name:\s*\S+", low):
+        return True, "kubernetes.default resolves"
+    return True, "could not verify"
+
+
 def env_path() -> Path:
     return project_dir() / ".env"
+
+
+# The image used for one-shot utility pods (the interface probe). Deliberately a
+# tiny base rather than the application image: the probe reads /sys and /proc only,
+# so pulling a 15 MB+ worker image to answer a question about NICs would be slow and
+# pointless. Overridable for an air-gapped registry.
+PROBE_IMAGE = os.environ.get("WEIRVERN_PROBE_IMAGE", "busybox:1.37")
+
+
+def _cluster_config() -> dict[str, str]:
+    """Read the live cluster ConfigMap, as a flat dict.
+
+    Returns {} on any failure rather than raising: callers use this to enrich a
+    check, and a missing ConfigMap must not abort a diagnostic that is otherwise
+    useful (the whole point of these commands is to work when something is wrong).
+    """
+    r = _run(["kubectl", "-n", NAMESPACE, "get", "configmap", "weirvern-env",
+              "-o", "jsonpath={.data}"], project_dir(), timeout=20)
+    if not r.ok or not (r.stdout or "").strip():
+        return {}
+    try:
+        data = json.loads(r.stdout)
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sensor_image() -> str:
+    """The image to run the interface probe in.
+
+    The probe is a stdlib Python program, but the images in this project do not all
+    ship Python (the worker does, busybox does not). Resolving that here rather than
+    hardcoding one image means the command keeps working if a deployment swaps the
+    base: prefer the worker image, which is known to have Python, and fall back to
+    the busybox probe image only if asked.
+    """
+    for kind, name in (("deployment", "weirvern-worker"), ("daemonset", "zeek")):
+        r = _run(["kubectl", "-n", NAMESPACE, "get", kind, name,
+                  "-o", "jsonpath={.spec.template.spec.containers[0].image}"],
+                 project_dir(), timeout=15)
+        img = (r.stdout or "").strip()
+        if r.ok and img:
+            return img
+    return PROBE_IMAGE
 
 
 def _connect(settings):
@@ -172,6 +284,27 @@ def cmd_install(args: argparse.Namespace) -> int:
     else:
         _warn(caps.reason or "no reachable cluster")
         ready = False
+    # In-cluster DNS. This is checked because its failure is SILENT and looks like
+    # something else entirely: with net.bridge.bridge-nf-call-iptables unset on the
+    # node, bridged traffic bypasses iptables, the Service ClusterIP is never
+    # reverse-translated, and CoreDNS answers from its POD address instead of the
+    # service address -- so every getaddrinfo in every pod times out with
+    # "Temporary failure in name resolution" while DNS content itself looks healthy.
+    # The symptom appears as "the GUI cannot reach ClickHouse", which sends you looking
+    # in entirely the wrong place, so it is worth one cheap probe at install time.
+    if caps.cluster_available:
+        dns_ok, dns_detail = _probe_cluster_dns()
+        if dns_ok:
+            _ok(f"in-cluster DNS resolves ({dns_detail})")
+        else:
+            _bad(f"in-cluster DNS is NOT working: {dns_detail}")
+            print(_c("dim", "    Pods will fail to resolve Service names, which shows up as"))
+            print(_c("dim", "    'cannot reach ClickHouse' in the GUI or worker logs."))
+            print(_c("dim", "    Fix on every node, then reboot or re-apply:"))
+            print(_c("dim", "      sysctl -w net.bridge.bridge-nf-call-iptables=1"))
+            print(_c("dim", "      echo 'net.bridge.bridge-nf-call-iptables = 1' "
+                            "> /etc/sysctl.d/99-k3s-bridge-nf.conf"))
+            ready = False
     if caps.namespace:
         _ok(f"namespace '{NAMESPACE}' exists")
     else:
@@ -195,14 +328,31 @@ def cmd_install(args: argparse.Namespace) -> int:
     #    package, so its absence is fatal rather than cosmetic — and a repo-level
     #    copy would not fix a real install (verified: the path resolved outside
     #    the package and the job applied nothing while reporting success).
-    from weirvern import db as db_mod
-    sql_files = sorted(db_mod.SCHEMA_DIR.glob("*.sql")) if db_mod.SCHEMA_DIR.is_dir() else []
+    #
+    #    Resolved WITHOUT importing weirvern.db, because that module imports
+    #    clickhouse_connect at the top level. A prerequisite CHECK must not crash on a
+    #    driver that is not installed here -- on the test box this raised
+    #    "No module named 'clickhouse_connect'" and killed the whole install report
+    #    partway through, hiding every check after it. The schema directory resolves the
+    #    same way (relative to the package) without pulling in the driver.
+    sql_dir = Path(__file__).resolve().parent.parent / "schema"
+    sql_files = sorted(sql_dir.glob("*.sql")) if sql_dir.is_dir() else []
     if sql_files:
         _ok(f"ClickHouse schema present in the package "
             f"({', '.join(p.name for p in sql_files)})")
     else:
-        _bad(f"no schema .sql files in {db_mod.SCHEMA_DIR} — cannot create tables")
+        _bad(f"no schema .sql files in {sql_dir} — cannot create tables")
         return EXIT_FAIL
+    # The local driver is only needed for LOCAL database commands. Report it as a note
+    # rather than a failure: a cluster deployment applies the schema in-cluster, where
+    # the image has the driver.
+    try:
+        import clickhouse_connect  # noqa: F401
+        _ok("clickhouse-driver available locally (needed for init-db/tune)")
+    except ImportError:
+        print(_c("dim", "    clickhouse-connect not installed locally — `weirvern init-db` "
+                        "and `weirvern tune` need it; the cluster applies the schema "
+                        "itself and does not"))
 
     # 5. Secrets. Checked against the CLUSTER secret (that is what the pod reads),
     #    falling back to reporting that it cannot be verified.
@@ -447,7 +597,10 @@ CONFIG_HELP = {
     "MIN_AGREEMENT": "fraction of detectors that must fire",
     "DETECT_INTERVAL_S": "detection sweep cadence, seconds",
     "RETRAIN_EVERY_H": "full retrain cadence, hours",
-    "ZEEK_IFACE": "interface the Zeek sensor sniffs",
+    "ZEEK_IFACE": "interface the Zeek sensor sniffs (the capture port)",
+    "MGMT_IFACE": "management port (default route, SSH, API) — not sniffed",
+    "SENSOR_MODE": "loch = passive capture, weir = in-path intercept",
+    "INTERCEPT_TARGETS": "weir mode: who to intercept (empty = nobody)",
     "CLICKHOUSE_HOST": "ClickHouse hostname",
     "CLICKHOUSE_PORT": "ClickHouse HTTP port",
     "CLICKHOUSE_DB": "ClickHouse database name",
@@ -634,6 +787,311 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return run_tui(project_dir(), refresh_s=args.refresh)
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    """Serve the read-only web dashboard.
+
+    Read-only by design: no code path here reaches a mutating cluster operation,
+    which is what makes binding it to a LAN address acceptable without auth. See
+    weirvern/admin/web.py for the reasoning.
+
+    ON THE PROJECT DIRECTORY: `project_dir()` used to be called unconditionally
+    here, and it RAISES inside the container image -- the Containerfile copies only
+    pyproject/README/LICENSE plus the package, so the image has neither k8s/ nor
+    .env.example for find_project_dir to recognise. That made the GUI pod
+    CrashLoopBackOff with
+
+        could not locate the Weirvern project directory; set WEIRVERN_HOME
+
+    which is the same defect class as the schema Job's import-time crash. The
+    project directory is only needed to locate the CLUSTER (for the Workloads
+    panel), so its absence is now tolerated: the GUI serves every data panel from
+    ClickHouse alone.
+    """
+    from weirvern.admin import web
+    from weirvern.config import get_settings
+
+    settings = get_settings()
+    host = args.host or os.environ.get("GUI_HOST", web.DEFAULT_HOST)
+    port = args.port or int(os.environ.get("GUI_PORT", str(web.DEFAULT_PORT)))
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    print(_c("bold", f"Weirvern GUI on http://{shown}:{port}"))
+    if host in ("0.0.0.0", "::"):
+        print(_c("dim", "    bound to all interfaces; anyone who can reach this "
+                        "port can read your flow data"))
+    print(_c("dim", "    read-only: no start/stop/apply actions are exposed"))
+
+    try:
+        pdir = project_dir()
+    except Exception:  # noqa: BLE001
+        # Running from an installed package with no checkout. Data panels are
+        # unaffected; only the workload list needs kubectl, which is discovered
+        # separately and reported in the UI when missing.
+        pdir = Path.cwd()
+        print(_c("dim", "    no project checkout found; the Workloads panel will "
+                        "report cluster access as unavailable"))
+
+    try:
+        return web.run(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
+    except OSError as exc:
+        # The common case is a port already in use, and saying which port is far
+        # more useful than the bare errno.
+        _bad(f"cannot bind {host}:{port}: {exc}")
+        print(_c("dim", "    pick another with: weirvern gui --port 8090"))
+        return EXIT_FAIL
+
+
+def cmd_interfaces(args: argparse.Namespace) -> int:
+    """List a sensor node's interfaces and judge which one can capture.
+
+    WHY A COMMAND rather than documenting `ip link`: the choice is not obvious from
+    interface names, and getting it wrong fails SILENTLY. Pointing the sensor at the
+    management port produces a capture full of broadcast noise, which reads as a busy
+    network; pointing it at a bridge member inside a container produces 73% noise and
+    no unicast. Both look healthy in Zeek's logs. So this prints the verdict, not just
+    the list.
+
+    Probes the NODE by default (a throwaway hostNetwork pod), because that is what
+    Zeek sees. `--local` asks the machine the CLI is running on instead, which is
+    right on a single-host install and wrong on a cluster.
+    """
+    from weirvern.admin import interfaces as if_mod
+
+    iface_env = {}
+    # A missing or unreadable .env must not stop a diagnostic that is otherwise
+    # useful -- this command exists partly to help when the setup is wrong.
+    with contextlib.suppress(Exception):
+        iface_env = config_io.EnvFile.load(env_path()).as_dict()
+    configured = args.capture_iface or iface_env.get("ZEEK_IFACE", "")
+    mgmt = args.mgmt_iface or iface_env.get("MGMT_IFACE", "")
+    # Fall back to the cluster ConfigMap, which is what the deployment actually uses.
+    if not configured:
+        configured = _cluster_config().get("ZEEK_IFACE", "")
+    if not mgmt:
+        mgmt = _cluster_config().get("MGMT_IFACE", "")
+
+    if args.local:
+        probe = if_mod.probe_local()
+    else:
+        caps = detect_capabilities(project_dir())
+        if not (caps.kubectl and caps.cluster_available):
+            _warn(f"no cluster ({caps.reason or 'kubectl unavailable'}) — probing this host instead")
+            probe = if_mod.probe_local()
+        else:
+            image = _sensor_image()
+            print(_c("dim", f"    probing node via a hostNetwork pod ({image})…"))
+            probe = if_mod.probe_node(NAMESPACE, node=args.node, image=image)
+
+    if probe.error:
+        _bad(probe.error)
+        print()
+        print("  If the probe pod could not start, re-run with --local to inspect this")
+        print("  host, or run this command ON the sensor node.")
+        return EXIT_FAIL
+
+    where = "this host" if probe.source == "local" else f"node {probe.source}"
+    print(_c("bold", f"Interfaces on {where}"))
+    if probe.hostname and probe.hostname != probe.source:
+        print(_c("dim", f"    hostname {probe.hostname}"))
+    print()
+
+    rows = if_mod.describe(probe)
+    if not rows:
+        print("  no usable interfaces found")
+        return EXIT_FAIL
+    width = max(len(r[0]) for r in rows) + 2
+    print(f"  {'iface'.ljust(width)} {'role':<9} detail")
+    for name, role, detail in rows:
+        colour = "bold" if role in ("mgmt", "CAPTURE?") else "dim"
+        print(f"  {name.ljust(width)} {_c(colour, role.ljust(9))} {detail}")
+
+    print()
+    if configured:
+        v = if_mod.validate_capture_iface(probe, configured, mgmt)
+        head = _c("bold", f"Capture interface (ZEEK_IFACE={configured})")
+        print(head)
+        if v.fatal:
+            _bad(v.summary())
+            for f in v.fatal:
+                print(f"    {f}")
+        else:
+            _ok(v.summary())
+        for w in v.warnings:
+            _warn(w)
+        for n in v.notes:
+            print(_c("dim", f"    {n}"))
+    else:
+        _warn("ZEEK_IFACE is not set — the sensor will fall back to eth0")
+
+    if mgmt:
+        m = probe.by_name(mgmt)
+        if m is None:
+            _warn(f"MGMT_IFACE='{mgmt}' does not exist on {where}")
+        # The same-interface case is already reported inside the verdict above, so it
+        # is deliberately NOT repeated here -- two identical warnings read as a bug.
+
+    suggestion = if_mod.recommend(probe, mgmt)
+    print()
+    if suggestion:
+        print(_c("bold", "Suggested capture port: ") + suggestion)
+        if configured and suggestion != configured:
+            print(f"  ZEEK_IFACE is '{configured}'. To use '{suggestion}':")
+            print(f"    weirvern config set ZEEK_IFACE={suggestion}")
+            print(f"    edit k8s/20-configmap-env.yaml ZEEK_IFACE: \"{suggestion}\"")
+            print("    weirvern apply")
+    else:
+        print(_c("bold", "No valid capture port found."))
+        print("  Every interface is a bridge member, virtual, or the management port.")
+        print("  A mirror/SPAN port has to exist as a PHYSICAL interface on the sensor")
+        print("  node. On a virtualised host (Proxmox, ESXi, Hyper-V) a VM cannot be")
+        print("  handed a SPAN feed through its normal paravirtual NIC: the switch")
+        print("  mirrors to a physical port, and the hypervisor's bridge delivers only")
+        print("  flooded traffic to a virtual port. Give the sensor VM/LXC a dedicated")
+        print("  physical NIC (PCI passthrough or a second, unbridged NIC) and mirror")
+        print("  the switch port to that cable.")
+    return EXIT_OK
+
+
+def cmd_mode(args: argparse.Namespace) -> int:
+    """Inspect or set the sensor mode.
+
+    WHY THIS IS ITS OWN COMMAND: the mode decides whether Weirvern is a passive
+    observer or a router, and those have different requirements and radically different
+    failure modes. Burying that in a config value an operator has to know to look for
+    would mean discovering the blast radius after a deployment, so the mode gets a
+    first-class command that states the requirements and the consequence.
+
+    With no argument it reports the current mode. `weirvern mode weir` checks whether
+    weir mode CAN be enabled here before writing anything, and refuses when it cannot.
+    """
+    from weirvern.admin import mode as mode_mod
+
+    env = config_io.EnvFile.load(env_path())
+    current = env.get("SENSOR_MODE") or mode_mod.DEFAULT_MODE
+    mgmt_iface = env.get("MGMT_IFACE") or ""
+    capture_iface = env.get("ZEEK_IFACE") or ""
+
+    if not args.mode:
+        # Report only.
+        print(_c("bold", "Sensor mode"))
+        print(f"  {mode_mod.describe(current)}")
+        print()
+        v = mode_mod.validate(current)
+        if not v.ok:
+            _warn(v.summary())
+            for b in v.blockers:
+                print(f"    {b}")
+        else:
+            _ok(v.summary())
+        print()
+        print(_c("dim", "  switch with: weirvern mode loch   |   weirvern mode weir"))
+        return EXIT_OK
+
+    wanted = mode_mod.normalise(args.mode)
+    print(_c("bold", f"Sensor mode: {current} -> {wanted}"))
+    print(f"  {mode_mod.SUMMARY.get(wanted, 'unknown mode')}")
+    print(f"  impact: {mode_mod.IMPACT.get(wanted, '?')}")
+    print()
+
+    if wanted == current and not args.force:
+        _ok(f"already in {wanted} mode — nothing to change")
+        return EXIT_OK
+
+    # Gather the facts the gates depend on, from the cluster the sensor runs in.
+    # Unknown is treated as absent: claiming a capability we could not confirm would
+    # defeat the point of gating.
+    has_net_admin = has_net_raw = False
+    watchdog_ok = True          # ships with Weirvern; absence would be a code fault
+    if wanted == mode_mod.MODE_WEIR:
+        caps = detect_capabilities(project_dir())
+        if caps.kubectl and caps.cluster_available:
+            # NET_ADMIN on the zeek container is what weir mode needs; read it back
+            # from the manifest render rather than trusting the checked-in file.
+            r = _run(["kubectl", "-n", NAMESPACE, "get", "ds", "zeek", "-o",
+                      "jsonpath={.spec.template.spec.containers[0].securityContext.capabilities.add}"],
+                     project_dir(), timeout=20)
+            adds = (r.stdout or "") if r.ok else ""
+            has_net_admin = "NET_ADMIN" in adds
+            has_net_raw = "NET_RAW" in adds
+        else:
+            _warn("no cluster reachable — cannot confirm the sensor's capabilities")
+        print(_c("bold", "Prerequisites"))
+        _ok_or_bad("CAP_NET_RAW", has_net_raw, "needed to send forged ARP replies")
+        _ok_or_bad("CAP_NET_ADMIN", has_net_admin,
+                   "needed to configure forwarding; the passive sensor does NOT have it")
+        _ok_or_bad("fail-open watchdog", watchdog_ok, "withdraws the poisoned ARP entries")
+        print()
+        print(_c("bold", "Node sysctls weir mode depends on"))
+        from weirvern.admin.watchdog import preflight_sysctls
+        for name, cur, want in preflight_sysctls():
+            if args.local and cur != "?":
+                mark = "ok" if cur == want else "MISMATCH"
+                print(f"  [{mark}] {name} = {cur} (want {want})")
+            else:
+                print(_c("dim", f"  [node] {name} must be {want}"))
+        print()
+
+    v = mode_mod.validate(wanted, has_net_admin=has_net_admin,
+                          has_net_raw=has_net_raw, watchdog_available=watchdog_ok)
+
+    # In weir mode the CAPTURE interface is the one that gets spoofed and relayed, so
+    # it must not be the management port: intercepting your own management path would
+    # cut the sensor off from the cluster that manages it. loch mode does not care,
+    # which is exactly why this check lives here rather than in validate().
+    if wanted == mode_mod.MODE_WEIR and capture_iface and mgmt_iface:
+        if capture_iface == mgmt_iface:
+            v.ok = False
+            v.blockers.append(
+                f"ZEEK_IFACE and MGMT_IFACE are both '{capture_iface}'. Weir mode "
+                f"relays traffic on the capture interface, so using the management "
+                f"port would intercept the sensor's own cluster API traffic and can "
+                f"cut it off from the deployment that manages it"
+            )
+    elif wanted == mode_mod.MODE_WEIR and capture_iface and not mgmt_iface:
+        v.warnings.append(
+            "MGMT_IFACE is not set, so Weirvern cannot verify the capture interface is "
+            "separate from the management path. Set it before enabling weir mode."
+        )
+
+    if not v.ok and not args.force:
+        _bad(f"cannot enable {wanted} mode:")
+        for b in v.blockers:
+            print(f"    {b}")
+        print()
+        print(_c("dim", "  --force writes it anyway. Do not use it to skip the watchdog: "
+                        "in weir mode a sensor that stops relaying takes the LAN down."))
+        return EXIT_NOTREADY
+
+    for w in v.warnings:
+        _warn(w)
+
+    # Write it. .env is the local view; the cluster reads the ConfigMap, so both are
+    # updated and the operator is told which one matters at runtime.
+    try:
+        env.set("SENSOR_MODE", mode_mod.env_value(wanted))
+        env.save()
+        _ok(f"{env_path()} updated (SENSOR_MODE={mode_mod.env_value(wanted)})")
+    except Exception as exc:  # noqa: BLE001
+        _bad(f"could not update {env_path()}: {exc}")
+        return EXIT_FAIL
+
+    if wanted == mode_mod.MODE_WEIR:
+        print()
+        _warn("the CLUSTER mode lives in k8s/20-configmap-env.yaml — set it there too:")
+        print(f'    SENSOR_MODE: "{mode_mod.env_value(wanted)}"')
+        print("  then:  weirvern apply")
+        print()
+        _warn("set INTERCEPT_TARGETS before traffic is actually diverted. The mode "
+              "alone intercepts nothing.")
+    return EXIT_OK
+
+
+def _ok_or_bad(label: str, ok: bool, why: str) -> None:
+    if ok:
+        _ok(f"{label} — {why}")
+    else:
+        _bad(f"{label} MISSING — {why}")
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     from weirvern import __version__
     print(f"weirvern {__version__}")
@@ -712,6 +1170,38 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tui", help="launch the control-panel TUI")
     s.add_argument("--refresh", type=int, default=5, help="refresh interval, seconds")
     s.set_defaults(func=cmd_tui)
+
+    s = sub.add_parser(
+        "mode",
+        help="inspect or set the sensor mode (loch = passive, weir = in-path intercept)",
+    )
+    s.add_argument("mode", nargs="?", default="",
+                   help="'loch' or 'weir'; omit to report the current mode")
+    s.add_argument("--force", action="store_true",
+                   help="write the mode even if prerequisites are missing (not advised)")
+    s.add_argument("--local", action="store_true",
+                   help="also read the sysctls from this host")
+    s.set_defaults(func=cmd_mode)
+
+    s = sub.add_parser(
+        "interfaces",
+        help="list a sensor node's NICs and judge which can capture (mirror/SPAN)",
+    )
+    s.add_argument("--node", default="", help="probe this node (default: any node)")
+    s.add_argument("--local", action="store_true",
+                   help="probe this host instead of a cluster node")
+    s.add_argument("--capture-iface", default="",
+                   help="check this interface as the capture port instead of the configured one")
+    s.add_argument("--mgmt-iface", default="",
+                   help="check this interface as the management port")
+    s.set_defaults(func=cmd_interfaces)
+
+    s = sub.add_parser("gui", help="serve the read-only web dashboard")
+    s.add_argument("--host", default=None,
+                   help="bind address (default 127.0.0.1, or $GUI_HOST)")
+    s.add_argument("--port", type=int, default=None,
+                   help="port (default 8088, or $GUI_PORT)")
+    s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("version", help="show version and detected runtime")
     s.set_defaults(func=cmd_version)

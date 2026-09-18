@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weirvern</title>
+<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <img class="mark" src="/logo.png" alt="" width="28" height="28">
+    <h1>Weirvern</h1>
+  </div>
+  <div class="status" id="statusline">
+    <span class="pill" id="health-pill">loading…</span>
+    <span class="muted" id="fetched"></span>
+    <button id="refresh" title="Reload now">Refresh</button>
+    <label class="auto"><input type="checkbox" id="autorefresh" checked> auto (15s)</label>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button class="tab active" data-view="overview">Overview</button>
+  <button class="tab" data-view="anomalies">Anomalies</button>
+  <button class="tab" data-view="host">Host drill-down</button>
+  <button class="tab" data-view="about">About</button>
+</nav>
+
+<main>
+  <!-- ── Overview ─────────────────────────────────────────────────────── -->
+  <section id="view-overview" class="view active">
+    <div class="grid">
+      <div class="card">
+        <h2>Health</h2>
+        <table id="health-table"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Workloads</h2>
+        <table id="workloads-table"><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recent anomalies</h2>
+      <table id="overview-anomalies">
+        <thead><tr><th>Detected</th><th>Host</th><th>Score</th><th>Severity</th><th>Why</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Top talkers <span class="muted">last 24h</span></h2>
+      <table id="talkers-table">
+        <thead><tr><th>Host</th><th>Bytes</th><th>Flows</th><th>Destinations</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Anomalies ────────────────────────────────────────────────────── -->
+  <section id="view-anomalies" class="view">
+    <div class="card">
+      <h2>All anomalies</h2>
+      <div class="controls">
+        <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
+        <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
+      </div>
+      <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window.</p>
+      <table id="anomalies-table">
+        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Alert evidence (the pivot) ───────────────────────────────────── -->
+  <section id="view-evidence" class="view">
+    <div class="card">
+      <h2 id="ev-title">Evidence</h2>
+      <p class="muted" id="ev-sub"></p>
+      <div class="stats" id="ev-stats"></div>
+      <div id="ev-verdict"></div>
+    </div>
+    <div class="card">
+      <h2>Raw flows <span class="muted">what the model actually scored</span></h2>
+      <table id="ev-flows">
+        <thead><tr><th>Start</th><th>Destination</th><th>Port</th><th>Proto</th><th>Bytes</th><th>Packets</th><th>ms</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Zeek sessions</h2>
+        <table id="ev-zeek"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>DNS queries</h2>
+        <table id="ev-dns"><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="card" id="ev-notice-card">
+      <h2>Zeek notices</h2>
+      <table id="ev-notice"><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- ── Host drill-down ──────────────────────────────────────────────── -->
+  <section id="view-host" class="view">
+    <div class="card">
+      <h2>Host drill-down</h2>
+      <div class="controls">
+        <label>address
+          <input type="text" id="h-addr" placeholder="192.168.2.42" list="known-hosts">
+          <datalist id="known-hosts"></datalist>
+        </label>
+        <label>hours <input type="number" id="h-hours" value="24" min="1" max="336"></label>
+        <button id="h-go">Look up</button>
+      </div>
+      <p class="muted" id="h-hint">Pick a host from the anomalies or talkers, or type one. Shows volume, destinations, ports and every anomaly for that address.</p>
+    </div>
+    <div id="h-results" class="hidden">
+      <div class="card">
+        <h2 id="h-title">Host</h2>
+        <div class="stats" id="h-stats"></div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h2>Volume over time</h2>
+          <div id="h-spark" class="spark"></div>
+        </div>
+        <div class="card">
+          <h2>Zeek services <span class="muted">if the packet sensor is on</span></h2>
+          <table id="h-zeek"><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h2>Top destinations</h2>
+          <table id="h-dests"><thead><tr><th>Destination</th><th>Bytes</th><th>Flows</th><th>Ports</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="card">
+          <h2>Top ports</h2>
+          <table id="h-ports"><thead><tr><th>Port</th><th>Proto</th><th>Bytes</th><th>Flows</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Anomalies for this host</h2>
+        <table id="h-anoms"><thead><tr><th>Detected</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── About ────────────────────────────────────────────────────────── -->
+  <section id="view-about" class="view">
+    <div class="card">
+      <h2>About this interface</h2>
+      <p>Read-only. Every number here comes from ClickHouse via the same query layer
+         the CLI and TUI use, so all three agree by construction.</p>
+      <p><strong>There are no lifecycle controls in this UI by design.</strong>
+         Starting, stopping and applying stay in the CLI and TUI. That is what makes
+         it safe to reach this on a LAN port: nothing an HTTP request can do can
+         change the deployment. Adding buttons here would require authentication
+         first.</p>
+      <p><strong>Hostnames</strong> come from reverse DNS. By default only private
+         addresses are resolved, so the lookup stays on your network; set
+         <code>WEIRVERN_REVERSE_DNS=all</code> to resolve public addresses too,
+         which sends them to your resolver.</p>
+      <p id="about-mode" class="muted"></p>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -175,8 +175,12 @@ def find_project_dir(start: str | Path | None = None) -> Path:
         return packaged
 
     raise FileNotFoundError(
-        "could not locate the Weirvern project directory; set WEIRVERN_HOME "
-        "or run from inside the checkout"
+        "could not locate the Weirvern project directory. Looked for a directory "
+        "containing k8s/kustomization.yaml or .env.example, in: $WEIRVERN_HOME, "
+        "the ancestors of the current directory, and the repository containing "
+        "this package. None existed, which is expected inside the container image "
+        "(it ships only the package). Set WEIRVERN_HOME to a checkout, or run from "
+        "inside one."
     )
 
 

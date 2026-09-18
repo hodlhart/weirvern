@@ -1,0 +1,160 @@
+# The web GUI.
+#
+# READ-ONLY BY DESIGN, and that is what makes exposing it acceptable. There is no
+# code path from an HTTP request to a mutating cluster operation: start, stop and
+# apply stay in the CLI and TUI, which an operator runs knowingly. If lifecycle
+# buttons are ever added here, authentication must come FIRST -- this Deployment
+# has none, and a button without it would silently hand cluster control to anyone
+# who can reach the NodePort.
+#
+# WHY A NodePort RATHER THAN AN INGRESS OR A PORT-FORWARD:
+#   * An ingress would need a controller, which a homelab may not have and which
+#     this project has deliberately not required anywhere else.
+#   * A port-forward works for the TUI (it runs as one process and the tunnel dies
+#     with it) but not for a browser: the dashboard must stay reachable while the
+#     operator clicks around, and a foreground kubectl would have to stay open in
+#     a terminal the whole time. The TUI's automatic tunnel is implemented in
+#     weirvern/admin/tunnel.py for exactly the cases where it does fit.
+#   * So a NodePort is the honest answer for a long-lived browser session, and the
+#     Service is the single place that decides who can reach it.
+#
+# The GUI reads ClickHouse over the cluster network, so unlike the sensors it does
+# NOT need hostNetwork, a hostPath, or any capability. It is the most ordinary
+# workload in the project.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirvern-gui
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-gui
+    app.kubernetes.io/part-of: weirvern
+spec:
+  # Safe to run more than one replica: this is stateless and read-only, with no
+  # in-process alert state and no hostPath to contend over. (The WORKER is the
+  # single-replica workload, for those reasons.)
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weirvern-gui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirvern-gui
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-clickhouse
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "waiting for clickhouse:8123"
+              for i in $(seq 1 120); do
+                if nc -z clickhouse 8123 2>/dev/null; then echo "clickhouse is up"; exit 0; fi
+                sleep 2
+              done
+              echo "clickhouse did not become ready; starting anyway (the GUI reports it)" >&2
+          resources:
+            requests: {cpu: "10m", memory: "32Mi"}
+            limits: {cpu: "100m", memory: "64Mi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: gui
+          image: weirvern-worker:0.4.0
+          # GUI_HOST=0.0.0.0 is REQUIRED here. The CLI defaults to 127.0.0.1 so
+          # that running it on a workstation does not accidentally publish the
+          # dashboard; inside a pod, binding to loopback would make the Service
+          # unreachable and the NodePort silently useless.
+          command: ["python", "-m", "weirvern.admin.cli", "gui"]
+          env:
+            - name: GUI_HOST
+              value: "0.0.0.0"
+            - name: GUI_PORT
+              value: "8088"
+            # Reverse DNS. Default is "private", which resolves only RFC1918/
+            # link-local/CGNAT addresses so the lookups stay on the local network.
+            # "all" would send every destination IP in your flow data to a
+            # resolver, which is derived traffic intelligence -- that is an
+            # operator's decision, not a default. See weirvern/admin/revdns.py.
+            - name: WEIRVERN_REVERSE_DNS
+              value: "private"
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            - secretRef:
+                name: weirvern-secrets
+          ports:
+            - name: http
+              containerPort: 8088
+          # The GUI needs kubectl to list workloads, and the image does not ship
+          # it. Without this the Workloads panel is empty while everything else
+          # works, which looks like a bug rather than a missing binary.
+          #
+          # If your image lacks kubectl, either add it to the Containerfile or
+          # accept an empty Workloads panel: every data panel (health, anomalies,
+          # talkers, drill-down) talks to ClickHouse directly and is unaffected.
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # Deliberately /api/healthz, which does NOT touch ClickHouse. A probe
+            # that fails when the database is slow would restart the GUI and hide
+            # the real problem -- the same mistake the worker's probe made.
+            #
+            # timeoutSeconds is 5, not the default 1: the worker's probe was fixed
+            # for exactly this reason (a cold Python import exceeded 1s on a loaded
+            # node and restarted a healthy process every 3 minutes).
+            httpGet: {path: /api/healthz, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "512Mi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
+        # bytecode caches and temp files. An emptyDir is the minimum that allows.
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weirvern-gui
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-gui
+    app.kubernetes.io/part-of: weirvern
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: weirvern-gui
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http
+      # 30088 rather than an auto-assigned port, so the URL in the README is
+      # stable and a firewall rule can be written once.
+      nodePort: 30088

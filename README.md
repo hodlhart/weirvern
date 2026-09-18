@@ -148,10 +148,41 @@ you give it, and below that its own memory-tracking starts refusing queries.
 **Sensor node.** The node that carries the mirrored/SPAN traffic (and therefore
 runs goflow2, Zeek and the worker) needs:
 
-- the NIC receiving the traffic, up and (ideally) promiscuous
+- **two network interfaces, with different jobs.** The capture port is a dedicated
+  NIC fed by a switch SPAN/mirror port or a passive TAP; the management port carries
+  the default route, SSH and the cluster API. They must not be the same NIC — see
+  below.
+- the capture NIC up, and (on a SPAN port) promiscuous
 - a label so the workloads can find it: `weirvern.io/sensor-node=true`
 - two host directories, group-writable by GID 10001:
   `/var/lib/weirvern/flows` and `/var/lib/weirvern/zeek`
+
+### Why the capture port must be its own interface
+
+A mirror/SPAN port receives **copies of other hosts' traffic**. The management port
+only ever sees traffic addressed to this host plus broadcast, so pointing the sensor
+at it produces a capture that looks busy and shows you almost none of the network.
+This is not hypothetical: on the test deployment the sensor sat on a bridge member
+inside a container, and **73% of what it captured was broadcast and multicast, with
+no unicast from any other host**. Zeek reported no error.
+
+Ask the sensor node what it has, and what to do about it:
+
+```bash
+weirvern interfaces --node <sensor-node>
+```
+
+That probes the node itself (via a throwaway hostNetwork pod, so it reports exactly
+what Zeek sees) and prints a role for every interface — `mgmt`, `CAPTURE?`,
+`bridge`, `virtual` — plus a verdict on the configured `ZEEK_IFACE` and a suggested
+alternative. On a single-host install, `--local` inspects the machine you are on.
+
+The command refuses to guess. If every interface is a bridge member, a veth, or the
+management port, it says so and explains that the host needs a second physical NIC —
+which is the usual conclusion on a virtualised host, because a hypervisor bridge
+delivers only flooded traffic to a virtual port. Give the sensor VM/LXC a dedicated
+physical NIC (PCI passthrough or a second, unbridged NIC) and mirror the switch port
+to that cable.
 
 ---
 
@@ -204,8 +235,10 @@ cd weirvern
 # Review what the cluster will run (no changes made):
 kubectl apply -k k8s/ --dry-run=client
 
-# Adjust the non-secret settings — most importantly ZEEK_IFACE, the interface
-# on the sensor node that sees the mirrored traffic:
+# Adjust the non-secret settings — most importantly the two sensor interfaces:
+#   ZEEK_IFACE  the CAPTURE port (dedicated NIC fed by a switch mirror/SPAN)
+#   MGMT_IFACE  the MANAGEMENT port (default route, SSH, cluster API)
+# Check them against the node first: weirvern interfaces --node <sensor-node>
 $EDITOR k8s/20-configmap-env.yaml
 
 # Deploy. The namespace and every workload except the Secret come from here.
@@ -490,7 +523,8 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLICKHOUSE_HOST` / `CLICKHOUSE_PORT` | `clickhouse` / `8123` | ClickHouse endpoint (the Service name resolves in-cluster) |
-| `ZEEK_IFACE` | `eth0` | **Interface on the sensor node** that sees mirrored traffic |
+| `ZEEK_IFACE` | `eth1` | **Capture port on the sensor node** — the dedicated NIC receiving mirrored/SPAN traffic. Must not carry the default route, and must not be a bridge member |
+| `MGMT_IFACE` | `eth0` | **Management port** — default route, SSH, cluster API. Not sniffed. Used to detect when `ZEEK_IFACE` points at the wrong NIC |
 | `ZEEK_LOG_DIR` | `/zeek/logs` | Where the worker reads Zeek logs |
 | `TAIL_FILE` | `/data/flows.jsonl` | goflow2 JSONL sink |
 | `DETECT_INTERVAL_S` | 300 | Detection sweep cadence (s) |
@@ -623,10 +657,14 @@ Work through these in order — the first two account for most reports.
 
 3. **Is Zeek on the right interface?**
    ```bash
-   weirvern logs zeek
+   weirvern interfaces --node <sensor-node>
    ```
-   The container validates `ZEEK_IFACE` at startup and lists the interfaces that
-   do exist if it does not match, rather than failing silently.
+   Reports a role for every NIC and a verdict on `ZEEK_IFACE`. A sensor pointed at
+   the management port, a bridge member, or a veth still runs and still logs — it
+   just captures almost none of the network, which is why this check is explicit
+   rather than left to reading `ip link` output. The Zeek container also validates
+   `ZEEK_IFACE` at startup, warns when the interface is a bridge member or carries
+   the default route, and lists the interfaces that do exist if the name is wrong.
 
 4. **Is capture loss hiding the traffic?** Zeek reports dropped packets in its
    own `capture_loss` log; a sensor that cannot keep up degrades detection

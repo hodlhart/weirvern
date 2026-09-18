@@ -121,6 +121,53 @@ spec:
             - |
               set -eu
               IFACE="${ZEEK_IFACE:-eth0}"
+              MGMT="${MGMT_IFACE:-}"
+              MODE="${SENSOR_MODE:-loch}"
+              # ── WHICH MODE ARE WE IN, AND WHAT DOES IT COST IF WE FAIL? ──────
+              #
+              # The mode decides whether this sensor is a passive observer or a
+              # ROUTER. Both are valid; the consequences are not comparable, and an
+              # operator should not have to infer which one they are running from a
+              # config file. So it is stated at startup, every time, with the failure
+              # mode attached -- the same reason the interface warnings below exist.
+              case "$MODE" in
+                loch)
+                  echo "[zeek] mode loch — PASSIVE capture on $IFACE."
+                  echo "[zeek] mode loch — Weirvern observes only; it cannot affect traffic."
+                  ;;
+                weir)
+                  echo "[zeek] mode weir — IN-PATH intercept on $IFACE."
+                  echo "[zeek] mode weir — traffic is relayed THROUGH this container." >&2
+                  echo "[zeek] mode weir — if it stops forwarding, intercepted hosts lose" >&2
+                  echo "[zeek] mode weir — the network until their ARP entries expire." >&2
+                  # Verify the pieces weir mode depends on, and refuse to pretend:
+                  # intercepting without the ability to forward takes the LAN down,
+                  # which is strictly worse than not starting.
+                  if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" != "1" ]; then
+                    echo "[zeek] FATAL: mode weir requires net.ipv4.ip_forward=1." >&2
+                    echo "[zeek] FATAL: Without it the intercepted traffic is dropped," >&2
+                    echo "[zeek] FATAL: which is an outage for the intercepted hosts." >&2
+                    exit 1
+                  fi
+                  if [ "$(cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null || echo 1)" != "0" ]; then
+                    echo "[zeek] FATAL: mode weir requires net.ipv4.conf.all.rp_filter=0." >&2
+                    echo "[zeek] FATAL: Reverse-path filtering would drop the relayed" >&2
+                    echo "[zeek] FATAL: packets because their source is not ours." >&2
+                    exit 1
+                  fi
+                  if [ "$(cat /proc/sys/net/ipv4/conf/all/send_redirects 2>/dev/null || echo 1)" != "0" ]; then
+                    echo "[zeek] FATAL: mode weir requires send_redirects=0." >&2
+                    echo "[zeek] FATAL: ICMP redirects would tell intercepted hosts to" >&2
+                    echo "[zeek] FATAL: send directly, silently undoing the intercept." >&2
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "[zeek] FATAL: unknown SENSOR_MODE '$MODE'." >&2
+                  echo "[zeek] FATAL: expected 'loch' (passive) or 'weir' (in-path)." >&2
+                  exit 1
+                  ;;
+              esac
               # Interface existence check WITHOUT `ip`.
               #
               # `ip` is not in the zeek/zeek image (verified: the guard below ran
@@ -131,10 +178,109 @@ spec:
               # It also needs no privileges beyond what the container already has.
               if [ ! -e "/sys/class/net/$IFACE" ]; then
                 echo "[zeek] FATAL: interface '$IFACE' does not exist on this node." >&2
-                echo "[zeek] Set ZEEK_IFACE in the weirvern-env ConfigMap to a real" >&2
-                echo "[zeek] interface (the mirror/span port). Available interfaces:" >&2
-                for d in /sys/class/net/*; do echo "  $(basename "$d")" >&2; done
+                echo "[zeek]" >&2
+                echo "[zeek] Weirvern uses TWO interfaces:" >&2
+                echo "[zeek]   ZEEK_IFACE  the CAPTURE port - a dedicated NIC fed by a" >&2
+                echo "[zeek]               switch SPAN/mirror port or a passive TAP" >&2
+                echo "[zeek]   MGMT_IFACE  the MANAGEMENT port - default route, SSH, API" >&2
+                echo "[zeek]" >&2
+                echo "[zeek] Interfaces that exist on THIS node:" >&2
+                for d in /sys/class/net/*; do
+                  n=$(basename "$d")
+                  [ "$n" = "lo" ] && continue
+                  extra=""
+                  [ -e "$d/brport" ] && extra=" (bridge member - cannot capture)"
+                  printf '[zeek]   %-14s %s%s\n' "$n" "$(cat "$d/operstate" 2>/dev/null || echo '?')" "$extra" >&2
+                done
+                echo "[zeek]" >&2
+                echo "[zeek] If you have not added the mirror NIC yet, set ZEEK_IFACE to" >&2
+                echo "[zeek] an existing interface in k8s/20-configmap-env.yaml. Note that" >&2
+                echo "[zeek] capturing on the management port sees only this host's own" >&2
+                echo "[zeek] traffic plus broadcast, NOT the network - an L7 view of the" >&2
+                echo "[zeek] LAN needs a real mirror/SPAN port." >&2
+                echo "[zeek] Analyse this node:  weirvern interfaces --node <this-node>" >&2
                 exit 1
+              fi
+              # ── IS THIS ACTUALLY A MIRROR PORT? ─────────────────────────────
+              #
+              # The failure this guards is SILENT. Zeek will happily sniff a bridge
+              # member or the management NIC, produce a healthy-looking capture, and
+              # show you almost none of the network. We measured a real deployment
+              # where the sensor sat on a bridge member inside a container: 73% of
+              # what it captured was broadcast and multicast, with no unicast from
+              # any other host.
+              #
+              # Two checks, both from sysfs, no extra tools:
+              #   /sys/class/net/<if>/brport   exists when ens
+              #      a bridge member -> sees only flooded traffic
+              #   the interface carrying the default route is the MANAGEMENT port
+              #
+              # These are WARNINGS, not fatal. A deliberately unusual topology can be
+              # valid, and refusing to start would be worse than capturing
+              # imperfectly -- but the operator must not have to discover this from a
+              # thin log days later. `weirvern interfaces` does the full analysis.
+              if [ -e "/sys/class/net/$IFACE/brport" ]; then
+                echo "[zeek] WARNING: '$IFACE' is a member of a bridge." >&2
+                echo "[zeek] WARNING: A bridge port receives only flooded traffic" >&2
+                echo "[zeek] WARNING: (broadcast/multicast) plus traffic to this host." >&2
+                echo "[zeek] WARNING: It is NOT a mirror port. Expect very little" >&2
+                echo "[zeek] WARNING: unicast from other hosts in these logs." >&2
+                echo "[zeek] WARNING: See: weirvern interfaces --node <this-node>" >&2
+              fi
+              if [ -n "$MGMT" ] && [ "$IFACE" = "$MGMT" ]; then
+                echo "[zeek] WARNING: ZEEK_IFACE and MGMT_IFACE are both '$IFACE'." >&2
+                echo "[zeek] WARNING: The capture port should be a DEDICATED NIC. On" >&2
+                echo "[zeek] WARNING: the management port you will capture this host's" >&2
+                echo "[zeek] WARNING: own traffic plus broadcast, not the network." >&2
+              else
+                # No MGMT_IFACE set: fall back to detecting the default-route port,
+                # which is the management port on any normal host. Parsed from
+                # /proc/net/route -- the destination column is little-endian hex and
+                # a zeroed destination is the default route.
+                #
+                # POSIX sh only: process substitution (`< <(...)`) is a bashism and
+                # would fail in the zeek image's /bin/sh (dash). A plain read loop
+                # over the file is portable.
+                DEFROUTE=""
+                while read -r ifname dest _rest; do
+                  if [ "$dest" = "00000000" ]; then DEFROUTE="$ifname"; break; fi
+                done < /proc/net/route
+                if [ -n "$DEFROUTE" ] && [ "$IFACE" = "$DEFROUTE" ]; then
+                  echo "[zeek] WARNING: '$IFACE' carries the default route, so it is the" >&2
+                  echo "[zeek] WARNING: MANAGEMENT port. Capturing here sees only this" >&2
+                  echo "[zeek] WARNING: host's traffic plus broadcast -- not the network." >&2
+                  echo "[zeek] WARNING: Point ZEEK_IFACE at the dedicated mirror port." >&2
+                fi
+              fi
+              # Promiscuous mode is reported, never set: the container deliberately
+              # has no NET_ADMIN, so the host must configure it. Saying so here means
+              # a capture that looks thin has a stated possible cause.
+              #
+              # THE ARITHMETIC IS SUBTLE. /sys/class/net/<if>/flags holds a HEX string
+              # ("1103"), and shell arithmetic parses bare digits as DECIMAL. So
+              # `$(( 1103 & 0x100 ))` computes on decimal 1103, not hex 0x1103, and
+              # silently gives the WRONG answer (0 instead of 256) -- which inverted
+              # the test in both directions. Two portable options exist and this uses
+              # the second:
+              #   `$(( 16#$f & 0x100 ))`  -- base-prefix syntax, but it is NOT POSIX
+              #                              (verified: dash rejects it with
+              #                              "expecting EOF", while busybox/ash accepts)
+              #   `$(( 0x$f & 0x100 ))`   -- concatenate the hex prefix onto the
+              #                              string and let arithmetic parse the whole
+              #                              0x1103 token, which every shell does
+              # IFF_PROMISC is bit 8, so the mask is 256 in decimal -- written as
+              # 256 rather than 0x100 so no reader mistakes the base.
+              if [ -r "/sys/class/net/$IFACE/flags" ]; then
+                iflags=$(cat "/sys/class/net/$IFACE/flags" 2>/dev/null || echo 0)
+                # Strip anything unusual before use so a malformed value cannot make
+                # the arithmetic error out under `set -e` and kill the sensor.
+                case "$iflags" in
+                  *[!0-9a-fA-F]*) iflags=0 ;;
+                esac
+                if [ $(( 0x$iflags & 256 )) -eq 0 ]; then
+                  echo "[zeek] NOTE: '$IFACE' is not in promiscuous mode. A SPAN port" >&2
+                  echo "[zeek] NOTE: usually is. On the node: ip link set $IFACE promisc on" >&2
+                fi
               fi
               # Verify CAP_NET_RAW is actually EFFECTIVE before handing control to
               # Zeek. This is the failure that cost the most time to diagnose: with
@@ -178,6 +324,28 @@ spec:
                 configMapKeyRef:
                   name: weirvern-env
                   key: ZEEK_IFACE
+            # MGMT_IFACE must be injected EXPLICITLY. The ConfigMap having the key is
+            # not enough: without this the variable is empty inside the container, the
+            # two-interface check silently falls through to default-route detection,
+            # and an operator who deliberately set MGMT_IFACE would never be told that
+            # ZEEK_IFACE points at the same NIC. Set it as optional so a ConfigMap
+            # from an older release does not block the pod from starting.
+            - name: MGMT_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: MGMT_IFACE
+                  optional: true
+            # SENSOR_MODE tells the container HOW it is supposed to be capturing, so it
+            # can state the blast radius in its own logs and refuse to start on a
+            # contradiction (e.g. mode=weir without the privileges that mode needs).
+            # Optional so a ConfigMap from an earlier release does not block startup.
+            - name: SENSOR_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: SENSOR_MODE
+                  optional: true
           volumeMounts:
             - name: zeek-logs
               mountPath: /zeek/logs

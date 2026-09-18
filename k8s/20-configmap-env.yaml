@@ -48,11 +48,42 @@ data:
   SFLOW_PORT: "6343"
 
   # ── Sensors ────────────────────────────────────────────────────────────────
-  # Zeek sniffs a node's interface, so this is the *node* NIC, not a cluster
-  # resource. Set it per deployment; see 32-zeek.yaml for the caveats.
-  ZEEK_IFACE: "eth0"
+  # TWO INTERFACES, TWO JOBS. This is the shape that works:
+  #
+  #   ZEEK_IFACE   the CAPTURE port: a dedicated NIC receiving a switch SPAN/mirror
+  #                feed, or a passive TAP. It must NOT carry the default route and
+  #                must NOT be a bridge member.
+  #   MGMT_IFACE   the MANAGEMENT port: normal networking, default route, SSH and
+  #                the cluster API. Not sniffed.
+  #
+  # A mirror port receives copies of OTHER hosts' traffic. The management port only
+  # ever sees traffic to and from this host plus broadcast noise, so pointing
+  # ZEEK_IFACE at it produces a capture that looks busy and contains no network
+  # view -- measured at 73% broadcast/multicast on a real deployment.
+  #
+  # List what this node actually has, and get a verdict, with:
+  #     weirvern interfaces --node <sensor-node>
+  ZEEK_IFACE: "eth1"
+  MGMT_IFACE: "eth0"
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
+
+  # ── Sensor mode ────────────────────────────────────────────────────────────
+  # HOW the sensor gets its packets. Named for the creature: a wyvern keeps its
+  # water in a LOCH and controls it at a WEIR.
+  #   loch  passive — still water. A promiscuous NIC fed by a SPAN/mirror port or
+  #         TAP. Weirvern observes only; a dead sensor is a visibility gap.
+  #   weir  in-path — a barrier the water flows through. ARP-spoof and relay
+  #         selected hosts through Weirvern. No switch change needed, but Weirvern
+  #         becomes a router and a dead sensor is an OUTAGE for those hosts.
+  #         Requires CAP_NET_ADMIN, three sysctls on the node, and the fail-open
+  #         watchdog.
+  # Inspect a mode's requirements before enabling it:  weirvern mode weir
+  SENSOR_MODE: "loch"
+  # weir mode only: who to intercept (comma-separated addresses/CIDRs, or "*").
+  # EMPTY MEANS NOTHING IS INTERCEPTED — enabling the mode diverts no traffic by
+  # itself. Never list the management gateway, this sensor, the API server, or DNS.
+  INTERCEPT_TARGETS: ""
 
   # ── Detection loop ─────────────────────────────────────────────────────────
   DETECT_INTERVAL_S: "300"

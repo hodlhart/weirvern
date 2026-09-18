@@ -1,0 +1,206 @@
+"""Every ConfigMap key a workload READS must be injected into its pod.
+
+THE BUG THIS GUARDS: `MGMT_IFACE` was added to the ConfigMap and read by the Zeek
+startup script, but the container's `env:` list only declared `ZEEK_IFACE`. A ConfigMap
+having a key does not put it in a container -- a pod receives the keys it names (or all
+of them via `envFrom`). So the variable was empty at runtime, the two-interface check
+silently fell through to default-route detection, and an operator who explicitly set
+MGMT_IFACE would never be told that the capture port and the management port were the
+same NIC.
+
+The failure is invisible from every angle: valid YAML, valid schema, healthy pod, and
+a feature that simply never runs.
+
+These tests PARSE the render rather than pattern-matching it. An earlier version used
+regexes, and a false negative came from `namespace:` sitting between the ConfigMap's
+`name:` and `data:` -- the regex silently failed to match and reported the ConfigMap as
+empty. Structured data deserves a structured parser.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parent.parent
+K8S = REPO / "k8s"
+
+
+@pytest.fixture(scope="module")
+def docs() -> list[dict]:
+    """The kustomize render, as parsed YAML documents."""
+    import yaml
+
+    exe = Path.home() / ".local" / "bin" / "kustomize"
+    if not exe.exists():
+        pytest.skip("kustomize not installed")
+    r = subprocess.run([str(exe), "build", str(K8S)],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        pytest.fail(f"kustomize build failed: {r.stderr[:400]}")
+    return [d for d in yaml.safe_load_all(r.stdout) if d]
+
+
+def _find(docs: list[dict], kind: str, name: str) -> dict:
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    pytest.fail(f"{kind}/{name} not found in the render")
+
+
+def _pod_spec(docs: list[dict], kind: str, name: str) -> dict:
+    obj = _find(docs, kind, name)
+    return obj["spec"]["template"]["spec"]
+
+
+def _containers(spec: dict) -> list[dict]:
+    return list(spec.get("initContainers") or []) + list(spec.get("containers") or [])
+
+
+# --- the specific regression ---------------------------------------------------
+def test_mgmt_iface_is_in_the_configmap(docs):
+    cm = _find(docs, "ConfigMap", "weirvern-env")
+    data = cm.get("data") or {}
+    assert "MGMT_IFACE" in data, (
+        "MGMT_IFACE is missing from the ConfigMap; the two-port model cannot be "
+        "detected at runtime without it"
+    )
+    assert data["MGMT_IFACE"], "MGMT_IFACE is present but empty"
+
+
+def test_zeek_receives_every_interface_variable_it_reads(docs):
+    """Zeek's startup script reads ZEEK_IFACE and MGMT_IFACE. Both must be declared.
+
+    THE REGRESSION: MGMT_IFACE was in the ConfigMap and referenced by the script, but
+    absent from the container's env list, so it was empty inside the pod.
+    """
+    spec = _pod_spec(docs, "DaemonSet", "zeek")
+    pods_envfrom = spec.get("envFrom")
+    assert not pods_envfrom, "pod-level envFrom would change how this is wired"
+
+    names: set[str] = set()
+    envfrom_used = False
+    for c in _containers(spec):
+        if c.get("envFrom"):
+            envfrom_used = True
+        for e in c.get("env") or []:
+            names.add(e.get("name", ""))
+    if envfrom_used:
+        pytest.skip("a container uses envFrom; all ConfigMap keys are imported")
+
+    for var in ("ZEEK_IFACE", "MGMT_IFACE"):
+        assert var in names, (
+            f"the zeek container reads ${var} but does not declare it in env:, so it "
+            f"is empty at runtime and every check that uses it is dead code"
+        )
+
+
+def test_the_startup_script_and_the_env_list_agree(docs):
+    """Any ${VAR} the startup script references must be declared in env: or set by the
+    script itself. Catches the whole class, not just MGMT_IFACE."""
+    spec = _pod_spec(docs, "DaemonSet", "zeek")
+    declared: set[str] = set()
+    script = ""
+    for c in _containers(spec):
+        for e in c.get("env") or []:
+            declared.add(e.get("name", ""))
+        for arg in c.get("args") or []:
+            script += arg
+
+    referenced = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]{2,})\}?", script))
+    # Set by the script itself, or by the kernel/container runtime. MODE and MGMT are
+    # the script's own derived locals (MODE="${SENSOR_MODE:-loch}"), so requiring them
+    # in env: would be wrong -- and an earlier version of this test did exactly that,
+    # flagging a correct script.
+    internal = {
+        "IFACE", "MGMT", "MODE", "DEFROUTE", "CAPS", "IFLAGS", "HOME", "PATH", "PWD",
+        "SHELL", "HOSTNAME", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
+    }
+    missing = {v for v in referenced if v not in declared and v not in internal}
+    assert not missing, (
+        f"the zeek startup script references {sorted(missing)} but the container does "
+        f"not declare them, so they are empty at runtime"
+    )
+
+
+def test_no_workload_reads_a_missing_configmap_key(docs):
+    """A configMapKeyRef to a key that does not exist makes the pod fail to start."""
+    cm = _find(docs, "ConfigMap", "weirvern-env")
+    keys = set((cm.get("data") or {}).keys())
+
+    referenced: set[str] = set()
+    for kind in ("Deployment", "DaemonSet", "Job", "StatefulSet"):
+        for d in docs:
+            if d.get("kind") != kind:
+                continue
+            spec = d["spec"]["template"]["spec"]
+            for c in _containers(spec):
+                for e in c.get("env") or []:
+                    ref = (e.get("valueFrom") or {}).get("configMapKeyRef")
+                    # An `optional: true` reference to a missing key is intentional
+                    # and safe; a required one that is absent stops the pod starting.
+                    if ref and ref.get("name") == "weirvern-env" and not ref.get("optional"):
+                        referenced.add(ref.get("key", ""))
+
+    missing = referenced - keys
+    assert not missing, (
+        f"these keys are referenced by a required configMapKeyRef but absent from the "
+        f"ConfigMap, so those pods will not start: {sorted(missing)}"
+    )
+
+
+def test_the_two_interfaces_are_not_the_same_by_default(docs):
+    """The shipped default must not point both roles at one NIC -- that is the
+    configuration that produces a broadcast-only capture."""
+    data = _find(docs, "ConfigMap", "weirvern-env").get("data") or {}
+    zeek, mgmt = data.get("ZEEK_IFACE", ""), data.get("MGMT_IFACE", "")
+    assert zeek and mgmt, "both interface vars must have defaults"
+    assert zeek != mgmt, (
+        f"ZEEK_IFACE and MGMT_IFACE both default to '{zeek}'; the capture port must be "
+        f"a separate interface from the management port"
+    )
+
+
+def test_root_containers_are_only_ones_with_a_documented_reason(docs):
+    """Root is required in exactly two places, both verified on a real cluster and
+    both documented in their manifests:
+
+      zeek              -- Kubernetes DROPS added capabilities for non-root containers,
+                           so CAP_NET_RAW only survives at uid 0. Without it the sensor
+                           crashes with "pcap_error: socket: Operation not permitted",
+                           which reads like a bad interface.
+      fix-permissions   -- an init container that chowns the ClickHouse data volume to
+                           the clickhouse uid. It runs before the server and exits; the
+                           kubelet refuses it under runAsNonRoot.
+
+    Anything else at uid 0 is a new privilege grant and should be a deliberate decision,
+    not something that slips in unnoticed. This test is the tripwire for that.
+    """
+    expected = {"zeek", "fix-permissions"}
+    root: set[str] = set()
+    for kind in ("Deployment", "DaemonSet", "Job", "StatefulSet"):
+        for d in docs:
+            if d.get("kind") != kind:
+                continue
+            spec = d["spec"]["template"]["spec"]
+            pod_sc = spec.get("securityContext") or {}
+            for c in _containers(spec):
+                sc = c.get("securityContext") or {}
+                uid = sc.get("runAsUser", pod_sc.get("runAsUser"))
+                if uid == 0:
+                    root.add(c.get("name", "?"))
+    unexpected = root - expected
+    assert not unexpected, (
+        f"these containers run as root without a documented reason: {sorted(unexpected)}. "
+        f"If deliberate, add the name to `expected` in this test and explain why in the "
+        f"manifest — a silently-root workload widens the blast radius."
+    )
+    # And the documented ones must actually still be there: if a capability fix makes
+    # zeek able to run unprivileged, this test should be updated rather than quietly
+    # passing with an empty set.
+    assert "zeek" in root, (
+        "the zeek container no longer runs as root; if capture still works, the note in "
+        "32-zeek.yaml about dropping capabilities for non-root containers is stale"
+    )

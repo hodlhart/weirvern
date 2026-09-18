@@ -42,7 +42,13 @@ include = ["weirvern*"]
 # k8s/50-schema-job.yaml). Declaring it here is what makes that work; without
 # this line the .sql file is absent from an installed package and the schema
 # step silently does nothing.
-weirvern = ["schema/*.sql"]
+weirvern = ["schema/*.sql", "admin/web/*"]
+# The web GUI's assets must ship inside the wheel for the same class of reason:
+# the GUI Server reads them at request time from weirvern/admin/web. Without this
+# the page returns a 500 naming the missing file (the handler is explicit about
+# it rather than serving an empty 200), which is the schema bug's shape again --
+# works in a checkout, breaks in an installed package.
+"weirvern.admin" = ["web/*.html", "web/*.js", "web/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

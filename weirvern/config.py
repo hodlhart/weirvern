@@ -71,6 +71,22 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_mode(name: str, default: str = "loch") -> str:
+    """Read the sensor mode, normalised through the mode module.
+
+    Normalised here rather than validated: an unknown value is RETURNED AS TYPED so the
+    status output can report exactly what is configured and that it is unrecognised.
+    Silently coercing it to "loch" would hide a typo and quietly change the sensor's
+    behaviour, which is the opposite of what someone setting this wants.
+    """
+    raw = _clean_env(os.environ.get(name))
+    if raw is None or raw.strip() == "":
+        return default
+    from weirvern.admin.mode import normalise
+
+    return normalise(raw)
+
+
 @dataclass(frozen=True)
 class Settings:
     # ClickHouse
@@ -92,6 +108,33 @@ class Settings:
 
     # Zeek packet-level logs (optional second sensor). Empty = NetFlow only.
     zeek_log_dir: str = field(default_factory=lambda: os.environ.get("ZEEK_LOG_DIR", ""))
+
+    # The capture and management interfaces, by NAME, as the sensor node sees them.
+    # Kept in the settings so the running worker can report a mismatch: a capture
+    # interface that is also the default route is the configuration that produces a
+    # capture full of broadcast noise and nothing else.
+    zeek_iface: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACE", ""))
+    mgmt_iface: str = field(default_factory=lambda: os.environ.get("MGMT_IFACE", ""))
+
+    # HOW the sensor gets its packets: "loch" (passive promisc/SPAN capture) or "weir"
+    # (in-path ARP intercept). Normalised through the mode module so a mechanism word
+    # like "intercept" typed into a config file still resolves, and so an unknown value
+    # is preserved for reporting rather than silently defaulting to something else.
+    #
+    # Note this is read, not enforced, here: the mode gates container capabilities and
+    # sysctls, which are decided in the manifests. Reading it lets the running worker
+    # report the mode and its blast radius in status output.
+    sensor_mode: str = field(
+        default_factory=lambda: _env_mode("SENSOR_MODE")
+    )
+
+    # Weir mode only: comma-separated addresses (or CIDRs) to intercept, or "*" for
+    # every host on the capture segment. Empty means nothing is intercepted even if the
+    # mode says weir, so enabling the mode cannot by itself divert traffic — the
+    # targets are a separate, explicit decision.
+    intercept_targets: str = field(
+        default_factory=lambda: os.environ.get("INTERCEPT_TARGETS", "")
+    )
 
     # Alerting
     pushover_enabled: bool = field(default_factory=lambda: _env_bool("PUSHOVER_ENABLED", False))

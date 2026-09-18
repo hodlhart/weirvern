@@ -52,6 +52,31 @@ logger = logging.getLogger(__name__)
 # drift from the workloads the backend actually knows about.
 SERVICE_ORDER = [name for name, _kind in WORKLOADS]
 
+def _host_label(addr: str) -> str:
+    """Address for a table cell: `spyro.home (192.168.2.42)`.
+
+    THE FULL SOURCE IP IS ALWAYS PRESENT. An earlier version shortened it to the
+    last octet (`spyro (42)`) to save width, which was wrong: the IP is the fact,
+    not the decoration. An operator correlating an anomaly with a firewall rule,
+    a DHCP lease, or another log needs the whole address, and a name alone is not
+    a substitute — DNS can be stale, and a PTR record can map several addresses to
+    one name. The name is the convenience; the address is what you act on.
+
+    Falls back to the bare address for every failure path, including the default
+    `private` reverse-DNS mode declining to resolve a public address.
+    """
+    if not addr:
+        return ""
+    try:
+        from weirvern.admin import revdns
+        name = revdns.lookup(addr)
+    except Exception:  # noqa: BLE001
+        return addr
+    if not name or name == addr:
+        return addr
+    return f"{name} ({addr})"
+
+
 def _condense(text: str, limit: int = 90) -> str:
     """Shorten a driver/connection error for a one-line display.
 
@@ -203,6 +228,10 @@ class WeirvernTUI(App):
         health.add_columns("", "Check", "Detail")
 
         anom = self.query_one("#anomalies", DataTable)
+        # The Source column holds a reverse-DNS label like
+        # `spyro.home (192.168.2.42)` -- about 26 characters. Textual auto-sizes
+        # columns to their content, so the full label fits without an explicit
+        # width; no truncation is needed and the IP is never dropped to save space.
         anom.add_columns("Detected", "Source", "Score", "Severity", "Detectors")
 
         talk = self.query_one("#talkers", DataTable)
@@ -303,7 +332,7 @@ class WeirvernTUI(App):
         for row in msg.anomalies:
             detected, src, score, severity, detectors = row
             colour = {"critical": "red", "high": "yellow"}.get(severity, "dim")
-            atable.add_row(str(detected), str(src), f"{score:.3f}",
+            atable.add_row(str(detected), _host_label(str(src)), f"{score:.3f}",
                            f"[{colour}]{severity}[/{colour}]", str(detectors)[:40])
         if not msg.anomalies and not msg.error:
             atable.add_row("-", "(none recorded)", "-", "-", "-")
@@ -313,7 +342,8 @@ class WeirvernTUI(App):
         ttable.clear()
         for row in msg.talkers:
             src, b, flows, dsts = row
-            ttable.add_row(str(src), _bytes(int(b or 0)), str(flows), str(dsts))
+            ttable.add_row(_host_label(str(src)), _bytes(int(b or 0)),
+                           str(flows), str(dsts))
 
         self._render_config()
 
