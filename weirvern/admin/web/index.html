@@ -26,6 +26,7 @@
   <button class="tab active" data-view="overview">Overview</button>
   <button class="tab" data-view="anomalies">Anomalies</button>
   <button class="tab" data-view="host">Host drill-down</button>
+  <button class="tab" data-view="models">Models</button>
   <button class="tab" data-view="about">About</button>
 </nav>
 
@@ -73,6 +74,67 @@
       <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window.</p>
       <table id="anomalies-table">
         <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+
+  <!-- ── Models ───────────────────────────────────────────────────────── -->
+  <section id="view-models" class="view">
+    <div class="card">
+      <h2>Models <span class="muted" id="m-window"></span></h2>
+      <p class="muted" id="m-summary">loading…</p>
+      <div class="controls">
+        <label>window
+          <select id="m-hours">
+            <option value="6">6h</option>
+            <option value="24">24h</option>
+            <option value="72" selected>72h</option>
+            <option value="168">7d</option>
+            <option value="720">30d</option>
+          </select>
+        </label>
+        <button id="m-reload">Reload</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Training history <span class="muted">samples per retrain</span></h2>
+      <p class="muted">Each line is one detector. Rising sample counts mean the training
+      window is filling; a flat line means the window is already full.</p>
+      <div id="m-history" class="chart"></div>
+      <div id="m-history-legend" class="legend"></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Score distribution <span class="muted">every anomaly, including sub-threshold</span></h2>
+        <p class="muted">Where the alert threshold sits, and how much data falls below it.
+        A threshold in an empty region is doing nothing.</p>
+        <div id="m-scores" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>Model agreement <span class="muted">which detectors fired together</span></h2>
+        <p class="muted">Agreement between independent detectors is the strongest signal
+        the ensemble produces. One model alone is usually noise.</p>
+        <div id="m-agreement" class="chart"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Feature deviations <span class="muted">mean |z| against each host's own baseline</span></h2>
+      <p class="muted">Which features the models keep flagging, and how far from normal
+      they sit. Features that never deviate are not earning their place.</p>
+      <div id="m-features" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>Anomalies</h2>
+      <p class="muted">Click a row to open its evidence.</p>
+      <table id="m-points">
+        <thead><tr><th>Score</th><th>Agreement</th><th>Severity</th><th>Models</th>
+        <th>Primary feature</th><th>Magnitude</th><th>Host</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

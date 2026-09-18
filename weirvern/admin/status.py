@@ -191,6 +191,145 @@ def collect_health(client, settings) -> HealthReport:
     return report
 
 
+def model_overview(client, hours: int = 72) -> dict:
+    """Everything the Models view needs, in one round trip per panel.
+
+    WHY THIS IS NOT A SCATTER PLOT OF EVERY ANOMALY: a young deployment has very few
+    anomalies (three, at the time of writing). A scatter of three points looks like a
+    rendering failure, and padding it with synthetic rows would be worse -- an analyst
+    cannot tell invented data from real. So each panel is built from data that is
+    genuinely deep at any volume:
+
+      * training history   -- one row per retrain (96 in the first 7 hours)
+      * score distribution -- every score the models have produced, including the ones
+                              below the alert threshold, which is what shows whether the
+                              threshold sits in a sensible place
+      * ensemble agreement -- which models fire together, from detected_by_models
+      * feature deviations -- per-feature actual vs baseline, from feature_contributions
+
+    Returns {"available": False, "reason": ...} rather than raising or returning empty
+    structures, so the frontend can say WHY a panel is blank instead of showing nothing.
+    """
+    import json
+
+    out: dict = {"available": True, "hours": hours}
+
+    # 1. Training history: the models maturing. Sample counts grow as the window fills.
+    try:
+        rows = client.query(
+            "SELECT model_type, trained_at, training_sample_count, current_weight, "
+            "metrics FROM weirvern.ml_models "
+            "WHERE trained_at >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY trained_at",
+            parameters={"h": hours},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001 - a panel must not break the page
+        return {"available": False, "reason": f"training history query failed: {exc}"}
+
+    hist: dict[str, list] = {}
+    for mtype, trained_at, n, weight, metrics in rows:
+        try:
+            m = json.loads(metrics) if metrics else {}
+        except (ValueError, TypeError):
+            m = {}
+        hist.setdefault(mtype, []).append({
+            "t": _iso(trained_at),
+            "n": int(n or 0),
+            "w": float(weight or 1.0),
+            "metrics": m,
+        })
+    out["training_history"] = hist
+    out["run_count"] = sum(len(v) for v in hist.values())
+
+    # 2. Score distribution across EVERY anomaly, including sub-threshold ones, so the
+    #    threshold can be judged rather than assumed.
+    try:
+        rows = client.query(
+            "SELECT anomaly_score, isolation_forest_score, gradient_boosting_score, "
+            "dbscan_score, baseline_score, model_agreement, detected_by_models, "
+            "severity, primary_deviation_feature, deviation_magnitude, "
+            "window_start, src_addr, feature_contributions "
+            "FROM weirvern.netflow_anomalies "
+            "WHERE detected_at >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY detected_at DESC LIMIT 500",
+            parameters={"h": hours},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        out["available"] = False
+        out["reason"] = f"anomaly query failed: {exc}"
+        return out
+
+    MODELS = [
+        ("isolation_forest_score", "Isolation Forest"),
+        ("gradient_boosting_score", "Gradient Boosting"),
+        ("dbscan_score", "DBSCAN"),
+        ("baseline_score", "Adaptive Baseline"),
+    ]
+    scores: dict[str, list[float]] = {label: [] for _col, label in MODELS}
+    scores["Ensemble"] = []
+    points: list[dict] = []
+    features: dict[str, dict[str, float]] = {}
+    agreement: dict[str, int] = {}
+
+    for r in rows:
+        (score, ifs, gb, db, bl, agree, by_models, severity, primary,
+         devmag, window, src, contrib) = r
+        scores["Isolation Forest"].append(float(ifs or 0))
+        scores["Gradient Boosting"].append(float(gb or 0))
+        scores["DBSCAN"].append(float(db or 0))
+        scores["Adaptive Baseline"].append(float(bl or 0))
+        scores["Ensemble"].append(float(score or 0))
+        points.append({
+            "score": float(score or 0),
+            "agreement": float(agree or 0),
+            "severity": severity,
+            "models": [m for m in (by_models or "").split(",") if m.strip()],
+            "primary": primary or None,
+            "magnitude": float(devmag or 0),
+            "src_addr": src,
+        })
+        for name in points[-1]["models"]:
+            agreement[name.strip()] = agreement.get(name.strip(), 0) + 1
+        # Feature deviations, accumulated per feature so the heatmap shows which feature
+        # the models keep flagging -- a per-host view would be empty at low volume.
+        if contrib:
+            try:
+                parsed = json.loads(contrib)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                for fname, fv in parsed.items():
+                    if not isinstance(fv, dict):
+                        continue
+                    z = fv.get("z")
+                    if z is None:
+                        continue
+                    agg = features.setdefault(fname, {"z_sum": 0.0, "n": 0, "max_z": 0.0})
+                    agg["z_sum"] += abs(float(z))
+                    agg["n"] += 1
+                    agg["max_z"] = max(agg["max_z"], abs(float(z)))
+
+    out["scores"] = scores
+    out["points"] = points
+    out["model_counts"] = agreement
+    out["feature_deviations"] = [
+        {"feature": k, "mean_abs_z": (v["z_sum"] / v["n"]) if v["n"] else 0.0,
+         "max_abs_z": v["max_z"], "n": v["n"]}
+        for k, v in sorted(features.items())
+    ]
+    return out
+
+
+def _iso(value) -> str | None:
+    """ISO timestamp for JSON, or None. Kept local so this module needs no new import."""
+    if value is None:
+        return None
+    try:
+        return value.isoformat()
+    except AttributeError:
+        return str(value)
+
+
 def recent_anomalies(client, limit: int = 25, min_score: float = 0.5) -> list[tuple]:
     """Most recent anomalies for the UI. Returns [] on any failure."""
     try:

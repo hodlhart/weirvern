@@ -292,3 +292,47 @@ def overview_payload(services: list, report, anomalies: list[dict],
             "reason": getattr(caps, "reason", "") or "",
         },
     }
+
+def models_payload(data: dict) -> dict:
+    """Serialise model_overview() for the frontend.
+
+    Adds a hostname to each anomaly point alongside its address (the IP is the fact and
+    the name is the convenience -- replacing one with the other would lose information
+    the analyst cannot recover from the UI).
+
+    Keeps `available`/`reason` intact so the frontend can distinguish "no models have
+    trained yet" from "the query failed", which need different words on screen.
+    """
+    if not data.get("available", True):
+        return {"available": False, "reason": data.get("reason", "unavailable")}
+
+    out = {
+        "available": True,
+        "hours": data.get("hours"),
+        "run_count": data.get("run_count", 0),
+        "training_history": data.get("training_history", {}),
+        "scores": data.get("scores", {}),
+        "model_counts": data.get("model_counts", {}),
+        "feature_deviations": data.get("feature_deviations", []),
+        "points": [],
+    }
+    for pt in data.get("points", []):
+        row = {k: _jsonable(v) for k, v in pt.items()}
+        row["hostname"] = _hostname(row.get("src_addr"))
+        out["points"].append(row)
+
+    # A one-line reading of the state, so an analyst does not have to infer it from the
+    # charts. Deliberately factual: it describes what is present, not what it means.
+    n = len(out["points"])
+    runs = out["run_count"]
+    if n == 0 and runs == 0:
+        out["summary"] = "No training runs and no anomalies in the selected window."
+    elif n == 0:
+        out["summary"] = f"{runs} training run(s); no anomalies in the selected window."
+    else:
+        sev: dict[str, int] = {}
+        for pt in out["points"]:
+            sev[pt.get("severity") or "unknown"] = sev.get(pt.get("severity") or "unknown", 0) + 1
+        spread = ", ".join(f"{k} {v}" for k, v in sorted(sev.items()))
+        out["summary"] = f"{n} anomaly(ies) from {runs} training run(s) ({spread})."
+    return out

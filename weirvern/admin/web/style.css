@@ -147,3 +147,44 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   border: 1px solid color-mix(in srgb, var(--crit) 35%, var(--border));
 }
 code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 12px; }
+
+/* ── models view ─────────────────────────────────────────────────────────────
+ *
+ * Hand-rolled SVG charts and bar rows. Colours identify a MODEL (a stable label the
+ * analyst learns), never magnitude -- magnitude is the bar length. A colour that meant
+ * "big" in one panel and "small" in another would be worse than no colour.
+ */
+
+.chart { margin-top: 8px; }
+.chart-empty {
+  padding: 18px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.svg-chart { width: 100%; height: auto; display: block; overflow: visible; }
+
+/* SVG text and lines do not inherit body colour, so they are set explicitly. */
+.svg-chart .axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.svg-chart .axis { stroke: var(--border); stroke-width: 1; }
+.svg-chart .grid { stroke: var(--border); stroke-width: 0.5; opacity: 0.5; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.bar-row { display: grid; grid-template-columns: 160px 1fr 64px;
+  align-items: center; gap: 10px; margin: 5px 0; }
+.bar-name { font-family: var(--mono); font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 3px; height: 14px; position: relative; overflow: hidden; }
+.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
+/* The pale extension shows the PEAK behind the mean, so a single large spike is not
+ * hidden by an average that looks calm. */
+.bar-fill.ghost { background: var(--border); opacity: 0.55; }
+.bar-val { font-family: var(--mono); font-size: 12px; text-align: right; }
+
+td.num { font-family: var(--mono); text-align: right; }

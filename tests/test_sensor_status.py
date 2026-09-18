@@ -351,7 +351,8 @@ def test_no_orphan_placeholder_elements_remain():
     #   h-hint: hint text set once in the markup
     #   ev-notice-card: shown/hidden, not populated
     structural = {"view-overview", "view-anomalies", "view-evidence", "view-host",
-                  "view-about", "tabs", "statusline", "h-hint", "ev-notice-card"}
+                  "view-about", "view-models", "tabs", "statusline", "h-hint",
+                  "ev-notice-card"}
 
     orphans = {i for i in ids
                if i not in referenced and i not in js and i not in structural}

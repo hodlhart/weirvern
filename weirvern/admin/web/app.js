@@ -563,7 +563,8 @@ function showView(name) {
     v.classList.toggle("active", v.id === "view-" + name);
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
-}
+  if (name === "models") loadModels().then(clearError).catch(showError);
+  }
 
 async function refreshAll() {
   try {
@@ -584,6 +585,12 @@ document.addEventListener("DOMContentLoaded", () => {
     t.addEventListener("click", () => showView(t.dataset.view));
   }
   document.getElementById("refresh").addEventListener("click", refreshAll);
+  // Onchange rather than a Reload click for a <select>: an operator who picks 24h and
+  // then has to press a button has been given a two-step control for a one-step intent.
+  const mHours = document.getElementById("m-hours");
+  if (mHours) mHours.addEventListener("change", () => loadModels().then(clearError).catch(showError));
+  const mReload = document.getElementById("m-reload");
+  if (mReload) mReload.addEventListener("click", () => loadModels().then(clearError).catch(showError));
   document.getElementById("autorefresh").addEventListener("change", (e) => {
     if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
   });
@@ -603,3 +610,271 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshAll();
   startAuto(15);
 });
+
+/* ── models ───────────────────────────────────────────────────────────────────
+ *
+ * Charts are hand-rolled SVG. The GUI is deliberately dependency-free (Python stdlib
+ * server, no bundler, no CDN) because it has to work on an isolated sensor network --
+ * a charting library fetched from the internet is a chart that does not render in the
+ * environment this is built for.
+ *
+ * EVERY PANEL HANDLES EMPTINESS EXPLICITLY. This was built against a deployment with
+ * three anomalies: a scatter of three points looks like a rendering bug, and an empty
+ * box teaches the analyst nothing. So each panel either draws real data or states in
+ * words what is absent and why. Nothing is padded or interpolated to look fuller.
+ */
+
+const MODEL_COLORS = {
+  "Isolation Forest": "#4ea1ff",
+  "Gradient Boosting": "#5ec26a",
+  "DBSCAN": "#e0a34a",
+  "Adaptive Baseline": "#c07ad6",
+  "Ensemble": "#e05c5c",
+};
+
+/** A placeholder that says what is missing rather than rendering an empty box. */
+function chartEmpty(text) {
+  return el("p", { class: "muted chart-empty", text });
+}
+
+/** An SVG canvas with a padded drawing area. Returns {svg, plot, x, y} helpers. */
+function chartFrame(w, h, pad) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "svg-chart");
+  svg.setAttribute("preserveAspectRatio", "none");
+  const plot = { l: pad.l, r: w - pad.r, t: pad.t, b: h - pad.b };
+  return { svg, plot, w, h };
+}
+
+function svgEl(tag, attrs, text) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  if (text !== undefined) n.textContent = String(text);
+  return n;
+}
+
+/** A horizontal axis label, positioned in the plot area. */
+function axisLabel(g, x, y, text, anchor = "middle") {
+  g.appendChild(svgEl("text", { x, y, "text-anchor": anchor, class: "axis-label" }, text));
+}
+
+/**
+ * Training history: samples per retrain, one line per detector.
+ *
+ * Sample counts on one axis with a log-ish scale, because Isolation Forest spans 360 ->
+ * 9496 and a linear axis would flatten every other detector onto the floor.
+ */
+function renderTrainingHistory(hist) {
+  const host = document.getElementById("m-history");
+  const legend = document.getElementById("m-history-legend");
+  host.innerHTML = "";
+  legend.innerHTML = "";
+
+  const series = Object.entries(hist || {}).filter(([, pts]) => pts && pts.length);
+  if (!series.length) {
+    host.appendChild(chartEmpty("No training runs in this window."));
+    return;
+  }
+
+  const W = 900, H = 240, PAD = { l: 64, r: 16, t: 12, b: 34 };
+  const { svg, plot } = chartFrame(W, H, PAD);
+
+  // A shared time axis across every detector.
+  const allT = series.flatMap(([, pts]) => pts.map((p) => new Date(p.t).getTime()));
+  const tMin = Math.min(...allT), tMax = Math.max(...allT);
+  const span = Math.max(1, tMax - tMin);
+
+  const maxN = Math.max(...series.flatMap(([, pts]) => pts.map((p) => p.n)));
+  // log scale so a 26x range stays readable
+  const yOf = (n) => {
+    const lv = Math.log10(Math.max(1, n));
+    const lmax = Math.log10(Math.max(10, maxN));
+    return plot.b - (lv / lmax) * (plot.b - plot.t);
+  };
+  const xOf = (t) => plot.l + ((t - tMin) / span) * (plot.r - plot.l);
+
+  // gridlines at decades
+  const lmax = Math.log10(Math.max(10, maxN));
+  for (let d = 0; d <= Math.floor(lmax); d++) {
+    const v = Math.pow(10, d);
+    const y = plot.b - (d / lmax) * (plot.b - plot.t);
+    svg.appendChild(svgEl("line", { x1: plot.l, y1: y, x2: plot.r, y2: y, class: "grid" }));
+    axisLabel(svg, plot.l - 6, y + 4, v >= 1000 ? (v / 1000) + "k" : String(v), "end");
+  }
+  svg.appendChild(svgEl("line", { x1: plot.l, y1: plot.b, x2: plot.r, y2: plot.b, class: "axis" }));
+  svg.appendChild(svgEl("line", { x1: plot.l, y1: plot.t, x2: plot.l, y2: plot.b, class: "axis" }));
+  axisLabel(svg, plot.l, H - 10, fmtTime(new Date(tMin)), "start");
+  axisLabel(svg, plot.r, H - 10, fmtTime(new Date(tMax)), "end");
+
+  for (const [name, pts] of series) {
+    const colour = MODEL_COLORS[name] || "#888";
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${xOf(new Date(p.t).getTime()).toFixed(1)},${yOf(p.n).toFixed(1)}`).join(" ");
+    svg.appendChild(svgEl("path", { d, fill: "none", stroke: colour, "stroke-width": 1.8 }));
+    // Last point marked and labelled: the current state is the useful figure.
+    const last = pts[pts.length - 1];
+    svg.appendChild(svgEl("circle", {
+      cx: xOf(new Date(last.t).getTime()), cy: yOf(last.n), r: 2.6, fill: colour,
+    }));
+    legend.appendChild(el("span", { class: "legend-item" }, [
+      el("span", { class: "legend-swatch", attrs: { style: `background:${colour}` } }),
+      el("span", { text: `${name} — last ${last.n} samples, ${pts.length} run(s)` }),
+    ]));
+  }
+  host.appendChild(svg);
+}
+
+/**
+ * Score distribution: how many anomalies fall in each 0.1 band, per detector.
+ *
+ * Shows where the threshold sits relative to the data. Bands are drawn from real counts
+ * only; if everything falls in one band, that is what is shown.
+ */
+function renderScoreDistribution(scores) {
+  const host = document.getElementById("m-scores");
+  host.innerHTML = "";
+  const names = Object.keys(scores || {});
+  if (!names.length) { host.appendChild(chartEmpty("No scores recorded.")); return; }
+  const total = names.reduce((a, n) => a + (scores[n] || []).length, 0);
+  if (!total) { host.appendChild(chartEmpty("No anomalies in this window.")); return; }
+
+  const BANDS = 10;
+  const counts = {};
+  for (const n of names) {
+    counts[n] = new Array(BANDS).fill(0);
+    for (const v of scores[n] || []) {
+      const b = Math.min(BANDS - 1, Math.max(0, Math.floor((Number(v) || 0) * BANDS)));
+      counts[n][b] += 1;
+    }
+  }
+  const max = Math.max(1, ...names.flatMap((n) => counts[n]));
+  const W = 440, H = 200, PAD = { l: 34, r: 10, t: 10, b: 30 };
+  const { svg, plot } = chartFrame(W, H, PAD);
+  const bw = (plot.r - plot.l) / BANDS;
+
+  for (let i = 0; i < BANDS; i++) {
+    let y = plot.b;
+    for (const n of names) {
+      const c = counts[n][i];
+      if (!c) continue;
+      const h = (c / max) * (plot.b - plot.t);
+      svg.appendChild(svgEl("rect", {
+        x: plot.l + i * bw + 0.5, y: y - h, width: Math.max(1, bw - 1), height: h,
+        fill: MODEL_COLORS[n] || "#888", opacity: 0.85,
+      }));
+      y -= h;
+    }
+    axisLabel(svg, plot.l + i * bw + bw / 2, H - 10, (i / 10).toFixed(1));
+  }
+  svg.appendChild(svgEl("line", { x1: plot.l, y1: plot.b, x2: plot.r, y2: plot.b, class: "axis" }));
+  axisLabel(svg, plot.l - 6, plot.t + 10, String(max), "end");
+  axisLabel(svg, plot.l - 6, plot.b, "0", "end");
+  host.appendChild(svg);
+  host.appendChild(el("p", { class: "muted", text: `max ${max} per band, over ${total} score(s)` }));
+}
+
+/** Model agreement: how often each detector fired, as a bar per detector. */
+function renderAgreement(counts) {
+  const host = document.getElementById("m-agreement");
+  host.innerHTML = "";
+  const entries = Object.entries(counts || {});
+  if (!entries.length) {
+    host.appendChild(chartEmpty("No fired detections recorded."));
+    return;
+  }
+  entries.sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...entries.map(([, c]) => c));
+  for (const [name, c] of entries) {
+    const colour = MODEL_COLORS[name] || "#888";
+    const pct = (c / max) * 100;
+    host.appendChild(el("div", { class: "bar-row" }, [
+      el("span", { class: "bar-name", text: name, title: name }),
+      el("span", { class: "bar-track" }, [
+        el("span", { class: "bar-fill", attrs: { style: `width:${pct}%;background:${colour}` } }),
+      ]),
+      el("span", { class: "bar-val", text: String(c) }),
+    ]));
+  }
+  host.appendChild(el("p", { class: "muted", text:
+    "A detector missing here fired on nothing, which is itself worth knowing." }));
+}
+
+/** Feature deviations: mean |z| per feature, as horizontal bars against a z=1/2/3 guide. */
+function renderFeatureDeviations(rows) {
+  const host = document.getElementById("m-features");
+  host.innerHTML = "";
+  if (!rows || !rows.length) {
+    host.appendChild(chartEmpty(
+      "No per-feature deviations recorded. These are written from feature_contributions, " +
+      "so they appear once an anomaly carries one."));
+    return;
+  }
+  const max = Math.max(1, ...rows.map((r) => r.mean_abs_z), ...rows.map((r) => r.max_abs_z));
+  for (const r of rows) {
+    const w = (r.mean_abs_z / max) * 100;
+    const wMax = (r.max_abs_z / max) * 100;
+    host.appendChild(el("div", { class: "bar-row" }, [
+      el("span", { class: "bar-name", text: r.feature,
+                   title: `${r.feature}: mean |z| ${r.mean_abs_z.toFixed(2)}, peak ${r.max_abs_z.toFixed(2)}, n=${r.n}` }),
+      el("span", { class: "bar-track" }, [
+        el("span", { class: "bar-fill ghost", attrs: { style: `width:${wMax}%` } }),
+        el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:#4ea1ff` } }),
+      ]),
+      el("span", { class: "bar-val", text: r.mean_abs_z.toFixed(2) }),
+    ]));
+  }
+  host.appendChild(el("p", { class: "muted", text:
+    "Filled bar is the mean deviation; the pale extension is the peak seen. " +
+    "z around 1 is normal noise, 3+ is genuinely unusual for that host." }));
+}
+
+async function loadModels() {
+  const hours = (document.getElementById("m-hours") || {}).value || "72";
+  const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
+  const sum = document.getElementById("m-summary");
+  const win = document.getElementById("m-window");
+
+  if (!data || !data.available) {
+    if (win) win.textContent = "";
+    if (sum) sum.textContent = "Unavailable: " + ((data && data.reason) || "no data");
+    for (const id of ["m-history", "m-scores", "m-agreement", "m-features"]) {
+      const n = document.getElementById(id);
+      if (n) { n.innerHTML = ""; n.appendChild(chartEmpty("Unavailable.")); }
+    }
+    const body = document.querySelector("#m-points tbody");
+    if (body) body.innerHTML = "";
+    return;
+  }
+
+  if (win) win.textContent = "last " + hours + "h";
+  if (sum) sum.textContent = data.summary || "";
+
+  renderTrainingHistory(data.training_history || {});
+  renderScoreDistribution(data.scores || {});
+  renderAgreement(data.model_counts || {});
+  renderFeatureDeviations(data.feature_deviations || []);
+
+  const body = document.querySelector("#m-points tbody");
+  body.innerHTML = "";
+  if (!(data.points || []).length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", text: "No anomalies in this window.", attrs: { colspan: 7 } }),
+    ]));
+    return;
+  }
+  for (const pt of data.points) {
+    const tr = el("tr", { class: "clickable" }, [
+      el("td", { class: "num", text: Number(pt.score || 0).toFixed(3) }),
+      el("td", { class: "num", text: Number(pt.agreement || 0).toFixed(2) }),
+      el("td", {}, [el("span", { class: "sev-" + (pt.severity || "low"), text: pt.severity || "—" })]),
+      el("td", { text: (pt.models || []).join(", ") || "—" }),
+      el("td", { text: pt.primary || "—" }),
+      el("td", { class: "num", text: Number(pt.magnitude || 0).toFixed(2) }),
+      el("td", {}, [hostCell(pt.src_addr, pt.hostname)]),
+    ]);
+    if (pt.src_addr) {
+      tr.addEventListener("click", () => { showView("host"); loadHost(pt.src_addr, 24); });
+    }
+    body.appendChild(tr);
+  }
+}

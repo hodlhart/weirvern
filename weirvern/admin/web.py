@@ -154,6 +154,8 @@ def _build_handler(ctx: GuiContext):
                 return self._host(query)
             if path == "/api/evidence":
                 return self._evidence(query)
+            if path == "/api/models":
+                return self._models(query)
             if path == "/api/healthz":
                 # Liveness for the Kubernetes probe. Deliberately does NOT touch
                 # ClickHouse: a probe that fails when the database is slow would
@@ -230,6 +232,22 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.anomalies_payload(rows))
+
+        def _models(self, query: dict) -> None:
+            """Model overview: training history, score spread, agreement, deviations.
+
+            Returns 200 with {"available": false, "reason": ...} when the data cannot be
+            read, rather than 503. A missing panel should say why it is missing; an
+            error page for one panel would take down the views around it.
+            """
+            hours = _int_arg(query, "hours", 72, 1, 24 * 30)
+            try:
+                with self._with_client() as client:
+                    data = status_mod.model_overview(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.models_payload(data))
 
         def _host(self, query: dict) -> None:
             addr = (query.get("addr") or [""])[0].strip()
