@@ -469,3 +469,56 @@ def test_the_error_key_is_always_present():
     for client in (FakeClient([]), FakeClient(fail=True), FakeClient([_row()])):
         d = status.sensor_status(client, now=NOW)
         assert "error" in d
+
+
+# ── schema application ──────────────────────────────────────────────────────────
+
+
+def test_a_schema_file_ending_in_comments_applies_cleanly():
+    """A trailing comment block must not become an "empty query".
+
+    The splitter cuts on `;`, so everything after the last semicolon is a separate chunk --
+    and for a file that ends in explanatory comments, that chunk is non-empty TEXT
+    containing no SQL. ClickHouse rejects it with "Empty query (SYNTAX_ERROR)", and because
+    apply_schema treats any failure as fatal, the whole migration fails.
+
+    Hit for real: this file documents its design in a trailing comment, and the worker
+    refused to start with "1 schema statement(s) failed; refusing to report success". Every
+    schema file is checked, because the next one to end in a comment would fail the same way.
+    """
+    from weirvern.db import _SQL_SPLIT, _strip_sql_comments
+
+    schema_dir = ROOT / "weirvern" / "schema"
+    # The condition that triggers it: at least one file ends with a comment.
+    assert any(p.read_text().rstrip().splitlines()[-1].strip().startswith("--")
+               for p in schema_dir.glob("*.sql")), (
+        "no schema file ends in a comment any more, so this test no longer exercises the "
+        "bug it was written for"
+    )
+
+    for path in sorted(schema_dir.glob("*.sql")):
+        statements = [s for s in (_strip_sql_comments(raw).strip()
+                                  for raw in _SQL_SPLIT.split(path.read_text())) if s]
+        assert statements, f"{path.name} produced no statements"
+        for stmt in statements:
+            assert stmt.strip(), f"{path.name} produced an empty statement"
+            # A statement must contain SQL, not only comment text.
+            assert not all(line.strip().startswith("--")
+                           for line in stmt.splitlines()), (
+                f"{path.name} produced a comment-only statement, which ClickHouse rejects "
+                f"as an empty query and which fails the entire migration"
+            )
+
+
+def test_the_migration_is_idempotent():
+    """Every statement must be safe to re-run: the schema Job runs on every apply."""
+    schema_dir = ROOT / "weirvern" / "schema"
+    for path in sorted(schema_dir.glob("*.sql")):
+        for line in path.read_text().splitlines():
+            stripped = line.split("--", 1)[0].strip()
+            if not stripped.upper().startswith("CREATE"):
+                continue
+            assert "IF NOT EXISTS" in stripped.upper(), (
+                f"{path.name}: '{stripped[:60]}...' is not idempotent, so re-applying the "
+                f"schema would fail the Job"
+            )

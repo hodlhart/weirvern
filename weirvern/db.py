@@ -38,6 +38,29 @@ SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 _SQL_SPLIT = re.compile(r";\s*$", re.MULTILINE)
 
 
+def _strip_sql_comments(statement: str) -> str:
+    """Remove `--` comments, leaving only executable SQL.
+
+    WHY: the splitter cuts on `;`, so ANYTHING after the last semicolon becomes a
+    "statement" -- including a trailing comment block. ClickHouse rejects that with
+    "Empty query (SYNTAX_ERROR)", and because apply_schema treats a failure as fatal, a
+    schema file that merely ENDS IN A COMMENT failed the whole migration. That was hit for
+    real: 003_sensor_status.sql documents its design in a trailing comment, and the worker
+    refused to start with "1 schema statement(s) failed; refusing to report success".
+
+    Stripping comments rather than dropping the trailing chunk is the right fix, because a
+    comment is not a statement in any position -- an earlier file in this project also had
+    a comment AFTER a statement on the same line, which the naive split would have sent to
+    ClickHouse as SQL.
+    """
+    out = []
+    for line in statement.splitlines():
+        code = line.split("--", 1)[0]
+        if code.strip():
+            out.append(code)
+    return "\n".join(out)
+
+
 def connect(settings: Settings, retries: int = 30, delay_s: float = 5.0) -> Client:
     """Connect with retry (ClickHouse takes longer than the worker to boot).
 
@@ -101,7 +124,12 @@ def apply_schema(client: Client, settings: Settings) -> None:
     applied = []
     failures: list[tuple[str, str]] = []
     for sql_path in sql_files:
-        statements = [s.strip() for s in _SQL_SPLIT.split(sql_path.read_text()) if s.strip()]
+        # Strip comments BEFORE the emptiness check: a file ending in a comment block
+        # splits into a final chunk that is non-empty text but contains no SQL, which
+        # ClickHouse rejects as an empty query and which fails the whole migration.
+        statements = [s for s in (_strip_sql_comments(raw).strip()
+                                  for raw in _SQL_SPLIT.split(sql_path.read_text()))
+                      if s]
         for stmt in statements:
             # Statements are idempotent (CREATE IF NOT EXISTS); still skip VIEWs
             # that already exist without erroring on the `CREATE VIEW IF NOT EXISTS`.
