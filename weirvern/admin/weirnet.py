@@ -1,0 +1,263 @@
+"""In-path intercept (weir mode): the ARP dataplane.
+
+WHAT THIS IS, AND WHAT IT IS NOT. Weirvern inserts itself into the path between hosts and
+their gateway by forging ARP mappings, then RELAYS the traffic it intercepts. This is an
+L2/L3 redirection -- **not** a TLS intercept. Nothing is decrypted and no certificate is
+substituted. The point is coverage: on a veth (which is what a container gets) the bridge
+does not flood switched unicast, so a passive sensor sees only broadcast noise. Measured
+on the test deployment: ~73% of what reached the passive sensor was broadcast, and Zeek
+reported 62-65% capture loss. Traffic addressed to us cannot be "missed" the same way.
+
+WHY A WATCHDOG IS NOT OPTIONAL. In weir mode Weirvern is a ROUTER. If it stops forwarding
+-- crash, OOM kill, node reboot -- every host whose ARP cache we poisoned loses the network
+until that entry expires, which is typically minutes. That is the difference between a
+monitoring gap and a LAN outage, and it is why `mode.py` refuses to enable weir without a
+watchdog. This module always arms the watchdog BEFORE sending the first poison frame, so
+there is no window in which a mapping exists unmanaged.
+
+WHY THE FORWARDING IS DONE IN THE KERNEL. We do not copy packets in userspace. Poisoning
+makes the kernel the next hop for the victim's traffic; with `ip_forward=1` it routes it
+onwards. That is far cheaper than a userspace relay and it means a packet is never held in
+a process that can die. The failure mode is then a routing one, which the watchdog covers
+by withdrawing the mappings.
+
+WHAT IS DELIBERATELY NOT HERE: no packet payload is inspected, stored, or modified. The
+relay is the kernel's, so by construction this process never holds the traffic.
+"""
+from __future__ import annotations
+
+import logging
+import socket
+import struct
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+ETH_P_ARP = 0x0806
+ETH_P_ALL = 0x0003
+
+# How often to re-send poison frames. ARP cache entries on modern hosts live minutes, but
+# some stacks (and some switch/AP combinations) age faster. 5s is well inside the shortest
+# common timeout and costs 2 tiny frames per host per interval.
+DEFAULT_REFRESH_S = 5.0
+
+
+# ---------------------------------------------------------------------------
+# reading the real network state
+# ---------------------------------------------------------------------------
+
+
+def read_mac(iface: str) -> str | None:
+    """The interface's own MAC, or None if it cannot be read."""
+    path = Path(f"/sys/class/net/{iface}/address")
+    try:
+        mac = path.read_text().strip()
+    except OSError:
+        return None
+    return mac or None
+
+
+def read_neighbour_mac(iface: str, ip: str) -> str | None:
+    """The MAC currently known for `ip`, from the kernel neighbour table.
+
+    Read from /proc rather than by shelling out to `ip neigh`: this runs in a container
+    that has NO `ip` command (the zeek image ships busybox, perl and Zeek only -- verified).
+    Shelling out would work on a dev host and fail in production, which is the wrong way
+    round.
+
+    NUD states other than REACHABLE/STALE/DELAY/PROBE mean the entry is not usable
+    (INCOMPLETE/FAILED), so the MAC is not returned for those.
+    """
+    try:
+        lines = Path("/proc/net/arp").read_text().splitlines()
+    except OSError:
+        return None
+    want_flags = {"0x2", "0x0"}  # 0x2 = ATF_COM (complete)
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        addr, _hwtype, flags, mac, _mask, dev = parts[:6]
+        if addr != ip or dev != iface:
+            continue
+        if mac in ("00:00:00:00:00:00", ""):
+            return None
+        if flags not in want_flags and flags != "0x2":
+            continue
+        return mac.lower()
+    return None
+
+
+def ping_host(iface: str, ip: str, timeout_s: float = 1.0) -> bool:
+    """Send one ICMP echo to populate the neighbour table.
+
+    WHY: to forge a mapping FOR a host we must already know its real MAC, which means the
+    kernel must have resolved it. A host that has not been spoken to recently has no
+    neighbour entry, so we probe first. Without this the first intercept attempt fails with
+    "unknown host MAC" and the operator sees nothing happen.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as s:
+            s.settimeout(timeout_s)
+            # ICMP echo request, id 0, seq 0
+            packet = struct.pack("!BBHHH", 8, 0, 0, 0, 1)
+            checksum = _icmp_checksum(packet)
+            packet = struct.pack("!BBHHH", 8, 0, checksum, 0, 1)
+            s.sendto(packet, (ip, 0))
+    except (OSError, PermissionError):
+        return False
+    return True
+
+
+def _icmp_checksum(data: bytes) -> int:
+    """Standard one's-complement checksum over 16-bit words."""
+    if len(data) % 2:
+        data += b"\x00"
+    total = 0
+    for i in range(0, len(data), 2):
+        total += (data[i] << 8) + data[i + 1]
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+
+
+def resolve_mac(iface: str, ip: str, attempts: int = 3, wait_s: float = 0.4) -> str | None:
+    """Best-effort MAC for `ip`, probing the neighbour table first."""
+    mac = read_neighbour_mac(iface, ip)
+    if mac:
+        return mac
+    for _ in range(attempts):
+        if not ping_host(iface, ip):
+            break
+        time.sleep(wait_s)
+        mac = read_neighbour_mac(iface, ip)
+        if mac:
+            return mac
+    return None
+
+
+# ---------------------------------------------------------------------------
+# the packet sender
+# ---------------------------------------------------------------------------
+
+
+class ArpSender:
+    """Writes Ethernet frames to an AF_PACKET socket.
+
+    Raw sockets need CAP_NET_RAW, which `mode.py` already requires for weir. Kept as a
+    class so the watchdog (which takes a `sender` callable) can be given a fake in tests.
+    """
+
+    def __init__(self, iface: str) -> None:
+        self.iface = iface
+        self._sock: socket.socket | None = None
+
+    def open(self) -> None:
+        if self._sock is None:
+            self._sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ARP))
+            self._sock.bind((self.iface, 0))
+
+    def __call__(self, frame: bytes, kind: str = "poison") -> None:
+        self.open()
+        assert self._sock is not None
+        self._sock.send(frame)
+
+    def close(self) -> None:
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
+
+# ---------------------------------------------------------------------------
+# forwarding prerequisites
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ForwardingState:
+    ip_forward: bool
+    rp_filter_off: bool
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def ready(self) -> bool:
+        return not self.problems
+
+
+def sysctl_path(name: str, iface: str = "") -> Path:
+    """Where a sysctl lives under /proc/sys.
+
+    Dots become slashes, `all`/interface-qualified names keep their second component.
+    Examples:
+        net.ipv4.ip_forward            -> /proc/sys/net/ipv4/ip_forward
+        net.ipv4.conf.all.rp_filter    -> /proc/sys/net/ipv4/conf/all/rp_filter
+    """
+    parts = name.split(".")
+    return Path("/proc/sys") / "/".join(parts)
+
+
+def read_sysctl(name: str) -> int | None:
+    try:
+        return int(sysctl_path(name).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def check_forwarding(iface: str) -> ForwardingState:
+    """Verify the two kernel settings weir mode cannot work without.
+
+    Both failures have a specific symptom, recorded here because a misconfigured intercept
+    presents as "the network is slow/broken" rather than as an error:
+
+      * `ip_forward=0`      -> we poison the mapping and then DROP the traffic. The victim
+                               loses the network completely: the worst possible outcome,
+                               and it looks like a hardware fault.
+      * `rp_filter != 0`    -> the kernel's reverse-path check discards relayed packets
+                               whose return path does not match the interface they arrived
+                               on. Symptom: one-way traffic, so TCP connects hang.
+    """
+    state = ForwardingState(ip_forward=False, rp_filter_off=False)
+
+    fwd = read_sysctl("net.ipv4.ip_forward")
+    if fwd is None:
+        state.problems.append("could not read net.ipv4.ip_forward")
+    elif fwd != 1:
+        state.problems.append(
+            "net.ipv4.ip_forward is 0: relayed traffic would be DROPPED, so poisoning "
+            "would take hosts off the network rather than pass traffic through"
+        )
+    else:
+        state.ip_forward = True
+
+    # rp_filter must be 0 for `all` and for the capture interface. `all` alone is not
+    # enough: the per-interface setting is more restrictive when set.
+    for scope in ("all", iface):
+        name = f"net.ipv4.conf.{scope}.rp_filter"
+        value = read_sysctl(name)
+        if value is None:
+            # A missing per-interface file means the interface does not exist yet, which
+            # is its own problem but not one to report twice.
+            if scope == iface:
+                state.problems.append(f"interface {iface} has no rp_filter setting")
+            continue
+        if value != 0:
+            state.problems.append(
+                f"{name} is {value}: the reverse-path check will drop relayed packets "
+                f"whose return route differs from {scope}, giving one-way traffic"
+            )
+        elif scope == iface:
+            state.rp_filter_off = True
+
+    return state
+
+
+SYSCTL_WRITE_HINT = (
+    "weir mode needs, inside the container:\n"
+    "    sysctl -w net.ipv4.ip_forward=1\n"
+    "    sysctl -w net.ipv4.conf.all.rp_filter=0\n"
+    "    sysctl -w net.ipv4.conf.<iface>.rp_filter=0\n"
+    "In Kubernetes these belong in the pod's securityContext (sysctls: []) or in the "
+    "node's config, since a container cannot set them by default."
+)

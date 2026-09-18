@@ -1296,6 +1296,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="never delete files newer than this many seconds (default 3600)")
     s.set_defaults(func=cmd_prune)
 
+    s = sub.add_parser("intercept", help="run in-path intercept (weir mode)")
+    s.add_argument("--iface", help="capture NIC with L2 reachability to the segment")
+    s.add_argument("--segment", help="CIDR to intercept, e.g. 192.168.3.0/24")
+    s.add_argument("--our-ip", dest="our_ip", help="this sensor's address on that segment")
+    s.add_argument("--gateway", help="the gateway whose traffic to relay")
+    s.add_argument("--dry-run", action="store_true",
+                   help="show the plan and preflight results, change nothing")
+    s.add_argument("--seconds", type=int,
+                   help="intercept for this long, then restore (default: until Ctrl-C)")
+    s.set_defaults(func=cmd_intercept)
+
     s = sub.add_parser("version", help="show version and detected runtime")
     s.set_defaults(func=cmd_version)
 
@@ -1378,6 +1389,158 @@ def cmd_prune(args: argparse.Namespace) -> int:
         return EXIT_FAIL
     return EXIT_OK
 
+
+
+def cmd_intercept(args: argparse.Namespace) -> int:
+    """Run in-path intercept (weir mode): ARP-forge the path, relay in the kernel.
+
+    WHY THIS IS GATED AND LOVES --dry-run: in weir mode Weirvern is a ROUTER. Every host
+    whose ARP cache is forged loses the network if this process stops without restoring,
+    which is why the watchdog is armed before the first poison frame. A whole-segment
+    intercept can take an entire VLAN off the air, so the plan is inspectable first.
+
+    This is an L2/L3 redirect, NOT a TLS intercept: nothing is decrypted, no certificate
+    is substituted, and no payload is inspected or stored.
+    """
+    from weirvern.admin import intercept as ic_mod
+    from weirvern.admin import mode as mode_mod
+    from weirvern.admin import weirnet
+
+    env = config_io.EnvFile.load(env_path()) if env_path().exists() else None
+
+    def _get(k, d=""):
+        """Env file wins, then the process environment, then the default.
+
+        The file wins because `.env` is what the operator edited; the process environment
+        only matters for the flags Kubernetes injects.
+        """
+        value = env.get(k) if env is not None else None
+        return str(value or os.environ.get(k) or d)
+
+    iface = args.iface or _get("CAPTURE_IFACE") or _get("ZEEK_IFACE")
+    segment = args.segment or _get("INTERCEPT_SEGMENT")
+    our_ip = args.our_ip or _get("INTERCEPT_ADDR") or _get("MGMT_ADDR")
+    gateway = args.gateway or _get("INTERCEPT_GATEWAY")
+
+    missing = [n for n, v in (("interface", iface), ("segment", segment),
+                              ("our address", our_ip), ("gateway", gateway)) if not v]
+    if missing:
+        _bad("missing: " + ", ".join(missing))
+        print("\n  Required for an intercept:")
+        print("    --iface    the capture NIC with L2 reachability to the segment")
+        print("    --segment  the CIDR to intercept, e.g. 192.168.3.0/24")
+        print("    --our-ip   this sensor's address on that segment")
+        print("    --gateway  the gateway whose traffic to relay")
+        print("\n  Or set CAPTURE_IFACE / INTERCEPT_SEGMENT / INTERCEPT_ADDR /")
+        print("  INTERCEPT_GATEWAY in .env")
+        return EXIT_USAGE
+
+    # Mode gate first: refuse before probing anything, so a misconfigured mode cannot
+    # half-build a plan and leave the operator wondering which step failed.
+    # Signature is validate(mode, *, ...) returning ModeVerdict(mode, ok, blockers,
+    # warnings) -- verified against mode.py rather than assumed. The watchdog ships with
+    # Weirvern, so its availability is a code fact, not a probe.
+    verdict = mode_mod.validate(
+        mode_mod.MODE_WEIR,
+        has_net_admin=_has_cap("net_admin"),
+        has_net_raw=_has_cap("net_raw"),
+        watchdog_available=True,
+    )
+    if not verdict.ok:
+        _bad(f"weir mode is not permitted on this host: {verdict.summary()}")
+        for reason in verdict.blockers:
+            print(f"    - {reason}")
+        for warn in verdict.warnings:
+            print(f"    ! {warn}")
+        return EXIT_NOTREADY
+
+    plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
+                             gateway_ip=gateway)
+    if plan is None:
+        return EXIT_FAIL
+
+    print(_c("bold", "Intercept plan"))
+    print(plan.describe())
+    print()
+
+    runner = ic_mod.Intercept(plan)
+    problems = runner.preflight()
+
+    if args.dry_run:
+        print(_c("bold", "Preflight"))
+        if problems:
+            for p_ in problems:
+                print(f"  {_c('bad', 'BLOCKED')} {p_}")
+            print()
+            print(weirnet.SYSCTL_WRITE_HINT)
+            return EXIT_NOTREADY
+        print("  all checks passed")
+        print()
+        print(f"  would install {plan.host_count * 2} mapping(s): "
+              f"{plan.host_count} host(s) x 2 directions")
+        print("  (each host: its gateway entry, and the gateway's entry for it)")
+        print()
+        print("  Nothing was changed. Remove --dry-run to apply.")
+        return EXIT_OK
+
+    if problems:
+        _bad("preflight failed, nothing was changed")
+        for p_ in problems:
+            print(f"    - {p_}")
+        print()
+        print(weirnet.SYSCTL_WRITE_HINT)
+        return EXIT_NOTREADY
+
+    runner.start()
+    failure: str | None = None
+    try:
+        if args.seconds:
+            runner.wait(stop_after_s=args.seconds)
+        else:
+            print("  intercepting; Ctrl-C to stop and restore")
+            runner.wait()
+    except KeyboardInterrupt:
+        print("\n  interrupted")
+    except Exception as exc:  # noqa: BLE001
+        # Recorded, not swallowed, and the restore below still runs. An exception here
+        # means the intercept loop broke, which is exactly when the mappings most need
+        # withdrawing.
+        failure = f"{type(exc).__name__}: {exc}"
+    finally:
+        runner.stop()
+
+    st = runner.status()
+    print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
+          f"{st['watchdog_refreshes']} refresh(es)")
+    if failure:
+        _bad(f"the intercept loop failed: {failure}")
+        return EXIT_FAIL
+    if st["watchdog_failures"]:
+        _bad("watchdog reported failures:")
+        for f in list(st["watchdog_failures"]):  # type: ignore[call-overload]
+            print(f"    - {f}")
+        return EXIT_FAIL
+    return EXIT_OK
+
+
+def _has_cap(name: str) -> bool:
+    """Whether this process holds a Linux capability, read from CapEff.
+
+    Read from /proc rather than inferred from uid: a container may run as root with
+    capabilities DROPPED (which is exactly what the zeek manifest does with
+    `drop: [ALL]`), so root does not imply NET_ADMIN.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            line = next(ln for ln in fh if ln.startswith("CapEff:"))
+        bits = int(line.split()[1], 16)
+    except (OSError, StopIteration, ValueError):
+        return False
+    # Capability numbers: NET_ADMIN = 12, NET_RAW = 13.
+    number = {"net_admin": 12, "net_raw": 13}.get(name)
+    if number is None:
+        return False
+    return bool(bits & (1 << number))
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()

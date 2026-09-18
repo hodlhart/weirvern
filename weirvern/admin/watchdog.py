@@ -183,6 +183,14 @@ class FailOpenWatchdog:
         self._restored = False
         self._forwarding = ForwardingMonitor()
         self._stall_strikes = 0
+        # Whether forwarding has EVER been seen to work since the mappings went in. Until
+        # it has, a still counter is uninformative -- an idle segment looks identical to a
+        # broken one -- so the health loop must not treat stillness as a stall. See
+        # _health_loop for why treating it as one makes weir flap.
+        self._forwarding_observed = False
+        # Ticks where nothing was being forwarded yet. Reported rather than counted toward
+        # a failure, so an operator can tell "quiet" from "broken".
+        self._quiet_samples = 0
         self._threads: list[threading.Thread] = []
         # Recorded so status output can explain WHY the watchdog fired.
         self.failures: list[str] = []
@@ -224,8 +232,33 @@ class FailOpenWatchdog:
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
+
+        # Assert the mappings IMMEDIATELY, not on the first refresh tick.
+        #
+        # The refresh loop waits `refresh_s` (5s) before its first iteration, so without
+        # this there is a window in which start() has returned, the caller reports
+        # "intercepting N hosts", and NOT ONE poison frame has been sent -- the ARP caches
+        # are untouched, so traffic is not actually flowing through us. Interception that
+        # silently is not happening is the worst failure mode this module has, because
+        # everything downstream looks healthy.
+        #
+        # This runs LAST, after the signal handlers and both loops are live, so the
+        # guarantee "no mapping exists without something responsible for restoring it"
+        # still holds: by the time a frame is on the wire, restore-on-signal is installed
+        # and the health monitor is running.
+        self._poison_all("initial")
         logger.info("fail-open watchdog started on %s (%d mapping(s))",
                     self.iface, self.active)
+
+    def _poison_all(self, kind: str) -> int:
+        """Send a poison frame for every registered mapping. Returns the count sent."""
+        with self._lock:
+            items = list(self._interceptions.values())
+        sent = 0
+        for ic in items:
+            if self._send(ic.poison_frame(), kind):
+                sent += 1
+        return sent
 
     def _install_signal_handlers(self) -> None:
         """SIGTERM/SIGINT restore before exiting.
@@ -248,11 +281,10 @@ class FailOpenWatchdog:
 
     def _refresh_loop(self) -> None:
         while not self._stop.wait(self.refresh_s):
-            with self._lock:
-                items = list(self._interceptions.values())
-            for ic in items:
-                self._send(ic.poison_frame(), "refresh")
-                self.refresh_count += 1
+            # Shares _poison_all with the initial assertion, so the initial and periodic
+            # paths cannot drift apart -- a difference between them would mean the first
+            # frames and the maintained frames were built or counted differently.
+            self.refresh_count += self._poison_all("refresh")
 
     def _health_loop(self) -> None:
         """Watch forwarding. Two consecutive missed samples before acting.
@@ -260,6 +292,18 @@ class FailOpenWatchdog:
         One missed sample is normal: /proc/net/snmp updates periodically, so a single
         quiet second proves nothing. Acting on it would produce spurious restores,
         which are themselves disruptive.
+
+        WHY A QUIET NETWORK IS NOT A STALL. The counter only advances when traffic is
+        actually being forwarded. On an idle segment -- or a test harness, or overnight on
+        a home LAN -- it legitimately does not move, and treating that as "we broke
+        forwarding" makes weir flap: poison, restore, poison, restore. Each flap is a brief
+        outage, so a benign condition would become a continuous one.
+
+        The distinction that matters is whether we have OBSERVED forwarding working. If the
+        counter has never advanced since the mappings went in, we cannot conclude anything
+        from its stillness, so the watchdog stays armed but silent and the ARP cache
+        expiry backstop covers a genuine failure. Once forwarding has been seen to work,
+        a stall IS meaningful, because we know we broke something that was working.
         """
         while not self._stop.wait(self.health_s):
             advanced = self._forwarding.advanced()
@@ -267,12 +311,18 @@ class FailOpenWatchdog:
                 continue
             if advanced:
                 self._stall_strikes = 0
+                self._forwarding_observed = True
+                continue
+            if not self._forwarding_observed:
+                # Nothing has ever been forwarded. Stillness is uninformative here, so
+                # record it once rather than accumulating strikes that would trip a restore.
+                self._quiet_samples += 1
                 continue
             self._stall_strikes += 1
             if self._stall_strikes < 2:
                 continue
             msg = (f"forwarding stalled for {self._stall_strikes} samples on "
-                   f"{self.iface}; failing open")
+                   f"{self.iface} after previously working; failing open")
             logger.error(msg)
             self.failures.append(msg)
             self.stop()
@@ -306,7 +356,12 @@ class FailOpenWatchdog:
         if self._sender is None:
             return False
         try:
-            self._sender(frame)
+            # `kind` MUST be forwarded. Dropping it made restore and refresh frames
+            # indistinguishable to the sender (both arrived as the default "poison"), so a
+            # sender could not log, route, or count them differently -- and a test could
+            # not tell a restore from a re-poison. That distinction is the whole reason
+            # `kind` exists here.
+            self._sender(frame, kind)
             return True
         except OSError as exc:
             # A send failure during RESTORE is the dangerous one: it means a host may

@@ -192,7 +192,11 @@ class FakeSender:
         self.sent: list[bytes] = []
         self.fail_on = fail_on
 
-    def __call__(self, frame: bytes) -> None:
+    def __call__(self, frame: bytes, kind: str = "poison") -> None:
+        # `kind` is part of the sender contract: _send forwards it so a sender can tell a
+        # restore from a refresh from a poison. Signature updated when that forwarding was
+        # fixed -- before that, every frame arrived as the default and the distinction was
+        # silently lost.
         if len(self.sent) in self.fail_on:
             raise OSError("simulated send failure")
         self.sent.append(frame)
@@ -315,9 +319,20 @@ def test_a_forwarding_stall_triggers_fail_open():
                          "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(ic)
 
-    # Stub the monitor to report "not advancing" so this does not depend on the real
-    # /proc counters or on generating traffic.
-    w._forwarding.advanced = lambda: False  # type: ignore[method-assign]
+    # The stall must happen AFTER forwarding has been seen to work.
+    #
+    # That is the whole subtlety: a counter that has NEVER advanced is uninformative,
+    # because an idle segment looks exactly like a broken one. Treating that as a stall
+    # makes weir flap -- poison, restore, poison -- turning a quiet network into a
+    # continuous outage. So the sequence modelled here is the real one: traffic flows,
+    # then it stops.
+    seq = {"n": 0}
+
+    def advancing() -> bool:
+        seq["n"] += 1
+        return seq["n"] == 1          # one healthy sample, then stalled
+
+    w._forwarding.advanced = advancing  # type: ignore[method-assign]
     w.start()
     deadline = time.time() + 3
     while time.time() < deadline and not w.failures:
@@ -403,3 +418,31 @@ def test_signal_handlers_are_installed_for_term_and_int():
     finally:
         sig.signal(sig.SIGTERM, before_term)
         sig.signal(sig.SIGINT, before_int)
+
+
+def test_a_never_advancing_counter_does_not_fail_open():
+    """An idle segment must NOT be treated as a stall.
+
+    The counter only moves when traffic is forwarded, so on a quiet network -- a home LAN
+    overnight, or any test harness -- it never advances. Failing open on that would make
+    weir flap continuously: each restore withdraws the mappings and the next refresh
+    reinstates them, inventing a repeating outage out of silence.
+
+    Staying armed-but-silent is safe because the ARP cache expiry backstop still covers a
+    real failure that we cannot distinguish from idleness.
+    """
+    s = FakeSender()
+    w = _watchdog(s, health_s=0.02)
+    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+                               "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
+    w._forwarding.advanced = lambda: False  # type: ignore[method-assign]
+
+    w.start()
+    time.sleep(0.3)
+    try:
+        assert not w.failures, (
+            f"a never-advancing counter must not fail open, got {w.failures}"
+        )
+        assert w.active == 1, "the mappings must still be held"
+    finally:
+        w.stop()
