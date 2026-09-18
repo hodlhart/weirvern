@@ -209,8 +209,16 @@ def detect_flows(
         # v20 fix: the worker attaches _diversity/_temporal per flow; without
         # this, port_entropy/burstiness/etc. silently fell back to defaults
         # and the Phase 2 detectors scored on 10 host features only.
+        # THE ZEEK ROW MUST BE PASSED, or the Zeek features default to zero at scoring
+        # time while the models were trained on their real values -- the model would be
+        # evaluated on a different distribution than it was fitted on, and nothing would
+        # raise. `_zeek` is attached by the worker alongside _diversity/_temporal, and a
+        # host Zeek never saw is a legitimate None rather than an error: the presence flag
+        # in the vector records that.
         features = extract_features(
-            flow, flow.get("_diversity") or None, flow.get("_temporal") or None
+            flow, flow.get("_diversity") or None, flow.get("_temporal") or None,
+            flow.get("_zeek") or None,
+            (baseline_det.baselines.get(src) if baseline_det else None),
         )
         scores: dict[str, float] = {}
         for det in detectors:

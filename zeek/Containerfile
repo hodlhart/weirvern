@@ -13,24 +13,41 @@
 #
 #     cd k8s && kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 #
-# LICENSING -- READ BEFORE CHANGING THE @load LINES IN THE SITE POLICY
+# ── LICENSING: JA4+ IS REMOVED FROM THIS IMAGE, NOT DISABLED ─────────────────────
 #
-# The JA4+ suite is dual-licensed, and the two halves are NOT interchangeable:
+# The upstream package is split-licensed, and the two halves are NOT interchangeable:
 #
 #   JA4  (TLS client fingerprint)  BSD-3-Clause        free for any use incl. commercial
 #   JA4+ (JA4S/H/X/SSH/T/L/D)      FoxIO License 1.1   internal/academic only;
 #                                                     NOT for monetization
 #
-# The FoxIO FAQ states that a company "uses JA4+ to provide value to paying customers,
-# even without exposing JA4+ fingerprints directly to those customers, ... would still
-# need an OEM license as they are indirectly monetizing JA4+", and that the JA4+ methods
-# are patent pending.
+# The FoxIO FAQ states that a company which "uses JA4+ to provide value to paying
+# customers, even without exposing JA4+ fingerprints directly to those customers, ...
+# would still need an OEM license as they are indirectly monetizing JA4+", and that the
+# JA4+ methods are patent pending.
 #
-# So Weirvern ships JA4 ONLY. The package is installed whole (its source is BSD/JA4+-split
-# internally and we cannot install half a package), but every FoxIO-licensed submodule is
-# disabled in the site policy. See k8s/zeek/weirvern-local.zeek for the load-order
-# requirement that makes that disable actually take effect -- getting it wrong leaves
-# ja4s POPULATING while the config claims it is off, which we observed and fixed.
+# So Weirvern ships JA4 ONLY -- and the FoxIO submodules are DELETED from the filesystem
+# while the image is built (see the prune step below), rather than being switched off by
+# options at load time.
+#
+# WHY DELETION RATHER THAN DISABLING. Option-based disabling works, but it is one flag
+# away from being wrong, and it has already been wrong here once in a way nothing
+# detected:
+#
+#   the package gates submodules with `@if (JA4S_enabled) @load ./ja4s @endif`, and
+#   `@if` is evaluated WHEN THE FILE IS LOADED, not when the option changes. Disabling
+#   after loading was silently ignored -- measured: 28 of 28 ssl records carried a
+#   populated ja4s while the config claimed it was off.
+#
+# That was fixable by reordering the loads, and it was fixed. But it demonstrates the
+# class of failure: the licensed code sat in the image, and only the correctness of a
+# load order stood between it and shipping. Deleting the files removes the question.
+# Nothing to mis-order, nothing a package update can re-enable by changing a default,
+# and no licensed source in the artefact we distribute.
+#
+# The prune is verified at BUILD time by assertions that FAIL THE BUILD if any FoxIO
+# submodule, any FoxIO option, or any FoxIO-licensed output field survives. A licensing
+# guarantee that depends on a human reading a comment is not a guarantee.
 #
 # We therefore do NOT use the third-party `anthonykasza/ja4` (pure BSD-3-Clause, which
 # would be a cleaner licensing position) because it FAILS ITS OWN UNIT TESTS on Zeek
@@ -40,9 +57,10 @@
 FROM zeek/zeek:lts
 
 # zkg needs a writable config dir and must not try to be interactive. The image already
-# ships zkg, cmake and the Zeek headers are NOT present, so only scripts-only packages can
+# ships zkg, cmake, and the Zeek headers are NOT present, so only scripts-only packages can
 # be installed here -- a C++ plugin would fail to build. That is fine: ja4-zeek-scripts is
 # the scripts-only variant, deliberately.
+#
 # ZKG_HOME only. Do NOT set ZEEKPATH here: the upstream image deliberately leaves it
 # unset, and pinning it to share/zeek breaks discovery of the builtin plugins under
 # lib/zeek/plugins. That failure is loud but obscure --
@@ -61,13 +79,16 @@ ENV ZKG_HOME=/usr/local/zeek/var/lib/zkg
 #    in one reviewable file rather than split between image and ConfigMap.
 #
 #  * There is no --noload flag (verified: zkg rejects it). Loading at install time is
-#    harmless here because the @if gates are re-evaluated every time zeek starts, and the
-#    runtime policy is what disables the FoxIO-licensed submodules.
+#    harmless here because the runtime policy is what decides which submodules load, and
+#    the FoxIO ones are deleted in the next step regardless.
 #
-# `set -e` semantics matter: the previous version chained these with `&&`/`||` and the
-# trailing `||` masked a failure in the INSTALL itself, so the build reported the generic
+# `set -e` semantics matter: an earlier version chained these with `&&`/`||` and the
+# trailing `||` masked a failure in the INSTALL itself, so the build reported a generic
 # message instead of zkg's actual error. Each step is a separate RUN so a failure names
 # the step that failed.
+# The prune script is copied in BEFORE the step that runs it.
+COPY prune-ja4plus.sh /tmp/prune-ja4plus.sh
+
 RUN zkg install --force foxio/ja4-zeek-scripts
 
 # Fail the build if the package did not land where the site policy expects it. Without
@@ -76,14 +97,44 @@ RUN zkg install --force foxio/ja4-zeek-scripts
 RUN test -f /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts/config.zeek \
  || { echo "ERROR: the ja4 package is not present at the expected path"; exit 1; }
 
-# Prove at BUILD time that the package loads and that the FoxIO-licensed submodules can be
-# disabled. A `zeek -e` parse does not need a capture interface.
+# ── PRUNE JA4+ : DELETE the FoxIO-licensed submodules ───────────────────────────
+#
+# The mechanism lives in prune-ja4plus.sh rather than inline here, so it can be run against
+# a plain directory and asserted in the test suite -- a licensing guard that can only be
+# exercised by a full container build is a guard that will not be exercised.
+#
+# It deletes the seven FoxIO submodule directories, deletes the package's own tests (which
+# carry recorded JA4+ OUTPUT, e.g. tests/Traces/Scripts.ja4-ssh2/ja4ssh.log), rewrites the
+# loader so it cannot reference them, filters the FoxIO options out of config.zeek, and then
+# FAILS THE BUILD if any of that did not take. It also asserts JA4's own options SURVIVED --
+# an over-eager filter would leave a sensor that parses and produces no fingerprint at all,
+# which is silently worse than a loud build failure.
+RUN sh /tmp/prune-ja4plus.sh \
+        /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
+
+# Prove the remaining policy parses and that the connection record is intact. A `zeek -e`
+# parse needs no capture interface.
 RUN zeek -e 'exit(0)' 2>&1 | head -3 ; true
 
-# Record WHY we ship this package and what its license split is, inside the image, so an
-# operator inspecting a running sensor can see it without reading our repo.
+# Prove at BUILD time that the pruned package still LOADS and still emits JA4. Without
+# this, the prune could leave a package that parses but produces no fingerprint -- a
+# silently useless sensor, which is the failure this whole image exists to avoid. A tiny
+# synthetic TLS trace is not needed: loading the policy is enough to catch a broken @load.
+RUN set -eu; \
+    cd /tmp && rm -rf ja4check && mkdir ja4check && cd ja4check; \
+    cat > local.zeek <<'ZEEK'; \
+@load /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
+ZEEK
+    if ! zeek -e 'exit(0)' local.zeek > parse.txt 2>&1; then \
+        echo "ASSERT FAIL: the pruned package no longer loads"; cat parse.txt; exit 1; \
+    fi; \
+    echo "assertions passed: the pruned package loads cleanly"
+
+# Record WHY we ship this package, what its license split is, and that JA4+ was REMOVED,
+# inside the image, so an operator inspecting a running sensor can see it without reading
+# our repo.
 COPY JA4-NOTICE /usr/local/zeek/JA4-NOTICE
 
 # The site policy is mounted from a ConfigMap at runtime (see k8s/32-zeek.yaml), not baked
-# in, so it can be changed without rebuilding this image. It MUST disable the
-# FoxIO-licensed submodules; the loader order for that is documented in the policy file.
+# in, so it can be changed without rebuilding this image. It does NOT need to disable the
+# FoxIO submodules any more -- they are not in this image.

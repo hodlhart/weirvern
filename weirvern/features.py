@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES, ZEEK_FEATURES
+
 HOST_FEATURES = [
     "log_bytes",
     "log_packets",
@@ -26,12 +28,25 @@ HOST_FEATURES = [
     "log_flow_count",
 ]
 
+# Zeek-derived features are APPENDED to the NetFlow ones, never interleaved.
+#
+# WHY THE ORDER MATTERS AND WHY THEY GO LAST: a model records its `feature_columns` and
+# rebuilds its input vector by name, so inserting a feature in the middle would silently
+# reinterpret every column after it for any model trained before the change -- the vector
+# would still have the right LENGTH, so nothing would raise, and every prediction would be
+# quietly wrong. Appending keeps existing vectors valid up to the new tail.
+#
+# WHY ZEEK ADDS SOMETHING THE NETFLOW FEATURES CANNOT: bytes/packets/diversity describe
+# VOLUME and BREADTH. They cannot see what the traffic IS. Measured on the live deployment,
+# one host-window showed 89 connections of which 88 were unanswered SYNs, with zero response
+# bytes -- a scan, and one that NetFlow reports as modest traffic. Zeek's conn_state shows
+# it directly.
 IF_FEATURES = HOST_FEATURES + [
     "log_unique_dst_ports",
     "port_entropy",
     "bytes_stddev_norm",
     "connection_density",
-]
+] + ZEEK_FEATURES
 
 DBSCAN_FEATURES = [
     "log_bytes",
@@ -42,7 +57,7 @@ DBSCAN_FEATURES = [
     "port_entropy",
     "activity_regularity",
     "burstiness",
-]
+] + ZEEK_DBSCAN_FEATURES
 
 
 def _safe_log1p(v: float) -> float:
@@ -50,12 +65,26 @@ def _safe_log1p(v: float) -> float:
 
 
 def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = None,
-                     temporal: dict[str, Any] | None = None) -> dict[str, float]:
+                     temporal: dict[str, Any] | None = None,
+                     zeek: dict[str, Any] | None = None,
+                     zeek_baseline: dict[str, Any] | None = None) -> dict[str, float]:
     """Build the full feature dict for one aggregated flow row.
 
     `flow` keys expected: total_bytes, total_packets, unique_dst_ips, flow_count,
     window_start (datetime). `diversity`/`temporal` are the per-host metric
     dicts from the diversity/temporal tables (any missing → safe defaults).
+
+    `zeek` is the per-(host, 5-minute window) Zeek summary row -- see
+    weirvern/zeek_features.py. `zeek_baseline` is the host's longer-window service and
+    fingerprint history, which is what makes novelty measurable rather than mere variety.
+
+    WHEN `zeek` IS None OR EMPTY, THE ZEEK FEATURES ARE ZERO AND `zeek_present` IS 0. That
+    flag is part of the vector on purpose: "Zeek did not observe this host-window" and "Zeek
+    observed it and there was nothing unusual" are different facts, and only the second is
+    evidence of normality. Without the flag the model would learn that a whole class of hosts
+    is defined by empty features, which is an artefact of two sensors seeing different
+    traffic rather than a property of the network. Measured on the test box: 35 Zeek hosts
+    against 88 NetFlow hosts with an overlap of 2, so this is the common case there.
     """
     total_bytes = float(flow.get("total_bytes", 0) or 0)
     total_packets = float(flow.get("total_packets", 0) or 0)
@@ -104,6 +133,12 @@ def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = No
     else:
         f["activity_regularity"] = 1.0
         f["burstiness"] = 1.0
+
+    # Zeek-derived features. Imported here rather than at module scope only for the pure
+    # function, so this module stays importable without the Zeek query builders.
+    from weirvern.zeek_features import extract_zeek_features
+
+    f.update(extract_zeek_features(zeek or {}, zeek_baseline))
 
     return f
 

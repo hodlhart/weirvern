@@ -2,10 +2,12 @@ from datetime import datetime
 
 from weirvern.features import (
     DBSCAN_FEATURES,
+    HOST_FEATURES,
     IF_FEATURES,
     extract_features,
     feature_vector,
 )
+from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES, ZEEK_FEATURES
 
 
 def _flow(**overrides):
@@ -23,8 +25,10 @@ def _flow(**overrides):
 
 def test_basic_features_shape():
     feats = extract_features(_flow())
-    # 10 host + 4 diversity + 2 temporal = 16
-    assert len(feats) == 16
+    # 10 host + 4 diversity + 2 temporal + the Zeek set. Asserted as a SUM rather than a
+    # literal, so appending a feature does not need this line edited -- but a feature that
+    # silently went missing still fails here.
+    assert len(feats) == len(HOST_FEATURES) + 4 + 2 + len(ZEEK_FEATURES)
     assert feats["log_bytes"] > 0
     assert feats["bytes_per_packet"] == 100.0
     assert feats["is_business_hours"] == 1.0  # Tue 10:30
@@ -66,5 +70,17 @@ def test_feature_vectors_match_train_order():
         "unique_dst_ports": 10, "port_entropy": 1.0, "bytes_stddev": 1.0,
         "unique_connections": 5,
     }, temporal={"activity_regularity": 0.5, "burstiness": 2.0})
-    assert len(feature_vector(feats, IF_FEATURES)) == len(IF_FEATURES) == 14
-    assert len(feature_vector(feats, DBSCAN_FEATURES)) == len(DBSCAN_FEATURES) == 8
+    # The vector length must equal the declared feature list, which is the property that
+    # actually matters: `feature_vector` rebuilds a model's input BY POSITION, so a vector
+    # whose length disagrees with its column list is silently misaligned.
+    assert len(feature_vector(feats, IF_FEATURES)) == len(IF_FEATURES)
+    assert len(feature_vector(feats, DBSCAN_FEATURES)) == len(DBSCAN_FEATURES)
+    # The Zeek features must actually be in those lists, or the wiring did nothing.
+    assert "zeek_present" in IF_FEATURES, "the Zeek presence flag is not in the IF vector"
+    assert ZEEK_FEATURES[0] in IF_FEATURES
+
+    # AND the lists must end with the Zeek block in the SAME ORDER as ZEEK_FEATURES. A model
+    # records its feature_columns and rebuilds its vector by name, so an order mismatch
+    # produces a vector of the right length holding the wrong values -- nothing raises.
+    assert IF_FEATURES[-len(ZEEK_FEATURES):] == ZEEK_FEATURES
+    assert DBSCAN_FEATURES[-len(ZEEK_DBSCAN_FEATURES):] == ZEEK_DBSCAN_FEATURES

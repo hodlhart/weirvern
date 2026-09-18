@@ -54,61 +54,66 @@ def _executable_lines(text: str) -> list[str]:
     return out
 
 
-# ── licensing: the load ORDER, not just the presence ────────────────────────────
+# ── licensing: REMOVAL, which replaced the load order ───────────────────────────
+#
+# These three tests used to assert the disable LIST: that every FoxIO option was redefined
+# to F in the site policy, and that the redefs appeared BEFORE the package was loaded.
+#
+# That design worked, and the ordering assertion genuinely caught a real defect -- the
+# package evaluates `@if (JA4S_enabled)` at LOAD time, so a disable placed after the package
+# had loaded was silently ignored and ja4s populated in 28 of 28 records while the config
+# claimed it was off.
+#
+# It has been superseded by deletion at build time (zeek/prune-ja4plus.sh, exercised in
+# tests/test_ja4_removal.py), for a reason worth stating: the disable list left the
+# licensed code IN the image with a load ORDER as the only thing preventing its
+# distribution. A three-line ordering property cannot be verified from configuration, and a
+# package update changing a default is invisible to it. Removing the files has no ordering
+# to get wrong.
+#
+# So the assertions below are now the inverse: the disables must be ABSENT, because their
+# presence would mean the licensed code is back.
 
 
-def test_every_foxio_licensed_option_is_disabled():
-    text = _policy()
-    for opt in FOXIO_OPTIONS:
-        assert re.search(rf"redef\s+FINGERPRINT::{opt}\s*=\s*F\s*;", text), (
-            f"{opt} is not disabled in the site policy. It is FoxIO License 1.1 "
-            f"(no monetization, patent pending) while JA4 alone is BSD-3-Clause."
-        )
+def test_the_site_policy_no_longer_carries_a_disable_list():
+    """The absence of the disable list IS the guarantee.
 
-
-def test_the_options_are_disabled_BEFORE_the_package_is_loaded():
-    """The assertion that actually prevents shipping FoxIO output.
-
-    `@if (JA4S_enabled)` is evaluated at load time, so a disable that appears after the
-    package has been loaded has no effect whatsoever -- and produces no error, no warning,
-    and no test failure. Only the order distinguishes a real restriction from a decorative
-    one. Measured failure of the wrong order: ja4s populated in 28/28 records.
+    If someone re-adds `redef FINGERPRINT::JA4S_enabled = F`, that option no longer exists
+    (it is deleted from the package's config.zeek at build time), so Zeek would abort with
+    "redef used but not previously defined". More importantly its presence would signal that
+    the licensed code had returned and was being switched off by configuration again.
     """
     lines = _executable_lines(_policy())
-
-    # The last point at which the package's submodules could be pulled in.
-    package_loads = [i for i, ln in enumerate(lines)
-                     if re.match(r"^@load\s+(ja4-zeek-scripts|packages)\s*$", ln)]
-    assert package_loads, "the policy never loads the ja4 package at all"
-
-    first_package_load = min(package_loads)
-
-    disables = [i for i, ln in enumerate(lines) if "FINGERPRINT::" in ln and "= F" in ln]
-    assert disables, "no JA4+ options are disabled"
-
-    late = [i for i in disables if i > first_package_load]
-    assert not late, (
-        "a FoxIO-licensed JA4+ option is disabled AFTER the package is loaded, so the "
-        "disable is silently ignored and the field still populates. Load "
-        "`packages/ja4-zeek-scripts/config` first, disable, then load the package. "
-        f"offending line(s): {[lines[i] for i in late]}"
+    disables = [ln for ln in lines if "FINGERPRINT::" in ln and "= F" in ln]
+    assert not disables, (
+        f"the site policy redefines FoxIO options again: {disables}. Those options are "
+        f"DELETED from the package at build time (zeek/prune-ja4plus.sh), so this is either "
+        f"a dead redef that will abort startup, or a sign the licensed code came back."
     )
 
 
-def test_config_is_loaded_before_the_disables():
-    """The disables need `config` loaded first, or the options are undefined.
-
-    Without it Zeek aborts with "redef used but not previously defined" -- a hard failure,
-    which is at least loud. Asserted anyway so the ordering constraint is stated in full.
-    """
+def test_the_package_is_loaded_as_a_unit_with_no_ordering_requirement():
+    """The old policy loaded `packages/ja4-zeek-scripts/config` separately so it could
+    disable options in between. With the options gone, that indirection is only a way to get
+    the order wrong."""
     lines = _executable_lines(_policy())
-    cfg = [i for i, ln in enumerate(lines) if "ja4-zeek-scripts/config" in ln]
-    dis = [i for i, ln in enumerate(lines) if "FINGERPRINT::" in ln and "= F" in ln]
-    assert cfg, "the policy does not load the package's config module"
-    assert dis, "no disables found"
-    assert min(cfg) < min(dis), (
-        "the FoxIO options are disabled before their defining `config` module is loaded, "
-        "so Zeek will fail with 'redef used but not previously defined'"
+    assert any(re.match(r"^@load\s+packages/ja4-zeek-scripts\s*$", ln) for ln in lines), (
+        "the policy does not load the ja4 package"
+    )
+    separate = [ln for ln in lines if "ja4-zeek-scripts/config" in ln]
+    assert not separate, (
+        f"the package config is still loaded separately ({separate}), which was only ever "
+        f"needed to position the disables"
+    )
+
+
+def test_ja4plus_removal_is_documented_where_the_policy_is_read():
+    """A future maintainer reading the policy must be able to find out that the submodules
+    are absent on purpose -- otherwise the obvious 'fix' is to add them back."""
+    text = _policy()
+    assert "prune-ja4plus.sh" in text, (
+        "the policy does not point at the prune script, so a reader cannot tell why the "
+        "JA4+ submodules are missing"
     )
 
 

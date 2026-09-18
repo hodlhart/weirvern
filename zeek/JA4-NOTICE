@@ -1,70 +1,81 @@
-JA4 / JA4+ LICENSING NOTICE
-===========================
+# Weirvern: JA4 fingerprinting, and why JA4+ is absent
 
-This Weirvern sensor image contains the Zeek package `foxio/ja4-zeek-scripts`, which
-implements the JA4+ suite of network fingerprints.
+This image contains **JA4 only**. The JA4+ methods are **removed at build time**, not
+disabled by configuration.
 
-Only ONE member of that suite is enabled in this deployment: JA4, the TLS client
-fingerprint. Every other member is disabled in the site policy.
+## The split
 
-The two halves are licensed differently:
+The upstream `foxio/ja4-zeek-scripts` package is dual-licensed, and its two halves are not
+interchangeable:
 
-  JA4   (TLS client fingerprint)   BSD 3-Clause
-        Free for any use, including commercial use. Redistribution requires retaining
-        the copyright notice and disclaimer.
-        Copyright (c) 2026 FoxIO. All rights reserved.
-        License: https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE-JA4
+| Component | License | Permitted use |
+|---|---|---|
+| **JA4** (TLS client fingerprint) | **BSD 3-Clause** | any use, including commercial |
+| **JA4+** — JA4S, JA4H, JA4X, JA4SSH, JA4T, JA4TS, JA4L, JA4D | **FoxIO License 1.1** | internal / academic only; **not** for monetization; methods patent pending |
 
-  JA4+  (JA4S, JA4L, JA4LS, JA4H, JA4X, JA4SSH, JA4T, JA4TS, JA4TScan, JA4Scan, JA4D,
-         JA4D6 and all future additions)   FoxIO License 1.1
-        Permissive for academic and internal business use. NOT permissive for
-        monetization. Methods and associated detection logic are patent pending.
-        License: https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE
-        FAQ:     https://github.com/FoxIO-LLC/ja4/blob/main/License%20FAQ.md
+The FoxIO FAQ states that a company which *"uses JA4+ to provide value to paying customers,
+even without exposing JA4+ fingerprints directly to those customers, ... would still need an
+OEM license as they are indirectly monetizing JA4+"*.
 
-Why only JA4 is enabled
------------------------
+Weirvern ships JA4 only, so no OEM licence is required and the BSD-3-Clause notice governs
+everything present.
 
-The FoxIO FAQ states that a company which "uses JA4+ to provide value to paying
-customers, even without exposing JA4+ fingerprints directly to those customers, ... would
-still need an OEM license as they are indirectly monetizing JA4+."
+## What was removed, and how
 
-Weirvern is intended to be deployable as a product. Enabling JA4+ would therefore require
-an OEM license from FoxIO. JA4 alone carries no such restriction, and it is the member
-that answers the question encryption creates -- "what client software is this, when the
-payload is unreadable" -- by fingerprinting the TLS ClientHello.
+Build time, via `zeek/prune-ja4plus.sh`, invoked from `zeek/Containerfile`:
 
-How the restriction is enforced in code
----------------------------------------
+- the seven FoxIO submodule directories (`ja4s/`, `ja4h/`, `ja4x/`, `ja4ssh/`, `ja4t/`,
+  `ja4l/`, `ja4d/`)
+- the package's `tests/` directory, which contains **recorded output of the licensed code**
+  (e.g. `tests/Traces/Scripts.ja4-ssh2/ja4ssh.log`). Leaving it would ship JA4+ fingerprints
+  inside the image even with the code that produced them gone.
+- the `@load` lines in the package loader that referenced those submodules
+- the FoxIO option declarations in the package's `config.zeek`
 
-The package gates each submodule at LOAD time:
+The script **fails the build** if any submodule directory, test file, or FoxIO option
+survives — and equally if JA4's own options were removed, since an over-eager filter would
+leave a sensor that parses cleanly and produces no fingerprint at all. That is silently
+worse than a loud build failure.
 
-    @if (JA4S_enabled) @load ./ja4s @endif
+## Why deletion rather than a disable flag
 
-Because `@if` is evaluated when the file is loaded rather than when the option changes,
-the disable must happen BEFORE the package's other files are loaded. Disabling the options
-after `@load ja4-zeek-scripts` is silently ignored and leaves ja4s POPULATING while the
-configuration claims it is off -- a state we reproduced, measured (28 of 28 records had
-ja4s populated), and corrected.
+Configuration-based disabling does work, and it worked here, but it was one flag away from
+being wrong — and it had already been wrong in a way that nothing detected:
 
-The correct order is documented in k8s/zeek/weirvern-local.zeek, which loads only the
-package's `config` module first, disables the FoxIO-licensed options, and only then loads
-the package.
+> The package gates its submodules with `@if (JA4S_enabled) @load ./ja4s @endif`, and `@if`
+> is evaluated **when the file is loaded**, not when the option changes. Disabling the
+> options *after* loading the package was therefore silently ignored: measured on a live
+> sensor, **28 of 28** `ssl` records carried a populated `ja4s` while the configuration
+> claimed it was off.
 
-If you enable any JA4+ member
------------------------------
+That was fixed by loading `config` first, disabling, and only then loading the package. But
+it left the licensed source sitting in the image with nothing but a **load order** standing
+between it and distribution — a correctness property living in the sequence of three lines,
+which no configuration check could confirm and which a package update could quietly invalidate.
 
-You are responsible for holding an appropriate FoxIO license. Do not enable them in a
-distribution you monetize without one. The relevant option names are:
+Deleting the files removes the question:
 
-    FINGERPRINT::JA4_enabled      (BSD-3-Clause -- safe)
-    FINGERPRINT::JA4S_enabled     (FoxIO License 1.1)
-    FINGERPRINT::JA4H_enabled     (FoxIO License 1.1)
-    FINGERPRINT::JA4L_enabled     (FoxIO License 1.1)
-    FINGERPRINT::JA4SSH_enabled   (FoxIO License 1.1)
-    FINGERPRINT::JA4T_enabled     (FoxIO License 1.1)
-    FINGERPRINT::JA4TS_enabled    (FoxIO License 1.1)
-    FINGERPRINT::JA4D_enabled     (FoxIO License 1.1)
-    FINGERPRINT::JA4X_enabled     (FoxIO License 1.1)
+- nothing to mis-order
+- nothing a future package version can re-enable by changing a default
+- no licensed source in the artefact we distribute
 
-This notice is informational and is not legal advice.
+If you are reading this inside a running sensor and want to verify the removal, the
+submodule directories should be absent and `config.zeek` should contain no `JA4S`, `JA4H`,
+`JA4X`, `JA4SSH`, `JA4T`, `JA4L` or `JA4D` option.
+
+## What Weirvern uses
+
+JA4 TLS client fingerprints, written to `ssl.log` as `ja4`, and ingested into
+`weirvern.zeek_ssl.ja4`. A sample real value from the live deployment:
+
+```
+t130200_1302_234ea6891581
+```
+
+## Third-party alternative, and why it is not used
+
+`anthonykasza/ja4` is pure BSD-3-Clause, which would be a simpler licensing position. It is
+**not** used because it **fails its own unit tests on Zeek 9.0.0** and cannot be installed:
+`zkg install` aborts with `test_command failed`. A fingerprint that is subtly wrong is worse
+than none, because it silently fails to match threat-intelligence data while appearing to
+work.

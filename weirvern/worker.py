@@ -31,6 +31,7 @@ from weirvern.models.detectors import (
     GradientBoostingDetector,
     IsolationForestDetector,
 )
+from weirvern.zeek_features import zeek_window_sql
 
 logger = logging.getLogger("weirvern.worker")
 
@@ -184,11 +185,31 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         since=since,
     )
 
+    # THE ZEEK SIDE OF SCORING, which is what makes the Zeek features real rather than
+    # train-only. Training on a feature that live scoring cannot supply is worse than not
+    # having it: the model learns weights for a column that is always zero at inference,
+    # so every live score is computed from a different distribution than it was fitted on.
+    #
+    # One query for the whole sweep, keyed on (5-minute window, host) to match
+    # flows_aggregated exactly. Wrapped because a Zeek schema problem must not stop
+    # detection entirely -- NetFlow-only detection is a degraded mode, not a stopped system.
     def index(cols: list[str], rows) -> dict[tuple, dict]:
         out = {}
         for r in rows:
             out[(r[0], r[1])] = dict(zip(cols[2:], r[2:], strict=False))
         return out
+
+    zeek_idx: dict[tuple, dict] = {}
+    try:
+        z_cols, z_rows = db.fetch_rows_named(client, zeek_window_sql(since))
+        zeek_idx = index(z_cols, z_rows)
+        if not zeek_idx:
+            logger.warning(
+                "Zeek summary is empty for this sweep, so every Zeek feature is imputed. "
+                "Check that the Zeek sensor covers the same segment as NetFlow."
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load the Zeek window summary (continuing NetFlow-only): %s", exc)
 
     div_idx = index(div_cols, div_rows)
     tmp_idx = index(tmp_cols, tmp_rows)
@@ -198,6 +219,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         key = (f["window_start"], f["src_addr"])
         f["_diversity"] = div_idx.get(key)
         f["_temporal"] = tmp_idx.get(key)
+        f["_zeek"] = zeek_idx.get(key)
 
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg)
     if not verdicts:

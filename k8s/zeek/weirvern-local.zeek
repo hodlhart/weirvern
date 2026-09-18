@@ -20,39 +20,29 @@
 # "fingerprint the TLS ClientHello" idea, readable a_b_c format, and it also covers
 # QUIC.
 #
-# LICENSING -- DO NOT REORDER THESE LINES.
-# The JA4+ suite is split-licensed: JA4 itself is BSD-3-Clause (free for any use,
-# including commercial), while JA4S/JA4H/JA4X/JA4SSH/JA4T/JA4L/JA4D are FoxIO
-# License 1.1 -- permissive for internal and academic use but NOT for monetization,
-# with patent-pending methods. Weirvern ships JA4 only. See zeek/JA4-NOTICE.
+# LICENSING: JA4+ IS NOT IN THE IMAGE.
+# The JA4+ half of the package (JA4S/H/X/SSH/T/L/D) is FoxIO License 1.1 -- permissive
+# for internal and academic use, NOT for monetization, with patent-pending methods. At
+# image BUILD time every FoxIO submodule directory, the package's recorded JA4+ test
+# output, the loader lines that referenced them, and the options that gated them are all
+# DELETED. See zeek/prune-ja4plus.sh, which fails the build if any of that did not take.
 #
-# The load ORDER is load-bearing. The package gates its submodules with
-#     @if (JA4S_enabled) @load ./ja4s @endif
-# and `@if` is evaluated WHEN THE FILE IS LOADED, not when the option changes. So
-# disabling the options AFTER loading the package is silently ignored: we measured
-# 28 of 28 ssl records carrying a populated ja4s while the config said it was off.
-# Loading config FIRST, disabling, and only then loading the package is what makes
-# the restriction real. Verified: ja4 populated 28/28, ja4+ populated 0/28.
-@load packages/ja4-zeek-scripts/config
-
+# THERE IS DELIBERATELY NO DISABLE LIST HERE ANY MORE. This file used to carry ten
+# `redef FINGERPRINT::JA4*_enabled = F` lines, because the package's submodules are gated
+# with `@if (X_enabled) @load ./x @endif` and `@if` is evaluated WHEN THE FILE IS LOADED --
+# so disabling after loading was silently ignored (measured: 28 of 28 ssl records carried a
+# populated ja4s while the config claimed it was off). That was fixable by load ordering,
+# and it was fixed.
 #
-# EVERY option in the FoxIO section of the package's config.zeek is listed, not just the
-# ones that default to T. Some default to F today (JA4X_enabled, JA4S_raw, JA4H_raw), and
-# relying on a default is how a package update silently turns a licensed feature back on:
-# the option name does not change, only its default, and nothing here would notice.
-redef FINGERPRINT::JA4S_enabled   = F;
-redef FINGERPRINT::JA4S_raw       = F;   # unhashed JA4S components
-redef FINGERPRINT::JA4H_enabled   = F;
-redef FINGERPRINT::JA4H_raw       = F;   # unhashed JA4H components
-redef FINGERPRINT::JA4L_enabled   = F;
-redef FINGERPRINT::JA4SSH_enabled = F;
-redef FINGERPRINT::JA4T_enabled   = F;
-redef FINGERPRINT::JA4TS_enabled  = F;
-redef FINGERPRINT::JA4X_enabled   = F;
-redef FINGERPRINT::JA4D_enabled   = F;
-
-@load packages
-@load ja4-zeek-scripts
+# But it left the licensed code sitting in the image with only a load ORDER standing
+# between it and being shipped, and nothing in the config could tell you if that order
+# broke. Deleting the files removes the question entirely: there is nothing to mis-order,
+# nothing a package update can turn back on by changing a default, and no licensed source
+# in the artefact we distribute.
+#
+# If you find yourself wanting to re-add a `redef FINGERPRINT::JA4S_enabled = F` line, that
+# option no longer exists -- and its absence is the point.
+@load packages/ja4-zeek-scripts
 
 # ── Detection scripts ───────────────────────────────────────────────────────
 # Host/service inventory: turns "this host started speaking something new" into

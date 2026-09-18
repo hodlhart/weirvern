@@ -17,6 +17,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from weirvern import prune
 
 
@@ -32,15 +34,46 @@ def make_logs(tmp_path: Path, spec: dict[str, list[tuple[str, int]]]) -> Path:
     return tmp_path
 
 
+# A FIXED clock for everything in this file.
+#
+# WHY: every test here compares a file's name-embedded timestamp against the current time,
+# and `plan_prune` accepts a `now` parameter for exactly that reason -- but none of the 11
+# call sites used it, so each read the wall clock. That makes the grace-period assertions
+# depend on how long the test takes and on where the wall clock happens to sit when the
+# fixture is built. A timestamp formatted to whole SECONDS from a `time.time()` that lands
+# at a fractional second shifts by up to 1s between the name and the comparison, which is
+# harmless against a 3600s grace but is the kind of drift that turns a tight assertion flaky
+# for reasons nobody can reproduce later.
+#
+# A single frozen instant removes the whole class: names and comparisons derive from the same
+# value, so the arithmetic is exact.
+NOW = 1_800_000_000.0   # 2027-01-15 12:00:00 UTC, arbitrary but fixed
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    """Pin `time.time()` for every test in this module.
+
+    `prune.py` reads the wall clock internally (both for a file's age and for `plan_prune`'s
+    default `now`), and its own `now` parameter is not accepted by the deleting wrapper
+    `prune()`. Patching the clock at the source covers every path uniformly, so a test cannot
+    accidentally compare timestamps taken from two different instants -- which is what made
+    the grace-period assertions depend on how long the suite happened to take.
+
+    `time.localtime` and `strftime` are left alone: the fixtures format real calendar
+    timestamps with them, and only the "what time is it now" answer needs to be pinned.
+    """
+    monkeypatch.setattr(prune.time, "time", lambda: NOW)
+    yield
+
+
 def old_ts(hours_ago: int) -> str:
     """A Zeek-style timestamp, sufficiently past the grace period."""
-    t = time.time() - (hours_ago * 3600)
-    return time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(t))
+    return time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(NOW - (hours_ago * 3600)))
 
 
 def recent_ts(minutes_ago: int) -> str:
-    t = time.time() - (minutes_ago * 60)
-    return time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(t))
+    return time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(NOW - (minutes_ago * 60)))
 
 
 MB = 1024 * 1024

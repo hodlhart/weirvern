@@ -36,10 +36,35 @@ from weirvern.models.scoring import (
     normalize_zscore,
     score_by_percentile,
 )
+from weirvern.zeek_features import (
+    ZEEK_DBSCAN_FEATURES,
+    ZEEK_FEATURES,
+    ZEEK_JOIN_ON,
+    zeek_join_cte,
+)
 
 logger = logging.getLogger(__name__)
 
 QUERY_SETTINGS = {"max_memory_usage": 4_000_000_000, "max_execution_time": 120}
+
+
+
+def _zeek_clause(start: str, end: str, columns: list[str] | None = None) -> tuple[str, str, str]:
+    """(with-clause, select-list, join-clause) for the Zeek side of a training query.
+
+    One helper for all four detectors. Duplicating the join per detector is how the models
+    drift apart: three training on one window and the fourth on a slightly different key,
+    which no metric would show and which would appear only as one detector disagreeing with
+    the others for no stated reason.
+
+    `columns` selects which Zeek features to include. The DEFAULT is all of them, matching
+    IF_FEATURES; DBSCAN passes its smaller set, because clustering degrades with
+    dimensionality when samples are few.
+    """
+    if columns is None:
+        columns = ZEEK_FEATURES
+    select = ",\n".join(f"                z.{c}" for c in columns)
+    return zeek_join_cte(start, end), select, ZEEK_JOIN_ON
 
 
 class RobustPreprocessor:
@@ -82,7 +107,9 @@ class IsolationForestDetector(BaseDetector):
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
+            WITH {zeek_cte}
             SELECT
                 log(a.total_bytes + 1),
                 log(a.total_packets + 1),
@@ -97,10 +124,12 @@ class IsolationForestDetector(BaseDetector):
                 log(coalesce(d.unique_dst_ports, 0) + 1),
                 coalesce(d.port_entropy, 0),
                 coalesce(d.bytes_stddev, 0) / NULLIF(a.total_bytes, 0),
-                coalesce(d.unique_connections, a.flow_count) / NULLIF(a.flow_count, 1)
+                coalesce(d.unique_connections, a.flow_count) / NULLIF(a.flow_count, 1),
+{zeek_cols}
             FROM weirvern.flows_aggregated a
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
+            {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
               AND a.total_bytes > 0
               AND (
@@ -275,7 +304,9 @@ class DBSCANDetector(BaseDetector):
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
+            WITH {zeek_cte}
             SELECT
                 log(a.total_bytes + 1),
                 log(a.total_packets + 1),
@@ -284,12 +315,14 @@ class DBSCANDetector(BaseDetector):
                 log(coalesce(d.unique_dst_ports, 0) + 1),
                 coalesce(d.port_entropy, 0),
                 coalesce(t.activity_regularity, 1.0),
-                coalesce(t.burstiness, 1.0)
+                coalesce(t.burstiness, 1.0),
+{zeek_cols}
             FROM weirvern.flows_aggregated a
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
             LEFT JOIN weirvern.flows_aggregated_temporal t
                 ON a.window_start = t.window_start AND a.src_addr = t.src_addr
+            {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
               AND a.total_bytes > 0
               AND sipHash64(a.src_addr) % 5 == 1
@@ -349,17 +382,35 @@ class AdaptiveBaselineDetector(BaseDetector):
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        # The Zeek join gives this detector a BEHAVIOURAL baseline alongside the volumetric
+        # one. The existing three statistics (bytes, packets, unique destinations) all
+        # measure how MUCH a host did; none measures WHAT it did. A host whose volume is
+        # perfectly normal while it starts making refused connections, or suddenly speaking
+        # services it never has, is invisible to a volume-only baseline -- and that is the
+        # shape of an intrusion rather than of a busy day.
+        #
+        # The Zeek aggregates here are per-host ACROSS the window, not per 5-minute bucket,
+        # because the question is "what is normal for this host" rather than "what happened
+        # in this bucket". Averages and percentiles are the right shape for that.
+        zeek_cte, _, zeek_join = _zeek_clause(s, e)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
+            WITH {zeek_cte}
             SELECT
-                src_addr,
-                avg(total_bytes), sqrt(varPop(total_bytes)),
-                avg(total_packets), sqrt(varPop(total_packets)),
-                avg(unique_dst_ips), sqrt(varPop(unique_dst_ips)),
-                quantiles(0.95, 0.99, 0.999)(total_bytes),
-                quantiles(0.95, 0.99, 0.999)(total_packets)
-            FROM weirvern.flows_aggregated
-            WHERE window_start BETWEEN '{s}' AND '{e}'
-            GROUP BY src_addr
+                a.src_addr,
+                avg(a.total_bytes), sqrt(varPop(a.total_bytes)),
+                avg(a.total_packets), sqrt(varPop(a.total_packets)),
+                avg(a.unique_dst_ips), sqrt(varPop(a.unique_dst_ips)),
+                quantiles(0.95, 0.99, 0.999)(a.total_bytes),
+                quantiles(0.95, 0.99, 0.999)(a.total_packets),
+                avg(coalesce(z.conn_count, 0)), sqrt(varPop(coalesce(z.conn_count, 0))),
+                avg(coalesce(z.s0_count, 0)), sqrt(varPop(coalesce(z.s0_count, 0))),
+                avg(coalesce(z.service_count, 0)), sqrt(varPop(coalesce(z.service_count, 0))),
+                avg(coalesce(z.notice_count, 0)), sqrt(varPop(coalesce(z.notice_count, 0))),
+                max(z.conn_count > 0)  AS zeek_seen
+            FROM weirvern.flows_aggregated a
+            {zeek_join}
+            WHERE a.window_start BETWEEN '{s}' AND '{e}'
+            GROUP BY a.src_addr
             HAVING count() >= {int(self.cfg.baseline_min_obs)}
             LIMIT 100000
         """
@@ -368,6 +419,7 @@ class AdaptiveBaselineDetector(BaseDetector):
             logger.warning("Not enough baseline data (%d hosts)", len(rows))
             return False
         self.baselines = {}
+        zeek_seen_hosts = 0
         for r in rows:
             bq, pq = r[7], r[8]
             self.baselines[r[0]] = {
@@ -376,14 +428,37 @@ class AdaptiveBaselineDetector(BaseDetector):
                 "avg_unique_dsts": float(r[5] or 0), "stddev_unique_dsts": float(r[6] or 1),
                 "p95_bytes": float(bq[0]), "p99_bytes": float(bq[1]), "p999_bytes": float(bq[2]),
                 "p95_packets": float(pq[0]), "p99_packets": float(pq[1]), "p999_packets": float(pq[2]),
+                # Behavioural norms from Zeek. `zeek_seen` is carried through so predict()
+                # can tell "this host has no Zeek baseline" from "its baseline is zero",
+                # exactly as the feature vector's presence flag does.
+                "zeek_seen": bool(r[14]),
+                "avg_conn": float(r[9] or 0), "stddev_conn": float(r[10] or 1),
+                "avg_s0": float(r[11] or 0), "stddev_s0": float(r[12] or 1),
+                "avg_services": float(r[13] or 0),
+                "avg_notices": float(r[15] or 0) if len(r) > 15 else 0.0,
             }
+            if self.baselines[r[0]]["zeek_seen"]:
+                zeek_seen_hosts += 1
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
             params={"min_obs": self.cfg.baseline_min_obs},
-            metrics={"baseline_count": len(self.baselines)},
+            metrics={"baseline_count": len(self.baselines),
+                     "zeek_baselined_hosts": zeek_seen_hosts},
             window_start=start_dt, window_end=end_dt, sample_count=len(self.baselines),
         )
-        logger.info("✅ Baselines computed for %d hosts", len(self.baselines))
+        logger.info(
+            "✅ Baselines computed for %d hosts (%d with Zeek behavioural baselines)",
+            len(self.baselines), zeek_seen_hosts,
+        )
+        if zeek_seen_hosts == 0 and self.baselines:
+            # Worth saying out loud rather than leaving as a silently missing dimension: the
+            # volumetric baseline works, the behavioural one contributes nothing, and nothing
+            # in the metrics would otherwise show the difference. Seen on the test box, where
+            # the Zeek and NetFlow host sets barely overlap.
+            logger.warning(
+                "No host has a Zeek behavioural baseline, so this detector is volume-only. "
+                "Check that both sensors observe the same segment (zeek_join_coverage)."
+            )
         self.save()
         return True
 
@@ -399,7 +474,33 @@ class AdaptiveBaselineDetector(BaseDetector):
             s_p = score_by_percentile(tp, b["p95_packets"], b["p99_packets"], b["p999_packets"])
             z = (float(flow.get("unique_dst_ips", 0)) - b["avg_unique_dsts"]) / max(b["stddev_unique_dsts"], 1.0)
             s_u = normalize_zscore(z)
-            return max(s_b, s_p, s_u)
+
+            # BEHAVIOURAL dimension, from Zeek. Trained in train() and consumed here -- a
+            # baseline that is computed but never consulted changes nothing, which is the
+            # easiest way to wire something up and have it silently do no work.
+            #
+            # Gated on `zeek_seen`: a host with no Zeek baseline gets NO behavioural score
+            # rather than a score of 0 against a zero baseline, which would either never fire
+            # or fire constantly depending on how the divisor fell. Absence is not evidence.
+            s_z = 0.0
+            if b.get("zeek_seen") and features:
+                # Refused-and-unanswered connections relative to what is normal for THIS host.
+                # A host whose established S0 rate is ~0 and which suddenly shows 88 of them is
+                # the case this exists for; the same 88 on a host that always scans is not.
+                conn = float(features.get("zeek_conn_count", 0.0) or 0.0)
+                s0 = float(features.get("zeek_s0_ratio", 0.0) or 0.0)
+                conn_z = (conn - b["avg_conn"]) / max(b["stddev_conn"], 1.0)
+                # The ratio is compared against the host's own typical S0 COUNT scaled to the
+                # window, because the ratio alone is 1.0 for a host that sends a single SYN.
+                s0_z = (s0 * max(conn, 1.0) - b["avg_s0"]) / max(b["stddev_s0"], 1.0)
+                # Notices are Zeek's own opinion; a host that normally raises none raising
+                # several is worth weighing even when its volume is unremarkable.
+                notices = float(features.get("zeek_notice_count", 0.0) or 0.0)
+                notice_z = (notices - b["avg_notices"]) / max(b["avg_notices"], 1.0)
+                s_z = max(normalize_zscore(conn_z), normalize_zscore(s0_z),
+                          normalize_zscore(notice_z))
+
+            return max(s_b, s_p, s_u, s_z)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Prediction error %s: %s", self.name, exc)
             return 0.0
