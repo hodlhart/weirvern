@@ -1,0 +1,71 @@
+# weir-mode overlay: grants the sensor what in-path intercept needs.
+#
+# WHY THIS IS A SEPARATE OVERLAY AND NOT AN EDIT TO 32-zeek.yaml
+#
+# The default deployment is loch (passive) and its securityContext is deliberately tight:
+# all capabilities dropped, NET_RAW re-added because libpcap cannot open a raw socket
+# without it, no privilege escalation, seccomp RuntimeDefault, no service-account token.
+# weir mode needs strictly MORE than that, and more privilege is not something to add to
+# the default just because a mode might want it. So it is opt-in:
+#
+#     kubectl apply -k k8s/                  # loch: NET_RAW only
+#     kubectl apply -k overlays/weir/        # weir: NET_RAW + NET_ADMIN + sysctls
+#
+# The overlay lives OUTSIDE k8s/ deliberately: kustomize refuses a kustomization that
+# references a directory containing itself ("cycle detected"), and an overlay nested under
+# its own base triggers exactly that.
+#
+# WHAT IS ACTUALLY REQUIRED, measured on the test box rather than assumed:
+#
+#   CAP_NET_ADMIN      to write the forwarding sysctls. Without it every write to
+#                      /proc/sys is refused and weir cannot work at all.
+#
+#   A WRITABLE /proc/sys   The non-obvious part. The sensor pod's /proc/sys is mounted
+#                      READ-ONLY, so even a container holding NET_ADMIN fails with
+#                      "Read-only file system" -- which reads like a file permission
+#                      problem rather than a mount restriction. VERIFIED: the same
+#                      sysctls write fine from the LXC itself, so this is a pod-level
+#                      restriction, not a host limitation. The pod securityContext
+#                      sysctls below are what bypass it.
+#
+#   Three sysctls       ip_forward must be 1, and BOTH rp_filter and send_redirects must
+#                      be 0. On the test box they were rp_filter=2 and send_redirects=1,
+#                      i.e. wrong for weir -- so weir would have failed even with the
+#                      capability granted. Each has its own symptom:
+#
+#                        rp_filter != 0   -> the reverse-path check drops relayed packets
+#                                            whose return route differs: one-way traffic,
+#                                            hanging TCP connects
+#                        send_redirects=1 -> the kernel tells the victim to send directly,
+#                                            silently undoing the intercept a few packets
+#                                            in. The MITM "works", then quietly stops.
+#
+# HOW THE SYSCtls GET SET, AND WHY NOT HERE
+#
+# They cannot be declared in this overlay. The API server rejects pod-level sysctls
+# whenever hostNetwork is true -- verified against the live cluster:
+#
+#   spec.template.spec.securityContext.sysctls[0].name: Invalid value:
+#   "net.ipv4.ip_forward": may not be specified when 'hostNetwork' is true
+#
+# Since this DaemonSet shares the node's network namespace, the sysctls ARE the node's, so
+# they are set on the node. Either persistently in the LXC/node, or immediately:
+#
+#   sysctl -w net.ipv4.ip_forward=1
+#   sysctl -w net.ipv4.conf.all.rp_filter=0
+#   sysctl -w net.ipv4.conf.all.send_redirects=0
+#
+# `weirvern intercept --dry-run` verifies all three and refuses to poison if any is wrong,
+# so a missed setting fails safe and loudly rather than taking the segment down.
+#
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../k8s
+
+patches:
+  - path: zeek-weir-patch.yaml
+    target:
+      kind: DaemonSet
+      name: zeek

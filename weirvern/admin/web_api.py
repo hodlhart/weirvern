@@ -255,7 +255,8 @@ def evidence_payload(d: dict) -> dict:
 
 
 def overview_payload(services: list, report, anomalies: list[dict],
-                     talkers: list[tuple], caps, data_error: str | None = None) -> dict:
+                     talkers: list[tuple], caps, data_error: str | None = None,
+                     sensor: dict | None = None) -> dict:
     """One payload for the landing page, so the browser makes ONE request.
 
     The dashboard is a single screen; making it fetch four endpoints in parallel
@@ -269,6 +270,11 @@ def overview_payload(services: list, report, anomalies: list[dict],
         # deployment, which is exactly how an earlier in-cluster tunnel bug hid.
         "data_error": data_error,
         "health": health_payload(report) if report is not None else None,
+        # What the SENSOR says it is doing, which is not the same as its configured
+        # mode: a weir process that died still has SENSOR_MODE=weir in the ConfigMap.
+        # The query reports a stale heartbeat as not-running, so this cannot show
+        # "intercepting" for a sensor that has stopped.
+        "sensor": sensor or {},
         "workloads": [
             {"name": s.name, "state": s.state, "health": getattr(s, "health", ""),
              "detail": getattr(s, "detail", "")}

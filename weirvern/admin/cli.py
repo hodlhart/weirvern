@@ -1492,6 +1492,29 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         return EXIT_NOTREADY
 
     runner.start()
+
+    # Publish a heartbeat so the GUI and TUI can see this intercept running. Without it
+    # the only thing a remote reader has is SENSOR_MODE in the ConfigMap, which says what
+    # was INTENDED and survives this process dying -- so the dashboard would show
+    # "intercepting" for a sensor that had stopped.
+    # The heartbeat needs a LIVE connection for the whole intercept, so the client is
+    # opened into an ExitStack rather than closed after starting the loop -- a closed
+    # client would make every subsequent beat fail silently and the GUI would show
+    # nothing while the intercept ran.
+    beat = None
+    stack = contextlib.ExitStack()
+    try:
+        from weirvern.admin import heartbeat as hb_mod
+        _hc = stack.enter_context(admin_client(_settings()))
+        beat = hb_mod.HeartbeatLoop(_hc, state=lambda: _intercept_state(runner))
+        beat.start()
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal by design: a sensor that cannot report must still intercept. The cost
+        # of no heartbeat is a dashboard showing "unknown", which is recoverable; the cost
+        # of aborting is no interception at all.
+        print(f"  note: no status heartbeat ({exc}) -- the GUI will not show this "
+              f"intercept, but it is running")
+
     failure: str | None = None
     try:
         if args.seconds:
@@ -1507,7 +1530,10 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         # withdrawing.
         failure = f"{type(exc).__name__}: {exc}"
     finally:
+        if beat is not None:
+            beat.stop()
         runner.stop()
+        stack.close()
 
     st = runner.status()
     print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
@@ -1541,6 +1567,36 @@ def _has_cap(name: str) -> bool:
     if number is None:
         return False
     return bool(bits & (1 << number))
+
+
+def _intercept_state(runner) -> dict:
+    """The fields to publish for a running intercept.
+
+    Reports the mode the process is ACTUALLY in -- "weir" here, because this only runs
+    while intercepting -- rather than reading SENSOR_MODE. That distinction is the point
+    of the heartbeat: an observed fact beats a configured one.
+    """
+    st = runner.status()
+    return {
+        "mode": "weir",
+        "iface": str(st.get("iface") or ""),
+        "segment": str(st.get("segment") or ""),
+        "hosts": int(st.get("hosts") or 0),
+        "mappings": int(st.get("mappings") or 0),
+        "running": bool(st.get("running")),
+        "uptime_s": float(st.get("uptime_s") or 0.0),
+        "restores": int(st.get("watchdog_restores") or 0),
+        "refreshes": int(st.get("watchdog_refreshes") or 0),
+        "failures": [str(f) for f in (st.get("watchdog_failures") or [])],
+    }
+
+
+def _settings():
+    """Settings from the environment, for the control-plane commands here."""
+    from weirvern import config
+    return config.Settings.from_env() if hasattr(config.Settings, "from_env") \
+        else config.Settings()
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()

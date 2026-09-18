@@ -194,12 +194,18 @@ def _build_handler(ctx: GuiContext):
             report = None
             anomalies: list = []
             talkers: list = []
+            sensor: dict = {}
             data_error = None
             try:
                 with self._with_client() as client:
                     report = status_mod.collect_health(client, ctx.settings)
                     anomalies = status_mod.anomalies_detailed(client, limit=25)
                     talkers = status_mod.top_talkers(client, limit=10)
+                    # What the sensor reports about itself. Separate from the health
+                    # checks above, which answer "is data flowing", not "what is the
+                    # sensor doing" -- and for weir that distinction is the whole point:
+                    # a dead intercept still has its mode in the ConfigMap.
+                    sensor = status_mod.sensor_status(client)
             except Exception as exc:  # noqa: BLE001
                 # WARNING, not debug, and surfaced in the payload. This was debug
                 # originally, and the effect was a page that rendered every panel
@@ -210,7 +216,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("overview data unavailable: %s", exc)
 
             payload = web_api.overview_payload(
-                services, report, anomalies, talkers, ctx.capabilities)
+                services, report, anomalies, talkers, ctx.capabilities, sensor=sensor)
             payload["data_error"] = data_error
             self._json(payload)
 

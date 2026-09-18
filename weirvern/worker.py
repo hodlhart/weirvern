@@ -11,6 +11,7 @@ Run as:  python -m weirvern.worker
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -365,6 +366,23 @@ def main() -> None:
             verdicts = detection_sweep(client, detectors, settings, cfg)
             for v in verdicts:
                 push_alert(v, settings, alert_state, client)
+
+            # Report what the SENSOR is doing, observed from its log files. The sensor
+            # container has no python3, so it cannot report itself (see sensorwatch), and
+            # the worker is the only component that both has Python and can see the logs.
+            #
+            # Guarded so a monitoring failure never interrupts detection: a dashboard
+            # showing "unknown" is recoverable, a worker that stops alerting is not.
+            try:
+                from weirvern.admin import sensorwatch, status
+                status.heartbeat(
+                    client,
+                    sensor_id=os.environ.get("SENSOR_ID")
+                    or os.environ.get("HOSTNAME", "worker"),
+                    **sensorwatch.observe(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("sensor heartbeat failed: %s", exc)
         except KeyboardInterrupt:
             break
         except Exception as exc:  # noqa: BLE001

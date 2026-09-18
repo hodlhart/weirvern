@@ -11,6 +11,7 @@ alarms.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import time
 from collections.abc import Callable
@@ -479,3 +480,163 @@ def _human_age(seconds: float) -> str:
 
 
 human_age = _human_age
+
+
+# ---------------------------------------------------------------------------
+# sensor status: what the sensor is ACTUALLY doing
+# ---------------------------------------------------------------------------
+
+# How long a heartbeat is trusted. The sensor writes every HEARTBEAT_S; three intervals
+# means a single missed write (a slow query, a brief stall) does not flap the display,
+# while a dead process is reported within ~45s rather than never.
+HEARTBEAT_S = 15
+HEARTBEAT_STALE_S = HEARTBEAT_S * 3
+
+
+
+def _aware(dt: datetime.datetime) -> datetime.datetime:
+    """Make a datetime comparable to ClickHouse's, without inventing an offset.
+
+    ClickHouse returns timezone-AWARE values (in the server's timezone), while
+    `datetime.now()` returns a NAIVE one. Mixing them raises TypeError, so one side must be
+    labelled -- and the label must be LOCAL, not UTC:
+
+        datetime.now()          -> naive, meaning LOCAL time
+        .replace(tzinfo=UTC)    -> WRONG: relabels local time as if it were UTC
+
+    That mistake shifted every age by the container's offset. This deployment runs
+    TZ=America/Chicago, so a heartbeat 29 seconds old computed as -17998s -- and because
+    `stale` is `age > threshold`, a NEGATIVE age is never stale. A sensor dead for five
+    minutes therefore reported `running: True`, which is precisely the failure this feature
+    exists to prevent.
+
+    `.astimezone()` on a naive value attaches the system's local timezone, which is what
+    the naive value genuinely means. Aware values pass through untouched, and Python then
+    compares across timezones correctly -- so this is correct regardless of TZ.
+    """
+    if dt.tzinfo is None:
+        return dt.astimezone()
+    return dt
+
+
+def sensor_status(client, now: datetime.datetime | None = None) -> dict:
+    """The sensor's own report of what it is doing, or an honest "unknown".
+
+    WHY THIS EXISTS, AND WHY IT IS NOT JUST THE CONFIG VALUE: the GUI runs in its own pod
+    and cannot see the sensor's filesystem, so the configured `SENSOR_MODE` was the only
+    thing available to it -- and that is a statement of INTENT, not of reality. The two
+    differ exactly when it matters: a weir process that died, or was never started, still
+    has SENSOR_MODE=weir in the ConfigMap. Reporting the configured mode as though it were
+    the running mode would show "intercepting 2 hosts" for a sensor that is not running.
+
+    THE RULE THIS ENFORCES: a stale heartbeat is reported as NOT RUNNING, never as the
+    last known state. That is the same class of bug as the always-empty Top Talkers and
+    Zeek Services panels -- a display that looks healthy while being wrong.
+
+    Returns a dict with `running`, `stale`, `age_s`, and the last reported details. Every
+    field is present even when nothing was ever reported, so the caller never has to
+    distinguish "key missing" from "null value".
+    """
+    now = _aware(now or datetime.datetime.now())
+    out: dict = {
+        "reported": False,
+        "running": False,
+        "stale": False,
+        "age_s": None,
+        "mode": "",
+        "iface": "",
+        "segment": "",
+        "hosts": 0,
+        "mappings": 0,
+        "uptime_s": 0.0,
+        "restores": 0,
+        "refreshes": 0,
+        "failures": [],
+        "stale_after_s": HEARTBEAT_STALE_S,
+        # Always present so a consumer never has to distinguish a missing key from a
+        # null value -- the frontend checks `if (s.error)` and an absent key is a
+        # different shape.
+        "error": None,
+    }
+    try:
+        rows = list(client.query(
+            "SELECT mode, iface, segment, hosts, mappings, running, uptime_s, "
+            "restores, refreshes, failures, ts "
+            "FROM weirvern.sensor_status "
+            "ORDER BY ts DESC LIMIT 1"
+        ).named_results())
+    except Exception as exc:  # noqa: BLE001
+        # A missing table is the normal state before the schema Job runs, and it must not
+        # be reported as "not running" -- those are different facts and conflating them
+        # sends an operator looking for a dead sensor that was never started.
+        logger.debug("sensor_status unavailable: %s", exc)
+        out["error"] = "sensor status is unavailable"
+        return out
+
+    if not rows:
+        out["error"] = (
+            "no sensor has reported yet. The sensor writes a heartbeat every "
+            f"{HEARTBEAT_S}s while it runs, so this means it has not started or cannot "
+            "reach ClickHouse."
+        )
+        return out
+
+    r = rows[0]
+    out.update({
+        "reported": True,
+        "mode": str(r.get("mode") or ""),
+        "iface": str(r.get("iface") or ""),
+        "segment": str(r.get("segment") or ""),
+        "hosts": int(r.get("hosts") or 0),
+        "mappings": int(r.get("mappings") or 0),
+        "uptime_s": float(r.get("uptime_s") or 0.0),
+        "restores": int(r.get("restores") or 0),
+        "refreshes": int(r.get("refreshes") or 0),
+        "failures": list(r.get("failures") or []),
+    })
+
+    ts = r.get("ts")
+    reported_running = bool(r.get("running"))
+    if isinstance(ts, datetime.datetime):
+        # Both sides normalised: see _aware for why this is not just a cast.
+        age = (now - _aware(ts)).total_seconds()
+        out["age_s"] = round(age, 1)
+        out["stale"] = age > HEARTBEAT_STALE_S
+        # A stale heartbeat overrides `running`: the process is gone regardless of what its
+        # last write claimed, because nothing has written since.
+        out["running"] = reported_running and not out["stale"]
+        if out["stale"]:
+            out["error"] = (
+                f"the sensor last reported {_human_age(age)} ago "
+                f"(heartbeats are every {HEARTBEAT_S}s), so it is no longer running. "
+                f"The most recent mode it reported was '{out['mode']}'."
+            )
+    else:
+        out["error"] = "the sensor heartbeat has an unreadable timestamp"
+    return out
+
+
+def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",
+              hosts: int = 0, mappings: int = 0, running: bool = False,
+              uptime_s: float = 0.0, restores: int = 0, refreshes: int = 0,
+              failures: list[str] | None = None) -> bool:
+    """Write one heartbeat row. Returns whether it landed.
+
+    Never raises: a sensor that cannot report its status must still capture traffic. The
+    failure mode of a missing heartbeat is a dashboard that says "unknown", which is
+    recoverable; the failure mode of an exception here is a dead sensor.
+    """
+    try:
+        client.insert(
+            "weirvern.sensor_status",
+            [[sensor_id, mode, iface, segment, int(hosts), int(mappings),
+              1 if running else 0, float(uptime_s), int(restores), int(refreshes),
+              list(failures or []), datetime.datetime.now()]],
+            column_names=["sensor_id", "mode", "iface", "segment", "hosts", "mappings",
+                          "running", "uptime_s", "restores", "refreshes", "failures",
+                          "ts"],
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("heartbeat write failed: %s", exc)
+        return False

@@ -45,6 +45,18 @@ function fmtBytes(n) {
   return String(Math.round(n));
 }
 
+/**
+ * A duration in seconds as a compact age. Mirrors status._human_age in the backend so
+ * the same figure does not render two different ways in the TUI and the GUI.
+ */
+function fmtAge(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m" + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d" + Math.floor((s % 86400) / 3600) + "h";
+}
+
 function fmtTime(v) {
   if (!v) return "—";
   const d = new Date(v);
@@ -89,6 +101,61 @@ async function getJSON(url) {
   return body;
 }
 
+/* ── sensor ─────────────────────────────────────────────────────────────── */
+
+/**
+ * What the SENSOR says it is doing -- which is not its configured mode.
+ *
+ * The configured SENSOR_MODE lives in the ConfigMap and survives the sensor dying, so
+ * showing it as the current state would display "intercepting 2 hosts" for a process
+ * that stopped hours ago. The backend reports a stale heartbeat as not-running, and this
+ * must render that as plainly as it renders a healthy sensor -- the failure mode being
+ * guarded against is a green panel over a dead sensor.
+ */
+function renderSensor(s) {
+  const box = document.getElementById("sensor-body");
+  if (!box) return;
+  box.replaceChildren();
+  if (!s) { box.appendChild(el("p", { class: "muted", text: "no sensor information" })); return; }
+
+  // The headline fact: running or not, and in which mode.
+  const mode = s.mode || "unknown";
+  const state = s.running ? "running" : (s.reported ? "NOT running" : "never reported");
+  const pill = el("span", {
+    class: "pill " + (s.running ? "ok" : "bad"),
+    text: mode,
+  });
+
+  box.appendChild(el("p", {}, [
+    el("strong", { text: "Mode: " }), pill,
+    el("span", { class: "muted", text: "  " + state }),
+    s.age_s != null
+      ? el("span", { class: "muted", text: `  · last heartbeat ${fmtAge(s.age_s)} ago` })
+      : el("span", { class: "muted", text: "  · no heartbeat received" }),
+  ]));
+
+  if (s.error) {
+    box.appendChild(el("p", { class: "banner", text: s.error }));
+  }
+
+  // Intercept detail only exists in weir mode. An empty value there means "not
+  // applicable", not "unknown", so it is stated rather than left blank.
+  if (mode === "weir" && s.reported) {
+    box.appendChild(el("p", { class: "muted", text:
+      `In-path intercept on ${s.iface || "?"} (${s.segment || "?"}): ` +
+      `${s.hosts} host(s), ${s.mappings} ARP mapping(s), up ${fmtAge(s.uptime_s)}` }));
+    box.appendChild(el("p", { class: "muted", text:
+      `watchdog: ${s.restores} restore(s), ${s.refreshes} refresh(es)` }));
+    for (const f of (s.failures || [])) {
+      box.appendChild(el("p", { class: "banner", text: "watchdog: " + f }));
+    }
+  } else if (mode === "loch" && s.reported) {
+    box.appendChild(el("p", { class: "muted", text:
+      `Passive capture on ${s.iface || "?"} — Weirvern observes only and cannot ` +
+      `affect traffic. Nothing is intercepted, so there is nothing to show here.` }));
+  }
+}
+
 /* ── overview ───────────────────────────────────────────────────────────── */
 
 async function loadOverview() {
@@ -110,6 +177,8 @@ async function loadOverview() {
   }
   document.getElementById("fetched").textContent =
     data.health ? "as of " + fmtTime(data.health.fetched_at) : "";
+
+  renderSensor(data.sensor);
 
   const ht = document.querySelector("#health-table tbody");
   ht.replaceChildren();

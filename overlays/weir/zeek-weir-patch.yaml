@@ -1,0 +1,61 @@
+# The weir-mode widening, as a strategic-merge patch against the base DaemonSet.
+#
+# WHY THIS IS A PATCH AND NOT A COPY: the base keeps owning the probe, the args, the
+# volumes and the env; this file changes ONLY what interception requires. A duplicated
+# manifest would silently lose any future change made to the base.
+#
+# WHY THERE ARE NO sysctls HERE -- MEASURED, NOT ASSUMED:
+#
+# The first version of this overlay declared the three sysctls in the pod securityContext,
+# on the reasoning that `net.*` sysctls are namespaced and hostNetwork makes them the
+# node's. The API server REJECTS that outright:
+#
+#   The DaemonSet "zeek" is invalid:
+#     * spec.template.spec.securityContext.sysctls[0].name: Invalid value:
+#       "net.ipv4.ip_forward": may not be specified when 'hostNetwork' is true
+#
+# So a pod CANNOT set them for itself here. Because this DaemonSet already shares the
+# node's network namespace, the sysctls are the node's to set -- either in the LXC/node
+# configuration (persistent) or with `sysctl -w` on the host (immediate), and the container
+# then inherits them.
+#
+# The required values, and why each matters:
+#
+#   net.ipv4.ip_forward=1            Without it we forge the ARP mapping and then DROP the
+#                                    traffic: every intercepted host goes off the network,
+#                                    and it presents as a hardware fault.
+#   net.ipv4.conf.all.rp_filter=0    Reverse-path filtering discards relayed packets whose
+#                                    return route differs from the interface they arrived
+#                                    on: one-way traffic, hanging TCP connects.
+#   net.ipv4.conf.all.send_redirects=0
+#                                    The kernel tells the victim to send directly, silently
+#                                    undoing the intercept a few packets in. The MITM
+#                                    "works", then quietly stops.
+#
+# `weirvern intercept --dry-run` reports all three before anything is poisoned, so this is
+# verifiable rather than guessable.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: zeek
+  namespace: weirvern
+spec:
+  template:
+    spec:
+      containers:
+        - name: zeek
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # NET_RAW for capture -- loch needs this too and it is already in the base.
+              # NET_ADMIN is the meaningful widening: it lets this container change IP
+              # forwarding and interface parameters on the NODE, since the DaemonSet uses
+              # hostNetwork.
+              #
+              # Still root, for the verified reason documented in k8s/32-zeek.yaml:
+              # Kubernetes DROPS added capabilities for non-root containers, so `add` only
+              # takes effect at uid 0. That is not a convenience.
+              add: ["NET_RAW", "NET_ADMIN"]
+            runAsUser: 0
+            runAsGroup: 0
