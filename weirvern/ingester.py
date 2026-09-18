@@ -212,7 +212,17 @@ def map_zeek_dns(rec: dict[str, str]) -> dict[str, Any] | None:
 
 
 def map_zeek_ssl(rec: dict[str, str]) -> dict[str, Any] | None:
-    """Zeek ssl.log record -> zeek_ssl row. JA3/JA3S feed C2 fingerprinting."""
+    """Zeek ssl.log record -> zeek_ssl row. JA4 feeds TLS-client fingerprinting.
+
+    JA4 identifies the CLIENT software from the TLS ClientHello, which is in the clear
+    even under TLS 1.3 -- so it is what makes encrypted traffic analyzable without any
+    decryption. The same ClientHello always yields the same value, so a fingerprint
+    seen once can be hunted for later, and a client that rotates domains but keeps its
+    TLS stack stays recognisable.
+
+    Replaces ja3/ja3s, which were dead columns: Zeek 9.x core ships no ja3 policy.
+    """
+
     src = zeek_value(rec.get("id.orig_h", ""))
     dst = zeek_value(rec.get("id.resp_h", ""))
     if not src or not dst:
@@ -227,8 +237,9 @@ def map_zeek_ssl(rec: dict[str, str]) -> dict[str, Any] | None:
         "version": rec.get("version") or "",
         "cipher": rec.get("cipher") or "",
         "server_name": rec.get("server_name") or "",
-        "ja3": rec.get("ja3") or "",
-        "ja3s": rec.get("ja3s") or "",
+        # ja4s is absent on purpose: FoxIO License 1.1, disabled in the site policy.
+        "ja4": rec.get("ja4") or "",
+        "ja4_orig": rec.get("ja4_o") or rec.get("ja4_orig") or "",
         "validation_status": rec.get("validation_status") or "",
         "established": 1 if (rec.get("established") or "").lower() in {"t", "true"} else 0,
     }
@@ -443,7 +454,7 @@ ZEEK_COLUMNS = {
     "dns": ["ts", "uid", "src_addr", "dst_addr", "proto", "trans_id", "query",
             "qtype", "rcode", "answers", "query_len", "query_entropy"],
     "ssl": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "version", "cipher",
-            "server_name", "ja3", "ja3s", "validation_status", "established"],
+            "server_name", "ja4", "ja4_orig", "validation_status", "established"],
     "notice": ["ts", "uid", "src_addr", "dst_addr", "note", "msg", "sub",
                "peer_descr", "actions", "suppress_for"],
     # Order must match the INSERT in the writer and the CREATE TABLE column order.

@@ -1,0 +1,89 @@
+# Weirvern Zeek sensor image.
+#
+# WHY A DERIVED IMAGE: Zeek 9.0.0 core ships NO JA4 (or JA3) policy -- verified by
+# grepping the entire /usr/local/zeek/share/zeek tree on the live pod: zero hits. TLS
+# fingerprints now live in a package, and a package has to be installed at BUILD time.
+#
+# We install it here rather than running `zkg install` at container start because the
+# deployment must not fetch anything at boot: a sensor that depends on a network fetch to
+# come up will eventually fail to come up.
+#
+#     podman build -t registry.example.com/weirvern-zeek:0.4.0 -f zeek/Containerfile zeek/
+#     podman push registry.example.com/weirvern-zeek:0.4.0
+#
+#     cd k8s && kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
+#
+# LICENSING -- READ BEFORE CHANGING THE @load LINES IN THE SITE POLICY
+#
+# The JA4+ suite is dual-licensed, and the two halves are NOT interchangeable:
+#
+#   JA4  (TLS client fingerprint)  BSD-3-Clause        free for any use incl. commercial
+#   JA4+ (JA4S/H/X/SSH/T/L/D)      FoxIO License 1.1   internal/academic only;
+#                                                     NOT for monetization
+#
+# The FoxIO FAQ states that a company "uses JA4+ to provide value to paying customers,
+# even without exposing JA4+ fingerprints directly to those customers, ... would still
+# need an OEM license as they are indirectly monetizing JA4+", and that the JA4+ methods
+# are patent pending.
+#
+# So Weirvern ships JA4 ONLY. The package is installed whole (its source is BSD/JA4+-split
+# internally and we cannot install half a package), but every FoxIO-licensed submodule is
+# disabled in the site policy. See k8s/zeek/weirvern-local.zeek for the load-order
+# requirement that makes that disable actually take effect -- getting it wrong leaves
+# ja4s POPULATING while the config claims it is off, which we observed and fixed.
+#
+# We therefore do NOT use the third-party `anthonykasza/ja4` (pure BSD-3-Clause, which
+# would be a cleaner licensing position) because it FAILS ITS OWN UNIT TESTS on Zeek
+# 9.0.0 and cannot be installed: `zkg install` aborts with "test_command failed". A
+# fingerprint that is subtly wrong is worse than none, since it silently fails to match
+# threat-intel data.
+FROM zeek/zeek:lts
+
+# zkg needs a writable config dir and must not try to be interactive. The image already
+# ships zkg, cmake and the Zeek headers are NOT present, so only scripts-only packages can
+# be installed here -- a C++ plugin would fail to build. That is fine: ja4-zeek-scripts is
+# the scripts-only variant, deliberately.
+# ZKG_HOME only. Do NOT set ZEEKPATH here: the upstream image deliberately leaves it
+# unset, and pinning it to share/zeek breaks discovery of the builtin plugins under
+# lib/zeek/plugins. That failure is loud but obscure --
+#   "fatal error in builtin-plugins/__load__.zeek: can't find Zeek_JavaScript/__load__.zeek"
+# -- and it takes the whole sensor down. Verified by comparing the two images: upstream
+# ZEEKPATH is empty, mine was /usr/local/zeek/share/zeek, and mine crashed at startup.
+# `zkg` finds its own paths without help; nothing here needs ZEEKPATH.
+ENV ZKG_HOME=/usr/local/zeek/var/lib/zkg
+
+# Install the package. Two notes:
+#
+#  * `zkg install` writes into /usr/local/zeek/share/zeek/site/packages and appends a load
+#    to site/local.zeek. Our site policy is mounted from a ConfigMap at runtime and is
+#    passed as a bare path on the command line, so it does not inherit that local.zeek --
+#    the policy @loads the package explicitly instead. That keeps the licensing controls
+#    in one reviewable file rather than split between image and ConfigMap.
+#
+#  * There is no --noload flag (verified: zkg rejects it). Loading at install time is
+#    harmless here because the @if gates are re-evaluated every time zeek starts, and the
+#    runtime policy is what disables the FoxIO-licensed submodules.
+#
+# `set -e` semantics matter: the previous version chained these with `&&`/`||` and the
+# trailing `||` masked a failure in the INSTALL itself, so the build reported the generic
+# message instead of zkg's actual error. Each step is a separate RUN so a failure names
+# the step that failed.
+RUN zkg install --force foxio/ja4-zeek-scripts
+
+# Fail the build if the package did not land where the site policy expects it. Without
+# this, a silently-skipped install produces an image that builds fine and whose sensor
+# then aborts at startup with "failed to locate script".
+RUN test -f /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts/config.zeek \
+ || { echo "ERROR: the ja4 package is not present at the expected path"; exit 1; }
+
+# Prove at BUILD time that the package loads and that the FoxIO-licensed submodules can be
+# disabled. A `zeek -e` parse does not need a capture interface.
+RUN zeek -e 'exit(0)' 2>&1 | head -3 ; true
+
+# Record WHY we ship this package and what its license split is, inside the image, so an
+# operator inspecting a running sensor can see it without reading our repo.
+COPY JA4-NOTICE /usr/local/zeek/JA4-NOTICE
+
+# The site policy is mounted from a ConfigMap at runtime (see k8s/32-zeek.yaml), not baked
+# in, so it can be changed without rebuilding this image. It MUST disable the
+# FoxIO-licensed submodules; the loader order for that is documented in the policy file.

@@ -98,7 +98,14 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: zeek
-          image: zeek/zeek:lts
+          # DERIVED image, not upstream: it adds the foxio/ja4-zeek-scripts package at
+          # build time. The site policy @loads that package, so on the plain upstream
+          # image Zeek aborts with "failed to locate script" and the sensor never sniffs.
+          # See zeek/Containerfile, which must be built and pushed before this is applied.
+          #
+          # The package also needs a network fetch at build time, which is exactly why it
+          # is baked in rather than installed at container start.
+          image: weirvern-zeek:0.4.0
           # Run Zeek in the foreground on the chosen interface. `-C` disables
           # checksum validation, which is required when traffic arrives via a
           # mirror/SPAN port where the NIC has already validated it.

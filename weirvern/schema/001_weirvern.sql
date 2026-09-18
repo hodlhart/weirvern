@@ -316,8 +316,20 @@ CREATE TABLE IF NOT EXISTS zeek_ssl
     version           LowCardinality(String),
     cipher            String,
     server_name       String,
-    ja3               String,
-    ja3s              String,
+    -- JA4: TLS ClientHello fingerprint. BSD-3-Clause (see zeek/JA4-NOTICE).
+    --
+    -- These replace ja3/ja3s, which were DEAD COLUMNS: Zeek 9.x core ships no ja3
+    -- policy at all (verified by grepping the entire installed script tree), so the
+    -- fields never appeared in ssl.log and the columns could never populate. JA3 was
+    -- removed from core Zeek and now lives only in a third-party package; JA4 is the
+    -- successor and is what the official FoxIO package emits.
+    --
+    -- ja4 covers the TLS ClientHello, so it identifies the CLIENT software even when
+    -- the payload is encrypted -- which is the whole point of fingerprinting TLS.
+    ja4               String,
+    -- NOTE: ja4s (server fingerprint) is deliberately NOT stored. It is FoxIO
+    -- License 1.1, not BSD-3-Clause, and is disabled in the site policy.
+    ja4_orig          String,
     validation_status LowCardinality(String),
     established       UInt8
 )
@@ -373,7 +385,7 @@ WITH
     s AS (
         SELECT toStartOfFiveMinute(ts) AS window_start, src_addr,
                count() AS tls_sessions,
-               uniqExact(ja3) AS distinct_ja3,
+               uniqExact(ja4) AS distinct_ja4,
                uniqExact(server_name) AS distinct_sni
         FROM weirvern.zeek_ssl
         GROUP BY window_start, src_addr
@@ -397,7 +409,7 @@ SELECT
     ifNull(d.mean_query_len, 0.0) AS mean_query_len,
     ifNull(d.distinct_queries, 0) AS distinct_queries,
     ifNull(s.tls_sessions, 0) AS tls_sessions,
-    ifNull(s.distinct_ja3, 0) AS distinct_ja3,
+    ifNull(s.distinct_ja4, 0) AS distinct_ja4,
     ifNull(s.distinct_sni, 0) AS distinct_sni,
     ifNull(n.notices, 0) AS notices,
     ifNull(n.notice_types, '') AS notice_types

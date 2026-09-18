@@ -11,6 +11,41 @@
 
 @load local
 
+# ── TLS fingerprints (JA4 -- BSD 3-Clause ONLY) ─────────────────────────────
+#
+# WHY JA4 AND NOT JA3: Zeek 9.0.0 core ships NEITHER. Grepping the whole
+# /usr/local/zeek/share/zeek tree returns zero hits for ja3 or ja4 -- the schemas
+# that once carried ja3/ja3s were removed from core, and the zeek_ssl.ja3 column
+# this project declared was therefore permanently empty. JA4 is its successor: same
+# "fingerprint the TLS ClientHello" idea, readable a_b_c format, and it also covers
+# QUIC.
+#
+# LICENSING -- DO NOT REORDER THESE LINES.
+# The JA4+ suite is split-licensed: JA4 itself is BSD-3-Clause (free for any use,
+# including commercial), while JA4S/JA4H/JA4X/JA4SSH/JA4T/JA4L/JA4D are FoxIO
+# License 1.1 -- permissive for internal and academic use but NOT for monetization,
+# with patent-pending methods. Weirvern ships JA4 only. See zeek/JA4-NOTICE.
+#
+# The load ORDER is load-bearing. The package gates its submodules with
+#     @if (JA4S_enabled) @load ./ja4s @endif
+# and `@if` is evaluated WHEN THE FILE IS LOADED, not when the option changes. So
+# disabling the options AFTER loading the package is silently ignored: we measured
+# 28 of 28 ssl records carrying a populated ja4s while the config said it was off.
+# Loading config FIRST, disabling, and only then loading the package is what makes
+# the restriction real. Verified: ja4 populated 28/28, ja4+ populated 0/28.
+@load packages/ja4-zeek-scripts/config
+
+redef FINGERPRINT::JA4S_enabled   = F;
+redef FINGERPRINT::JA4H_enabled   = F;
+redef FINGERPRINT::JA4L_enabled   = F;
+redef FINGERPRINT::JA4SSH_enabled = F;
+redef FINGERPRINT::JA4T_enabled   = F;
+redef FINGERPRINT::JA4TS_enabled  = F;
+redef FINGERPRINT::JA4D_enabled   = F;
+
+@load packages
+@load ja4-zeek-scripts
+
 # ── Detection scripts ───────────────────────────────────────────────────────
 # Host/service inventory: turns "this host started speaking something new" into
 # a notice, which is a useful explainability signal for an anomaly.

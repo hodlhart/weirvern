@@ -130,16 +130,28 @@ def test_label_entropy_bounds():
     assert _label_entropy("a.bbbbbbbb.c") == _label_entropy("bbbbbbbb")
 
 
-def test_map_zeek_ssl_extracts_ja3():
+def test_map_zeek_ssl_extracts_ja4():
+    """JA4, not JA3: Zeek 9.x core ships no ja3 policy, so ja3 never populated.
+
+    Renamed from test_map_zeek_ssl_extracts_ja3 rather than deleted, because the old
+    assertion encoded a real mistake -- it asserted a field that could never arrive.
+    """
     row = map_zeek_ssl({
         "ts": "1", "uid": "S1", "id.orig_h": "10.0.0.9", "id.resp_h": "1.2.3.4",
         "id.resp_p": "443", "version": "TLSv13", "cipher": "TLS_AES_256_GCM_SHA384",
-        "server_name": "c2.example.net", "ja3": "771,4865-4867,0-11", "ja3s": "771,4865",
+        "server_name": "c2.example.net", "ja4": "t130200_1302_234ea6891581",
+        "ja4_o": "t13d1516h2_8daaf6152771_02713d6af862",
+        "ja3": "THIS-MUST-BE-IGNORED",
         "validation_status": "ok", "established": "T",
     })
-    assert row["ja3"] == "771,4865-4867,0-11"
+    assert row is not None
+    assert row["ja4"] == "t130200_1302_234ea6891581"
+    assert row["ja4_orig"].startswith("t13d1516h2")
     assert row["server_name"] == "c2.example.net"
     assert row["established"] == 1
+    # ja4s is FoxIO License 1.1 and is not stored; a ja3 field must not be smuggled in.
+    assert "ja4s" not in row
+    assert "THIS-MUST-BE-IGNORED" not in str(row)
 
 
 def test_map_zeek_notice():
