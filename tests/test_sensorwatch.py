@@ -204,19 +204,38 @@ def test_the_heartbeat_interval_is_much_shorter_than_the_detection_interval():
         "the heartbeat must not be tied to the detection interval"
     )
     # Enough margin that one missed beat does not report a dead sensor.
-    assert status.HEARTBEAT_STALE_S >= s.heartbeat_interval_s * 2, (
+    assert s.heartbeat_interval_s * 2 <= status.HEARTBEAT_STALE_S, (
         "the staleness threshold must tolerate at least one missed heartbeat"
     )
 
 
 def test_the_heartbeat_runs_in_its_own_thread():
-    """Structural: it must not be inside the detection loop."""
+    """Structural: it must NOT be inside main()'s detection loop.
+
+    Publishing from the detection loop makes the heartbeat's interval the detection
+    interval (300s), while sensor_status treats anything older than 45s as dead -- so the
+    sensor would look stopped for four and a half minutes out of every five.
+
+    The slice is anchored on `main()` deliberately. `_heartbeat_thread` is defined EARLIER
+    in the file and contains its own `while not _stop.is_set():`, so searching for that line
+    from the top of the file finds the thread's loop, not the detection one -- which is how
+    the first version of this test failed against correct code.
+    """
     src = (Path(__file__).resolve().parents[1] / "weirvern" / "worker.py").read_text()
     assert "_heartbeat_thread" in src
-    assert 'name="sensor-heartbeat"' in src, "the heartbeat thread is not started"
-    # The detection loop must NOT call heartbeat directly any more.
-    loop = src[src.index("while not _stop.is_set():"):]
-    assert "status.heartbeat" not in loop, (
-        "status.heartbeat is still called from the detection loop, so the heartbeat's "
-        "interval is the detection interval and the sensor will look dead between cycles"
+    assert 'name="sensor-heartbeat"' in src, "the heartbeat thread is never started"
+
+    main_start = src.index("def main() -> None:")
+    main_body = src[main_start:]
+    assert "status.heartbeat" not in main_body, (
+        "status.heartbeat is called from main(), so the heartbeat shares the detection "
+        "interval and the sensor will look dead between cycles"
+    )
+
+    # And the thread genuinely publishes, so the assertion above cannot pass trivially for
+    # the wrong reason -- i.e. because nothing calls heartbeat at all.
+    thread_body = src[src.index("def _heartbeat_thread"):main_start]
+    assert "status.heartbeat" in thread_body, "nothing publishes the sensor heartbeat"
+    assert "_stop.wait(interval)" in thread_body, (
+        "the thread does not wait between beats, so it would spin"
     )
