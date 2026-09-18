@@ -1303,6 +1303,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--gateway", help="the gateway whose traffic to relay")
     s.add_argument("--dry-run", action="store_true",
                    help="show the plan and preflight results, change nothing")
+    s.add_argument("--hosts", action="append",
+                   help="intercept ONLY this host (repeatable). Strongly advised for a "
+                        "first run: a whole segment makes every device depend on this "
+                        "process, so a crash is an outage for all of them")
     s.add_argument("--seconds", type=int,
                    help="intercept for this long, then restore (default: until Ctrl-C)")
     s.set_defaults(func=cmd_intercept)
@@ -1493,8 +1497,9 @@ def cmd_intercept(args: argparse.Namespace) -> int:
                 print("  no obviously free address found; choose --our-ip deliberately")
         print()
 
+    only = {h.strip() for h in (args.hosts or []) if h.strip()}
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
-                             gateway_ip=gateway)
+                             gateway_ip=gateway, only=only or None)
     if plan is None:
         return EXIT_FAIL
 

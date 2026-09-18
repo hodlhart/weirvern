@@ -236,8 +236,19 @@ class InterceptPlan:
 
 
 def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
-               exclude: set[str] | None = None) -> InterceptPlan | None:
+               exclude: set[str] | None = None,
+               only: set[str] | None = None) -> InterceptPlan | None:
     """Discover what exists on `segment` and decide what to intercept.
+
+    `only` restricts interception to named hosts. THAT IS THE SAFER DEFAULT FOR A FIRST
+    TEST, and it is why the option exists: poisoning a whole segment makes Weirvern the
+    path for every device on it, so a crash is an outage for all of them until their ARP
+    caches expire. Two or three hosts prove relaying works and show the traffic, while
+    keeping the number of devices that would notice a mistake small.
+
+    A named host that did NOT answer the sweep is reported rather than silently dropped:
+    the operator asked for it, so silently intercepting fewer hosts than requested would
+    look like success while testing less than they think.
 
     Returns None (with a reason logged) rather than raising, because every failure here is
     an environmental one -- no MAC, no gateway MAC, nothing alive -- and each has a
@@ -268,6 +279,17 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     hosts = arp_sweep(iface, our_mac, our_ip, candidates)
     # A host that answered as our own MAC is us (or a mirror); never intercept ourselves.
     hosts = {ip: mac for ip, mac in hosts.items() if mac.lower() != our_mac.lower()}
+
+    if only:
+        missing = sorted(only - set(hosts))
+        if missing:
+            logger.warning(
+                "%d requested host(s) did not answer an ARP sweep and would NOT be "
+                "intercepted: %s. Intercepting fewer hosts than asked is reported rather "
+                "than silent, because it would otherwise look like success.",
+                len(missing), ", ".join(missing),
+            )
+        hosts = {ip: mac for ip, mac in hosts.items() if ip in only}
 
     return InterceptPlan(iface=iface, segment=segment, our_mac=our_mac, our_ip=our_ip,
                          gateway_ip=gateway_ip, gateway_mac=gateway_mac, hosts=hosts)

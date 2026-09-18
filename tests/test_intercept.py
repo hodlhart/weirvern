@@ -524,3 +524,64 @@ def test_the_sweep_does_not_source_from_0000():
     assert "describe_segment(iface, segment, our_ip or gateway)" in body, (
         "the survey does not pass a usable source address, so replies may never come"
     )
+
+
+# ── --hosts: intercept a subset, not the whole segment ──────────────────────────
+#
+# WHY THIS MATTERS MORE THAN IT LOOKS: poisoning a whole segment makes Weirvern the path
+# for every device on it, so a crash is an outage for all of them until their ARP caches
+# expire. Being able to name two or three hosts is what makes a first test on someone
+# else's network defensible.
+
+
+def test_a_host_filter_limits_what_is_intercepted(monkeypatch):
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
+        "192.168.3.11": "0b:0b:0b:0b:0b:0b",
+        "192.168.3.12": "0c:0c:0c:0c:0c:0c",
+    })
+    plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.50", "192.168.3.1",
+                         only={"192.168.3.10"})
+    assert plan is not None
+    assert set(plan.hosts) == {"192.168.3.10"}, (
+        "the host filter did not restrict the plan, so a 'small test' would poison the "
+        "whole segment"
+    )
+    # Two mappings per host: outbound (its cache for the gateway) and inbound (the
+    # gateway's cache for it). Both are required or replies take the direct path.
+    assert len(plan.mappings()) == 2
+
+
+def test_a_requested_host_that_is_absent_is_reported_not_silently_dropped(monkeypatch, caplog):
+    """Silently intercepting fewer hosts than asked would look like success while
+    testing less than the operator thinks."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
+    })
+    with caplog.at_level("WARNING"):
+        plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.50", "192.168.3.1",
+                             only={"192.168.3.10", "192.168.3.99"})
+    assert plan is not None
+    assert set(plan.hosts) == {"192.168.3.10"}
+    # caplog records the raw format string in .message with args in .args, so build the
+    # rendered text rather than comparing against either half.
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    assert "192.168.3.99" in rendered, (
+        f"the absent host was not reported, so the operator cannot tell the test covered "
+        f"less than they asked for. Log said: {rendered!r}"
+    )
+    assert "would NOT be intercepted" in rendered
+
+
+def test_the_cli_exposes_hosts():
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "cli.py").read_text()
+    assert '"--hosts"' in src, "the CLI has no way to limit interception to named hosts"
+    assert "action=\"append\"" in src, (
+        "--hosts must be repeatable, or only one host could ever be named"
+    )
