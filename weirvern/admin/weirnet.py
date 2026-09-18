@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import socket
 import struct
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,6 +181,9 @@ class ForwardingState:
     ip_forward: bool
     rp_filter_off: bool
     problems: list[str] = field(default_factory=list)
+    # The policy-routing pieces. See ensure_forwarding_path for why they are mandatory.
+    rule_installed: bool = False
+    table_installed: bool = False
 
     @property
     def ready(self) -> bool:
@@ -251,6 +255,111 @@ def check_forwarding(iface: str) -> ForwardingState:
             state.rp_filter_off = True
 
     return state
+
+
+# ---------------------------------------------------------------------------
+# the forwarding path -- the part ip_forward alone does not give you
+# ---------------------------------------------------------------------------
+
+# A dedicated routing table for relayed traffic, and the rule priority that selects it.
+# 1000 sits between the kernel's `local` rule (0) and `main` (32766), so it wins for the
+# traffic we care about without disturbing anything else.
+POLICY_TABLE = 100
+POLICY_PRIORITY = 1000
+
+
+def _run(*args: str) -> tuple[int, str]:
+    """Run a command, returning (rc, combined output). Never raises."""
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def forwarding_path_problems(iface: str, gateway: str) -> list[str]:
+    """Whether a FORWARDED packet would actually leave by the capture interface.
+
+    THE BUG THIS EXISTS FOR, measured on a live box:
+
+        ip route get 1.1.1.1 from 192.168.3.193 iif eth1
+            -> via 192.168.2.1 dev eth0          <-- WRONG INTERFACE
+
+        with `iif eth1 -> table 100` installed:
+            -> via 192.168.3.1 dev eth1 table 100   <-- correct
+
+    `ip_forward=1` makes the kernel willing to forward; it does NOT decide WHERE. A relayed
+    packet's destination is a public address, so it matches the DEFAULT route -- which on a
+    two-NIC sensor points at the management network. The packet then leaves by the wrong
+    interface carrying the victim's source address onto a segment that does not serve it,
+    where an upstream router drops it as a martian.
+
+    The symptom is "the network is slow or flaky", not an error, which is why this is
+    checked explicitly rather than assumed from `ip_forward`.
+    """
+    problems: list[str] = []
+    # A TEST-NET-1 destination (RFC 5737) so the lookup cannot match a real connected route
+    # and accidentally report the local path as the forward path. `iif` is what selects the
+    # policy rule under test.
+    rc, out = _run("sh", "-c", f"ip route get 192.0.2.1 iif {iface} 2>&1 | head -1")
+    if rc != 0:
+        problems.append(f"could not evaluate the forwarding route on {iface}: {out}")
+        return problems
+    if f"dev {iface}" not in out:
+        problems.append(
+            f"a FORWARDED packet arriving on {iface} would leave via a different "
+            f"interface ({out.strip()}). Relayed traffic would carry the victim's source "
+            f"address onto the wrong segment and be dropped upstream. A policy route is "
+            f"required: ip rule add iif {iface} lookup {POLICY_TABLE}, with a default via "
+            f"{gateway} in table {POLICY_TABLE}."
+        )
+    return problems
+
+
+def ensure_forwarding_path(iface: str, gateway: str) -> list[str]:
+    """Install the policy route that makes forwarded traffic use the capture interface.
+
+    Idempotent: deletes and re-adds, so a stale entry from a previous run cannot persist.
+    Returns a list of problems; empty means the path is correct.
+
+    Also refuses to touch anything if the gateway is not reachable on this interface, so a
+    wrong --gateway cannot install a route that black-holes the segment.
+    """
+    problems: list[str] = []
+
+    # Refuse to install a default route via a gateway we cannot reach. Getting this wrong is
+    # worse than not installing it: a bad default in table 100 would black-hole all relayed
+    # traffic rather than merely misrouting it.
+    mac = resolve_mac(iface, gateway)
+    if not mac:
+        return [f"gateway {gateway} did not resolve on {iface}, so a route via it would "
+                f"black-hole relayed traffic. Check --gateway and the interface."]
+
+    _run("ip", "route", "flush", "table", str(POLICY_TABLE))
+    rc, out = _run("ip", "route", "add", "default", "via", gateway, "dev", iface,
+                   "table", str(POLICY_TABLE))
+    if rc != 0:
+        problems.append(f"could not add the policy route: {out}")
+
+    _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
+    rc, out = _run("ip", "rule", "add", "iif", iface, "lookup", str(POLICY_TABLE),
+                   "priority", str(POLICY_PRIORITY))
+    if rc != 0:
+        problems.append(f"could not add the policy rule: {out}")
+
+    problems.extend(forwarding_path_problems(iface, gateway))
+    return problems
+
+
+def remove_forwarding_path(iface: str) -> None:
+    """Withdraw the policy route. Idempotent, and never raises.
+
+    Called on teardown because a leftover rule sends ALL traffic arriving on that interface
+    to table 100 -- which, once the address is removed, is a table with no routes. That
+    would break traffic the operator never intended to touch.
+    """
+    _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
+    _run("ip", "route", "flush", "table", str(POLICY_TABLE))
 
 
 SYSCTL_WRITE_HINT = (

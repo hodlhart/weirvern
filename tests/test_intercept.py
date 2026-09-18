@@ -585,3 +585,86 @@ def test_the_cli_exposes_hosts():
     assert "action=\"append\"" in src, (
         "--hosts must be repeatable, or only one host could ever be named"
     )
+
+# ── the forwarding path, as a fixture ───────────────────────────────────────────
+#
+# These functions shell out to `ip rule` / `ip route` and MODIFY the host's routing. A test
+# suite must never do that, so they are stubbed by default here and exercised explicitly by
+# the tests that care. The default is a working path; tests that need a broken one override
+# it to return a problem.
+
+
+@pytest.fixture(autouse=True)
+def _stub_forwarding_path(monkeypatch):
+    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g: [])
+    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g: [])
+    monkeypatch.setattr(ic, "remove_forwarding_path", lambda _i: None)
+    yield
+
+
+# ── the forwarding path must be correct BEFORE anything is poisoned ─────────────
+#
+# Measured on a live two-NIC box, this is the difference between a working relay and a
+# segment outage:
+#
+#   ip route get 1.1.1.1 iif eth1                -> via 192.168.2.1 dev eth0   (WRONG)
+#   with `iif eth1 -> table 100` installed       -> via 192.168.3.1 dev eth1   (correct)
+#
+# `ip_forward=1` makes the kernel willing to forward but does not decide WHERE. A relayed
+# packet's destination is public, so it matches the DEFAULT route -- the management network
+# -- and leaves by the wrong interface carrying the victim's source address, where an
+# upstream router drops it as a martian. The symptom is "the network is flaky", not an
+# error, so it is checked rather than assumed.
+
+
+def test_a_wrong_forwarding_path_is_a_preflight_problem(monkeypatch):
+    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g: [
+        "a FORWARDED packet arriving on eth1 would leave via a different interface",
+    ])
+    icpt = ic.Intercept(_plan(), sender=RecordingSender())
+    problems = icpt.preflight()
+    assert any("leave via a different interface" in p for p in problems), (
+        "a misrouted forward path was not reported in preflight, so the operator would "
+        "see a healthy-looking intercept that does not relay"
+    )
+
+
+def test_a_broken_forwarding_path_aborts_before_sending_any_poison():
+    """The ordering is the safety property: if the route is wrong, poisoning takes the
+    segment off the network, so it must fail with NOTHING sent."""
+    from weirvern.admin import intercept as m
+
+    sender = RecordingSender()
+
+    # A real check that reports the path is broken, with the stubs removed for this test.
+    orig = m.ensure_forwarding_path
+    m.ensure_forwarding_path = lambda _i, _g: ["route goes out the wrong interface"]
+    try:
+        icpt = m.Intercept(_plan(), sender=sender)
+        with pytest.raises(m.InterceptError, match="forwarding path is not correct"):
+            icpt.start()
+    finally:
+        m.ensure_forwarding_path = orig
+
+    assert sender.frames == [], (
+        f"poison frames were sent ({[k for _f, k in sender.frames]}) despite a broken "
+        f"forwarding path -- the victim would lose the network instead of being relayed"
+    )
+    assert not icpt._started, "the intercept marked itself started after refusing to start"
+
+
+def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(ic, "ensure_forwarding_path",
+                        lambda i, g: (calls.append(("install", i, g)), [])[1])
+    monkeypatch.setattr(ic, "remove_forwarding_path",
+                        lambda i: calls.append(("remove", i, None)))
+    with ic.Intercept(_plan(), sender=RecordingSender()):
+        pass
+    assert ("install", "eth1", "192.168.3.1") in calls, "the policy route was never installed"
+    assert ("remove", "eth1", None) in calls, (
+        "the policy rule was left behind. Left in place it sends ALL traffic arriving on "
+        "that interface to a table with no routes once the address is gone, breaking "
+        "traffic the operator never asked us to touch."
+    )
+    assert calls.index(("install", "eth1", "192.168.3.1")) < calls.index(("remove", "eth1", None))

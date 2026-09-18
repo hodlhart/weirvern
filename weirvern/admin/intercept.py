@@ -43,10 +43,22 @@ from weirvern.admin.weirnet import (
     ArpSender,
     ForwardingState,
     check_forwarding,
+    ensure_forwarding_path,
+    forwarding_path_problems,
     read_mac,
     read_neighbour_mac,
+    remove_forwarding_path,
     resolve_mac,
 )
+
+
+class InterceptError(RuntimeError):
+    """Raised when interception cannot be started safely.
+
+    Distinct from a warning: this means NO poison frames were sent, because sending
+    them would take the segment off the network rather than relay it.
+    """
+
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +339,13 @@ class Intercept:
         state = self.forwarding or check_forwarding(self.plan.iface)
         problems.extend(state.problems)
 
+        # ip_forward only makes the kernel WILLING to forward; the policy route decides
+        # WHERE. Without it a relayed packet matches the default route and leaves by the
+        # management interface carrying the victim's source address onto the wrong segment.
+        # Reported here rather than only fixed silently, because it is a prerequisite the
+        # operator should be able to see fail.
+        problems.extend(forwarding_path_problems(self.plan.iface, self.plan.gateway_ip))
+
         if not self.plan.hosts:
             # Not fatal, but almost certainly not what the operator wanted, and silently
             # "intercepting nothing" is how a weir deployment looks broken.
@@ -348,7 +367,18 @@ class Intercept:
         if self._started:
             return
 
-        # 1. watchdog FIRST, so no mapping ever exists without something responsible for
+        # 1. the forwarding path, before anything claims to be the gateway. If the route is
+        #    wrong, poisoning makes the kernel the next hop for traffic it cannot deliver --
+        #    the victim loses the network instead of being relayed. Installing it first means
+        #    a failure here aborts with NO poison frames sent.
+        path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip)
+        if path_problems:
+            raise InterceptError(
+                "refusing to poison: the forwarding path is not correct, so relayed "
+                "traffic would not reach the gateway. " + " ".join(path_problems)
+            )
+
+        # 2. watchdog NEXT, so no mapping ever exists without something responsible for
         #    restoring it. A crash between poisoning and arming would leave the segment
         #    poisoned with no undo.
         self.watchdog = FailOpenWatchdog(
@@ -358,7 +388,7 @@ class Intercept:
         for ic in self.plan.mappings():
             self.watchdog.register(ic)
 
-        # 2. Now it is safe to poison.
+        # 3. Now it is safe to poison.
         self.watchdog.start()
         self._started = True
         self.started_at = time.time()
@@ -369,9 +399,13 @@ class Intercept:
         )
 
     def stop(self) -> None:
-        """Withdraw every mapping. Idempotent."""
+        """Withdraw every mapping and the forwarding path. Idempotent."""
         if self.watchdog is not None:
             self.watchdog.stop()
+        # The policy rule must go too: left behind, it sends ALL traffic arriving on this
+        # interface to a table that has no routes once the address is removed, which would
+        # break traffic the operator never asked us to touch.
+        remove_forwarding_path(self.plan.iface)
         close = getattr(self._sender, "close", None)
         if callable(close):
             close()
