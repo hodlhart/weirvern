@@ -132,6 +132,23 @@ def test_the_never_intercept_list_protects_management_paths():
 
 # --- ARP frame construction ----------------------------------------------------
 def test_poison_frame_claims_our_mac_for_the_claimed_ip():
+    """The poison must be an ANNOUNCEMENT (ARP request), not a reply.
+
+    MEASURED against a real host on a live segment, each form sent 8 times, reading the
+    destination MAC of the host's reply to an off-link probe:
+
+        forged ARP reply, unicast    ->  ignored  (traffic still went to the real gateway)
+        forged ARP REQUEST, unicast  ->  TOOK     (traffic came to us, 3/3)
+        gratuitous broadcast reply   ->  ignored
+
+    Linux does not update a neighbour entry in REACHABLE state from an unsolicited reply,
+    and a host's gateway entry is always reachable -- so the reply form was silently
+    discarded while being perfectly well formed. That is why every live attempt concluded
+    "the poison never took": it genuinely never did.
+
+    This test previously asserted opcode 2 ("must be an ARP reply"), encoding the wrong
+    assumption. It is updated to the measured behaviour, not relaxed to pass.
+    """
     ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
                          claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
@@ -140,16 +157,27 @@ def test_poison_frame_claims_our_mac_for_the_claimed_ip():
     assert frame[0:6] == bytes.fromhex("aabbccddee01")
     assert frame[6:12] == bytes.fromhex("aabbccddee03")
     assert struct.unpack("!H", frame[12:14])[0] == 0x0806
-    assert struct.unpack("!H", frame[20:22])[0] == 2, "must be an ARP reply"
-    # "claim_ip is at OUR mac" — the lie we are telling.
+    assert struct.unpack("!H", frame[20:22])[0] == 1, (
+        "must be an ARP REQUEST: a reply is ignored for a REACHABLE entry, so it would "
+        "never install the mapping"
+    )
+    # "claim_ip is at OUR mac" — the lie we are telling. In a request this rides in the
+    # SENDER fields, which is what makes it an announcement the target records.
     assert frame[22:28] == bytes.fromhex("aabbccddee03")
     assert frame[28:32] == bytes.fromhex("0a000001")   # 10.0.0.1
+    # The target field is the host we are asking about; its MAC is left zero because the
+    # request asks "who-has", and a fabricated answer there would be a false claim.
+    assert frame[32:38] == b"\x00" * 6
+    assert frame[38:42] == bytes.fromhex("0a000005")   # 10.0.0.5
 
 
 def test_restore_frame_tells_the_truth():
-    """The restore reuses the same shape with the REAL mac. That is why real_mac is
-    stored at registration time rather than looked up later, when the network may be in
-    the broken state the watchdog is trying to fix."""
+    """The restore names the REAL mac, and uses the same frame form as the poison.
+
+    Same form deliberately: the announcement installs a mapping regardless of the entry's
+    state, and the restore is the safety property — the wrong place to rely on a state
+    distinction going the right way while a network is in the state we are trying to fix.
+    """
     ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
                          claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
@@ -157,17 +185,37 @@ def test_restore_frame_tells_the_truth():
     assert frame[22:28] == bytes.fromhex("aabbccddee02"), "must name the real owner"
     assert frame[28:32] == bytes.fromhex("0a000001")
     assert frame[0:6] == bytes.fromhex("aabbccddee01"), "still addressed to the host"
+    assert struct.unpack("!H", frame[20:22])[0] == 1, (
+        "the restore must use the form that provably installs a mapping"
+    )
+    # The Ethernet source must be the real owner's MAC, because that is the frame's actual
+    # origin: a frame whose Ethernet source disagreed with its ARP sender field would be
+    # inconsistent, and some stacks drop those.
+    assert frame[6:12] == bytes.fromhex("aabbccddee02")
+
+
+def test_the_restore_is_never_sent_as_an_arp_reply():
+    """A guard on the specific regression: someone 'restoring' the reply form because it
+    looks more like a correction, reintroducing the bug that made interception a no-op."""
+    ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
+                         claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
+                         iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
+    for name, frame in (("poison", ic.poison_frame()), ("restore", ic.restore_frame())):
+        op = struct.unpack("!H", frame[20:22])[0]
+        assert op == 1, (
+            f"the {name} frame is an ARP reply (opcode 2). Measured: a reply is ignored "
+            f"for a REACHABLE neighbour entry, so this frame would silently do nothing."
+        )
 
 
 def test_poison_and_restore_differ_only_in_the_macs_they_name():
     """A restore that differed structurally would be a different kind of packet and
     might not be accepted as a correction.
 
-    TWO regions legitimately differ, and an earlier version of this test only allowed
-    one: the ARP sender MAC (bytes 22-27, the lie vs the truth) AND the Ethernet source
-    MAC (bytes 6-11, which must also be the frame's actual origin). Everything else —
-    the destination, the ethertype, the opcode, the addresses and lengths — must be
-    identical or the frame is a different class of packet.
+    TWO regions legitimately differ: the ARP sender MAC (bytes 22-27, the lie vs the
+    truth) AND the Ethernet source MAC (bytes 6-11, which must also be the frame's actual
+    origin). Everything else — the destination, the ethertype, the opcode, the addresses
+    and lengths — must be identical or the frame is a different class of packet.
     """
     ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
                          claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",

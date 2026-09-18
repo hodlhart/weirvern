@@ -27,6 +27,7 @@ relay is the kernel's, so by construction this process never holds the traffic.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import struct
 import subprocess
@@ -277,16 +278,39 @@ def _run(*args: str) -> tuple[int, str]:
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
-def forwarding_path_problems(iface: str, gateway: str) -> list[str]:
+def forwarding_rule_text(iface: str) -> str:
+    """`ip rule show` output, for asserting the policy rule exists."""
+    rc, out = _run("ip", "rule", "show")
+    return out if rc == 0 else ""
+
+
+def forwarding_table_text() -> str:
+    """`ip route show table <POLICY_TABLE>` output."""
+    rc, out = _run("ip", "route", "show", "table", str(POLICY_TABLE))
+    return out if rc == 0 else ""
+
+
+def _rule_installed(iface: str) -> bool:
+    return re.search(rf"iif\s+{re.escape(iface)}\s+lookup\s+{POLICY_TABLE}\b",
+                     forwarding_rule_text(iface)) is not None
+
+
+def _table_has_default(iface: str, gateway: str) -> bool:
+    text = forwarding_table_text()
+    return re.search(rf"default\s+via\s+{re.escape(gateway)}\s+dev\s+{re.escape(iface)}\b",
+                     text) is not None
+
+
+def forwarding_path_problems(iface: str, gateway: str,
+                             sample_src: str | None = None) -> list[str]:
     """Whether a FORWARDED packet would actually leave by the capture interface.
 
-    THE BUG THIS EXISTS FOR, measured on a live box:
+    THE BUG THIS EXISTS FOR, measured on a live boot:
 
-        ip route get 1.1.1.1 from 192.168.3.193 iif eth1
-            -> via 192.168.2.1 dev eth0          <-- WRONG INTERFACE
-
+        ip route get 192.0.2.1 from 192.168.3.193 iif eth1
+            -> via 192.168.2.1 dev eth0                 <-- WRONG INTERFACE
         with `iif eth1 -> table 100` installed:
-            -> via 192.168.3.1 dev eth1 table 100   <-- correct
+            -> via 192.168.3.1 dev eth1 table 100       <-- correct
 
     `ip_forward=1` makes the kernel willing to forward; it does NOT decide WHERE. A relayed
     packet's destination is a public address, so it matches the DEFAULT route -- which on a
@@ -295,24 +319,47 @@ def forwarding_path_problems(iface: str, gateway: str) -> list[str]:
     where an upstream router drops it as a martian.
 
     The symptom is "the network is slow or flaky", not an error, which is why this is
-    checked explicitly rather than assumed from `ip_forward`.
+    checked rather than assumed from `ip_forward`.
+
+    HOW IT CHECKS, and why not simply `ip route get`. Measured: the form WITHOUT a source
+    address FAILS on this iproute2 --
+
+        ip route get 192.0.2.1 iif eth1
+            -> RTNETLINK answers: Invalid argument
+
+    -- because specifying `iif` requires a source to select the rule. Reading that error as
+    "the route goes elsewhere" made this function report a problem whenever no source was
+    supplied, which would have aborted EVERY real intercept with a misleading message. So
+    the rule and table are inspected directly, which is deterministic, and the route lookup
+    is used only as corroboration when a representative source address is available.
     """
     problems: list[str] = []
-    # A TEST-NET-1 destination (RFC 5737) so the lookup cannot match a real connected route
-    # and accidentally report the local path as the forward path. `iif` is what selects the
-    # policy rule under test.
-    rc, out = _run("sh", "-c", f"ip route get 192.0.2.1 iif {iface} 2>&1 | head -1")
-    if rc != 0:
-        problems.append(f"could not evaluate the forwarding route on {iface}: {out}")
-        return problems
-    if f"dev {iface}" not in out:
+    remedy = (f"Install it with: ip rule add iif {iface} lookup {POLICY_TABLE}, plus a "
+              f"default via {gateway} dev {iface} in table {POLICY_TABLE}.")
+
+    if not _rule_installed(iface):
         problems.append(
-            f"a FORWARDED packet arriving on {iface} would leave via a different "
-            f"interface ({out.strip()}). Relayed traffic would carry the victim's source "
-            f"address onto the wrong segment and be dropped upstream. A policy route is "
-            f"required: ip rule add iif {iface} lookup {POLICY_TABLE}, with a default via "
-            f"{gateway} in table {POLICY_TABLE}."
+            f"no policy rule sends traffic arriving on {iface} to table {POLICY_TABLE}, so "
+            f"a FORWARDED packet would match the default route and leave by a different "
+            f"interface -- carrying the victim's source address onto the wrong segment, "
+            f"where it is dropped upstream. {remedy}"
         )
+    if not _table_has_default(iface, gateway):
+        problems.append(
+            f"table {POLICY_TABLE} has no default via {gateway} dev {iface}, so relayed "
+            f"traffic has nowhere to go on this interface. {remedy}"
+        )
+
+    # Corroboration only: this needs a non-local source to represent forwarded traffic,
+    # and it errors outright without one. Absence of a sample is not a problem.
+    if sample_src:
+        rc, out = _run("sh", "-c",
+                       f"ip route get 192.0.2.1 from {sample_src} iif {iface} 2>&1 | head -1")
+        if rc == 0 and out and f"dev {iface}" not in out:
+            problems.append(
+                f"a packet from {sample_src} arriving on {iface} would leave via a "
+                f"different interface ({out.strip()})."
+            )
     return problems
 
 

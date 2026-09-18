@@ -596,7 +596,8 @@ def test_the_cli_exposes_hosts():
 
 @pytest.fixture(autouse=True)
 def _stub_forwarding_path(monkeypatch):
-    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g: [])
+    monkeypatch.setattr(ic, "forwarding_path_problems",
+                        lambda _i, _g, **_kw: [])
     monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g: [])
     monkeypatch.setattr(ic, "remove_forwarding_path", lambda _i: None)
     yield
@@ -618,7 +619,7 @@ def _stub_forwarding_path(monkeypatch):
 
 
 def test_a_wrong_forwarding_path_is_a_preflight_problem(monkeypatch):
-    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g: [
+    monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g, **_kw: [
         "a FORWARDED packet arriving on eth1 would leave via a different interface",
     ])
     icpt = ic.Intercept(_plan(), sender=RecordingSender())
@@ -668,3 +669,91 @@ def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(mon
         "traffic the operator never asked us to touch."
     )
     assert calls.index(("install", "eth1", "192.168.3.1")) < calls.index(("remove", "eth1", None))
+
+
+# ── the forwarding-path CHECK must not abort a healthy intercept ─────────────────
+#
+# A check that reports a problem when nothing is wrong is worse than no check: it makes
+# every real intercept refuse to run, with a message that points the operator at a
+# configuration that is already correct. That is exactly what happened here.
+
+
+def test_the_policy_rule_is_detected_when_present(monkeypatch):
+    from weirvern.admin import weirnet
+
+    monkeypatch.setattr(weirnet, "_run", lambda *a: (
+        0, "0:\tfrom all lookup local\n1000:\tfrom all iif eth1 lookup 100\n"
+           "32766:\tfrom all lookup main"))
+    monkeypatch.setattr(weirnet, "forwarding_table_text",
+                        lambda: "default via 192.168.3.1 dev eth1")
+    assert weirnet.forwarding_path_problems("eth1", "192.168.3.1") == [], (
+        "a correctly installed policy rule was reported as a problem, so the intercept "
+        "would refuse to run against a healthy configuration"
+    )
+
+
+def test_a_missing_policy_rule_is_reported(monkeypatch):
+    from weirvern.admin import weirnet
+
+    monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "0:\tfrom all lookup local"))
+    monkeypatch.setattr(weirnet, "forwarding_table_text", lambda: "")
+    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1")
+    assert problems, "a missing policy route was not reported"
+    assert any("table 100" in p for p in problems), (
+        "the message does not name the table to install, so the operator cannot act on it"
+    )
+
+
+def test_a_source_less_route_lookup_is_not_treated_as_a_problem(monkeypatch):
+    """THE BUG, as a regression test.
+
+    Measured on this iproute2:
+
+        ip route get 192.0.2.1 iif eth1
+            -> RTNETLINK answers: Invalid argument
+
+    Specifying `iif` without a source is an ERROR, not a route. Reading that error text as
+    "the route goes elsewhere" made the check report a problem whenever no source was
+    supplied -- which aborted EVERY real intercept with a misleading message.
+
+    The check now inspects the rule and table directly, so an unhelpful lookup cannot
+    produce a false failure.
+    """
+    from weirvern.admin import weirnet
+
+    monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "1000:\tfrom all iif eth1 lookup 100"))
+    monkeypatch.setattr(weirnet, "forwarding_table_text",
+                        lambda: "default via 192.168.3.1 dev eth1")
+    # No sample_src: the case that used to fail.
+    assert weirnet.forwarding_path_problems("eth1", "192.168.3.1") == []
+
+
+def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
+    """The corroborating lookup must still catch a genuinely misrouted packet."""
+    from weirvern.admin import weirnet
+
+    def fake_run(*a, **k):
+        if "rule" in a:
+            return 0, "1000:\tfrom all iif eth1 lookup 100"
+        return 0, "192.0.2.1 from 192.168.3.193 via 192.168.2.1 dev eth0"
+
+    monkeypatch.setattr(weirnet, "_run", fake_run)
+    monkeypatch.setattr(weirnet, "forwarding_table_text",
+                        lambda: "default via 192.168.3.1 dev eth1")
+    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
+                                                sample_src="192.168.3.193")
+    assert any("dev eth0" in p or "different interface" in p for p in problems), (
+        "a packet that genuinely leaves by the wrong interface was not reported"
+    )
+
+
+def test_the_intercept_passes_a_real_host_as_the_route_sample():
+    """The lookup needs a non-local source to represent forwarded traffic. Without one it
+    errors, which is how the false failure was produced."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "intercept.py").read_text()
+    assert "sample_src=sample" in src, (
+        "the intercept does not pass a source to the forwarding check, so the route lookup "
+        "runs in the form that errors"
+    )

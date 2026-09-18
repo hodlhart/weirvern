@@ -344,7 +344,9 @@ class Intercept:
         # management interface carrying the victim's source address onto the wrong segment.
         # Reported here rather than only fixed silently, because it is a prerequisite the
         # operator should be able to see fail.
-        problems.extend(forwarding_path_problems(self.plan.iface, self.plan.gateway_ip))
+        sample = next(iter(sorted(self.plan.hosts)), None) if self.plan.hosts else None
+        problems.extend(forwarding_path_problems(self.plan.iface, self.plan.gateway_ip,
+                                                 sample_src=sample))
 
         if not self.plan.hosts:
             # Not fatal, but almost certainly not what the operator wanted, and silently
