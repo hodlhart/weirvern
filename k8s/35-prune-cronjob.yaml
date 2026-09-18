@@ -1,0 +1,131 @@
+# Rotation enforcement.
+#
+# WHY THIS EXISTS: Zeek rotates hourly and deletes nothing. Measured on the test
+# deployment: 87 rotated files / 11 MB after a few hours of light traffic, growing at
+# roughly 7 MB per hour, on a 40 GB disk, with nothing bounding it. A sensor that fills
+# its disk stops capturing AND takes ClickHouse down with it, so the failure presents as a
+# database fault rather than a capacity one -- which is exactly the wrong thing to be
+# debugging at 3am.
+#
+# WHY A CRONJOB AND NOT A LOOP IN THE SENSOR:
+#   1. The `zeek/zeek:lts` image has NO python3. It ships busybox/ash, perl and Zeek. A
+#      pruner in that container cannot import the package, so it cannot run there. (This
+#      was verified on the live pod, not assumed -- `command -v python3` returns nothing.)
+#   2. The worker mounts the Zeek log directory READ-ONLY, deliberately: an ingester
+#      should not be able to mutate the logs it is reading. Relaxing that to fit a
+#      convenience feature would trade a real invariant for a small one.
+#   3. A CronJob runs in the worker image (which has python3 and the package), mounts the
+#      same hostPath read-write as its OWN mount, and exits. The worker's mount stays
+#      read-only, so the invariant holds.
+#
+# WHY EVERY 5 MINUTES: the cap is a ceiling, not a schedule. Pruning often and cheaply
+# keeps the directory near the cap instead of letting it spike and then reclaiming in a
+# big burst, and it means the grace period can be short without ever discarding data the
+# worker has not read.
+#
+# concurrencyPolicy: Forbid -- two pruners racing could each decide the same file is
+# over-cap and the second would find it already gone (harmless), but more importantly the
+# netflow rewrite is read-modify-write and two of those interleaving WOULD lose data.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weirvern-prune
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-prune
+    app.kubernetes.io/part-of: weirvern
+    app.kubernetes.io/component: maintenance
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  # Keep only a little history: a failing prune is visible in `kubectl get jobs` without
+  # accumulating a thousand completed pods.
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # If the node is busy, a skipped prune is fine -- the next one is 5 minutes away and the
+  # cap is a ceiling, not a deadline. But a job that has not STARTED in an hour means
+  # something is wrong with the cluster, so give up rather than queue forever.
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      # A prune pass is seconds. Retry a couple of times so a transient OSError does not
+      # silently skip a cycle and let the disk creep.
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: weirvern-prune
+            app.kubernetes.io/part-of: weirvern
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            # The worker image runs as uid 10001. The log and flow directories are written
+            # by the sensor (uid 0 in the zeek container) and by goflow2, so the pruner
+            # needs write access to files it does not own -- hence fsGroup so the volume
+            # is group-writable rather than needing root.
+            fsGroup: 10001
+            runAsNonRoot: true
+            runAsUser: 10001
+          containers:
+            - name: prune
+              image: weirvern-worker:0.4.0
+              imagePullPolicy: IfNotPresent
+              # `weirvern prune` reads the caps from the environment (the same ConfigMap the
+              # other components use) and applies all three components. Called as the CLI
+              # rather than a private script so the scheduled path and the manual path are
+              # literally the same code -- a divergence between them would be invisible
+              # until the disk filled.
+              command: ["python3", "-m", "weirvern.admin.cli", "prune"]
+              envFrom:
+                - configMapRef:
+                    name: weirvern-env
+              env:
+                # These are the REAL config names the package already reads
+                # (weirvern/config.py): ZEEK_LOG_DIR and MODEL_DIR. Using the same
+                # variables as the worker means a layout change moves one value rather
+                # than two, and a mis-set path shows up as "does not exist" instead of
+                # pruning an empty directory and silently reporting success.
+                - name: ZEEK_LOG_DIR
+                  value: /zeek/logs
+                - name: MODEL_DIR
+                  value: /models
+                - name: NETFLOW_DIR
+                  value: /data
+              volumeMounts:
+                # Read-WRITE, and scoped to this container only. The worker's own mount of
+                # this same path stays read-only (33-worker.yaml), so the invariant that
+                # the ingester cannot mutate its own input is preserved.
+                #
+                # Mount paths deliberately MATCH the worker's: /zeek/logs, /models,
+                # /data/flows.jsonl. Same paths, same env vars, different access mode.
+                - name: zeek-logs
+                  mountPath: /zeek/logs
+                - name: models
+                  mountPath: /models
+                - name: flow-data
+                  mountPath: /data
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  # A prune of a few hundred MB of JSONL needs headroom to read a file into
+                  # memory, but not much: it streams in chunks.
+                  cpu: 200m
+                  memory: 256Mi
+          volumes:
+            # hostPath, matching 32-zeek.yaml and 33-worker.yaml. This is a single-node
+            # deployment by design; a multi-node cluster would need these as a PVC with
+            # ReadWriteMany, which is why the paths are explicit rather than assumed.
+            - name: zeek-logs
+              hostPath:
+                path: /var/lib/weirvern/zeek
+                type: DirectoryOrCreate
+            - name: flow-data
+              hostPath:
+                path: /var/lib/weirvern/flows
+                type: DirectoryOrCreate
+            - name: models
+              persistentVolumeClaim:
+                claimName: models

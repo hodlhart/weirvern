@@ -217,6 +217,21 @@ def evidence_payload(d: dict) -> dict:
             out.append({f: _jsonable(v) for f, v in zip(fields, r, strict=True)})
         return out
 
+    def evidence_rows(items, fields):
+        """Like rows(), but resolves the DESTINATION hostname for each record.
+
+        The evidence tables are the ones an analyst reads line by line, and a column of
+        bare IPs makes them cross-reference every address by hand. The lookup is served
+        from the shared cache, so this costs one resolution per distinct destination
+        rather than one per row.
+        """
+        out = rows(items, fields)
+        for row in out:
+            dst = row.get("dst_addr")
+            if dst:
+                row["hostname"] = _hostname(dst)
+        return out
+
     return {
         "src_addr": d.get("src_addr"),
         "hostname": _hostname(d.get("src_addr")),
@@ -224,10 +239,10 @@ def evidence_payload(d: dict) -> dict:
         "window_end": _jsonable(d.get("window_end")),
         "anomaly": d.get("anomaly"),
         "flow_summary": _summary(d),
-        "flows": rows(d.get("flows"), [
+        "flows": evidence_rows(d.get("flows"), [
             "time_flow_start", "dst_addr", "dst_port", "proto", "bytes",
             "packets", "duration_ms"]),
-        "zeek_conn": rows(d.get("zeek_conn"), [
+        "zeek_conn": evidence_rows(d.get("zeek_conn"), [
             "ts", "dst_addr", "dst_port", "proto", "service", "duration",
             "orig_bytes", "resp_bytes", "conn_state"]),
         "zeek_dns": rows(d.get("zeek_dns"), [

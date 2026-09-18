@@ -34,6 +34,10 @@ resources:
   - 32-zeek.yaml
   - 33-worker.yaml
   - 34-gui.yaml
+  # Rotation enforcement. Zeek rotates hourly and deletes nothing; this is what bounds
+  # the log directory. See the file's header for why it is a CronJob and not a loop
+  # inside the sensor or the worker.
+  - 35-prune-cronjob.yaml
   - 50-schema-job.yaml
   - 60-rbac.yaml
   # NetworkPolicy is OPTIONAL and commented out by default: it only takes effect

@@ -312,6 +312,20 @@ spec:
               fi
               rm -f /zeek/logs/.writetest
               echo "[zeek] sniffing $IFACE (uid $(id -u), caps $caps), logs to /zeek/logs"
+              # ROTATION: rotated logs are pruned by a CronJob in the worker image
+              # (k8s/35-prune-cronjob.yaml), NOT here. This image has no python3 -- it
+              # ships busybox/ash, perl and Zeek only -- so a Python pruner cannot run in
+              # this container, and the worker cannot do it either because it mounts this
+              # directory READ-ONLY to keep the ingester from mutating its own input.
+              #
+              # This container therefore only has to say whether the cap is set, because a
+              # cap that nothing enforces is the failure mode worth shouting about.
+              if [ -z "${ZEEK_MAX_MB:-}" ] || [ "${ZEEK_MAX_MB:-0}" = "0" ]; then
+                echo "[zeek] WARNING: ZEEK_MAX_MB is unset, so rotated logs are NEVER" >&2
+                echo "[zeek] WARNING: deleted and will fill the disk. Run: weirvern disk" >&2
+              else
+                echo "[zeek] rotation: cap ${ZEEK_MAX_MB} MB, enforced by the prune CronJob"
+              fi
               # Bare script path => loaded as a script (see the note above).
               exec zeek -i "$IFACE" \
                    -C \
@@ -324,6 +338,19 @@ spec:
                 configMapKeyRef:
                   name: weirvern-env
                   key: ZEEK_IFACE
+            # Read only to WARN. The cap itself is enforced by the prune CronJob
+            # (35-prune-cronjob.yaml), because this image has no python3 and the worker
+            # mounts this directory read-only. But a cap that nothing enforces is the
+            # failure worth shouting about, so the sensor says so at startup -- and for
+            # that to work the variable must be declared here, not merely present in the
+            # ConfigMap. (Verified: an undeclared ${VAR} is empty in this container even
+            # when the ConfigMap has the key, which made the warning dead code.)
+            - name: ZEEK_MAX_MB
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: ZEEK_MAX_MB
+                  optional: true
             # MGMT_IFACE must be injected EXPLICITLY. The ConfigMap having the key is
             # not enough: without this the variable is empty inside the container, the
             # two-interface check silently falls through to default-route detection,

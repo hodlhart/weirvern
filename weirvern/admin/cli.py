@@ -600,6 +600,9 @@ CONFIG_HELP = {
     "ZEEK_IFACE": "interface the Zeek sensor sniffs (the capture port)",
     "MGMT_IFACE": "management port (default route, SSH, API) — not sniffed",
     "SENSOR_MODE": "loch = passive capture, weir = in-path intercept",
+    "ZEEK_MAX_MB": "cap on rotated Zeek logs (MB); see `weirvern disk`",
+    "NETFLOW_MAX_MB": "cap on the raw flow sink (MB)",
+    "ML_MAX_MB": "cap on ClickHouse table data (MB)",
     "INTERCEPT_TARGETS": "weir mode: who to intercept (empty = nobody)",
     "CLICKHOUSE_HOST": "ClickHouse hostname",
     "CLICKHOUSE_PORT": "ClickHouse HTTP port",
@@ -1092,6 +1095,78 @@ def _ok_or_bad(label: str, ok: bool, why: str) -> None:
         _bad(f"{label} MISSING — {why}")
 
 
+def cmd_disk(args: argparse.Namespace) -> int:
+    """Show disk usage and the per-component caps, and recommend values from the disk.
+
+    WHY THIS IS A COMMAND: Zeek rotates by TIME but deletes nothing, so a sensor on a
+    40 GB disk reaches 87 rotated files / 11 MB in a few hours of light traffic and keeps
+    growing -- measured, at roughly 7 MB/hour. Nothing bounded it. A sensor that fills its
+    disk stops capturing, and it takes ClickHouse down with it, which presents as a
+    database fault rather than a capacity one.
+
+    Set a cap with:  weirvern config set ZEEK_MAX_MB=2048
+    """
+    from weirvern.admin import diskplan as dp
+
+    env = config_io.EnvFile.load(env_path()) if env_path().exists() else None
+    current = {}
+    if env is not None:
+        for key, comp in (("ZEEK_MAX_MB", "zeek"), ("NETFLOW_MAX_MB", "netflow"),
+                          ("ML_MAX_MB", "ml")):
+            raw = (env.get(key) or "").strip()
+            if raw.isdigit() and int(raw) > 0:
+                current[comp] = int(raw)
+
+    target = args.path or env_path().parent
+    total, used, avail, mount = dp.probe_disk(str(target))
+    if not total:
+        _bad(f"could not read disk usage for {target}")
+        return EXIT_FAIL
+
+    print(_c("bold", f"Disk ({mount or target})"))
+    print(f"  total {dp.human_mb(total)}   used {dp.human_mb(used)}   "
+          f"free {dp.human_mb(avail)}")
+    print()
+
+    report = dp.plan(avail, total, current)
+    print(_c("bold", "Component caps"))
+    print(f"  {'component':<9} {'cap':<10} {'holds':<12} source")
+    for name in ("zeek", "netflow", "ml"):
+        b = report.budgets[name]
+        cap = dp.human_mb(b.cap_mb)
+        print(f"  {name:<9} {cap:<10} ~{b.human_history:<11} {b.reason}")
+    print()
+    print(f"  allocated {dp.human_mb(report.allocated_mb)} of "
+          f"{dp.human_mb(avail)} free ({report.allocated_mb / max(avail, 1):.0%}), "
+          f"leaving {dp.human_mb(report.headroom_mb)} for merges and the runtime")
+
+    if report.warnings:
+        print()
+        for w in report.warnings:
+            _warn(w)
+
+    # The Zeek file-count translation, because Zeek cannot cap by size and the integer
+    # rounding can push real usage above the requested cap.
+    z = report.budgets["zeek"]
+    pol = dp.rotation_policy("zeek", z.cap_mb)
+    print()
+    print(_c("bold", "How Zeek's cap is enforced"))
+    print(f"  Zeek rotates every {pol.rotation_interval_s // 60} min and keeps a FILE "
+          f"COUNT, not a byte total.")
+    print(f"  {dp.human_mb(z.cap_mb)} becomes {pol.keep} files at an estimated "
+          f"{pol.mb_per_rotation:.1f} MB each = {dp.human_mb(pol.actual_cap_mb)} actual.")
+    print(_c("dim", "  The estimate uses the observed rate on this deployment. Re-run "
+                    "after a day of traffic for a tighter figure."))
+
+    if not current:
+        print()
+        print(_c("bold", "To apply the recommendation:"))
+        for name in ("zeek", "netflow", "ml"):
+            b = report.budgets[name]
+            print(f"  weirvern config set {name.upper()}_MAX_MB={b.recommended_mb}")
+    return EXIT_OK
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     from weirvern import __version__
     print(f"weirvern {__version__}")
@@ -1172,6 +1247,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_tui)
 
     s = sub.add_parser(
+        "disk",
+        help="disk usage, per-component log caps, and a recommendation from disk size",
+    )
+    s.add_argument("--path", default="",
+                   help="measure this path's filesystem (default: the project dir)")
+    s.set_defaults(func=cmd_disk)
+
+    s = sub.add_parser(
         "mode",
         help="inspect or set the sensor mode (loch = passive, weir = in-path intercept)",
     )
@@ -1203,10 +1286,97 @@ def build_parser() -> argparse.ArgumentParser:
                    help="port (default 8088, or $GUI_PORT)")
     s.set_defaults(func=cmd_gui)
 
+    s = sub.add_parser("prune", help="apply the per-component disk caps")
+    s.add_argument("--dry-run", action="store_true",
+                   help="report what would be freed without deleting")
+    s.add_argument("--cap", help="override the cap in MB for one component")
+    s.add_argument("--component", choices=["zeek", "netflow", "ml"], default="zeek",
+                   help="which component --cap applies to (default: zeek)")
+    s.add_argument("--grace", type=int, default=3600,
+                   help="never delete files newer than this many seconds (default 3600)")
+    s.set_defaults(func=cmd_prune)
+
     s = sub.add_parser("version", help="show version and detected runtime")
     s.set_defaults(func=cmd_version)
 
     return p
+
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Apply the per-component disk caps. Safe to run repeatedly.
+
+    This is BOTH the manual command and the body of the prune CronJob, deliberately: a cap
+    is only worth having if the scheduled path and the path an operator runs by hand are
+    the same code. A divergence between them stays invisible until a disk fills.
+
+    Reads ZEEK_MAX_MB / NETFLOW_MAX_MB / ML_MAX_MB. A component with no cap is reported as
+    unset rather than assumed fine -- "no cap" and "under cap" look identical on a
+    healthy-looking disk and only one of them is safe.
+    """
+    from weirvern import enforce
+
+    caps = {c: 0 for c in ("zeek", "netflow", "ml")}
+    for key, comp in (("ZEEK_MAX_MB", "zeek"), ("NETFLOW_MAX_MB", "netflow"),
+                      ("ML_MAX_MB", "ml")):
+        raw = (os.environ.get(key) or "").strip()
+        if raw.isdigit() and int(raw) > 0:
+            caps[comp] = int(raw)
+
+    if args.cap:
+        try:
+            caps[args.component] = int(args.cap)
+        except ValueError:
+            _bad(f"--cap must be a whole number of MB, got {args.cap!r}")
+            return EXIT_FAIL
+
+    if not any(caps.values()):
+        print("No caps are set, so nothing is enforced: rotated logs and flow data will")
+        print("grow until the disk fills. Run `weirvern disk` for recommended values, then")
+        print("for example:  weirvern config set ZEEK_MAX_MB=2048")
+        return EXIT_NOTREADY
+
+    if args.dry_run:
+        print(_c("bold", "Dry run: nothing will be deleted"))
+        total = 0.0
+        for comp in ("zeek", "netflow", "ml"):
+            cap = caps[comp]
+            if cap <= 0:
+                print(f"  {comp:<8} {'no cap set':>16}")
+                continue
+            if comp == "zeek":
+                from weirvern import prune as _prune
+                before = _prune.total_bytes(enforce.ZEEK_DIR)
+                res = _prune.plan_prune(enforce.ZEEK_DIR, cap)
+                freed = getattr(res, "planned_freed_mb", 0.0) or 0.0
+                n = len(getattr(res, "to_delete", []) or [])
+                print(f"  {comp:<8} {enforce._mb(before):8.1f} MB / cap {cap:<6} MB"
+                      f"  would free {freed:.1f} MB ({n} file(s))")
+            else:
+                d = enforce.NETFLOW_DIR if comp == "netflow" else enforce.ML_DIR
+                before = enforce._total_bytes(d)
+                freed = max(0.0, enforce._mb(before) - cap)
+                print(f"  {comp:<8} {enforce._mb(before):8.1f} MB / cap {cap:<6} MB"
+                      f"  would free {freed:.1f} MB")
+            total += freed
+        print(f"\n  total reclaimable: {total:.1f} MB")
+        return EXIT_OK
+
+    results = enforce.enforce(caps, grace_s=args.grace)
+    print(enforce.render(results))
+
+    if any(r.errors for r in results):
+        _bad("at least one component reported errors; the disk may still be over cap")
+        return EXIT_FAIL
+
+    # Exit non-zero when a component is STILL over cap after a real prune pass. This is what
+    # makes the CronJob's failure state meaningful: a Job that "succeeded" while the disk is
+    # over budget would hide the exact condition worth alerting on.
+    stuck = [r for r in results if r.cap_mb > 0 and r.after_mb > r.cap_mb]
+    if stuck:
+        _bad("still over cap after pruning: " + ", ".join(r.component for r in stuck))
+        return EXIT_FAIL
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:

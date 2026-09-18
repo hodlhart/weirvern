@@ -274,11 +274,165 @@ def _label_entropy(name: str) -> float:
     return -sum((c / total) * math.log2(c / total) for c in counts.values())
 
 
+# ── Tier 1 mappers ─────────────────────────────────────────────────────────────
+#
+# These four logs were being WRITTEN AND DISCARDED. The site policy loads
+# known-hosts and known-services, so Zeek produced http, files, ssh and weird on
+# every deployment while the ingester knew only conn/dns/ssl/notice. Measured over a
+# few hours on the test cluster: 359 http, 324 files, 155 ssh, 78 weird records lost.
+#
+# Field names below are taken from the live #fields headers of each log, not from
+# documentation, because Zeek's field sets vary by version and a wrong name produces
+# an empty column rather than an error.
+
+
+def map_zeek_http(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek http.log record -> zeek_http row.
+
+    THE highest-signal log for web-based activity and the one whose absence was most
+    conspicuous: it carries the method, host, full URI and user agent, so
+    "what did that host actually request?" becomes answerable. Nothing in NetFlow
+    aggregates can answer that.
+
+    PRIVACY: `uri` can contain usernames, session tokens and query parameters. This is
+    the most PII-dense table Weirvern stores, which is why its TTL is the shortest.
+    `password` from http.log is deliberately NOT ingested -- `capture_password` stays
+    off, and storing plaintext credentials in an analytics store would be a liability
+    with no analytic value.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    uri = rec.get("uri") or ""
+    # Zeek uses "-" for unset; normalise so an absent host is empty rather than "-",
+    # which would otherwise be indistinguishable from a literal "-" hostname.
+    host = rec.get("host") or ""
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "src_port": _safe_int(rec.get("id.orig_p"), 0),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "method": rec.get("method") or "",
+        "host": "" if host == ZEEK_NULL else host,
+        "uri": uri,
+        "referrer": rec.get("referrer") or "",
+        "user_agent": rec.get("user_agent") or "",
+        "status_code": _safe_int(rec.get("status_code"), 0),
+        "resp_mime": "" if (rec.get("resp_mime_types") or "") == ZEEK_NULL
+                     else (rec.get("resp_mime_types") or ""),
+        "resp_bytes": _safe_int(rec.get("response_body_len"), 0),
+        # Long URIs and high-entropy query strings are the shape of data-in-URL
+        # exfiltration. Computed at ingest so a hunt does not re-parse every URI.
+        "uri_len": len(uri),
+        "uri_entropy": _label_entropy(uri.split("?")[-1] if "?" in uri else uri),
+    }
+
+
+def map_zeek_files(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek files.log record -> zeek_files row.
+
+    Ties a transfer to a filename and a hash, which is what makes "did anything
+    matching this indicator move?" answerable. `sha256` is kept separately from
+    `filename` because the hash can be compared against threat intel WITHOUT exposing
+    the filename -- the two have different privacy properties and different lifetimes.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "fuid": rec.get("fuid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "f_source": rec.get("source") or "",
+        "filename": rec.get("filename") or "",
+        "mime_type": rec.get("mime_type") or "",
+        "sha256": rec.get("sha256") or "",
+        "md5": rec.get("md5") or "",
+        "seen_bytes": _safe_int(rec.get("seen_bytes"), 0),
+        "total_bytes": _safe_int(rec.get("total_bytes"), 0),
+        "missing": _safe_int(rec.get("missing_bytes"), 0),
+    }
+
+
+def map_zeek_ssh(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek ssh.log record -> zeek_ssh row.
+
+    `auth_success`, `auth_attempts` and `direction` together are the brute-force and
+    lateral-movement signal. Direction matters: an inbound failure is someone attacking
+    us, an outbound success is one of our hosts logging in somewhere else, and those are
+    a perimeter problem versus a compromised-host problem.
+
+    No credentials are ingested. `capture_password` stays off.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "src_port": _safe_int(rec.get("id.orig_p"), 0),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "version": _safe_int(rec.get("version"), 0),
+        "auth_success": 1 if (rec.get("auth_success") or "").lower() in {"t", "true"} else 0,
+        "auth_attempts": _safe_int(rec.get("auth_attempts"), 0),
+        "direction": rec.get("direction") or "",
+        "client": rec.get("client") or "",
+        "server": rec.get("server") or "",
+    }
+
+
+def map_zeek_weird(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek weird.log record -> zeek_weird row.
+
+    Protocol anomalies: the layer where malformed or unexpected traffic surfaces before
+    anyone has written a signature for it. Cheap and PII-free, so it keeps the longest
+    TTL of the four.
+
+    `notice` is Zeek's own flag for whether the weird also raised a Notice -- kept as a
+    separate column because "the protocol did something odd" and "Zeek thought it worth
+    alerting on" are very different volumes, and collapsing them would swamp the signal.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "src_port": _safe_int(rec.get("id.orig_p"), 0),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "name": rec.get("name") or "",
+        "noticed": 1 if (rec.get("notice") or "").lower() in {"t", "true"} else 0,
+        "peer": rec.get("peer") or "",
+    }
+
+
 ZEEK_MAPPERS = {
     "conn": ("weirvern.zeek_conn", map_zeek_conn),
     "dns": ("weirvern.zeek_dns", map_zeek_dns),
     "ssl": ("weirvern.zeek_ssl", map_zeek_ssl),
     "notice": ("weirvern.zeek_notice", map_zeek_notice),
+    # Tier 1. Zeek already wrote these on every deployment and the ingester dropped
+    # them, so the tables are new but the data has been flowing all along.
+    "http": ("weirvern.zeek_http", map_zeek_http),
+    "files": ("weirvern.zeek_files", map_zeek_files),
+    "ssh": ("weirvern.zeek_ssh", map_zeek_ssh),
+    "weird": ("weirvern.zeek_weird", map_zeek_weird),
 }
 
 # Insert column order per Zeek table (first key is the row's identity column).
@@ -292,6 +446,16 @@ ZEEK_COLUMNS = {
             "server_name", "ja3", "ja3s", "validation_status", "established"],
     "notice": ["ts", "uid", "src_addr", "dst_addr", "note", "msg", "sub",
                "peer_descr", "actions", "suppress_for"],
+    # Order must match the INSERT in the writer and the CREATE TABLE column order.
+    "http": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "method",
+             "host", "uri", "referrer", "user_agent", "status_code", "resp_mime",
+             "resp_bytes", "uri_len", "uri_entropy"],
+    "files": ["ts", "uid", "fuid", "src_addr", "dst_addr", "f_source", "filename",
+              "mime_type", "sha256", "md5", "seen_bytes", "total_bytes", "missing"],
+    "ssh": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "version",
+            "auth_success", "auth_attempts", "direction", "client", "server"],
+    "weird": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "name",
+              "noticed", "peer"],
 }
 
 

@@ -107,5 +107,20 @@ data:
   PUSHOVER_COOLDOWN_S: "1800"
   PUSHOVER_MAX_PER_HOUR: "20"
 
+  # ── Disk caps ────────────────────────────────────────────────────────────
+  # Ceilings for each growing component. Zeek rotates hourly and deletes NOTHING,
+  # so without a cap the sensor fills its disk, stops capturing, and takes
+  # ClickHouse down with it -- which presents as a database fault rather than a
+  # capacity one. Run `weirvern disk` for values sized to the host.
+  #
+  # Enforced by the weirvern-prune CronJob (35-prune-cronjob.yaml), not by the
+  # sensor: the zeek image has no python3, and the worker mounts the log
+  # directory read-only on purpose.
+  #
+  # 0 means "no cap" and is reported as unset, never as "within budget".
+  ZEEK_MAX_MB: "2048"
+  NETFLOW_MAX_MB: "1024"
+  ML_MAX_MB: "2048"
+
   # ── Models ─────────────────────────────────────────────────────────────────
   MODEL_DIR: "/models"

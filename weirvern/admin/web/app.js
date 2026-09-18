@@ -54,12 +54,16 @@ function fmtTime(v) {
     hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-/* A host cell shows the name prominently with the IP beneath, rather than
- * replacing one with the other: the name is convenient, the IP is the fact that
- * lets an operator search a DHCP lease or a firewall rule. */
-function hostCell(addr, hostname) {
+/* A host cell shows the name AND the IP, never one instead of the other: the name is
+ * convenient, the IP is the fact that lets an operator search a DHCP lease or a
+ * firewall rule.
+ *
+ * `sameAs` is for DESTINATION columns on a host drill-down: when the destination is the
+ * host you are already looking at, repeating its name in every row is noise, so only
+ * the IP is shown. Any other destination gets the full label. */
+function hostCell(addr, hostname, sameAs = null) {
   if (!addr) return el("span", { class: "muted", text: "—" });
-  if (!hostname) return el("span", { class: "host", text: addr });
+  if (!hostname || addr === sameAs) return el("span", { class: "host", text: addr });
   return el("span", { class: "host" }, [
     el("span", { text: hostname }),
     el("br"),
@@ -276,7 +280,7 @@ async function loadHost(addr, hours) {
   if (!d.top_destinations.length) emptyRow(dests, 4, "No destinations recorded.");
   for (const x of d.top_destinations) {
     dests.appendChild(el("tr", {}, [
-      el("td", {}, [hostCell(x.dst_addr, x.hostname)]),
+      el("td", {}, [hostCell(x.dst_addr, x.hostname, d.src_addr)]),
       el("td", { class: "mono", text: fmtBytes(x.bytes) }),
       el("td", { class: "mono", text: String(x.flows ?? "—") }),
       el("td", { class: "mono", text: String(x.ports ?? "—") }),
@@ -397,7 +401,7 @@ async function loadEvidence(addr, start, end) {
     for (const f of d.flows) {
       fl.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(f.time_flow_start) }),
-        el("td", {}, [hostCell(f.dst_addr, null)]),
+        el("td", {}, [hostCell(f.dst_addr, f.hostname, d.src_addr)]),
         el("td", { class: "mono", text: String(f.dst_port ?? "—") }),
         el("td", { class: "mono", text: String(f.proto ?? "—") }),
         el("td", { class: "mono", text: fmtBytes(f.bytes) }),
@@ -415,7 +419,7 @@ async function loadEvidence(addr, start, end) {
     for (const z of d.zeek_conn) {
       zk.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(z.ts) }),
-        el("td", {}, [hostCell(z.dst_addr, null)]),
+        el("td", {}, [hostCell(z.dst_addr, z.hostname, d.src_addr)]),
         el("td", { text: z.service || z.dst_port || "—" }),
         el("td", { class: "mono", text: fmtBytes((z.orig_bytes ?? 0) + (z.resp_bytes ?? 0)) }),
       ]));
