@@ -15,6 +15,7 @@ Design decisions worth knowing:
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 
 from textual import on, work
@@ -198,6 +199,15 @@ class WeirvernTUI(App):
                     classes="hint",
                 )
                 yield DataTable(id="config-list", zebra_stripes=True)
+                # Mode switching, separated from the generic key editor because it is a
+                # different kind of action: every other key is a preference, this one
+                # decides whether Weirvern is a passive observer or a router. The gate
+                # below reports WHY it cannot be enabled rather than silently refusing.
+                yield Static(id="mode-status", classes="hint")
+                with Horizontal(id="mode-row"):
+                    yield Button("Switch to loch (passive)", id="btn-mode-loch")
+                    yield Button("Switch to weir (in-path)", id="btn-mode-weir", variant="warning")
+                    yield Button("Check", id="btn-mode-check")
                 with Horizontal(id="action-row"):
                     yield Select(
                         [(k, k) for k in EDITABLE_KEYS],
@@ -217,6 +227,11 @@ class WeirvernTUI(App):
         self.sub_title = str(self.project_dir)
         self._setup_tables()
         self.query_one("#help-text", Static).update(self._help_markdown())
+        # Populate the mode panel immediately. Without this it renders as an empty
+        # paragraph until a button is pressed -- the same silent-empty state this project
+        # has had to fix repeatedly, and worse here because the panel is what tells an
+        # operator whether the sensor is passive or in the path.
+        self._show_mode()
         self._refresh()
         self._timer = self.set_interval(self.refresh_s, self._refresh_tick)
 
@@ -508,6 +523,128 @@ class WeirvernTUI(App):
         text = _re.sub(r"\x1b\[[0-9;]*m", "", text)
         self.notify(text[:180], severity="information" if code == 0 else "error", timeout=8)
 
+
+
+    # ── mode ───────────────────────────────────────────────────────────────
+    #
+    # WHY THIS IS A SEPARATE CONTROL: `loch` and `weir` are not two settings of one dial.
+    # loch observes; weir puts Weirvern in the path, so a crashed sensor becomes a LAN
+    # outage rather than a monitoring gap. The panel therefore states the impact and the
+    # missing prerequisites BEFORE offering the switch, and `weir` is a warning-variant
+    # button on purpose.
+
+    def _mode_text(self, mode: str, verdict) -> str:
+        from weirvern.admin import mode as mode_mod
+
+        lines = [
+            f"Mode: [b]{mode}[/b] — {mode_mod.SUMMARY.get(mode, '?')}",
+            f"Impact: {mode_mod.IMPACT.get(mode, '?')}",
+        ]
+        if not verdict.ok:
+            lines.append("[b]Cannot enable here:[/b]")
+            lines.extend(f"  • {b}" for b in verdict.blockers)
+        for w in getattr(verdict, "warnings", []) or []:
+            lines.append(f"  ! {w}")
+        return "\n".join(lines)
+
+    def _sensor_caps(self) -> tuple[bool, bool]:
+        """(net_admin, net_raw) as the SENSOR on the cluster actually holds them.
+
+        Read from the live DaemonSet rather than from the checked-in manifest, because
+        those differ exactly when it matters -- an overlay applied or reverted on the
+        cluster is invisible in the repository, and the repository is what a TUI on an
+        operator's laptop would naturally read.
+
+        Unknown is reported as ABSENT. Assuming a capability we could not confirm would
+        defeat the gate: the whole point is to refuse weir when the sensor cannot forward,
+        because the alternative is a LAN outage.
+        """
+        from weirvern.admin.runtime import detect_capabilities
+
+        caps = detect_capabilities(self.project_dir)
+        if not (caps.kubectl and caps.cluster_available):
+            self.notify(
+                "no cluster reachable — cannot confirm the sensor's capabilities, so weir "
+                "is treated as unavailable",
+                severity="warning", timeout=8,
+            )
+            return False, False
+        try:
+            proc = subprocess.run(
+                ["kubectl", "-n", "weirvern", "get", "ds", "zeek", "-o",
+                 "jsonpath={.spec.template.spec.containers[0].securityContext.capabilities.add}"],
+                capture_output=True, text=True, timeout=20,
+                cwd=str(self.project_dir),
+            )
+            adds = proc.stdout or ""
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.notify(f"could not read sensor caps: {exc}", severity="warning", timeout=6)
+            return False, False
+        return ("NET_ADMIN" in adds), ("NET_RAW" in adds)
+
+    @on(Button.Pressed, "#btn-mode-check")
+    def _b_mode_check(self) -> None:
+        self._show_mode()
+
+    def _show_mode(self) -> None:
+        from weirvern.admin import mode as mode_mod
+
+        env = config_io.EnvFile.load(self.project_dir / ".env")
+        current = env.get("SENSOR_MODE") or mode_mod.DEFAULT_MODE
+        verdict = mode_mod.validate(mode_mod.normalise(current))
+        panel = self.query_one("#mode-status", Static)
+        panel.update(self._mode_text(current, verdict))
+
+    @on(Button.Pressed, "#btn-mode-loch")
+    def _b_mode_loch(self) -> None:
+        self._set_mode("loch")
+
+    @on(Button.Pressed, "#btn-mode-weir")
+    def _b_mode_weir(self) -> None:
+        self._set_mode("weir")
+
+    def _set_mode(self, wanted: str) -> None:
+        """Write SENSOR_MODE, but only after the mode's own gate passes.
+
+        The gate is the CLI's, imported rather than reimplemented: two copies of a safety
+        check drift, and the one that drifts is the one nobody tests. Refusing here matches
+        `weirvern mode weir` refusing -- the TUI must not be a way around it.
+        """
+        from weirvern.admin import mode as mode_mod
+
+        env = config_io.EnvFile.load(self.project_dir / ".env")
+        current = env.get("SENSOR_MODE") or mode_mod.DEFAULT_MODE
+        normalised = mode_mod.normalise(wanted)
+
+        if normalised == current:
+            self.notify(f"already in {normalised} mode", timeout=4)
+            return
+
+        # Validate against the CLUSTER's capabilities, not this host's: the TUI usually
+        # runs on the operator's machine, where the answer would be about the wrong box.
+        has_net_admin, has_net_raw = self._sensor_caps()
+
+        verdict = mode_mod.validate(normalised, has_net_admin=has_net_admin,
+                                    has_net_raw=has_net_raw, watchdog_available=True)
+        if not verdict.ok:
+            self.query_one("#mode-status", Static).update(
+                self._mode_text(current, verdict))
+            self.notify(
+                f"cannot enable {normalised} — see the panel for the missing prerequisites",
+                severity="error", timeout=8,
+            )
+            return
+
+        env.backup(".bak")
+        env.set("SENSOR_MODE", normalised)
+        env.save()
+        self.notify(
+            f"SENSOR_MODE={normalised} saved. Restart the sensor to apply "
+            f"(`kubectl -n weirvern rollout restart ds/zeek`).",
+            timeout=8,
+        )
+        self._show_mode()
+        self._refresh()
 
 def _bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
