@@ -350,20 +350,29 @@ def forwarding_path_problems(iface: str, gateway: str,
             f"traffic has nowhere to go on this interface. {remedy}"
         )
 
-    # Corroboration only: this needs a non-local source to represent forwarded traffic,
-    # and it errors outright without one. Absence of a sample is not a problem.
+    # Corroboration only: this needs a non-local source to represent forwarded traffic, and
+    # it errors outright without one. Absence of a sample is not a problem.
     if sample_src:
-        rc, out = _run("sh", "-c",
-                       f"ip route get 192.0.2.1 from {sample_src} iif {iface} 2>&1 | head -1")
-        if rc == 0 and out and f"dev {iface}" not in out:
+        # NOTE the pipe is gone. `sh -c "... | head -1"` reports the exit status of `head`,
+        # which is 0 even when `ip route get` FAILED -- so the error text "RTNETLINK answers:
+        # Invalid argument" was read as a route and reported as "would leave via a different
+        # interface". Measured live: that produced a bogus BLOCKED on a correct
+        # configuration. No pipe, so the command's real status is visible.
+        rc, out = _run("ip", "route", "get", "192.0.2.1", "from", sample_src, "iif", iface)
+        first = out.splitlines()[0] if out else ""
+        # A routing ERROR is not a misroute. Report nothing rather than a false blocker; the
+        # rule and table checks above are the authoritative ones.
+        clean = bool(first) and "RTNETLINK" not in first and "Error" not in first
+        if rc == 0 and clean and f"dev {iface}" not in first:
             problems.append(
                 f"a packet from {sample_src} arriving on {iface} would leave via a "
-                f"different interface ({out.strip()})."
+                f"different interface ({first.strip()})."
             )
     return problems
 
 
-def ensure_forwarding_path(iface: str, gateway: str) -> list[str]:
+def ensure_forwarding_path(iface: str, gateway: str,
+                           gateway_mac: str | None = None) -> list[str]:
     """Install the policy route that makes forwarded traffic use the capture interface.
 
     Idempotent: deletes and re-adds, so a stale entry from a previous run cannot persist.
@@ -371,13 +380,18 @@ def ensure_forwarding_path(iface: str, gateway: str) -> list[str]:
 
     Also refuses to touch anything if the gateway is not reachable on this interface, so a
     wrong --gateway cannot install a route that black-holes the segment.
+
+    `gateway_mac` should be supplied when the caller already knows it (the plan does). The
+    fallback lookup reads the kernel neighbour table, which is empty when the capture
+    interface has no address yet -- the normal state while an operator is still choosing one
+    -- so relying on the lookup alone refuses a perfectly valid plan.
     """
     problems: list[str] = []
 
     # Refuse to install a default route via a gateway we cannot reach. Getting this wrong is
     # worse than not installing it: a bad default in table 100 would black-hole all relayed
     # traffic rather than merely misrouting it.
-    mac = resolve_mac(iface, gateway)
+    mac = gateway_mac or resolve_mac(iface, gateway)
     if not mac:
         return [f"gateway {gateway} did not resolve on {iface}, so a route via it would "
                 f"black-hole relayed traffic. Check --gateway and the interface."]
@@ -407,6 +421,50 @@ def remove_forwarding_path(iface: str) -> None:
     """
     _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
     _run("ip", "route", "flush", "table", str(POLICY_TABLE))
+
+
+def add_address(iface: str, address: str, segment: str) -> tuple[int, str]:
+    """Put `address` on `iface` with the segment's prefix length. (rc, output).
+
+    WHY THIS IS PART OF THE INTERCEPT AND NOT LEFT TO THE OPERATOR. Without an address on the
+    capture interface the kernel has no route on that interface, so it cannot forward relayed
+    traffic, and neighbour lookups for anything on the segment fail. Measured live: the plan
+    refused to build with "cannot resolve the gateway" purely because the interface had no
+    address -- the gateway was answering ARP the whole time. Poisoning without an address
+    would therefore take hosts off the network instead of relaying them.
+
+    The prefix comes from the segment so a mistyped address cannot silently land on the wrong
+    netmask. Idempotent in effect: adding an address the interface already holds is reported
+    by the kernel, and the caller checks first.
+    """
+    import ipaddress
+
+    try:
+        prefix = ipaddress.ip_network(segment, strict=False).prefixlen
+    except ValueError as exc:
+        return 1, f"bad segment {segment!r}: {exc}"
+    rc, out = _run("ip", "addr", "add", f"{address}/{prefix}", "dev", iface)
+    if rc == 0:
+        # Bring it up explicitly: an address on a down interface looks configured and does
+        # nothing, which is a confusing way to fail.
+        _run("ip", "link", "set", iface, "up")
+    return rc, out
+
+
+def remove_address(iface: str, address: str, segment: str) -> None:
+    """Withdraw the address this run added. Idempotent, never raises.
+
+    Called on every exit path. Leaving an address behind changes the host's behaviour
+    permanently -- a leftover address on the capture interface keeps a route and keeps
+    accepting traffic for a segment the operator never asked to be involved in.
+    """
+    import ipaddress
+
+    try:
+        prefix = ipaddress.ip_network(segment, strict=False).prefixlen
+    except ValueError:
+        prefix = 24
+    _run("ip", "addr", "del", f"{address}/{prefix}", "dev", iface)
 
 
 SYSCTL_WRITE_HINT = (

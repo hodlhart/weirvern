@@ -598,7 +598,8 @@ def test_the_cli_exposes_hosts():
 def _stub_forwarding_path(monkeypatch):
     monkeypatch.setattr(ic, "forwarding_path_problems",
                         lambda _i, _g, **_kw: [])
-    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g: [])
+    monkeypatch.setattr(ic, "ensure_forwarding_path",
+                        lambda _i, _g, **_kw: [])
     monkeypatch.setattr(ic, "remove_forwarding_path", lambda _i: None)
     yield
 
@@ -618,15 +619,26 @@ def _stub_forwarding_path(monkeypatch):
 # error, so it is checked rather than assumed.
 
 
-def test_a_wrong_forwarding_path_is_a_preflight_problem(monkeypatch):
+def test_preflight_does_not_demand_a_route_that_start_installs(monkeypatch):
+    """A prerequisite the command creates for itself must not be preflighted.
+
+    THE DEADLOCK THIS GUARDS: preflight required the policy route, and `start()` is what
+    installs it. So `weirvern intercept` refused on every host, telling the operator to fix
+    something that was never their job, and could never reach the code that would have fixed
+    it. Measured live -- the dry run reported the missing route as BLOCKED, which returns
+    before start() is ever called.
+
+    What preflight gates on is what the OPERATOR owns: ip_forward and the sysctls a container
+    cannot set. Installing the route is ours.
+    """
     monkeypatch.setattr(ic, "forwarding_path_problems", lambda _i, _g, **_kw: [
         "a FORWARDED packet arriving on eth1 would leave via a different interface",
     ])
     icpt = ic.Intercept(_plan(), sender=RecordingSender())
     problems = icpt.preflight()
-    assert any("leave via a different interface" in p for p in problems), (
-        "a misrouted forward path was not reported in preflight, so the operator would "
-        "see a healthy-looking intercept that does not relay"
+    assert not any("leave via a different interface" in p for p in problems), (
+        "preflight demands the forwarding route, which start() installs -- so the command "
+        "would refuse every run and never reach the code that fixes it"
     )
 
 
@@ -639,7 +651,8 @@ def test_a_broken_forwarding_path_aborts_before_sending_any_poison():
 
     # A real check that reports the path is broken, with the stubs removed for this test.
     orig = m.ensure_forwarding_path
-    m.ensure_forwarding_path = lambda _i, _g: ["route goes out the wrong interface"]
+    m.ensure_forwarding_path = lambda _i, _g, **_kw: [
+        "route goes out the wrong interface"]
     try:
         icpt = m.Intercept(_plan(), sender=sender)
         with pytest.raises(m.InterceptError, match="forwarding path is not correct"):
@@ -657,7 +670,7 @@ def test_a_broken_forwarding_path_aborts_before_sending_any_poison():
 def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(monkeypatch):
     calls: list = []
     monkeypatch.setattr(ic, "ensure_forwarding_path",
-                        lambda i, g: (calls.append(("install", i, g)), [])[1])
+                        lambda i, g, **_kw: (calls.append(("install", i, g)), [])[1])
     monkeypatch.setattr(ic, "remove_forwarding_path",
                         lambda i: calls.append(("remove", i, None)))
     with ic.Intercept(_plan(), sender=RecordingSender()):
@@ -747,13 +760,203 @@ def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
     )
 
 
-def test_the_intercept_passes_a_real_host_as_the_route_sample():
-    """The lookup needs a non-local source to represent forwarded traffic. Without one it
-    errors, which is how the false failure was produced."""
+def test_start_verifies_the_path_it_installed_using_a_real_host():
+    """The route must be verified AFTER install, and the lookup needs a non-local source to
+    represent forwarded traffic -- the source-less form errors outright."""
     from pathlib import Path as _P
 
     src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "intercept.py").read_text()
-    assert "sample_src=sample" in src, (
-        "the intercept does not pass a source to the forwarding check, so the route lookup "
-        "runs in the form that errors"
+    body = src[src.index("def start("):]
+    nxt = body.find("\n    def ", 10)
+    body = body[:nxt] if nxt > 0 else body
+    assert "ensure_forwarding_path(" in body, (
+        "start() does not install the forwarding path, so relayed traffic would leave by the "
+        "wrong interface"
+    )
+    assert "gateway_mac=self.plan.gateway_mac" in body, (
+        "start() does not pass the gateway MAC it already resolved, so the install re-resolves "
+        "it from the neighbour table -- which is empty when the interface has no address yet"
+    )
+
+
+# ── the intercept must get itself an address, and withdraw it ───────────────────
+#
+# FOUND BY RUNNING THE CLI against a live segment, which no unit test had done. Two
+# independent faults, both fatal in the same way:
+#
+#   1. `weirvern intercept` never assigned --our-ip to the capture interface. Without an
+#      address there is no route on that interface, so the kernel CANNOT forward relayed
+#      traffic, and every neighbour lookup on the segment fails. The intercept would have
+#      poisoned real hosts into a black hole -- they would lose the network -- which is the
+#      exact failure weir mode exists to avoid, in the mode whose whole purpose is not to
+#      cause outages.
+#   2. `build_plan` resolved the gateway MAC from the kernel neighbour table BEFORE the ARP
+#      sweep. The neighbour table only fills for addresses the interface can reach at L3, and
+#      at plan time the capture interface has no address yet -- so the lookup failed and the
+#      plan was refused with "cannot resolve the gateway", while the dry run had just printed
+#      that same gateway's MAC from the sweep. The information was already in hand.
+
+
+def test_build_plan_takes_the_gateway_mac_from_the_sweep_not_the_neighbour_table(monkeypatch):
+    """The neighbour table is empty when the interface has no address yet, which is the
+    normal state at plan time. The sweep finds the gateway anyway, so its answer must win."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    # resolve_mac fails -- exactly as it does with no address on the interface.
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: None)
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "192.168.3.1": "a8:9c:6c:96:b6:2d",      # the gateway answered
+        "192.168.3.193": "bc:24:11:53:ca:66",
+    })
+    plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.250", "192.168.3.1")
+    assert plan is not None, (
+        "the plan was refused even though the sweep reported the gateway: the gateway MAC "
+        "must come from the sweep, which works without an assigned address"
+    )
+    assert plan.gateway_mac == "a8:9c:6c:96:b6:2d"
+    assert "192.168.3.1" not in plan.hosts, (
+        "the gateway is in the sweep result but must never be an intercept TARGET -- forging "
+        "the gateway's own view of its peers is the fastest way to black-hole a segment"
+    )
+    assert "192.168.3.193" in plan.hosts
+
+
+def test_build_plan_still_refuses_when_the_gateway_answered_nothing(monkeypatch):
+    """The fallback must not weaken the check: a gateway that cannot be resolved means the
+    mapping could never be RESTORED, so refusing is correct."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: None)
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {"192.168.3.193": "bc:24:11:53:ca:66"})
+    assert ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.250", "192.168.3.1") is None
+
+
+def test_the_cli_assigns_our_address_and_withdraws_it():
+    """Without this the intercept cannot forward, and the hosts it poisons lose the network."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "cli.py").read_text()
+    assert "add_address(" in src, (
+        "the intercept never assigns --our-ip, so the kernel has no route on the capture "
+        "interface and cannot forward relayed traffic"
+    )
+    assert "remove_address(" in src, (
+        "the address is never withdrawn, so a finished or failed run leaves the interface "
+        "permanently different from how the operator left it"
+    )
+    # The teardown must be in a finally, so it covers the failure returns as well.
+    body = src[src.index("def cmd_intercept"):]
+    nxt = body.find("\ndef ", 10)
+    body = body[:nxt] if nxt > 0 else body
+    assert "finally:" in body, "the address teardown is not in a finally block"
+    assert "addr_added" in body, "nothing tracks whether the address was ours to remove"
+
+
+def test_add_address_uses_the_segments_prefix_length():
+    """A mistyped netmask would put the address on the wrong network, where it would either
+    not route or would route somewhere unintended."""
+    from weirvern.admin import weirnet
+
+    calls: list[tuple] = []
+    orig = weirnet._run
+    weirnet._run = lambda *a, **k: (calls.append(a), (0, ""))[1]
+    try:
+        rc, _ = weirnet.add_address("eth1", "192.168.3.250", "192.168.3.0/24")
+        assert rc == 0
+        assert ("ip", "addr", "add", "192.168.3.250/24", "dev", "eth1") in calls, (
+            f"the prefix did not come from the segment: {calls}"
+        )
+        # A /16 must produce /16, not a hardcoded /24.
+        weirnet.add_address("eth1", "10.0.5.9", "10.0.0.0/16")
+        assert ("ip", "addr", "add", "10.0.5.9/16", "dev", "eth1") in calls
+    finally:
+        weirnet._run = orig
+
+
+def test_add_address_rejects_a_bad_segment_instead_of_guessing():
+    from weirvern.admin import weirnet
+
+    rc, out = weirnet.add_address("eth1", "192.168.3.250", "not-a-cidr")
+    assert rc != 0, "a malformed segment must fail rather than silently default a netmask"
+    assert "not-a-cidr" in out
+
+
+def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
+    """THE FALSE BLOCKER, as a regression test.
+
+    Measured live: preflight produced
+
+        BLOCKED a packet from 192.168.3.193 arriving on eth1 would leave via a different
+        interface (RTNETLINK answers: Invalid argument)
+
+    on a configuration that was CORRECT. Two causes stacked:
+
+      1. `ip route get <dst> iif <iface>` errors without a source, so an error is the
+         normal result for one of the call forms.
+      2. the command ran as `sh -c "... | head -1"`, and the exit status of that pipeline is
+         `head`'s -- always 0 -- so the error text was treated as a successful route.
+
+    A blocker that fires on a correct setup is not a harmless false positive: preflight
+    blockers REFUSE the intercept, so this made `weirvern intercept` unusable on a healthy
+    host while telling the operator to fix something that was already right.
+    """
+    from weirvern.admin import weirnet
+
+    monkeypatch.setattr(weirnet, "forwarding_rule_text",
+                        lambda _i: "1000:\tfrom all iif eth1 lookup 100")
+    monkeypatch.setattr(weirnet, "forwarding_table_text",
+                        lambda: "default via 192.168.3.1 dev eth1")
+
+    def fake_run(*a, **k):
+        # The rule check succeeds; the corroborating route lookup errors.
+        if a and a[0] == "ip" and "rule" in a:
+            return 0, "1000:\tfrom all iif eth1 lookup 100"
+        return 2, "RTNETLINK answers: Invalid argument"
+
+    monkeypatch.setattr(weirnet, "_run", fake_run)
+    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
+                                                sample_src="192.168.3.193")
+    assert problems == [], (
+        f"a routing ERROR was reported as a misroute: {problems}. Preflight blockers REFUSE "
+        f"the intercept, so this makes the command unusable on a correct configuration."
+    )
+
+
+def test_a_genuinely_misrouted_packet_is_still_reported(monkeypatch):
+    """The fix must not blind the check: a real wrong-interface route is still a blocker."""
+    from weirvern.admin import weirnet
+
+    monkeypatch.setattr(weirnet, "forwarding_rule_text",
+                        lambda _i: "1000:\tfrom all iif eth1 lookup 100")
+    monkeypatch.setattr(weirnet, "forwarding_table_text",
+                        lambda: "default via 192.168.3.1 dev eth1")
+
+    def fake_run(*a, **k):
+        if a and a[0] == "ip" and "rule" in a:
+            return 0, "1000:\tfrom all iif eth1 lookup 100"
+        if a and "get" in a:
+            return 0, "192.0.2.1 from 192.168.3.193 via 192.168.2.1 dev eth0"
+        return 0, ""
+
+    monkeypatch.setattr(weirnet, "_run", fake_run)
+    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
+                                                sample_src="192.168.3.193")
+    assert any("dev eth0" in p for p in problems), (
+        "a packet that genuinely leaves by the wrong interface was not reported"
+    )
+
+
+def test_the_route_lookup_is_not_run_through_a_pipe():
+    """A pipeline's exit status is the LAST command's, so `| head -1` hides a failure."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "weirnet.py").read_text()
+    body = src[src.index("def forwarding_path_problems"):]
+    nxt = body.find("\ndef ", 10)
+    body = body[:nxt] if nxt > 0 else body
+    # Comments are stripped first: the docstring above deliberately quotes the OLD piped
+    # command to explain the bug, and a naive substring search flags that explanation as the
+    # bug itself. Assert on the code, not the prose about the code.
+    code = "\n".join(ln.split("#")[0] for ln in body.splitlines())
+    assert "| head" not in code, (
+        "the route lookup is piped, so its exit status is head's and a failure reads as "
+        "success"
     )

@@ -155,7 +155,7 @@ def validate(mode: str, *, has_net_admin: bool = False,
     if not has_net_raw:
         v.ok = False
         v.blockers.append(
-            "CAP_NET_RAW is required to send forged ARP replies (the sensor container "
+            "CAP_NET_RAW is required to send forged ARP frames (the sensor container "
             "needs it, as it already does for capture)"
         )
     if not has_net_admin:

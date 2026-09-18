@@ -44,7 +44,6 @@ from weirvern.admin.weirnet import (
     ForwardingState,
     check_forwarding,
     ensure_forwarding_path,
-    forwarding_path_problems,
     read_mac,
     read_neighbour_mac,
     remove_forwarding_path,
@@ -271,6 +270,11 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
         logger.error("cannot read a MAC for %s; is the interface present?", iface)
         return None
 
+    # The gateway is NOT a sweep target (never intercept it), but its MAC is still required,
+    # so it is surveyed separately. An earlier version excluded it from the candidate list and
+    # then expected it in the results -- measured live, the operator saw all 11 hosts listed
+    # including the gateway, and then a message saying that same gateway "answered neither the
+    # ARP sweep nor the neighbour table".
     skip = set(exclude or ()) | {our_ip, gateway_ip}
     try:
         candidates = [h for h in parse_cidr(segment) if h not in skip]
@@ -278,19 +282,41 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
         logger.error("bad segment %r: %s", segment, exc)
         return None
 
-    gateway_mac = resolve_mac(iface, gateway_ip)
-    if not gateway_mac:
-        logger.error(
-            "cannot resolve the gateway %s on %s. Interception needs its real MAC both to "
-            "forge its address and to restore it. Check the gateway is reachable from this "
-            "interface.",
-            gateway_ip, iface,
-        )
-        return None
-
+    # SWEEP FIRST, THEN TAKE THE GATEWAY'S MAC FROM THE SAME MECHANISM.
+    #
+    # The order matters and was wrong. `resolve_mac` reads the kernel neighbour table, which
+    # only fills for addresses the interface can reach at L3 -- and at plan time the capture
+    # interface typically has NO address yet (the operator is still choosing one), so the
+    # lookup fails and the plan was refused with "cannot resolve the gateway" while the survey
+    # had just printed that gateway's real MAC.
+    #
+    # `arp_sweep` gets MACs without an assigned address (it sources requests from an
+    # unassigned probe address and parses replies off the socket), so it is the primary
+    # source. The gateway is probed in the SAME sweep as the hosts, as its own target, so both
+    # come from one mechanism and one code path.
     hosts = arp_sweep(iface, our_mac, our_ip, candidates)
     # A host that answered as our own MAC is us (or a mirror); never intercept ourselves.
     hosts = {ip: mac for ip, mac in hosts.items() if mac.lower() != our_mac.lower()}
+
+    gw_probe = arp_sweep(iface, our_mac, our_ip, [gateway_ip])
+    gateway_mac = ((gw_probe.get(gateway_ip) or hosts.get(gateway_ip)
+                    or resolve_mac(iface, gateway_ip) or "").lower() or None)
+    if not gateway_mac:
+        logger.error(
+            "cannot resolve the gateway %s on %s -- it answered neither the ARP sweep of "
+            "%s nor the neighbour table. Interception needs its real MAC both to forge its "
+            "address and to restore it, so without it a poison frame could never be undone. "
+            "Check --gateway and that %s has L2 reachability to the segment.",
+            gateway_ip, iface, segment, iface,
+        )
+        return None
+
+    # The gateway is in `hosts` too (it answered the sweep). Intercepting the gateway ITSELF
+    # would forge the gateway's view of its own peers, which is not the intent and is the
+    # fastest way to black-hole a segment -- so it is never a target, only ever the address
+    # we claim. `skip` already excluded it from the candidate list, but a sweep result can
+    # still contain it, so remove it explicitly.
+    hosts.pop(gateway_ip, None)
 
     if only:
         missing = sorted(only - set(hosts))
@@ -339,14 +365,21 @@ class Intercept:
         state = self.forwarding or check_forwarding(self.plan.iface)
         problems.extend(state.problems)
 
-        # ip_forward only makes the kernel WILLING to forward; the policy route decides
-        # WHERE. Without it a relayed packet matches the default route and leaves by the
-        # management interface carrying the victim's source address onto the wrong segment.
-        # Reported here rather than only fixed silently, because it is a prerequisite the
-        # operator should be able to see fail.
-        sample = next(iter(sorted(self.plan.hosts)), None) if self.plan.hosts else None
-        problems.extend(forwarding_path_problems(self.plan.iface, self.plan.gateway_ip,
-                                                 sample_src=sample))
+        # ip_forward only makes the kernel WILLING to forward, and it is the one part of the
+        # path the OPERATOR owns (a container cannot set it). The policy route that decides
+        # WHERE the packet goes is installed by start() -- see the note below.
+        # The forwarding PATH is NOT checked here, because start() INSTALLS it.
+        #
+        # This distinction is the difference between the command working and never working.
+        # Preflighting the policy route made `weirvern intercept` refuse every time it was run:
+        # the route is created by start(), so requiring it beforehand is a prerequisite nothing
+        # can ever satisfy -- a deadlock whose message tells the operator to fix something that
+        # was never their job.
+        #
+        # What preflight genuinely gates on is what the OPERATOR must provide and what we must
+        # not proceed without: the kernel being willing to forward at all, and the sysctls that
+        # would silently make the relay one-way. Installing the route is ours, and start() does
+        # it before any poison frame exists so a failure there aborts with nothing sent.
 
         if not self.plan.hosts:
             # Not fatal, but almost certainly not what the operator wanted, and silently
@@ -373,7 +406,8 @@ class Intercept:
         #    wrong, poisoning makes the kernel the next hop for traffic it cannot deliver --
         #    the victim loses the network instead of being relayed. Installing it first means
         #    a failure here aborts with NO poison frames sent.
-        path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip)
+        path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip,
+                                               gateway_mac=self.plan.gateway_mac)
         if path_problems:
             raise InterceptError(
                 "refusing to poison: the forwarding path is not correct, so relayed "

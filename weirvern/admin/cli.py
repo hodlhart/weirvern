@@ -1018,7 +1018,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
         else:
             _warn("no cluster reachable — cannot confirm the sensor's capabilities")
         print(_c("bold", "Prerequisites"))
-        _ok_or_bad("CAP_NET_RAW", has_net_raw, "needed to send forged ARP replies")
+        _ok_or_bad("CAP_NET_RAW", has_net_raw, "needed to send forged ARP frames")
         _ok_or_bad("CAP_NET_ADMIN", has_net_admin,
                    "needed to configure forwarding; the passive sensor does NOT have it")
         _ok_or_bad("fail-open watchdog", watchdog_ok, "withdraws the poisoned ARP entries")
@@ -1535,6 +1535,45 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         print(weirnet.SYSCTL_WRITE_HINT)
         return EXIT_NOTREADY
 
+    # ASSIGN THE ADDRESS, which is the step this command was missing entirely.
+    #
+    # Without an address on the capture interface the kernel has no route on that interface,
+    # so it CANNOT forward relayed traffic, and every neighbour lookup on the segment fails.
+    # Measured live: the plan refused to build with "cannot resolve the gateway" purely
+    # because the interface had no address, while the gateway was answering ARP the whole
+    # time. Poisoning without an address would take hosts OFF the network instead of relaying
+    # them -- the exact failure weir mode exists to avoid.
+    #
+    # Placed HERE, after the mode gate and the survey and immediately before the try, so
+    # every return below it is covered by the finally and no path can leak the address.
+    addr_added = False
+    if not _iface_has_address(iface, our_ip):
+        rc, out = weirnet.add_address(iface, our_ip, segment)
+        if rc != 0:
+            _bad(f"could not assign {our_ip} to {iface}: {out}")
+            return EXIT_NOTREADY
+        addr_added = True
+        print(f"  assigned {our_ip} to {iface} for the duration of this intercept")
+        print("  (withdrawn on exit, including on failure and on Ctrl-C)")
+        print()
+    else:
+        print(f"  {iface} already carries {our_ip}; it will be left in place")
+        print()
+
+    try:
+        return _run_intercept(args, runner, plan, ic_mod)
+    finally:
+        # EVERY exit path, including the failure returns inside. An address left on the
+        # capture interface keeps a route and keeps accepting traffic for a segment the
+        # operator never asked to be involved in.
+        if addr_added:
+            weirnet.remove_address(iface, our_ip, segment)
+            print(f"  withdrew {our_ip} from {iface}")
+
+
+def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
+    """Start the intercept, wait, and restore. Split out so the address teardown can wrap
+    the whole thing in one finally block rather than being repeated on each return path."""
     runner.start()
 
     # Publish a heartbeat so the GUI and TUI can see this intercept running. Without it
@@ -1592,6 +1631,24 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         return EXIT_FAIL
     return EXIT_OK
 
+
+
+def _iface_has_address(iface: str, address: str) -> bool:
+    """Whether `iface` already carries `address` (with any prefix).
+
+    Checked so a re-run does not add a duplicate, and so the message can say whether the
+    address was ours to add -- which decides whether we withdraw it on exit. Removing an
+    address the operator had already configured would be a real network change made by
+    teardown, exactly the kind of thing this command must never do.
+    """
+    import subprocess as _sp
+
+    try:
+        out = _sp.run(["ip", "-o", "addr", "show", "dev", iface],
+                      capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return address in out
 
 def _has_cap(name: str) -> bool:
     """Whether this process holds a Linux capability, read from CapEff.
