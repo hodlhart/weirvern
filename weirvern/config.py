@@ -163,6 +163,14 @@ class Settings:
     # Models
     model_dir: str = field(default_factory=lambda: os.environ.get("MODEL_DIR", "/models"))
 
+    # How often the worker publishes the sensor's observed state. Independent of
+    # detect_interval_s: the heartbeat must be frequent for staleness to mean anything
+    # (status.HEARTBEAT_STALE_S is 45s), while detection is deliberately slow. Sharing one
+    # interval would make a healthy sensor look dead between detection cycles.
+    heartbeat_interval_s: int = field(
+        default_factory=lambda: _int_env("HEARTBEAT_INTERVAL_S", 15)
+    )
+
     # ── Disk caps ───────────────────────────────────────────────────────────
     # Byte ceilings for the components that grow without bound. Zeek rotates by TIME
     # and never deletes, so nothing bounded its log directory until these existed:

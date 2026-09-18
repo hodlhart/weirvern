@@ -289,6 +289,33 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 # time. The replacement is weirvern/explain.py.
 
 
+
+def _heartbeat_thread(settings) -> None:
+    """Publish the sensor's observed state every `heartbeat_interval_s`, forever.
+
+    Beats IMMEDIATELY on start, so a freshly deployed worker populates the dashboard
+    without waiting an interval -- otherwise the panel says "never reported" for the first
+    15s of every deploy and looks broken.
+
+    Never raises: the cost of a missing heartbeat is a dashboard reading "unknown", which
+    is recoverable, while an exception here must not be able to kill ingestion.
+    """
+    from weirvern.admin import sensorwatch, status
+
+    sid = os.environ.get("SENSOR_ID") or os.environ.get("HOSTNAME", "worker")
+    interval = max(5, int(getattr(settings, "heartbeat_interval_s", 15)))
+    logger.info("Sensor heartbeat every %ds, observing %s", interval,
+                sensorwatch._log_dir())
+
+    while not _stop.is_set():
+        try:
+            with db.connect(settings, retries=1, delay_s=1) as client:
+                status.heartbeat(client, sensor_id=sid, **sensorwatch.observe())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sensor heartbeat failed: %s", exc)
+        _stop.wait(interval)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     settings = get_settings()
@@ -340,6 +367,21 @@ def main() -> None:
                     "ZEEK_LOG_DIR is empty — set it to enable the packet sensor)",
                     settings.tail_file)
 
+    # Report what the SENSOR is doing, observed from its log files. The sensor container
+    # has no python3 (busybox/ash, perl and Zeek only -- verified on the live pod), so it
+    # cannot report itself, and the worker is the only component with both Python and a
+    # read-only view of the logs.
+    #
+    # Its own thread because the heartbeat interval (15s) is independent of the detection
+    # interval (300s): sharing the detection loop would make the sensor look dead between
+    # cycles. Every failure is swallowed, so a monitoring problem never stops detection.
+    threading.Thread(
+        target=_heartbeat_thread,
+        args=(settings,),
+        daemon=True,
+        name="sensor-heartbeat",
+    ).start()
+
     detectors = build_detectors(settings, cfg)
     alert_state = AlertState()
     last_full_train: datetime | None = None
@@ -367,22 +409,13 @@ def main() -> None:
             for v in verdicts:
                 push_alert(v, settings, alert_state, client)
 
-            # Report what the SENSOR is doing, observed from its log files. The sensor
-            # container has no python3, so it cannot report itself (see sensorwatch), and
-            # the worker is the only component that both has Python and can see the logs.
+            # The sensor heartbeat runs in its OWN thread, not here.
             #
-            # Guarded so a monitoring failure never interrupts detection: a dashboard
-            # showing "unknown" is recoverable, a worker that stops alerting is not.
-            try:
-                from weirvern.admin import sensorwatch, status
-                status.heartbeat(
-                    client,
-                    sensor_id=os.environ.get("SENSOR_ID")
-                    or os.environ.get("HOSTNAME", "worker"),
-                    **sensorwatch.observe(),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("sensor heartbeat failed: %s", exc)
+            # Publishing inside this loop would make the heartbeat's interval equal to
+            # detect_interval_s -- five minutes by default -- while sensor_status treats a
+            # heartbeat older than 45s as dead. A perfectly healthy sensor would therefore
+            # be reported as stopped almost all the time: the panel would be permanently
+            # WRONG rather than permanently empty. See _heartbeat_thread.
         except KeyboardInterrupt:
             break
         except Exception as exc:  # noqa: BLE001

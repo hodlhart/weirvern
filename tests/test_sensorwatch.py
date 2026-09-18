@@ -181,3 +181,42 @@ def test_the_worker_publishes_the_heartbeat():
         "the heartbeat is not wrapped, so a monitoring failure would break the worker's "
         "detection loop"
     )
+
+
+def test_the_heartbeat_interval_is_much_shorter_than_the_detection_interval():
+    """Coupling them would make a healthy sensor look dead.
+
+    sensor_status treats a heartbeat older than 45s as not-running, while detection runs
+    every 300s. Publishing the heartbeat from the detection loop therefore meant a healthy
+    sensor was reported as STOPPED for four and a half minutes out of every five -- a panel
+    that is permanently wrong, which is worse than one that is empty.
+    """
+    from weirvern.admin import status
+    from weirvern.config import Settings
+
+    s = Settings()
+    assert s.heartbeat_interval_s < status.HEARTBEAT_STALE_S, (
+        f"the heartbeat interval ({s.heartbeat_interval_s}s) must be shorter than the "
+        f"staleness threshold ({status.HEARTBEAT_STALE_S}s), or every beat arrives already "
+        f"expired"
+    )
+    assert s.heartbeat_interval_s < s.detect_interval_s, (
+        "the heartbeat must not be tied to the detection interval"
+    )
+    # Enough margin that one missed beat does not report a dead sensor.
+    assert status.HEARTBEAT_STALE_S >= s.heartbeat_interval_s * 2, (
+        "the staleness threshold must tolerate at least one missed heartbeat"
+    )
+
+
+def test_the_heartbeat_runs_in_its_own_thread():
+    """Structural: it must not be inside the detection loop."""
+    src = (Path(__file__).resolve().parents[1] / "weirvern" / "worker.py").read_text()
+    assert "_heartbeat_thread" in src
+    assert 'name="sensor-heartbeat"' in src, "the heartbeat thread is not started"
+    # The detection loop must NOT call heartbeat directly any more.
+    loop = src[src.index("while not _stop.is_set():"):]
+    assert "status.heartbeat" not in loop, (
+        "status.heartbeat is still called from the detection loop, so the heartbeat's "
+        "interval is the detection interval and the sensor will look dead between cycles"
+    )
