@@ -11,6 +11,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read a positive int from the environment, tolerating junk.
+
+    A cap is an operational safety limit, not a correctness-critical value, so a
+    malformed one must not take the control plane down -- it falls back to the default
+    and the value is visible via `weirvern disk`.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+
+
 def _env_int(name: str, default: int) -> int:
     raw = _clean_env(os.environ.get(name))
     if raw is None or raw == "":
@@ -145,6 +162,20 @@ class Settings:
 
     # Models
     model_dir: str = field(default_factory=lambda: os.environ.get("MODEL_DIR", "/models"))
+
+    # ── Disk caps ───────────────────────────────────────────────────────────
+    # Byte ceilings for the components that grow without bound. Zeek rotates by TIME
+    # and never deletes, so nothing bounded its log directory until these existed:
+    # measured 87 rotated files / ~7 MB per hour on a 40 GB disk.
+    #
+    # Read by the prune CronJob and `weirvern prune`. Declared here so they are
+    # discoverable -- a cap that only appears in a manifest is one operators never set,
+    # and an unset cap is indistinguishable from a healthy disk until it is full.
+    #
+    # 0 means "no cap" and is reported as unset rather than as within budget.
+    zeek_max_mb: int = field(default_factory=lambda: _int_env("ZEEK_MAX_MB", 0))
+    netflow_max_mb: int = field(default_factory=lambda: _int_env("NETFLOW_MAX_MB", 0))
+    ml_max_mb: int = field(default_factory=lambda: _int_env("ML_MAX_MB", 0))
 
     # ------------------------------------------------------------------
     @property
