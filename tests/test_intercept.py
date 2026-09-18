@@ -16,6 +16,8 @@ The specific hazards, each with its symptom:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from weirvern.admin import intercept as ic
@@ -386,3 +388,139 @@ def test_read_mac_returns_none_for_a_missing_interface(monkeypatch):
     monkeypatch.setattr(weirnet.Path, "read_text",
                         lambda self: (_ for _ in ()).throw(OSError()))
     assert weirnet.read_mac("nosuchiface") is None
+
+
+# ── choosing an address (rather than being told to invent one) ─────────────────
+#
+# WHY NOT DHCP: a DHCP address can change or be withdrawn mid-intercept, and that is the
+# one failure the watchdog cannot tell from idleness -- the forwarding counter simply stops
+# advancing, which is treated as "quiet" rather than "broken". The connected route would
+# vanish, so poisoned hosts keep believing we are the gateway while we can no longer
+# forward for them: a segment-wide outage the health monitor reports as healthy.
+#
+# So the address is STATIC and CHOSEN BY THE OPERATOR, from a list verified free.
+
+
+def test_free_addresses_prefers_the_top_of_the_range(monkeypatch):
+    """DHCP pools hand out from the bottom, so a high address is least likely to collide."""
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
+    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5", count=3)
+    assert free == ["192.168.3.254", "192.168.3.253", "192.168.3.252"], free
+
+
+def test_an_address_that_answered_arp_is_not_offered(monkeypatch):
+    """Offering an in-use address would cause a conflict on the operator's network."""
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "arp_sweep",
+                        lambda *a, **k: {"192.168.3.254": "de:ad:be:ef:00:01"})
+    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5", count=2)
+    assert "192.168.3.254" not in free, "a taken address was offered as free"
+    assert free == ["192.168.3.253", "192.168.3.252"]
+
+
+def test_the_source_address_is_never_offered(monkeypatch):
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
+    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.254", count=1)
+    assert "192.168.3.254" not in free, "offered the address we are already using"
+
+
+def test_no_mac_means_no_offer_rather_than_a_guess(monkeypatch):
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: None)
+    assert weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5") == []
+
+
+def test_describe_segment_reports_the_blast_radius(monkeypatch):
+    """Every host listed is one whose ARP cache would be forged."""
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
+        "192.168.3.11": "0b:0b:0b:0b:0b:0b",
+    })
+    used, err = weirnet.describe_segment("eth1", "192.168.3.0/24", "192.168.3.5")
+    assert not err
+    assert len(used) == 2
+
+
+def test_describe_segment_refuses_an_enormous_sweep(monkeypatch):
+    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    used, err = weirnet.describe_segment("eth1", "10.0.0.0/16", "10.0.0.5")
+    assert used == {}
+    assert "too large" in err
+
+
+def test_the_cli_surveys_before_building_the_plan():
+    """A blast radius nobody sees is not a decision, it is an accident."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "cli.py").read_text()
+    body = src[src.index("def cmd_intercept"):]
+    body = body[:body.index("plan = ic_mod.build_plan")]
+    assert "describe_segment" in body, (
+        "the CLI does not survey the segment, so the operator never sees how many hosts "
+        "an intercept would affect"
+    )
+    assert "find_free_addresses" in body, (
+        "the CLI does not offer free addresses, so the operator must invent one and risk "
+        "a conflict"
+    )
+
+
+# ── the sweep must SEE hosts (this was a real bug) ──────────────────────────────
+#
+# A sweep that reads /proc/net/arp returns ZERO hosts on a live segment, because the kernel
+# only installs a neighbour entry for addresses the interface actually OWNS. Replies for
+# every other address arrive on the wire and are discarded. Measured against a live
+# 192.168.3.0/24 with ELEVEN hosts: the kernel-table version found 0, parsing the socket
+# found 11.
+#
+# That failure is worse than a crash. `weirvern intercept --dry-run` uses this to report
+# the blast radius and to offer free addresses, so it would have told an operator their
+# network was empty and that intercepting it would be pointless -- on a live network.
+
+
+def test_arp_sweep_parses_replies_rather_than_reading_the_kernel_table():
+    src = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" /
+           "intercept.py").read_text()
+    body = src[src.index("def arp_sweep"):]
+    body = body[:body.index("\ndef ", 10)]
+    assert "sock.recv" in body, (
+        "the sweep does not read replies from the socket, so it will report an empty "
+        "segment on a live network"
+    )
+    # read_neighbour_mac may appear only as the gap-filler, never as the primary source.
+    primary = body[:body.index("finally:")]
+    assert "read_neighbour_mac" not in primary, (
+        "the sweep still relies on the kernel neighbour table, which is blind to every "
+        "address the interface does not own"
+    )
+
+
+def test_arp_sweep_sends_in_batches_and_drains_between_them():
+    """Blasting a whole /24 and then reading loses replies to a full socket buffer.
+
+    ARP replies are UNICAST, so a dropped frame is gone rather than retransmitted -- and
+    the socket buffer is small. Measured: all-at-once found 1 host where batching found 11.
+    """
+    src = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" /
+           "intercept.py").read_text()
+    body = src[src.index("def arp_sweep"):]
+    body = body[:body.index("\ndef ", 10)]
+    assert "range(0, len(targets), 32)" in body, (
+        "the sweep does not batch its sends, so most replies will be dropped"
+    )
+    assert "sock.settimeout" in body, (
+        "no socket timeout: a recv loop without one blocks forever on a quiet segment"
+    )
+
+
+def test_the_sweep_does_not_source_from_0000():
+    """A request from 0.0.0.0 is ignored by most stacks -- a second false 'empty network'."""
+    src = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" /
+           "cli.py").read_text()
+    body = src[src.index("def cmd_intercept"):]
+    body = body[:body.index("def _has_cap") if "def _has_cap" in body else len(body)]
+    assert "describe_segment(iface, segment, our_ip or gateway)" in body, (
+        "the survey does not pass a usable source address, so replies may never come"
+    )

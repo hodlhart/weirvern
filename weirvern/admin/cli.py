@@ -1454,6 +1454,45 @@ def cmd_intercept(args: argparse.Namespace) -> int:
             print(f"    ! {warn}")
         return EXIT_NOTREADY
 
+    # Show the segment and offer free addresses, BEFORE building the plan.
+    #
+    # WHY THE OPERATOR CHOOSES: intercept needs an address on the segment to relay from,
+    # and silently picking one risks an address conflict on their network -- a worse
+    # outcome than not testing at all. DHCP is not an option here: a lease can change or be
+    # withdrawn mid-intercept, and that is the one failure the watchdog cannot distinguish
+    # from idleness (the forwarding counter simply stops advancing), so poisoned hosts
+    # would keep believing we are the gateway while we can no longer forward for them.
+    used, err = weirnet.describe_segment(iface, segment, our_ip or gateway)
+    if err:
+        _warn(f"could not survey {segment}: {err}")
+    else:
+        print(_c("bold", f"Segment {segment} on {iface}"))
+        if not used:
+            print("  nothing answered ARP — either the segment is empty, or this "
+                  "interface cannot reach it")
+            print("  (intercepting it would affect nobody, which is safe but pointless)")
+        else:
+            print(f"  {len(used)} host(s) in reach — this is the blast radius, since")
+            print("  every one of them would have its ARP cache forged:")
+            for ip, mac in sorted(used.items(),
+                                  key=lambda kv: tuple(int(x) for x in kv[0].split(".")))[:20]:
+                print(f"      {ip:<16} {mac}")
+            if len(used) > 20:
+                print(f"      ... and {len(used) - 20} more")
+        print()
+        if not args.our_ip:
+            free = weirnet.find_free_addresses(iface, segment, our_ip or gateway,
+                                               exclude=set(used) | {gateway})
+            if free:
+                print(_c("bold", "  free addresses you could use for --our-ip:"))
+                for f_ in free:
+                    print(f"      {f_}")
+                print("  These answered no ARP. Confirm against your own records before")
+                print("  using one — a host that is simply powered off would also be free.")
+            else:
+                print("  no obviously free address found; choose --our-ip deliberately")
+        print()
+
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
                              gateway_ip=gateway)
     if plan is None:

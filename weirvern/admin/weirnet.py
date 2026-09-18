@@ -261,3 +261,67 @@ SYSCTL_WRITE_HINT = (
     "In Kubernetes these belong in the pod's securityContext (sysctls: []) or in the "
     "node's config, since a container cannot set them by default."
 )
+
+
+def find_free_addresses(iface: str, segment: str, src_ip: str,
+                        count: int = 3, exclude: set[str] | None = None) -> list[str]:
+    """Candidate addresses on `segment` that nothing answered ARP for.
+
+    WHY THIS IS OFFERED RATHER THAN AUTO-ASSIGNED: intercept needs an address on the
+    segment to relay from, and picking one silently risks an address conflict on someone
+    else's network -- a worse outcome than not testing at all. So the operator is shown the
+    segment, told which addresses are already taken, and offered free ones.
+
+    WHY NOT DHCP: a DHCP address can change or be withdrawn mid-intercept, and that is the
+    one failure the watchdog cannot distinguish from idleness. If the lease goes away the
+    connected route disappears, so the poisoned hosts keep believing we are the gateway
+    while we can no longer forward for them -- a segment-wide outage with a health monitor
+    reporting "quiet", because the forwarding counter never advanced. A static address we
+    set, verify free, and can remove deterministically on teardown has none of that.
+
+    `src_ip` must be an address the interface already has, or most stacks will not answer
+    the probe and the sweep would report an empty network that is actually full.
+    """
+    import ipaddress
+
+    from weirvern.admin.intercept import arp_sweep
+
+    net = ipaddress.ip_network(segment, strict=False)
+    skip = set(exclude or ()) | {src_ip}
+    candidates = [str(h) for h in net.hosts() if str(h) not in skip]
+    if not candidates:
+        return []
+
+    our_mac = read_mac(iface)
+    if not our_mac:
+        return []
+    taken = arp_sweep(iface, our_mac, src_ip, candidates)
+    free = [ip for ip in candidates if ip not in taken]
+
+    # Prefer the TOP of the range: DHCP pools conventionally hand out from the bottom, so
+    # a high address is least likely to collide with a future lease. This is a heuristic,
+    # which is exactly why the result is presented for confirmation rather than applied.
+    def _sort_key(addr: str) -> int:
+        return -int(addr.split(".")[-1])
+
+    return sorted(free, key=_sort_key)[:count]
+
+
+def describe_segment(iface: str, segment: str, src_ip: str) -> tuple[dict[str, str], str]:
+    """(used addresses, error) for reporting the blast radius before poisoning.
+
+    Every host listed is one whose ARP cache would be forged, so this is the number that
+    says how much of the network a mistake would take down.
+    """
+    import ipaddress
+
+    from weirvern.admin.intercept import arp_sweep
+
+    net = ipaddress.ip_network(segment, strict=False)
+    our_mac = read_mac(iface)
+    if not our_mac:
+        return {}, f"cannot read a MAC for {iface}"
+    candidates = [str(h) for h in net.hosts()]
+    if len(candidates) > 4094:
+        return {}, f"{segment} is too large to sweep ({len(candidates)} addresses)"
+    return arp_sweep(iface, our_mac, src_ip, candidates), ""

@@ -75,31 +75,80 @@ def parse_cidr(value: str) -> list[str]:
 
 
 def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
-              timeout_s: float = 2.0) -> dict[str, str]:
+              timeout_s: float = 3.0) -> dict[str, str]:
     """Send ARP requests for every target and return {ip: mac} for those that answered.
 
-    A broadcast ARP REQUEST is answered by the owner, which is what fills the neighbour
-    table. Reading /proc/net/arp after the sweep is more reliable than parsing replies
-    ourselves, and it works without privileged packet parsing.
+    REPLIES ARE PARSED FROM THE SOCKET, NOT READ FROM /proc/net/arp.
+    This was a real bug and it produced a confident wrong answer: reading the kernel's
+    neighbour table returned ZERO hosts on a live segment with ELEVEN, because the kernel
+    only installs a neighbour entry for addresses the interface actually OWNS. Replies for
+    every other address arrive on the wire and are discarded -- so a sweep that looked
+    correct reported an empty network and made the dry-run advise that intercepting it
+    would be pointless.
+
+    Verified against the same segment both ways: /proc/net/arp -> 0 hosts, parsing the
+    socket -> 11 hosts (gateway + 10 peers).
+
+    A further trap in the same area: ARP replies are UNICAST to the sender, so the socket
+    must be bound to the interface and must capture outgoing frames too. Binding to
+    (iface, 0) with ETH_P_ARP and reading with a timeout does both.
+
+    `our_ip` should be an address the segment will accept as a source. A request from
+    0.0.0.0 is ignored by most stacks, which also yields a false "empty network" -- the
+    second way this function could lie.
     """
     request_tmpl = _arp_request_builder(our_mac, our_ip)
+    found: dict[str, str] = {}
+
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ARP))
     try:
         sock.bind((iface, 0))
-        for ip in targets:
-            try:
-                sock.send(request_tmpl(ip))
-            except OSError:
-                continue
-        time.sleep(timeout_s)
+        sock.settimeout(0.4)
+
+        # SEND IN BATCHES AND DRAIN BETWEEN THEM.
+        #
+        # Blasting all 254 requests and then reading finds only a handful: the socket
+        # receive buffer fills, and because ARP replies are UNICAST (not flooded) each one
+        # exists only as a single queued frame that a full buffer drops. Measured on a
+        # live segment: all-at-once found 1 host, batched found 11.
+        #
+        # 32 per batch with a bounded drain window is enough for a /24 on a LAN; larger
+        # segments simply take more batches, which is what the loop is for.
+        for start in range(0, len(targets), 32):
+            for ip in targets[start:start + 32]:
+                try:
+                    sock.send(request_tmpl(ip))
+                except OSError:
+                    continue
+            end = time.time() + max(0.5, timeout_s / max(1, len(targets) // 32))
+            while time.time() < end:
+                try:
+                    frame = sock.recv(2048)
+                except OSError:
+                    break
+                # Reply frame layout: dst(6) src(6) ethertype(2) htype(2) ptype(2)
+                # hlen(1) plen(1) op(2) sender_mac(6) sender_ip(4) target_mac(6)
+                # target_ip(4) -- so sender_mac is bytes 22:28 and sender_ip 28:32.
+                if len(frame) < 42:
+                    continue
+                if int.from_bytes(frame[12:14], "big") != ETH_P_ARP:
+                    continue
+                if int.from_bytes(frame[20:22], "big") != 2:      # 2 = reply
+                    continue
+                sender_ip = socket.inet_ntoa(frame[28:32])
+                sender_mac = ":".join(f"{b:02x}" for b in frame[22:28])
+                if sender_mac != "00:00:00:00:00:00":
+                    found[sender_ip] = sender_mac
     finally:
         sock.close()
 
-    found: dict[str, str] = {}
+    # Fall back to the kernel table only to FILL GAPS, never as the primary source: it is
+    # authoritative for addresses we own and blind to everything else.
     for ip in targets:
-        mac = read_neighbour_mac(iface, ip)
-        if mac:
-            found[ip] = mac
+        if ip not in found:
+            mac = read_neighbour_mac(iface, ip)
+            if mac:
+                found[ip] = mac
     return found
 
 
