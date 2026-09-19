@@ -352,7 +352,7 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         dhcp_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
-                src_addr,
+                toString(client_addr) AS src_addr,
                 count()                                          AS dhcp_events,
                 uniqExactIf(mac, mac != '')                      AS dhcp_macs,
                 uniqExactIf(server_addr, server_addr != '0.0.0.0') AS dhcp_servers,
@@ -383,7 +383,7 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         tunnel_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
-                src_addr,
+                toString(src_addr) AS src_addr,
                 count()                                          AS tunnel_events,
                 uniqExact(tunnel_type)                            AS tunnel_types
             FROM weirvern.zeek_tunnel
@@ -398,7 +398,7 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         quic_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
-                src_addr,
+                toString(src_addr) AS src_addr,
                 count()                                          AS quic_count,
                 uniqExactIf(server_name, server_name != '')      AS quic_servers
             FROM weirvern.zeek_quic
@@ -411,7 +411,7 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         ldap_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
-                src_addr,
+                toString(src_addr) AS src_addr,
                 count()                                          AS ldap_searches,
                 uniqExactIf(ldap_filter, ldap_filter != '')      AS ldap_filter_shapes,
                 avg(result_count)                                AS ldap_results_mean,
