@@ -281,19 +281,43 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
 
 
 def _running_version(backend) -> str:
-    """The image tag the pod is actually running.
+    """The version of the code serving this page.
 
-    Asked of the cluster because the in-package `__version__` literal DRIFTS: it read 0.4.0
-    while the deployment ran 0.5.6, which would misreport the version of every other setting
-    shown beside it. Returns "(unknown)" rather than falling back to the literal -- an operator
-    who sees "unknown" will look; one who sees a plausible wrong number will not.
+    TWO SOURCES, AND THE ORDER MATTERS. The running image tag is a MEASUREMENT of what is
+    deployed; the in-package `__version__` is a statement about the code itself. Prefer the
+    measurement when the cluster is reachable.
+
+    The literal alone was the original bug: it read 0.4.0 while the deployment ran 0.5.6, because
+    nothing tied the two together. That is now tied by a test
+    (test_the_package_version_matches_the_image_tag_declared_in_the_transformer), so the fallback
+    is checked rather than trusted.
+
+    The fallback EXISTS because this pod often cannot reach the cluster at all -- the GUI image
+    ships no `kubectl` and the Deployment sets automountServiceAccountToken: false. Requiring a
+    cluster read would mean reporting "(unknown)" on the normal deployment, which tells an
+    operator nothing when they are trying to confirm what they are running.
     """
-    if backend is None:
+    if backend is not None:
+        try:
+            tag = _version_from_backend(backend)
+            if tag:
+                return tag
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from weirvern import __version__  # noqa: PLC0415
+
+        return __version__
+    except Exception:  # noqa: BLE001
         return "(unknown)"
+
+
+def _version_from_backend(backend) -> str:
+    """The running image tag, or "" when the cluster cannot answer."""
     try:
         ps = backend.ps()
     except Exception:  # noqa: BLE001
-        return "(unknown)"
+        return ""
     best = ""
     for svc in ps or []:
         name = (getattr(svc, "name", "") or "").lower()
@@ -307,7 +331,7 @@ def _running_version(backend) -> str:
             return tag
         if "worker" in name and not best:
             best = tag
-    return best or "(unknown)"
+    return best
 
 
 def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:

@@ -248,10 +248,34 @@ def test_the_version_row_prefers_the_gui_image():
     assert rows["version"]["value"] == "2.2.2"
 
 
-def test_the_version_row_says_unknown_rather_than_guessing_without_a_backend():
-    """With no cluster access there is no honest answer, and a guess would be worse."""
+def test_the_version_row_falls_back_to_the_package_literal_without_a_backend():
+    """The GUI pod normally CANNOT reach the cluster.
+
+    Measured: the image ships no `kubectl` and the Deployment sets
+    automountServiceAccountToken: false, so the backend is None on the real deployment. Reporting
+    "(unknown)" there would tell an operator nothing while they are trying to confirm what they
+    are running -- and the live endpoint did exactly that until this fallback was added.
+
+    The literal is safe to fall back to ONLY because a test now pins it to the image tag; that
+    test is the reason this fallback is not the original bug again.
+    """
+    import weirvern
+
     rows = _flat(status.settings_overview(settings=_Settings(), backend=None))
-    assert rows["version"]["value"] == "(unknown)"
+    assert rows["version"]["value"] == weirvern.__version__
+
+
+def test_the_measured_image_tag_wins_over_the_package_literal():
+    """A measurement of what is deployed beats a statement about the code."""
+    from weirvern.admin.runtime import ServiceState
+
+    class _Backend:
+        def ps(self):
+            return [ServiceState(name="weirvern-gui", state="running",
+                                 image="weirvern-worker:7.7.7")]
+
+    rows = _flat(status.settings_overview(settings=_Settings(), backend=_Backend()))
+    assert rows["version"]["value"] == "7.7.7"
 
 
 def test_the_namespace_row_resolves_from_runtime_rather_than_rendering_unknown():
