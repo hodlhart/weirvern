@@ -82,7 +82,13 @@ def test_adaptive_baseline_predict():
     }
     normal = det.predict({"src_addr": "198.51.100.5", "total_bytes": 1000, "total_packets": 100, "unique_dst_ips": 5})
     assert normal == 0.0
-    spike = det.predict({"src_addr": "198.51.100.5", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
+    spike = det.predict(
+        {"src_addr": "198.51.100.5", "total_bytes": 5_000_000,
+         "total_packets": 100, "unique_dst_ips": 5}
+    )
     assert spike > 0.8
-    unknown = det.predict({"src_addr": "203.0.113.9", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
+    unknown = det.predict(
+        {"src_addr": "203.0.113.9", "total_bytes": 5_000_000,
+         "total_packets": 100, "unique_dst_ips": 5}
+    )
     assert unknown == 0.0
