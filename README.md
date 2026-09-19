@@ -763,15 +763,15 @@ UI bug into an outage.
 
 | View | What it answers |
 |---|---|
-| Overview | Sensor state, health probes, recent anomalies, top talkers |
 | Anomalies | Every anomaly with score, agreement and the "why" line; click through to **evidence** |
 | Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
 | Network | Every host-to-host connection as a graph; **select any number of hosts to track only their connections** |
 | Netflow | Volume, protocol mix, top ports, destination spread; **click a protocol or port bar to see the host-to-host pairs behind it** |
 | Zeek | Per-log volume, a trend by log, observed services, DNS names; **click a log to see which hosts it contains**, then a host to drill into it |
 | Models | Training history, score distribution, model agreement, and per-feature deviations |
-| Health | The deep checks, ingestion trend per pipeline stage, table sizes, sensor state |
+| Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status) plus the health probes, ingestion trend and table sizes — the landing view |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
+| Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version. Read-only, and it says so: the GUI is unauthenticated, so a settings form here would be a way to reconfigure a sensor from the network. Secrets show as `(set, N chars)` or `(not set)`, never in value |
 
 The **Assets** and **Network** views share one rule: an endpoint that could not be read is not an
 endpoint with nothing on it. Both name the sources they failed to read, so a short list is never

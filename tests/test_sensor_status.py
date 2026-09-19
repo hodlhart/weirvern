@@ -275,29 +275,49 @@ def test_schema_migration_files_are_ordered():
 
 
 def test_the_gui_has_a_sensor_panel_element():
+    """The sensor panel lives on the HEALTH tab.
+
+    It moved there when the Overview tab was removed (the sensor and health panels were merged
+    into Health rather than deleted). The assertion follows the panel: a merged panel that no
+    test looks for is a panel that can quietly disappear in the next restructure.
+    """
     html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
-    assert 'id="sensor-body"' in html, (
-        "the sensor panel container is missing, so renderSensor has nowhere to write"
+    assert 'id="hp-sensor"' in html, (
+        "the sensor panel container is missing from the Health tab, so the sensor has nowhere "
+        "to render"
     )
 
 
 def test_the_gui_renders_the_sensor_payload():
-    js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
-    assert "renderSensor" in js, "the GUI never renders the sensor payload"
-    assert "data.sensor" in js, "loadOverview does not pass the sensor payload to the renderer"
+    """The Health view must render the sensor from the payload it already fetched."""
+    js = (ROOT / "weirvern" / "admin" / "web" / "soc.js").read_text()
+    assert "sensorLine" in js, "the GUI never renders the sensor payload"
+    # It must read the sensor from the /api/health payload rather than a second request, or the
+    # sensor's story and the health checks' story can disagree about the same moment.
+    assert "d.sensor" in js, "loadHealthDeep does not pass the sensor payload to the renderer"
+    assert 'id="hp-sensor"' in (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
 
 
 def test_the_renderer_distinguishes_not_running_from_running():
     """The frontend must not treat a dead sensor as merely stale-looking."""
-    js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
-    body = js[js.index("function renderSensor"):]
-    body = body[:body.index("\n}\n") + 3]
-    assert "s.running" in body
+    js = (ROOT / "weirvern" / "admin" / "web" / "soc.js").read_text()
+    body = js[js.index("function sensorLine"):]
+    body = body[:body.index("\n}") + 3]
+    assert "s.running" in body, (
+        "the renderer ignores the running flag; a dead sensor would read as live"
+    )
     assert "NOT running" in body or "not running" in body.lower(), (
         "the renderer has no wording for a stopped sensor; the panel would show the mode "
         "with no indication it is dead"
     )
-    assert "s.error" in body, "the renderer ignores the backend's explanation"
+    # "never reported" and "reported but dead" are different facts, and collapsing them would
+    # hide a sensor that died from a sensor that was never installed.
+    assert "never reported" in body, (
+        "the renderer does not distinguish a sensor that never reported from one that stopped"
+    )
+    assert "intercept_stopped" in body, (
+        "the renderer drops the flag warning that an intercept ran and did not restore the node"
+    )
 
 
 def test_the_gui_uses_only_classes_that_exist_in_the_stylesheet():
@@ -357,8 +377,11 @@ def test_no_orphan_placeholder_elements_remain():
     #   views/tabs/statusline: toggled by CSS class, not filled with data
     #   h-hint: hint text set once in the markup
     #   ev-notice-card: shown/hidden, not populated
-    structural = {"view-overview", "view-anomalies", "view-evidence", "view-host",
+    structural = {"view-anomalies", "view-evidence", "view-host",
                   "view-network", "view-models", "view-netflow", "view-zeek", "view-health",
+                  #   view-settings: a static skeleton -- loadSettings creates every row
+                  #     into the st-* hosts, so the section itself is never written to
+                  "view-settings",
                   "tabs", "statusline", "h-hint",
                   # Deliberately structural, each for a stated reason:
                   #   ev-notice-card: shown/hidden, never filled with data

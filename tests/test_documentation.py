@@ -213,7 +213,7 @@ def test_the_readme_documents_the_gui_views():
         "health": "Health",
         "anomalies": "Anomalies",
         "evidence": "Evidence",
-        "overview": "Overview",
+        "settings": "Settings",   # added; Overview was removed
     }
     for key, label in tabs:
         phrase = documented_as.get(key, label.strip())

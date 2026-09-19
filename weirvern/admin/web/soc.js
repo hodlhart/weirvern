@@ -302,6 +302,22 @@ async function loadHealthDeep() {
     ? (bad === 0 ? `All ${checks.length} checks passing.` : `${bad} of ${checks.length} checks FAILING — see below.`)
     : "Health checks are unavailable — cannot reach ClickHouse.";
 
+  // The header pill. It was populated by the removed Overview loader, so without this it read
+  // "loading…" forever -- an element that looks like it is still working when it is not. Health
+  // is the view that owns this fact now, so it sets the pill as well as the summary.
+  const pill = document.getElementById("health-pill");
+  if (pill) {
+    if (!d.health) {
+      pill.textContent = "no database";
+      pill.className = "pill bad";
+    } else {
+      pill.textContent = `${checks.length - bad}/${checks.length} checks passing`;
+      pill.className = "pill " + (h.ok ? "ok" : "bad");
+    }
+  }
+  const fetched = document.getElementById("fetched");
+  if (fetched) fetched.textContent = d.health ? "as of " + fmtTime(h.fetched_at) : "";
+
   renderTimeline("hp-ingest", d.ingest,
                  { emptyText: "No pipeline activity in this window — nothing is being ingested." });
 
@@ -334,11 +350,10 @@ async function loadHealthDeep() {
       text: (d.tables || {}).available === false ? `unavailable: ${d.tables.reason}` : "no tables" })]));
   }
 
-  // The sensor block reuses the Overview renderer so the two agree by construction -- they
-  // read the same payload field and must not drift into two different stories. `renderSensor`
-  // targets #sensor-body by design (one sensor panel, one renderer); the Health view shows the
-  // same facts inline, so it reuses the SAME function with the same target rather than
-  // duplicating the logic and risking two versions of the sensor's story.
+  // The sensor block renders INLINE from the same /api/health payload the rest of this view
+  // uses. It previously delegated to app.js's renderSensor, which targeted the Overview tab's
+  // #sensor-body -- that tab is gone and the function with it, so the sensor's story is told
+  // here, once, from the payload already in hand.
   if (d.sensor && Object.keys(d.sensor).length) {
     const host = document.getElementById("hp-sensor");
     host.replaceChildren(el("p", { class: "muted", text: sensorLine(d.sensor) }));

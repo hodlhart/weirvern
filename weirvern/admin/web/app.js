@@ -123,188 +123,72 @@ async function getJSON(url) {
 
 /* ── sensor ─────────────────────────────────────────────────────────────── */
 
-/**
- * What the SENSOR says it is doing -- which is not its configured mode.
- *
- * The configured SENSOR_MODE lives in the ConfigMap and survives the sensor dying, so
- * showing it as the current state would display "intercepting 2 hosts" for a process
- * that stopped hours ago. The backend reports a stale heartbeat as not-running, and this
- * must render that as plainly as it renders a healthy sensor -- the failure mode being
- * guarded against is a green panel over a dead sensor.
- */
-function renderSensor(s) {
-  const box = document.getElementById("sensor-body");
-  if (!box) return;
-  box.replaceChildren();
-  if (!s) { box.appendChild(el("p", { class: "muted", text: "no sensor information" })); return; }
-
-  // The headline fact: running or not, and in which mode.
-  const mode = s.mode || "unknown";
-  const state = s.running ? "running" : (s.reported ? "NOT running" : "never reported");
-  const pill = el("span", {
-    class: "pill " + (s.running ? "ok" : "bad"),
-    text: mode,
-  });
-
-  box.appendChild(el("p", {}, [
-    el("strong", { text: "Mode: " }), pill,
-    el("span", { class: "muted", text: "  " + state }),
-    s.age_s != null
-      ? el("span", { class: "muted", text: `  · last heartbeat ${fmtAge(s.age_s)} ago` })
-      : el("span", { class: "muted", text: "  · no heartbeat received" }),
-  ]));
-
-  if (s.error) {
-    box.appendChild(el("p", { class: "banner", text: s.error }));
-  }
-
-  // Intercept detail only exists in weir mode. An empty value there means "not
-  // applicable", not "unknown", so it is stated rather than left blank.
-  if (mode === "weir" && s.reported) {
-    box.appendChild(el("p", { class: "muted", text:
-      `In-path intercept on ${s.iface || "?"} (${s.segment || "?"}): ` +
-      `${s.hosts} host(s), ${s.mappings} ARP mapping(s), up ${fmtAge(s.uptime_s)}` }));
-    box.appendChild(el("p", { class: "muted", text:
-      `watchdog: ${s.restores} restore(s), ${s.refreshes} refresh(es)` }));
-    for (const f of (s.failures || [])) {
-      box.appendChild(el("p", { class: "banner", text: "watchdog: " + f }));
-    }
-  } else if (mode === "loch" && s.reported) {
-    box.appendChild(el("p", { class: "muted", text:
-      `Passive capture on ${s.iface || "?"} — Weirvern observes only and cannot ` +
-      `affect traffic. Nothing is intercepted, so there is nothing to show here.` }));
-  }
-
-  // AN INTERCEPT THAT STOPPED IS NOT THE SAME AS NO INTERCEPT.
-  //
-  // The reader falls back to this passive row once an intercept's heartbeat goes stale, which is
-  // right — a stale row must never beat a live one. But it means the panel says "Weirvern cannot
-  // affect traffic" about a node where an intercept ran and stopped, and whether the restore
-  // happened is exactly what this reader cannot see. If the process was killed before its watchdog
-  // restored, the forged ARP mappings are still in the neighbours' caches: the box is in the path
-  // and this panel would say it is not.
-  //
-  // Stated as uncertainty, not as danger. A banner that cries wolf gets ignored, and then the real
-  // one is ignored too.
-  if (s.intercept_stopped) {
-    box.appendChild(el("p", { class: "banner", text:
-      "an intercept ran on this sensor and has stopped without reporting a clean restore. " +
-      "The mode above describes what is running NOW, not what the node was left in — confirm " +
-      "the mappings were withdrawn before trusting this segment's traffic." }));
-  }
-
-  // THE OTHER MODES ARE REPORTED, NOT HIDDEN.
-  //
-  // A sensor can legitimately do both at once: the worker keeps publishing its configured
-  // capture mode while an intercept publishes its own row. Showing only the higher-ranked one
-  // would be a panel that is silently half the truth -- the same class of wrong as a green
-  // panel over a dead sensor.
-  for (const o of (s.others || [])) {
-    box.appendChild(el("p", { class: "muted", text:
-      `also reporting: ${o.mode} on ${o.iface || "?"}` +
-      (o.hosts ? ` (${o.hosts} host(s))` : "") +
-      ` · heartbeat ${fmtAge(o.age_s)} ago` }));
-  }
-}
-
 /* ── overview ───────────────────────────────────────────────────────────── */
 
-async function loadOverview() {
-  const data = await getJSON(API.overview);
+/* ── settings ───────────────────────────────────────────────────────────────
+ *
+ * READ-ONLY BY DESIGN, and the panel says so. The GUI is served on a LAN port with no
+ * authentication, so any write it accepted would be a way to reconfigure the sensor from the
+ * network -- the same reasoning the removed About tab carried. This shows the EFFECTIVE
+ * configuration and where to change it.
+ *
+ * A secret shows as "(set, N chars)" or "(not set)" rather than a value: an operator debugging
+ * an authentication failure needs to distinguish those two, and the value must not cross an
+ * unauthenticated port.
+ */
+async function loadSettings() {
+  const data = await getJSON("/api/settings");
+  const sum = document.getElementById("st-summary");
+  const win = document.getElementById("st-window");
 
-  // Show the API's own data error, if any. This is separate from a transport
-  // failure: the page loaded, but the panels could not be filled.
-  showDataError(data.data_error);
-
-  const pill = document.getElementById("health-pill");
-  const checks = (data.health && data.health.checks) || [];
-  const passing = checks.filter((c) => c.ok).length;
-  if (!data.health) {
-    pill.textContent = "no database";
-    pill.className = "pill bad";
-  } else {
-    pill.textContent = `${passing}/${checks.length} checks passing`;
-    pill.className = "pill " + (data.health.ok ? "ok" : "bad");
+  if (!data || data.available === false) {
+    if (win) win.textContent = "";
+    if (sum) sum.textContent = "Unavailable: " + ((data && data.reason) || "no data");
+    for (const id of ["st-detect", "st-sensor", "st-runtime"]) {
+      const n = document.getElementById(id);
+      if (n) { n.replaceChildren(); n.appendChild(chartEmpty("Unavailable.")); }
+    }
+    return;
   }
-  document.getElementById("fetched").textContent =
-    data.health ? "as of " + fmtTime(data.health.fetched_at) : "";
 
-  renderSensor(data.sensor);
+  if (win) win.textContent = data.version ? `v${data.version}` : "";
+  const groups = data.groups || {};
+  const titles = data.titles || {};
+  const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
+  if (sum) sum.textContent = `${total} settings in effect`;
 
-  const ht = document.querySelector("#health-table tbody");
-  ht.replaceChildren();
-  if (!checks.length) {
-    emptyRow(ht, 2, "No health data — is ClickHouse reachable?");
-  } else {
-    for (const c of checks) {
-      ht.appendChild(el("tr", {}, [
-        el("td", { class: c.ok ? "ok" : "bad", text: c.ok ? "✓" : "✗" }),
-        el("td", {}, [
-          el("strong", { text: c.name }),
-          el("div", { class: "muted mono", text: c.detail || "" }),
-        ]),
+  for (const key of ["detect", "sensor", "runtime"]) {
+    const host = document.getElementById(`st-${key}`);
+    if (!host) continue;
+    host.replaceChildren();
+    const rows = groups[key] || [];
+    if (!rows.length) {
+      host.appendChild(chartEmpty(`No ${(titles[key] || key).toLowerCase()} settings reported.`));
+      continue;
+    }
+    for (const r of rows) {
+      host.appendChild(el("div", { class: "setting" }, [
+        el("span", { class: "setting-key", text: r.label, title: r.key }),
+        el("span", {
+          class: "setting-val" + (r.secret ? " secret" : ""),
+          // A secret is visibly marked so the reader knows the blank is deliberate.
+          text: String(r.value),
+          title: r.secret ? "reported as set/not-set only; this page is unauthenticated" : "",
+        }),
       ]));
     }
   }
 
-  const at = document.querySelector("#overview-anomalies tbody");
-  at.replaceChildren();
-  if (!data.anomalies.length) {
-    emptyRow(at, 6, "No anomalies yet. Detection needs a baseline — expect a few hours of traffic first.");
-  } else {
-    for (const a of data.anomalies) {
-      const tr = el("tr", { class: "clickable",
-                            on: { click: () => openHost(a.src_addr) } }, [
-        el("td", { class: "mono", text: fmtTime(a.detected_at) }),
-        el("td", {}, [hostCell(a.src_addr, a.hostname)]),
-        el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
-        el("td", {}, [sevCell(a.severity)]),
-        el("td", { class: "mono", text: a.baseline_comparison || a.primary_deviation_feature || "—" }),
-        el("td", { class: "mono attack-cell", text: a.attack_label || "—" }),
-      ]);
-      at.appendChild(tr);
-    }
+  // State the boundary explicitly rather than leaving the reader to discover it by looking for
+  // a Save button that does not exist.
+  const note = document.getElementById("st-note");
+  if (note) {
+    note.replaceChildren();
+    note.appendChild(chartEmpty(
+      "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
+      "Secrets are reported as set or not set, never in value."));
   }
-
-  const tt = document.querySelector("#talkers-table tbody");
-  tt.replaceChildren();
-  const known = new Set();
-
-  // A BAR CHART BESIDE THE TABLE, not instead of it. The table carries the exact figures an
-  // analyst may quote; the bars carry the comparison the table makes you compute. Both read
-  // the same rows, so they cannot disagree.
-  renderBars("talkers-chart", {
-    available: true,
-    points: (data.top_talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })),
-  }, {
-    label: (r) => r.src_addr,
-    value: (r) => r.bytes,
-    format: fmtBytes,
-    limit: 10,
-    onClick: (r) => openHost(r.src_addr),
-    title: (r) => `${r.src_addr} — ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to drill down.`,
-    emptyText: "No flow volume in the last 24h — check the collector is receiving.",
-  });
-
-  if (!data.top_talkers.length) {
-    emptyRow(tt, 4, "No flow volume in the last 24h — check the collector is receiving.");
-  } else {
-    for (const t of data.top_talkers) {
-      known.add(t.src_addr);
-      tt.appendChild(el("tr", { class: "clickable",
-                                on: { click: () => openHost(t.src_addr) } }, [
-        el("td", {}, [hostCell(t.src_addr, t.hostname)]),
-        el("td", { class: "mono", text: fmtBytes(t.bytes) }),
-        el("td", { class: "mono", text: String(t.flows ?? "—") }),
-        el("td", { class: "mono", text: String(t.destinations ?? "—") }),
-      ]));
-    }
-  }
-  for (const a of data.anomalies) known.add(a.src_addr);
-  const dl = document.getElementById("known-hosts");
-  dl.replaceChildren(...[...known].map((h) => el("option", { attrs: { value: h } })));
 }
-
 /* ── anomalies ──────────────────────────────────────────────────────────── */
 
 async function loadAnomalies() {
@@ -647,6 +531,7 @@ function showView(name) {
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") loadModels().then(clearError).catch(showError);
+  if (name === "settings") loadSettings().then(clearError).catch(showError);
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on
   // ClickHouse for a panel nobody is looking at.
@@ -661,8 +546,10 @@ function showView(name) {
 }
 
 async function refreshAll() {
+  // HEALTH, not Overview: the Overview tab is gone and Health is the landing view. Auto-refresh
+  // follows whatever is on screen rather than refreshing a view nobody is looking at.
   try {
-    await loadOverview();
+    await loadHealthDeep();
     clearError();
   } catch (err) {
     showError(err);
@@ -705,6 +592,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // in showView: these run aggregate queries and should not fire on a background timer.
   for (const [id, fn] of [
     ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep],
+    ["st-reload", loadSettings],
   ]) {
     const b = document.getElementById(id);
     if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));

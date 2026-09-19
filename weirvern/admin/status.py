@@ -192,6 +192,137 @@ def collect_health(client, settings) -> HealthReport:
     return report
 
 
+# Setting names that must NEVER be sent to a browser. The GUI has no authentication, so anything
+# it returns is readable by anyone who can reach the port -- and this list is a DENY-list applied
+# by name, so a new secret added to Settings later is caught by the pattern rather than by someone
+# remembering to add it here.
+_SECRET_HINTS = ("password", "token", "secret", "key", "credential", "passwd")
+
+# Names that carry a credential but do NOT read like one. The pattern above catches the obvious
+# cases and anything named consistently in future; these are the exceptions whose names would
+# otherwise sail through -- `pushover_user` is the Pushover USER KEY, an account identifier that
+# is only useful together with the API token, so it is a secret with an innocuous name.
+# Pattern first, then explicit: a name that does not announce itself still has to be listed.
+_SECRET_NAMES = frozenset({"pushover_user"})
+
+
+def _is_secret(name: str) -> bool:
+    """Whether a setting's VALUE must be withheld from an unauthenticated page."""
+    low = name.lower()
+    return low in _SECRET_NAMES or any(hint in low for hint in _SECRET_HINTS)
+
+
+def _redact(name: str, value):
+    """A setting's display value: the value, or the fact that it is set.
+
+    A secret is reported as SET or NOT SET rather than blanked, because "unset" and "hidden" are
+    different facts and an operator debugging an authentication failure needs to know which one
+    they have. The value itself never leaves the process.
+    """
+    # A BOOLEAN IS NEVER A SECRET. `capture_password` name-matches the pattern but its value is
+    # a switch, not a credential -- and hiding it as "(not set)" would take away exactly the fact
+    # an operator needs ("are we capturing passwords?"). Redaction applies to the value a secret
+    # would carry, so a bool is reported as the state it is.
+    if isinstance(value, bool):
+        return "enabled" if value else "disabled"
+    if _is_secret(name):
+        if value in (None, ""):
+            return "(not set)"
+        return f"(set, {len(str(value))} chars)"
+    if value in (None, ""):
+        return "(not set)"
+    return value
+
+
+# The settings worth showing, grouped as the Settings tab displays them. Listed EXPLICITLY rather
+# than introspected: a settings object is not a data model, and dumping every attribute would
+# expose internals (paths, credentials) through an unauthenticated port by accident.
+_SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
+    ("detect", "Detection", [
+        ("retrain_every_h", "retrain every (h)"),
+        ("retrain_window_h", "retrain window (h)"),
+        ("detect_interval_s", "detect interval (s)"),
+        ("base_threshold", "alert threshold"),
+        ("min_agreement", "minimum agreement"),
+        ("strong_signal", "strong signal"),
+    ]),
+    ("sensor", "Sensor", [
+        ("sensor_mode", "mode"),
+        ("zeek_iface", "Zeek interface"),
+        ("mgmt_iface", "management interface"),
+        ("zeek_log_dir", "Zeek log dir"),
+        ("tail_file", "NetFlow tail file"),
+        ("intercept_targets", "intercept targets"),
+        ("intercept_seconds", "intercept duration (s)"),
+        ("intercept_segment", "intercept segment"),
+        ("intercept_gateway", "intercept gateway"),
+        ("reverse_dns", "reverse DNS"),
+    ]),
+    ("runtime", "Storage and runtime", [
+        ("clickhouse_host", "ClickHouse host"),
+        ("clickhouse_port", "ClickHouse port"),
+        ("clickhouse_db", "ClickHouse database"),
+        ("clickhouse_user", "ClickHouse user"),
+        ("clickhouse_password", "ClickHouse password"),
+        ("model_dir", "model directory"),
+        ("pushover_enabled", "Pushover"),
+        ("pushover_user", "Pushover user"),
+        ("pushover_token", "Pushover token"),
+        ("capture_password", "capture passwords"),
+        ("namespace", "namespace"),
+        ("version", "version"),
+    ]),
+]
+
+
+def settings_overview(settings=None, namespace: str = "") -> dict:
+    """The EFFECTIVE configuration, for the Settings tab. Read-only by design.
+
+    WHY READ-ONLY. The GUI is served on a LAN port with no authentication. Anything an HTTP
+    request can write is therefore a way to reconfigure a sensor from the network -- and the
+    About tab carried the same reasoning before it was removed. So this reports what is running
+    and where to change it, rather than offering knobs it cannot safely accept.
+
+    SECRETS ARE REPORTED AS SET OR NOT SET, never in value. The redaction is by NAME pattern, so
+    a new credential added later is caught by the pattern rather than by memory.
+    """
+    import os
+
+    rows: dict[str, list[dict]] = {}
+    for key, _title, fields in _SETTINGS_GROUPS:
+        out: list[dict] = []
+        for attr, label in fields:
+            value = getattr(settings, attr, None) if settings is not None else None
+            if attr == "reverse_dns":
+                # Not a Settings field: the resolver reads it from the environment directly.
+                value = os.environ.get("WEIRVERN_REVERSE_DNS") or "private (default)"
+            elif attr == "namespace":
+                value = namespace or "(unknown)"
+            elif attr == "version":
+                try:
+                    from weirvern import __version__
+
+                    value = __version__
+                except Exception:  # noqa: BLE001
+                    value = "(unknown)"
+            elif value is None:
+                # Fall back to the environment, since these settings are env-driven and the
+                # process may be reading them from the ConfigMap rather than a literal default.
+                env_name = attr.upper()
+                value = os.environ.get(env_name)
+            out.append({
+                "key": attr,
+                "label": label,
+                "value": _redact(attr, value),
+                # A secret is flagged so the UI can say WHY it shows no value, instead of leaving
+                # the reader to wonder whether the field is broken.
+                "secret": _is_secret(attr),
+            })
+        rows[key] = out
+    return {"available": True, "reason": "", "groups": rows,
+            "titles": {key: title for key, title, _ in _SETTINGS_GROUPS}}
+
+
 def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
     """Per-detector age of the last retrain, and whether it exceeds the interval.
 

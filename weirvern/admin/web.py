@@ -189,6 +189,9 @@ def _build_handler(ctx: GuiContext):
             # "is data still arriving", which requires reading it.
             if path == "/api/health":
                 return self._health(query)
+            # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
+            if path == "/api/settings":
+                return self._settings(query)
             if path == "/api/healthz":
                 # Liveness for the Kubernetes probe. Deliberately does NOT touch
                 # ClickHouse: a probe that fails when the database is slow would
@@ -468,6 +471,27 @@ def _build_handler(ctx: GuiContext):
                     "available": False, "points": [], "log": label,
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
+                })
+            self._json(payload)
+
+        def _settings(self, query: dict) -> None:
+            """The effective configuration. READ-ONLY, and deliberately so.
+
+            This GUI is served on a LAN port with no authentication, so any write it accepted
+            would be a way to reconfigure the sensor from the network. It reports what is
+            running and where to change it instead. Secrets are reported as set or not set by
+            `status.settings_overview`, never in value.
+            """
+            del query  # no parameters: the configuration is whatever is running
+            try:
+                payload = status_mod.settings_overview(
+                    settings=ctx.settings, namespace=getattr(ctx, "namespace", "") or ""
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("settings view unavailable: %s", exc)
+                return self._json({
+                    "available": False, "groups": {},
+                    "reason": f"could not read the configuration: {type(exc).__name__}",
                 })
             self._json(payload)
 

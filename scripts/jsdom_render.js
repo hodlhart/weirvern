@@ -67,6 +67,7 @@ async function main() {
   const epilogue = `
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
+                     showView, loadSettings, loadHealthDeep,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
   `;
   try {
@@ -115,12 +116,40 @@ async function main() {
                            sources_read: [], sources_failed: [], reason: "" }
                      : String(url).includes("/api/flows")
                        ? FLOWS_PAYLOAD
-                       : String(url).includes("/api/models")
+                       : String(url).includes("/api/settings")
+                       ? SETTINGS_PAYLOAD
+                     : String(url).includes("/api/models")
                          ? { available: true, hours: 72, run_count: 0, training_history: {},
                              scores: {}, model_counts: {}, feature_deviations: [], points: [],
                              staleness: [], retrain_interval_h: 6 }
                          : { available: true, reason: "", log: "ssl", points: [] }),
   });
+
+  // A settings payload WITH a secret, shaped like the real one. The value below is a sentinel:
+  // if it ever appears in the rendered DOM the harness fails, which makes "the page does not
+  // leak the credential" an executed check rather than a claim about the code.
+  const SECRET_SENTINEL = "ZZ-SENTINEL-DO-NOT-PRINT-ZZ";
+  const SETTINGS_PAYLOAD = {
+    available: true, reason: "",
+    titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
+    groups: {
+      detect: [
+        { key: "retrain_every_h", label: "retrain every (h)", value: 6, secret: false },
+        { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false },
+      ],
+      sensor: [
+        { key: "sensor_mode", label: "mode", value: "loch", secret: false },
+        { key: "reverse_dns", label: "reverse DNS", value: "private (default)", secret: false },
+      ],
+      runtime: [
+        { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false },
+        { key: "clickhouse_password", label: "ClickHouse password",
+          value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true },
+        { key: "pushover_token", label: "Pushover token", value: "(not set)", secret: true },
+        { key: "capture_password", label: "capture passwords", value: "disabled", secret: false },
+      ],
+    },
+  };
 
   const H = window.__H;
   if (!H) {
@@ -464,10 +493,15 @@ async function main() {
         !!fdRows[0] && fdRows[0].className.includes("clickable"));
 
   // A failed query must say so, not render an empty panel.
+  // NOTE: this stub is installed LATER than the first one, so it is the one in force for
+  // everything below this point. Any payload a later check needs must be served HERE --
+  // /api/settings was silently falling through to this default and rendering "0 settings".
   window.fetch = async (url) => ({
     ok: true, status: 200, statusText: "OK",
     json: async () => (String(url).includes("/api/flows")
       ? { available: false, points: [], reason: "the flow drill-down failed" }
+      : String(url).includes("/api/settings")
+        ? SETTINGS_PAYLOAD
       : { available: true, hours: 24, hosts: [], unreadable: [], sources_read: [],
           sources_failed: [], reason: "" }),
   });
@@ -506,9 +540,64 @@ async function main() {
   check("the note distinguishes never-trained from merely overdue",
         doc.getElementById("m-stale-note").textContent.includes("never trained"));
 
+  // ── the tab restructure ───────────────────────────────────────────────────────────────────
+  // Asserted BEFORE any navigation: these describe the landing state (Health first, Health
+  // active, no Overview). Reading them after showView("settings") would assert the state this
+  // block itself just changed, which is how the "Health is active" check first failed.
+  const navTabs = [...doc.querySelectorAll("nav .tab")].map(b => b.dataset.view);
+  const firstTabActive = doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
+  check("the Overview tab is gone from the nav", !navTabs.includes("overview"),
+        `nav is ${navTabs.join(", ")}`);
+  check("Health is first and active (it inherited the landing role)",
+        navTabs[0] === "health" && firstTabActive);
+  check("the Settings tab is in the nav", navTabs.includes("settings"));
+  check("the Overview SECTION is gone from the DOM",
+        doc.getElementById("view-overview") === null);
+  check("sensor state and the health checks live on the Health tab now",
+        !!doc.getElementById("hp-sensor") && !!doc.getElementById("hp-checks"));
+
+  // ── the Settings tab ───────────────────────────────────────────────────────────────────────
+  // Now navigate to Settings the way a user would.
+  H.showView("settings");
+  await H.loadSettings();
+
+  const stSummary = doc.getElementById("st-summary");
+  check("the settings view states how many settings are in effect",
+        /\d+ settings in effect/.test(stSummary.textContent));
+
+  const vals = [...doc.querySelectorAll("#view-settings .setting")];
+  check("every setting renders as a key/value row, not a JSON blob",
+        vals.length === 8, `rendered ${vals.length} rows`);
+
+  const shown = doc.getElementById("clickhouse_host");
+  check("an ordinary setting shows its value",
+        [...doc.querySelectorAll(".setting-val")].some(n => n.textContent === "clickhouse"));
+
+  // THE SECURITY CHECK. The sentinel is what a real credential would be; it must not be here.
+  const panelText = doc.getElementById("view-settings").textContent;
+  check("NO SECRET VALUE reaches the DOM", !panelText.includes(SECRET_SENTINEL),
+        "the credential value rendered into the page");
+  check("a secret shows as set-by-length instead",
+        [...doc.querySelectorAll(".setting-val.secret")].some(
+          n => /^\(set, \d+ chars\)$/.test(n.textContent)));
+  check("an unset secret is distinguishable from a set one",
+        [...doc.querySelectorAll(".setting-val.secret")].some(
+          n => n.textContent === "(not set)"));
+
+  // A read-only page must SAY so, or the reader hunts for a Save button.
+  check("the settings view states it cannot change the configuration",
+        /read-only|cannot change/i.test(doc.getElementById("view-settings").textContent));
+  check("the settings view says where the settings CAN be changed",
+        doc.getElementById("view-settings").textContent.includes("weirvern config set"));
+  check("there is no Save or Apply control on the settings tab",
+        ![...doc.querySelectorAll("#view-settings button")]
+          .some(b => /save|apply|submit/i.test(b.textContent)));
+
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));
+
+
 
   console.log(notes.join("\n"));
   if (failures.length) {
@@ -516,7 +605,9 @@ async function main() {
     console.log(`\n  ${failures.length} FAILED, ${notes.length} passed`);
     process.exit(1);
   }
-  console.log(`\n  all ${notes.length} checks passed`);
+  console.log(`\n  all ${notes.length} checks passed
+
+`);
 }
 
 main().catch((e) => { console.error("harness error:", e); process.exit(2); });

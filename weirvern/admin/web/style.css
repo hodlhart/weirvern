@@ -295,3 +295,17 @@ td.link:hover, .link:hover { text-decoration: underline; }
  * pointer target, so this carries the click; without it the edges are decorative. */
 .graph .edge-hit { cursor: pointer; }
 .graph .edge-hit:hover { stroke: var(--accent); opacity: 0.22; }
+
+/* ── settings rows ──────────────────────────────────────────────────────────
+ * A key/value list rather than a form: the page is read-only, and a form control implies an
+ * editable field. Values are monospaced because they are configuration, not prose.
+ */
+.grid-inline { display: flex; flex-direction: column; gap: 2px; }
+.setting { display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+  padding: 5px 0; border-bottom: 1px solid var(--border); }
+.setting:last-child { border-bottom: none; }
+.setting-key { color: var(--muted); font-size: 12px; }
+.setting-val { font-family: var(--mono); font-size: 13px; color: var(--fg);
+  text-align: right; word-break: break-all; }
+/* A secret shows "(set, N chars)" rather than a value; muted so it does not read as data. */
+.setting-val.secret { color: var(--muted); font-style: italic; }

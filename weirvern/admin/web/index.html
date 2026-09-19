@@ -23,46 +23,17 @@
 </header>
 
 <nav id="tabs">
-  <button class="tab active" data-view="overview">Overview</button>
+  <button class="tab active" data-view="health">Health</button>
   <button class="tab" data-view="anomalies">Anomalies</button>
   <button class="tab" data-view="host">Assets</button>
   <button class="tab" data-view="network">Network</button>
   <button class="tab" data-view="netflow">Netflow</button>
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="models">Models</button>
-  <button class="tab" data-view="health">Health</button>
+  <button class="tab" data-view="settings">Settings</button>
 </nav>
 
 <main>
-  <!-- ── Overview ─────────────────────────────────────────────────────── -->
-  <section id="view-overview" class="view active">
-    <div class="grid">
-      <div class="card">
-        <h2>Sensor</h2>
-        <div id="sensor-body"><p class="muted">loading…</p></div>
-      </div>
-      <div class="card">
-        <h2>Health</h2>
-        <table id="health-table"><tbody></tbody></table>
-      </div>
-    </div>
-    <div class="card">
-      <h2>Recent anomalies</h2>
-      <table id="overview-anomalies">
-        <thead><tr><th>Detected</th><th>Host</th><th>Score</th><th>Severity</th><th>Why</th><th>ATT&amp;CK</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h2>Top talkers <span class="muted">last 24h — bar length is bytes</span></h2>
-      <div id="talkers-chart"></div>
-      <table id="talkers-table">
-        <thead><tr><th>Host</th><th>Bytes</th><th>Flows</th><th>Destinations</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
   <!-- ── Netflow ──────────────────────────────────────────────────────── -->
   <!-- ── Network (connection graph) ────────────────────────────────────── -->
   <!--
@@ -258,7 +229,7 @@
       </div>
       <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window.</p>
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th></th></tr></thead>
+        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -483,7 +454,7 @@
   </section>
 
   <!-- ── Health ───────────────────────────────────────────────────────── -->
-  <section id="view-health" class="view">
+  <section id="view-health" class="view active">
     <div class="card">
       <h2>Health <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
@@ -516,6 +487,48 @@
     </div>
   </section>
 
+
+  <!-- ── Settings ─────────────────────────────────────────────────────── -->
+  <!--
+    READ-ONLY, AND THAT IS THE DESIGN RATHER THAN AN OMISSION. This GUI is served over a LAN port
+    with no authentication, and the About tab's removal note already recorded why: nothing an
+    unauthenticated HTTP request can do may change the deployment. So Settings shows the
+    EFFECTIVE configuration -- what is actually running, read from the cluster -- and states where
+    to change it (`weirvern config set`, or the TUI). Showing values without offering knobs is
+    more useful than offering knobs without authentication.
+  -->
+  <section id="view-settings" class="view">
+    <div class="card">
+      <h2>Settings <span class="muted" id="st-window"></span></h2>
+      <p class="muted" id="st-summary">loading…</p>
+      <p class="muted">These are the values the running deployment is using, read from the
+        cluster. <strong>This page cannot change them.</strong> It is served without
+        authentication, so anything an HTTP request could write would be a way to reconfigure the
+        sensor from the network. Change them with <code>weirvern config set</code> or the TUI,
+        then apply.</p>
+      <div class="controls">
+        <button id="st-reload">Reload</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Detection</h2>
+      <p class="muted">Thresholds and cadence. A model scored against a stale baseline is still
+        confident — see the Models tab for freshness.</p>
+      <div id="st-detect" class="grid-inline"></div>
+    </div>
+
+    <div class="card">
+      <h2>Sensor</h2>
+      <div id="st-sensor" class="grid-inline"></div>
+    </div>
+
+    <div class="card">
+      <h2>Storage and runtime</h2>
+      <div id="st-runtime" class="grid-inline"></div>
+      <div id="st-note"></div>
+    </div>
+  </section>
 </main>
 
 <script src="/app.js"></script>

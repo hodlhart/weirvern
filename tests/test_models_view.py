@@ -344,16 +344,27 @@ def test_the_models_route_does_not_require_the_health_probe_path_to_change():
 def test_the_anomalies_table_has_a_header_for_every_cell():
     """The technique column was added to the renderer; a missing <th> misaligns the whole
     table silently, because HTML does not complain about a row wider than its header."""
+    # The table moved to #anomalies-table when the Overview tab was removed. The assertion
+    # follows it: a table that stops being checked is a table that drifts.
     html = (WEB / "index.html").read_text()
-    m = re.search(r'<table id="overview-anomalies">\s*<thead>(.*?)</thead>', html, re.S)
-    assert m, "the overview anomalies table was not found"
+    m = re.search(r'<table id="anomalies-table">\s*<thead>(.*?)</thead>', html, re.S)
+    assert m, "the anomalies table was not found"
     headers = len(re.findall(r"<th", m.group(1)))
 
     app = (WEB / "app.js").read_text()
-    # The row is built as a list of el("td", ...) inside one tr for #overview-anomalies.
-    region = app[app.index('querySelector("#overview-anomalies tbody")'):]
-    region = region[:region.index("at.appendChild(tr)")]
+    region = app[app.index('querySelector("#anomalies-table tbody")'):]
+    # The row is one `tbody.appendChild(el("tr", {...}, [ ...cells... ]));`, so the cells belong to
+    # the span between the tr opening and the array's close.
+    region = region[region.index('el("tr"'):]
+    region = region[:region.index("      ]));")]
     cells = region.count('el("td"')
+    # The empty-state row must span the same width, or the "no anomalies" message sits under a
+    # header it does not fill.
+    empty = re.search(r"emptyRow\(tbody, (\d+), note\)", app)
+    assert empty and int(empty.group(1)) == headers, (
+        f"the empty-state row spans {empty.group(1) if empty else '?'} columns but the table has "
+        f"{headers} headers"
+    )
     assert headers == cells, (
         f"{headers} header cells but {cells} data cells -- the table would render misaligned"
     )
