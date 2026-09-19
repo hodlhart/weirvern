@@ -31,7 +31,7 @@ EOF
 
     RESULT=$(
         PATH="$STUB:$PATH"
-        NS=weirvern; W=stub-pod; OUT=/dev/null; ELAPSED=14; HB_UNREADABLE=0
+        NS=weirvern; W=stub-pod; OUT=/dev/null; ELAPSED=14; HB_UNREADABLE=0; HB_STREAK=0
         BROKE=no
         . "$BLOCK" || true
         # Did the block exit the loop? It uses `break`, which outside a loop is a no-op error, so the
@@ -53,3 +53,48 @@ run_case "UNKNOWN: unreadable (empty output)" ""
 
 # UNKNOWN: the status command failed entirely.
 run_case "UNKNOWN: error text, no HEARTBEAT line" "Unexpected Http Driver Exception"
+
+echo
+echo "=== COUNTER SEMANTICS: a streak must not be mistaken for a total ==="
+echo "  Two failures separated by a good check. The STREAK resets; the TOTAL must not -- the summary"
+echo "  rests on the total, and reporting the streak claimed 'full' evidence for a run that had"
+echo "  unreadable checks."
+STUB=$(mktemp -d)
+cat > "$STUB/kubectl" <<'EOF'
+#!/bin/sh
+cat <<'OUT'
+HEARTBEAT=999.0s ago mode=weir
+OUT
+EOF
+chmod +x "$STUB/kubectl"
+# Drive the block three times: unreadable, readable, unreadable -- then check the total is 2.
+RESULT=$(
+    PATH="$STUB:$PATH"
+    NS=x; W=x; OUT=/dev/null; ELAPSED=2; HB_UNREADABLE=0; HB_STREAK=0
+    # First pass with an unreadable stub: rewrite the stub to emit nothing.
+    cat > "$STUB/kubectl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$STUB/kubectl"
+    . "$BLOCK"
+    cat > "$STUB/kubectl" <<'EOF'
+#!/bin/sh
+echo "HEARTBEAT=3.0s ago mode=weir"
+EOF
+    chmod +x "$STUB/kubectl"
+    . "$BLOCK"
+    cat > "$STUB/kubectl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$STUB/kubectl"
+    . "$BLOCK"
+    echo "TOTAL=$HB_UNREADABLE STREAK=$HB_STREAK"
+)
+echo "  $RESULT" | sed 's/^/    /'
+case "$RESULT" in
+  *"TOTAL=2 STREAK=1"*) echo "    PASS: total survives a good check, streak resets" ;;
+  *) echo "    FAIL: expected TOTAL=2 STREAK=1 -- the summary would misreport evidence quality" ;;
+esac
+rm -rf "$STUB"

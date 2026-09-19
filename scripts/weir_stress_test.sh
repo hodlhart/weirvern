@@ -197,7 +197,8 @@ HB_AGE=""
 HB_MODE=""
 # Times the heartbeat check itself failed. Reported: a run with many unreadable checks is weakly
 # evidenced even when it completes.
-HB_UNREADABLE=0
+HB_UNREADABLE=0   # total failures across the run
+HB_STREAK=0       # consecutive failures, reset on a readable check
 FORW_PREV=""
 FORW_BEFORE=$(awk '/^Ip:/{if(n==0){for(i=1;i<=NF;i++)h[i]=$i;n=1;next} for(i=1;i<=NF;i++) if(h[i]=="ForwDatagrams") print $i+0; exit}' /proc/net/snmp)
 i=0
@@ -228,9 +229,12 @@ while [ $i -lt $SAMPLES ]; do
   case "$HB_AGE" in
     ''|*[!0-9.]*)
       HB_UNREADABLE=$((HB_UNREADABLE + 1))
+      HB_STREAK=$((HB_STREAK + 1))
       HB_AGE=""
-      echo "  ${ELAPSED}m  heartbeat UNREADABLE ($HB_UNREADABLE so far) -- NOT treating this as a" | tee -a "$OUT"
-      echo "       stopped intercept: an unanswerable check is not evidence of failure" | tee -a "$OUT"
+      # BOTH numbers: the streak says whether this is a passing blip (streak 1) or a persistent
+      # condition (streak 3+), and the total is what the evidence-quality claim rests on.
+      echo "  ${ELAPSED}m  heartbeat UNREADABLE (streak $HB_STREAK, total $HB_UNREADABLE) -- NOT treating" | tee -a "$OUT"
+      echo "       this as a stopped intercept: an unanswerable check is not evidence of failure" | tee -a "$OUT"
       ;;
     *)
       if [ "${HB_AGE%%.*}" -gt 60 ]; then
@@ -238,7 +242,7 @@ while [ $i -lt $SAMPLES ]; do
         echo "     intercept has stopped reporting. See /tmp/weir_intercept_detached.log" | tee -a "$OUT"
         break
       fi
-      HB_UNREADABLE=0
+      HB_STREAK=0
       ;;
   esac
   # Forwarding counters: the relay must still be moving packets.
@@ -352,6 +356,9 @@ if [ "$POISON_HOLDS" = "0" ] && [ "$POISON_LOST" = "0" ]; then
 fi
 echo "  poison held in $POISON_HOLDS sample(s), lost in $POISON_LOST" | tee -a "$OUT"
 echo "  last heartbeat mode: ${HB_MODE:-n/a} (age ${HB_AGE:-n/a})" | tee -a "$OUT"
-echo "  heartbeat checks that FAILED TO READ: $HB_UNREADABLE -- evidence quality: $([ "$HB_UNREADABLE" -eq 0 ] && echo full || echo PARTIAL)" | tee -a "$OUT"
+# The TOTAL, not the streak. Reporting the streak here claimed "full" evidence for a run that ended
+# on a readable check despite having failures earlier -- a false claim of good evidence.
+echo "  heartbeat checks that FAILED TO READ: $HB_UNREADABLE total (longest streak: see above)" | tee -a "$OUT"
+echo "  evidence quality: $([ "$HB_UNREADABLE" -eq 0 ] && echo full || echo PARTIAL)" | tee -a "$OUT"
 echo "  ForwDatagrams at start: $FORW_BEFORE" | tee -a "$OUT"
 echo "  full log: $OUT"
