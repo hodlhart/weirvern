@@ -22,9 +22,9 @@
 # route -- unlike testing the L2 reachability of hosts that pass straight through.
 set -u
 IFACE="${CAPTURE_IFACE:-eth1}"
-SEGMENT="${INTERCEPT_SEGMENT:-192.168.3.0/24}"
-OUR_IP="${INTERCEPT_ADDR:-192.168.3.250}"
-GW="${INTERCEPT_GATEWAY:-192.168.3.1}"
+SEGMENT="${INTERCEPT_SEGMENT:?set INTERCEPT_SEGMENT}"
+OUR_IP="${INTERCEPT_ADDR:?set INTERCEPT_ADDR}"
+GW="${INTERCEPT_GATEWAY:?set INTERCEPT_GATEWAY}"
 NS="${NS:-weirvern}"
 PHASE="${1:-unknown}"
 OUT="/tmp/relay_${PHASE}_$(date +%H%M%S).log"

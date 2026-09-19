@@ -108,13 +108,31 @@ class SysctlSnapshot:
 
     def describe(self) -> str:
         if not self.applied:
-            return "no sysctls were changed"
+            return "no sysctls were changed by this process"
         parts = []
         for name in self.applied:
             was = self.original.get(name)
             parts.append(f"{name}: {was} -> restore on exit" if was is not None
                          else f"{name}: unreadable, will NOT be restored")
         return "; ".join(parts)
+
+    def node_restore_command(self) -> str:
+        """A shell command that puts the node back, for when this process CANNOT.
+
+        WHY THIS EXISTS. In the deployed container /proc/sys is read-only, so this guard cannot
+        restore anything -- the sysctls were set by the overlay's privileged init container and only
+        something with a writable /proc/sys can undo them. Printing the command is the difference
+        between "Weirvern restored the node" and "Weirvern left the node configured for an intercept
+        and told nobody until it was noticed hours later".
+
+        Only values that were actually READ appear: restoring to a value we never saw is a guess.
+        """
+        lines = []
+        for name, value in self.original.items():
+            if value is None:
+                continue
+            lines.append(f"sysctl -w {name}={value}")
+        return "\n".join(lines)
 
 
 def _write(name: str, value: int) -> bool:
@@ -126,6 +144,44 @@ def _write(name: str, value: int) -> bool:
         logger.warning("could not write %s=%s (%s): %s", name, value, path, exc)
         return False
     return True
+
+
+@dataclass
+class SysctlCapability:
+    """Whether this process can actually WRITE the sysctls, established by TESTING, not by guessing.
+
+    A guard that assumes it can write will log a failure per sysctl per run and restore nothing. A
+    guard that assumes it cannot would silently skip the bare-metal case where it works. So the
+    ability is probed once, by attempting a write of the value a readable sysctl ALREADY has --
+    which changes nothing if it succeeds and reveals the truth either way.
+    """
+
+    can_write: bool
+    reason: str
+
+    def describe(self) -> str:
+        return "writable" if self.can_write else f"read-only ({self.reason})"
+
+
+def probe_writable() -> SysctlCapability:
+    """Can this process write /proc/sys? Tested against a sysctl we can safely read back.
+
+    `net.ipv4.ip_forward` is used because it always exists on Linux. Writing back the value it
+    already holds is a no-op when permitted, so the probe is safe: it cannot change behaviour even
+    if it succeeds.
+    """
+    name = "net.ipv4.ip_forward"
+    current = read_sysctl(name)
+    if current is None:
+        return SysctlCapability(False, "cannot read the probe sysctl")
+
+    path = sysctl_path(name)
+    try:
+        path.write_text(str(current))
+    except OSError as exc:
+        # The expected result inside a container: /proc/sys is mounted read-only.
+        return SysctlCapability(False, f"{type(exc).__name__}: {exc}")
+    return SysctlCapability(True, "")
 
 
 class SysctlGuard:
@@ -149,6 +205,8 @@ class SysctlGuard:
         self.iface = iface
         self.snapshot = SysctlSnapshot()
         self._restored = False
+        # Probed once, by test, rather than assumed either way.
+        self.capability = probe_writable()
 
     def names(self) -> list[str]:
         """Every sysctl this will touch, expanded for the interface."""
@@ -181,6 +239,18 @@ class SysctlGuard:
         for name in self.names():
             self.snapshot.original[name] = read_sysctl(name)
 
+        if not self.capability.can_write:
+            # NOT A FAILURE. /proc/sys is read-only in the deployed container by design: the node's
+            # sysctls are set by the overlay's privileged init container, which is the only thing
+            # with a writable /proc/sys. Returning cleanly here, with the originals recorded, is
+            # what lets the caller know there is nothing to restore from INSIDE -- the recorded
+            # values are still the useful output.
+            #
+            # Reporting five per-sysctl write failures on every run, as an earlier version did, trains
+            # the reader to ignore them -- and then the one that matters is ignored too.
+            self.snapshot.unrestorable.extend(self.names())
+            return []
+
         for name, want, iface_scoped in MANAGED:
             for target in [name] + [t.format(iface=self.iface) for t in iface_scoped]:
                 if self.snapshot.original.get(target) is None:
@@ -195,6 +265,17 @@ class SysctlGuard:
                 if write and target not in self.snapshot.applied:
                     self.snapshot.applied.append(target)
         return failed
+
+    def needs_node_restore(self) -> bool:
+        """True when this process recorded originals it cannot put back itself.
+
+        The deployed case: read-only /proc/sys, node-side init container did the setting. The caller
+        must then either report the command (interactive) or accept that the node stays configured
+        for weir mode until something restores it (a deployment that is genuinely running weir).
+        """
+        return bool(self.snapshot.applied) and not self.capability.can_write or (
+            not self.snapshot.applied and not self.capability.can_write and bool(self.snapshot.original)
+        )
 
     def record_only(self) -> list[str]:
         """Record the originals WITHOUT changing anything. For a dry run or an audit.

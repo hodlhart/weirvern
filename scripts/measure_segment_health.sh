@@ -21,8 +21,8 @@
 # Usage: sh measure_segment_health.sh baseline|intercept
 set -u
 IFACE="${CAPTURE_IFACE:-eth1}"
-PROBE_IP=192.168.3.249
-HOSTS="${SEG_HOSTS:-192.168.3.1 192.168.3.71 192.168.3.96 192.168.3.123 192.168.3.128 192.168.3.151 192.168.3.162 192.168.3.185 192.168.3.193 192.168.3.194 192.168.3.248}"
+PROBE_IP="${PROBE_ADDR:?set PROBE_ADDR (an address on the segment)}"
+HOSTS="${SEG_HOSTS:?set SEG_HOSTS (space-separated hosts on the segment)}"
 PHASE="${1:-baseline}"
 OUT="/tmp/health_${PHASE}_$(date +%H%M%S).log"
 

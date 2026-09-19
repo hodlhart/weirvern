@@ -185,6 +185,9 @@ class ForwardingState:
     # The policy-routing pieces. See ensure_forwarding_path for why they are mandatory.
     rule_installed: bool = False
     table_installed: bool = False
+    # Commands that would clear the problems found. Separate from `problems` because a diagnosis and
+    # an action are different things, and a caller may want to show one without the other.
+    remedies: list[str] = field(default_factory=list)
 
     @property
     def ready(self) -> bool:
@@ -252,6 +255,14 @@ def check_forwarding(iface: str) -> ForwardingState:
                 f"{name} is {value}: the reverse-path check will drop relayed packets "
                 f"whose return route differs from {scope}, giving one-way traffic"
             )
+            # THE REMEDY IS CARRIED WITH THE PROBLEM, because this process CANNOT apply it.
+            #
+            # In the deployed container /proc/sys is READ-ONLY -- verified: every write returns
+            # "Read-only file system" -- so the node's sysctls are set by the overlay's privileged
+            # init container or by hand. Reporting "BLOCKED" with no remedy sends the reader looking
+            # for a configuration knob that does not exist, and an earlier version did exactly that:
+            # a correct deployment reported a blocker whose only visible cause was this message.
+            state.remedies.append(f"sysctl -w {name}=0")
         elif scope == iface:
             state.rp_filter_off = True
 
