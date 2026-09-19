@@ -767,8 +767,8 @@ UI bug into an outage.
 | Anomalies | Every anomaly with score, agreement and the "why" line; click through to **evidence** |
 | Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
 | Network | Every host-to-host connection as a graph; **select any number of hosts to track only their connections** |
-| Netflow | Volume, protocol mix, top ports, destination spread |
-| Zeek | Per-log volume, a trend by log, observed services, DNS names; click a log to see which hosts it contains |
+| Netflow | Volume, protocol mix, top ports, destination spread; **click a protocol or port bar to see the host-to-host pairs behind it** |
+| Zeek | Per-log volume, a trend by log, observed services, DNS names; **click a log to see which hosts it contains**, then a host to drill into it |
 | Models | Training history, score distribution, model agreement, and per-feature deviations |
 | Health | The deep checks, ingestion trend per pipeline stage, table sizes, sensor state |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
@@ -776,6 +776,20 @@ UI bug into an outage.
 The **Assets** and **Network** views share one rule: an endpoint that could not be read is not an
 endpoint with nothing on it. Both name the sources they failed to read, so a short list is never
 mistaken for a quiet network.
+
+The **Zeek** view applies the same rule to a zero. A log with no rows in the window can be in one
+of three states, and they need different responses:
+
+| State | Meaning | What to do |
+|---|---|---|
+| active | rows in the window | nothing |
+| idle | rows exist, but none in this window | widen the window |
+| never written | no row has ever landed | check whether the traffic exists on the segment or the analyzer is enabled |
+
+This distinction exists because the opposite was shipped: on a real deployment `zeek_http`,
+`zeek_ssh` and `zeek_files` held 544, 245 and 394 rows between them but none inside the default
+24-hour window, so the panel showed `0` for each and the dashboard looked broken when it was
+reporting the truth.
 
 **Hostnames come from reverse DNS, and the address is always shown alongside the name.** By
 default only private addresses are resolved, so the lookup stays on your network; set
