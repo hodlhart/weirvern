@@ -51,7 +51,9 @@ def generate(args) -> int:
     """
     rng = random.Random(args.seed)
     devices = [f"192.168.3.{10 + i}" for i in range(args.devices)]
-    servers = ["8.8.8.8", "1.1.1.1", "13.107.42.14", "20.190.160.10", "172.217.3.110"]
+    # Documentation addresses (RFC 5737), not real resolvers: this fixture is invented, and a
+    # real address here reads as observed traffic from the network this was developed on.
+    servers = ["198.51.100.53", "203.0.113.53", "192.0.2.53", "198.51.100.54", "203.0.113.54"]
     start = int(time.time())
     total = 0
 

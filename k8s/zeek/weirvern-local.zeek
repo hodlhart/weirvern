@@ -114,3 +114,35 @@ event zeek_init()
 # detection adds analyzer work on every packet. Turn it on when you want tunnel.log, and note
 # that the ingest is already in place -- `zeek_tunnel` exists, the mapper and features are
 # wired, and the table is simply empty until the log is produced.)
+
+# ── Two Zeek defaults that SILENCE evidence, both verified against the installed source ──────
+#
+# These are not tuning. Each one hides a specific attack, and both are the SHIPPED default --
+# so leaving them alone means a detection that cannot fire, silently, with a healthy-looking log.
+
+# 1. kerberos.log: `ignored_errors` defaults to {NEEDED_PREAUTH, "Need to use
+#    PA-ENC-TIMESTAMP/PA-PK-AS-REQ"} in base/protocols/krb/main.zeek. NEEDED_PREAUTH is EXACTLY
+#    what AS-REP roasting produces: the attacker iterates principals looking for ones that do
+#    not require preauth, then attacks the returned ticket offline.
+#
+#    Zeek's own comment in that file says it suppresses the value because logging it
+#    "will significantly increase the noisiness of the log" -- and then says, in the same
+#    comment, "To detect that attack, log NEEDED_PREAUTH."
+#
+#    So this redef is the difference between being able to detect AS-REP roasting at all and not.
+#    It costs log volume on a network with misconfigured Kerberos clients; that is the trade, and
+#    it is the right one for a detection tool. Remove these two lines to go back to the default.
+redef KRB::ignored_errors -= { "NEEDED_PREAUTH" };
+redef KRB::ignored_errors -= { "Need to use PA-ENC-TIMESTAMP/PA-PK-AS-REQ" };
+
+# 2. smb_files.log: `logged_file_actions` defaults to {FILE_OPEN, FILE_RENAME, FILE_DELETE,
+#    PRINT_OPEN, PRINT_CLOSE} -- FILE_WRITE is NOT in it. Ransomware detection survives that
+#    (RENAME and DELETE are the burst), but TOOL TRANSFER does not: writing a binary to a remote
+#    admin share and then starting a service is the canonical lateral-movement path, and the
+#    write half of it would be invisible.
+#
+#    Adding FILE_WRITE means one row per file write, which on a busy file server is real volume.
+#    It is added because without it a `FILE_WRITE`-based feature is structurally always zero --
+#    the failure mode this project has already shipped twice (dead ja3/ja3s columns; three tables
+#    ingested and read by nothing).
+redef SMB::logged_file_actions += { FILE_WRITE };

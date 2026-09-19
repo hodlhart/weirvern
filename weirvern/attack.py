@@ -130,9 +130,15 @@ TECHNIQUES: dict[str, Technique] = {
     ),
     "T1558": Technique(
         "T1558", "Steal or Forge Kerberos Tickets", "Credential Access",
-        "PARTIAL. Kerberoasting appears as TGS requests naming many SPNs from one principal; "
-        "AS-REP roasting as AS requests for accounts that do not require preauth. The "
-        "error_msg field carries the signal; the ticket contents do not exist in the log.",
+        "PARTIAL. Kerberoasting appears as TGS requests naming many SPNs from one principal. "
+        "AS-REP roasting -- iterating principals to find ones that do not require preauth and "
+        "then attacking the ticket offline -- has its ONLY signal SUPPRESSED BY DEFAULT: Zeek "
+        "ships `ignored_errors = {NEEDED_PREAUTH, ...}` in base/protocols/krb/main.zeek, and "
+        "NEEDED_PREAUTH is precisely the error the attack generates. The log deliberately omits "
+        "it because logging it 'significantly increase[s] the noisiness of the log', and Zeek's "
+        "own comment says logging it is how you detect the attack. So `error_msg` cannot carry "
+        "this signal until the policy redefines `ignored_errors` -- see weirvern-local.zeek. The "
+        "ticket contents do not exist in the log at all.",
     ),
     "T1110": Technique(
         "T1110", "Brute Force", "Credential Access",

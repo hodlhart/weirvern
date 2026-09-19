@@ -15,8 +15,18 @@
 --               in conn.log.
 --   smb_mapping the SHARE PATH (\\HOST\ADMIN$). conn.log reports service=smb and nothing
 --               else, so admin-share access is currently invisible.
---   smb_files   file ACTION (READ/WRITE/DELETE/RENAME) with the path. Tool transfer, and
---               ransomware bursts, are action-level facts.
+--   smb_files   file ACTION (OPEN/RENAME/DELETE by default) with the path. Tool transfer and
+--               ransomware bursts are action-level facts.
+--
+--               NOTE, MEASURED AGAINST THE INSTALLED SOURCE: `logged_file_actions` defaults to
+--               {FILE_OPEN, FILE_RENAME, FILE_DELETE, PRINT_OPEN, PRINT_CLOSE} in
+--               base/protocols/smb/main.zeek. **FILE_WRITE IS NOT IN IT.** So a "how much was
+--               written over SMB" feature would be structurally ZERO on every window, and a
+--               query for write-volume would return nothing while looking like a quiet network.
+--               RENAME and DELETE -- the ransomware signature -- ARE logged, which is why the
+--               detection here leans on those. Write-volume needs
+--               `redef SMB::logged_file_actions += {FILE_WRITE}`, which weirvern-local.zeek now
+--               applies because tool transfer is a WRITE followed by a remote service start.
 --   ntlm        username <-> hostname <-> domainname. A bipartite identity graph, which is
 --               what pass-the-hash detection is built from.
 --
@@ -138,8 +148,13 @@ CREATE TABLE IF NOT EXISTS weirvern.zeek_smb_files
     src_addr        IPv4,
     dst_addr        IPv4,
     fuid            String,
-    -- FILE_READ/WRITE/OPEN/CLOSE/DELETE/RENAME/... Ransomware is a burst of RENAME and
-    -- DELETE; tool transfer is a WRITE followed by a remote service start (dce_rpc).
+    -- Ransomware is a burst of RENAME and DELETE -- both logged by default, which is why that
+    -- detection works without configuration.
+    --
+    -- FILE_WRITE is NOT logged by default (`logged_file_actions` omits it), so tool transfer --
+    -- a WRITE followed by a remote service start via dce_rpc -- is only observable because
+    -- weirvern-local.zeek adds FILE_WRITE to that set. Without the redef, this column would
+    -- never contain FILE_WRITE and any write-volume feature would be zero forever.
     action          LowCardinality(String),
     -- Full path and basename logged VERBATIM by Zeek. The highest PII surface in this set,
     -- and the reason retention here is the shortest of the four.
