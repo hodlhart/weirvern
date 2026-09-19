@@ -90,10 +90,18 @@ CREATE TABLE IF NOT EXISTS zeek_ssh
     src_port      UInt16,
     dst_addr      String,
     dst_port      UInt16,
+    -- The SSH PROTOCOL number (2 in practice, for every row measured). NOT a software banner:
+    -- Zeek puts those in `client`/`server` below. Kept as UInt8 because that is what Zeek
+    -- declares; a feature must not compare it to a string, which is a type error at query time.
     version       UInt8,
     auth_success  UInt8,
     auth_attempts UInt64,
-    -- `direction` distinguishes an inbound attempt (someone attacking us) from an
+    -- NOTE: `direction` is declared by Zeek in ssh.log's #fields list and is left UNSET in
+    -- practice -- measured: 188 of 188 rows empty on the live sensor. The column is kept
+    -- because it costs nothing and a future Zeek version may populate it, but NO FEATURE may
+    -- depend on it; the SSH features use auth_attempts/auth_success and the protocol version.
+    --
+    -- `direction` was intended to distinguish an inbound attempt (someone attacking us) from an
     -- outbound one (a host of ours trying to log in elsewhere), which is the
     -- difference between a perimeter problem and a compromised internal host.
     direction     LowCardinality(String),

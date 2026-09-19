@@ -103,7 +103,10 @@ ZEEK_FEATURES = [
     "zeek_ssh_count",
     "zeek_ssh_attempts",
     "zeek_ssh_fail_ratio",
-    "zeek_ssh_inbound_ratio",
+    "zeek_ssh_failures",
+    "zeek_ssh_client_count",
+    "zeek_ssh_server_count",
+    "zeek_ssh_present",
     # ── HTTP (zeek_http: 327 rows on the live box, previously contributing NOTHING) ──────
     #
     # Added because Scripts/audit_schema.py found the table was ingested and read by no query,
@@ -272,42 +275,42 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         ),
         -- ── HTTP: was ingested and contributed NOTHING to the models ───────────
         --
-        # `zeek_http` had 327 rows in the live deployment and was read by no query, no feature
-        # and no view (found by Scripts/audit_schema.py, section B). The data was collected,
-        # stored, and then ignored -- the same shape as the Tier-2 tables that had no mapper.
-        #
-        # WHAT IS WORTH FEATURISING, and why these three rather than anything else:
-        #
-        #   uri_entropy mean/max  Encoded or high-entropy URIs are the transport of choice for
-        #                         simple C2 and for data smuggled in a query string. A plain
-        #                         path on a normal site is low entropy; base64 or a long random
-        #                         token is high. This is the HTTP analogue of the DNS query
-        #                         entropy feature that has already proved useful.
-        #   http_error_ratio      A host whose requests overwhelmingly 404 is enumerating paths
-        #                         (content discovery). A host whose POSTs 5xx is a different
-        #                         thing again, but both are deviations from "browsing".
-        #   http_post_ratio       GET-only hosts and POST-heavy hosts behave differently; a
-        #                         sudden shift is a change in what the host DOES, not how much.
-        #
-        # DELIBERATELY NOT FEATURISED: `host`, `uri` and `user_agent` are free text with
-        # unbounded cardinality -- as features they would be noise, and they carry usernames
-        # and session tokens. They remain queryable for hunting, which is a different job from
-        # scoring.
+        -- `zeek_http` had 327 rows in the live deployment and was read by no query, no feature
+        -- and no view (found by Scripts/audit_schema.py, section B). The data was collected,
+        -- stored, and then ignored -- the same shape as the Tier-2 tables that had no mapper.
+        --
+        -- WHAT IS WORTH FEATURISING, and why these three rather than anything else:
+        --
+        --   uri_entropy mean/max  Encoded or high-entropy URIs are the transport of choice for
+        --                         simple C2 and for data smuggled in a query string. A plain
+        --                         path on a normal site is low entropy; base64 or a long random
+        --                         token is high. This is the HTTP analogue of the DNS query
+        --                         entropy feature that has already proved useful.
+        --   http_error_ratio      A host whose requests overwhelmingly 404 is enumerating paths
+        --                         (content discovery). A host whose POSTs 5xx is a different
+        --                         thing again, but both are deviations from "browsing".
+        --   http_post_ratio       GET-only hosts and POST-heavy hosts behave differently; a
+        --                         sudden shift is a change in what the host DOES, not how much.
+        --
+        -- DELIBERATELY NOT FEATURISED: `host`, `uri` and `user_agent` are free text with
+        -- unbounded cardinality -- as features they would be noise, and they carry usernames
+        -- and session tokens. They remain queryable for hunting, which is a different job from
+        -- scoring.
         -- ── SSH: also ingested and unread until the schema audit found it ──────
         --
-        # A third table in the same state as http and files. SSH auth behaviour is the clearest
-        # brute-force signal available on a network tap, and it is invisible to NetFlow: a
-        # failed password attempt is a handful of bytes in both directions, indistinguishable
-        # from a keepalive.
+        -- A third table in the same state as http and files. SSH auth behaviour is the clearest
+        -- brute-force signal available on a network tap, and it is invisible to NetFlow: a
+        -- failed password attempt is a handful of bytes in both directions, indistinguishable
+        -- from a keepalive.
         --
-        #   ssh_auth_fail_ratio  attempts with no success -- the brute-force signature. A host
-        #                        that normally authenticates cleanly and suddenly fails 90% of
-        #                        the time is either being attacked or is attacking.
-        #   ssh_attempts         volume, so the ratio has a scale attached. A 100% failure rate
-        #                        over 2 attempts is not a finding.
-        #   ssh_server_ratio     whether this host is mostly the CLIENT or the SERVER of its
-        #                        SSH sessions. A workstation that starts accepting logins is a
-        #                        change in role, not in volume.
+        --   ssh_auth_fail_ratio  attempts with no success -- the brute-force signature. A host
+        --                        that normally authenticates cleanly and suddenly fails 90% of
+        --                        the time is either being attacked or is attacking.
+        --   ssh_attempts         volume, so the ratio has a scale attached. A 100% failure rate
+        --                        over 2 attempts is not a finding.
+        --   ssh_server_ratio     whether this host is mostly the CLIENT or the SERVER of its
+        --                        SSH sessions. A workstation that starts accepting logins is a
+        --                        change in role, not in volume.
         ssh_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
@@ -315,7 +318,22 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
                 count()                                          AS ssh_conns,
                 sum(auth_attempts)                               AS ssh_attempts,
                 sum(auth_success)                                AS ssh_successes,
-                countIf(direction = 'INBOUND')                   AS ssh_inbound
+                -- TWO FIELDS DELIBERATELY NOT USED, both measured on the live sensor:
+                --
+                --   `direction`  declared in ssh.log's #fields list and left UNSET for every
+                --                row (188 of 188 empty), so any feature from it is dead by
+                --                construction.
+                --   `version`    a UInt8 PROTOCOL NUMBER (value 2 for every row), not a
+                --                banner string. Comparing it to '' is a type error at query
+                --                time, and it cannot distinguish hosts: protocol 2 is the
+                --                only version anyone runs.
+                --
+                -- What DOES vary between hosts is the software BANNER, which Zeek stores in
+                -- `client` / `server` (e.g. "SSH-2.0-OpenSSH_10.5"). Distinct banners per host
+                -- is the usable signal: a new banner is a new SSH stack on the network, which
+                -- is exactly the kind of change a baseline should notice.
+                uniqExactIf(client, client != '')                AS ssh_clients,
+                uniqExactIf(server, server != '')                AS ssh_servers
             FROM weirvern.zeek_ssh
             WHERE ts BETWEEN '{start}' AND '{end}'
             GROUP BY w, src_addr
@@ -336,22 +354,22 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         ),
         -- ── files: also ingested and unread ───────────────────────────────────
         --
-        # `zeek_files` had 321 rows and was likewise unread. The feature here is deliberately
-        # narrow, because most of what files.log holds is either an identifier or a name:
-        #
-        #   file_count            How many distinct objects the host moved. A burst is either a
-        #                         legitimate bulk download or a collection stage.
-        #   file_bytes_mean       Size profile. A host suddenly moving many SMALL files differs
-        #                         from one moving a few large ones, and neither is visible in
-        #                         NetFlow byte totals alone -- NetFlow cannot tell one 500 MB
-        #                         transfer from 500 transfers of 1 MB.
-        #   file_mime_rarity      Executables and archives arriving where a host normally sees
-        #                         images and HTML. Rarity against the HOST's own history is the
-        #                         point, matching how the service-rarity feature is built.
-        #
-        # DELIBERATELY NOT FEATURISED: `sha256`/`md5` (an identifier, not a measurement -- and
-        # the right place for them is threat-intel lookup, which is a separate feature);
-        # `filename` (free text, and the highest PII surface in the schema).
+        -- `zeek_files` had 321 rows and was likewise unread. The feature here is deliberately
+        -- narrow, because most of what files.log holds is either an identifier or a name:
+        --
+        --   file_count            How many distinct objects the host moved. A burst is either a
+        --                         legitimate bulk download or a collection stage.
+        --   file_bytes_mean       Size profile. A host suddenly moving many SMALL files differs
+        --                         from one moving a few large ones, and neither is visible in
+        --                         NetFlow byte totals alone -- NetFlow cannot tell one 500 MB
+        --                         transfer from 500 transfers of 1 MB.
+        --   file_mime_rarity      Executables and archives arriving where a host normally sees
+        --                         images and HTML. Rarity against the HOST's own history is the
+        --                         point, matching how the service-rarity feature is built.
+        --
+        -- DELIBERATELY NOT FEATURISED: `sha256`/`md5` (an identifier, not a measurement -- and
+        -- the right place for them is threat-intel lookup, which is a separate feature);
+        -- `filename` (free text, and the highest PII surface in the schema).
         files_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
@@ -399,8 +417,18 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             if(coalesce(ss.ssh_attempts, 0) > 0,
                1 - (coalesce(ss.ssh_successes, 0) / ss.ssh_attempts), 0)
                                                                    AS zeek_ssh_fail_ratio,
-            if(coalesce(ss.ssh_conns, 0) > 0,
-               coalesce(ss.ssh_inbound, 0) / ss.ssh_conns, 0)      AS zeek_ssh_inbound_ratio,
+            coalesce(ss.ssh_clients, 0)                            AS zeek_ssh_client_count,
+            coalesce(ss.ssh_servers, 0)                            AS zeek_ssh_server_count,
+            -- Zero when the host has no SSH at all. Carried explicitly because on a segment
+            -- with no SSH traffic the ratio features are all 0.0, which is indistinguishable
+            -- from a host whose SSH is entirely unremarkable -- `ssh_present` is what tells
+            -- them apart, matching how `zeek_present` works for the join as a whole.
+            if(coalesce(ss.ssh_conns, 0) = 0, 0, 1)                AS zeek_ssh_present,
+            -- FAILURE COUNT as well as the ratio. A ratio alone cannot distinguish "3 failures
+            -- out of 4" from "3000 out of 4000", and those are different events: the second is
+            -- a brute-force run in progress, the first is a typo.
+            coalesce(ss.ssh_attempts, 0)
+              - coalesce(ss.ssh_successes, 0)                      AS zeek_ssh_failures,
             -- HTTP. Counts alone would just duplicate conn_count; the entropy and the error
             -- ratio are what HTTP adds that no other log can.
             coalesce(hh.http_count, 0)                             AS zeek_http_count,
@@ -508,7 +536,8 @@ def extract_zeek_features(row: dict[str, Any],
     # from the SQL, so there is nothing to compute here -- the ratio guards live in the query
     # so the two paths cannot disagree.
     for name in ("zeek_ssh_count", "zeek_ssh_attempts", "zeek_ssh_fail_ratio",
-                 "zeek_ssh_inbound_ratio",
+                 "zeek_ssh_failures", "zeek_ssh_client_count", "zeek_ssh_server_count",
+                 "zeek_ssh_present",
                  "zeek_http_count", "zeek_http_uri_entropy_mean", "zeek_http_uri_entropy_max",
                  "zeek_http_host_count", "zeek_http_error_ratio", "zeek_http_post_ratio",
                  "zeek_file_count", "zeek_file_bytes_mean", "zeek_file_bytes_max",
@@ -562,7 +591,8 @@ def _fill(out: dict[str, float], row: dict[str, Any],
     # from the SQL, so there is nothing to compute here -- the ratio guards live in the query
     # so the two paths cannot disagree.
     for name in ("zeek_ssh_count", "zeek_ssh_attempts", "zeek_ssh_fail_ratio",
-                 "zeek_ssh_inbound_ratio",
+                 "zeek_ssh_failures", "zeek_ssh_client_count", "zeek_ssh_server_count",
+                 "zeek_ssh_present",
                  "zeek_http_count", "zeek_http_uri_entropy_mean", "zeek_http_uri_entropy_max",
                  "zeek_http_host_count", "zeek_http_error_ratio", "zeek_http_post_ratio",
                  "zeek_file_count", "zeek_file_bytes_mean", "zeek_file_bytes_max",

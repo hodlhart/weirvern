@@ -392,7 +392,16 @@ class AdaptiveBaselineDetector(BaseDetector):
         # The Zeek aggregates here are per-host ACROSS the window, not per 5-minute bucket,
         # because the question is "what is normal for this host" rather than "what happened
         # in this bucket". Averages and percentiles are the right shape for that.
-        zeek_cte, _, zeek_join = _zeek_clause(s, e)
+        zeek_cte, zeek_select, zeek_join = _zeek_clause(s, e)
+        # The shared helper returns `z.<feature>` per column, correct for a per-row SELECT. This
+        # query GROUPS BY src_addr, so each column has to sit under an aggregate. Built here
+        # from the same ZEEK_FEATURES list the helper uses, so the names still cannot drift --
+        # only the wrapping differs.
+        zeek_select = ",\n".join(
+            f"                max(coalesce(z.{c}, 0))" if c == "zeek_present"
+            else f"                avg(coalesce(z.{c}, 0))"
+            for c in ZEEK_FEATURES
+        )
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
             WITH {zeek_cte}
             SELECT
@@ -402,11 +411,27 @@ class AdaptiveBaselineDetector(BaseDetector):
                 avg(a.unique_dst_ips), sqrt(varPop(a.unique_dst_ips)),
                 quantiles(0.95, 0.99, 0.999)(a.total_bytes),
                 quantiles(0.95, 0.99, 0.999)(a.total_packets),
-                avg(coalesce(z.conn_count, 0)), sqrt(varPop(coalesce(z.conn_count, 0))),
-                avg(coalesce(z.s0_count, 0)), sqrt(varPop(coalesce(z.s0_count, 0))),
-                avg(coalesce(z.service_count, 0)), sqrt(varPop(coalesce(z.service_count, 0))),
-                avg(coalesce(z.notice_count, 0)), sqrt(varPop(coalesce(z.notice_count, 0))),
-                max(z.conn_count > 0)  AS zeek_seen
+                -- THE ZEEK COLUMNS COME FROM THE SHARED HELPER, aliased as the FEATURE names.
+                --
+                -- This block used to hand-write `z.conn_count`, `z.s0_count`,
+                -- `z.service_count` and `z.notice_count`. The shared CTE exposes those
+                -- concepts under their FEATURE names -- `zeek_conn_count`, `zeek_s0_ratio`,
+                -- `zeek_service_count`, `zeek_notice_count` -- so the query failed outright:
+                --
+                --   Code: 47. DB::Exception: Identifier 'z.conn_count' cannot be resolved
+                --   from subquery with name z.
+                --
+                -- Which means the Adaptive Baseline could NOT TRAIN AT ALL against the Zeek
+                -- join, while the other three detectors could. Nothing raised at import time,
+                -- the other three trained fine, and the failure appeared only when this
+                -- detector ran -- so a deployment would have had three working models and one
+                -- permanently absent, with a healthy-looking status page.
+                -- Every Zeek column must be AGGREGATED here, because this query groups by
+                -- src_addr: `Column 'z.zeek_present' is not under aggregate function and not
+                -- in GROUP BY keys`. `avg` for the measurements, `max` for the presence flag
+                -- (mean presence is meaningless; "seen at any point" is the question).
+                {zeek_select},
+                max(coalesce(z.zeek_conn_count, 0) > 0)  AS zeek_seen
             FROM weirvern.flows_aggregated a
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'

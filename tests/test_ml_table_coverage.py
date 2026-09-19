@@ -177,3 +177,111 @@ def test_the_zeek_join_covers_every_table_it_advertises():
         assert feature in cte or feature == "zeek_present", (
             f"{feature} cannot be selected from the join CTE"
         )
+
+
+# ── the SQL must be valid SQL, not Python-with-SQL-in-it ────────────────────────
+
+def test_the_query_contains_no_python_style_comments():
+    """THE BUG THIS CATCHES, measured against the live database.
+
+    The new CTEs were documented with Python `#` comments INSIDE the SQL f-string. To Python
+    that is a comment; to ClickHouse it is an unrecognised token:
+
+        Code: 62. DB::Exception: Unrecognized token: Syntax error: failed at position 3143
+        (#) (line 66, col 9): # WHAT IS WORTH FEATURISING ...
+
+    Every unit test passed, because they compare STRINGS. Only executing the query against a
+    real server found it. So the assertion runs against the GENERATED SQL -- which is what the
+    driver sends -- and not against the source file.
+
+    All five SQL templates in the module, not just the summary one: the same mistake is
+    available in every one of them.
+    """
+    from weirvern import zeek_features as zf
+    templates = {
+        "zeek_window_summary_sql": zf.zeek_window_summary_sql(
+            "2026-01-01 00:00:00", "2026-01-02 00:00:00"),
+        "zeek_protocol_records_sql": zf.zeek_protocol_records_sql(
+            "2026-01-01 00:00:00", "2026-01-02 00:00:00"),
+        "zeek_coverage_sql": zf.zeek_coverage_sql("2026-01-01 00:00:00"),
+        "zeek_baseline_sql": zf.zeek_baseline_sql("2026-01-01 00:00:00", "2026-01-02 00:00:00"),
+        "zeek_join_cte": zf.zeek_join_cte("2026-01-01 00:00:00", "2026-01-02 00:00:00"),
+    }
+    for name, sql in templates.items():
+        offenders = [
+            line for line in sql.splitlines()
+            if line.strip().startswith("#")
+        ]
+        assert not offenders, (
+            f"{name} emits {len(offenders)} line(s) beginning with '#', which ClickHouse "
+            f"rejects as an unrecognised token. Use '--' for SQL comments. First offender:\n"
+            f"  {offenders[0][:100]}"
+        )
+
+
+def test_no_generated_sql_template_contains_a_python_comment_marker():
+    """Belt and braces on the same defect: scan the module for a `#` at the start of a line
+    that is inside a triple-quoted SQL block. Implemented as a direct check on the generated
+    output above, so this only needs to catch a template that is not covered there."""
+    import inspect
+
+    from weirvern import zeek_features as zf
+    src = inspect.getsource(zf)
+    # Count how many SQL templates the module declares, so a new one cannot be added without
+    # the test above being extended.
+    templates = src.count('return f"""') + src.count('= f"""')
+    covered = 5
+    assert templates <= covered + 2, (
+        f"the module declares roughly {templates} SQL templates but only {covered} are covered "
+        f"by the comment check -- add the new one, or a `#` comment in it ships"
+    )
+
+
+def test_every_detector_training_query_uses_feature_names_not_raw_aliases():
+    """THE REGRESSION, measured against the live cluster.
+
+    The Adaptive Baseline's training query hand-wrote `z.conn_count`, `z.s0_count`,
+    `z.service_count` and `z.notice_count`. The shared Zeek CTE exposes those concepts under
+    their FEATURE names -- `zeek_conn_count`, `zeek_s0_ratio`, `zeek_service_count`,
+    `zeek_notice_count` -- so ClickHouse rejected the query outright:
+
+        Code: 47. DB::Exception: Identifier 'z.conn_count' cannot be resolved from subquery
+        with name z.
+
+    The consequence was the worst shape available: the OTHER THREE detectors trained fine, so
+    a deployment would run with three working models and one permanently absent, and the status
+    page would look healthy. `train()` returns False, which is logged and otherwise ignored.
+
+    So this asserts that every detector's Zeek columns are drawn from the shared helper and
+    named as features. Any `z.<name>` where <name> is not in ZEEK_FEATURES is the bug.
+    """
+    src = (ROOT / "weirvern" / "models" / "detectors.py").read_text()
+    # COMMENTS STRIPPED. The fix documents itself by quoting the broken names
+    # ("this block used to hand-write `z.conn_count`"), so a naive search finds the removal
+    # note and reports the defect as still present. This is the seventh place in this project
+    # an assertion had to read code rather than prose about code -- hence the helper.
+    code = "\n".join(ln.split("--")[0].split("#")[0] for ln in src.splitlines())
+
+    # Every `z.<identifier>` reference must name a real feature.
+    referenced = set(re.findall(r"\bz\.([a-z_][a-z0-9_]*)", code))
+    unknown = sorted(n for n in referenced if n not in ZEEK_FEATURES)
+    assert not unknown, (
+        f"the detector queries reference z.{unknown}, which are not feature names. The shared "
+        f"CTE aliases every Zeek column as its FEATURE name, so these fail at query time."
+    )
+
+
+def test_no_detector_redeclares_its_own_zeek_columns():
+    """A second reason the Baseline broke: it hand-wrote its Zeek select-list instead of using
+    `_zeek_clause`, so the names could drift from the CTE. The helper exists precisely so the
+    join and the names cannot differ between detectors."""
+    src = (ROOT / "weirvern" / "models" / "detectors.py").read_text()
+    code = "\n".join(ln.split("#")[0] for ln in src.splitlines())
+    # Every detector that trains against Zeek must call the shared helper.
+    trainings = code.count("def train(self")
+    helper_uses = code.count("_zeek_clause(")
+    assert helper_uses >= trainings, (
+        f"{trainings} train() methods but only {helper_uses} uses of the shared _zeek_clause "
+        f"helper -- at least one detector builds its own Zeek columns, which is how the "
+        f"Adaptive Baseline's query drifted and broke"
+    )
