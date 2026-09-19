@@ -265,3 +265,15 @@ td.link:hover, .link:hover { text-decoration: underline; }
 /* A detector that is overdue gets a tint as well as a word: the table is skimmed, and a colour
  * is what a skim catches. The word is still there, so the meaning does not depend on it. */
 .stale-row { background: rgba(224, 92, 92, 0.07); }
+
+/* ── pager ──────────────────────────────────────────────────────────────────
+ * Arrows stay in place and grey out at the ends rather than disappearing, so the control does
+ * not reflow under the cursor and the boundary is visible.
+ */
+.pager { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; }
+.pager-btn { font-family: var(--mono); font-size: 13px; min-width: 34px;
+  padding: 4px 10px; background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.pager-btn:hover:not(:disabled) { border-color: var(--accent); }
+.pager-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
+.pager-info { font-family: var(--mono); font-size: 12px; color: var(--muted); }

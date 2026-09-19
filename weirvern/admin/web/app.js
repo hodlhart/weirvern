@@ -725,16 +725,23 @@ document.addEventListener("DOMContentLoaded", () => {
   const asSearch = document.getElementById("as-search");
   if (asSearch) asSearch.addEventListener("input", (e) => {
     ASSETS_STATE.search = e.target.value;
+    // Back to page 1: filtering 245 hosts down to 3 while sitting on page 12 would show an
+    // empty table, which reads as "no matches" rather than "you are past the end".
+    ASSETS_STATE.page = 1;
     renderAssets();
   });
   const asSort = document.getElementById("as-sort");
   if (asSort) asSort.addEventListener("change", (e) => {
     ASSETS_STATE.sort = e.target.value;
+    // Reordering moves every row, so holding the page number would show a different set of
+    // hosts than the one the reader was looking at.
+    ASSETS_STATE.page = 1;
     renderAssets();
   });
   const asHours = document.getElementById("as-hours");
   if (asHours) asHours.addEventListener("change", (e) => {
     ASSETS_STATE.hours = Number(e.target.value) || 24;
+    ASSETS_STATE.page = 1;
     loadAssets().then(clearError).catch(showError);
   });
   const asReload = document.getElementById("as-reload");

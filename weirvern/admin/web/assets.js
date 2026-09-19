@@ -38,6 +38,11 @@ const ASSETS_STATE = {
   search: "",
   minEdges: 1,
   showNames: false,
+  // Pagination for the inventory. 15 per page by default (the user's number): a segment with
+  // 245 hosts is unreadable as one scroll, and a table you have to scroll is a table you skim
+  // rather than read.
+  page: 1,
+  pageSize: 15,
 };
 
 async function getJSON(url) {
@@ -101,14 +106,37 @@ function renderAssets() {
     anomalies: (a, b) => (b.anomalies - a.anomalies) || (b.bytes - a.bytes),
     bytes: (a, b) => b.bytes - a.bytes,
     flows: (a, b) => b.flows - a.flows,
-    addr: (a, b) => a.addr.localeCompare(b.addr),
+    // NUMERIC, not lexicographic. `localeCompare` puts "…​.10" before "…​.2" because it compares
+    // character by character, and an address column that reads 1, 10, 11, 2, 20 looks broken to
+    // anyone scanning it. IPv4 is compared octet-by-octet; anything else (a hostname, an IPv6
+    // address) falls back to the string comparison, which is the best available ordering.
+    addr: (a, b) => compareAddr(a.addr, b.addr),
     name: (a, b) => (a.name || "~").localeCompare(b.name || "~"),
   };
   rows.sort(sorters[ASSETS_STATE.sort] || sorters.anomalies);
 
-  summary.textContent = q
+  // PAGINATED, because a segment with 245 hosts is unreadable as one scroll and a table you
+  // scroll is a table you skim. The page is clamped to the real range: a filter can shrink the
+  // result below the current page, and leaving the page number where it was would render an
+  // empty table with no explanation.
+  const size = ASSETS_STATE.pageSize;
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+  if (ASSETS_STATE.page > pages) ASSETS_STATE.page = pages;
+  if (ASSETS_STATE.page < 1) ASSETS_STATE.page = 1;
+  const from = (ASSETS_STATE.page - 1) * size;
+  const pageRows = rows.slice(from, from + size);
+
+  renderPager("as-pager", rows.length, ASSETS_STATE.page, pages, (next) => {
+    ASSETS_STATE.page = next;
+    renderAssets();
+  });
+
+  const range = rows.length
+    ? ` (showing ${from + 1}\u2013${Math.min(from + size, rows.length)})`
+    : "";
+  summary.textContent = (q
     ? `${rows.length} of ${all.length} hosts matching “${ASSETS_STATE.search}”`
-    : `${all.length} hosts in the last ${d.hours}h`;
+    : `${all.length} hosts in the last ${d.hours}h`) + range;
 
   // The unreadable sources are named, because a short list must never be mistaken for a
   // quiet network.
@@ -138,10 +166,7 @@ function renderAssets() {
     return;
   }
 
-  // Only the first N rows are drawn. A /24 is ~250 rows and a busy segment far more; past a
-  // few hundred the table stops being readable and starts being a scroll test.
-  const LIMIT = 250;
-  for (const h of rows.slice(0, LIMIT)) {
+  for (const h of pageRows) {
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "link", text: h.addr, title: `drill into ${h.addr}` }),
       el("td", { class: "muted", text: h.name || "—" }),
@@ -173,16 +198,78 @@ function renderAssets() {
     tbody.appendChild(tr);
   }
 
-  if (rows.length > LIMIT) {
-    empty.textContent =
-      `Showing the first ${LIMIT} of ${rows.length}. Narrow the search or window to see the rest.`;
-  }
+  // The range is stated by the pager, but the summary line repeats it because it is the line an
+  // analyst reads first -- and a paged table that does not say "of 245" is the same
+  // silent-truncation problem as the graph's edge cap.
+  empty.textContent = "";
 
   // Feed the drill-down datalist, so typing an address is a suggestion not a memory test.
   const dl = document.getElementById("known-hosts");
   if (dl) {
     dl.replaceChildren(...all.slice(0, 300).map((h) =>
       el("option", { attrs: { value: h.addr, label: h.name || h.addr } })));
+  }
+}
+
+/** Page controls for a long table: prev/next arrows, a page indicator, and the range.
+ *
+ * WHY ARROWS RATHER THAN A SCROLL. The inventory reached 245 hosts on one page, which is a
+ * scroll rather than a table -- you skim it and lose your place. Pages of 15 give a stable
+ * viewport and a bounded number of rows to read at once.
+ *
+ * THE RANGE IS ALWAYS STATED ("showing 16-30 of 245"). A paged list that shows only "page 2 of
+ * 17" makes the total invisible, which is the same silent-truncation problem as the connection
+ * graph's edge cap: the reader cannot tell a complete list from a partial one.
+ *
+ * The arrows are DISABLED at the ends rather than hidden, so the control does not reflow and
+ * the reader can see that they are at the boundary.
+ */
+/** Compare two addresses numerically when both are IPv4, else as strings.
+ *
+ * An asset inventory is scanned, and "…​.10" sorting before "…​.2" makes the column unreadable.
+ * IPv6 and hostnames are left to string comparison rather than half-parsed into something wrong.
+ */
+function compareAddr(a, b) {
+  const octets = (s) => {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(s || ""));
+    return m ? m.slice(1).map(Number) : null;
+  };
+  const x = octets(a), y = octets(b);
+  if (x && y) {
+    for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  }
+  return String(a || "").localeCompare(String(b || ""));
+}
+
+function renderPager(hostId, total, page, pages, onGo) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  host.replaceChildren();
+  if (total === 0) return;
+
+  const size = ASSETS_STATE.pageSize;
+  const first = (page - 1) * size + 1;
+  const last = Math.min(page * size, total);
+
+  const btn = (label, target, disabled, title) => {
+    const b = el("button", { class: "pager-btn", text: label, title });
+    b.disabled = !!disabled;
+    if (!disabled) b.addEventListener("click", () => onGo(target));
+    return b;
+  };
+
+  host.appendChild(btn("‹", page - 1, page <= 1, "previous page"));
+  host.appendChild(el("span", {
+    class: "pager-info",
+    text: `${first}\u2013${last} of ${total}   \u00b7   page ${page} of ${pages}`,
+  }));
+  host.appendChild(btn("›", page + 1, page >= pages, "next page"));
+
+  // Jump-to-first/last only earn their space when there are enough pages to make them useful.
+  if (pages > 3) {
+    host.appendChild(btn("\u00ab first", 1, page <= 1, "first page"));
+    host.appendChild(btn("last \u00bb", pages, page >= pages, "last page"));
   }
 }
 

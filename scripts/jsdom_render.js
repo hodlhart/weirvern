@@ -67,7 +67,7 @@ async function main() {
   const epilogue = `
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -215,6 +215,90 @@ async function main() {
      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   check("a plain click on a row drills down", drilled === "203.0.113.42", `drilled=${drilled}`);
   H.openHost = realOpenHost;
+
+  // ── the asset inventory pager ──────────────────────────────────────────────────────────
+  // The bug this guards: 245 hosts rendered as one scroll. Pages of 15 give a stable viewport,
+  // and the range must be stated -- "page 2 of 17" alone hides the total.
+  const manyHosts = [];
+  for (let i = 1; i <= 47; i++) {
+    manyHosts.push({ addr: "192.0.2." + i, name: "", bytes: i * 1000, flows: i,
+      dst_count: 1, services: [], anomalies: 0, last_seen: "2026-01-01T00:00:00" });
+  }
+  H.ASSETS_STATE.inventory = {
+    available: true, hours: 24, count: manyHosts.length, hosts: manyHosts,
+    unreadable: [], sources_read: [], sources_failed: [], reason: "",
+  };
+  H.ASSETS_STATE.page = 1;
+  H.ASSETS_STATE.search = "";
+  H.renderAssets();
+
+  check("the inventory shows only one page of rows at a time",
+        doc.querySelectorAll("#as-table tbody tr").length === 15,
+        `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
+  check("the pager states the range AND the total",
+        doc.getElementById("as-pager").textContent.includes("1\u201315 of 47"),
+        doc.getElementById("as-pager").textContent);
+  check("the pager states which page of how many",
+        doc.getElementById("as-pager").textContent.includes("page 1 of 4"),
+        doc.getElementById("as-pager").textContent);
+  check("'previous' is disabled on the first page",
+        doc.querySelector("#as-pager .pager-btn").disabled === true);
+
+  // The next arrow must advance, and the rows must change.
+  const nextBtn = Array.from(doc.querySelectorAll("#as-pager .pager-btn")).find(
+    (b) => b.textContent.includes("\u203a"));
+  check("a next arrow exists", !!nextBtn);
+  nextBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  check("clicking next advances to page 2",
+        doc.getElementById("as-pager").textContent.includes("page 2 of 4"),
+        doc.getElementById("as-pager").textContent);
+  check("page 2 shows the NEXT range of hosts",
+        doc.getElementById("as-pager").textContent.includes("16\u201330 of 47"),
+        doc.getElementById("as-pager").textContent);
+  check("page 2 still shows exactly 15 rows",
+        doc.querySelectorAll("#as-table tbody tr").length === 15);
+  // Assert the rows CHANGED, not a specific address: the default sort is by anomalies then
+  // bytes, so page 1 holds the highest-byte hosts and pinning a literal would encode an
+  // assumption about the sort rather than about pagination (which is what is under test here).
+  const pageTwoFirst = doc.querySelector("#as-table tbody tr td").textContent;
+  check("the rows on page 2 differ from page 1",
+        pageTwoFirst !== "192.0.2.47", `page2 first row = ${pageTwoFirst}`);
+
+  // The last page holds the remainder, not a full slice.
+  H.ASSETS_STATE.page = 4;
+  H.renderAssets();
+  check("the final page holds only the remaining rows",
+        doc.querySelectorAll("#as-table tbody tr").length === 2,
+        `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
+  check("the final page's range stops at the total",
+        doc.getElementById("as-pager").textContent.includes("46\u201347 of 47"),
+        doc.getElementById("as-pager").textContent);
+  check("'next' is disabled on the last page",
+        Array.from(doc.querySelectorAll("#as-pager .pager-btn"))
+          .find((b) => b.textContent.includes("\u203a")).disabled === true);
+
+  // Sorting by address must be NUMERIC: "…​.10" before "…​.2" looks broken in an IP column.
+  H.ASSETS_STATE.page = 1;
+  H.ASSETS_STATE.sort = "addr";
+  H.renderAssets();
+  const addrCells = Array.from(doc.querySelectorAll("#as-table tbody tr"))
+    .map((tr) => tr.querySelector("td").textContent);
+  const numeric = addrCells.every((v, i) =>
+    i === 0 || Number(v.split(".")[3]) >= Number(addrCells[i - 1].split(".")[3]));
+  check("sorting by address is NUMERIC, not lexicographic", numeric,
+        `first page: ${addrCells.slice(0, 5).join(", ")}`);
+  H.ASSETS_STATE.sort = "anomalies";
+
+  // A filter that shrinks the set must not leave the reader stranded past the end.
+  H.ASSETS_STATE.page = 4;
+  H.ASSETS_STATE.search = "192.0.2.3";
+  H.renderAssets();
+  check("a search RESETS to page 1 rather than stranding on an empty page",
+        H.ASSETS_STATE.page === 1 && doc.querySelectorAll("#as-table tbody tr").length > 0,
+        `page=${H.ASSETS_STATE.page} rows=${doc.querySelectorAll("#as-table tbody tr").length}`);
+  H.ASSETS_STATE.search = "";
+  H.ASSETS_STATE.page = 1;
+  H.renderAssets();
 
   // ── the graph ──────────────────────────────────────────────────────────────────────────
   // Clear the selection first: the shift-click test above deliberately leaves 203.0.113.42
