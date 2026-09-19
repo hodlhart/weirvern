@@ -43,7 +43,15 @@ echo "  found the wrong figure in $TARGET"
 # terminate a single-quoted argument and make the shell try to execute the following words
 # (observed as "sh: line 3: these: command not found" plus a fatal syntax error). A file has no
 # quoting problem.
-MSG_FILTER="$(dirname "$0")/msgfix_test_count.sh"
+# An ABSOLUTE path: git filter-branch runs the filter via the shell but does not resolve a
+# relative one against the repository root, failing with "No such file or directory" even when
+# the file exists (observed). $PWD here is already the repo root because of the `cd` above.
+MSG_FILTER="$PWD/scripts/msgfix_test_count.sh"
+
+if [ ! -x "$MSG_FILTER" ]; then
+    echo "  refusing: the message filter is not executable at $MSG_FILTER"
+    exit 1
+fi
 
 FILTER_BRANCH_SQUELCH_WARNING=1 \
     git filter-branch -f --msg-filter "$MSG_FILTER" "$TARGET^..HEAD" >/dev/null 2>&1 || {
