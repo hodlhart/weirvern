@@ -39,14 +39,11 @@ echo "  found the wrong figure in $TARGET"
 
 # The message filter reads the message on stdin and writes the new one to stdout. It ASSERTS the
 # target text is present, so a silent no-op aborts the whole rewrite.
-MSG_FILTER='
-MSG=$(cat)
-case "$MSG" in
-  *"1014 passed, 3 skipped. Gate green, now 11 checks."*) ;;
-  *) echo "target text missing in msg-filter" >&2; exit 1 ;;
-esac
-printf "%s" "$MSG" | sed "s|1014 passed, 3 skipped\. Gate green, now 11 checks\.|928 passed, 4 skipped (MEASURED at this commit by checking it out into a worktree and running the suite -- an earlier draft of this message said 1014, a hand-incremented figure that no run ever produced). Gate green, now 11 checks.|"
-'
+# The filter is a FILE, not an inline string: the commit message contains apostrophes, which
+# terminate a single-quoted argument and make the shell try to execute the following words
+# (observed as "sh: line 3: these: command not found" plus a fatal syntax error). A file has no
+# quoting problem.
+MSG_FILTER="$(dirname "$0")/msgfix_test_count.sh"
 
 FILTER_BRANCH_SQUELCH_WARNING=1 \
     git filter-branch -f --msg-filter "$MSG_FILTER" "$TARGET^..HEAD" >/dev/null 2>&1 || {
