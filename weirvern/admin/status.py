@@ -695,6 +695,10 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         # Other modes reporting from the same sensor, e.g. a passive capture alongside a live
         # intercept. Always a list, never absent, for the reason given below.
         "others": [],
+        # True when a `weir` row exists but has gone stale: an intercept ran and stopped, and
+        # whether the node was restored cannot be determined from here. Present always, so a
+        # consumer never has to distinguish a missing key from a false value.
+        "intercept_stopped": False,
         "stale_after_s": HEARTBEAT_STALE_S,
         # Always present so a consumer never has to distinguish a missing key from a
         # null value -- the frontend checks `if (s.error)` and an absent key is a
@@ -756,6 +760,34 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
 
     best = max(rows, key=_rank)
     r = best
+
+    # AN INTERCEPT THAT STOPPED IS NOT THE SAME AS NO INTERCEPT.
+    #
+    # Measured on the live box: an intercept publishes `weir` while the worker publishes the
+    # configured `loch`, both under one sensor_id. When the intercept process ENDS, its row goes
+    # stale and `_rank` demotes it -- correctly, a stale row must never beat a live one -- so the
+    # reader falls back to the live `loch` row and reports "passive capture, not in the path".
+    #
+    # That is a safe statement only if the restore actually happened. If the intercept was killed
+    # before its watchdog could restore (`kill -9` is uncatchable), the forged ARP mappings are
+    # STILL in the node's neighbours' caches: the box is in the path, and the panel says it is not.
+    # An operator reading that would conclude their traffic is untouched when it is being relayed.
+    #
+    # So: report that an intercept RAN and stopped, and that the node may need checking. Not a
+    # blocker and not a claim of danger -- a claim of uncertainty, which is the honest state, since
+    # this reader cannot see the node's ARP caches from inside the GUI pod.
+    stopped_intercept = False
+    for row in rows:
+        if str(row.get("mode") or "") != MODE_WEIR:
+            continue
+        if row.get("sensor_id") != best.get("sensor_id"):
+            continue
+        row_ts = row.get("ts")
+        if not isinstance(row_ts, datetime.datetime):
+            continue
+        if (now - _aware(row_ts)).total_seconds() > HEARTBEAT_STALE_S:
+            stopped_intercept = True
+    out["intercept_stopped"] = stopped_intercept
 
     # The OTHER row is reported, not discarded. A sensor running both a passive capture and an
     # intercept is a real and useful state, and hiding the second row is how "the panel is

@@ -179,3 +179,75 @@ def test_the_empty_shape_includes_every_key():
         assert key in out, f"the empty report omits {key!r}"
     assert out["running"] is False
     assert out["others"] == []
+
+
+def test_a_stopped_intercept_is_reported_even_though_the_passive_row_wins():
+    """The reader must not let a live `loch` row imply the node is untouched.
+
+    MEASURED ON THE LIVE BOX. An intercept publishes `weir` under one sensor_id while the worker
+    publishes the configured `loch` under the SAME sensor_id. Rows observed:
+
+        Weirvern                      loch  hosts=0   ts 00:00:15
+        Weirvern                      weir  hosts=10  ts 23:59:55
+
+    Once the intercept ends, its row goes stale and ranking correctly demotes it -- a stale row must
+    never beat a live one. But the panel then says "Weirvern observes only and cannot affect traffic"
+    about a node where an intercept ran. If the process was killed before its watchdog could restore
+    (`kill -9` is uncatchable), the forged ARP mappings are STILL in the neighbours' caches: the box
+    is in the path and the panel says it is not.
+
+    So the reader reports `intercept_stopped`, and the GUI shows it as uncertainty.
+    """
+    import datetime
+
+    from weirvern.admin import status as status_mod
+
+    now = datetime.datetime(2026, 9, 19, 0, 0, 30)
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def named_results(self):
+            return iter(self._rows)
+
+    class _FakeClient:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, _sql):
+            return _FakeQuery(self._rows)
+
+    def row(mode, hosts, age_s):
+        return {
+            "sensor_id": "Weirvern", "mode": mode, "iface": "eth1", "segment": "198.51.100.0/24",
+            "hosts": hosts, "mappings": 10 if mode == "weir" else 0,
+            "running": 1, "uptime_s": 300.0, "restores": 20, "refreshes": 1200,
+            "failures": [], "ts": now - datetime.timedelta(seconds=age_s),
+        }
+
+    # The measured case: live loch, stale weir.
+    live_loch = row("loch", 0, 2)
+    stale_weir = row("weir", 10, 600)
+    got = status_mod.sensor_status(_FakeClient([live_loch, stale_weir]), now=now)
+
+    assert got["mode"] == "loch", "the live row must win over the stale one"
+    assert got["intercept_stopped"] is True, (
+        "a stale `weir` row means an intercept ran and stopped; the reader must say so rather than "
+        "presenting the passive row as if nothing had happened"
+    )
+
+    # And the converse: with NO weir row ever seen, there is nothing to warn about. A banner that
+    # fires on a sensor that has never intercepted is a banner that gets ignored.
+    got_clean = status_mod.sensor_status(_FakeClient([live_loch]), now=now)
+    assert got_clean["intercept_stopped"] is False
+
+    # A LIVE intercept is not a stopped one -- the field must not fire while it is running.
+    fresh_weir = row("weir", 10, 3)
+    got_live = status_mod.sensor_status(_FakeClient([live_loch, fresh_weir]), now=now)
+    assert got_live["mode"] == "weir"
+    assert got_live["intercept_stopped"] is False
+
+    # The key is ALWAYS present, so a consumer never distinguishes a missing key from a false value.
+    empty = status_mod.sensor_status(_FakeClient([]), now=now)
+    assert "intercept_stopped" in empty

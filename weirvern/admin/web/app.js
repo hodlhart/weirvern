@@ -169,6 +169,24 @@ function renderSensor(s) {
       `affect traffic. Nothing is intercepted, so there is nothing to show here.` }));
   }
 
+  // AN INTERCEPT THAT STOPPED IS NOT THE SAME AS NO INTERCEPT.
+  //
+  // The reader falls back to this passive row once an intercept's heartbeat goes stale, which is
+  // right — a stale row must never beat a live one. But it means the panel says "Weirvern cannot
+  // affect traffic" about a node where an intercept ran and stopped, and whether the restore
+  // happened is exactly what this reader cannot see. If the process was killed before its watchdog
+  // restored, the forged ARP mappings are still in the neighbours' caches: the box is in the path
+  // and this panel would say it is not.
+  //
+  // Stated as uncertainty, not as danger. A banner that cries wolf gets ignored, and then the real
+  // one is ignored too.
+  if (s.intercept_stopped) {
+    box.appendChild(el("p", { class: "banner", text:
+      "an intercept ran on this sensor and has stopped without reporting a clean restore. " +
+      "The mode above describes what is running NOW, not what the node was left in — confirm " +
+      "the mappings were withdrawn before trusting this segment's traffic." }));
+  }
+
   // THE OTHER MODES ARE REPORTED, NOT HIDDEN.
   //
   // A sensor can legitimately do both at once: the worker keeps publishing its configured
