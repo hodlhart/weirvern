@@ -450,10 +450,26 @@ function drawGraph(host, nodes, edges, truncated) {
     const w = 0.6 + 2.4 * (Math.log10(1 + e.bytes) / Math.log10(1 + maxEdge));
     const involved = ASSETS_STATE.tracked.length === 0 ||
       ASSETS_STATE.tracked.includes(e.source) || ASSETS_STATE.tracked.includes(e.target);
+    const shown = involved ? "0.85" : "0.18";
+    // A WIDE TRANSPARENT LINE UNDER EACH EDGE IS THE CLICK TARGET. The drawn line is 0.6-3px,
+    // which is not a realistic pointer target, so an invisible 12px stroke sits beneath it and
+    // carries the click. Without this the edges would be decorative -- and an analyst pointing
+    // at a specific connection is exactly the interaction this view is for.
+    const hit = svgEl("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "edge-hit",
+      "stroke-width": "12", stroke: "transparent", "pointer-events": "stroke",
+    });
+    hit.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      showEdgeDetail(e);
+    });
+    hit.appendChild(svgEl("title", {}, `${e.source} → ${e.target}\n${fmtBytes(e.bytes)}`));
+    svg.appendChild(hit);
+
     svg.appendChild(svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "edge",
       "stroke-width": w.toFixed(2),
-      opacity: involved ? "0.85" : "0.18",
+      opacity: shown, "pointer-events": "none",
     }));
   }
 
@@ -476,7 +492,10 @@ function drawGraph(host, nodes, edges, truncated) {
       }));
     }
     g.appendChild(svgEl("title", {}, `${n.name ? n.name + " · " : ""}${n.id}\n${n.degree} peers\n${fmtBytes(n.bytes)}`));
-    g.addEventListener("click", () => toggleTracked(n.id));
+    // CLICK LEADS WITH DATA. It used to toggle tracking only, which the user could not infer
+    // from anything on screen -- "i dont understand what clicking down". The detail panel now
+    // opens on the host's connections, and tracking is an explicit button inside it.
+    g.addEventListener("click", () => showNodeDetail(n));
     g.style.cursor = "pointer";
     svg.appendChild(g);
   }
@@ -513,6 +532,158 @@ function zeekWindow() {
   const sel = document.getElementById("zk-hours");
   const n = sel ? Number(sel.value) : NaN;
   return Number.isFinite(n) && n > 0 ? n : ASSETS_STATE.hours;
+}
+
+/* ── Network: what a click on the graph actually means ─────────────────────── */
+
+/** One connection's source and destination, in words and numbers.
+ *
+ * WHY THIS EXISTS: the user clicked the graph and could not tell what had happened. A node click
+ * only toggled a filter, so the click looked inert and the graph looked unreadable -- you could
+ * see that two hosts were joined but not what the join WAS.
+ *
+ * Every line shows the address AND the name, never the name alone: a name is a convenience that
+ * can be wrong, shared, or absent, and the address is the fact.
+ */
+function showEdgeDetail(edge) {
+  const host = document.getElementById("nw-detail");
+  const table = document.querySelector("#nw-detail-table tbody");
+  const title = document.getElementById("nw-detail-title");
+  const note = document.getElementById("nw-detail-note");
+  if (!host) return;
+  host.replaceChildren();
+  table.replaceChildren();
+
+  title.textContent = "one connection";
+  const ports = (edge.ports || []).length ? edge.ports.join(", ") : "—";
+  note.textContent =
+    `${label(edge.source_name, edge.source)} → ${label(edge.target_name, edge.target)}` +
+    ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.`;
+
+  // The pair, as a single prominent row, because "source and destination" is the question.
+  host.appendChild(el("div", { class: "pair" }, [
+    el("div", { class: "pair-side" }, [
+      el("div", { class: "pair-label", text: "source" }),
+      el("div", { class: "pair-addr", text: edge.source }),
+      edge.source_name ? el("div", { class: "muted", text: edge.source_name }) : null,
+    ]),
+    el("div", { class: "pair-arrow", text: "→" }),
+    el("div", { class: "pair-side" }, [
+      el("div", { class: "pair-label", text: "destination" }),
+      // The port belongs on the destination card: "host :443" is one fact, and splitting it
+      // across a card and a note makes the reader assemble it. Several ports are listed in
+      // descending-count order (topK), so a host on many ports reads as a short list.
+      el("div", { class: "pair-addr", text: (edge.ports || []).length === 1
+        ? `${edge.target}:${edge.ports[0]}`
+        : edge.target }),
+      (edge.ports || []).length > 1
+        ? el("div", { class: "muted", text: `ports ${edge.ports.join(", ")}` })
+        : null,
+      edge.target_name ? el("div", { class: "muted", text: edge.target_name }) : null,
+    ]),
+  ]));
+  host.appendChild(el("div", { class: "muted", text:
+    `${fmtBytes(edge.bytes)} across ${edge.flows} flow${edge.flows === 1 ? "" : "s"}` +
+    (edge.first_seen ? ` · first seen ${fmtTime(edge.first_seen)}` : "") +
+    (edge.last_seen ? ` · last seen ${fmtTime(edge.last_seen)}` : "") }));
+
+  const tr = el("tr", {}, [
+    el("td", { class: "link mono", text: edge.source }),
+    el("td", { class: "link mono", text: edge.target }),
+    el("td", { class: "mono", text: ports }),
+    el("td", { class: "mono", text: fmtBytes(edge.bytes) }),
+    el("td", { class: "mono", text: String(edge.flows) }),
+    el("td", {}, [el("span", { class: "muted", text: "drill into source →" })]),
+  ]);
+  tr.addEventListener("click", () => openHost(edge.source));
+  table.appendChild(tr);
+}
+
+/** Everything one host talked to, from the graph already in memory.
+ *
+ * NO REFETCH: the graph payload holds every drawn edge, so the answer is filtered locally. A
+ * click that runs a query is a click that can be slow, and this view is meant to be explorable.
+ */
+function showNodeDetail(node) {
+  const host = document.getElementById("nw-detail");
+  const table = document.querySelector("#nw-detail-table tbody");
+  const title = document.getElementById("nw-detail-title");
+  const note = document.getElementById("nw-detail-note");
+  if (!host) return;
+  host.replaceChildren();
+  table.replaceChildren();
+
+  const all = (ASSETS_STATE.graph && ASSETS_STATE.graph.edges) || [];
+  const touching = all.filter((e) => e.source === node.id || e.target === node.id);
+  // Sorted so the heaviest conversation is first -- an analyst asking "what does this host
+  // talk to" wants the answer ordered by significance, not by query order.
+  const outbound = touching.filter((e) => e.source === node.id)
+                           .sort((a, b) => b.bytes - a.bytes);
+  const inbound = touching.filter((e) => e.target === node.id)
+                          .sort((a, b) => b.bytes - a.bytes);
+
+  title.textContent = label(node.name, node.id);
+  note.replaceChildren(el("span", { text:
+    `${node.degree} peer${node.degree === 1 ? "" : "s"} · ${fmtBytes(node.bytes)} · ` +
+    `${outbound.length} outbound, ${inbound.length} inbound` }));
+
+  // Tracking stays available, but as an explicit ACTION inside the panel rather than the thing
+  // a click silently did.
+  const tracking = ASSETS_STATE.tracked.includes(node.id);
+  const btn = el("button", {
+    class: "pager-btn",
+    text: tracking ? "stop tracking this host" : "track only this host's connections",
+  });
+  btn.addEventListener("click", () => { toggleTracked(node.id); showNodeDetail(node); });
+  host.appendChild(el("div", { class: "pair-side" }, [
+    el("div", { class: "pair-label", text: "host" }),
+    el("div", { class: "pair-addr", text: node.id }),
+    node.name ? el("div", { class: "muted", text: node.name }) : null,
+  ]));
+  host.appendChild(el("div", { class: "chips" }, [btn]));
+
+  if (!touching.length) {
+    table.appendChild(el("tr", {}, [
+      el("td", { class: "empty", attrs: { colspan: "6" },
+                 text: "This host has no drawn connections in the current selection." }),
+    ]));
+    return;
+  }
+
+  // Outbound first: "who does this host talk TO" is the usual question, and separating the
+  // directions means a server answering everything does not bury its own few outbound flows.
+  const rows = [];
+  if (outbound.length) {
+    rows.push(el("tr", {}, [el("td", {
+      class: "muted", attrs: { colspan: "6" }, text: `outbound (${outbound.length})` })]));
+    rows.push(...outbound.map(edgeRow));
+  }
+  if (inbound.length) {
+    rows.push(el("tr", {}, [el("td", {
+      class: "muted", attrs: { colspan: "6" }, text: `inbound (${inbound.length})` })]));
+    rows.push(...inbound.map(edgeRow));
+  }
+  table.replaceChildren(...rows);
+}
+
+/** One edge as a table row: who → who, on which ports, how much. */
+function edgeRow(e) {
+  const ports = (e.ports || []).length ? e.ports.join(", ") : "—";
+  const tr = el("tr", { class: "clickable" }, [
+    el("td", { class: "mono", text: e.source }),
+    el("td", { class: "mono", text: e.target }),
+    el("td", { class: "mono", text: ports }),
+    el("td", { class: "mono", text: fmtBytes(e.bytes) }),
+    el("td", { class: "mono", text: String(e.flows) }),
+    el("td", {}, [el("span", { class: "muted", text: "details →" })]),
+  ]);
+  tr.addEventListener("click", () => showEdgeDetail(e));
+  return tr;
+}
+
+/** An address with its name in front, when there is one. Never a name INSTEAD of an address. */
+function label(name, addr) {
+  return name ? `${name} (${addr})` : String(addr || "");
 }
 
 /* ── Netflow: the port/protocol drill-down ─────────────────────────────────── */

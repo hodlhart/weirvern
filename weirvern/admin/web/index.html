@@ -102,6 +102,26 @@
       <div id="nw-selected" class="chips"></div>
       <div id="nw-graph" class="graph"></div>
       <div id="nw-legend" class="legend"></div>
+      <p class="muted">Click a <strong>line</strong> to see that connection's source and
+        destination, or a <strong>dot</strong> to see everything that host talked to.</p>
+    </div>
+
+    <!--
+      THE CLICK RESULT, next to the graph rather than below the fold. The user's feedback was
+      "i dont understand what clicking down. i need like source and destination" -- clicking a
+      node used to only toggle a filter, so the click appeared to do nothing meaningful. This
+      panel answers with DATA first.
+    -->
+    <div class="card" id="nw-detail-card">
+      <h2>Connection detail <span class="muted" id="nw-detail-title">click a line or a dot</span></h2>
+      <div id="nw-detail-note"></div>
+      <div id="nw-detail"></div>
+      <table id="nw-detail-table">
+        <thead><tr>
+          <th>Source</th><th>Destination</th><th>Ports</th><th>Bytes</th><th>Flows</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
 
     <div class="grid">

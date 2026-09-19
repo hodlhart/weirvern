@@ -67,7 +67,7 @@ async function main() {
   const epilogue = `
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -98,8 +98,12 @@ async function main() {
       { id: "203.0.113.1", name: "gateway", degree: 4, bytes: 900000 },
     ],
     edges: [
-      { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900 },
-      { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60 },
+      { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900,
+        ports: [443, 80], source_name: "workstation.lan", target_name: "gateway",
+        first_seen: "2026-01-01T00:00:00", last_seen: "2026-01-02T00:00:00" },
+      { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60,
+        ports: [22], source_name: "workstation.lan", target_name: "vault",
+        first_seen: "2026-01-01T06:00:00", last_seen: "2026-01-02T06:00:00" },
     ],
     total_edges: 25, truncated: true, reason: "",
   };
@@ -324,41 +328,34 @@ async function main() {
         doc.getElementById("nw-selected").textContent.includes("every connection"),
         doc.getElementById("nw-selected").textContent.slice(0, 80));
 
-  // Clicking a node tracks it -- the multi-host selection requirement.
-  const groups = svg.querySelectorAll("g.node");
-  groups[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  check("clicking a node adds it to the tracked set",
-        H.ASSETS_STATE.tracked.length >= 1,
-        JSON.stringify(H.ASSETS_STATE.tracked));
+  // (A bare node click no longer tracks -- see the block that drives the panel's track
+  //  button, which is the path the user actually takes. These assertions moved there.)
   // Clicking a node triggers loadNetwork(), which is async: the re-render that marks the node
   // as selected happens in a later tick. Asserting synchronously measures the clock, not the
   // code -- and that is exactly what produced the earlier false failure.
-  await new Promise((r) => setTimeout(r, 60));
-  check("the tracked host appears as a removable chip",
-        doc.querySelectorAll("#nw-selected .chip").length >= 1,
-        `${doc.querySelectorAll("#nw-selected .chip").length} chip(s)`);
-  check("the selected node is marked in the DOM",
-        doc.querySelectorAll("#nw-graph g.node.selected").length >= 1,
-        `${doc.querySelectorAll("#nw-graph g.node.selected").length} selected of ` +
-        `${doc.querySelectorAll("#nw-graph g.node").length}`);
-  check("the node's circle is recoloured to show it is tracked",
-        (() => {
-          const c = doc.querySelector("#nw-graph g.node.selected circle");
-          return !!c && c.getAttribute("fill") === "#5ec26a";
-        })());
+  // (A bare node click no longer tracks -- see the block that drives the panel's track
+  //  button, which is the path the user actually takes. These assertions moved there.)
 
-  // Two hosts tracked at once -- "select any number".
+  // Two hosts tracked at once -- the user's "select any number" requirement. Tracking is now
+  // driven by the explicit action in the detail panel rather than by a bare node click, so the
+  // test drives the real path: open a node, press its track button.
   H.ASSETS_STATE.tracked = [];
   H.renderNetwork();
-  const g2 = doc.querySelectorAll("#nw-graph g.node");
-  g2[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  g2[1].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  for (const idx of [0, 1]) {
+    const g = doc.querySelectorAll("#nw-graph g.node")[idx];
+    g.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const trackBtn = Array.from(doc.querySelectorAll("#nw-detail button"))
+      .find((b) => b.textContent.includes("track only"));
+    check(`node ${idx}'s detail panel offers a track button`, !!trackBtn);
+    trackBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  }
   await new Promise((r) => setTimeout(r, 60));
   check("two hosts can be tracked at once",
         H.ASSETS_STATE.tracked.length === 2,
         JSON.stringify(H.ASSETS_STATE.tracked));
   check("both tracked hosts are listed as chips",
-        doc.querySelectorAll("#nw-selected .chip").length === 2);
+        doc.querySelectorAll("#nw-selected .chip").length === 2,
+        `${doc.querySelectorAll("#nw-selected .chip").length} chips`);
   check("a chip removes its host when clicked",
         (() => {
           doc.querySelector("#nw-selected .chip")
@@ -366,13 +363,66 @@ async function main() {
           return H.ASSETS_STATE.tracked.length === 1;
         })(), JSON.stringify(H.ASSETS_STATE.tracked));
 
-  // Clearing restores the whole graph.
-  H.ASSETS_STATE.tracked = ["203.0.113.42", "192.0.2.40"];
+  // ── what clicking the GRAPH means ──────────────────────────────────────────────────────
+  H.ASSETS_STATE.tracked = [];
+  // The user's report: "i like the network diagram. i dont understand what clicking down.
+  // i need like source and destination". Clicking used to toggle a filter silently.
+  H.ASSETS_STATE.tracked = [];
+  H.ASSETS_STATE.graph = GRAPH_PAYLOAD;
   H.renderNetwork();
-  doc.getElementById("nw-clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 30));
-  await new Promise((r) => setTimeout(r, 60));
-  check("Clear selection empties the tracked set", H.ASSETS_STATE.tracked.length === 0,
+
+  const edgeLines = doc.querySelectorAll("#nw-graph line.edge-hit");
+  check("each drawn edge has a widened click target", edgeLines.length === 2,
+        `${edgeLines.length} hit-lines`);
+
+  // Click an EDGE -> that pair's source and destination.
+  edgeLines[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  const dTitle = doc.getElementById("nw-detail-title").textContent;
+  check("clicking an edge says it is showing one connection",
+        dTitle.includes("one connection"), dTitle);
+  check("the edge detail names the SOURCE",
+        doc.getElementById("nw-detail").textContent.includes("203.0.113.42"),
+        doc.getElementById("nw-detail").textContent.slice(0, 80));
+  check("the edge detail names the DESTINATION",
+        doc.getElementById("nw-detail").textContent.includes("203.0.113.1"),
+        doc.getElementById("nw-detail").textContent.slice(0, 80));
+  check("the source and destination are LABELLED, not just listed",
+        doc.getElementById("nw-detail").textContent.includes("source") &&
+        doc.getElementById("nw-detail").textContent.includes("destination"));
+  check("the edge detail shows the ports",
+        doc.getElementById("nw-detail").textContent.includes("443"));
+  check("the name is shown ALONGSIDE the address, never instead of it",
+        doc.getElementById("nw-detail").textContent.includes("workstation.lan") &&
+        doc.getElementById("nw-detail").textContent.includes("203.0.113.42"));
+  check("the edge detail renders the arrow between the two sides",
+        !!doc.querySelector("#nw-detail .pair-arrow"));
+
+  // Click a NODE -> everything that host talked to, direction separated.
+  H.showNodeDetail(GRAPH_PAYLOAD.nodes[0]);
+  check("clicking a node lists its conversations",
+        doc.querySelectorAll("#nw-detail-table tbody tr").length >= 2,
+        `${doc.querySelectorAll("#nw-detail-table tbody tr").length} rows`);
+  check("the node detail separates outbound from inbound",
+        doc.getElementById("nw-detail-table").textContent.includes("outbound"),
+        doc.getElementById("nw-detail-table").textContent.slice(0, 80));
+  check("the node detail offers tracking as an explicit ACTION",
+        doc.getElementById("nw-detail").textContent.includes("track only this host"));
+  check("clicking an edge and clicking a node show DIFFERENT panels",
+        doc.getElementById("nw-detail-title").textContent.includes("workstation") ||
+        doc.getElementById("nw-detail-title").textContent.includes("192.0.2.10"),
+        doc.getElementById("nw-detail-title").textContent);
+
+  // And the node's own click handler must open the panel, not silently toggle tracking.
+  H.ASSETS_STATE.tracked = [];
+  H.renderNetwork();
+  doc.querySelector("#nw-graph g.node").dispatchEvent(
+    new window.MouseEvent("click", { bubbles: true }));
+  check("a real click on a node opens the detail panel",
+        doc.getElementById("nw-detail-title").textContent.length > 0 &&
+        doc.getElementById("nw-detail-title").textContent !== "click a line or a dot",
+        doc.getElementById("nw-detail-title").textContent);
+  check("a real click on a node does NOT silently change the tracked set",
+        H.ASSETS_STATE.tracked.length === 0,
         JSON.stringify(H.ASSETS_STATE.tracked));
 
   // ── honest failure states ──────────────────────────────────────────────────────────────

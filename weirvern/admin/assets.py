@@ -70,6 +70,35 @@ def _rows(client, sql: str, params: dict, what: str) -> list | None:
         return None
 
 
+def _as_ports(value) -> list[int]:
+    """A ClickHouse array of ports as a list of ints, tolerant of how the driver returns it.
+
+    `topK(5)(dst_port)` comes back as a real `Array(UInt16)` through clickhouse-connect, but a
+    text-protocol client hands back the string form `[443,80]`. Both reach this function in
+    practice -- the shipped client and the probes used to verify it -- and `int("[443,80]")`
+    raises ValueError, which took the whole connection graph down.
+
+    Anything unparseable is dropped rather than raised on: a port list is decoration on an edge,
+    and a malformed one must not cost the analyst the graph.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip().strip("[]")
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        parts = list(value)
+    else:
+        parts = [value]
+    out: list[int] = []
+    for item in parts:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     """Every host we have seen, with a per-host summary, for the asset inventory view.
 
@@ -220,7 +249,9 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     """
     edges = _rows(
         client,
-        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows "
+        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
+        "       topK(5)(dst_port) AS ports, min(timestamp) AS first_seen, "
+        "       max(timestamp) AS last_seen "
         "FROM weirvern.flows "
         "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
         "  AND src_addr != '' AND dst_addr != '' "
@@ -253,7 +284,17 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     for r in edges:
         src, dst = str(r[0]), str(r[1])
         b, f = int(r[2] or 0), int(r[3] or 0)
-        out_edges.append({"source": src, "target": dst, "bytes": b, "flows": f})
+        # The PORTS and the TIME RANGE belong on the edge, because "A talked to B" is not
+        # actionable on its own -- an analyst needs ":443" and "since when" to judge it. The
+        # user's feedback on this view was precisely that clicking showed no source/destination
+        # detail, so the detail is now carried rather than the click being a filter only.
+        ports = _as_ports(r[4])
+        out_edges.append({
+            "source": src, "target": dst, "bytes": b, "flows": f,
+            "ports": ports,
+            "first_seen": r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5] or ""),
+            "last_seen": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6] or ""),
+        })
         # Degree counts INCIDENT edges, so it is bumped on both ends -- a leaf has degree 1
         # even though it appears as a target only, which is what a layout wants.
         _n(src)["degree"] += 1
@@ -269,6 +310,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     names = resolve_names(client, list(nodes))
     for addr, node in nodes.items():
         node["name"] = names.get(addr, "")
+    # The edge carries its endpoints' names too, so the details panel does not have to join two
+    # node rows to render one line -- and so a name is never shown without its address.
+    for e in out_edges:
+        e["source_name"] = names.get(e["source"], "")
+        e["target_name"] = names.get(e["target"], "")
 
     max_degree = max(n["degree"] for n in nodes.values())
     max_bytes = max((n["bytes"] for n in nodes.values()), default=1) or 1

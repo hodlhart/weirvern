@@ -330,3 +330,104 @@ def test_the_flow_drilldown_excludes_port_zero():
     assert "dst_port > 0" in inspect.getsource(soc.top_ports), (
         "top_ports must keep excluding port 0"
     )
+
+# ── the graph's click result: source and destination ───────────────────────────────────────
+
+
+def test_edges_carry_ports_and_a_time_range():
+    """The user clicked the graph and could not tell what a connection WAS.
+
+    "A talked to B" is not actionable without the port and since when -- and the detail panel
+    exists precisely to answer that, so the edge has to carry it.
+    """
+    import inspect
+
+    from weirvern.admin import assets
+
+    src = inspect.getsource(assets.connection_graph)
+    assert "dst_port" in src, (
+        "the edge query does not select dst_port, so the detail panel cannot say which service "
+        "a connection is"
+    )
+    for key in ("ports", "first_seen", "last_seen"):
+        assert key in src, f"connection_graph does not put {key!r} on the edge"
+        assert key in ASSETS_JS, f"assets.js never reads the edge's {key!r}"
+
+
+def test_edges_carry_both_endpoint_names_so_a_row_needs_no_join():
+    import inspect
+
+    from weirvern.admin import assets
+
+    src = inspect.getsource(assets.connection_graph)
+    assert '"source_name"' in src and '"target_name"' in src, (
+        "the edge does not carry its endpoint names, so the panel would have to look them up "
+        "and the name could disagree with the node's"
+    )
+
+
+def test_clicking_a_node_opens_data_before_it_toggles_tracking():
+    """Clicking used to toggle a filter only, which the user could not infer from the screen.
+
+    The click must lead with the answer (what this host talks to), and tracking must become an
+    explicit action rather than the silent effect of a click.
+    """
+    code = _code(ASSETS_JS)
+    i = code.find("function showNodeDetail")
+    assert i > 0, "there is no node detail renderer"
+    body = code[i : code.find("\nfunction ", i + 10)]
+    assert "outbound" in body and "inbound" in body, (
+        "the node detail does not separate direction, so a server answering everything would "
+        "bury its own few outbound flows"
+    )
+    # And the node's click must open the panel, not change the selection.
+    j = code.find('g.addEventListener("click"')
+    assert j > 0, "the node click handler is gone"
+    handler = code[j : j + 120]
+    assert "showNodeDetail" in handler, (
+        f"clicking a node does not open the detail panel: {handler!r}"
+    )
+    assert "toggleTracked" not in handler, (
+        "clicking a node still toggles tracking directly, which is the behaviour the user "
+        "reported as not understanding"
+    )
+
+
+def test_the_edges_have_a_clickable_target():
+    """A 0.6-3px line is not a realistic pointer target, so the edges would be decorative."""
+    code = _code(ASSETS_JS)
+    assert "edge-hit" in code, (
+        "there is no widened hit-line under the drawn edges, so clicking a specific connection "
+        "is impractical"
+    )
+    css = (WEB / "style.css").read_text()
+    assert ".edge-hit" in css, "the hit-line class has no styling (it would not be clickable)"
+    assert "pointer" in css[css.find(".edge-hit") : css.find(".edge-hit") + 200], (
+        "the hit-line has no pointer cursor, so it does not look clickable"
+    )
+
+
+def test_the_detail_panel_shows_the_address_alongside_the_name():
+    """Standing directive: a name is never shown INSTEAD of the address."""
+    code = _code(ASSETS_JS)
+    i = code.find("function label(")
+    assert i > 0, "the label helper is gone"
+    body = code[i : i + 220]
+    assert "name ?" in body and "addr" in body, (
+        f"label() does not fall back to the address when there is no name: {body!r}"
+    )
+    # The panel must render the raw address as well as the label.
+    assert 'pair-addr' in code, "the source/destination card does not show a bare address"
+
+
+def test_clicking_an_edge_shows_that_pair_not_the_whole_host():
+    """The two clicks answer different questions and must not render the same panel."""
+    code = _code(ASSETS_JS)
+    assert "function showEdgeDetail" in code and "function showNodeDetail" in code, (
+        "edge and node clicks must have separate renderers"
+    )
+    edge = code[code.find("function showEdgeDetail") : code.find("function showNodeDetail")]
+    assert "ports" in edge, "the edge detail does not mention the ports"
+    assert "→" in edge or "&rarr;" in edge, (
+        "the edge detail does not render the source→destination relationship visually"
+    )
