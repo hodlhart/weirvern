@@ -769,6 +769,12 @@ UI bug into an outage.
 | Models | Training history, score distribution, model agreement, and per-feature deviations |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
 
+Some tables are **live and empty on this deployment**, which is a fact about the network rather
+than the code: `zeek_tunnel`, `zeek_quic` and `zeek_ldap_search` have no traffic on this segment, so
+their tables are correctly zero. `zeek_dhcp` has rows, which is the useful check — it is the one
+Tier-3 log this segment produces, and it ingests. See
+[Deploy in five steps](#deploy-in-five-steps) for how to confirm this on your own network.
+
 The **Models** view is deliberately built from data that is deep at any volume — training
 runs, every score including sub-threshold ones, and the per-feature deviation JSON — rather
 than from a scatter of the anomalies themselves. A young deployment has very few anomalies,
