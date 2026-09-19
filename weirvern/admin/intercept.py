@@ -457,20 +457,31 @@ class Intercept:
     def wait(self, stop_after_s: float | None = None) -> None:
         """Block until interrupted, or for `stop_after_s`.
 
-        WHY THIS INSTALLS SIGNAL HANDLERS. `KeyboardInterrupt` alone covers Ctrl-C in a terminal,
-        which is NOT how this runs in a cluster: `kubectl exec` is a client, and when that client
-        is disconnected -- the terminal closes, the SSH session drops, the runner script is killed
-        -- the signal goes to the CLIENT. The in-pod process kept running, orphaned, holding a
-        poisoned segment in memory with its watchdog armed.
+        SIGNALS: WHAT THIS DOES AND DOES NOT DO.
 
-        That is not theoretical. It happened: an intercept from an earlier run was found still
-        alive in the pod while the address and policy rules had already been torn down by someone
-        else's cleanup. A live intercept in that state can re-poison the segment at its next
-        refresh, which is exactly what a failed sensor must never be able to do.
+        A SIGTERM/SIGINT handler already exists -- `WeirWatchdog._install_signal_handlers` installs
+        one at start, and it is the one that restores the mappings ("signal 2 received -- restoring
+        ARP mappings" in a real run). This method previously caught only `KeyboardInterrupt`.
 
-        SIGTERM and SIGHUP are therefore handled as the same request as Ctrl-C: unwind through the
-        `finally` that restores every forged mapping. The handler only sets a flag -- restoring
-        synchronously inside a signal handler would run arbitrary code at an arbitrary point.
+        The two are NOT the same thing, which is why both are kept:
+
+          * `KeyboardInterrupt` is raised INSIDE this loop, so it unwinds through the caller's
+            `finally` in `cmd_intercept`, which calls `runner.stop()`.
+          * The watchdog's handler raises `SystemExit(0)` -- it never returns -- so it does NOT
+            unwind this loop and the caller's `finally` does not run. The restore then depends on
+            the watchdog's own `stop()`, which it does call. That works, and it is why the
+            observed runs restored cleanly.
+
+        WHAT NEITHER COVERS, and the honest limit of this code: a `kubectl exec` client that is
+        SIGKILLed, or an SSH session that vanishes, may deliver NO signal to the in-pod process at
+        all. No handler can run if no signal arrives. The protections that actually hold in that
+        case are (a) `--seconds`, which bounds the run inside the process, and (b) the forged ARP
+        entries EXPIRING, which is why the watchdog's expiry backstop exists and why SIGKILL is
+        explicitly documented there.
+
+        So this handler is a BELT: it covers SIGHUP (a dropped SSH session usually does deliver
+        SIGHUP) and gives the loop a clean stop path that unwinds the caller. It is not the primary
+        protection, and nothing here should be read as "an orphan is now impossible".
         """
         stop = False
 
@@ -479,15 +490,18 @@ class Intercept:
             stop = True
 
         installed: list[tuple[signal.Signals, Any]] = []
-        for sig in (signal.SIGTERM, signal.SIGHUP):
+        for sig in (signal.SIGHUP,):
+            # SIGHUP ONLY. SIGTERM and SIGINT already have a handler that restores the mappings;
+            # installing ours over it would replace a working restore path with a flag that only
+            # stops this loop -- a downgrade dressed as a fix.
             try:
                 previous = signal.signal(sig, _request_stop)
-                installed.append((sig, previous))
             except (ValueError, OSError):
                 # Not the main thread, or the platform lacks the signal. Ctrl-C still works, so
-                # this is a degradation rather than a failure -- and saying so is better than
-                # claiming a handler that is not there.
+                # this is a degradation rather than a failure.
                 logger.debug("could not install a handler for signal %s", sig)
+            else:
+                installed.append((sig, previous))
 
         deadline = None if stop_after_s is None else time.time() + stop_after_s
         try:
