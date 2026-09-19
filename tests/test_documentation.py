@@ -191,8 +191,37 @@ def test_the_readme_documents_the_zeek_features_the_models_use():
 
 
 def test_the_readme_documents_the_gui_views():
-    for view in ("Overview", "Anomalies", "Host drill-down", "Models", "Evidence"):
-        assert view in README, f"the GUI's {view} view is undocumented"
+    # The list must cover EVERY tab in index.html, not a remembered subset: a view added to the
+    # nav and never documented is exactly what this test exists to catch, and it cannot catch it
+    # from a hand-maintained list. The nav is the source of truth, and the README must name every
+    # entry in it.
+    from pathlib import Path
+
+    nav = (Path(__file__).resolve().parent.parent
+           / "weirvern" / "admin" / "web" / "index.html").read_text()
+    tabs = re.findall(r'data-view="([\w-]+)">([^<]+)</button>', nav)
+    assert tabs, "no tabs were parsed from index.html -- this test can no longer see the nav"
+
+    # A tab whose label is a single word is documented under that word; the two views that need a
+    # longer phrase are listed explicitly rather than guessed at.
+    documented_as = {
+        "host": "Assets",          # the inventory, renamed from "Host drill-down"
+        "network": "Network",
+        "zeek": "Zeek",
+        "netflow": "Netflow",
+        "models": "Models",
+        "health": "Health",
+        "anomalies": "Anomalies",
+        "evidence": "Evidence",
+        "overview": "Overview",
+    }
+    for key, label in tabs:
+        phrase = documented_as.get(key, label.strip())
+        assert phrase in README, (
+            f"the GUI's {label.strip()} view (data-view={key!r}) is in the nav but undocumented. "
+            f"Either document it in the README's GUI view table or remove the tab."
+        )
+    assert "30088" in README, "the GUI's port is not stated"
     assert "30088" in README, "the GUI's port is not stated"
 
 
@@ -221,7 +250,6 @@ def test_the_linter_is_pinned_to_an_exact_version():
 
     A linter is part of the build, so its version is part of the build. Pinned exactly.
     """
-    import re
     pyproject = (ROOT / "pyproject.toml").read_text()
     m = re.search(r'"(ruff[^"]*)"', pyproject)
     assert m, "ruff is not declared as a dependency"
@@ -249,7 +277,6 @@ def test_changelog_references_resolve_to_real_files():
     under `docs/research/` and the schema audit under `scripts/`, and this asserts the references
     keep pointing at real files.
     """
-    import re
     changelog = (ROOT / "CHANGELOG.md").read_text()
     # Paths in backticks that look like repository paths.
     cited = set(re.findall(r"`((?:docs|scripts|tests|weirvern|k8s|overlays|zeek)/[\w./{}-]+)`", changelog))
@@ -298,7 +325,6 @@ def test_the_image_tag_is_declared_once_and_applies_everywhere():
     So: the tag must be declared in the transformer, and the manifests must NOT hardcode a tag of
     their own, or a bump would have to be made in several places and one would be missed.
     """
-    import re
     kustomization = (ROOT / "k8s" / "kustomization.yaml").read_text()
     m = re.search(r"name:\s+weirvern-worker\s*\n\s*newTag:\s*[\"']?([\w.]+)", kustomization)
     assert m, "the worker image tag is not declared in the kustomization `images:` transformer"

@@ -60,6 +60,26 @@ run "shell syntax" sh -n scripts/weir_stress_test.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
 run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 
+# The frontend only, and only the part that can be checked without a browser: `node --check`
+# catches a syntax error in a view file, which otherwise shows up as a tab that does nothing.
+# The DOM-level check (scripts/jsdom_render.js) needs a server and an npm install, so it is run
+# by hand rather than in the gate -- it is documented in the README's development section.
+step "frontend syntax (node --check)"
+JS_OK=1
+for js in weirvern/admin/web/app.js weirvern/admin/web/soc.js weirvern/admin/web/assets.js; do
+    if command -v node >/dev/null 2>&1; then
+        if ! node --check "$js" 2>/tmp/weirvern_gate_js.txt; then
+            echo "  $js: $(head -3 /tmp/weirvern_gate_js.txt | tr '\n' ' ')"
+            JS_OK=0
+        fi
+    else
+        echo "  node not installed -- skipping (install node to check the frontend)"
+        break
+    fi
+done
+if [ "$JS_OK" = "1" ]; then echo "  PASS"; else echo "  FAIL"; FAIL=1; fi
+
+
 # The suite last: it is the slowest, and everything above is a precondition for trusting it.
 step "tests"
 if .venv/bin/pytest -q > /tmp/weirvern_gate_tests.txt 2>&1; then

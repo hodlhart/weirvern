@@ -765,9 +765,24 @@ UI bug into an outage.
 |---|---|
 | Overview | Sensor state, health probes, recent anomalies, top talkers |
 | Anomalies | Every anomaly with score, agreement and the "why" line; click through to **evidence** |
-| Host drill-down | One host: its flows, Zeek sessions, DNS, and detected anomalies |
+| Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
+| Network | Every host-to-host connection as a graph; **select any number of hosts to track only their connections** |
+| Netflow | Volume, protocol mix, top ports, destination spread |
+| Zeek | Per-log volume, a trend by log, observed services, DNS names; click a log to see which hosts it contains |
 | Models | Training history, score distribution, model agreement, and per-feature deviations |
+| Health | The deep checks, ingestion trend per pipeline stage, table sizes, sensor state |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
+
+The **Assets** and **Network** views share one rule: an endpoint that could not be read is not an
+endpoint with nothing on it. Both name the sources they failed to read, so a short list is never
+mistaken for a quiet network.
+
+**Hostnames come from reverse DNS, and the address is always shown alongside the name.** By
+default only private addresses are resolved, so the lookup stays on your network; set
+`WEIRVERN_REVERSE_DNS=all` to resolve public addresses too, which sends each one to your
+resolver. `WEIRVERN_REVERSE_DNS=off` disables lookups entirely. Results are cached with separate
+positive and negative TTLs, and every lookup is bounded by a socket timeout so a slow resolver
+cannot stall a page render.
 
 Some tables are **live and empty on this deployment**, which is a fact about the network rather
 than the code: `zeek_tunnel`, `zeek_quic` and `zeek_ldap_search` have no traffic on this segment, so
@@ -963,6 +978,35 @@ verified without one.
 
 Model artifacts are versioned and persisted to `MODEL_DIR` — a worker restart
 **does not** lose learned baselines or models (this was a legacy failure mode).
+
+### Checking the GUI
+
+The web UI has no build step and no test framework, so three things are checked instead:
+
+```bash
+node --check weirvern/admin/web/app.js          # and soc.js, assets.js
+sh scripts/gate.sh                              # includes the syntax check above
+```
+
+The syntax check catches a broken view file, which would otherwise appear as a tab that does
+nothing. It cannot catch a *silent* failure — an element id that does not exist, a payload key
+read under the wrong name, a click handler that never fires — because none of those raise.
+
+For that, `scripts/jsdom_render.js` executes the shipping JavaScript against the shipping HTML
+in a DOM and asserts what appears. It needs a served GUI and one npm package:
+
+```bash
+# 1. serve the GUI (any reachable instance; see below for a stub-backed local one)
+# 2. then:
+npm install jsdom
+node scripts/jsdom_render.js http://127.0.0.1:30088
+```
+
+It renders the inventory and the graph from real-shaped payloads and checks the behaviours that
+matter: that a shift-click tracks a host instead of drilling into it, that several hosts can be
+tracked at once, that clearing the selection restores the whole graph, and that a **failed**
+query says so rather than drawing an empty panel. That last one is the point — an empty panel and
+a broken query look identical on screen, and this project has shipped that bug more than once.
 
 ### End-to-end validation
 

@@ -220,6 +220,11 @@ async function loadZeek() {
 
   // Log volume: which logs are actually arriving. Bars rather than a table so "one log has
   // stopped" is visible at a glance.
+  //
+  // CLICKING A BAR DRILLS IN, which is what makes this a SOC view rather than a report: the
+  // bar answers "is ssl.log busy" and the next question is always "busy with whom". The
+  // handler lives in assets.js because the drill-down needs the same address validation and
+  // the same host click-through the other views use.
   const logRows = (counts.points || []).map((p, i) => ({
     label: p.log, value: p.rows, idx: i, table: p.table,
   }));
@@ -227,8 +232,15 @@ async function loadZeek() {
              { label: (r) => r.log, value: (r) => r.rows, format: (v) => v.toLocaleString(),
                colour: (r) => SOC_PALETTE[r.idx % SOC_PALETTE.length],
                limit: 18,
-               title: (r) => `${r.log} -> weirvern.${r.table}: ${r.rows} row(s)`,
-               emptyText: "No Zeek log has written a row in this window." });
+               title: (r) => `${r.log} -> weirvern.${r.table}: ${r.rows} row(s) — click to see the hosts`,
+               emptyText: "No Zeek log has written a row in this window.",
+               // A log with zero rows has nothing to drill into; offering the click would be a
+               // dead end that looks like a broken feature.
+               onClick: (r) => {
+                 if (r.rows > 0 && typeof loadZeekLog === "function") {
+                   loadZeekLog(r.label).catch(showError);
+                 }
+               } });
   if ((counts.unreadable || []).length) {
     document.getElementById("zk-counts").appendChild(chartEmpty(
       `Could not count: ${counts.unreadable.join(", ")} — these are unreadable, which is not the same as empty.`));

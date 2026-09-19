@@ -40,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from weirvern.admin import assets as assets_mod
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import web_api
@@ -61,6 +62,10 @@ STATIC_FILES = {
     # grow every time a view is added. Loaded after app.js (see index.html) because it calls
     # the shared helpers -- chartFrame, svgEl, el, fmtBytes -- that app.js defines.
     "/soc.js": ("soc.js", "application/javascript; charset=utf-8"),
+    # The Assets inventory and the Network connection graph. Its own file for the same reason
+    # as soc.js, and because the force-free graph layout is code a reader should be able to
+    # find on its own.
+    "/assets.js": ("assets.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -165,6 +170,16 @@ def _build_handler(ctx: GuiContext):
                 return self._netflow(query)
             if path == "/api/zeek":
                 return self._zeek(query)
+            # The asset inventory and the connection graph. Separate endpoints from /api/host
+            # because /api/host answers "tell me about THIS address" while these answer "what
+            # hosts exist" and "how are they wired" -- and the graph needs different tables
+            # (raw `flows` for per-edge facts, which the aggregate cannot provide).
+            if path == "/api/assets":
+                return self._assets(query)
+            if path == "/api/graph":
+                return self._graph(query)
+            if path == "/api/zeeklog":
+                return self._zeeklog(query)
             # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
             # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
             # restart the GUI and hide the real problem); this one exists precisely to answer
@@ -335,6 +350,94 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"health": None, "ingest": empty, "tables": empty,
                                    "sensor": {}, "data_error": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.health_deep_payload(report, ingest, sizes, sensor))
+
+        def _assets(self, query: dict) -> None:
+            """The asset inventory: every host seen, with a per-host summary.
+
+            Read-only and dependency-free like every other route. `hours` bounds the TRAFFIC
+            columns only -- a host whose last packet was days ago is still an asset, so it
+            appears with zeroed counters rather than being dropped, and the payload reports
+            which sources were readable so the panel can explain the zeros.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            try:
+                with self._with_client() as client:
+                    payload = assets_mod.asset_inventory(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("asset inventory unavailable: %s", exc)
+                return self._json({
+                    "available": False, "hosts": [],
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "data_error": str(exc),
+                })
+            self._json(payload)
+
+        def _graph(self, query: dict) -> None:
+            """The connection graph: nodes and edges, optionally restricted to tracked hosts.
+
+            `host` may be repeated to track a chosen set -- `?host=A&host=B`. An EMPTY
+            selection means "no restriction" and returns the whole graph, which is what an
+            operator expects from a cleared multi-select; the payload says which reading
+            applied so a blank graph is never ambiguous.
+
+            The host list is validated the same way /api/host validates an address, and the
+            set is capped: an unbounded IN list is a way to make the database do arbitrary
+            work from an HTTP request.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            tracked = [h.strip() for h in (query.get("host") or []) if h.strip()]
+            for addr in tracked:
+                if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
+                    return self._error(400, f"host does not look like an address: {addr!r}")
+            if len(tracked) > 64:
+                return self._error(400, "too many hosts to track (limit 64)")
+            try:
+                with self._with_client() as client:
+                    if tracked:
+                        payload = assets_mod.top_edges_for(client, tracked, hours=hours)
+                        # top_edges_for answers "which edges touch these hosts"; the graph view
+                        # also wants the node set even when an edge is missing, so the
+                        # selection is echoed back for the UI to draw as selected.
+                        payload.setdefault("tracked", tracked)
+                    else:
+                        payload = assets_mod.connection_graph(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("graph unavailable: %s", exc)
+                return self._json({
+                    "available": False, "nodes": [], "edges": [],
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "data_error": str(exc),
+                })
+            self._json(payload)
+
+        def _zeeklog(self, query: dict) -> None:
+            """Per-log detail for ONE Zeek log, for click-through from the Zeek view.
+
+            Answers "which hosts appear in ssl.log, and how often" -- the drill-down a bar
+            chart needs to be useful. `log` names a label from soc.ZEEK_LOGS; anything else is
+            rejected rather than interpolated, because the table name reaches the SQL text.
+            """
+            label = (query.get("log") or [""])[0].strip()
+            if not label:
+                return self._error(400, "log is required, e.g. /api/zeeklog?log=ssl")
+            allowed = dict(soc_mod.ZEEK_LOGS)
+            table = allowed.get(label)
+            if not table:
+                return self._error(
+                    400, f"unknown log {label!r}; expected one of: {', '.join(sorted(allowed))}"
+                )
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            try:
+                with self._with_client() as client:
+                    payload = soc_mod.zeek_log_hosts(client, table=table, label=label, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("zeek log detail unavailable: %s", exc)
+                return self._json({
+                    "available": False, "points": [], "log": label,
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "data_error": str(exc),
+                })
+            self._json(payload)
 
         def _host(self, query: dict) -> None:
             addr = (query.get("addr") or [""])[0].strip()

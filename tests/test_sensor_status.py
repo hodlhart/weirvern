@@ -358,9 +358,12 @@ def test_no_orphan_placeholder_elements_remain():
     #   h-hint: hint text set once in the markup
     #   ev-notice-card: shown/hidden, not populated
     structural = {"view-overview", "view-anomalies", "view-evidence", "view-host",
-                  "view-about", "view-models", "view-netflow", "view-zeek", "view-health",
+                  "view-network", "view-models", "view-netflow", "view-zeek", "view-health",
                   "tabs", "statusline", "h-hint",
-                  "ev-notice-card"}
+                  # Deliberately structural, each for a stated reason:
+                  #   ev-notice-card: shown/hidden, never filled with data
+                  #   zk-drill-card: the Zeek drill-down wrapper, likewise shown/hidden
+                  "ev-notice-card", "zk-drill-card"}
 
     orphans = {i for i in ids
                if i not in referenced and i not in scripts and i not in structural}

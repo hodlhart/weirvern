@@ -16,7 +16,10 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = pathlib.Path("/home/hart/Documents/flowforge")
+# Derived from this file's own location, never hardcoded: an absolute path to a working
+# directory is both a portability bug and a leak of the local directory name (which still
+# carries the pre-rename project name).
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "weirvern" / "zeek_features.py"
 TEST = "tests/test_zeek_summary_runnable.py"
 

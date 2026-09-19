@@ -647,6 +647,11 @@ function showView(name) {
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") loadModels().then(clearError).catch(showError);
+  // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
+  // query per Zeek host table, and firing that every 15s in the background would put load on
+  // ClickHouse for a panel nobody is looking at.
+  if (name === "host") loadAssets().then(clearError).catch(showError);
+  if (name === "network") loadNetwork().then(clearError).catch(showError);
   // The SOC views load on demand rather than on every refresh cycle: they run several
   // aggregate queries each, and firing them every 15s in the background would put load on
   // ClickHouse for panels nobody is looking at.
@@ -712,6 +717,54 @@ document.addEventListener("DOMContentLoaded", () => {
     // control for a one-step intent, which the Models view already settled for this codebase.
     if (i) i.addEventListener("change", () => fn().then(clearError).catch(showError));
   }
+
+  // ── Assets inventory controls ──────────────────────────────────────────────
+  // The search filters the CACHED payload rather than refetching: a ClickHouse aggregate
+  // behind every keystroke makes typing laggy on a busy segment, and the inventory for one
+  // window does not change between keystrokes.
+  const asSearch = document.getElementById("as-search");
+  if (asSearch) asSearch.addEventListener("input", (e) => {
+    ASSETS_STATE.search = e.target.value;
+    renderAssets();
+  });
+  const asSort = document.getElementById("as-sort");
+  if (asSort) asSort.addEventListener("change", (e) => {
+    ASSETS_STATE.sort = e.target.value;
+    renderAssets();
+  });
+  const asHours = document.getElementById("as-hours");
+  if (asHours) asHours.addEventListener("change", (e) => {
+    ASSETS_STATE.hours = Number(e.target.value) || 24;
+    loadAssets().then(clearError).catch(showError);
+  });
+  const asReload = document.getElementById("as-reload");
+  if (asReload) asReload.addEventListener("click", () => loadAssets().then(clearError).catch(showError));
+
+  // ── Network graph controls ─────────────────────────────────────────────────
+  const nwHours = document.getElementById("nw-hours");
+  if (nwHours) nwHours.addEventListener("change", (e) => {
+    ASSETS_STATE.hours = Number(e.target.value) || 24;
+    loadNetwork().then(clearError).catch(showError);
+  });
+  const nwReload = document.getElementById("nw-reload");
+  if (nwReload) nwReload.addEventListener("click", () => loadNetwork().then(clearError).catch(showError));
+  const nwClear = document.getElementById("nw-clear");
+  if (nwClear) nwClear.addEventListener("click", () => {
+    ASSETS_STATE.tracked = [];
+    loadNetwork().then(clearError).catch(showError);
+  });
+  // The edge filter re-renders from the cached payload; it is a view control, not a query.
+  const nwMin = document.getElementById("nw-min");
+  if (nwMin) nwMin.addEventListener("input", (e) => {
+    ASSETS_STATE.minEdges = Number(e.target.value) || 1;
+    renderNetwork();
+  });
+  const nwLabels = document.getElementById("nw-labels");
+  if (nwLabels) nwLabels.addEventListener("change", (e) => {
+    ASSETS_STATE.showNames = e.target.checked;
+    renderNetwork();
+  });
+
   refreshAll();
   startAuto(15);
 });

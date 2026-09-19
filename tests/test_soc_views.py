@@ -133,6 +133,7 @@ def test_soc_js_only_calls_helpers_that_exist():
 
     known = set(re.findall(r"^function ([A-Za-z_$][\w$]*)", app, re.M))
     known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", app, re.M))
+    assets = strip_comments((SOC_JS.parent / "assets.js").read_text())
     known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", app, re.M))
     known |= set(re.findall(r"^function ([A-Za-z_$][\w$]*)", soc, re.M))
     # `async function` must be matched separately: the plain pattern requires `function` at
@@ -140,6 +141,10 @@ def test_soc_js_only_calls_helpers_that_exist():
     # That is a false positive of exactly the kind that gets an allow-list widened.
     known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", soc, re.M))
     known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", soc, re.M))
+    # assets.js defines the Zeek drill-down soc.js calls when a log-volume bar is clicked.
+    known |= set(re.findall(r"^function ([A-Za-z_$][\w$]*)", assets, re.M))
+    known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", assets, re.M))
+    known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", assets, re.M))
     # Parameters of every arrow function, and of object-literal methods used as callbacks
     # (`onClick: (r) => ...` leaves `r` as a parameter, not a call).
     for params in re.findall(r"\(([^()]*)\)\s*=>", soc):

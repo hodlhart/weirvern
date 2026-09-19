@@ -205,6 +205,16 @@ ZEEK_LOGS: list[tuple[str, str]] = [
 ]
 
 
+# Which column holds the peer address in each Zeek log. NOT uniformly `src_addr`:
+# `zeek_dhcp` keys its peers as client_addr/server_addr, and assuming src_addr there is the
+# mistake that made `zeek_window_summary_sql` unrunnable (Code 47), so the mapping is explicit
+# and this comment records why it exists.
+_ADDR_COLUMN: dict[str, str] = {
+    "zeek_dhcp": "client_addr",
+    "zeek_ldap_search": "src_addr",
+}
+
+
 def zeek_counts(client, hours: int = 24) -> dict:
     """Row count per Zeek table, so a chart can show which logs are actually arriving.
 
@@ -347,6 +357,46 @@ def ingestion_series(client, hours: int = 24) -> dict:
         return _unavailable("no pipeline table could be read")
     return {"available": True, "reason": "", "hours": hours, "bucket_s": width,
             "series": stages}
+
+
+def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int = 25) -> dict:
+    """Which hosts appear in ONE Zeek log, and how often, for click-through from the Zeek view.
+
+    WHY THIS IS THE DRILL-DOWN. A bar chart of row counts per log answers "is ssl.log busy"
+    and nothing else. The question an analyst actually has next is "busy with WHOM", and that
+    needs the address column -- which differs per table (`zeek_dhcp` keys its peers as
+    client_addr, not src_addr), so the column is looked up rather than assumed.
+
+    THE TABLE NAME COMES FROM A CALLER-SUPPLIED LABEL, so it is resolved through ZEEK_LOGS
+    rather than interpolated. `web.py` does the same lookup, and this second check is the
+    backstop: a table name reaching an f-string is how a read-only endpoint becomes a way to
+    query arbitrary relations.
+    """
+    import logging as _logging
+
+    resolved = dict(ZEEK_LOGS).get(label)
+    if resolved != table:
+        # The label and the table must agree with ZEEK_LOGS, or something is passing us
+        # unvalidated input.
+        raise ValueError(f"log {label!r} does not map to table {table!r} in ZEEK_LOGS")
+
+    addrcol = _ADDR_COLUMN.get(table, "src_addr")
+    try:
+        rows = client.query(
+            f"SELECT toString({addrcol}) AS addr, count() AS n "  # noqa: S608 - table from ZEEK_LOGS, not input
+            f"FROM weirvern.{table} "
+            "WHERE ts >= now() - INTERVAL %(h)s HOUR "
+            f"AND toString({addrcol}) != '' AND toString({addrcol}) != '-' "
+            "GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
+            parameters={"h": hours, "n": limit},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        _logging.getLogger(__name__).warning("zeek_log_hosts failed for %s: %s", table, exc)
+        return _unavailable(f"{label} query failed: {type(exc).__name__}", log=label, points=[])
+    return {
+        "available": True, "reason": "", "log": label, "table": table, "hours": hours,
+        "points": [{"addr": str(r[0]), "n": int(r[1] or 0)} for r in rows],
+    }
 
 
 def table_sizes(client, limit: int = 14) -> dict:
