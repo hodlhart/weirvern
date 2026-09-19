@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from weirvern.admin import status as status_mod  # noqa: E402
 
-NOW = datetime.datetime(2026, 9, 18, 21, 0, 50, tzinfo=datetime.timezone.utc)
+NOW = datetime.datetime(2026, 9, 18, 21, 0, 50, tzinfo=datetime.UTC)
 
 
 def _row(mode: str, seconds_ago: float, **overrides) -> dict:

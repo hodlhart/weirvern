@@ -1332,6 +1332,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="intercept ONLY this host (repeatable). Strongly advised for a "
                         "first run: a whole segment makes every device depend on this "
                         "process, so a crash is an outage for all of them")
+    s.add_argument("--all", action="store_true", dest="all_hosts",
+                   help="intercept EVERY host the sweep finds on the segment. Requires "
+                        "--seconds or a hard timeout, and refuses a segment larger than /22: "
+                        "this process becomes the path for everything it intercepts, so a "
+                        "crash is an outage for all of it. Use when the segment has no "
+                        "interactive users (servers only), where a brief loss is tolerable")
     s.add_argument("--seconds", type=int,
                    help="intercept for this long, then restore (default: until Ctrl-C)")
     s.set_defaults(func=cmd_intercept)
@@ -1418,6 +1424,39 @@ def cmd_prune(args: argparse.Namespace) -> int:
         return EXIT_FAIL
     return EXIT_OK
 
+
+
+def _resolve_host_scope(args: argparse.Namespace) -> tuple[set[str], str | None]:
+    """Which hosts to intercept: a named set, an explicit "all", or a refusal to explain.
+
+    Returns (only, refusal). `refusal` is None when the combination is valid.
+
+    WHY THIS IS A FUNCTION RATHER THAN A FEW LINES INSIDE cmd_intercept: it is a SAFETY gate. It
+    is what stops an unbounded whole-segment intercept -- where every host on the VLAN has this
+    process in its path and nothing ends the run except someone remembering to stop it. A gate
+    that can only be exercised with a live NIC is a gate that does not get tested, and this one
+    used to sit after interface resolution, so a missing interface masked it entirely.
+
+    The two rules:
+
+      * `--all` and `--hosts` are contradictory. One says "only these", the other "all of them";
+        silently honouring either leaves the operator believing the other took effect.
+      * `--all` REQUIRES `--seconds`. Without a bound, every intercepted host stays dependent on
+        this process until the session ends.
+    """
+    only = {h.strip() for h in (args.hosts or []) if h.strip()}
+    if not getattr(args, "all_hosts", False):
+        return only, None
+
+    if only:
+        return set(), "  --all intercepts every host; --hosts names specific ones. Pick one."
+    if not args.seconds:
+        return set(), (
+            "  --all requires --seconds N: intercepting a whole segment without an\n"
+            "  automatic end means every host stays dependent on this process until\n"
+            "  someone stops it. Give it a bound."
+        )
+    return set(), None
 
 
 def cmd_intercept(args: argparse.Namespace) -> int:
@@ -1522,7 +1561,10 @@ def cmd_intercept(args: argparse.Namespace) -> int:
                 print("  no obviously free address found; choose --our-ip deliberately")
         print()
 
-    only = {h.strip() for h in (args.hosts or []) if h.strip()}
+    only, refusal = _resolve_host_scope(args)
+    if refusal is not None:
+        print(refusal)
+        return EXIT_FAIL
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
                              gateway_ip=gateway, only=only or None)
     if plan is None:

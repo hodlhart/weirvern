@@ -30,12 +30,15 @@ accepted responsibility for undoing it.
 """
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
+import signal
 import socket
 import struct
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from weirvern.admin.watchdog import FailOpenWatchdog, Interception
 from weirvern.admin.weirnet import (
@@ -452,15 +455,53 @@ class Intercept:
         return self._started and self.watchdog is not None and self.watchdog.active > 0
 
     def wait(self, stop_after_s: float | None = None) -> None:
-        """Block until interrupted, or for `stop_after_s`."""
+        """Block until interrupted, or for `stop_after_s`.
+
+        WHY THIS INSTALLS SIGNAL HANDLERS. `KeyboardInterrupt` alone covers Ctrl-C in a terminal,
+        which is NOT how this runs in a cluster: `kubectl exec` is a client, and when that client
+        is disconnected -- the terminal closes, the SSH session drops, the runner script is killed
+        -- the signal goes to the CLIENT. The in-pod process kept running, orphaned, holding a
+        poisoned segment in memory with its watchdog armed.
+
+        That is not theoretical. It happened: an intercept from an earlier run was found still
+        alive in the pod while the address and policy rules had already been torn down by someone
+        else's cleanup. A live intercept in that state can re-poison the segment at its next
+        refresh, which is exactly what a failed sensor must never be able to do.
+
+        SIGTERM and SIGHUP are therefore handled as the same request as Ctrl-C: unwind through the
+        `finally` that restores every forged mapping. The handler only sets a flag -- restoring
+        synchronously inside a signal handler would run arbitrary code at an arbitrary point.
+        """
+        stop = False
+
+        def _request_stop(_signum, _frame) -> None:
+            nonlocal stop
+            stop = True
+
+        installed: list[tuple[signal.Signals, Any]] = []
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                previous = signal.signal(sig, _request_stop)
+                installed.append((sig, previous))
+            except (ValueError, OSError):
+                # Not the main thread, or the platform lacks the signal. Ctrl-C still works, so
+                # this is a degradation rather than a failure -- and saying so is better than
+                # claiming a handler that is not there.
+                logger.debug("could not install a handler for signal %s", sig)
+
         deadline = None if stop_after_s is None else time.time() + stop_after_s
         try:
-            while True:
+            while not stop:
                 time.sleep(0.5)
                 if deadline is not None and time.time() >= deadline:
                     return
         except KeyboardInterrupt:
             return
+        finally:
+            for sig, previous in installed:
+                # Restoring the previous handler must never mask the real outcome of the run.
+                with contextlib.suppress(ValueError, OSError):
+                    signal.signal(sig, previous)
 
     def __enter__(self) -> Intercept:
         self.start()
