@@ -1,0 +1,115 @@
+# The privileged initContainer that sets weir mode's three sysctls.
+#
+# WHY AN INIT CONTAINER AT ALL. A pod cannot declare these sysctls for itself: the API server
+# rejects pod-level sysctls whenever hostNetwork is true ("may not be specified when
+# 'hostNetwork' is true"). And holding CAP_NET_ADMIN is not enough either, because Kubernetes
+# mounts /proc/sys read-only for a normal container -- measured: "cannot create
+# /proc/sys/net/ipv4/conf/all/send_redirects: Read-only file system", from a container that
+# DOES hold the capability. Privileged gets a writable /proc; nothing less does.
+#
+# WHY IT IS PRIVILEGED AND THE ZEEK CONTAINER IS NOT. This container exists to write three
+# files and exit. It needs no network device, no capture socket, and no long lifetime. The
+# sniffer parses untrusted input from the wire continuously, so it is the process worth
+# keeping unprivileged; a compromise there should not come with the ability to rewrite node
+# networking. The privilege is scoped to the step that needs it.
+#
+# WHY init AND NOT A KUBECTL STEP. `kubectl apply -k overlays/weir/` is then the entire
+# procedure. An initContainer also runs on every zeek container start, including restarts, so
+# a node reboot or a kubelet restart cannot leave the sensor believing it is intercepting with
+# forwarding disabled -- which is the failure that takes a LAN down.
+#
+# WHY IT VERIFIES AFTER WRITING. Writing is not the same as taking. The container re-reads all
+# three, and exits non-zero if any did not stick, which keeps the DaemonSet pod in
+# Init:Error rather than starting a sensor that would blackhole traffic. It also refuses to
+# proceed if a sysctl cannot be read at all, since "cannot read" must never be treated as
+# "already correct".
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: zeek
+  namespace: weirvern
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: weir-sysctls
+          image: busybox:1.36
+          # The sensor image has no shell tools beyond busybox ash and, notably, no `ip`; using
+          # busybox here keeps this step independent of the zeek image entirely, so changing the
+          # sniffer's base cannot break bringing up its networking.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # Read a value, or fail loudly. `|| echo` defaults are deliberately NOT used:
+              # a missing file means we cannot verify, and silently assuming the wanted value
+              # is how a broken intercept looks healthy.
+              read_sysctl() {
+                if [ ! -r "/proc/sys/$1" ]; then
+                  echo "[weir-init] FATAL: cannot read /proc/sys/$1" >&2
+                  exit 1
+                fi
+                tr -d '\n' < "/proc/sys/$1"
+              }
+
+              echo "[weir-init] configuring forwarding for in-path intercept"
+
+              # ip_forward: without it the ARP mapping is forged and the traffic is DROPPED.
+              echo 1 > /proc/sys/net/ipv4/ip_forward
+
+              # rp_filter: reverse-path filtering discards relayed packets whose return route
+              # differs from the arrival interface. `all` is set, and so is the capture
+              # interface's own value, because the per-interface setting overrides `all` and
+              # the capture NIC is exactly where a mismatch would be dropped.
+              echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
+              for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+                case "$i" in
+                  */all/rp_filter|*/default/rp_filter) ;;
+                  *) echo 0 > "$i" 2>/dev/null || true ;;
+                esac
+              done
+
+              # send_redirects: the kernel otherwise tells the victim to send directly, undoing
+              # the intercept a few packets in. Also set per-interface for the same reason.
+              echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects
+              for i in /proc/sys/net/ipv4/conf/*/send_redirects; do
+                case "$i" in
+                  */all/send_redirects|*/default/send_redirects) ;;
+                  *) echo 0 > "$i" 2>/dev/null || true ;;
+                esac
+              done
+
+              # Verify rather than assume: a write that silently did not take is the whole
+              # failure this container exists to prevent.
+              ipf=$(read_sysctl net/ipv4/ip_forward)
+              rpf=$(read_sysctl net/ipv4/conf/all/rp_filter)
+              srd=$(read_sysctl net/ipv4/conf/all/send_redirects)
+              echo "[weir-init] ip_forward=$ipf rp_filter=$rpf send_redirects=$srd"
+
+              if [ "$ipf" != "1" ] || [ "$rpf" != "0" ] || [ "$srd" != "0" ]; then
+                echo "[weir-init] FATAL: sysctls did not take." >&2
+                echo "[weir-init] FATAL: refusing to start an intercept that cannot forward." >&2
+                exit 1
+              fi
+              echo "[weir-init] forwarding path configured"
+          securityContext:
+            # Privileged because it edits node-wide networking; the alternative (NET_ADMIN
+            # alone) is insufficient -- /proc/sys is mounted read-only without it.
+            #
+            # `allowPrivilegeEscalation` is NOT set to false here, and that is not an
+            # oversight. The API server rejects the combination outright -- verified:
+            #
+            #   cannot set `allowPrivilegeEscalation` to false and `privileged` to true
+            #
+            # which is correct in spirit: the privilege IS the escalation this container needs.
+            # The containment is scope -- three writes, then exit -- rather than a flag.
+            privileged: true
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import db, ensemble
+from weirvern import attack, db, ensemble
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain
@@ -31,7 +31,11 @@ from weirvern.models.detectors import (
     GradientBoostingDetector,
     IsolationForestDetector,
 )
-from weirvern.zeek_features import zeek_window_sql
+from weirvern.zeek_features import (
+    index_protocol_records,
+    zeek_protocol_records_sql,
+    zeek_window_sql,
+)
 
 logger = logging.getLogger("weirvern.worker")
 
@@ -200,9 +204,23 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         return out
 
     zeek_idx: dict[tuple, dict] = {}
+    protocol_by_host: dict[str, list[dict]] = {}
     try:
         z_cols, z_rows = db.fetch_rows_named(client, zeek_window_sql(since))
         zeek_idx = index(z_cols, z_rows)
+        # The Tier-2 PROTOCOL records, for the ATT&CK mapping. Fetched separately from the
+        # aggregated features because the mapping needs individual facts (a share path, an RPC
+        # operation) rather than counts -- aggregating first would discard the evidence. A
+        # failure here must not stop detection: an alert without a technique is still an alert.
+        try:
+            p_cols, p_rows = db.fetch_rows_named(client, zeek_protocol_records_sql(since))
+            protocol_by_host = index_protocol_records(p_rows, p_cols)
+            logger.info("ATT&CK mapping: %d hosts with protocol records",
+                        len(protocol_by_host))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not load protocol records for ATT&CK mapping "
+                           "(mapping will use volumetric evidence only): %s", exc)
+            protocol_by_host = {}
         if not zeek_idx:
             logger.warning(
                 "Zeek summary is empty for this sweep, so every Zeek feature is imputed. "
@@ -272,6 +290,22 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             "feature_contributions": exp["feature_contributions"],
             "baseline_comparison": exp["baseline_comparison"],
         })
+        # ── ATT&CK techniques supported by this window's measurements ──────────
+        #
+        # Mapped from the SAME feature row the explanation used, so the technique and the
+        # numbers cannot disagree -- an alert claiming T1046 while the row shows 400 ports
+        # and 5 MB would mean two different rows had been read.
+        #
+        # Two sources, and they are genuinely different evidence:
+        #   * the volumetric row (`f`)          -> discovery, exfiltration, DNS tunnelling
+        #   * the Zeek records for this host    -> admin shares, DCE/RPC, Kerberos, NTLM, TLS
+        # The Zeek half is frequently empty because the join is sparse; that yields fewer
+        # techniques, which is correct. It must never be rendered as "no lateral movement".
+        techniques = attack.map_techniques(f)
+        zeek_rows = protocol_by_host.get(v["src_addr"]) or []
+        techniques += attack.map_zeek_techniques(zeek_rows)
+        v["attack_techniques"] = [m.as_dict() for m in techniques]
+        v["attack_label"] = attack.label(techniques)
         rows.append([
             datetime.now(), v["window_start"], f.get("window_end"), v["src_addr"],
             v["anomaly_score"], v["confidence"], v["isolation_forest_score"],
@@ -295,6 +329,9 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         "dbscan_score", "baseline_score", "model_agreement",
         "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
         "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
+        # The ATT&CK columns. Positional insert: these must stay LAST and in the same order as
+        # the values appended above, or every value after them lands in the wrong column.
+        "attack_techniques", "attack_label",
     ])
     logger.info("🚨 %d anomalies recorded", len(rows))
     return fresh

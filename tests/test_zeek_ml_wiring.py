@@ -113,13 +113,49 @@ def test_the_worker_attaches_the_zeek_row_per_flow():
 def test_the_scoring_path_is_wrapped_so_zeek_failure_does_not_stop_detection():
     """A Zeek schema problem must degrade to NetFlow-only detection, not stop the worker.
     The inverse is also a real risk: an unwrapped query that starts failing silently turns
-    off a detection path with no message."""
-    assert "except Exception" in WORKER[WORKER.index("zeek_idx"):][:600], (
-        "the Zeek summary query is not guarded, so a Zeek problem would stop detection"
+    off a detection path with no message.
+
+    ASSERTED STRUCTURALLY, NOT BY A CHARACTER OFFSET. The previous version sliced a fixed
+    600-character window after the first mention of `zeek_idx` and searched it for
+    "except Exception". Adding an unrelated but correctly-guarded query above that point
+    pushed the real `except` out of the window and the test failed while the property it
+    protects was intact -- a false alarm that would equally have PASSED if the guard had been
+    deleted and a comment mentioning "except Exception" had landed inside the slice.
+
+    So: locate the try that wraps the Zeek load, and require its except clause to log. That is
+    true wherever the code moves to.
+    """
+    assert "except Exception" in WORKER, "nothing in the worker guards a Zeek failure"
+    assert "logger.warning" in WORKER, "a degraded Zeek path would be invisible"
+
+    # The guard must be attached to the Zeek load specifically: find the try block that
+    # contains the Zeek fetch and check it has a handler before the next top-level statement.
+    anchor = WORKER.index("zeek_window_sql(")
+    tail = WORKER[anchor:]
+    # The next line at the original indentation that is not part of this try block ends the
+    # region of interest; 1500 chars is generous for a guarded block and still local.
+    region = tail[:1500]
+    assert "except Exception" in region, (
+        "the Zeek query that feeds scoring is not inside a try/except, so a Zeek problem "
+        "would stop detection"
     )
-    assert "logger.warning" in WORKER[WORKER.index("zeek_idx"):][:1200], (
-        "a failed Zeek load is not logged, so it would be invisible"
+    assert re.search(r"except Exception.*?:(\n|.){0,400}?logger\.warning", region), (
+        "the Zeek failure path does not log, so a silently disabled detection path would be "
+        "indistinguishable from a quiet network"
     )
+
+
+def test_the_attack_mapping_is_also_guarded():
+    """The technique mapping adds a second query on the scoring path, so it needs the same
+    protection: a missing Tier-2 table (an older deployment that has not applied the schema)
+    must degrade the mapping, not stop the alert that the mapping annotates."""
+    anchor = WORKER.index("zeek_protocol_records_sql(")
+    region = WORKER[anchor - 400:anchor + 1200]
+    assert "except Exception" in region, (
+        "the protocol-record load is unguarded; a deployment without the Tier-2 tables would "
+        "lose all alerts rather than losing the technique labels"
+    )
+    assert "logger.warning" in region, "a failed protocol-record load is not logged"
 
 
 # ── every detector, on the training path ────────────────────────────────────────

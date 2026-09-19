@@ -15,6 +15,7 @@ from datetime import datetime
 import requests
 from clickhouse_connect.driver.client import Client
 
+from weirvern import attack
 from weirvern.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,25 @@ def format_message(verdict: dict) -> str:
                f"z={verdict.get('primary_deviation_zscore', 0.0)}")
     if why:
         lines.append(f"why: {why}")
+
+    # ── ATT&CK technique, when one is supported ────────────────────────────────
+    #
+    # Placed AFTER the measurements, deliberately. Ordering the technique above them would
+    # invite an analyst to read the MITRE ID as the finding and stop -- "T1046" is a
+    # classification of the measurements below it, not evidence in its own right.
+    #
+    # Two cases, and only one of them gets a line:
+    #
+    #   * matches present   -> the id, name and confidence, preceded by "consistent with". An
+    #                          alert is read on a phone, and an unhedged technique name reads
+    #                          as a conclusion.
+    #   * no matches        -> NOTHING is appended. An explicit "no technique matched" line
+    #                          would be noise on every alert that lacks one, and worse, it
+    #                          would appear to clear the window. Absence of a mapping is
+    #                          absence of a mapping; the alert already says what was measured.
+    techniques = verdict.get("attack_techniques") or []
+    if techniques:
+        lines.append(f"ATT&CK: {attack.summarise(techniques)}")
     return "\n".join(lines)
 
 

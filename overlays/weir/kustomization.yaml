@@ -1,65 +1,67 @@
-# weir-mode overlay: grants the sensor what in-path intercept needs.
+# weir-mode overlay: what in-path intercept needs, and nothing more.
 #
-# WHY THIS IS A SEPARATE OVERLAY AND NOT AN EDIT TO 32-zeek.yaml
+# WHY A SEPARATE OVERLAY. The default deployment is `loch` (passive) and its securityContext
+# is deliberately tight: all capabilities dropped, NET_RAW re-added because libpcap cannot open
+# a raw socket without it, no privilege escalation, seccomp RuntimeDefault, no service-account
+# token. `weir` needs strictly more. More privilege is not something to add to the default
+# because a mode might want it, so it is opt-in:
 #
-# The default deployment is loch (passive) and its securityContext is deliberately tight:
-# all capabilities dropped, NET_RAW re-added because libpcap cannot open a raw socket
-# without it, no privilege escalation, seccomp RuntimeDefault, no service-account token.
-# weir mode needs strictly MORE than that, and more privilege is not something to add to
-# the default just because a mode might want it. So it is opt-in:
-#
-#     kubectl apply -k k8s/                  # loch: NET_RAW only
-#     kubectl apply -k overlays/weir/        # weir: NET_RAW + NET_ADMIN + sysctls
+#     kubectl apply -k k8s/               # loch: NET_RAW only
+#     kubectl apply -k overlays/weir/     # weir: NET_RAW + NET_ADMIN + sysctls
 #
 # The overlay lives OUTSIDE k8s/ deliberately: kustomize refuses a kustomization that
-# references a directory containing itself ("cycle detected"), and an overlay nested under
-# its own base triggers exactly that.
+# references a directory containing itself ("cycle detected"), and an overlay nested under its
+# own base triggers exactly that.
 #
-# WHAT IS ACTUALLY REQUIRED, measured on the test box rather than assumed:
+# ── THE SYSCtlS, WHICH ARE THE WHOLE DIFFICULTY ────────────────────────────────────────────
 #
-#   CAP_NET_ADMIN      to write the forwarding sysctls. Without it every write to
-#                      /proc/sys is refused and weir cannot work at all.
+# `weir` needs three sysctls. Each has its own failure symptom, and all three are wrong by
+# default on this node:
 #
-#   A WRITABLE /proc/sys   The non-obvious part. The sensor pod's /proc/sys is mounted
-#                      READ-ONLY, so even a container holding NET_ADMIN fails with
-#                      "Read-only file system" -- which reads like a file permission
-#                      problem rather than a mount restriction. VERIFIED: the same
-#                      sysctls write fine from the LXC itself, so this is a pod-level
-#                      restriction, not a host limitation. The pod securityContext
-#                      sysctls below are what bypass it.
+#   net.ipv4.ip_forward=1            Without it we forge the ARP mapping and then DROP the
+#                                    traffic: every intercepted host leaves the network, and
+#                                    it presents as a hardware fault.
+#   net.ipv4.conf.all.rp_filter=0    Reverse-path filtering discards relayed packets whose
+#                                    return route differs from the arrival interface: one-way
+#                                    traffic and hanging TCP connects.
+#   net.ipv4.conf.all.send_redirects=0
+#                                    The kernel tells the victim to send directly, silently
+#                                    undoing the intercept a few packets in. The MITM "works",
+#                                    then quietly stops.
 #
-#   Three sysctls       ip_forward must be 1, and BOTH rp_filter and send_redirects must
-#                      be 0. On the test box they were rp_filter=2 and send_redirects=1,
-#                      i.e. wrong for weir -- so weir would have failed even with the
-#                      capability granted. Each has its own symptom:
+# A pod CANNOT declare them for itself. The API server refuses pod-level sysctls whenever
+# hostNetwork is true -- verified against the live cluster:
 #
-#                        rp_filter != 0   -> the reverse-path check drops relayed packets
-#                                            whose return route differs: one-way traffic,
-#                                            hanging TCP connects
-#                        send_redirects=1 -> the kernel tells the victim to send directly,
-#                                            silently undoing the intercept a few packets
-#                                            in. The MITM "works", then quietly stops.
+#     spec.template.spec.securityContext.sysctls[0].name: Invalid value:
+#     "net.ipv4.ip_forward": may not be specified when 'hostNetwork' is true
 #
-# HOW THE SYSCtls GET SET, AND WHY NOT HERE
+# And holding CAP_NET_ADMIN is NOT sufficient, because Kubernetes mounts /proc/sys READ-ONLY
+# for a normal container. Measured from the running zeek container, which holds NET_RAW:
 #
-# They cannot be declared in this overlay. The API server rejects pod-level sysctls
-# whenever hostNetwork is true -- verified against the live cluster:
+#     mount: proc on /proc/sys type proc (ro,nosuid,nodev,noexec,relatime)
+#     write: cannot create /proc/sys/net/ipv4/conf/all/send_redirects: Read-only file system
 #
-#   spec.template.spec.securityContext.sysctls[0].name: Invalid value:
-#   "net.ipv4.ip_forward": may not be specified when 'hostNetwork' is true
+# That error reads like a permissions problem, which is why it was worth measuring: the
+# capability is present and the mount is the blocker.
 #
-# Since this DaemonSet shares the node's network namespace, the sysctls ARE the node's, so
-# they are set on the node. Either persistently in the LXC/node, or immediately:
+# ── HOW IT IS SOLVED, ALSO MEASURED ────────────────────────────────────────────────────────
 #
-#   sysctl -w net.ipv4.ip_forward=1
-#   sysctl -w net.ipv4.conf.all.rp_filter=0
-#   sysctl -w net.ipv4.conf.all.send_redirects=0
+# An initContainer with `privileged: true` gets a writable /proc/sys. Measured in a probe pod
+# on the node (same-value writes, so nothing changed):
 #
-# `weirvern intercept --dry-run` verifies all three and refuses to poison if any is wrong,
-# so a missed setting fails safe and loudly rather than taking the segment down.
+#     /proc/sys is NOT a read-only mount here
+#     send_redirects <- 0   OK      (now 0)
 #
-apiVersion: kustomize.config.k8s.io/v1beta1
+# Because the pod shares the node's network namespace, the container's /proc/sys IS the node's,
+# so this configures the sensor's own host from inside the manifest -- no manual node step.
+#
+# (Two earlier runs of that probe reported all three keys REFUSED while a single write to the
+# same file reported OK. That was a defect in the probe -- `net.ipv4.ip_forward` was used as a
+# filesystem path instead of `net/ipv4/ip_forward` -- and reporting it as a finding would have
+# been a conclusion about the mechanism drawn from the instrument. Hence the re-measurement.)
+
 kind: Kustomization
+apiVersion: kustomize.config.k8s.io/v1beta1
 
 resources:
   - ../../k8s
@@ -69,3 +71,28 @@ patches:
     target:
       kind: DaemonSet
       name: zeek
+
+  - path: zeek-weir-sysctl-init.yaml
+    target:
+      kind: DaemonSet
+      name: zeek
+
+  # The WORKER runs the intercept -- `weirvern intercept` is a control-plane command, so it
+  # executes in the worker pod, and the sensor's NET_ADMIN does nothing for it. See the patch
+  # for why NET_RAW and NET_ADMIN are both needed and neither implies the other.
+  - path: worker-weir-caps.yaml
+    target:
+      kind: Deployment
+      name: weirvern-worker
+
+# The sysctls are set by the initContainer rather than by hand so that the overlay is
+# self-contained: `kubectl apply -k overlays/weir/` is the entire procedure, and there is no
+# second step to forget. The initContainer runs before every zeek container start (including
+# restarts), so a node reboot or a kubelet restart cannot leave the sensor in weir mode with
+# forwarding off.
+#
+# WHY THE INIT CONTAINER IS PRIVILEGED AND THE ZEEK CONTAINER IS NOT: the privilege is needed
+# only to write three files, once, before zeek starts. It is not needed to capture, parse, or
+# forward -- forwarding is a kernel function, not a container one. Keeping the long-running
+# sniffer unprivileged means a compromise of the process that parses untrusted network data
+# does not come with the ability to rewrite node networking.

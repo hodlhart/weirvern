@@ -337,3 +337,55 @@ def test_the_models_route_does_not_require_the_health_probe_path_to_change():
         "the liveness probe now touches the database, so a slow database would restart "
         "the GUI and hide the real problem"
     )
+
+
+# ── the ATT&CK block, which is part of the same "explain what was measured" contract ──
+
+def test_the_anomalies_table_has_a_header_for_every_cell():
+    """The technique column was added to the renderer; a missing <th> misaligns the whole
+    table silently, because HTML does not complain about a row wider than its header."""
+    html = (WEB / "index.html").read_text()
+    m = re.search(r'<table id="overview-anomalies">\s*<thead>(.*?)</thead>', html, re.S)
+    assert m, "the overview anomalies table was not found"
+    headers = len(re.findall(r"<th", m.group(1)))
+
+    app = (WEB / "app.js").read_text()
+    # The row is built as a list of el("td", ...) inside one tr for #overview-anomalies.
+    region = app[app.index('querySelector("#overview-anomalies tbody")'):]
+    region = region[:region.index("at.appendChild(tr)")]
+    cells = region.count('el("td"')
+    assert headers == cells, (
+        f"{headers} header cells but {cells} data cells -- the table would render misaligned"
+    )
+
+
+def test_the_technique_block_renders_evidence_not_just_the_id():
+    """A bare MITRE ID is not checkable. The block must show the measurements that produced
+    it, the confidence, and what a network sensor can see for that technique."""
+    app = (WEB / "app.js").read_text()
+    for field in ("attack_techniques", "t.evidence", "t.confidence", "t.network_visibility"):
+        assert field in app, f"the GUI does not render {field}"
+
+
+def test_the_gui_renders_nothing_when_no_technique_matched():
+    """THE KEY ASSERTION. An empty state or an explicit "no technique matched" line would read
+    as an all-clear. Absence of a mapping is not evidence of absence, so the block is simply
+    not drawn -- and the check is that the render is guarded by a non-empty list."""
+    app = (WEB / "app.js").read_text()
+    region = app[app.index("parseTechniques(d.anomaly.attack_techniques)"):]
+    region = region[:600]
+    assert "if (techs.length)" in region, (
+        "the technique block is not guarded by a non-empty list, so it may render an empty "
+        "frame that reads as a clearance"
+    )
+
+
+def test_malformed_technique_json_does_not_blank_the_evidence_view():
+    """The techniques ride in a String column. A parse failure must degrade the technique
+    block, not throw and take out the evidence the analyst opened the page for."""
+    app = (WEB / "app.js").read_text()
+    assert "function parseTechniques" in app
+    region = app[app.index("function parseTechniques"):]
+    region = region[:500]
+    assert "catch" in region, "parseTechniques does not guard against malformed JSON"
+    assert "return []" in region, "a parse failure must yield an empty list, not throw"

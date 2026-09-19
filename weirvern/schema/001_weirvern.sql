@@ -178,7 +178,22 @@ CREATE TABLE IF NOT EXISTS netflow_anomalies
     feature_contributions     String,
     baseline_comparison       String,
     detected_by_models        String,
-    severity                  LowCardinality(String)
+    severity                  LowCardinality(String),
+    -- ATT&CK techniques supported by this window's measurements, as JSON: a list of
+    -- {id, name, tactic, confidence, evidence, network_visibility}. Empty array when nothing
+    -- matched, which is the common case.
+    --
+    -- STORED, NOT COMPUTED AT READ TIME, and that is a deliberate choice. The mapping is a
+    -- judgement about a window of traffic; recomputing it in the GUI would let a display
+    -- change history, and an analyst comparing an alert from last week against today's screen
+    -- needs the two to agree. It also means a later change to the thresholds does not rewrite
+    -- what the system said at the time -- the alert that was sent stays the alert that was
+    -- sent.
+    attack_techniques         String DEFAULT '[]',
+    -- The compact label for list views: "T1046 (high), T1018 (medium)". Denormalised on
+    -- purpose: the list renders 100 rows, and parsing 100 JSON blobs to build a table cell
+    -- would be work the database can do once at write time.
+    attack_label              String DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(detected_at)
 PARTITION BY toYYYYMM(detected_at)

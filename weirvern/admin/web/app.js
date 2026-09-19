@@ -49,6 +49,20 @@ function fmtBytes(n) {
  * A duration in seconds as a compact age. Mirrors status._human_age in the backend so
  * the same figure does not render two different ways in the TUI and the GUI.
  */
+// Techniques arrive as JSON in one column. Parsed defensively: a malformed value must
+// degrade the technique block, not blank the whole evidence view -- the evidence is what the
+// analyst came for.
+function parseTechniques(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [];
+  } catch (e) {
+    return [];
+  }
+}
+
 function fmtAge(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
   if (s < 60) return s + "s";
@@ -218,7 +232,7 @@ async function loadOverview() {
   const at = document.querySelector("#overview-anomalies tbody");
   at.replaceChildren();
   if (!data.anomalies.length) {
-    emptyRow(at, 5, "No anomalies yet. Detection needs a baseline — expect a few hours of traffic first.");
+    emptyRow(at, 6, "No anomalies yet. Detection needs a baseline — expect a few hours of traffic first.");
   } else {
     for (const a of data.anomalies) {
       const tr = el("tr", { class: "clickable",
@@ -228,6 +242,7 @@ async function loadOverview() {
         el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
         el("td", {}, [sevCell(a.severity)]),
         el("td", { class: "mono", text: a.baseline_comparison || a.primary_deviation_feature || "—" }),
+        el("td", { class: "mono attack-cell", text: a.attack_label || "—" }),
       ]);
       at.appendChild(tr);
     }
@@ -442,9 +457,42 @@ async function loadEvidence(addr, start, end) {
     if (d.anomaly.baseline_comparison) {
       verdict.appendChild(el("p", { text: d.anomaly.baseline_comparison }));
     }
-  }
+    // ── ATT&CK techniques ────────────────────────────────────────────────────
+    //
+    // Rendered with the evidence and the confidence, never as a bare ID. "T1046" alone
+    // reads as a finding; "consistent with T1046 (high) -- 300 distinct destination ports
+    // (threshold 100)" can be checked, argued with, and dismissed. Only the second is
+    // usable, and only the second is honest.
+    //
+    // NOTHING is rendered when no technique matched. An empty frame or an explicit "no
+    // technique" line would read as a clearance, and absence of a mapping is not that.
+    const techs = parseTechniques(d.anomaly.attack_techniques);
+    if (techs.length) {
+      const box = el("div", { class: "attack" }, [
+        el("div", { class: "muted", text: "MITRE ATT&CK — hypotheses supported by these measurements" }),
+      ]);
+      for (const t of techs) {
+        box.appendChild(el("div", { class: "attack-row" }, [
+          el("span", { class: "mono attack-id", text: t.id }),
+          el("span", { text: t.name }),
+          el("span", { class: "attack-meta", text: `${t.tactic} · ${t.confidence} confidence` }),
+        ]));
+        if (t.evidence && t.evidence.length) {
+          box.appendChild(el("ul", { class: "attack-evidence" },
+            t.evidence.map((e) => el("li", { class: "muted", text: e }))));
+        }
+        if (t.network_visibility) {
+          box.appendChild(el("div", {
+            class: "muted attack-vis",
+            text: `network visibility: ${t.network_visibility}`,
+            }));
+          }
+        }
+        verdict.appendChild(box);
+      }
+    }
 
-  const s = d.flow_summary;
+    const s = d.flow_summary;
   const stats = document.getElementById("ev-stats");
   stats.replaceChildren();
   if (s) {
