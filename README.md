@@ -676,6 +676,44 @@ signal without corroboration alerts at `medium` — it is not escalated and not
 silenced. This gate exists because measurement showed a 90-false-positive storm
 without it.
 
+### MITRE ATT&CK mapping
+
+Every anomaly is mapped to the ATT&CK techniques its measurements actually support, and the
+mapping is presented as a **hypothesis, never a finding**:
+
+```
+ATT&CK: consistent with T1046 Network Service Discovery (high); also T1018
+  - 300 distinct destination ports (threshold 100)
+  - port entropy 7.90 (threshold 3.0)
+  - 0 bytes out, so no data was moved
+  - network visibility: STRONG. Many destination ports from one source with little or no
+    return traffic is the signature itself.
+  - 284.0 bytes out is not evidence of exfiltration
+```
+
+The evidence lines are the point. "T1046" alone reads as a conclusion and stops an analyst
+looking; the measurements can be checked, argued with, and dismissed. The `network visibility`
+line states what a tap can and cannot see for that technique, and the block is **not rendered
+at all** when nothing matched -- an empty frame or an explicit "no technique" line would read as
+a clearance, and absence of a mapping is not absence of an attack.
+
+**18 techniques** are mapped, across Discovery, Lateral Movement, Execution, Exfiltration,
+Command and Control, Credential Access, Defense Evasion and Initial Access. Techniques that
+require endpoint telemetry (process injection, credential dumping, registry changes) are
+deliberately excluded and listed with the reason, so "not mapped" is never confused with
+"not observable".
+
+The rules are weighted towards the ways a mapping **overstates**, because that is the damaging
+direction. Each of these is a test:
+
+| Would be wrong | Why it does not fire |
+|---|---|
+| Busy server → port scan | The zero/low-byte qualifier is required. 400 ports moving 5 MB is a server. |
+| 900-port scan of one host → Active Scanning | T1595 is reconnaissance of a **range**; measured in hosts, not ports. |
+| Any DCE/RPC call → service execution | Only a service-control **operation** (`CreateServiceW`) counts. A `NetShareEnum` is low-confidence lateral movement at most. |
+| Large transfer → exfiltration | A **ratio** is required. A 50 MB two-way transfer is a backup, not exfil. |
+| Many DNS queries → tunnelling | Entropy **and** a failure ratio. Normal browsing is high-volume, low-entropy, answered. |
+
 ### What the models see: NetFlow *and* Zeek
 
 Every model trains and scores on features from **both** sensors. The NetFlow half describes
@@ -689,6 +727,9 @@ half describes **what the traffic is**, which volume alone cannot express:
 | Service variety | distinct protocols, and novelty against the host's own baseline | A host that begins speaking something it never has |
 | TLS | distinct JA4 fingerprints, modern-version ratio | A client changing TLS stack, or downgrading |
 | Zeek's own signals | notice and weird counts | A second opinion on the same traffic |
+| SSH authentication | attempt counts and failure **ratio** | The clearest brute-force signal on a tap — a failed password is a few bytes each way, indistinguishable from a keepalive in NetFlow |
+| HTTP shape | URI entropy, error ratio, POST ratio | Encoded or high-entropy paths are how simple C2 hides and how data is smuggled through a query string; a host whose requests are overwhelmingly 404 is enumerating paths |
+| File transfer profile | count, mean/max size, MIME variety | NetFlow byte totals cannot distinguish one 500 MB transfer from 500 transfers of 1 MB |
 
 Two design points matter when reading the numbers:
 
@@ -698,6 +739,11 @@ Two design points matter when reading the numbers:
   most host-windows are defined by empty features, which is a fact about the deployment
   rather than about the network. Absence is therefore distinguishable from "observed, and
   nothing unusual".
+- **Every ingested table feeds the models.** An audit found `zeek_http`, `zeek_files` and
+  `zeek_ssh` were mapped, ingested, stored — and read by no query, no feature and no view.
+  Three tables' worth of traffic collected and discarded while the deployment looked complete.
+  The feature set went from 18 to 33, and `tests/test_ml_table_coverage.py` keeps every table
+  read by *something*.
 - **The join is LEFT, on `(5-minute window, host)`.** An inner join would silently drop every
   host Zeek did not see; joining on host alone would compare a five-minute window against all
   of that host's history. `weirvern status` reports the actual coverage, and the Adaptive

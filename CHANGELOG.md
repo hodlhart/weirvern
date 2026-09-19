@@ -1,5 +1,86 @@
 # Changelog
 
+## Unreleased — ATT&CK mapping, a full schema audit, and the tables that fed nothing
+
+### Added — MITRE ATT&CK technique mapping
+
+Every anomaly is mapped to the techniques its measurements support: 18 techniques with a
+confidence, the evidence that produced each one, and an explicit statement of what a network
+sensor can see for it. Wired into the alert, the scoring path, the API and the GUI evidence
+view, and **stored on the anomaly row** rather than recomputed for display — a later threshold
+change must not rewrite what the system said at the time.
+
+Presented as a hypothesis throughout. The no-match string is "no ATT&CK technique matched these
+measurements", never "benign", and the technique block is not rendered when nothing matched,
+because an empty frame reads as a clearance. `attack.coverage()` reports the techniques
+deliberately NOT mapped (process injection, credential dumping, registry edits) with the reason,
+so "not mapped" is never confused with "not observable".
+
+The rules are weighted against overstatement, which is the damaging direction: a busy server
+with many ports and real volume is not a scan; a 900-port probe of ONE host is T1046 and not
+range reconnaissance; an ordinary DCE/RPC call is not service execution; a large two-way
+transfer is not exfiltration; high DNS volume without entropy and failures is not tunnelling.
+
+### Fixed — three tables were ingested and read by nothing
+
+A full schema audit (`Scripts/audit_schema.py`) checks the whole project in three directions:
+columns nothing writes, tables nothing reads, names the code reads that nothing produces. It
+found more than the feature it was written for.
+
+- **`zeek_http` (327 rows), `zeek_files` (321) and `zeek_ssh` (155) were collected, stored, and
+  read by no query, no feature and no view.** Data gathered for the life of the deployment and
+  discarded, while every individual file looked complete. The feature set went from 18 to 33.
+- **Four ATT&CK rules read column names no query produces** — `dns_query_count`,
+  `kerberos_distinct_services`, `orig_bytes`, `ssh_auth_attempts` — so each read 0.0 and the
+  rule could never fire. They looked like working coverage. Same defect as the dead
+  `ja3`/`ja3s` columns and the six Tier-2 tables that had no mapper: a name that exists in one
+  place and is produced nowhere.
+- **The `or` fallbacks that hid it.** `_f(row.get("zeek_dns_count")) or _f(row.get("dns_query_count"))`
+  is worse than a wrong name: 0 is falsy, so a host with a legitimate zero fell through to a
+  name that does not exist, and the code *appeared* to handle two sources.
+
+### Added — schema migrations that reach an existing database
+
+`005_attack_techniques.sql`. Adding a column to a `CREATE TABLE IF NOT EXISTS` does nothing on a
+database that already has the table — measured: the deployed cluster returned
+`Unknown expression identifier attack_techniques` with the column plainly listed in the schema
+file. Works on a fresh install, fails on an upgrade: the worst combination. Schema changes to an
+existing table now go in a numbered `ALTER` migration, and `tests/test_schema_migrations.py`
+requires it.
+
+### Fixed — bugs in the instruments, not the system
+
+Recorded because each produced a confident wrong answer about the code:
+
+- The audit reported nine working columns as dead; they are written by materialized views in the
+  same `.sql` file and the check only searched Python.
+- It reported the whole GoFlow2 flow mapper as phantom; those names are the collector's JSON
+  schema, not our DDL.
+- It reported removed `or` fallbacks as live, because the mapper's docstrings *quote* the wrong
+  names they replaced while explaining why. The sixth place in this project an assertion had to
+  distinguish code from prose about code.
+- `tests/test_attack_wiring.py` asserted that the *invented* names exist — written against the
+  same wrong names the mapper used, so it could not fail for the reason it existed.
+- A `str.index("keys AS (")` matched that phrase inside an explanatory comment, producing a
+  four-character slice that made every assertion against it fail.
+
+### Added — in-cluster `weir` mode
+
+`kubectl apply -k overlays/weir/` is now the entire procedure:
+
+- a **privileged init container** sets the three sysctls, because the API server rejects
+  pod-level sysctls when `hostNetwork` is true *and* holding `NET_ADMIN` is insufficient —
+  Kubernetes mounts `/proc/sys` read-only for a normal container
+- the worker gains `NET_RAW` + `NET_ADMIN`, `hostNetwork` (measured: without it the pod sees
+  `['lo','eth0']` and cannot reach the capture NIC), and `dnsPolicy: ClusterFirstWithHostNet`
+  (the default for a hostNetwork pod cannot resolve cluster Services)
+- **`iproute2` added to the worker image** — `ip` was missing, so `weir` could never have worked
+  in-cluster with every capability granted; it would have failed at the first `ip` call, after
+  the preflight had passed
+- `runAsUser: 0` at **both** pod and container level, because Kubernetes drops added
+  capabilities for non-root containers: measured `CapBnd 0x3000` with `CapEff 0x0` until the
+  user was changed
+
 ## Unreleased — in-path intercept, Zeek in the models, and JA4+ removed
 
 ### Added — in-path intercept (`weir` mode)
