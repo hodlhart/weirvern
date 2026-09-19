@@ -244,8 +244,12 @@ def test_insert_column_order_matches_the_schema_ddl():
 
     for log_type, (table, _fn) in ingester.ZEEK_MAPPERS.items():
         bare = table.split(".")[-1]
+        # The schema qualifies some tables (`weirvern.zeek_kerberos`) and not others
+        # (`zeek_conn`), so the optional prefix is required. Without it this test silently
+        # reported "no CREATE TABLE" for every Tier-2 table rather than comparing them --
+        # which is the failure mode it exists to catch, turned on the test itself.
         m = re.search(
-            rf"CREATE TABLE IF NOT EXISTS\s+{re.escape(bare)}\s*\((.*?)\)\s*ENGINE",
+            rf"CREATE TABLE IF NOT EXISTS\s+(?:\w+\.)?{re.escape(bare)}\s*\((.*?)\)\s*ENGINE",
             ddl, re.S,
         )
         assert m, f"no CREATE TABLE for {bare}"

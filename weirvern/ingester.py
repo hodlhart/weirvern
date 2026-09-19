@@ -433,6 +433,183 @@ def map_zeek_weird(rec: dict[str, str]) -> dict[str, Any] | None:
     }
 
 
+def _epoch_or_zero(val: Any) -> datetime:
+    """A Zeek `time` field -> datetime, with the epoch itself as the "unset" value.
+
+    Zeek writes unset time fields as `unset_field`, which is a string, so it cannot be fed to
+    `datetime.fromtimestamp` at all. It ALSO writes a literal 0 for some unset times, which
+    would otherwise become 1970-01-01 and look like real data from a clock-skewed host --
+    a Kerberos ticket that expired 56 years ago is not a finding, it is a missing value.
+
+    Returning the epoch for both cases keeps the column non-null (the schema is not Nullable)
+    while making "absent" obvious in a query: `ticket_till > now()` is simply false for both,
+    which is the correct semantics for a ticket we have no expiry for.
+    """
+    v = zeek_value(val if isinstance(val, str) else "")
+    if v is None:
+        return datetime.fromtimestamp(0)
+    f = _safe_float(v, 0.0)
+    return datetime.fromtimestamp(f) if f > 0 else datetime.fromtimestamp(0)
+
+
+def map_zeek_kerberos(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek kerberos.log record -> zeek_kerberos row.
+
+    The only source for Kerberoasting and AS-REP roasting: `request_type` plus the service
+    principal and the client principal together describe "who asked for a ticket to what",
+    which conn.log cannot express at all -- it sees a TCP flow to port 88 and nothing more.
+
+    TWO FIELDS ARE RENAMED HERE, and the rename is deliberate. Zeek declares these as
+    `from` and `till`; the schema column names are `ticket_from` and `ticket_till` because
+    `from` is a SQL keyword and a column named for it invites quoting bugs in every query
+    written against the table. The mapping is the ONE place that has to know both names, so
+    getting it wrong here is a permanently empty column -- verified against the `&log`
+    declarations in the installed Zeek source rather than against documentation.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+
+    # Zeek writes "unset_field" or "-" for booleans it did not set; anything else means true.
+    def _bool(key: str) -> int:
+        v = zeek_value(rec.get(key, ""))
+        if v is None:
+            return 0
+        return 0 if v.lower() in ("f", "false", "0") else 1
+
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "request_type": rec.get("request_type") or "",
+        "client": rec.get("client") or "",
+        "service": rec.get("service") or "",
+        "success": _bool("success"),
+        # `error_code` is NOT read: Zeek 9.0.0 declares it `&optional` without `&log`, so it
+        # never reaches the log. `error_msg` carries the same signal as text.
+        "error_msg": rec.get("error_msg") or "",
+        "ticket_from": _epoch_or_zero(rec.get("from")),
+        "ticket_till": _epoch_or_zero(rec.get("till")),
+        "cipher": rec.get("cipher") or "",
+        "forwardable": _bool("forwardable"),
+        "renewable": _bool("renewable"),
+    }
+
+
+def map_zeek_dce_rpc(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek dce_rpc.log record -> zeek_dce_rpc row.
+
+    PsExec, WMI and scheduled-task execution are the canonical lateral-movement paths, and all
+    three arrive as DCE/RPC to a named pipe. In conn.log this is indistinguishable from
+    ordinary SMB file traffic; `endpoint` + `operation` is what names the action.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        # Zeek logs rtt as an `interval` -- seconds, possibly fractional.
+        "rtt": _safe_float(rec.get("rtt"), 0.0),
+        "named_pipe": rec.get("named_pipe") or "",
+        "endpoint": rec.get("endpoint") or "",
+        "operation": rec.get("operation") or "",
+    }
+
+
+def map_zeek_smb_mapping(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek smb_mapping.log record -> zeek_smb_mapping row.
+
+    The SHARE PATH. conn.log reports `service=smb` and nothing else, so access to ADMIN$ or
+    C$ -- the share-write primitive of nearly every lateral-movement tool -- is invisible
+    without this. `path` includes hostnames and sometimes usernames, which is why the table
+    carries a shorter TTL than the flow tables.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "path": rec.get("path") or "",
+        "service": rec.get("service") or "",
+        "native_file_system": rec.get("native_file_system") or "",
+        "share_type": rec.get("share_type") or "",
+    }
+
+
+def map_zeek_smb_files(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek smb_files.log record -> zeek_smb_files row.
+
+    Action-level file semantics: a WRITE followed by a remote service start is tool transfer;
+    a burst of RENAME and DELETE across many files is ransomware. Those are facts about
+    actions, and no byte-count feature can express them.
+
+    FIELD NAME: Zeek declares the basename as `name`, not `filename` -- confirmed from the
+    `&log` declaration in base/protocols/smb/main.zeek. The column is called `filename` for
+    consistency with zeek_files, so the rename happens here. Reading `filename` from the
+    record would have yielded a permanently empty basename column while `path` populated,
+    which is the kind of defect that looks like "Zeek just isn't logging it".
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "fuid": rec.get("fuid") or "",
+        "action": rec.get("action") or "",
+        "path": rec.get("path") or "",
+        "filename": rec.get("name") or "",
+        "size": _safe_int(rec.get("size"), 0),
+        "prev_name": rec.get("prev_name") or "",
+    }
+
+
+def map_zeek_ntlm(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek ntlm.log record -> zeek_ntlm row.
+
+    username + hostname + domainname is a bipartite identity graph, and pass-the-hash is
+    visible only in its shape: ONE credential appearing against MANY hosts inside a short
+    window. No single field shows that, which is why the aggregation (ntlm_identity_daily,
+    fed by a materialized view) exists rather than a query over raw rows.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    v = zeek_value(rec.get("success", ""))
+    success = 0 if v is None or v.lower() in ("f", "false", "0") else 1
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "username": rec.get("username") or "",
+        "hostname": rec.get("hostname") or "",
+        "domainname": rec.get("domainname") or "",
+        "success": success,
+    }
+
+
 ZEEK_MAPPERS = {
     "conn": ("weirvern.zeek_conn", map_zeek_conn),
     "dns": ("weirvern.zeek_dns", map_zeek_dns),
@@ -444,6 +621,15 @@ ZEEK_MAPPERS = {
     "files": ("weirvern.zeek_files", map_zeek_files),
     "ssh": ("weirvern.zeek_ssh", map_zeek_ssh),
     "weird": ("weirvern.zeek_weird", map_zeek_weird),
+    # Tier 2, the identity and lateral-movement set. The schema for these landed in
+    # 004_zeek_identity.sql, and until a mapper exists the log file is read, discarded, and
+    # the six tables stay empty -- which is exactly the failure mode a schema alone cannot
+    # reveal, because an empty table looks like a quiet network.
+    "kerberos": ("weirvern.zeek_kerberos", map_zeek_kerberos),
+    "dce_rpc": ("weirvern.zeek_dce_rpc", map_zeek_dce_rpc),
+    "smb_mapping": ("weirvern.zeek_smb_mapping", map_zeek_smb_mapping),
+    "smb_files": ("weirvern.zeek_smb_files", map_zeek_smb_files),
+    "ntlm": ("weirvern.zeek_ntlm", map_zeek_ntlm),
 }
 
 # Insert column order per Zeek table (first key is the row's identity column).
@@ -467,6 +653,19 @@ ZEEK_COLUMNS = {
             "auth_success", "auth_attempts", "direction", "client", "server"],
     "weird": ["ts", "uid", "src_addr", "src_port", "dst_addr", "dst_port", "name",
               "noticed", "peer"],
+    # Tier 2. These orders must match BOTH the mapper's dict and the CREATE TABLE column
+    # order in 004_zeek_identity.sql -- the writer builds a positional INSERT from them.
+    "kerberos": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "request_type", "client",
+                 "service", "success", "error_msg", "ticket_from", "ticket_till", "cipher",
+                 "forwardable", "renewable"],
+    "dce_rpc": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "rtt", "named_pipe",
+                "endpoint", "operation"],
+    "smb_mapping": ["ts", "uid", "src_addr", "dst_addr", "path", "service",
+                    "native_file_system", "share_type"],
+    "smb_files": ["ts", "uid", "src_addr", "dst_addr", "fuid", "action", "path",
+                  "filename", "size", "prev_name"],
+    "ntlm": ["ts", "uid", "src_addr", "dst_addr", "username", "hostname", "domainname",
+             "success"],
 }
 
 
@@ -586,6 +785,20 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
                 continue
             values = line.split(separator)
             rec = dict(zip(fields, values, strict=False))
+            # NORMALISE ZEEK'S UNSET SENTINEL BEFORE THE MAPPER SEES IT.
+            #
+            # Zeek writes `-` for any field it did not set. Storing that literally makes an
+            # absent value indistinguishable from a value that IS a hyphen, and it is the
+            # kind of thing that only shows up in answers: a hunt for "requests with no
+            # Referer" returns nothing while "requests whose Referer is -" returns the real
+            # set, and nobody notices which one they ran.
+            #
+            # This was a measured bug, not a hypothetical: `map_zeek_http` normalised `host`
+            # and `resp_mime` explicitly, and left `referrer` and `user_agent` storing the
+            # literal `-`, because each mapper had to remember to do it per field. Doing it
+            # once here means a mapper cannot forget -- and the per-field normalisations were
+            # left in place, since they are now no-ops that document the intent.
+            rec = {k: ("" if v == "-" else v) for k, v in rec.items()}
             row = mapper(rec)
             if row is None:
                 continue

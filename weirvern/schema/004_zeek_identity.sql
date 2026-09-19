@@ -31,7 +31,29 @@
 -- PRIVACY: this set is a deliberate step change. `ntlm.username`, `kerberos.client` and
 -- `smb_files.path` convert this corpus from "traffic telemetry" into "identifiable persons
 -- and their files". That is the cost of the asset-identity analytics, and it is paid on
--- purpose -- but it is why these tables carry SHORTER retention than the flow tables.
+-- purpose.
+--
+-- RETENTION POLICY, stated accurately. An earlier version of this comment claimed these
+-- tables "carry SHORTER retention than the flow tables", and that claim was FALSE: the flow
+-- tables are 7 days (zeek_conn/dns/ssl) while these run 30-90, because the flow tables are
+-- short for a VOLUME reason -- they are enormous -- and not for a privacy one. Comparing
+-- against them would have justified 7 days here, which is shorter than a lateral-movement
+-- campaign and would delete the evidence before the investigation that needs it.
+--
+-- The rule actually applied is a bound justified by the PII surface and the analytic window,
+-- per table, shortest where the exposure is greatest:
+--
+--   zeek_smb_files    30d  verbatim paths AND filenames -- the highest exposure here, and
+--                          the only one of the five that records WHAT was touched
+--   zeek_smb_mapping  60d  share paths, which name hosts and departments
+--   zeek_ntlm         60d  username <-> host <-> domain, the identity graph itself
+--   zeek_kerberos     90d  principals and SPNs; campaigns are measured in weeks, so this is
+--                          the shortest window that still answers the question it exists for
+--   zeek_dce_rpc      90d  RPC metadata only: no username, no path, no payload. Nothing in
+--                          this table identifies a person on its own.
+--
+-- Every table here is BOUNDED. An unbounded PII table is the failure mode that matters, and
+-- tests/test_zeek_tier2.py asserts both the bound and the ordering above.
 
 -- ── kerberos ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS weirvern.zeek_kerberos
