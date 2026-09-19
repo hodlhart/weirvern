@@ -287,3 +287,59 @@ def test_ingest_thread_gets_its_own_client(monkeypatch):
     assert "args=(client, settings.tail_file" not in src, (
         "the ingest thread is still sharing the detection loop's client"
     )
+
+
+def test_env_path_works_without_a_project_checkout():
+    """THE REGRESSION, measured inside the deployed pod.
+
+    `env_path()` called `project_dir()`, which raises when it cannot find a checkout. The
+    container image ships only the package -- no k8s/, no .env.example -- so EVERY command that
+    reads configuration crashed in the cluster, including `weirvern intercept`:
+
+        ✗ unexpected error: could not locate the Weirvern project directory.
+
+    Which meant in-cluster weir mode could not run at all, for a reason unrelated to weir mode.
+    A command needs configuration, not a checkout; in-cluster the configuration arrives through
+    the environment and the ConfigMap.
+
+    Asserted by simulating the container's situation: no project directory anywhere.
+    """
+    from weirvern.admin import cli
+
+    # In the container there is no checkout, so find_project_dir() raises.
+    saved = cli._CACHED_PROJECT_DIR
+    try:
+        cli._CACHED_PROJECT_DIR = None
+
+        def _raise(*_a, **_k):
+            raise FileNotFoundError("no checkout in the image")
+
+        real_find = cli.find_project_dir
+        cli.find_project_dir = _raise
+        try:
+            p = cli.env_path()
+            assert p.name == ".env", f"env_path() returned {p} under a missing checkout"
+            # It must be a RELATIVE fallback, not an absolute path into a checkout that does
+            # not exist -- and crucially it must not raise, which is the whole point. (Whether
+            # the file happens to exist depends on the working directory: the repo root has a
+            # .env, the container's /app does not. Asserting non-existence tested the CWD, not
+            # the fix.)
+            assert not p.is_absolute(), (
+                f"env_path() returned {p}, which points into a checkout that is not there"
+            )
+        finally:
+            cli.find_project_dir = real_find
+    finally:
+        cli._CACHED_PROJECT_DIR = saved
+
+
+def test_env_path_still_returns_the_real_file_when_a_checkout_exists(tmp_path, monkeypatch):
+    """The fix must not break the normal case: a real checkout still resolves to its own .env."""
+    from weirvern.admin import cli
+
+    saved = cli._CACHED_PROJECT_DIR
+    try:
+        cli._CACHED_PROJECT_DIR = tmp_path
+        assert cli.env_path() == tmp_path / ".env"
+    finally:
+        cli._CACHED_PROJECT_DIR = saved

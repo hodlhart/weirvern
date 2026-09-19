@@ -150,7 +150,32 @@ def _interpret_dns_probe(text: str, ok: bool) -> tuple[bool, str]:
 
 
 def env_path() -> Path:
-    return project_dir() / ".env"
+    """`<project>/.env`, or a path that does not exist when there is no checkout.
+
+    WHY THIS TOLERATES A MISSING PROJECT DIRECTORY.
+
+    `project_dir()` raises when it cannot find a checkout, and the container image deliberately
+    ships only the package -- so no k8s/ and no .env.example. Every command that reads
+    configuration was therefore CRASHING inside the cluster, including `weirvern intercept`:
+
+        ✗ unexpected error: could not locate the Weirvern project directory. Looked for a
+          directory containing k8s/kustomization.yaml or .env.example, in: $WEIRVERN_HOME, the
+          ancestors of the current directory, and the repository containing this package.
+
+    That is the same defect this module already documents for `init-db` (see the note on
+    `project_dir` below), reached by a different route: a command that needs CONFIGURATION does
+    not need a CHECKOUT, and in-cluster the configuration comes from the environment and the
+    ConfigMap, never from a `.env` file.
+
+    Returning a non-existent path under the current directory preserves the calling convention
+    exactly -- callers already do `env_path().exists()` or `EnvFile.load(...) if ... .exists()` --
+    without inventing a file that is not there. A deployment with a real checkout is unaffected:
+    `find_project_dir()` succeeds and this returns the same path as before.
+    """
+    try:
+        return project_dir() / ".env"
+    except Exception:  # noqa: BLE001 - ProjectDirNotFound and anything similar
+        return Path(".env")
 
 
 # The image used for one-shot utility pods (the interface probe). Deliberately a
