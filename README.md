@@ -727,6 +727,11 @@ half describes **what the traffic is**, which volume alone cannot express:
 | Service variety | distinct protocols, and novelty against the host's own baseline | A host that begins speaking something it never has |
 | TLS | distinct JA4 fingerprints, modern-version ratio | A client changing TLS stack, or downgrading |
 | Zeek's own signals | notice and weird counts | A second opinion on the same traffic |
+| L2 identity (dhcp) | MAC and server counts, lease duration | The only log with hardware identity — a MAC persists across lease renewals where an IP does not, so a per-host baseline keyed on IP loses its subject every time the lease turns over |
+| Certificates (x509) | self-signed, weak-key and short-validity ratios | `ssl.log` stores fingerprints only, so it cannot say whether the certificate behind one is self-signed, expired, or 1024-bit |
+| Encapsulation (tunnel) | tunnel event and type counts | The existence of the row is the finding; `conn.log` records that a connection is tunnelled but never what kind |
+| QUIC | QUIC share of the host's TLS-like traffic, SNI count | QUIC never reaches `ssl.log`, so a host that moves its C2 to QUIC was previously unnamed |
+| Directory (ldap_search) | search count, distinct filter shapes, result counts | Enumeration is defined by filter content, and no other log exposes directory queries at all |
 | SSH authentication | attempt counts and failure **ratio** | The clearest brute-force signal on a tap — a failed password is a few bytes each way, indistinguishable from a keepalive in NetFlow |
 | HTTP shape | URI entropy, error ratio, POST ratio | Encoded or high-entropy paths are how simple C2 hides and how data is smuggled through a query string; a host whose requests are overwhelmingly 404 is enumerating paths |
 | File transfer profile | count, mean/max size, MIME variety | NetFlow byte totals cannot distinguish one 500 MB transfer from 500 transfers of 1 MB |

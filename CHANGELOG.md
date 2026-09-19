@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased — Tier 3 Zeek logs, chosen from research rather than guesswork
+
+### Added — five logs, and a recorded reason for the eleven that were not
+
+Two independent research passes ranked **every log Zeek 9.0.0 ships**, extracting field lists from
+the v9.0.0 release source tree rather than from documentation. Both independently placed the same
+five at the top. Reports: `Scripts/zeek-log-research-{threat-hunting,ml}.md`; decision and
+reasoning: `Scripts/zeek-log-expansion-decision.md`.
+
+| Log | What it adds that no ingested log can |
+|---|---|
+| `dhcp` | **The only log with L2 identity.** Converts an IP into a MAC and hostname — the pivot that makes every other log attributable after a lease expires, and what lets a per-host baseline key on something stable. A `server_addr` that is not yours is a rogue DHCP server. |
+| `x509` | **Already written and previously unread.** `ssl.log` stores fingerprints only, so it structurally cannot say whether a certificate is self-signed, a CA, expired, short-key, or carries a SAN contradicting the SNI. |
+| `tunnel` | **The existence of a row is the finding** — Zeek's own documentation says so. `conn.log` carries `tunnel_parents` (UIDs) but never the encapsulation type. |
+| `quic` | **Closes a TLS blind spot.** QUIC is encrypted at the transport layer and never reaches `ssl.log`, so a host moving its C2 to QUIC had no TLS record at all. Recovers the SNI and ALPN. |
+| `ldap_search` | **AD enumeration is defined by filter content**, and nothing else exposes directory queries. `result_count` is the numeric signal. |
+
+**Not added, each with a reason recorded:** `signatures` (duplicates the scan signal already
+derived in `flows_aggregated_diversity`), `pe` (no PE traffic on this deployment — a table that
+stays empty is a defect), `unknown_protocols` (gated, and `first_bytes` is **raw payload**, which
+would break the no-payload invariant), `smb_cmd` (Zeek's own header calls it debugging-only), and
+the ten protocols not present on this segment.
+
+Feature set: **33 → 49**.
+
+### Fixed — three bugs in the first draft of this work
+
+- **`x509` cannot be a per-host feature.** The feature join is `(window, src_addr)` and x509 has no
+  `src_addr` — it is keyed on the certificate fingerprint, because one certificate is presented by
+  many hosts and Zeek deduplicates per certificate. A first draft joined it by a constant, which
+  would have given every host a column reading the default *forever*: a feature that is always 0.0
+  and indistinguishable from a quiet network. Caught by `tests/test_ml_table_coverage.py`.
+- **Three of the five were already being written.** `ls /zeek/logs/` on the running sensor is the
+  ground truth: `dhcp` was already producing rows, and `x509`/`quic` are in the default load
+  closure producing none only because no matching traffic had arrived. Adding `@load` lines would
+  have looked like configuration while changing nothing. Only `tunnel` needs an explicit load.
+- **An audit exemption was unsubstantiated, and the audit was made to check it.** The exemption
+  claimed x509 was readable "via the protocol query" so it could be skipped by the unread-table
+  check. It was not. The audit now *verifies* every exemption against the query rather than
+  trusting it — which is the entire point of that check.
+
+### Fixed — the stress test's counters and teardown
+
+Four faults in the harness rather than the product, each of which produced a confident wrong answer:
+
+- `read_forwarding` was imported from `weirnet`, which does not have it — so the teardown raised
+  `ImportError` **during cleanup**, after the intercept ran and before the policy route was
+  removed.
+- `remove_forwarding_path()` takes one argument; the script passed two. `remove_address()` takes
+  three; the script passed two.
+- `ForwardingState` has no `rp_filter` attribute — it carries `rp_filter_off`.
+- **The forwarding counter was read by fixed column position**, and printed EMPTY for a
+  demonstrably working intercept (`ForwDatagrams` was 272,959). The field is now resolved **by
+  name** from `/proc/net/snmp`'s own header line, because the column order is kernel-version
+  dependent.
+- The poison-hold sampler read `ip neigh show` **on the sensor**, which is this host's cache for
+  the target and says nothing about whether the *target* is poisoned. Replaced with the evidence
+  the dataplane proof used: whether the forwarding counter advances between samples, since the
+  kernel only forwards datagrams that arrived because a remote host sent them to our MAC.
+
 ## Unreleased — ATT&CK mapping, a full schema audit, and the tables that fed nothing
 
 ### Added — MITRE ATT&CK technique mapping
