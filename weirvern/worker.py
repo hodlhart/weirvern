@@ -57,20 +57,29 @@ def build_detectors(settings, cfg: ModelConfig):
     ]
 
 
-def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> bool:
+def load_or_train(client: Client, detectors, settings,
+                  cfg: ModelConfig) -> tuple[bool, datetime | None]:
     """Warm start from persisted artifacts; otherwise train cold (lesson:
     v14 deployed while v19 sat on disk — the persisted artifact is the
     source of truth, and each training run records metadata to ml_models).
 
-    Returns True when the detectors are usable afterwards, False when they are
-    not (no data yet). THE BUG THIS FIXES: this used to return None in both
-    cases, so the caller could not distinguish "warm" from "we had nothing to
-    train on". On a fresh deployment the worker starts before any traffic has
-    arrived, training fails with "Not enough data for Isolation Forest (0 rows)",
-    and the caller then stamped last_full_train = now() as though it had
-    succeeded. The next full retrain was therefore deferred by the ENTIRE
-    retrain_every_h window, so a deployment that boots to an empty database
-    detects nothing for up to 6 hours while every pod reports healthy.
+    RETURNS (usable, trained_at). The second element is when the FULL detectors were actually
+    trained, read from their own on-disk metadata; it is None when nothing was trained.
+
+    WHY IT RETURNS A TIMESTAMP AND NOT JUST A BOOL. The caller used to stamp
+    `last_full_train = datetime.now()` whenever the detectors were usable, and a WARM START is
+    usable with no training having happened at all. So every restart reset the retrain clock to
+    now for models whose artifacts could be hours old, and `train_if_due` then correctly
+    declined to retrain for another `retrain_every_h`.
+
+    MEASURED on the deployment: Isolation Forest, Gradient Boosting and DBSCAN were loaded from
+    disk on each restart and had not retrained in 16 hours despite a 6-hour interval, while the
+    Adaptive Baseline -- which has its own fast-refresh path -- trained every few minutes. The
+    stale models raised nothing, looked healthy on the status page, and kept scoring against a
+    baseline trained on an older traffic mix.
+
+    The age now comes from the ARTIFACT rather than from the process's uptime, so a warm start
+    resumes the previous schedule instead of restarting it.
     """
     if_model, gb_model, db_model, bl_model = detectors
     any_loaded = 0
@@ -79,7 +88,12 @@ def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> bool
             any_loaded += 1
     if any_loaded == len(detectors):
         logger.info("All detectors loaded from disk — warm start")
-        return True
+        oldest = _oldest_trained_at(detectors)
+        if oldest is not None:
+            age_h = (datetime.now() - oldest).total_seconds() / 3600
+            logger.info("Artifacts are %.1fh old (retrain due at %dh)",
+                        age_h, settings.retrain_every_h)
+        return True, oldest
 
     end_dt, start_dt = datetime.now(), datetime.now() - timedelta(hours=settings.retrain_window_h)
     trained_any = False
@@ -99,7 +113,46 @@ def load_or_train(client: Client, detectors, settings, cfg: ModelConfig) -> bool
             "the next cycle. This is expected on a fresh deployment and clears "
             "once flows arrive."
         )
-    return trained_any
+        return False, None
+    return True, _oldest_trained_at(detectors)
+
+
+def _oldest_trained_at(detectors) -> datetime | None:
+    """When the OLDEST full detector was trained, taken from the artifacts themselves.
+
+    THE OLDEST, not the newest: the retrain clock must fire when the stalest model is due, so one
+    freshly-trained detector cannot hold a retrain back for the others.
+
+    THE ADAPTIVE BASELINE IS EXCLUDED. It refreshes on its own faster cadence, so including it
+    would pin the clock to a timestamp from minutes ago on every cycle and the full retrain would
+    never become due -- which is exactly the bug being fixed here.
+
+    None when no detector reports a timestamp, which the caller reads as "due". An unknown age
+    must not silently suppress a retrain.
+    """
+    from weirvern.models.detectors import AdaptiveBaselineDetector
+
+    # `trained_at` lives on the detector's METADATA, not on the detector: base.py records it as
+    # a ModelMetadata field at persist time and the load path logs it ("Loaded Isolation Forest
+    # from disk (trained ...)"). Reading `d.trained_at` would have been None for every detector
+    # and the retrain clock would have silently treated everything as due -- the opposite
+    # failure, and a busy one.
+    stamps = []
+    for d in detectors:
+        if isinstance(d, AdaptiveBaselineDetector):
+            continue
+        # ONLY READY DETECTORS COUNT. `ModelMetadata.trained_at` has
+        # `default_factory=datetime.now`, so a detector that has NEVER been trained still reports
+        # a timestamp -- the moment it was constructed. Including it would pin the clock to
+        # "just now" and suppress the retrain this helper exists to schedule: the same
+        # never-retrain failure, arrived at from the other direction. A detector that is not
+        # ready contributes nothing, and if none are ready the answer is None ("due").
+        if not d.is_ready():
+            continue
+        meta = getattr(d, "metadata", None)
+        stamps.append(getattr(meta, "trained_at", None))
+    valid = [s for s in stamps if isinstance(s, datetime)]
+    return min(valid) if valid else None
 
 
 def train_if_due(
@@ -491,9 +544,17 @@ def main() -> None:
                 # before traffic arrives, so the cold train finds 0 rows and
                 # returns False; retrying every cycle then picks it up within
                 # detect_interval_s instead of waiting out retrain_every_h.
-                if load_or_train(client, detectors, settings, cfg):
+                #
+                # `last_full_train` COMES FROM THE ARTIFACTS, NOT FROM now(). A warm start is
+                # usable without anything having been trained, so stamping now() here reset the
+                # retrain clock on every restart: measured on the deployment, Isolation Forest,
+                # Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour
+                # interval, while the Adaptive Baseline refreshed every few minutes because it has
+                # its own path. The stale models raised nothing and kept scoring.
+                usable, trained_at = load_or_train(client, detectors, settings, cfg)
+                if usable:
                     trained_once = True
-                    last_full_train = datetime.now()
+                    last_full_train = trained_at or datetime.now()
                 else:
                     logger.info("No data to train on yet — will retry next cycle "
                                 "(this clears automatically once flows arrive)")

@@ -20,8 +20,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import pytest
-
 from weirvern.models.base import ModelMetadata
 from weirvern.worker import load_or_train
 
@@ -144,11 +142,19 @@ def test_no_detector_passes_formatted_strings_into_metadata_windows():
 class _Detector:
     """A detector that reports whether training succeeded."""
 
-    def __init__(self, name: str, trains: bool, has_scaled: bool = True):
+    def __init__(self, name: str, trains: bool, has_scaled: bool = True, ready: bool = False):
         self.name = name
         self._trains = trains
         self.X_train_unscaled = [1, 2, 3] if has_scaled else None
         self.train_calls = 0
+        # `_oldest_trained_at` consults `is_ready()` so that a detector which has never trained
+        # does not contribute its construction-time `trained_at` and suppress the retrain. The
+        # stub therefore needs the method; readiness is opt-in per test.
+        self._ready = ready
+        self.metadata = type("M", (), {"trained_at": None})()
+
+    def is_ready(self) -> bool:
+        return self._ready
 
     def load(self) -> bool:
         return False
@@ -175,7 +181,8 @@ def test_load_or_train_reports_failure_when_there_is_no_data(monkeypatch):
     dets = [_Detector("if", False, has_scaled=False), _Detector("gb", False),
             _Detector("db", False), _Detector("bl", False)]
 
-    assert load_or_train(MagicMock(), dets, settings, MagicMock()) is False
+    usable, _trained = load_or_train(MagicMock(), dets, settings, MagicMock())
+    assert usable is False
     # The INDEPENDENT detectors must each have been attempted. `if` is asserted
     # separately below because Gradient Boosting is trained from Isolation
     # Forest's scaled output, so it is deliberately skipped when IF produced
@@ -196,7 +203,8 @@ def test_load_or_train_reports_success_when_any_detector_trains(monkeypatch):
     dets = [_Detector("if", False, has_scaled=False), _Detector("gb", False),
             _Detector("db", False), _Detector("bl", True)]
 
-    assert load_or_train(MagicMock(), dets, settings, MagicMock()) is True
+    usable, _trained = load_or_train(MagicMock(), dets, settings, MagicMock())
+    assert usable is True
 
 
 def test_load_or_train_reports_success_on_a_warm_start(monkeypatch):
@@ -207,9 +215,16 @@ def test_load_or_train_reports_success_on_a_warm_start(monkeypatch):
     for d in dets:
         d.load = lambda: True  # type: ignore[method-assign]
 
-    assert load_or_train(MagicMock(), dets, MagicMock(retrain_window_h=72),
-                         MagicMock()) is True
+    # The signature now returns (usable, trained_at) so the caller can resume the retrain
+    # schedule from the ARTIFACT instead of resetting it to now(). The original intent --
+    # "usable, and nothing was retrained" -- is what is asserted.
+    usable, trained_at = load_or_train(MagicMock(), dets, MagicMock(retrain_window_h=72),
+                                       MagicMock())
+    assert usable is True
     assert all(d.train_calls == 0 for d in dets), "warm start must not retrain"
+    # `trained_at` may be None when nothing reports an age, and the caller treats None as "due";
+    # what must NOT happen is a value of ~now() invented for a model that was merely loaded.
+    assert trained_at is None or trained_at <= datetime.now()
 
 
 def test_baseline_history_is_only_persisted_when_training_succeeded(monkeypatch):
@@ -246,22 +261,40 @@ def test_main_loop_retries_cold_start_instead_of_deferring_the_full_window(monke
     import weirvern.worker as w
 
     src = inspect.getsource(w.main)
-    # The latch must be conditional on the training result.
-    assert "if load_or_train(" in src, (
-        "main() must gate trained_once on load_or_train's result, not set it "
-        "unconditionally"
+    # The call now returns (usable, trained_at), and the latch is still gated on the result.
+    # Asserting the exact CALL FORM would make this test fail on a signature change rather than
+    # on the bug it guards, so the intent is asserted instead: the result is bound, and the
+    # latch is conditional on it.
+    assert "= load_or_train(" in src, (
+        "main() must bind load_or_train's result, not call it for effect"
     )
     assert src.count("trained_once = True") == 1, (
         "trained_once should be latched in exactly one place"
     )
-    # And it must be inside the conditional, i.e. indented under it.
-    for line in src.splitlines():
-        if "if load_or_train(" in line:
-            indent = len(line) - len(line.lstrip())
-            break
-    else:
-        pytest.fail("could not locate the load_or_train call in main()")
-    assert indent >= 16, f"the call is not inside the try/if block (indent {indent})"
+    # And the latch must sit INSIDE the conditional on that result.
+    lines = src.splitlines()
+    call_idx = next((i for i, ln in enumerate(lines) if "= load_or_train(" in ln), None)
+    assert call_idx is not None, "could not locate the load_or_train call in main()"
+    call_indent = len(lines[call_idx]) - len(lines[call_idx].lstrip())
+    assert call_indent >= 12, f"the call is not inside the try block (indent {call_indent})"
+    # The `if usable:` guard is the next non-blank line, and the latch is indented under it.
+    guard_idx = next(i for i in range(call_idx + 1, len(lines)) if lines[i].strip())
+    assert lines[guard_idx].strip().startswith("if "), (
+        f"the call's result is not immediately guarded; found {lines[guard_idx].strip()!r}"
+    )
+    guard_indent = len(lines[guard_idx]) - len(lines[guard_idx].lstrip())
+    # The guard is a SIBLING of the call, not nested: the call sits inside `if not trained_once:`
+    # and the result check follows at the same level. Equal indentation is the correct shape, so
+    # asserting `>` here failed on correct code.
+    assert guard_indent == call_indent, (
+        f"the result guard is at indent {guard_indent}, expected {call_indent} (a sibling of the call)"
+    )
+    latch_idx = next(i for i in range(guard_idx + 1, len(lines)) if "trained_once = True" in lines[i])
+    latch_indent = len(lines[latch_idx]) - len(lines[latch_idx].lstrip())
+    assert latch_indent > guard_indent, (
+        "trained_once is not latched inside the result check, so a cold start that found no "
+        "data would still latch it and defer the retrain by the whole window"
+    )
 
 
 # --- 2. one client per thread -------------------------------------------------
