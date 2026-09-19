@@ -239,3 +239,47 @@ def test_the_ci_workflow_runs_the_same_checks_as_the_gate():
     assert "ruff check" in text, "CI does not lint"
     assert "mypy" in text, "CI does not type-check"
     assert "pytest" in text, "CI does not run the tests"
+
+
+def test_changelog_references_resolve_to_real_files():
+    """A path in the CHANGELOG that does not exist makes a reader think THEY broke something.
+
+    The research reports that justify which Zeek logs were added were kept outside the repository
+    while the CHANGELOG cited them, so the citations were unresolvable from a clone. They are now
+    under `docs/research/` and the schema audit under `scripts/`, and this asserts the references
+    keep pointing at real files.
+    """
+    import re
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    # Paths in backticks that look like repository paths.
+    cited = set(re.findall(r"`((?:docs|scripts|tests|weirvern|k8s|overlays|zeek)/[\w./{}-]+)`", changelog))
+    unresolved: list[str] = []
+    for ref in cited:
+        # A brace glob like `research/x-{a,b}.md` names several files.
+        m = re.match(r"^(.*)\{(.+)\}(.*)$", ref)
+        candidates = (
+            [m.group(1) + part + m.group(3) for part in m.group(2).split(",")] if m else [ref]
+        )
+        for candidate in candidates:
+            if (ROOT / candidate).exists():
+                continue
+            # A CHANGELOG legitimately names files that were DELETED -- that is what a changelog
+            # records. Such a line says so in the surrounding sentence, and the check requires
+            # that wording rather than an exemption list: a list would need updating for every
+            # future deletion, and a reader cannot tell a listed name from a live one.
+            # The phrasing varies: "was deleted", "shipped placeholder values" (a past state),
+            # "was included in the kustomization" (past tense about a live-at-the-time file). What
+            # they share is a PAST-TENSE verb within a sentence or two of the path. A live
+            # reference is written in the present ("the manifest lives in k8s/..."), so this
+            # separates the two without an exemption list.
+            window = changelog[max(0, changelog.find(candidate) - 40):][:260]
+            if re.search(
+                r"\b(?:was|were|shipped|had|deleted|removed|dropped|replaced|introduced)\b",
+                window, re.IGNORECASE,
+            ):
+                continue
+            unresolved.append(candidate)
+    assert not unresolved, (
+        "the CHANGELOG cites files that are not in the repository, so a reader cannot follow "
+        f"them: {sorted(unresolved)}"
+    )

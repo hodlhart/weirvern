@@ -6,8 +6,8 @@
 
 Two independent research passes ranked **every log Zeek 9.0.0 ships**, extracting field lists from
 the v9.0.0 release source tree rather than from documentation. Both independently placed the same
-five at the top. Reports: `Scripts/zeek-log-research-{threat-hunting,ml}.md`; decision and
-reasoning: `Scripts/zeek-log-expansion-decision.md`.
+five at the top. Reports: `docs/research/zeek-log-research-{threat-hunting,ml}.md`; decision and
+reasoning: `docs/research/zeek-log-expansion-decision.md`.
 
 | Log | What it adds that no ingested log can |
 |---|---|
@@ -83,7 +83,7 @@ transfer is not exfiltration; high DNS volume without entropy and failures is no
 
 ### Fixed — three tables were ingested and read by nothing
 
-A full schema audit (`Scripts/audit_schema.py`) checks the whole project in three directions:
+A full schema audit (`scripts/audit_schema.py`) checks the whole project in three directions:
 columns nothing writes, tables nothing reads, names the code reads that nothing produces. It
 found more than the feature it was written for.
 
