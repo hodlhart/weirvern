@@ -84,13 +84,13 @@ async function main() {
   const GRAPH_PAYLOAD = {
     available: true, hours: 24,
     nodes: [
-      { id: "192.168.2.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
-      { id: "10.20.40.50", name: "vault", degree: 6, bytes: 182400000 },
-      { id: "192.168.2.1", name: "gateway", degree: 4, bytes: 900000 },
+      { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
+      { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000 },
+      { id: "203.0.113.1", name: "gateway", degree: 4, bytes: 900000 },
     ],
     edges: [
-      { source: "192.168.2.42", target: "192.168.2.1", bytes: 5000000, flows: 900 },
-      { source: "192.168.2.42", target: "10.20.40.50", bytes: 400000, flows: 60 },
+      { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900 },
+      { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60 },
     ],
     total_edges: 25, truncated: true, reason: "",
   };
@@ -132,21 +132,21 @@ async function main() {
 
   // ── feed real-shaped payloads and render ───────────────────────────────────────────────
   const HOSTS = [
-    { addr: "192.168.2.42", name: "workstation.lan", bytes: 7153288, flows: 105190,
+    { addr: "203.0.113.42", name: "workstation.lan", bytes: 7153288, flows: 105190,
       dst_count: 37, services: ["conn", "http", "ssh"], anomalies: 3,
       last_seen: "2026-09-19T07:40:00", bytes_out: 6100000, bytes_in: 1053288 },
-    { addr: "192.168.5.82", name: "", bytes: 2210000, flows: 41000, dst_count: 12,
+    { addr: "192.0.2.20", name: "", bytes: 2210000, flows: 41000, dst_count: 12,
       services: ["conn", "dns"], anomalies: 0, last_seen: "2026-09-19T07:39:10",
       bytes_out: 900000, bytes_in: 1310000 },
   ];
   const NODES = [
-    { id: "192.168.2.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
-    { id: "10.20.40.50", name: "vault", degree: 6, bytes: 182400000 },
-    { id: "192.168.2.1", name: "gateway", degree: 4, bytes: 900000 },
+    { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
+    { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000 },
+    { id: "203.0.113.1", name: "gateway", degree: 4, bytes: 900000 },
   ];
   const EDGES = [
-    { source: "192.168.2.42", target: "192.168.2.1", bytes: 5000000, flows: 900 },
-    { source: "192.168.2.42", target: "10.20.40.50", bytes: 400000, flows: 60 },
+    { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900 },
+    { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60 },
   ];
 
   H.ASSETS_STATE.inventory = {
@@ -163,7 +163,7 @@ async function main() {
   check("the name column shows the resolved name",
         !!firstRow && firstRow.textContent.includes("workstation.lan"));
   check("the address is shown ALONGSIDE the name, not replaced by it",
-        !!firstRow && firstRow.textContent.includes("192.168.2.42"));
+        !!firstRow && firstRow.textContent.includes("203.0.113.42"));
   check("a zero-anomaly host is shown, not hidden",
         !!rows[1] && doc.querySelectorAll("#as-table tbody tr").length === 2);
   check("unreadable sources are named, not silently dropped",
@@ -189,7 +189,7 @@ async function main() {
   const ev = new window.MouseEvent("click", { bubbles: true, shiftKey: true });
   rows[0].dispatchEvent(ev);
   check("shift-click on a row TRACKS instead of drilling",
-        drilled === null && H.ASSETS_STATE.tracked[0] === "192.168.2.42",
+        drilled === null && H.ASSETS_STATE.tracked[0] === "203.0.113.42",
         `drilled=${drilled} tracked=${JSON.stringify(H.ASSETS_STATE.tracked)}`);
 
   // A plain click drills down.
@@ -198,11 +198,11 @@ async function main() {
   H.renderAssets();
   doc.querySelectorAll("#as-table tbody tr")[0]
      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  check("a plain click on a row drills down", drilled === "192.168.2.42", `drilled=${drilled}`);
+  check("a plain click on a row drills down", drilled === "203.0.113.42", `drilled=${drilled}`);
   H.openHost = realOpenHost;
 
   // ── the graph ──────────────────────────────────────────────────────────────────────────
-  // Clear the selection first: the shift-click test above deliberately leaves 192.168.2.42
+  // Clear the selection first: the shift-click test above deliberately leaves 203.0.113.42
   // tracked, and that host is the highest-degree node -- so clicking node[0] would TOGGLE IT
   // OFF instead of adding it, and the failures would look like broken click handling.
   H.ASSETS_STATE.tracked = [];
@@ -268,7 +268,7 @@ async function main() {
         })(), JSON.stringify(H.ASSETS_STATE.tracked));
 
   // Clearing restores the whole graph.
-  H.ASSETS_STATE.tracked = ["192.168.2.42", "10.20.40.50"];
+  H.ASSETS_STATE.tracked = ["203.0.113.42", "192.0.2.40"];
   H.renderNetwork();
   doc.getElementById("nw-clear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 30));

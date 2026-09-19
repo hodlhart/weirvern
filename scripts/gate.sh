@@ -60,6 +60,13 @@ run "shell syntax" sh -n scripts/weir_stress_test.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
 run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 
+# The guard proofs: each reintroduces a real defect and requires the suite to go RED. A test
+# that cannot fail on its own defect is not a guard, and these two are the ones where a silent
+# pass is most costly -- the Zeek feature query returning nothing, and a sentinel counted as a
+# real TLS fingerprint.
+run "guard proof: zeek summary (4 defects)" .venv/bin/python scripts/prove_zeek_summary_guards.py
+run "guard proof: JA4 integrity (5 defects)" .venv/bin/python scripts/prove_ja4_guards.py
+
 # The frontend only, and only the part that can be checked without a browser: `node --check`
 # catches a syntax error in a view file, which otherwise shows up as a tab that does nothing.
 # The DOM-level check (scripts/jsdom_render.js) needs a server and an npm install, so it is run

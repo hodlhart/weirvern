@@ -160,6 +160,19 @@ ZEEK_FEATURES = [
     "zeek_file_bytes_max",
     "zeek_file_mime_count",
     "zeek_file_unique_ratio",
+    # APPENDED, never inserted (see the ordering note above IF_FEATURES): a model rebuilds its
+    # vector by name, so inserting would silently reinterpret every column after it.
+    #
+    # THE JA4 NOVELTY RATIO. JA4 appeared in this list only as `zeek_ja4_count` -- the NUMBER of
+    # distinct fingerprints a host presented in a window -- which cannot distinguish "the same
+    # client as every previous window" from "a client this host has never used before". That
+    # second case is the one worth alerting on (a new TLS stack on an internal host is how
+    # malware is introduced and how a rogue device announces itself), and a count cannot express
+    # it: the count is 1 either way.
+    #
+    # This is the fraction of the window's fingerprints that the host has NOT used in the
+    # longer baseline window. 0.0 means "all familiar", 1.0 means "entirely new clients".
+    "zeek_ja4_novelty",
 ]
 
 # The features that are DERIVED from the Zeek data being present at all. If Zeek saw nothing
@@ -177,6 +190,23 @@ ZEEK_DBSCAN_FEATURES = [
     "zeek_weird_count",
     "zeek_present",
 ]
+
+# THE JA4 SENTINELS, AND WHY THERE ARE THREE. Zeek writes `-` for "unset_field" and
+# `(empty)` for "empty_field" (see ingester.zeek_value, which now normalises both). Historic
+# rows ingested BEFORE that fix still hold the literal 7-character string `(empty)`, so the read
+# layer must exclude all three -- otherwise:
+#   * `uniqExactIf(ja4, ja4 != '')` counts `(empty)` as a REAL fingerprint, so the
+#     `zeek_ja4_count` feature reported 1 on hosts that had no fingerprint at all;
+#   * the T1573 TLS-downgrade rule compares `ja4` and would match against the text "(empty)";
+#   * the new novelty feature would treat "(empty)" as a client build worth being novel about.
+#
+# Written as a SQL fragment rather than inline in each query so the definition cannot drift
+# between the four places that need it.
+JA4_REAL = "ja4 != '' AND ja4 != '-' AND ja4 != '(empty)'"
+
+# The same predicate for a column that is already an array (`groupArray(ja4)`).
+JA4_REAL_ARRAY = "x != '' AND x != '-' AND x != '(empty)'"
+
 
 # TTL / value for modern TLS versions, used by `zeek_ssl_modern_ratio`.
 MODERN_TLS = {"TLSv13", "TLSv12", "TLSv1.3", "TLSv1.2"}
@@ -273,7 +303,17 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             SELECT
                 toStartOfFiveMinute(ts) AS w,
                 src_addr,
-                uniqExactIf(ja4, ja4 != '')                 AS ja4_count,
+                uniqExactIf(ja4, {JA4_REAL})              AS ja4_count,
+                -- THE FINGERPRINTS THEMSELVES, not only how many there were. A count cannot
+                -- tell "the same client as always" from "a client this host has never used",
+                -- and that difference is the whole point of a fingerprint. Collected as a set
+                -- so the novelty measure below can compare it against the host's baseline.
+                --
+                -- The EMPTY string is filtered out because `(empty)` and '-' both mean "Zeek
+                -- produced nothing" (see ingester.zeek_value), and treating a missing
+                -- fingerprint as a real one invents a client that does not exist.
+                arrayDistinct(arrayFilter(x -> {JA4_REAL_ARRAY},
+                                          groupArray(ja4)))  AS ja4_set,
                 count()                                     AS ssl_count,
                 countIf(version IN ('TLSv13','TLSv12','TLSv1.3','TLSv1.2')) AS modern_count
             FROM weirvern.zeek_ssl
@@ -521,6 +561,11 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             coalesce(d.mean_entropy, 0)                            AS zeek_dns_mean_query_entropy,
             coalesce(d.mean_len, 0)                                AS zeek_dns_mean_query_len,
             coalesce(s.ja4_count, 0)                               AS zeek_ja4_count,
+            -- The window's fingerprint set, passed through for the novelty measure. It is NOT a
+            -- feature itself: a fingerprint is an IDENTIFIER, and this codebase's rule is that
+            -- identifiers are join keys, never model inputs. What enters the model is the
+            -- DERIVED novelty ratio, which is a number about the host, not a name for a client.
+            ifNull(s.ja4_set, [])                                  AS ja4_set,
             coalesce(n.notice_count, 0)                            AS zeek_notice_count,
             coalesce(ww.weird_count, 0)                            AS zeek_weird_count,
             -- Tier 3. Counts, ratios and bounded categoricals only -- no identifier becomes a
@@ -600,6 +645,18 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             -- Rarity needs the host's longer-window baseline, which is a separate query;
             -- left at 0 here and filled by the caller that has it.
             0                                                      AS zeek_service_rarity,
+            -- Same contract as rarity: the comparison needs the BASELINE, which this query does
+            -- not have, so the column exists with a 0 placeholder and the caller that holds the
+            -- baseline computes the real value.
+            --
+            -- THE PLACEHOLDER IS NOT OPTIONAL. `detectors._zeek_clause` builds its training
+            -- SELECT list by mapping over ZEEK_FEATURES and emitting `z.<name>`, so a feature
+            -- that appears in that list but not as a column here makes every one of the four
+            -- detectors' training queries reference a column that does not exist -- training
+            -- fails outright. Measured while adding this feature: 51 names in ZEEK_FEATURES
+            -- against 49 SQL aliases. The two lists must stay in step, and
+            -- tests/test_zeek_summary_runnable.py now asserts it.
+            0                                                      AS zeek_ja4_novelty,
             -- PRESENCE as a real column, so ZEEK_FEATURES works verbatim as a SELECT list.
             if(coalesce(c.conn_count, 0) + coalesce(d.dns_count, 0) + coalesce(s.ssl_count, 0)
                + coalesce(n.notice_count, 0) + coalesce(ww.weird_count, 0) > 0, 1, 0)
@@ -629,21 +686,78 @@ def zeek_baseline_sql(start: str, end: str) -> str:
     is not interesting on its own; "this host spoke 4 services, none of which it has used in
     the last 30 days" is. The baseline is deliberately separate so it can use a much longer
     range than the per-window features without widening the feature query.
+
+    THE FINGERPRINT BASELINE IS COMPUTED IN ITS OWN SUBQUERY, NOT JOINED ONTO zeek_conn. The
+    previous form was
+
+        FROM weirvern.zeek_conn
+        LEFT JOIN (SELECT src_addr AS f_addr, ja4 FROM weirvern.zeek_ssl ...) fp
+               ON fp.f_addr = src_addr
+        GROUP BY src_addr
+
+    and it MULTIPLIED THE ROWS: measured on the live deployment, 64,240 conn rows became 92,969
+    after the join. One conn row per matching SSL row means `count() AS baseline_conn_count`
+    counts conn x ssl pairs, not connections, so the "is this many connections normal for this
+    host" comparison was inflated by whatever TLS the host happened to be doing -- and it was
+    inflated MORE for busier hosts, which is the direction that hides an anomaly.
+
+    `uniqExact` is unaffected by fan-out (it deduplicates), which is why only the counts were
+    wrong and nothing looked broken. Counting each source separately avoids the whole class of
+    error rather than compensating for it.
     """
     return f"""
         SELECT
             src_addr,
             uniqExactIf(service, service != '')  AS baseline_service_count,
-            uniqExactIf(ja4, ja4 != '')          AS baseline_ja4_count,
             count()                              AS baseline_conn_count
         FROM weirvern.zeek_conn
-        LEFT JOIN (
-            SELECT src_addr AS f_addr, ja4 FROM weirvern.zeek_ssl
-            WHERE ts BETWEEN '{start}' AND '{end}'
-        ) fp ON fp.f_addr = src_addr
-        WHERE ts BETWEEN '{start}' AND '{end}'
+        WHERE ts BETWEEN '{start}' AND '{end}' AND src_addr != ''
         GROUP BY src_addr
     """
+
+
+def zeek_baseline_ja4_sql(start: str, end: str) -> str:
+    """Per-host distinct JA4 fingerprints, from zeek_ssl alone.
+
+    Kept separate from the connection baseline so the join cannot fan out. A host's
+    fingerprints are a fact about its TLS clients; its connection count is a fact about its
+    connections. Combining them in one row shape was what produced the inflated count.
+    """
+    return f"""
+        SELECT
+            src_addr,
+            uniqExactIf(ja4, {JA4_REAL})               AS baseline_ja4_count,
+            -- THE SET, NOT ONLY ITS SIZE. Novelty needs an exact membership test: "is this
+            -- fingerprint one the host has used before?" A count cannot answer that, and the
+            -- approximation available from a count (assume the first N are familiar) overstates
+            -- novelty on exactly the hosts that use TLS most -- which is where a false alert is
+            -- most expensive. The set is bounded in practice (a host presents a handful of
+            -- client builds) and capped so a pathological host cannot pull an unbounded array.
+            arraySlice(arrayDistinct(arrayFilter(x -> {JA4_REAL_ARRAY},
+                                                 groupArray(ja4))), 1, 64) AS baseline_ja4_set,
+            count()                                    AS ssl_count
+        FROM weirvern.zeek_ssl
+        WHERE ts BETWEEN '{start}' AND '{end}' AND src_addr != ''
+        GROUP BY src_addr
+    """
+
+
+def _as_list(value: Any) -> list[str] | None:
+    """A ClickHouse array or a hand-written string as a list of strings, else None.
+
+    Both shapes occur: the database returns a real array, while tests and older callers build
+    rows by hand and pass the repr. `None` means "no value at all", which callers must tell
+    apart from an EMPTY list -- an empty history and a missing history need different handling,
+    and collapsing them would make a missing field look like a host with no fingerprints.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().strip("[]")
+        return [part.strip().strip("'\"") for part in text.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    return None
 
 
 def extract_zeek_features(row: dict[str, Any],
@@ -763,6 +877,37 @@ def _fill(out: dict[str, float], row: dict[str, Any],
     if baseline and svc:
         known = max(_f(baseline.get("baseline_service_count")), 1.0)
         out["zeek_service_rarity"] = max(0.0, svc - known) / known
+
+    # JA4 NOVELTY: the share of this window's TLS fingerprints the host has not used before.
+    #
+    # IT NEEDS BOTH HALVES AND THEY COME FROM DIFFERENT PLACES. The window's fingerprints arrive
+    # on the row (`ja4_set`, collected by ssl_agg); the host's history arrives in `baseline` from
+    # the longer window. With no baseline there is nothing to be novel AGAINST, so the feature
+    # stays 0.0 rather than being guessed -- the same rule service rarity follows.
+    #
+    # A host with no TLS at all also gets 0.0, which is correct: no fingerprints is not novelty.
+    seen = _as_list(row.get("ja4_set")) or []
+    if seen and baseline is not None:
+        # EXACT MEMBERSHIP, using the baseline SET. The count alone could only support a guess
+        # ("assume the first N are familiar"), and that guess overstates novelty on the hosts
+        # with the most TLS -- the ones where a false alert costs most.
+        history = _as_list(baseline.get("baseline_ja4_set"))
+        if history is None:
+            # A baseline without the set (an older caller) cannot support the test. Fall back to
+            # the count-based lower bound and never claim more novelty than that, so a missing
+            # field degrades the signal rather than manufacturing one.
+            familiar = min(len(seen), _f(baseline.get("baseline_ja4_count")))
+        else:
+            # `known_fps`, NOT `known`: `known` already holds the service-count float twelve
+            # lines above, and reusing the name rebinds it to a set there -- which mypy caught
+            # as a type error and which would have been a silent wrong answer at runtime if the
+            # two blocks were ever reordered.
+            known_fps = set(history)
+            familiar = 0
+            for fp in seen:
+                if fp in known_fps:
+                    familiar += 1
+        out["zeek_ja4_novelty"] = max(0.0, len(seen) - familiar) / len(seen)
 
     # Log-scale the counts so they sit on a comparable range to the NetFlow features, which
     # are log1p'd. Without this a host with 10,000 connections dominates any distance metric

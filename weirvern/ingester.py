@@ -35,6 +35,11 @@ BATCH_SIZE = 10_000
 
 # Zeek's "no value" sentinel.
 ZEEK_NULL = "-"
+# The OTHER sentinel. Zeek's header declares `#empty_field (empty)` as well as `#unset_field -`,
+# and they mean different things: "-" is "not set", "(empty)" is "set to an empty value". Only
+# ZEEK_NULL was being normalised, so `(empty)` reached the database as a literal 7-character
+# string -- see zeek_value() for what that broke.
+ZEEK_EMPTY = "(empty)"
 
 
 class Inserter(Protocol):
@@ -154,8 +159,24 @@ def parse_zeek_header(lines: list[str]) -> tuple[str, list[str]]:
 
 
 def zeek_value(val: str) -> str | None:
-    """Zeek's unset_field sentinel means 'no value' -> None."""
-    if val == ZEEK_NULL or val == "":
+    """Zeek's unset sentinels mean 'no value' -> None.
+
+    ZEEK EMITS *TWO* SENTINELS AND ONLY ONE OF THEM WAS HANDLED. The header declares
+    `#empty_field (empty)` alongside `#unset_field -`, and they are different: `-` means "not
+    set" and `(empty)` means "set, but to an empty value". Only `-` was normalised here, so
+    `(empty)` was stored VERBATIM as a string.
+
+    That mattered. `weirvern.zeek_ssl.ja4` held the literal 7-character string `(empty)` on rows
+    where Zeek produced an empty fingerprint, so:
+      * `uniqExactIf(ja4, ja4 != '') AS ja4_count` counted it as a REAL DISTINCT FINGERPRINT, and
+        `zeek_ja4_count` -- a live ML feature -- reported 1 on hosts that had no fingerprint at all;
+      * `ja4 != '-'` guards elsewhere were satisfied by it, so a TLS-downgrade rule could compare
+        against the literal text "(empty)";
+      * the same applies to every other column that can be empty, not just ja4.
+
+    Normalising at the READ layer is the fix, matching how the `-` case was already handled.
+    """
+    if val == "" or val in (ZEEK_NULL, ZEEK_EMPTY):
         return None
     return val
 

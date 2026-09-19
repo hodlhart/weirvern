@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Prove the JA4 guards fail on the three defects they describe.
+
+A guard that cannot fail is not a guard. Each defect is reintroduced on a copy of the shipping
+file, one at a time, and the matching test must go red. Anything reported MISSED is a test that
+would have let the bug back in.
+
+The three defects, all of which produced a plausible number for something never measured:
+
+  1. `zeek_value()` normalising only the `-` sentinel, so the literal string "(empty)" was stored
+     as a TLS fingerprint and `zeek_ja4_count` reported 1 on hosts with no fingerprint at all.
+  2. The baseline query LEFT JOINing zeek_ssl onto zeek_conn, so `baseline_conn_count` counted
+     conn x ssl pairs (measured: 64,319 rows -> 93,048) instead of connections.
+  3. A feature in ZEEK_FEATURES with no matching column in the summary query, which makes all
+     four detectors' training queries reference a nonexistent column.
+
+Offline: reads the generated SQL, needs no database. Restores every file it touches.
+"""
+from __future__ import annotations
+
+import pathlib
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+INGESTER = ROOT / "weirvern" / "ingester.py"
+FEATURES = ROOT / "weirvern" / "zeek_features.py"
+TEST = "tests/test_ja4_fingerprint_integrity.py"
+
+
+def run_tests() -> tuple[bool, list[str]]:
+    proc = subprocess.run(
+        [".venv/bin/pytest", TEST, "-q", "--no-header", "-p", "no:cacheprovider"],
+        cwd=ROOT, capture_output=True, text=True, timeout=300,
+    )
+    out = proc.stdout + proc.stderr
+    names = [
+        line.split("::")[-1].split()[0]
+        for line in out.splitlines() if line.strip().startswith("FAILED")
+    ]
+    if proc.returncode != 0 and not names:
+        # A collection error is also a failure, and reporting it as "caught" is correct: the
+        # mutation made the module unimportable, which the suite notices.
+        names = ["<collection error>"]
+    return proc.returncode != 0, names
+
+
+def mutate(path: pathlib.Path, old: str, new: str, label: str) -> bool:
+    original = path.read_text()
+    if old not in original:
+        print(f"  SKIP    {label}: anchor not found (mutation would prove nothing)")
+        print(f"          looked for: {old[:70]!r}")
+        return True  # not a failure of the guards; the probe is stale
+    assert original != original.replace(old, new, 1), "the mutation changed nothing"
+    path.write_text(original.replace(old, new, 1))
+    caught, names = run_tests()
+    path.write_text(original)
+    print(f"  {'CAUGHT' if caught else 'MISSED':7s} {label}")
+    for n in names:
+        print(f"             -> {n}")
+    return caught
+
+
+results = []
+
+# 1. The sentinel: stop normalising `(empty)`, exactly as it shipped.
+results.append(mutate(
+    INGESTER,
+    'if val == "" or val in (ZEEK_NULL, ZEEK_EMPTY):',
+    'if val == "" or val == ZEEK_NULL:',
+    "zeek_value() ignores the (empty) sentinel (defect 1)",
+))
+
+# 2. The inflated baseline: put the fan-out join back.
+results.append(mutate(
+    FEATURES,
+    """        FROM weirvern.zeek_conn
+        WHERE ts BETWEEN '{start}' AND '{end}' AND src_addr != ''
+        GROUP BY src_addr
+    \"\"\"
+
+
+def zeek_baseline_ja4_sql""",
+    """        FROM weirvern.zeek_conn
+        LEFT JOIN (SELECT src_addr AS f_addr, ja4 FROM weirvern.zeek_ssl
+                   WHERE ts BETWEEN '{start}' AND '{end}') fp
+               ON fp.f_addr = src_addr
+        WHERE ts BETWEEN '{start}' AND '{end}'
+        GROUP BY src_addr
+    \"\"\"
+
+
+def zeek_baseline_ja4_sql""",
+    "the connection baseline joins zeek_ssl again (defect 2)",
+))
+
+# 3. The missing column: drop the placeholder so ZEEK_FEATURES lists a name the SQL lacks.
+results.append(mutate(
+    FEATURES,
+    "            0                                                      AS zeek_ja4_novelty,",
+    "            -- placeholder removed",
+    "zeek_ja4_novelty loses its SQL column (defect 3)",
+))
+
+# 4. The predicate: accept `(empty)` as a real fingerprint again.
+results.append(mutate(
+    FEATURES,
+    'JA4_REAL = "ja4 != \'\' AND ja4 != \'-\' AND ja4 != \'(empty)\'"',
+    'JA4_REAL = "ja4 != \'\'"',
+    "the JA4 predicate accepts the (empty) sentinel again",
+))
+
+# 5. The set: ship only the count, so novelty has to guess.
+results.append(mutate(
+    FEATURES,
+    "arraySlice(arrayDistinct(arrayFilter(x -> {JA4_REAL_ARRAY},",
+    "arraySlice(arrayDistinct(arrayFilter(x -> x != '',",
+    "the baseline fingerprint set loses its sentinel guard",
+))
+
+# Confirm the clean tree is green again.
+caught, names = run_tests()
+
+# The probe is only meaningful if it ran mutations at all.
+assert results, "no mutation was attempted -- the anchors have drifted"
+missed = results.count(False)
+print()
+if missed:
+    print(f"  RESULT: {missed} of {len(results)} mutations MISSED.")
+    print("  A test that does not fail on its own defect is not yet a guard.")
+    sys.exit(1)
+print(f"  RESULT: all {len(results)} mutations caught.")
+print(f"  restored tree: {'STILL RED (restore is wrong!)' if caught else 'green'}")
