@@ -85,6 +85,39 @@ data:
   # itself. Never list the management gateway, this sensor, the API server, or DNS.
   INTERCEPT_TARGETS: ""
 
+  # ── In-path intercept (weir mode only) ─────────────────────────────────────
+  #
+  # THE REST OF THE INTERCEPT PLAN, so that enabling weir mode does not require
+  # hand-passing four flags to a command inside a pod every time.
+  #
+  # These were read by the CLI (`weirvern intercept` falls back to INTERCEPT_SEGMENT,
+  # INTERCEPT_ADDR, INTERCEPT_GATEWAY) and were present in .env.example, but NOT here —
+  # so a cluster deployment had no way to set them except the command line. Measured:
+  # the deployed pod had all four empty, and `weirvern intercept` with no flags reports
+  # "missing: segment, our address, gateway".
+  #
+  # ALL THREE ARE EMPTY BY DEFAULT, which is the safe state: an empty segment means
+  # preflight cannot pass, so weir mode refuses to start rather than guessing a range.
+  # Guessing here would mean poisoning hosts the operator never chose.
+  #
+  #   INTERCEPT_SEGMENT   the CIDR whose traffic to relay, e.g. 192.168.3.0/24. This IS
+  #                       the blast radius: every host in it would have its ARP cache
+  #                       forged, so it is listed explicitly rather than derived from
+  #                       the interface.
+  #   INTERCEPT_ADDR      this sensor's own address ON THAT SEGMENT. It must be an
+  #                       address nothing else uses; `weirvern intercept` can find a
+  #                       free one and verify it, which is why the default is empty
+  #                       rather than a plausible-looking guess.
+  #   INTERCEPT_GATEWAY   the gateway whose traffic is relayed. Required for the
+  #                       one-armed-router policy route, without which relayed packets
+  #                       leave by the management interface and are dropped as martians.
+  #
+  # Set these together or not at all; a partial set fails preflight with a specific
+  # missing-item list rather than a partial intercept.
+  INTERCEPT_SEGMENT: ""
+  INTERCEPT_ADDR: ""
+  INTERCEPT_GATEWAY: ""
+
   # ── Detection loop ─────────────────────────────────────────────────────────
   DETECT_INTERVAL_S: "300"
   RETRAIN_EVERY_H: "6"

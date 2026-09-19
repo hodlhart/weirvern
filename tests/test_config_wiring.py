@@ -204,3 +204,48 @@ def test_root_containers_are_only_ones_with_a_documented_reason(docs):
         "the zeek container no longer runs as root; if capture still works, the note in "
         "32-zeek.yaml about dropping capabilities for non-root containers is stale"
     )
+
+
+def test_every_intercept_variable_the_cli_reads_is_settable_in_the_configmap():
+    """THE GAP FOUND BY RUNNING A 1-HOUR INTERCEPT.
+
+    `weirvern intercept` falls back to INTERCEPT_SEGMENT / INTERCEPT_ADDR / INTERCEPT_GATEWAY
+    when the flags are absent, and all three were in `.env.example` — but NOT in the ConfigMap.
+    So a cluster deployment had no way to configure them except by hand-passing flags to a
+    command inside a pod, every time. Measured in the deployed pod: all three empty, and the
+    command reporting "missing: segment, our address, gateway".
+
+    An operator following the README would have hit a weir mode that could not be configured.
+    This asserts the CLI's fallbacks and the ConfigMap agree, so a new variable cannot be added
+    to one and forgotten in the other.
+    """
+    import re
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[1]
+    cli = (root / "weirvern" / "admin" / "cli.py").read_text()
+    cm = (root / "k8s" / "20-configmap-env.yaml").read_text()
+    env_example = (root / ".env.example").read_text()
+
+    # Every INTERCEPT_* name the CLI asks for by name.
+    read = set(re.findall(r'_get\(\s*"(INTERCEPT_[A-Z_]+)"', cli))
+    assert read, "the CLI no longer reads any INTERCEPT_* variable -- has intercept changed?"
+
+    for name in sorted(read):
+        assert name in cm, f"{name} is read by the CLI but is not in the ConfigMap"
+        assert name in env_example, f"{name} is read by the CLI but not in .env.example"
+
+
+def test_the_intercept_defaults_are_empty_not_plausible():
+    """An empty segment means preflight CANNOT pass, so weir refuses to start. A default that
+    looked plausible (a guessed CIDR, or an address) would instead poison hosts the operator
+    never chose."""
+    import re
+    from pathlib import Path as _P
+    cm = (_P(__file__).resolve().parents[1] / "k8s" / "20-configmap-env.yaml").read_text()
+    for name in ("INTERCEPT_SEGMENT", "INTERCEPT_ADDR", "INTERCEPT_GATEWAY"):
+        m = re.search(rf'^\s*{name}:\s*"?([^"\n]*)"?\s*$', cm, re.M)
+        assert m, f"{name} is not present in the ConfigMap"
+        assert m.group(1).strip() == "", (
+            f"{name} ships a non-empty default ({m.group(1)!r}). A default here is a range "
+            f"nobody chose, and weir mode would act on it."
+        )
