@@ -168,6 +168,19 @@ function renderSensor(s) {
       `Passive capture on ${s.iface || "?"} — Weirvern observes only and cannot ` +
       `affect traffic. Nothing is intercepted, so there is nothing to show here.` }));
   }
+
+  // THE OTHER MODES ARE REPORTED, NOT HIDDEN.
+  //
+  // A sensor can legitimately do both at once: the worker keeps publishing its configured
+  // capture mode while an intercept publishes its own row. Showing only the higher-ranked one
+  // would be a panel that is silently half the truth -- the same class of wrong as a green
+  // panel over a dead sensor.
+  for (const o of (s.others || [])) {
+    box.appendChild(el("p", { class: "muted", text:
+      `also reporting: ${o.mode} on ${o.iface || "?"}` +
+      (o.hosts ? ` (${o.hosts} host(s))` : "") +
+      ` · heartbeat ${fmtAge(o.age_s)} ago` }));
+  }
 }
 
 /* ── overview ───────────────────────────────────────────────────────────── */

@@ -32,7 +32,21 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path("/home/hart/Documents/flowforge")
+def _repo_root() -> Path:
+    """The directory the script is being run against.
+
+    NOT a hardcoded path. An earlier version pinned an absolute path from one developer's machine,
+    which meant the audit silently ran against whatever happened to be there -- or nothing -- on
+    any other checkout. The script lives in `scripts/`, so the repository is its parent.
+    """
+    here = Path(__file__).resolve()
+    for candidate in (here.parent.parent, Path.cwd()):
+        if (candidate / "weirvern" / "schema").is_dir():
+            return candidate
+    return here.parent.parent
+
+
+ROOT = _repo_root()
 SCHEMA_DIR = ROOT / "weirvern" / "schema"
 SRC = [p for p in (ROOT / "weirvern").rglob("*.py")] + [ROOT / "weirvern" / "admin" / "web" / "app.js"]
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+from weirvern.admin.mode import MODE_WEIR  # noqa: E402
 
 
 @dataclass
@@ -691,6 +692,9 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         "restores": 0,
         "refreshes": 0,
         "failures": [],
+        # Other modes reporting from the same sensor, e.g. a passive capture alongside a live
+        # intercept. Always a list, never absent, for the reason given below.
+        "others": [],
         "stale_after_s": HEARTBEAT_STALE_S,
         # Always present so a consumer never has to distinguish a missing key from a
         # null value -- the frontend checks `if (s.error)` and an absent key is a
@@ -698,11 +702,20 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         "error": None,
     }
     try:
+        # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
+        # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
+        # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
+        # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
+        # alternated between them on every refresh. The data was never wrong; the reader was
+        # picking by wall-clock instead of by meaning.
+        #
+        # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
+        # being clever in SQL and much easier to reason about.
         rows = list(client.query(
-            "SELECT mode, iface, segment, hosts, mappings, running, uptime_s, "
+            "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
             "restores, refreshes, failures, ts "
-            "FROM weirvern.sensor_status "
-            "ORDER BY ts DESC LIMIT 1"
+            "FROM weirvern.sensor_status FINAL "
+            "ORDER BY ts DESC"
         ).named_results())
     except Exception as exc:  # noqa: BLE001
         # A missing table is the normal state before the schema Job runs, and it must not
@@ -720,7 +733,55 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         )
         return out
 
-    r = rows[0]
+    # WHICH ROW IS THE SENSOR. Two rules, in order:
+    #
+    #   1. An INTERCEPTING row (`weir`) wins over a passive one. It describes the same physical
+    #      sensor in a strictly more informative state -- it names the segment, the host count and
+    #      a live watchdog -- and it exists only while an intercept process is actually running.
+    #   2. Otherwise the FRESHEST row wins, but staleness is computed per row and a stale row is
+    #      never chosen over a live one.
+    #
+    # This is deterministic: the same data always produces the same answer, which is what makes
+    # the panel stop changing under a refresh.
+    def _rank(row: dict):
+        ts_value = row.get("ts")
+        age = (
+            (now - _aware(ts_value)).total_seconds()
+            if isinstance(ts_value, datetime.datetime)
+            else float("inf")
+        )
+        fresh = age <= HEARTBEAT_STALE_S
+        active = str(row.get("mode") or "") == MODE_WEIR
+        return (fresh, active, -age)
+
+    best = max(rows, key=_rank)
+    r = best
+
+    # The OTHER row is reported, not discarded. A sensor running both a passive capture and an
+    # intercept is a real and useful state, and hiding the second row is how "the panel is
+    # silently showing half the truth" bugs start.
+    others: list[dict] = []
+    for row in rows:
+        # Same SENSOR, different mode. Filtering on sensor_id matters: several worker replicas
+        # report under their own pod names, and without it a different replica's heartbeat would
+        # be listed as another mode of this sensor.
+        if row.get("sensor_id") != best.get("sensor_id"):
+            continue
+        if row.get("mode") == best.get("mode"):
+            continue
+        row_ts = row.get("ts")
+        if not isinstance(row_ts, datetime.datetime):
+            continue
+        row_age = (now - _aware(row_ts)).total_seconds()
+        if row_age > HEARTBEAT_STALE_S:
+            continue
+        others.append({
+            "mode": str(row.get("mode") or ""),
+            "iface": str(row.get("iface") or ""),
+            "hosts": int(row.get("hosts") or 0),
+            "age_s": round(row_age, 1),
+        })
+    out["others"] = others
     out.update({
         "reported": True,
         "mode": str(r.get("mode") or ""),
