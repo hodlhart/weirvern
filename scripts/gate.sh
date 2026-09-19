@@ -58,6 +58,7 @@ run "types (mypy)" .venv/bin/mypy weirvern --ignore-missing-imports
 run "schema audit" "$PY" scripts/audit_schema.py
 run "shell syntax" sh -n scripts/weir_stress_test.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
+run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 
 # The suite last: it is the slowest, and everything above is a precondition for trusting it.
 step "tests"

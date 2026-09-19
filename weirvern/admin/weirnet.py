@@ -413,14 +413,61 @@ def ensure_forwarding_path(iface: str, gateway: str,
 
 
 def remove_forwarding_path(iface: str) -> None:
-    """Withdraw the policy route. Idempotent, and never raises.
+    """Withdraw the policy route and EVERY rule that references the policy table. Never raises.
 
-    Called on teardown because a leftover rule sends ALL traffic arriving on that interface
-    to table 100 -- which, once the address is removed, is a table with no routes. That
-    would break traffic the operator never intended to touch.
+    Called on teardown because a leftover rule sends matching traffic to table 100 -- which, once
+    the address is removed, is a table with no routes, so the rule DROPS that traffic. Measured on a
+    real host: `1000: from all iif eth1 lookup 100` was still installed with an EMPTY table 100
+    after an intercept had been stopped and reported as restored.
+
+    WHY IT NO LONGER DELETES ONE EXACT FORM. Deleting only what `ensure_forwarding_path` creates
+    misses every other shape that selects the table:
+
+        iif <iface> lookup 100        what this file creates
+        from <segment> lookup 100     what an earlier version created
+        <anything> lookup 100         a rule set by hand, or by a version that changed
+
+    So every rule mentioning the table is removed, by priority AND by parsing `ip rule show`. The
+    table number is ours and nothing else uses it, which makes the match unambiguous; and removing a
+    rule we did not add is safe, because a rule pointing at our private table cannot be doing
+    anything we would want to keep.
     """
+    # By priority: covers the rule this file adds, whatever its selector.
+    _run("ip", "rule", "del", "priority", str(POLICY_PRIORITY))
+
+    # By parsing: covers ANY priority selecting the table, including forms we did not anticipate.
+    for priority in _policy_rule_priorities():
+        _run("ip", "rule", "del", "priority", str(priority))
+
+    # Last resort for the exact form, in case the rule has no readable priority.
     _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
+
     _run("ip", "route", "flush", "table", str(POLICY_TABLE))
+
+
+def _policy_rule_priorities() -> list[int]:
+    """Priorities of every routing rule that selects the policy table.
+
+    Parsed rather than assumed, because the rule set is shared with the host's own networking and a
+    wrong guess could delete someone else's rule. Only rules mentioning OUR table number are
+    returned.
+    """
+    rc, out = _run("ip", "rule", "show")
+    if rc != 0:
+        return []
+    found: list[int] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts or not parts[0].rstrip(":").isdigit():
+            continue
+        # A rule line looks like: "1000:	from all iif eth1 lookup 100"
+        if f"lookup {POLICY_TABLE}" not in line:
+            continue
+        try:
+            found.append(int(parts[0].rstrip(":")))
+        except ValueError:
+            continue
+    return found
 
 
 def add_address(iface: str, address: str, segment: str) -> tuple[int, str]:

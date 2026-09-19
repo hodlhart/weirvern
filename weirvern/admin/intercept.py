@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from weirvern.admin.sysctl_guard import SysctlGuard
 from weirvern.admin.watchdog import FailOpenWatchdog, Interception
 from weirvern.admin.weirnet import (
     DEFAULT_REFRESH_S,
@@ -356,6 +357,11 @@ class Intercept:
         self.watchdog: FailOpenWatchdog | None = None
         self._started = False
         self.started_at: float = 0.0
+        # Records the node's network sysctls BEFORE this intercept changes them, so `stop()` can put
+        # the exact previous values back. Measured on a real host: they were left at the intercept's
+        # values hours after a clean-looking teardown, and `rp_filter=0` on a whole node disables a
+        # spoofing defence for every interface -- a test that does that has damaged the host.
+        self._sysctls = SysctlGuard(plan.iface)
 
     # -- preflight -------------------------------------------------------------
     def preflight(self) -> list[str]:
@@ -405,6 +411,14 @@ class Intercept:
         if self._started:
             return
 
+        # 0. RECORD THE SYCTLS BEFORE TOUCHING ANYTHING. Reading them later would capture the
+        #    intercept's own values, and restoring those is the same as not restoring at all.
+        #
+        #    Nothing here CHANGES a sysctl: the mode check and the Kubernetes init container own
+        #    that, and duplicating it would give two places that can disagree. This only remembers
+        #    what was there so the restore has an honest target.
+        self._sysctls.apply()
+
         # 1. the forwarding path, before anything claims to be the gateway. If the route is
         #    wrong, poisoning makes the kernel the next hop for traffic it cannot deliver --
         #    the victim loses the network instead of being relayed. Installing it first means
@@ -448,6 +462,22 @@ class Intercept:
         close = getattr(self._sender, "close", None)
         if callable(close):
             close()
+
+        # LAST, and never before the rules: with rp_filter back at its original value, any packet
+        # still being routed through table 100 would be dropped by the reverse-path check. Order
+        # matters here, and this is the only place it is decided.
+        #
+        # `restore()` is idempotent and returns the sysctls it could NOT put back, which is reported
+        # rather than swallowed: a silent failure here leaves the node's spoofing defence off, and
+        # the operator has no other way to learn that.
+        unrestored = self._sysctls.restore()
+        if unrestored:
+            logger.warning(
+                "could NOT restore %d network sysctl(s): %s. The node is still configured for "
+                "an intercept -- rp_filter=0 disables reverse-path filtering for EVERY interface. "
+                "Set them back by hand.",
+                len(unrestored), ", ".join(unrestored),
+            )
         self._started = False
 
     @property
