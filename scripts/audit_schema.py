@@ -32,6 +32,7 @@ import re
 import sys
 from pathlib import Path
 
+
 def _repo_root() -> Path:
     """The directory the script is being run against.
 

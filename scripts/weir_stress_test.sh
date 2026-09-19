@@ -34,10 +34,16 @@ DURATION_MIN=${1:-60}
 # set, because "the segment is healthy afterwards" should be a claim about the segment.
 TARGET=""
 INTERCEPT_SCOPE="--all"
-SEGMENT=192.168.3.0/24
-GW=192.168.3.1
-OUR_IP=192.168.3.250
-IFACE=eth1
+# THE SEGMENT, GATEWAY AND ADDRESS COME FROM THE ENVIRONMENT.
+#
+# These were hardcoded to one deployment's network, which put a real segment in the repository and
+# meant the harness would test the WRONG network anywhere else -- while reporting success. They are
+# required now: a stress test that silently scans someone else's segment is worse than one that
+# refuses to start.
+SEGMENT="${INTERCEPT_SEGMENT:?set INTERCEPT_SEGMENT (e.g. 198.51.100.0/24)}"
+GW="${INTERCEPT_GATEWAY:?set INTERCEPT_GATEWAY}"
+OUR_IP="${INTERCEPT_ADDR:?set INTERCEPT_ADDR}"
+IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
 NS=weirvern
 OUT=/tmp/weir_stress_$(date +%Y%m%d_%H%M%S).log
 

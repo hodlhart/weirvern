@@ -109,7 +109,9 @@ def start(args: argparse.Namespace) -> int:
         print("--seconds is required when detaching", file=sys.stderr)
         return 1
 
-    log = open(LOG_FILE, "ab")
+    # Kept open for the child's whole life -- the subprocess writes its output here -- so it is
+    # intentionally not closed in this function. Closing it would silence the run.
+    log = open(LOG_FILE, "ab")  # noqa: SIM115
     # setsid detaches from the controlling terminal AND puts the child in its own session, so a
     # hangup on our side is not delivered to it. Without setsid, `nohup` alone still leaves it in
     # our process group receiving our signals.

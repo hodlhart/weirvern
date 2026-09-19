@@ -26,7 +26,14 @@ from weirvern.config import Settings
 def main() -> int:
     s = Settings()
     iface = s.zeek_iface or "eth1"
-    segment = getattr(s, "intercept_segment", "") or "192.168.3.0/24"
+    segment = getattr(s, "intercept_segment", "") or ""
+    if not segment:
+        # NO DEFAULT SEGMENT. A fallback address here was a copy of one specific deployment's
+        # network, so on any other deployment this probe would have scanned the WRONG segment and
+        # reported whatever it found there. Refusing is the honest behaviour: set INTERCEPT_SEGMENT
+        # (or pass --segment) and it will sweep that.
+        print("  no segment configured: set INTERCEPT_SEGMENT", flush=True)
+        return 1
     print(f"  iface={iface} segment={segment}", flush=True)
 
     our_mac = weirnet.read_mac(iface) or ""
