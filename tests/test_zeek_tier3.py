@@ -93,8 +93,8 @@ def test_each_tier3_mapper_rejects_a_record_with_no_addresses(log_type):
         pytest.skip("dhcp is keyed on MAC, not an address pair -- covered below")
     mapper = ZEEK_MAPPERS[log_type][1]
     assert mapper(normalise({"ts": "1758200000.0", "id.orig_h": "-",
-                             "id.resp_h": "10.0.0.1"})) is None
-    assert mapper(normalise({"ts": "1758200000.0", "id.orig_h": "10.0.0.1",
+                             "id.resp_h": "198.51.100.1"})) is None
+    assert mapper(normalise({"ts": "1758200000.0", "id.orig_h": "198.51.100.1",
                              "id.resp_h": ""})) is None
 
 
@@ -103,8 +103,8 @@ def test_dhcp_accepts_a_broadcast_discover():
     every DISCOVER -- the message that reveals a new device arriving."""
     row = row_of(ZEEK_MAPPERS["dhcp"][1], {
         "ts": "1758200000.0", "uids": "Cabc", "client_addr": "0.0.0.0",
-        "server_addr": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff",
-        "host_name": "laptop", "requested_addr": "192.168.1.50", "lease_time": "86400.0",
+        "server_addr": "192.0.2.1", "mac": "aa:bb:cc:dd:ee:ff",
+        "host_name": "laptop", "requested_addr": "192.0.2.50", "lease_time": "86400.0",
         "msg_types": "DISCOVER", "duration": "0.1",
     })
     assert row is not None, "a DISCOVER was rejected because client_addr is 0.0.0.0"
@@ -116,8 +116,8 @@ def test_dhcp_keeps_the_mac_because_it_is_the_stable_identifier():
     per-host baseline keyed on IP loses its subject whenever the lease turns over."""
     assert "mac" in _table_cols("zeek_dhcp")
     row = row_of(ZEEK_MAPPERS["dhcp"][1], {
-        "ts": "1758200000.0", "mac": "aa:bb:cc:dd:ee:ff", "client_addr": "10.0.0.5",
-        "server_addr": "10.0.0.1", "lease_time": "3600.0",
+        "ts": "1758200000.0", "mac": "aa:bb:cc:dd:ee:ff", "client_addr": "198.51.100.5",
+        "server_addr": "198.51.100.1", "lease_time": "3600.0",
     })
     assert row["mac"] == "aa:bb:cc:dd:ee:ff"
     assert row["lease_time"] == pytest.approx(3600.0)
@@ -150,7 +150,7 @@ def test_tunnel_captures_the_type_which_is_its_entire_reason_to_exist():
     """conn.log carries `tunnel_parents` -- a set of UIDs -- and never the encapsulation type. The
     type is the difference between an expected site-to-site tunnel and tunnelling for evasion."""
     row = row_of(ZEEK_MAPPERS["tunnel"][1], {
-        "ts": "1758200000.0", "id.orig_h": "10.0.0.1", "id.resp_h": "10.0.0.2",
+        "ts": "1758200000.0", "id.orig_h": "198.51.100.1", "id.resp_h": "198.51.100.2",
         "tunnel_type": "Tunnel::TEREDO", "action": "DISCOVER",
     })
     assert row["tunnel_type"] == "Tunnel::TEREDO"
@@ -161,7 +161,7 @@ def test_quic_recovers_the_sni_that_ssl_log_never_sees():
     """QUIC is encrypted at the transport layer and bypasses ssl.log entirely, so a host moving its
     C2 to QUIC has no TLS record at all. The SNI is what makes the connection nameable."""
     row = row_of(ZEEK_MAPPERS["quic"][1], {
-        "ts": "1758200000.0", "id.orig_h": "10.0.0.1", "id.orig_p": "1234",
+        "ts": "1758200000.0", "id.orig_h": "198.51.100.1", "id.orig_p": "1234",
         "id.resp_h": "1.1.1.1", "id.resp_p": "443",
         "server_name": "cloudflare-dns.com", "client_protocol": "h3", "version": "1",
     })
@@ -173,8 +173,8 @@ def test_ldap_search_records_the_filter_which_is_the_enumeration_signal():
     """AD enumeration is defined by filter CONTENT, and nothing else in the corpus exposes directory
     queries at all."""
     row = row_of(ZEEK_MAPPERS["ldap_search"][1], {
-        "ts": "1758200000.0", "id.orig_h": "10.0.0.1", "id.orig_p": "49152",
-        "id.resp_h": "10.0.0.9", "id.resp_p": "389",
+        "ts": "1758200000.0", "id.orig_h": "198.51.100.1", "id.orig_p": "49152",
+        "id.resp_h": "198.51.100.9", "id.resp_p": "389",
         "filter": "(objectClass=user)", "base_object": "DC=corp,DC=local",
         "scope": "sub", "result_count": "4200", "result": "success",
     })

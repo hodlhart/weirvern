@@ -82,7 +82,7 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .card h2 { font-size: 13px; margin: 0 0 12px; text-transform: uppercase;
   letter-spacing: .6px; color: var(--muted); font-weight: 600; }
 /* The evidence title carries a HOSTNAME, so it must not inherit the uppercase
- * transform above: showing "SPYRO.HOME" instead of "spyro.home" misrepresents how
+ * transform above: showing "host-a.example" instead of "host-a.example" misrepresents how
  * the name is actually spelled, and a name is an identifier an operator may need to
  * type or copy verbatim. It is also the page's subject, so it reads as a heading
  * rather than a section label. */

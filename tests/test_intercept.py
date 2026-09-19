@@ -71,14 +71,14 @@ class RecordingSender:
 def _plan(hosts: dict[str, str] | None = None) -> ic.InterceptPlan:
     return ic.InterceptPlan(
         iface="eth1",
-        segment="192.168.3.0/24",
+        segment="198.51.100.0/24",
         our_mac="aa:bb:cc:dd:ee:ff",
-        our_ip="192.168.3.50",
-        gateway_ip="192.168.3.1",
+        our_ip="198.51.100.50",
+        gateway_ip="198.51.100.1",
         gateway_mac="11:22:33:44:55:66",
         hosts=hosts if hosts is not None else {
-            "192.168.3.10": "0a:0a:0a:0a:0a:0a",
-            "192.168.3.11": "0b:0b:0b:0b:0b:0b",
+            "198.51.100.10": "0a:0a:0a:0a:0a:0a",
+            "198.51.100.11": "0b:0b:0b:0b:0b:0b",
         },
     )
 
@@ -90,17 +90,17 @@ READY = ForwardingState(ip_forward=True, rp_filter_off=True)
 
 
 def test_cidr_lists_usable_hosts_only():
-    hosts = ic.parse_cidr("192.168.3.0/24")
+    hosts = ic.parse_cidr("198.51.100.0/24")
     assert len(hosts) == 254
-    assert "192.168.3.1" in hosts
-    assert "192.168.3.0" not in hosts, "the network address is not a host"
-    assert "192.168.3.255" not in hosts, "the broadcast address is not a host"
+    assert "198.51.100.1" in hosts
+    assert "198.51.100.0" not in hosts, "the network address is not a host"
+    assert "198.51.100.255" not in hosts, "the broadcast address is not a host"
 
 
 def test_a_huge_segment_is_refused_rather_than_attempted():
     """Poisoning 65k hosts is not something anyone means to do by accident."""
     with pytest.raises(ValueError, match="1024"):
-        ic.parse_cidr("10.0.0.0/16")
+        ic.parse_cidr("198.51.100.0/16")
 
 
 # ── the plan ────────────────────────────────────────────────────────────────────
@@ -116,8 +116,8 @@ def test_the_plan_installs_both_directions_per_host():
     mappings = _plan().mappings()
     assert len(mappings) == 4, "2 hosts x 2 directions"
     claims = {(m.host_ip, m.claim_ip) for m in mappings}
-    assert ("192.168.3.10", "192.168.3.1") in claims, "host -> gateway direction missing"
-    assert ("192.168.3.1", "192.168.3.10") in claims, "gateway -> host direction missing"
+    assert ("198.51.100.10", "198.51.100.1") in claims, "host -> gateway direction missing"
+    assert ("198.51.100.1", "198.51.100.10") in claims, "gateway -> host direction missing"
 
 
 def test_a_forged_mapping_claims_the_gateway_and_restores_the_real_mac():
@@ -141,9 +141,9 @@ def test_a_forged_mapping_claims_the_gateway_and_restores_the_real_mac():
 def test_the_plan_describes_itself_for_inspection():
     """An operator must be able to see what will be changed before it is changed."""
     text = _plan().describe()
-    assert "192.168.3.0/24" in text
-    assert "192.168.3.1" in text
-    assert "192.168.3.10" in text
+    assert "198.51.100.0/24" in text
+    assert "198.51.100.1" in text
+    assert "198.51.100.10" in text
 
 
 # ── preflight ───────────────────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ def test_status_reports_mappings_and_uptime():
         assert st["hosts"] == 2
         assert st["mappings"] == 4
         assert st["running"] is True
-        assert st["segment"] == "192.168.3.0/24"
+        assert st["segment"] == "198.51.100.0/24"
     finally:
         runner.stop()
 
@@ -375,13 +375,13 @@ def test_read_neighbour_mac_ignores_incomplete_entries(tmp_path, monkeypatch):
     arp = tmp_path / "arp"
     arp.write_text(
         "IP address       HW type     Flags       HW address            Mask     Device\n"
-        "192.168.3.10     0x1         0x2         aa:bb:cc:dd:ee:01     *        eth1\n"
-        "192.168.3.11     0x1         0x0         00:00:00:00:00:00     *        eth1\n"
+        "198.51.100.10     0x1         0x2         aa:bb:cc:dd:ee:01     *        eth1\n"
+        "198.51.100.11     0x1         0x0         00:00:00:00:00:00     *        eth1\n"
     )
     body = arp.read_text()          # capture BEFORE patching, or this recurses
     monkeypatch.setattr(weirnet.Path, "read_text", lambda self: body)
-    assert weirnet.read_neighbour_mac("eth1", "192.168.3.10") == "aa:bb:cc:dd:ee:01"
-    assert weirnet.read_neighbour_mac("eth1", "192.168.3.11") is None
+    assert weirnet.read_neighbour_mac("eth1", "198.51.100.10") == "aa:bb:cc:dd:ee:01"
+    assert weirnet.read_neighbour_mac("eth1", "198.51.100.11") is None
 
 
 def test_read_mac_returns_none_for_a_missing_interface(monkeypatch):
@@ -405,47 +405,47 @@ def test_free_addresses_prefers_the_top_of_the_range(monkeypatch):
     """DHCP pools hand out from the bottom, so a high address is least likely to collide."""
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
-    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5", count=3)
-    assert free == ["192.168.3.254", "192.168.3.253", "192.168.3.252"], free
+    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=3)
+    assert free == ["198.51.100.254", "198.51.100.253", "198.51.100.252"], free
 
 
 def test_an_address_that_answered_arp_is_not_offered(monkeypatch):
     """Offering an in-use address would cause a conflict on the operator's network."""
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep",
-                        lambda *a, **k: {"192.168.3.254": "de:ad:be:ef:00:01"})
-    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5", count=2)
-    assert "192.168.3.254" not in free, "a taken address was offered as free"
-    assert free == ["192.168.3.253", "192.168.3.252"]
+                        lambda *a, **k: {"198.51.100.254": "de:ad:be:ef:00:01"})
+    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=2)
+    assert "198.51.100.254" not in free, "a taken address was offered as free"
+    assert free == ["198.51.100.253", "198.51.100.252"]
 
 
 def test_the_source_address_is_never_offered(monkeypatch):
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
-    free = weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.254", count=1)
-    assert "192.168.3.254" not in free, "offered the address we are already using"
+    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.254", count=1)
+    assert "198.51.100.254" not in free, "offered the address we are already using"
 
 
 def test_no_mac_means_no_offer_rather_than_a_guess(monkeypatch):
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: None)
-    assert weirnet.find_free_addresses("eth1", "192.168.3.0/24", "192.168.3.5") == []
+    assert weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5") == []
 
 
 def test_describe_segment_reports_the_blast_radius(monkeypatch):
     """Every host listed is one whose ARP cache would be forged."""
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
-        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
-        "192.168.3.11": "0b:0b:0b:0b:0b:0b",
+        "198.51.100.10": "0a:0a:0a:0a:0a:0a",
+        "198.51.100.11": "0b:0b:0b:0b:0b:0b",
     })
-    used, err = weirnet.describe_segment("eth1", "192.168.3.0/24", "192.168.3.5")
+    used, err = weirnet.describe_segment("eth1", "198.51.100.0/24", "198.51.100.5")
     assert not err
     assert len(used) == 2
 
 
 def test_describe_segment_refuses_an_enormous_sweep(monkeypatch):
     monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
-    used, err = weirnet.describe_segment("eth1", "10.0.0.0/16", "10.0.0.5")
+    used, err = weirnet.describe_segment("eth1", "198.51.100.0/16", "198.51.100.5")
     assert used == {}
     assert "too large" in err
 
@@ -472,7 +472,7 @@ def test_the_cli_surveys_before_building_the_plan():
 # A sweep that reads /proc/net/arp returns ZERO hosts on a live segment, because the kernel
 # only installs a neighbour entry for addresses the interface actually OWNS. Replies for
 # every other address arrive on the wire and are discarded. Measured against a live
-# 192.168.3.0/24 with ELEVEN hosts: the kernel-table version found 0, parsing the socket
+# 198.51.100.0/24 with ELEVEN hosts: the kernel-table version found 0, parsing the socket
 # found 11.
 #
 # That failure is worse than a crash. `weirvern intercept --dry-run` uses this to report
@@ -538,14 +538,14 @@ def test_a_host_filter_limits_what_is_intercepted(monkeypatch):
     monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
-        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
-        "192.168.3.11": "0b:0b:0b:0b:0b:0b",
-        "192.168.3.12": "0c:0c:0c:0c:0c:0c",
+        "198.51.100.10": "0a:0a:0a:0a:0a:0a",
+        "198.51.100.11": "0b:0b:0b:0b:0b:0b",
+        "198.51.100.12": "0c:0c:0c:0c:0c:0c",
     })
-    plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.50", "192.168.3.1",
-                         only={"192.168.3.10"})
+    plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.50", "198.51.100.1",
+                         only={"198.51.100.10"})
     assert plan is not None
-    assert set(plan.hosts) == {"192.168.3.10"}, (
+    assert set(plan.hosts) == {"198.51.100.10"}, (
         "the host filter did not restrict the plan, so a 'small test' would poison the "
         "whole segment"
     )
@@ -560,17 +560,17 @@ def test_a_requested_host_that_is_absent_is_reported_not_silently_dropped(monkey
     monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
-        "192.168.3.10": "0a:0a:0a:0a:0a:0a",
+        "198.51.100.10": "0a:0a:0a:0a:0a:0a",
     })
     with caplog.at_level("WARNING"):
-        plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.50", "192.168.3.1",
-                             only={"192.168.3.10", "192.168.3.99"})
+        plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.50", "198.51.100.1",
+                             only={"198.51.100.10", "198.51.100.99"})
     assert plan is not None
-    assert set(plan.hosts) == {"192.168.3.10"}
+    assert set(plan.hosts) == {"198.51.100.10"}
     # caplog records the raw format string in .message with args in .args, so build the
     # rendered text rather than comparing against either half.
     rendered = " ".join(r.getMessage() for r in caplog.records)
-    assert "192.168.3.99" in rendered, (
+    assert "198.51.100.99" in rendered, (
         f"the absent host was not reported, so the operator cannot tell the test covered "
         f"less than they asked for. Log said: {rendered!r}"
     )
@@ -617,8 +617,8 @@ def _stub_forwarding_path(monkeypatch):
 # Measured on a live two-NIC box, this is the difference between a working relay and a
 # segment outage:
 #
-#   ip route get 1.1.1.1 iif eth1                -> via 192.168.2.1 dev eth0   (WRONG)
-#   with `iif eth1 -> table 100` installed       -> via 192.168.3.1 dev eth1   (correct)
+#   ip route get 1.1.1.1 iif eth1                -> via 203.0.113.1 dev eth0   (WRONG)
+#   with `iif eth1 -> table 100` installed       -> via 198.51.100.1 dev eth1   (correct)
 #
 # `ip_forward=1` makes the kernel willing to forward but does not decide WHERE. A relayed
 # packet's destination is public, so it matches the DEFAULT route -- the management network
@@ -690,13 +690,13 @@ def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(mon
                         lambda i: calls.append(("remove", i, None)))
     with ic.Intercept(_plan(), sender=RecordingSender()):
         pass
-    assert ("install", "eth1", "192.168.3.1") in calls, "the policy route was never installed"
+    assert ("install", "eth1", "198.51.100.1") in calls, "the policy route was never installed"
     assert ("remove", "eth1", None) in calls, (
         "the policy rule was left behind. Left in place it sends ALL traffic arriving on "
         "that interface to a table with no routes once the address is gone, breaking "
         "traffic the operator never asked us to touch."
     )
-    assert calls.index(("install", "eth1", "192.168.3.1")) < calls.index(("remove", "eth1", None))
+    assert calls.index(("install", "eth1", "198.51.100.1")) < calls.index(("remove", "eth1", None))
 
 
 # ── the forwarding-path CHECK must not abort a healthy intercept ─────────────────
@@ -713,8 +713,8 @@ def test_the_policy_rule_is_detected_when_present(monkeypatch):
         0, "0:\tfrom all lookup local\n1000:\tfrom all iif eth1 lookup 100\n"
            "32766:\tfrom all lookup main"))
     monkeypatch.setattr(weirnet, "forwarding_table_text",
-                        lambda: "default via 192.168.3.1 dev eth1")
-    assert weirnet.forwarding_path_problems("eth1", "192.168.3.1") == [], (
+                        lambda: "default via 198.51.100.1 dev eth1")
+    assert weirnet.forwarding_path_problems("eth1", "198.51.100.1") == [], (
         "a correctly installed policy rule was reported as a problem, so the intercept "
         "would refuse to run against a healthy configuration"
     )
@@ -725,7 +725,7 @@ def test_a_missing_policy_rule_is_reported(monkeypatch):
 
     monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "0:\tfrom all lookup local"))
     monkeypatch.setattr(weirnet, "forwarding_table_text", lambda: "")
-    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1")
+    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1")
     assert problems, "a missing policy route was not reported"
     assert any("table 100" in p for p in problems), (
         "the message does not name the table to install, so the operator cannot act on it"
@@ -751,9 +751,9 @@ def test_a_source_less_route_lookup_is_not_treated_as_a_problem(monkeypatch):
 
     monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "1000:\tfrom all iif eth1 lookup 100"))
     monkeypatch.setattr(weirnet, "forwarding_table_text",
-                        lambda: "default via 192.168.3.1 dev eth1")
+                        lambda: "default via 198.51.100.1 dev eth1")
     # No sample_src: the case that used to fail.
-    assert weirnet.forwarding_path_problems("eth1", "192.168.3.1") == []
+    assert weirnet.forwarding_path_problems("eth1", "198.51.100.1") == []
 
 
 def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
@@ -763,13 +763,13 @@ def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
     def fake_run(*a, **k):
         if "rule" in a:
             return 0, "1000:\tfrom all iif eth1 lookup 100"
-        return 0, "192.0.2.1 from 192.168.3.193 via 192.168.2.1 dev eth0"
+        return 0, "192.0.2.1 from 198.51.100.193 via 203.0.113.1 dev eth0"
 
     monkeypatch.setattr(weirnet, "_run", fake_run)
     monkeypatch.setattr(weirnet, "forwarding_table_text",
-                        lambda: "default via 192.168.3.1 dev eth1")
-    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
-                                                sample_src="192.168.3.193")
+                        lambda: "default via 198.51.100.1 dev eth1")
+    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+                                                sample_src="198.51.100.193")
     assert any("dev eth0" in p or "different interface" in p for p in problems), (
         "a packet that genuinely leaves by the wrong interface was not reported"
     )
@@ -819,20 +819,20 @@ def test_build_plan_takes_the_gateway_mac_from_the_sweep_not_the_neighbour_table
     # resolve_mac fails -- exactly as it does with no address on the interface.
     monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: None)
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
-        "192.168.3.1": "a8:9c:6c:96:b6:2d",      # the gateway answered
-        "192.168.3.193": "bc:24:11:53:ca:66",
+        "198.51.100.1": "00:00:5e:00:53:01",      # the gateway answered
+        "198.51.100.193": "00:00:5e:00:53:02",
     })
-    plan = ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.250", "192.168.3.1")
+    plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.250", "198.51.100.1")
     assert plan is not None, (
         "the plan was refused even though the sweep reported the gateway: the gateway MAC "
         "must come from the sweep, which works without an assigned address"
     )
-    assert plan.gateway_mac == "a8:9c:6c:96:b6:2d"
-    assert "192.168.3.1" not in plan.hosts, (
+    assert plan.gateway_mac == "00:00:5e:00:53:01"
+    assert "198.51.100.1" not in plan.hosts, (
         "the gateway is in the sweep result but must never be an intercept TARGET -- forging "
         "the gateway's own view of its peers is the fastest way to black-hole a segment"
     )
-    assert "192.168.3.193" in plan.hosts
+    assert "198.51.100.193" in plan.hosts
 
 
 def test_build_plan_still_refuses_when_the_gateway_answered_nothing(monkeypatch):
@@ -840,8 +840,8 @@ def test_build_plan_still_refuses_when_the_gateway_answered_nothing(monkeypatch)
     mapping could never be RESTORED, so refusing is correct."""
     monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: None)
-    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {"192.168.3.193": "bc:24:11:53:ca:66"})
-    assert ic.build_plan("eth1", "192.168.3.0/24", "192.168.3.250", "192.168.3.1") is None
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {"198.51.100.193": "00:00:5e:00:53:02"})
+    assert ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.250", "198.51.100.1") is None
 
 
 def test_the_cli_assigns_our_address_and_withdraws_it():
@@ -874,14 +874,14 @@ def test_add_address_uses_the_segments_prefix_length():
     orig = weirnet._run
     weirnet._run = lambda *a, **k: (calls.append(a), (0, ""))[1]
     try:
-        rc, _ = weirnet.add_address("eth1", "192.168.3.250", "192.168.3.0/24")
+        rc, _ = weirnet.add_address("eth1", "198.51.100.250", "198.51.100.0/24")
         assert rc == 0
-        assert ("ip", "addr", "add", "192.168.3.250/24", "dev", "eth1") in calls, (
+        assert ("ip", "addr", "add", "198.51.100.250/24", "dev", "eth1") in calls, (
             f"the prefix did not come from the segment: {calls}"
         )
         # A /16 must produce /16, not a hardcoded /24.
-        weirnet.add_address("eth1", "10.0.5.9", "10.0.0.0/16")
-        assert ("ip", "addr", "add", "10.0.5.9/16", "dev", "eth1") in calls
+        weirnet.add_address("eth1", "198.51.100.9", "198.51.100.0/16")
+        assert ("ip", "addr", "add", "198.51.100.9/16", "dev", "eth1") in calls
     finally:
         weirnet._run = orig
 
@@ -889,7 +889,7 @@ def test_add_address_uses_the_segments_prefix_length():
 def test_add_address_rejects_a_bad_segment_instead_of_guessing():
     from weirvern.admin import weirnet
 
-    rc, out = weirnet.add_address("eth1", "192.168.3.250", "not-a-cidr")
+    rc, out = weirnet.add_address("eth1", "198.51.100.250", "not-a-cidr")
     assert rc != 0, "a malformed segment must fail rather than silently default a netmask"
     assert "not-a-cidr" in out
 
@@ -899,7 +899,7 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
 
     Measured live: preflight produced
 
-        BLOCKED a packet from 192.168.3.193 arriving on eth1 would leave via a different
+        BLOCKED a packet from 198.51.100.193 arriving on eth1 would leave via a different
         interface (RTNETLINK answers: Invalid argument)
 
     on a configuration that was CORRECT. Two causes stacked:
@@ -918,7 +918,7 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
     monkeypatch.setattr(weirnet, "forwarding_rule_text",
                         lambda _i: "1000:\tfrom all iif eth1 lookup 100")
     monkeypatch.setattr(weirnet, "forwarding_table_text",
-                        lambda: "default via 192.168.3.1 dev eth1")
+                        lambda: "default via 198.51.100.1 dev eth1")
 
     def fake_run(*a, **k):
         # The rule check succeeds; the corroborating route lookup errors.
@@ -927,8 +927,8 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
         return 2, "RTNETLINK answers: Invalid argument"
 
     monkeypatch.setattr(weirnet, "_run", fake_run)
-    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
-                                                sample_src="192.168.3.193")
+    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+                                                sample_src="198.51.100.193")
     assert problems == [], (
         f"a routing ERROR was reported as a misroute: {problems}. Preflight blockers REFUSE "
         f"the intercept, so this makes the command unusable on a correct configuration."
@@ -942,18 +942,18 @@ def test_a_genuinely_misrouted_packet_is_still_reported(monkeypatch):
     monkeypatch.setattr(weirnet, "forwarding_rule_text",
                         lambda _i: "1000:\tfrom all iif eth1 lookup 100")
     monkeypatch.setattr(weirnet, "forwarding_table_text",
-                        lambda: "default via 192.168.3.1 dev eth1")
+                        lambda: "default via 198.51.100.1 dev eth1")
 
     def fake_run(*a, **k):
         if a and a[0] == "ip" and "rule" in a:
             return 0, "1000:\tfrom all iif eth1 lookup 100"
         if a and "get" in a:
-            return 0, "192.0.2.1 from 192.168.3.193 via 192.168.2.1 dev eth0"
+            return 0, "192.0.2.1 from 198.51.100.193 via 203.0.113.1 dev eth0"
         return 0, ""
 
     monkeypatch.setattr(weirnet, "_run", fake_run)
-    problems = weirnet.forwarding_path_problems("eth1", "192.168.3.1",
-                                                sample_src="192.168.3.193")
+    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+                                                sample_src="198.51.100.193")
     assert any("dev eth0" in p for p in problems), (
         "a packet that genuinely leaves by the wrong interface was not reported"
     )

@@ -49,3 +49,14 @@ Thumbs.db
 *.bak
 *.tmp
 !weirvern/tools/*.py
+
+# ── Packet captures: keep locally, never commit ──────────────────────────────────
+#
+# A capture is a complete record of a real network and is more revealing than any single address
+# in it. None belongs in the repository. The test fixtures here are built from the schema DDL and
+# synthetic dicts, so no capture is needed -- if one is ever required, keep it in a local
+# directory that this file already ignores and read it from there.
+*.pcap
+*.pcapng
+*.cap
+/captures/

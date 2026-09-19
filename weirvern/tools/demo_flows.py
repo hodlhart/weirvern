@@ -34,7 +34,7 @@ def _flow(time_ns: int, src: str, dst: str, sport: int, dport: int, proto: int,
         "packets": packets,
         "tcp_flags": flags,
         "sampling_rate": 1,
-        "sampler_address": "192.168.3.1",
+        "sampler_address": "198.51.100.1",
         "in_if": 0,
         "out_if": 0,
     }
@@ -50,7 +50,7 @@ def generate(args) -> int:
     hosts scoring as high as a port scanner, which disguised model-tuning bugs.
     """
     rng = random.Random(args.seed)
-    devices = [f"192.168.3.{10 + i}" for i in range(args.devices)]
+    devices = [f"198.51.100.{10 + i}" for i in range(args.devices)]
     # Documentation addresses (RFC 5737), not real resolvers: this fixture is invented, and a
     # real address here reads as observed traffic from the network this was developed on.
     servers = ["198.51.100.53", "203.0.113.53", "192.0.2.53", "198.51.100.54", "203.0.113.54"]
@@ -86,7 +86,7 @@ def generate(args) -> int:
             if args.scanner and minute == 0:
                 scanner = devices[0]
                 for dport in range(1, min(1024, args.scan_ports + 1)):
-                    f = _flow(t0 * 1_000_000_000, scanner, "192.168.3.99", 40000 + dport, dport, 6, 0, 1, flags=2)
+                    f = _flow(t0 * 1_000_000_000, scanner, "198.51.100.99", 40000 + dport, dport, 6, 0, 1, flags=2)
                     fh.write(json.dumps(f) + "\n")
                     total += 1
             # Attack device 2: beacon (regular callbacks every 15 min)

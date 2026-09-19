@@ -1,14 +1,14 @@
-"""Reverse DNS, so the UI can show `spyro.home` instead of `192.168.2.42`.
+"""Reverse DNS, so the UI can show `host-a.example` instead of `203.0.113.42`.
 
 Measured on a real deployment before designing this, because the numbers dictate
 the design:
 
-    192.168.2.42     0.00s -> spyro.home        (local resolver answers instantly)
-    192.168.2.1      0.00s -> unifi
-    192.168.2.159    0.00s -> Weirvern.home
-    162.248.221.199  0.30s -> derp21b.tailscale.com
+    203.0.113.42     0.00s -> host-a.example        (local resolver answers instantly)
+    203.0.113.1      0.00s -> gateway
+    203.0.113.159    0.00s -> sensor.example
+    203.0.113.200  0.30s -> relay.example.net
     8.8.8.8          0.24s -> dns.google
-    10.20.30.11      0.00s -> no PTR            (fails fast, does not hang)
+    192.0.2.11      0.00s -> no PTR            (fails fast, does not hang)
 
 LAN addresses are effectively free. PUBLIC addresses cost ~0.25-0.30s each, and a
 dashboard showing 25 anomalies would therefore spend ~7 seconds resolving before
@@ -191,7 +191,7 @@ def lookup(addr: str, use_cache: bool = True) -> str | None:
 
 
 def label(addr: str, use_cache: bool = True) -> str:
-    """What the UI should display: `spyro.home (192.168.2.42)`, or just the IP.
+    """What the UI should display: `host-a.example (203.0.113.42)`, or just the IP.
 
     The address is kept in parentheses rather than replaced. A hostname is a
     convenience, but the IP is the fact — an operator correlating with a firewall

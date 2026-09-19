@@ -194,7 +194,7 @@ def _flow(with_enrichment):
     flow = {
         "window_start": datetime(2026, 9, 14, 10, 30),
         "window_end": datetime(2026, 9, 14, 10, 35),
-        "src_addr": "192.168.3.10",
+        "src_addr": "198.51.100.10",
         "flow_count": 60,
         "total_bytes": 500_000,
         "total_packets": 500,

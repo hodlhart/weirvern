@@ -22,10 +22,10 @@ from weirvern import ingester
 # Real records, copied from the live logs on the test cluster.
 HTTP_ROW = {
     "ts": "1789694182.250915", "uid": "CBICIq2JWuvfNFypRa",
-    "id.orig_h": "192.168.2.42", "id.orig_p": "39088",
-    "id.resp_h": "192.168.2.159", "id.resp_p": "30088",
-    "trans_depth": "1", "method": "GET", "host": "192.168.2.159:30088",
-    "uri": "/api/overview", "referrer": "http://192.168.2.159:30088/",
+    "id.orig_h": "203.0.113.42", "id.orig_p": "39088",
+    "id.resp_h": "203.0.113.159", "id.resp_p": "30088",
+    "trans_depth": "1", "method": "GET", "host": "203.0.113.159:30088",
+    "uri": "/api/overview", "referrer": "http://203.0.113.159:30088/",
     "version": "1.1", "user_agent": "Mozilla/5.0 (X11; Linux x86_64)",
     "request_body_len": "0", "response_body_len": "3928", "status_code": "200",
     "status_msg": "OK", "resp_mime_types": "application/json",
@@ -35,8 +35,8 @@ HTTP_ROW = {
 
 SSH_ROW = {
     "ts": "1789678722.149819", "uid": "Cxhoay3FXGMCGzQNma",
-    "id.orig_h": "192.168.2.42", "id.orig_p": "50622",
-    "id.resp_h": "192.168.2.159", "id.resp_p": "22",
+    "id.orig_h": "203.0.113.42", "id.orig_p": "50622",
+    "id.resp_h": "203.0.113.159", "id.resp_p": "22",
     "version": "2", "auth_success": "T", "auth_attempts": "1", "direction": "-",
     "client": "SSH-2.0-OpenSSH_10.5",
     "server": "SSH-2.0-OpenSSH_9.9p1 Ubuntu-3ubuntu3.2",
@@ -54,7 +54,7 @@ WEIRD_ROW = {
 
 FILES_ROW = {
     "ts": "1789680000.123456", "fuid": "Fabc123", "uid": "Cabc123",
-    "id.orig_h": "192.168.2.42", "id.orig_p": "44321",
+    "id.orig_h": "203.0.113.42", "id.orig_p": "44321",
     "id.resp_h": "93.184.216.34", "id.resp_p": "80",
     "source": "HTTP", "depth": "0", "analyzers": "MD5,SHA1,SHA256",
     "mime_type": "application/pdf", "filename": "invoice.pdf",
@@ -74,11 +74,11 @@ def test_http_extracts_the_request_that_nothing_else_can_see():
     row = ingester.map_zeek_http(HTTP_ROW)
     assert row is not None
     assert row["method"] == "GET"
-    assert row["host"] == "192.168.2.159:30088"
+    assert row["host"] == "203.0.113.159:30088"
     assert row["uri"] == "/api/overview"
     assert row["status_code"] == 200
     assert row["resp_bytes"] == 3928
-    assert row["src_addr"] == "192.168.2.42"
+    assert row["src_addr"] == "203.0.113.42"
     assert row["dst_port"] == 30088
     assert isinstance(row["ts"], datetime)
 

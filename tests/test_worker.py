@@ -160,7 +160,7 @@ class StubDetector:
 AGG_COLS = ["window_start", "window_end", "src_addr", "flow_count", "total_bytes",
             "total_packets", "avg_bytes", "avg_packets", "unique_dst_ips"]
 AGG_ROWS = [(datetime(2026, 9, 14, 10, 30), datetime(2026, 9, 14, 10, 35),
-             "192.168.3.10", 60, 500_000, 500, 9000.0, 9.0, 8)]
+             "198.51.100.10", 60, 500_000, 500, 9000.0, 9.0, 8)]
 
 
 def _install_db_stubs(monkeypatch, existing_anomalies):
@@ -203,7 +203,7 @@ def test_detection_sweep_returns_exact_verdicts(monkeypatch):
 
     assert len(verdicts) == 1
     assert len(inserted_rows) == 1
-    assert verdicts[0]["src_addr"] == "192.168.3.10"
+    assert verdicts[0]["src_addr"] == "198.51.100.10"
     assert verdicts[0]["anomaly_score"] > 0.8
 
 
@@ -212,7 +212,7 @@ def test_sweep_skips_already_recorded_windows(monkeypatch):
     re-inserted the same (window_start, src_addr) anomaly row."""
     _install_db_stubs(
         monkeypatch,
-        existing_anomalies=[(datetime(2026, 9, 14, 10, 30), "192.168.3.10")],
+        existing_anomalies=[(datetime(2026, 9, 14, 10, 30), "198.51.100.10")],
     )
     fake_ch, inserted_rows = _capturing_client()
     detectors = [StubDetector(0.9), StubDetector(0.88)]

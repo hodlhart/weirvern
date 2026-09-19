@@ -48,7 +48,7 @@ spec:
       # an exporter targets the CONTAINER port (2055) instead of the NodePort
       # (32055): the packets arrive at the node, match nothing, and are dropped.
       # A real router was observed doing exactly this -- sending 300-byte NetFlow
-      # to 192.168.2.159:2055 while the listener was at 32055 -- with the result
+      # to 203.0.113.159:2055 while the listener was at 32055 -- with the result
       # that the database stayed empty and NOTHING logged an error, because from
       # the collector's point of view no packets were ever sent.
       #

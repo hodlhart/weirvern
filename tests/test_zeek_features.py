@@ -27,10 +27,10 @@ from weirvern.zeek_features import (
 
 # A row shaped exactly as the summary query returns it: aliases are the FEATURE names, and
 # the ratios are computed in SQL. Copied from real output measured on the live deployment
-# (192.168.3.1, a window in which 88 of 89 connections were unanswered SYNs).
+# (198.51.100.1, a window in which 88 of 89 connections were unanswered SYNs).
 REAL_SCAN_ROW = {
     "window_start": "2026-09-17 23:25:00",
-    "src_addr": "192.168.3.1",
+    "src_addr": "198.51.100.1",
     "zeek_conn_count": 89,
     "zeek_unique_dst_ips": 4,
     "zeek_service_count": 2,

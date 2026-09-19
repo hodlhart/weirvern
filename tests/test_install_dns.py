@@ -39,8 +39,8 @@ def test_a_healthy_cluster_reports_success(monkeypatch):
     def runner(args, cwd, timeout=60):
         calls.append(list(args))
         return FakeResult(
-            stdout="Server:\t\t10.43.0.10\nAddress:\t10.43.0.10:53\n\n"
-                   "Name:\tkubernetes.default\nAddress: 10.43.0.1\n")
+            stdout="Server:\t\t198.51.100.10\nAddress:\t198.51.100.10:53\n\n"
+                   "Name:\tkubernetes.default\nAddress: 198.51.100.1\n")
 
     monkeypatch.setattr(c, "_run", runner)
     ok, detail = c._probe_cluster_dns()
@@ -164,8 +164,8 @@ def test_nxdomain_is_not_reported_as_a_dns_failure(monkeypatch):
     """REGRESSION: the first version accepted any output containing 'Address' as success
     -- and nslookup echoes its Server/Address header even on failure. A reply of
 
-        Server:  10.43.0.10
-        Address: 10.43.0.10:53
+        Server:  198.51.100.10
+        Address: 198.51.100.10:53
         ** server can't find kubernetes.default: NXDOMAIN
 
     was therefore reported as "in-cluster DNS resolves". The header must not be
@@ -174,7 +174,7 @@ def test_nxdomain_is_not_reported_as_a_dns_failure(monkeypatch):
     """
     from weirvern.admin import cli
 
-    text = ("Server:\t\t10.43.0.10\nAddress:\t10.43.0.10:53\n\n"
+    text = ("Server:\t\t198.51.100.10\nAddress:\t198.51.100.10:53\n\n"
             "** server can't find kubernetes.default: NXDOMAIN\n")
     ok, detail = cli._interpret_dns_probe(text, ok=True)
     assert ok, detail

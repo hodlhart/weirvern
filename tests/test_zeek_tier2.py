@@ -132,8 +132,8 @@ def test_the_mapper_dict_keys_match_the_column_order():
 # ── records shaped like the real thing ─────────────────────────────────────────
 
 def _base(ts: str = "1758200000.000000") -> dict[str, str]:
-    return {"ts": ts, "uid": "CAbc123", "id.orig_h": "10.0.0.5", "id.orig_p": "49152",
-            "id.resp_h": "10.0.0.9", "id.resp_p": "88", "proto": "tcp"}
+    return {"ts": ts, "uid": "CAbc123", "id.orig_h": "198.51.100.5", "id.orig_p": "49152",
+            "id.resp_h": "198.51.100.9", "id.resp_p": "88", "proto": "tcp"}
 
 
 # Field names read from the &log declarations in the installed Zeek 9.0.0 source:

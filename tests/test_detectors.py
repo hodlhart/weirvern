@@ -73,16 +73,16 @@ def test_save_load_roundtrip(trained_if, tmp_path):
 
 def test_adaptive_baseline_predict():
     det = AdaptiveBaselineDetector("/tmp/ff-none", ModelConfig())
-    det.baselines["10.0.0.5"] = {
+    det.baselines["198.51.100.5"] = {
         "avg_bytes": 1000.0, "stddev_bytes": 200.0,
         "avg_packets": 100.0, "stddev_packets": 20.0,
         "avg_unique_dsts": 5.0, "stddev_unique_dsts": 2.0,
         "p95_bytes": 1400.0, "p99_bytes": 1800.0, "p999_bytes": 2200.0,
         "p95_packets": 140.0, "p99_packets": 180.0, "p999_packets": 220.0,
     }
-    normal = det.predict({"src_addr": "10.0.0.5", "total_bytes": 1000, "total_packets": 100, "unique_dst_ips": 5})
+    normal = det.predict({"src_addr": "198.51.100.5", "total_bytes": 1000, "total_packets": 100, "unique_dst_ips": 5})
     assert normal == 0.0
-    spike = det.predict({"src_addr": "10.0.0.5", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
+    spike = det.predict({"src_addr": "198.51.100.5", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
     assert spike > 0.8
-    unknown = det.predict({"src_addr": "10.9.9.9", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
+    unknown = det.predict({"src_addr": "203.0.113.9", "total_bytes": 5_000_000, "total_packets": 100, "unique_dst_ips": 5})
     assert unknown == 0.0

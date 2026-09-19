@@ -495,7 +495,7 @@ def test_ps_distinguishes_unreachable_api_server(tmp_path, monkeypatch):
     b = _backend(tmp_path)
     monkeypatch.setattr(rt, "_run", lambda *a, **k: rt.CommandResult(
         ok=False,
-        stderr="Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
+        stderr="Unable to connect to the server: dial tcp 198.51.100.1:6443: i/o timeout",
         code=1))
     states = {s.name: s for s in b.ps()}
     assert states["goflow2"].state == "unreachable"

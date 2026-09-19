@@ -70,7 +70,7 @@ def test_zeek_value_null_sentinel():
 # --- per-log mapping ---------------------------------------------------------
 def _conn_rec():
     return {
-        "ts": "1789447100.123456", "uid": "C1", "id.orig_h": "192.168.3.10",
+        "ts": "1789447100.123456", "uid": "C1", "id.orig_h": "198.51.100.10",
         "id.orig_p": "51000", "id.resp_h": "8.8.8.8", "id.resp_p": "443",
         "proto": "tcp", "service": "ssl", "duration": "1.5", "orig_bytes": "1000",
         "resp_bytes": "2000", "orig_pkts": "10", "resp_pkts": "12",
@@ -80,7 +80,7 @@ def _conn_rec():
 
 def test_map_zeek_conn():
     row = map_zeek_conn(_conn_rec())
-    assert row["src_addr"] == "192.168.3.10"
+    assert row["src_addr"] == "198.51.100.10"
     assert row["src_port"] == 51000
     assert row["dst_port"] == 443
     assert row["proto"] == "tcp"
@@ -108,9 +108,9 @@ def test_map_zeek_conn_handles_garbage_numbers():
 
 def test_map_zeek_dns_computes_entropy():
     """DNS tunnelling shape: long, high-entropy labels."""
-    benign = map_zeek_dns({"ts": "1", "id.orig_h": "10.0.0.5", "query": "www.google.com", "qtype": "1"})
+    benign = map_zeek_dns({"ts": "1", "id.orig_h": "198.51.100.5", "query": "www.google.com", "qtype": "1"})
     tunnel = map_zeek_dns({
-        "ts": "1", "id.orig_h": "10.0.0.5",
+        "ts": "1", "id.orig_h": "198.51.100.5",
         "query": "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHR1bm5lbA.exfil.example.com", "qtype": "16",
     })
     assert benign["query_len"] < tunnel["query_len"]
@@ -137,7 +137,7 @@ def test_map_zeek_ssl_extracts_ja4():
     assertion encoded a real mistake -- it asserted a field that could never arrive.
     """
     row = map_zeek_ssl({
-        "ts": "1", "uid": "S1", "id.orig_h": "10.0.0.9", "id.resp_h": "1.2.3.4",
+        "ts": "1", "uid": "S1", "id.orig_h": "198.51.100.9", "id.resp_h": "1.2.3.4",
         "id.resp_p": "443", "version": "TLSv13", "cipher": "TLS_AES_256_GCM_SHA384",
         "server_name": "c2.example.net", "ja4": "t130200_1302_234ea6891581",
         "ja4_o": "t13d1516h2_8daaf6152771_02713d6af862",
@@ -156,12 +156,12 @@ def test_map_zeek_ssl_extracts_ja4():
 
 def test_map_zeek_notice():
     row = map_zeek_notice({
-        "ts": "1", "uid": "N1", "src": "192.168.3.10", "dst": "192.168.3.99",
-        "note": "Scan::Port_Scan", "msg": "192.168.3.10 scanned 100 ports",
+        "ts": "1", "uid": "N1", "src": "198.51.100.10", "dst": "198.51.100.99",
+        "note": "Scan::Port_Scan", "msg": "198.51.100.10 scanned 100 ports",
         "sub": "100 ports", "actions": "Notice::ACTION_LOG", "suppress_for": "3600",
     })
     assert row["note"] == "Scan::Port_Scan"
-    assert row["src_addr"] == "192.168.3.10"
+    assert row["src_addr"] == "198.51.100.10"
     assert row["suppress_for"] == 3600.0
 
 
@@ -201,16 +201,16 @@ def test_tail_zeek_conn_inserts_rows():
                   "proto", "service", "duration", "orig_bytes", "resp_bytes",
                   "orig_pkts", "resp_pkts", "conn_state", "history"]
         recs = [
-            ["1789447100.0", "C1", "10.0.0.5", "5000", "8.8.8.8", "443", "tcp", "ssl",
+            ["1789447100.0", "C1", "198.51.100.5", "5000", "8.8.8.8", "443", "tcp", "ssl",
              "1.0", "100", "200", "2", "3", "SF", "ShAD"],
-            ["1789447101.0", "C2", "10.0.0.6", "5001", "1.1.1.1", "53", "udp", "dns",
+            ["1789447101.0", "C2", "198.51.100.6", "5001", "1.1.1.1", "53", "udp", "dns",
              "0.1", "50", "60", "1", "1", "SF", "Dd"],
         ]
         path = _write_zeek_log(d, "conn", recs, fields)
         n, off, ino, _hdr = tail_zeek_log(fake, path, state=ZeekTailState())
         assert n == 2
         assert len(fake.tables["weirvern.zeek_conn"]) == 2
-        assert fake.tables["weirvern.zeek_conn"][0][2] == "10.0.0.5"
+        assert fake.tables["weirvern.zeek_conn"][0][2] == "198.51.100.5"
 
 
 def test_tail_zeek_log_no_duplicates_on_second_pass():
@@ -219,7 +219,7 @@ def test_tail_zeek_log_no_duplicates_on_second_pass():
         fields = ["ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p",
                   "proto", "service", "duration", "orig_bytes", "resp_bytes",
                   "orig_pkts", "resp_pkts", "conn_state", "history"]
-        path = _write_zeek_log(d, "conn", [["1.0", "C1", "10.0.0.5", "1", "2.2.2.2", "80",
+        path = _write_zeek_log(d, "conn", [["1.0", "C1", "198.51.100.5", "1", "2.2.2.2", "80",
                                            "tcp", "http", "0", "1", "1", "1", "1", "SF", "h"]], fields)
         st = ZeekTailState()
         n1, _, _, _ = tail_zeek_log(fake, path, state=st)
@@ -242,8 +242,8 @@ def test_tail_zeek_log_holds_back_partial_line():
                   "orig_pkts", "resp_pkts", "conn_state", "history"]
         path = _write_zeek_log(d, "conn", [], fields)
         with open(path, "a") as fh:
-            fh.write("1.0\tC1\t10.0.0.5\t1\t2.2.2.2\t80\ttcp\thttp\t0\t1\t1\t1\t1\tSF\th\n")
-            fh.write("2.0\tC2\t10.0.0.6\t2\t3.3")  # partial, no newline
+            fh.write("1.0\tC1\t198.51.100.5\t1\t2.2.2.2\t80\ttcp\thttp\t0\t1\t1\t1\t1\tSF\th\n")
+            fh.write("2.0\tC2\t198.51.100.6\t2\t3.3")  # partial, no newline
         st = ZeekTailState()
         n1, _, _, _ = tail_zeek_log(fake, path, state=st)
         assert n1 == 1
@@ -260,9 +260,9 @@ def test_tail_zeek_dir_walks_relevant_logs():
                        "proto", "service", "duration", "orig_bytes", "resp_bytes",
                        "orig_pkts", "resp_pkts", "conn_state", "history"]
         notice_fields = ["ts", "uid", "src", "dst", "note", "msg", "sub", "actions", "suppress_for"]
-        _write_zeek_log(d, "conn", [["1.0", "C1", "10.0.0.5", "1", "2.2.2.2", "80",
+        _write_zeek_log(d, "conn", [["1.0", "C1", "198.51.100.5", "1", "2.2.2.2", "80",
                                      "tcp", "http", "0", "1", "1", "1", "1", "SF", "h"]], conn_fields)
-        _write_zeek_log(d, "notice", [["1.0", "N1", "10.0.0.5", "10.0.0.9", "Scan::Port_Scan",
+        _write_zeek_log(d, "notice", [["1.0", "N1", "198.51.100.5", "198.51.100.9", "Scan::Port_Scan",
                                        "scanned", "s", "log", "3600"]], notice_fields)
         # an unrelated log type must be ignored
         _write_zeek_log(d, "weird", [["1.0", "W1"]], ["ts", "uid"])
@@ -299,13 +299,13 @@ def test_tail_zeek_dir_reads_rotated_files():
         fields = _CONN_FIELDS
         # Two rotated files and the live one, exactly as Zeek leaves them.
         _write_zeek_log(d, "conn.2026-09-15-00-00-00", [  # oldest
-            ["1.0", "R1", "10.0.0.7", "1", "2.2.2.2", "80", "tcp", "http",
+            ["1.0", "R1", "198.51.100.7", "1", "2.2.2.2", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
         _write_zeek_log(d, "conn.2026-09-15-01-00-00", [
-            ["2.0", "R2", "10.0.0.8", "1", "3.3.3.3", "80", "tcp", "http",
+            ["2.0", "R2", "198.51.100.8", "1", "3.3.3.3", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
         _write_zeek_log(d, "conn", [  # live
-            ["3.0", "L1", "10.0.0.9", "1", "4.4.4.4", "80", "tcp", "http",
+            ["3.0", "L1", "198.51.100.9", "1", "4.4.4.4", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
 
         total, state = tail_zeek_dir(fake, d)
@@ -315,7 +315,7 @@ def test_tail_zeek_dir_reads_rotated_files():
             f"{total}; rotated logs named <type>.<timestamp>.log are being missed"
         )
         srcs = {row[2] for row in fake.tables["weirvern.zeek_conn"]}
-        assert srcs == {"10.0.0.7", "10.0.0.8", "10.0.0.9"}
+        assert srcs == {"198.51.100.7", "198.51.100.8", "198.51.100.9"}
         # Every distinct file must be tracked separately, or a rotation would
         # resume at the wrong offset.
         assert len([k for k in state if k.startswith("conn.")]) == 3
@@ -335,20 +335,20 @@ def test_tail_zeek_dir_rotated_files_are_read_oldest_first():
         # Deliberately create them in an order that does NOT match their names,
         # and give the newest name the OLDEST mtime, so an mtime sort fails.
         _write_zeek_log(d, "conn.2026-09-15-02-00-00", [
-            ["3.0", "C", "10.0.0.30", "1", "2.2.2.2", "80", "tcp", "http",
+            ["3.0", "C", "198.51.100.30", "1", "2.2.2.2", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
         _write_zeek_log(d, "conn.2026-09-15-00-00-00", [
-            ["1.0", "A", "10.0.0.10", "1", "2.2.2.2", "80", "tcp", "http",
+            ["1.0", "A", "198.51.100.10", "1", "2.2.2.2", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
         _write_zeek_log(d, "conn.2026-09-15-01-00-00", [
-            ["2.0", "B", "10.0.0.20", "1", "2.2.2.2", "80", "tcp", "http",
+            ["2.0", "B", "198.51.100.20", "1", "2.2.2.2", "80", "tcp", "http",
              "0", "1", "1", "1", "1", "SF", "h"]], fields)
         os.utime(os.path.join(d, "conn.2026-09-15-02-00-00.log"), (1000, 1000))
 
         total, _ = tail_zeek_dir(fake, d)
         assert total == 3
         order = [row[2] for row in fake.tables["weirvern.zeek_conn"]]
-        assert order == ["10.0.0.10", "10.0.0.20", "10.0.0.30"], (
+        assert order == ["198.51.100.10", "198.51.100.20", "198.51.100.30"], (
             f"rotated files must be read oldest-first by name, got {order}"
         )
 

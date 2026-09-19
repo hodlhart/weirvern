@@ -53,8 +53,8 @@ def test_loopback_never_tunnels(host):
 @pytest.mark.parametrize("host", [
     "clickhouse.weirvern.svc.cluster.local",
     "clickhouse.example.com",
-    "192.168.2.159",
-    "10.0.0.5",
+    "203.0.113.159",
+    "198.51.100.5",
 ])
 def test_explicit_targets_never_tunnel(host):
     """An FQDN or an IP is something an operator aimed at deliberately, so the
@@ -81,7 +81,7 @@ def test_detects_a_pod_by_the_service_host_env(monkeypatch):
     """The fallback signal. Needed because this project sets
     automountServiceAccountToken: false on most workloads, so the token directory
     may be absent while KUBERNETES_SERVICE_HOST is still set."""
-    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "198.51.100.1")
     assert tunnel._detect_in_cluster() is True
 
 

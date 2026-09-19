@@ -174,7 +174,7 @@ def test_a_failing_query_is_recorded_not_hidden():
     from weirvern.admin import status
 
     client = RecordingClient(rows_per_query=0, raise_for=("zeek_dns",))
-    out = status.alert_evidence(client, "10.0.0.5", "2026-09-17T16:37:00")
+    out = status.alert_evidence(client, "198.51.100.5", "2026-09-17T16:37:00")
     assert out.get("_errors"), "the failure was swallowed"
     assert "zeek_dns" in out["_errors"]
     assert out["zeek_dns"] == [], "the failed section should be empty, not absent"
@@ -184,7 +184,7 @@ def test_evidence_payload_surfaces_errors():
     from weirvern.admin import web_api
 
     payload = web_api.evidence_payload({
-        "src_addr": "10.0.0.5", "flows": [], "zeek_conn": [], "zeek_dns": [],
+        "src_addr": "198.51.100.5", "flows": [], "zeek_conn": [], "zeek_dns": [],
         "notice": [], "_errors": {"zeek_dns": "Code: 47"},
     })
     assert payload["errors"] == {"zeek_dns": "Code: 47"}, (
@@ -202,7 +202,7 @@ def test_payload_is_json_serialisable_with_real_datetimes():
 
     now = datetime(2026, 9, 17, 16, 37, 36, tzinfo=UTC)
     payload = web_api.evidence_payload({
-        "src_addr": "10.0.0.5",
+        "src_addr": "198.51.100.5",
         "window_start": now, "window_end": now,
         "flows": [(now, "1.2.3.4", 443, 6, 1234, 9, 12.5)],
         "zeek_conn": [(now, "1.2.3.4", 443, "tcp", "ssl", 1.0, 10, 20, "SF")],
@@ -223,7 +223,7 @@ def test_column_count_mismatch_raises_rather_than_truncating():
 
     with pytest.raises(ValueError):
         web_api.evidence_payload({
-            "src_addr": "10.0.0.5",
+            "src_addr": "198.51.100.5",
             # Seven field names, five values.
             "flows": [("a", "b", "c", "d", "e")],
         })
@@ -307,7 +307,7 @@ def test_flow_summary_is_labelled_not_a_positional_row():
     from weirvern.admin import web_api
 
     summary = web_api.evidence_payload({
-        "src_addr": "10.0.0.5",
+        "src_addr": "198.51.100.5",
         "flow_summary": (3604, 53, 53, 1, 1, "2026-09-17T16:35:23", "2026-09-17T16:39:36"),
     })["flow_summary"]
     assert isinstance(summary, dict), "flow_summary must be a labelled object"
@@ -348,14 +348,14 @@ def test_flow_summary_of_wrong_width_is_dropped_not_mislabelled():
     from weirvern.admin import web_api
 
     assert web_api.evidence_payload(
-        {"src_addr": "10.0.0.5", "flow_summary": (1, 2)}
+        {"src_addr": "198.51.100.5", "flow_summary": (1, 2)}
     )["flow_summary"] is None
-    assert web_api.evidence_payload({"src_addr": "10.0.0.5"})["flow_summary"] is None
+    assert web_api.evidence_payload({"src_addr": "198.51.100.5"})["flow_summary"] is None
 
 
 def test_evidence_title_is_not_uppercased():
-    """The title holds a hostname; CSS uppercasing turned spyro.home into
-    SPYRO.HOME, which misrepresents an identifier the operator may need verbatim."""
+    """The title holds a hostname; CSS uppercasing turned host-a.example into
+    host-a.example, which misrepresents an identifier the operator may need verbatim."""
     css = (Path(__file__).resolve().parent.parent
            / "weirvern" / "admin" / "web" / "style.css").read_text()
     m = re.search(r"#ev-title\s*\{[^}]*\}", css, re.S)

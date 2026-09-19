@@ -54,10 +54,10 @@ logger = logging.getLogger(__name__)
 SERVICE_ORDER = [name for name, _kind in WORKLOADS]
 
 def _host_label(addr: str) -> str:
-    """Address for a table cell: `spyro.home (192.168.2.42)`.
+    """Address for a table cell: `host-a.example (203.0.113.42)`.
 
     THE FULL SOURCE IP IS ALWAYS PRESENT. An earlier version shortened it to the
-    last octet (`spyro (42)`) to save width, which was wrong: the IP is the fact,
+    last octet (`host-a (42)`) to save width, which was wrong: the IP is the fact,
     not the decoration. An operator correlating an anomaly with a firewall rule,
     a DHCP lease, or another log needs the whole address, and a name alone is not
     a substitute — DNS can be stale, and a PTR record can map several addresses to
@@ -244,7 +244,7 @@ class WeirvernTUI(App):
 
         anom = self.query_one("#anomalies", DataTable)
         # The Source column holds a reverse-DNS label like
-        # `spyro.home (192.168.2.42)` -- about 26 characters. Textual auto-sizes
+        # `host-a.example (203.0.113.42)` -- about 26 characters. Textual auto-sizes
         # columns to their content, so the full label fits without an explicit
         # width; no truncation is needed and the IP is never dropped to save space.
         anom.add_columns("Detected", "Source", "Score", "Severity", "Detectors")

@@ -149,8 +149,8 @@ def test_poison_frame_claims_our_mac_for_the_claimed_ip():
     This test previously asserted opcode 2 ("must be an ARP reply"), encoding the wrong
     assumption. It is updated to the measured behaviour, not relaxed to pass.
     """
-    ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
-                         claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
+    ic = wd.Interception(host_ip="198.51.100.5", host_mac="aa:bb:cc:dd:ee:01",
+                         claim_ip="198.51.100.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
     frame = ic.poison_frame()
     # Ethernet: dst is the host, src is us, ethertype ARP.
@@ -164,11 +164,11 @@ def test_poison_frame_claims_our_mac_for_the_claimed_ip():
     # "claim_ip is at OUR mac" — the lie we are telling. In a request this rides in the
     # SENDER fields, which is what makes it an announcement the target records.
     assert frame[22:28] == bytes.fromhex("aabbccddee03")
-    assert frame[28:32] == bytes.fromhex("0a000001")   # 10.0.0.1
+    assert frame[28:32] == bytes.fromhex("c6336401")   # 198.51.100.1
     # The target field is the host we are asking about; its MAC is left zero because the
     # request asks "who-has", and a fabricated answer there would be a false claim.
     assert frame[32:38] == b"\x00" * 6
-    assert frame[38:42] == bytes.fromhex("0a000005")   # 10.0.0.5
+    assert frame[38:42] == bytes.fromhex("c6336405")   # 198.51.100.5
 
 
 def test_restore_frame_tells_the_truth():
@@ -178,12 +178,12 @@ def test_restore_frame_tells_the_truth():
     state, and the restore is the safety property — the wrong place to rely on a state
     distinction going the right way while a network is in the state we are trying to fix.
     """
-    ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
-                         claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
+    ic = wd.Interception(host_ip="198.51.100.5", host_mac="aa:bb:cc:dd:ee:01",
+                         claim_ip="198.51.100.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
     frame = ic.restore_frame()
     assert frame[22:28] == bytes.fromhex("aabbccddee02"), "must name the real owner"
-    assert frame[28:32] == bytes.fromhex("0a000001")
+    assert frame[28:32] == bytes.fromhex("c6336401")
     assert frame[0:6] == bytes.fromhex("aabbccddee01"), "still addressed to the host"
     assert struct.unpack("!H", frame[20:22])[0] == 1, (
         "the restore must use the form that provably installs a mapping"
@@ -197,8 +197,8 @@ def test_restore_frame_tells_the_truth():
 def test_the_restore_is_never_sent_as_an_arp_reply():
     """A guard on the specific regression: someone 'restoring' the reply form because it
     looks more like a correction, reintroducing the bug that made interception a no-op."""
-    ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
-                         claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
+    ic = wd.Interception(host_ip="198.51.100.5", host_mac="aa:bb:cc:dd:ee:01",
+                         claim_ip="198.51.100.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
     for name, frame in (("poison", ic.poison_frame()), ("restore", ic.restore_frame())):
         op = struct.unpack("!H", frame[20:22])[0]
@@ -217,8 +217,8 @@ def test_poison_and_restore_differ_only_in_the_macs_they_name():
     origin). Everything else — the destination, the ethertype, the opcode, the addresses
     and lengths — must be identical or the frame is a different class of packet.
     """
-    ic = wd.Interception(host_ip="10.0.0.5", host_mac="aa:bb:cc:dd:ee:01",
-                         claim_ip="10.0.0.1", real_mac="aa:bb:cc:dd:ee:02",
+    ic = wd.Interception(host_ip="198.51.100.5", host_mac="aa:bb:cc:dd:ee:01",
+                         claim_ip="198.51.100.1", real_mac="aa:bb:cc:dd:ee:02",
                          iface="eth1", our_mac="aa:bb:cc:dd:ee:03")
     a, b = ic.poison_frame(), ic.restore_frame()
     assert len(a) == len(b)
@@ -258,7 +258,7 @@ def test_stop_restores_every_mapping():
     """THE core safety property: what was poisoned must be corrected."""
     s = FakeSender()
     w = _watchdog(s)
-    ic = wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    ic = wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                          "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(ic)
     w.stop()
@@ -273,7 +273,7 @@ def test_stop_is_idempotent():
     or raise."""
     s = FakeSender()
     w = _watchdog(s)
-    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                                "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
     w.stop()
     first = len(s.sent)
@@ -293,7 +293,7 @@ def test_a_send_failure_during_restore_is_recorded_not_swallowed():
     dangerous possible error state, so it must be visible."""
     s = FakeSender(fail_on=(0,))          # the very first (restore) send fails
     w = _watchdog(s)
-    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                                "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
     w.stop()
     assert w.failures, "a failed restore must be recorded"
@@ -305,7 +305,7 @@ def test_the_refresh_loop_reasserts_the_poison():
     the intercept silently reverts to passive."""
     s = FakeSender()
     w = _watchdog(s, refresh_s=0.05)
-    ic = wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    ic = wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                          "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(ic)
     w.start()
@@ -325,7 +325,7 @@ def test_restore_is_not_undone_by_the_refresh_loop():
     """
     s = FakeSender()
     w = _watchdog(s, refresh_s=0.05)
-    ic = wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    ic = wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                          "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(ic)
     w.start()
@@ -345,14 +345,14 @@ def test_restore_is_not_undone_by_the_refresh_loop():
 def test_unregister_restores_just_that_host():
     s = FakeSender()
     w = _watchdog(s)
-    a = wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    a = wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                         "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
-    b = wd.Interception("10.0.0.6", "aa:bb:cc:dd:ee:04", "10.0.0.1",
+    b = wd.Interception("198.51.100.6", "aa:bb:cc:dd:ee:04", "198.51.100.1",
                         "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(a)
     w.register(b)
     assert w.active == 2
-    w.unregister("10.0.0.5", "10.0.0.1")
+    w.unregister("198.51.100.5", "198.51.100.1")
     assert w.active == 1
     assert s.sent[-1] == a.restore_frame(), "only the removed host should be restored"
     assert s.sent[-1] != b.restore_frame()
@@ -363,7 +363,7 @@ def test_a_forwarding_stall_triggers_fail_open():
     recovers, rather than holding the path and blackholing traffic."""
     s = FakeSender()
     w = _watchdog(s, health_s=0.02)
-    ic = wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    ic = wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                          "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03")
     w.register(ic)
 
@@ -397,7 +397,7 @@ def test_a_single_missed_health_sample_does_not_fail_open():
     on one sample would cause spurious restores, which are themselves disruptive."""
     s = FakeSender()
     w = _watchdog(s, health_s=0.02)
-    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                                "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
     calls = {"n": 0}
 
@@ -424,7 +424,7 @@ def test_unavailable_forwarding_counter_is_not_treated_as_a_stall():
     s = FakeSender()
     w = _watchdog(s, health_s=0.02)
     w._forwarding = NoCounter()
-    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                                "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
     w.start()
     time.sleep(0.2)
@@ -481,7 +481,7 @@ def test_a_never_advancing_counter_does_not_fail_open():
     """
     s = FakeSender()
     w = _watchdog(s, health_s=0.02)
-    w.register(wd.Interception("10.0.0.5", "aa:bb:cc:dd:ee:01", "10.0.0.1",
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
                                "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
     w._forwarding.advanced = lambda: False  # type: ignore[method-assign]
 

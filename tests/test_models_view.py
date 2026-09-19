@@ -225,7 +225,7 @@ def test_model_overview_survives_malformed_feature_contributions():
     not raise -- one bad row should not blank the whole panel."""
     rows = [(
         0.5, 0.4, 0.3, 0.2, 0.1, 0.5, "Isolation Forest", "low",
-        "total_bytes", 1.0, None, "192.168.2.9",
+        "total_bytes", 1.0, None, "203.0.113.9",
         "NOT JSON{{{",
     )]
     client = FakeClient({"netflow_anomalies": rows})
@@ -240,9 +240,9 @@ def test_model_overview_aggregates_feature_deviation_z_scores():
     contrib_b = json.dumps({"total_bytes": {"z": 4.0}})
     rows = [
         (0.9, 0.9, 0.9, 0.9, 0.9, 1.0, "Isolation Forest", "high", "total_bytes",
-         3.0, None, "192.168.2.1", contrib_a),
+         3.0, None, "203.0.113.1", contrib_a),
         (0.8, 0.8, 0.8, 0.8, 0.8, 1.0, "Gradient Boosting", "medium", "total_bytes",
-         2.0, None, "192.168.2.2", contrib_b),
+         2.0, None, "203.0.113.2", contrib_b),
     ]
     client = FakeClient({"netflow_anomalies": rows})
     out = _status_module().model_overview(client, hours=24)
@@ -258,8 +258,8 @@ def test_model_overview_aggregates_feature_deviation_z_scores():
 def test_model_overview_counts_which_models_fired_together():
     rows = [
         (0.9, 0, 0, 0, 0, 0.5, "Isolation Forest,Gradient Boosting", "low",
-         "x", 1.0, None, "10.0.0.1", ""),
-        (0.9, 0, 0, 0, 0, 0.5, "Isolation Forest", "low", "x", 1.0, None, "10.0.0.2", ""),
+         "x", 1.0, None, "198.51.100.1", ""),
+        (0.9, 0, 0, 0, 0, 0.5, "Isolation Forest", "low", "x", 1.0, None, "198.51.100.2", ""),
     ]
     client = FakeClient({"netflow_anomalies": rows})
     out = _status_module().model_overview(client, hours=24)
@@ -278,12 +278,12 @@ def test_the_api_payload_keeps_addresses_and_adds_names():
         "feature_deviations": [],
         "points": [{"score": 0.9, "agreement": 1.0, "severity": "high",
                     "models": ["Isolation Forest"], "primary": "total_bytes",
-                    "magnitude": 3.0, "src_addr": "192.168.2.42"}],
+                    "magnitude": 3.0, "src_addr": "203.0.113.42"}],
     }
     out = web_api.models_payload(data)
     assert out["available"] is True
     pt = out["points"][0]
-    assert pt["src_addr"] == "192.168.2.42", "the raw address was dropped, losing the fact"
+    assert pt["src_addr"] == "203.0.113.42", "the raw address was dropped, losing the fact"
     assert "hostname" in pt, "the display name was not added"
     assert "summary" in out and out["summary"], "no plain-language summary was produced"
 

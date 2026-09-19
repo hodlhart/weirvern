@@ -259,7 +259,7 @@ def test_the_ssl_mapper_reads_ja4_not_ja3():
     from weirvern.ingester import map_zeek_ssl
 
     row = map_zeek_ssl({
-        "ts": "1789689741.76", "uid": "C1", "id.orig_h": "10.0.0.5",
+        "ts": "1789689741.76", "uid": "C1", "id.orig_h": "198.51.100.5",
         "id.resp_h": "1.1.1.1", "id.resp_p": "443", "version": "TLSv13",
         "cipher": "TLS_AES_128_GCM_SHA256", "server_name": "example.com",
         "ja4": "t130200_1302_234ea6891581",

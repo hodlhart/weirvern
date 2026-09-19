@@ -252,7 +252,7 @@ def _build_handler(ctx: GuiContext):
         def _host(self, query: dict) -> None:
             addr = (query.get("addr") or [""])[0].strip()
             if not addr:
-                return self._error(400, "addr is required, e.g. /api/host?addr=10.0.0.5")
+                return self._error(400, "addr is required, e.g. /api/host?addr=198.51.100.5")
             # Validate before it reaches a query parameter. clickhouse-connect
             # parameterises these, so this is not the only defence, but an
             # obviously-wrong address should not become a database round trip.
@@ -276,14 +276,14 @@ def _build_handler(ctx: GuiContext):
             addr = (query.get("addr") or [""])[0].strip()
             if not addr:
                 return self._error(
-                    400, "addr is required, e.g. /api/evidence?addr=10.0.0.5&start=2026-09-17T16:37:00")
+                    400, "addr is required, e.g. /api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
             if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
                 return self._error(400, "addr does not look like an IP address or hostname")
             start = (query.get("start") or [""])[0].strip()
             if not start:
                 return self._error(
                     400, "start is required (the alert's window_start), e.g. "
-                         "/api/evidence?addr=10.0.0.5&start=2026-09-17T16:37:00")
+                         "/api/evidence?addr=198.51.100.5&start=2026-09-17T16:37:00")
             # Length-capped so a pathological value cannot reach the parser. The
             # query parameterises it, and parseDateTime64BestEffort is tolerant.
             if len(start) > 64:

@@ -307,10 +307,10 @@ def forwarding_path_problems(iface: str, gateway: str,
 
     THE BUG THIS EXISTS FOR, measured on a live boot:
 
-        ip route get 192.0.2.1 from 192.168.3.193 iif eth1
-            -> via 192.168.2.1 dev eth0                 <-- WRONG INTERFACE
+        ip route get 192.0.2.1 from 198.51.100.193 iif eth1
+            -> via 203.0.113.1 dev eth0                 <-- WRONG INTERFACE
         with `iif eth1 -> table 100` installed:
-            -> via 192.168.3.1 dev eth1 table 100       <-- correct
+            -> via 198.51.100.1 dev eth1 table 100       <-- correct
 
     `ip_forward=1` makes the kernel willing to forward; it does NOT decide WHERE. A relayed
     packet's destination is a public address, so it matches the DEFAULT route -- which on a

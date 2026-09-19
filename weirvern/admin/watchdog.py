@@ -83,7 +83,7 @@ def build_arp_announcement(claimed_mac: str, claimed_ip: str,
     THIS IS THE FRAME THAT ACTUALLY POISONS, and the reason is a Linux behaviour that
     silently ignores the frame the product originally sent.
 
-    MEASURED against a real host on a live segment (192.168.3.193), each frame type sent 8
+    MEASURED against a real host on a live segment (198.51.100.193), each frame type sent 8
     times, reading the destination MAC of the host's reply to an off-link probe:
 
         forged ARP reply, unicast         ->  ignored   (reply still went to the real gateway)

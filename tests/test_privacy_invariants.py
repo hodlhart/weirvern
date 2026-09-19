@@ -111,7 +111,7 @@ def test_the_ingester_never_stores_http_credentials():
     from weirvern.ingester import map_zeek_http
 
     row = map_zeek_http({
-        "ts": "1789689741.76", "uid": "H1", "id.orig_h": "10.0.0.5",
+        "ts": "1789689741.76", "uid": "H1", "id.orig_h": "198.51.100.5",
         "id.resp_h": "93.184.216.34", "id.resp_p": "80", "method": "POST",
         "host": "example.com", "uri": "/login", "status_code": "200",
         "resp_mime_types": "text/html", "resp_bytes": "1234",

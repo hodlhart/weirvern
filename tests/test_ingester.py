@@ -52,7 +52,7 @@ def _flow_record(i=1, pad=0):
     return {
         "time_flow_start_ns": 1_700_000_000_000_000_000,
         "time_flow_end_ns": 1_700_000_000_005_000_000,
-        "src_addr": "192.168.3.10",
+        "src_addr": "198.51.100.10",
         "dst_addr": "8.8.8.8",
         "src_port": 5000 + i,
         "dst_port": 443,

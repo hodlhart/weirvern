@@ -20,7 +20,7 @@ FROM python:3.11-slim
 # keeps relayed traffic off the management interface, and verifying the forwarding path. The
 # base image is python:3.11-slim, which has no iproute2 -- measured in the deployed pod:
 #
-#     $ ip addr add 192.168.3.250/24 dev eth1
+#     $ ip addr add 198.51.100.250/24 dev eth1
 #     sh: 1: ip: not found
 #
 # So `weir` mode could not have worked in-cluster even with every capability granted. It would

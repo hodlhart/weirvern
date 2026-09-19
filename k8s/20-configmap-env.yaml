@@ -100,7 +100,7 @@ data:
   # preflight cannot pass, so weir mode refuses to start rather than guessing a range.
   # Guessing here would mean poisoning hosts the operator never chose.
   #
-  #   INTERCEPT_SEGMENT   the CIDR whose traffic to relay, e.g. 192.168.3.0/24. This IS
+  #   INTERCEPT_SEGMENT   the CIDR whose traffic to relay, e.g. 198.51.100.0/24. This IS
   #                       the blast radius: every host in it would have its ARP cache
   #                       forged, so it is listed explicitly rather than derived from
   #                       the interface.

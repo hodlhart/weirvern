@@ -117,7 +117,7 @@ def _interpret_dns_probe(text: str, ok: bool) -> tuple[bool, str]:
 
     ORDER MATTERS, and an earlier version got it wrong: it accepted any output
     containing "Address" as success, so a reply reading
-    `Server: 10.43.0.10 Address: 10.43.0.10:53` followed by
+    `Server: 198.51.100.10 Address: 198.51.100.10:53` followed by
     `** server can't find kubernetes.default: NXDOMAIN` was reported as
     "DNS resolves". The Server/Address header is echoed even on failure, so the
     FAILURE wordings must be checked first.
@@ -1323,7 +1323,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("intercept", help="run in-path intercept (weir mode)")
     s.add_argument("--iface", help="capture NIC with L2 reachability to the segment")
-    s.add_argument("--segment", help="CIDR to intercept, e.g. 192.168.3.0/24")
+    s.add_argument("--segment", help="CIDR to intercept, e.g. 198.51.100.0/24")
     s.add_argument("--our-ip", dest="our_ip", help="this sensor's address on that segment")
     s.add_argument("--gateway", help="the gateway whose traffic to relay")
     s.add_argument("--dry-run", action="store_true",
@@ -1457,7 +1457,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         _bad("missing: " + ", ".join(missing))
         print("\n  Required for an intercept:")
         print("    --iface    the capture NIC with L2 reachability to the segment")
-        print("    --segment  the CIDR to intercept, e.g. 192.168.3.0/24")
+        print("    --segment  the CIDR to intercept, e.g. 198.51.100.0/24")
         print("    --our-ip   this sensor's address on that segment")
         print("    --gateway  the gateway whose traffic to relay")
         print("\n  Or set CAPTURE_IFACE / INTERCEPT_SEGMENT / INTERCEPT_ADDR /")

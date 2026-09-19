@@ -64,7 +64,7 @@ NOW = datetime.datetime(2026, 9, 18, 12, 0, 0)
 
 def _row(**over) -> dict:
     row = {
-        "mode": "weir", "iface": "eth1", "segment": "192.168.3.0/24",
+        "mode": "weir", "iface": "eth1", "segment": "198.51.100.0/24",
         "hosts": 11, "mappings": 22, "running": 1, "uptime_s": 120.0,
         "restores": 0, "refreshes": 24, "failures": [],
         "ts": NOW - datetime.timedelta(seconds=5),
@@ -163,7 +163,7 @@ def test_an_unreadable_timestamp_is_not_treated_as_running():
 def test_heartbeat_writes_a_row_with_every_field():
     c = FakeClient()
     ok = status.heartbeat(c, sensor_id="sensor-1", mode="weir", iface="eth1",
-                          segment="192.168.3.0/24", hosts=11, mappings=22, running=True,
+                          segment="198.51.100.0/24", hosts=11, mappings=22, running=True,
                           uptime_s=5.0, restores=1, refreshes=3, failures=["stalled"])
     assert ok is True
     table, data, cols = c.inserts[0]
