@@ -283,3 +283,45 @@ def test_changelog_references_resolve_to_real_files():
         "the CHANGELOG cites files that are not in the repository, so a reader cannot follow "
         f"them: {sorted(unresolved)}"
     )
+
+
+def test_the_image_tag_is_declared_once_and_applies_everywhere():
+    """The tag lives in ONE `images:` transformer, and every manifest uses the bare name.
+
+    WHY THIS IS TESTED. `kubectl set image deploy/... worker=weirvern-worker:0.4.3` appears to work,
+    and then the next `kubectl apply -k` silently reverts the deployment to whatever this transformer
+    pins. Measured on the deployed box: after rolling forward, re-applying the weir overlay put the
+    worker back on an older tag, so the pod lost `intercept --all` and refused to run. The only
+    symptom was "unrecognized arguments: --all" from inside the container -- a version mismatch
+    presenting as a code bug.
+
+    So: the tag must be declared in the transformer, and the manifests must NOT hardcode a tag of
+    their own, or a bump would have to be made in several places and one would be missed.
+    """
+    import re
+    kustomization = (ROOT / "k8s" / "kustomization.yaml").read_text()
+    m = re.search(r"name:\s+weirvern-worker\s*\n\s*newTag:\s*[\"']?([\w.]+)", kustomization)
+    assert m, "the worker image tag is not declared in the kustomization `images:` transformer"
+    tag = m.group(1)
+
+    # Every manifest must reference the tagless name, so the transformer is the only source of truth.
+    pinned = []
+    for path in sorted((ROOT / "k8s").glob("*.yaml")):
+        if path.name == "kustomization.yaml":
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if "image:" in line and "weirvern-worker:" in line:
+                pinned.append(f"{path.name}:{lineno}: {line.strip()}")
+    assert not pinned, (
+        "a manifest hardcodes the worker tag, so bumping the transformer would leave it behind:\n  "
+        + "\n  ".join(pinned)
+    )
+
+    # And the rendered output must actually carry the transformer's tag.
+    import subprocess
+    rendered = subprocess.run(
+        ["kustomize", "build", "k8s/"], cwd=ROOT, capture_output=True, text=True
+    ).stdout
+    assert f"weirvern-worker:{tag}" in rendered, (
+        f"the transformer declares {tag} but the rendered output does not use it"
+    )

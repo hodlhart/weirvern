@@ -72,7 +72,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: gui
-          image: weirvern-worker:0.4.0
+          image: weirvern-worker
           # GUI_HOST=0.0.0.0 is REQUIRED here. The CLI defaults to 127.0.0.1 so
           # that running it on a workstation does not accidentally publish the
           # dashboard; inside a pod, binding to loopback would make the Service

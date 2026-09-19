@@ -97,7 +97,16 @@ generatorOptions:
     app.kubernetes.io/part-of: weirvern
 
 images:
-  # Pin the worker image. Override for your registry:
-  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.4.0
+  # THE IMAGE TAG IS DECLARED HERE, AND ONLY HERE. Every manifest references the bare name
+  # (`weirvern-worker`) and this transformer rewrites it, so a version bump is one edit.
+  #
+  # WHY THIS MATTERS MORE THAN IT LOOKS: `kubectl set image deploy/weirvern-worker
+  # worker=weirvern-worker:0.4.3` appears to work and then SILENTLY REVERTS the next time anyone runs
+  # `kubectl apply -k`. Measured: after rolling to 0.4.3 and re-applying the weir overlay, the
+  # deployment went back to this pinned tag -- so the pod lost `intercept --all` and refused to run,
+  # with the only symptom being "unrecognized arguments: --all" from inside the container.
+  #
+  # A roll-forward must change THIS value, not the live object:
+  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.4.3
   - name: weirvern-worker
-    newTag: "0.4.0"
+    newTag: "0.4.3"

@@ -69,7 +69,7 @@ spec:
             runAsUser: 10001
           containers:
             - name: prune
-              image: weirvern-worker:0.4.0
+              image: weirvern-worker
               imagePullPolicy: IfNotPresent
               # `weirvern prune` reads the caps from the environment (the same ConfigMap the
               # other components use) and applies all three components. Called as the CLI

@@ -92,7 +92,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: worker
-          image: weirvern-worker:0.4.0
+          image: weirvern-worker
           # A cluster cannot build an image, so the tag must be resolvable from
           # every node. Set imagePullPolicy explicitly rather than relying on the
           # default, which flips to Always only for :latest — this tag is

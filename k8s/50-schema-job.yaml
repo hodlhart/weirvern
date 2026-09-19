@@ -85,7 +85,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: init-db
-          image: weirvern-worker:0.4.0
+          image: weirvern-worker
           imagePullPolicy: IfNotPresent
           # The CLI entry point, so the schema path is identical to a local run.
           command: ["weirvern", "init-db"]
