@@ -186,9 +186,28 @@ kubectl -n $NS exec "$W" -c worker -- python /tmp/intercept_detached.py \
     --iface $IFACE --segment $SEGMENT --our-ip $OUR_IP --gateway $GW \
     $INTERCEPT_SCOPE --seconds $((DURATION_MIN * 60)) 2>&1 | tee -a "$OUT" | tail -2
 
-# ── sample every 2 minutes ─────────────────────────────────────────────────────
-SAMPLES=$(( DURATION_MIN / 2 ))
-echo "=== sampling every 2 minutes (${SAMPLES} samples) ===" | tee -a "$OUT"
+# ── sample loop: bounded by REAL ELAPSED TIME, not an iteration count ────────────────────────────
+#
+# WHY THIS CHANGED. The loop was `SAMPLES=$((DURATION_MIN/2))` iterations of `sleep 120`, assuming
+# each iteration costs 2 minutes. It does not: every iteration shells out through `kubectl exec` for
+# the liveness check and the counters, and the API server's latency varies from under a second to
+# MINUTES. Measured: a single `count_intercepts` exec took 166s once, and a 60-minute run had logged
+# only 3 samples after 18 minutes of wall-clock.
+#
+# That mattered more than a mislabelled column. The intercept is bounded by WALL-CLOCK
+# (`--seconds 3600`), but the loop was bounded by ITERATION COUNT. With iterations costing ~3.5
+# minutes, 30 of them need ~105 minutes -- so the sampler outlived the intercept by ~45 minutes and
+# its tail samples would show a stopped intercept. That is MY harness stopping the subject, and it
+# would have been reported as the system failing the hour.
+#
+# Now the loop runs until the intercept's own deadline (minus a margin to observe the restore), and
+# `elapsed` is computed from real time. A measurement must report the thing it measured.
+START_EPOCH=$(date +%s)
+DEADLINE=$(( START_EPOCH + DURATION_MIN * 60 ))
+# Stop sampling this many seconds before the intercept's own deadline, so the final samples show it
+# still healthy and the teardown is observed rather than raced.
+SAMPLE_UNTIL=$(( DEADLINE - 60 ))
+echo "=== sampling until the intercept's own deadline (real time, not iteration count) ===" | tee -a "$OUT"
 printf "  %-8s %-9s %-9s %-9s %-24s\n" "elapsed" "ForwDat" "InNoRt" "InAddr" "note" | tee -a "$OUT"
 
 POISON_HOLDS=0
@@ -201,11 +220,24 @@ HB_UNREADABLE=0   # total failures across the run
 HB_STREAK=0       # consecutive failures, reset on a readable check
 FORW_PREV=""
 FORW_BEFORE=$(awk '/^Ip:/{if(n==0){for(i=1;i<=NF;i++)h[i]=$i;n=1;next} for(i=1;i<=NF;i++) if(h[i]=="ForwDatagrams") print $i+0; exit}' /proc/net/snmp)
+# INITIALISED DELIBERATELY. The first iteration reads LAST_ITER, and under `set -u` an unset
+# variable ABORTS the script before a single sample -- which produces a zero-sample run whose
+# teardown then reports a clean segment. That is the "a run that tested nothing looked like a
+# success" failure this file already warns about, and an uninitialised counter is one way to
+# reintroduce it.
+LAST_ITER=0
 i=0
-while [ $i -lt $SAMPLES ]; do
-  sleep 120
+while [ "$(date +%s)" -lt "$SAMPLE_UNTIL" ]; do
+  # Sleep the INTERVAL minus whatever the last iteration's checks cost, so the cadence is roughly
+  # regular without the expensive probes stretching it. Guarded: a slow iteration must not make this
+  # negative and busy-loop.
+  NOW=$(date +%s)
+  WAIT=$(( 120 - (NOW - LAST_ITER) ))
+  [ "$LAST_ITER" -eq 0 ] && WAIT=120
+  [ "$WAIT" -gt 0 ] && sleep "$WAIT"
+  LAST_ITER=$(date +%s)
   i=$((i+1))
-  ELAPSED=$(( i * 2 ))
+  ELAPSED=$(( (LAST_ITER - START_EPOCH) / 60 ))
   # Is the intercept still alive? Asked of the SENSOR'S OWN HEARTBEAT, not a local pid.
   # Is the intercept still alive? THREE STATES, NOT TWO.
   #
