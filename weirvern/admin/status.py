@@ -192,7 +192,48 @@ def collect_health(client, settings) -> HealthReport:
     return report
 
 
-def model_overview(client, hours: int = 72) -> dict:
+def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
+    """Per-detector age of the last retrain, and whether it exceeds the interval.
+
+    Returns a list rather than a dict so the ORDER is stable for a chart legend, sorted stalest
+    first -- the thing needing attention is at the top rather than wherever a dict happened to
+    order it.
+
+    A DETECTOR THAT HAS NEVER TRAINED IS STALE, with age None. Reporting it as fresh because
+    there is no timestamp would be the same class of mistake as counting a never-trained
+    detector as scheduled (see worker._oldest_trained_at): a missing measurement must not read
+    as a healthy one.
+    """
+    from datetime import datetime
+
+    known = ["Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"]
+    rows: list[dict] = []
+    for name in known:
+        stamp = newest.get(name)
+        age_h: float | None = None
+        if stamp:
+            try:
+                when = datetime.fromisoformat(stamp)
+                now = datetime.now(when.tzinfo) if when.tzinfo else datetime.now()
+                age_h = (now - when).total_seconds() / 3600
+            except (ValueError, TypeError):
+                age_h = None
+        rows.append({
+            "model": name,
+            "last_trained": stamp or "",
+            "age_h": round(age_h, 2) if age_h is not None else None,
+            # Never trained, or older than the configured interval.
+            "stale": age_h is None or age_h > interval_h,
+            "never_trained": age_h is None,
+        })
+    # SORT: never-trained first (the most urgent state -- there is no model at all, not an old
+    # one), then by age descending. The key is an explicit tuple rather than arithmetic on a
+    # value that can be None, which is what made an earlier version raise TypeError.
+    rows.sort(key=lambda r: (0 if r["never_trained"] else 1, -(r["age_h"] or 0.0)))
+    return rows
+
+
+def model_overview(client, hours: int = 72, settings=None) -> dict:
     """Everything the Models view needs, in one round trip per panel.
 
     WHY THIS IS NOT A SCATTER PLOT OF EVERY ANOMALY: a young deployment has very few
@@ -241,6 +282,35 @@ def model_overview(client, hours: int = 72) -> dict:
         })
     out["training_history"] = hist
     out["run_count"] = sum(len(v) for v in hist.values())
+
+    # 1b. PER-DETECTOR STALENESS, because the training history alone could not show it.
+    #
+    # WHY THIS EXISTS. Isolation Forest, Gradient Boosting and DBSCAN went 16 hours without a
+    # retrain against a 6-hour interval, and this view rendered that as three tidy lines with
+    # plenty of points -- because it plotted run COUNT, not RECENCY. A model whose last retrain
+    # was 16 hours ago looks identical to one retrained a minute ago if you only count runs.
+    #
+    # So each detector now carries when it last trained, how long ago that was in hours, and
+    # whether that exceeds the configured interval. `stale` is computed HERE rather than in the
+    # browser so the TUI and the GUI cannot disagree about whether a model is overdue.
+    # The interval comes from settings when the caller passes them, so the panel compares
+    # against the SAME number the worker schedules on. Falling back to the documented default
+    # keeps this callable from a test that has no settings rather than failing on it.
+    try:
+        interval_h = float(getattr(settings, "retrain_every_h", 6) or 6)
+    except (TypeError, ValueError):
+        interval_h = 6.0
+    newest: dict[str, str] = {}
+    for mtype, runs in hist.items():
+        # `_iso` returns None for a NULL timestamp, and `max()` over a list containing None
+        # raises TypeError against a str. A row with no trained_at is not evidence of a run at
+        # all, so it is excluded rather than sorted -- measured: this crashed the whole Models
+        # view with "'>' not supported between instances of 'NoneType' and 'NoneType'".
+        stamps = [run["t"] for run in (runs or []) if run["t"]]
+        if stamps:
+            newest[mtype] = max(stamps)
+    out["retrain_interval_h"] = interval_h
+    out["staleness"] = _staleness(newest, interval_h)
 
     # 2. Score distribution across EVERY anomaly, including sub-threshold ones, so the
     #    threshold can be judged rather than assumed.

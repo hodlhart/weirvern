@@ -276,7 +276,7 @@ def _build_handler(ctx: GuiContext):
             hours = _int_arg(query, "hours", 72, 1, 24 * 30)
             try:
                 with self._with_client() as client:
-                    data = status_mod.model_overview(client, hours=hours)
+                    data = status_mod.model_overview(client, hours=hours, settings=ctx.settings)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}"})

@@ -261,3 +261,7 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .graph .node text { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
 .graph .node.selected circle { stroke: var(--accent); stroke-width: 3; }
 .graph .node.selected text { fill: var(--fg); }
+
+/* A detector that is overdue gets a tint as well as a word: the table is skimmed, and a colour
+ * is what a skim catches. The word is still there, so the meaning does not depend on it. */
+.stale-row { background: rgba(224, 92, 92, 0.07); }

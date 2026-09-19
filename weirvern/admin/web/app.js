@@ -823,6 +823,68 @@ function axisLabel(g, x, y, text, anchor = "middle") {
  * Sample counts on one axis with a log-ish scale, because Isolation Forest spans 360 ->
  * 9496 and a linear axis would flatten every other detector onto the floor.
  */
+/** Per-detector freshness: when each last retrained, and whether that is overdue.
+ *
+ * WHY THIS PANEL EXISTS. The training-history chart below plots RUN COUNT, so a detector that
+ * retrained 16 hours ago on a 6-hour cadence drew as a healthy line with plenty of points --
+ * visually identical to one retrained a minute ago. Staleness was invisible until this table
+ * was added, and it is the question an operator actually has: "are these models still current?"
+ *
+ * The server computes `stale` so the TUI and the GUI cannot disagree, and the words here state
+ * the remedy rather than only the verdict.
+ */
+function renderStaleness(rows, intervalH) {
+  const body = document.querySelector("#m-stale tbody");
+  const note = document.getElementById("m-stale-note");
+  const win = document.getElementById("m-stale-window");
+  if (!body) return;
+  body.replaceChildren();
+  if (note) note.replaceChildren();
+  if (win) win.textContent = intervalH ? `retrain interval ${intervalH}h` : "";
+
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: "4" },
+                 text: "No detector has recorded a training run yet." }),
+    ]));
+    return;
+  }
+
+  const overdue = rows.filter((r) => r.stale);
+  for (const r of rows) {
+    const age = r.never_trained
+      ? el("span", { class: "muted", text: "never" })
+      : el("span", { class: "mono", text: `${Number(r.age_h).toFixed(1)}h` });
+    body.appendChild(el("tr", { class: r.stale ? "stale-row" : "" }, [
+      el("td", { text: r.model }),
+      el("td", { class: "mono muted", text: r.last_trained ? fmtTime(r.last_trained) : "—" }),
+      el("td", {}, [age]),
+      el("td", {}, [
+        r.never_trained
+          ? el("span", { class: "sev-medium", text: "never trained" })
+          : r.stale
+            ? el("span", { class: "sev-high", text: "overdue" })
+            : el("span", { class: "sev-low", text: "current" }),
+      ]),
+    ]));
+  }
+
+  if (note && overdue.length) {
+    const never = overdue.filter((r) => r.never_trained).map((r) => r.model);
+    const old = overdue.filter((r) => !r.never_trained);
+    const bits = [];
+    if (old.length) {
+      bits.push(`${old.map((r) => r.model).join(", ")} last retrained more than ` +
+        `${intervalH}h ago — they are scoring against an older traffic mix.`);
+    }
+    if (never.length) {
+      bits.push(`${never.join(", ")} have never trained, so their scores are absent or ` +
+        `imputed rather than measured.`);
+    }
+    note.appendChild(chartEmpty(bits.join(" ")));
+  }
+}
+
 function renderTrainingHistory(hist) {
   const host = document.getElementById("m-history");
   const legend = document.getElementById("m-history-legend");
@@ -1007,6 +1069,7 @@ async function loadModels() {
   if (win) win.textContent = "last " + hours + "h";
   if (sum) sum.textContent = data.summary || "";
 
+  renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});
   renderAgreement(data.model_counts || {});

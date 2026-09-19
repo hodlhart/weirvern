@@ -311,6 +311,11 @@ def models_payload(data: dict) -> dict:
         "hours": data.get("hours"),
         "run_count": data.get("run_count", 0),
         "training_history": data.get("training_history", {}),
+        # Per-detector recency. The training history alone cannot show staleness: a model whose
+        # last retrain was 16 hours ago renders as a line with plenty of points, identical to one
+        # retrained a minute ago. These three fields are what let the view say "overdue".
+        "staleness": data.get("staleness", []),
+        "retrain_interval_h": data.get("retrain_interval_h"),
         "scores": data.get("scores", {}),
         "model_counts": data.get("model_counts", {}),
         "feature_deviations": data.get("feature_deviations", []),

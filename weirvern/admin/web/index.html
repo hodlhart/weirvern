@@ -264,6 +264,25 @@
       </div>
     </div>
 
+    <!--
+      STALENESS FIRST, because it is the question this view could not answer. Isolation Forest,
+      Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour interval and
+      this page showed three healthy-looking lines, because it plotted run COUNT rather than
+      RECENCY. A model overdue by 10 hours looks identical to one retrained a minute ago if all
+      you draw is how many times it ran.
+    -->
+    <div class="card">
+      <h2>Detection freshness <span class="muted" id="m-stale-window"></span></h2>
+      <p class="muted">When each detector last retrained, and whether that is overdue. A model
+        scored against an old baseline is still confident; it is just confident about the wrong
+        traffic.</p>
+      <div id="m-stale-note"></div>
+      <table id="m-stale">
+        <thead><tr><th>Detector</th><th>Last retrained</th><th>Age</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <div class="card">
       <h2>Training history <span class="muted">samples per retrain</span></h2>
       <p class="muted">Each line is one detector. Rising sample counts mean the training

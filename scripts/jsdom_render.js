@@ -67,7 +67,7 @@ async function main() {
   const epilogue = `
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
-                   chartFrame, svgEl, fmtBytes, el };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -111,7 +111,11 @@ async function main() {
                            sources_read: [], sources_failed: [], reason: "" }
                      : String(url).includes("/api/flows")
                        ? FLOWS_PAYLOAD
-                       : { available: true, reason: "", log: "ssl", points: [] }),
+                       : String(url).includes("/api/models")
+                         ? { available: true, hours: 72, run_count: 0, training_history: {},
+                             scores: {}, model_counts: {}, feature_deviations: [], points: [],
+                             staleness: [], retrain_interval_h: 6 }
+                         : { available: true, reason: "", log: "ssl", points: [] }),
   });
 
   const H = window.__H;
@@ -338,6 +342,35 @@ async function main() {
   check("a failed flow drill-down names the reason",
         doc.getElementById("nf-detail").textContent.includes("flow drill-down failed"),
         doc.getElementById("nf-detail").textContent.slice(0, 90));
+
+  // ── the Models staleness panel ─────────────────────────────────────────────────────────
+  // The bug this guards: three detectors were 16h overdue against a 6h interval and the Models
+  // view drew them as healthy lines, because it plotted run COUNT rather than RECENCY.
+  H.renderStaleness([
+    { model: "Isolation Forest", last_trained: "2026-01-01T00:00:00", age_h: 16.0,
+      stale: true, never_trained: false },
+    { model: "DBSCAN", last_trained: "", age_h: null, stale: true, never_trained: true },
+    { model: "Gradient Boosting", last_trained: "2026-01-02T00:00:00", age_h: 0.4,
+      stale: false, never_trained: false },
+  ], 6);
+  const staleRows = doc.querySelectorAll("#m-stale tbody tr");
+  check("the staleness table renders one row per detector", staleRows.length === 3,
+        `rows=${staleRows.length}`);
+  check("an overdue detector is visibly marked",
+        doc.querySelectorAll("#m-stale tbody tr.stale-row").length === 2,
+        `${doc.querySelectorAll("#m-stale tbody tr.stale-row").length} tinted`);
+  check("the overdue detector's age is shown in hours",
+        doc.getElementById("m-stale").textContent.includes("16.0h"));
+  check("a never-trained detector says so rather than showing an age",
+        doc.getElementById("m-stale").textContent.includes("never"));
+  check("the interval is stated in the heading",
+        doc.getElementById("m-stale-window").textContent.includes("6"),
+        doc.getElementById("m-stale-window").textContent);
+  check("the note explains what an overdue model means for its scores",
+        doc.getElementById("m-stale-note").textContent.includes("older traffic mix"),
+        doc.getElementById("m-stale-note").textContent.slice(0, 100));
+  check("the note distinguishes never-trained from merely overdue",
+        doc.getElementById("m-stale-note").textContent.includes("never trained"));
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,
