@@ -249,8 +249,12 @@ def scan_history(root: Path) -> int:
     Rewriting history is destructive and is NOT done here -- this only reports, so the decision
     to rewrite is made deliberately rather than as a side effect of a scrub.
     """
+    # `--branches`, NOT `--all`. `--all` includes refs/original/*, which `git filter-branch` creates
+    # as a local backup of the PRE-rewrite state -- so a message that has been rewritten away still
+    # appears here and the check reports a leak that no branch contains. Verified both ways: with
+    # --all it flagged a commit that `git merge-base --is-ancestor` showed was not in main.
     log = subprocess.run(
-        ["git", "log", "--all", "--format=%h%x1f%B%x1e"],
+        ["git", "log", "--branches", "--format=%h%x1f%B%x1e"],
         cwd=root, capture_output=True, text=True, check=True,
     ).stdout
     found = 0

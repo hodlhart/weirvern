@@ -53,7 +53,13 @@ resolve_pod() {
 }
 
 
+# STAMP THE SCRIPT'S OWN DIGEST. Several old logs in /tmp came from superseded versions of this
+# harness, and one shows a failure that has since been fixed -- indistinguishable from a current
+# log when read side by side. This makes "which version produced this log" answerable from the log.
+SELF_DIGEST=$(sha256sum "$0" 2>/dev/null | cut -c1-12)
 echo "=== weir stress test: ${DURATION_MIN} minutes on $SEGMENT (scope: ALL swept hosts) ===" | tee "$OUT"
+echo "  harness    : $(basename "$0") sha256:${SELF_DIGEST:-unknown}" | tee -a "$OUT"
+echo "  started    : $(date -Is)" | tee -a "$OUT"
 echo "  log: $OUT"
 echo
 
