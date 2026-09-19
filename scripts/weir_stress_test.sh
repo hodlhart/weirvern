@@ -211,7 +211,9 @@ echo "=== sampling until the intercept's own deadline (real time, not iteration 
 printf "  %-8s %-9s %-9s %-9s %-24s\n" "elapsed" "ForwDat" "InNoRt" "InAddr" "note" | tee -a "$OUT"
 
 POISON_HOLDS=0
-POISON_LOST=0
+# Intervals where the forwarding counter did NOT move. Deliberately NOT called "lost": see the
+# sample-loop comment -- idle and relay-stalled are indistinguishable from here.
+POISON_UNKNOWN=0
 HB_AGE=""
 HB_MODE=""
 # Times the heartbeat check itself failed. Reported: a run with many unreadable checks is weakly
@@ -346,11 +348,26 @@ EOF
   if [ -z "$FORW_PREV" ]; then
     NOTE="baseline sample"
   elif [ "$FORW" -gt "$FORW_PREV" ]; then
-    DELTA=$((FORW - FORW_PREV)); NOTE="forwarding: +$DELTA (poison held)"
+    DELTA=$((FORW - FORW_PREV)); NOTE="forwarding: +$DELTA (relay active)"
     POISON_HOLDS=$((POISON_HOLDS+1))
   else
-    NOTE="no forwarding this interval (idle or lost)"
-    POISON_LOST=$((POISON_LOST+1))
+    # NOT "POISON LOST". This branch is only "the forwarding counter did not move in this
+    # interval", and that has (at least) two causes the harness cannot tell apart from here:
+    #
+    #   * the segment was IDLE -- no host sent anything off-link, so there was nothing to relay
+    #   * the relay is genuinely broken -- traffic is flowing but not through us
+    #
+    # The earlier label said "idle or lost" in the log but counted into a variable called
+    # POISON_LOST, which then printed as "poison held in N sample(s), LOST in M". That reads as
+    # observed poison loss and is NOT: it is an unmeasured interval being reported as a measurement.
+    # Same class of error as the four other instruments in this project that produced confident
+    # numbers for things they never measured.
+    #
+    # Distinguishing them needs positive evidence of ARP state on a peer DURING the interval (read
+    # the peer's cache, or confirm traffic is arriving while the counter is flat). Until the harness
+    # does that, the honest word is UNKNOWN.
+    NOTE="no forwarding this interval (IDLE or relay-stalled -- harness cannot distinguish)"
+    POISON_UNKNOWN=$((POISON_UNKNOWN+1))
   fi
   FORW_PREV=$FORW
   printf "  %-8s %-9s %-9s %-9s %-24s\n" "${ELAPSED}m" "$FORW" "$INNOR" "$INARRT" "$NOTE" | tee -a "$OUT"
@@ -420,11 +437,13 @@ ip addr del $OUR_IP/24 dev $IFACE 2>/dev/null
 
 echo "" | tee -a "$OUT"
 echo "=== SUMMARY ===" | tee -a "$OUT"
-if [ "$POISON_HOLDS" = "0" ] && [ "$POISON_LOST" = "0" ]; then
+if [ "$POISON_HOLDS" = "0" ] && [ "$POISON_UNKNOWN" = "0" ]; then
   echo "  !! NO SAMPLES COLLECTED -- this run tested nothing. The teardown below is clean, and a" | tee -a "$OUT"
   echo "     clean teardown is NOT evidence the intercept worked. Find why the loop stopped." | tee -a "$OUT"
 fi
-echo "  poison held in $POISON_HOLDS sample(s), lost in $POISON_LOST" | tee -a "$OUT"
+echo "  forwarding observed active in $POISON_HOLDS sample(s); no movement in $POISON_UNKNOWN" | tee -a "$OUT"
+echo "  (a 'no movement' interval means the counter did not move -- IDLE segment or a stalled relay;" | tee -a "$OUT"
+echo "   this harness cannot tell those apart, so it does NOT claim the poison was lost)" | tee -a "$OUT"
 echo "  last heartbeat mode: ${HB_MODE:-n/a} (age ${HB_AGE:-n/a})" | tee -a "$OUT"
 # The TOTAL, not the streak. Reporting the streak here claimed "full" evidence for a run that ended
 # on a readable check despite having failures earlier -- a false claim of good evidence.
