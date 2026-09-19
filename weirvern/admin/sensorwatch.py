@@ -110,6 +110,45 @@ def capture_loss(log_dir: Path | None = None, tail_lines: int = 50) -> float | N
     return None
 
 
+def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple[int, int]:
+    """The newest `pkts_recv`/`pkts_drop` from capture_loss.log, or (0, 0) if unreadable.
+
+    Read from the SAME file `capture_loss()` reads, and deliberately in the same module: the
+    percentage and the counters behind it must come from one log line, or a panel could show a
+    loss figure that does not correspond to the packets it is displayed beside.
+
+    0 here means "no counter available", which is why the caller stores these as plain integers
+    while `capture_loss_pct` is nullable -- a missing count is reported as zero packets rather
+    than inventing a number, and the percentage carries the not-measured signal.
+    """
+    d = log_dir or _log_dir()
+    files = sorted(list(d.glob("capture_loss.log")) + list(d.glob("capture_loss.*.log")),
+                   key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    for path in files:
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        fields: list[str] = []
+        out: tuple[int, int] = (0, 0)
+        for line in lines[-tail_lines:]:
+            if line.startswith("#fields"):
+                fields = line.split("\t")[1:]
+                continue
+            if line.startswith("#") or not line.strip():
+                continue
+            cols = line.split("\t")
+            try:
+                if "pkts_recv" in fields:
+                    out = (int(cols[fields.index("pkts_recv")]),
+                           int(cols[fields.index("pkts_drop")]) if "pkts_drop" in fields else 0)
+            except (ValueError, IndexError):
+                continue
+        if out != (0, 0):
+            return out
+    return (0, 0)
+
+
 def observe(mode: str = "", iface: str = "") -> dict:
     """The fields to publish, derived from observation.
 
@@ -120,6 +159,11 @@ def observe(mode: str = "", iface: str = "") -> dict:
     """
     activity = newest_activity()
     loss = capture_loss()
+    # The packet counters from the same log line that gave us percent_lost. Kept as numbers so a
+    # surface can show the measurement rather than re-deriving it from prose -- capture loss was
+    # previously computed here and only ever interpolated into a failure string, so nothing could
+    # display it as a figure.
+    recv, dropped = capture_counters()
 
     if activity is None:
         age = None
@@ -158,4 +202,9 @@ def observe(mode: str = "", iface: str = "") -> dict:
         "restores": 0,
         "refreshes": 0,
         "failures": failures,
+        # MEASUREMENTS, not configuration. None means "not measured" and must stay
+        # distinguishable from 0.0, which means "measured, nothing lost".
+        "capture_loss_pct": loss,
+        "packets_recv": recv,
+        "packets_dropped": dropped,
     }

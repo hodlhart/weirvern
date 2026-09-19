@@ -61,7 +61,17 @@ def strip_comments(sql: str) -> str:
 
 
 def tables() -> dict[str, tuple[str, list[str]]]:
-    """table -> (file, ordered column list)."""
+    """table -> (file, ordered column list).
+
+    ALTER TABLE ... ADD COLUMN IS INCLUDED, and that matters. Columns were previously discovered
+    from `CREATE TABLE` only, so a column added by a later migration was invisible to this audit
+    -- and a column the audit cannot see is a column it cannot check for a writer. The first
+    ALTER-based migration (007_sensor_capture.sql) surfaced it immediately: three columns were
+    written and read by real code, and this reported them as "phantom references".
+
+    The rule the audit encodes is "a column must have a writer or a reader". An ALTER-added
+    column satisfies it exactly like a declared one, so both are collected here.
+    """
     out: dict[str, tuple[str, list[str]]] = {}
     for path in sorted(SCHEMA_DIR.glob("*.sql")):
         code = strip_comments(path.read_text())
@@ -75,6 +85,21 @@ def tables() -> dict[str, tuple[str, list[str]]]:
                     continue
                 cols.append(line.split()[0])
             out[m.group(1)] = (path.name, cols)
+        # Migrations run in filename order, so an ALTER in 007_ applies to a table declared in
+        # 003_. Append rather than replace: the declared columns are still there.
+        for m in re.finditer(
+            r"ALTER TABLE\s+(?:\w+\.)?(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)", code, re.S
+        ):
+            table, col = m.group(1), m.group(2)
+            if table in out:
+                fname, cols = out[table]
+                if col not in cols:
+                    cols.append(col)
+                out[table] = (fname, cols)
+            else:
+                # An ALTER for a table this audit never saw declared: record it so the column is
+                # still checked, and note the migration as its source.
+                out[table] = (path.name, [col])
     return out
 
 

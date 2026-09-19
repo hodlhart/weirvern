@@ -996,7 +996,11 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         # being clever in SQL and much easier to reason about.
         rows = list(client.query(
             "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
-            "restores, refreshes, failures, ts "
+              "restores, refreshes, failures, ts, "
+              # Capture loss is the ONLY signal that the sensor is dropping packets.
+              # Selected so a surface can show the measurement instead of pattern-matching
+              # a prose failure string. NULL means not measured and is preserved as None.
+              "capture_loss_pct, packets_recv, packets_dropped "
             "FROM weirvern.sensor_status FINAL "
             "ORDER BY ts DESC"
         ).named_results())
@@ -1090,7 +1094,11 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
             "mode": str(row.get("mode") or ""),
             "iface": str(row.get("iface") or ""),
             "hosts": int(row.get("hosts") or 0),
-            "age_s": round(row_age, 1),
+              "age_s": round(row_age, 1),
+              # Per-mode, so a comparison of two modes on one sensor can show WHICH is
+              # dropping packets -- the reason to show both rows at all.
+              "capture_loss_pct": (None if row.get("capture_loss_pct") is None
+                                   else float(row["capture_loss_pct"])),
         })
     out["others"] = others
     out.update({
@@ -1103,7 +1111,14 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         "uptime_s": float(r.get("uptime_s") or 0.0),
         "restores": int(r.get("restores") or 0),
         "refreshes": int(r.get("refreshes") or 0),
-        "failures": list(r.get("failures") or []),
+          "failures": list(r.get("failures") or []),
+          # None (not 0.0) when unmeasured. That distinction is the point of the column:
+          # 0.0 is "measured, nothing lost", and a sensor with no capture_loss.log must
+          # not be able to masquerade as one.
+          "capture_loss_pct": (None if r.get("capture_loss_pct") is None
+                               else float(r["capture_loss_pct"])),
+          "packets_recv": int(r.get("packets_recv") or 0),
+          "packets_dropped": int(r.get("packets_dropped") or 0),
     })
 
     ts = r.get("ts")
@@ -1130,7 +1145,9 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
 def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",
               hosts: int = 0, mappings: int = 0, running: bool = False,
               uptime_s: float = 0.0, restores: int = 0, refreshes: int = 0,
-              failures: list[str] | None = None) -> bool:
+              failures: list[str] | None = None,
+              capture_loss_pct: float | None = None,
+              packets_recv: int = 0, packets_dropped: int = 0) -> bool:
     """Write one heartbeat row. Returns whether it landed.
 
     Never raises: a sensor that cannot report its status must still capture traffic. The
@@ -1142,10 +1159,18 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
             "weirvern.sensor_status",
             [[sensor_id, mode, iface, segment, int(hosts), int(mappings),
               1 if running else 0, float(uptime_s), int(restores), int(refreshes),
-              list(failures or []), datetime.datetime.now()]],
+              list(failures or []), datetime.datetime.now(),
+              # None stores as NULL and means NOT MEASURED. It must not become 0.0: 0.0
+              # means "measured, nothing lost", so a sensor with no capture_loss.log would
+              # read as a perfect one.
+              None if capture_loss_pct is None else float(capture_loss_pct),
+              max(0, int(packets_recv or 0)), max(0, int(packets_dropped or 0))]],
             column_names=["sensor_id", "mode", "iface", "segment", "hosts", "mappings",
                           "running", "uptime_s", "restores", "refreshes", "failures",
-                          "ts"],
+                          "ts",
+                          # NEW COLUMNS GO LAST, so the positional list above cannot
+                          # misalign against a reader or table that predates them.
+                          "capture_loss_pct", "packets_recv", "packets_dropped"],
         )
         return True
     except Exception as exc:  # noqa: BLE001
