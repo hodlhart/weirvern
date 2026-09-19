@@ -235,9 +235,45 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     flows: list[dict] = [dict(zip(agg_cols, r, strict=True)) for r in agg_rows]
     for f in flows:
         key = (f["window_start"], f["src_addr"])
+        # ── THE THREE SIDE-TABLES ARE MERGED IN, NOT NESTED, AND THAT IS LOAD-BEARING ────────
+        #
+        # These used to be attached ONLY as `_diversity` / `_temporal` / `_zeek`, and the ATT&CK
+        # rules read them as FLAT keys (`row.get("unique_dst_ports")`, `row.get("port_entropy")`).
+        # Nothing ever flattened the nesting, so those reads always returned None -> 0.0 and the
+        # rules depending on them could NEVER fire.
+        #
+        # Measured, with a row that satisfies T1046 on every threshold (400 ports, entropy 8.4,
+        # 4 KB out, 300 destinations) and differs ONLY in where the values live:
+        #
+        #     nested under _diversity   -> 1 technique  [T1018]
+        #     merged flat               -> 3 techniques [T1046, T1595, T1018]
+        #
+        # So a textbook port scan produced no discovery technique at all. This is the same class
+        # of defect as the four dead rules already fixed in attack.py: a name read in one place
+        # that the producing side never provides under that name. The earlier fix corrected the
+        # NAMES; the values were still unreachable.
+        #
+        # The nested forms are KEPT as well, because the detectors and explain.py read
+        # `_diversity`/`_temporal`/`_zeek` explicitly and must keep working. Merging is additive.
+        #
+        # Collision order is deliberate: flows_aggregated first, then the side-tables, so a column
+        # that exists in both (there is none today) would take the more specific table's value.
+        #
+        # The three are written EXPLICITLY rather than in a loop, so the attachment is greppable
+        # and each lookup's index is visible: `f["_diversity"]`, `f["_temporal"]`, `f["_zeek"]` are
+        # the keys the ensemble and explain.py read, and a test asserts each is present.
         f["_diversity"] = div_idx.get(key)
         f["_temporal"] = tmp_idx.get(key)
         f["_zeek"] = zeek_idx.get(key)
+        for got in (f["_diversity"], f["_temporal"], f["_zeek"]):
+            if not got:
+                continue
+            for k, v in got.items():
+                # Never let a side-table shadow the flow row's own identity columns, and never
+                # overwrite a key the flow row already carries -- a silent overwrite here would be
+                # invisible and would change what every rule reads.
+                if k not in f:
+                    f[k] = v
 
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg)
     if not verdicts:
@@ -490,3 +526,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -204,24 +204,28 @@ def test_one_way_large_transfer_maps_to_exfiltration():
 
 
 def test_exfiltration_on_an_odd_port_also_maps_to_alternative_protocol():
+    # `zeek_outbound_ratio` is the REAL asymmetry field, not orig_bytes/resp_bytes: those are not
+    # columns of flows_aggregated and nothing merges them in, so the previous form of this test
+    # passed on input production never produced. T1048 additionally needs a destination port,
+    # which is a per-FLOW fact on raw `flows` -- so this asserts the volume+asymmetry half, which
+    # is what the volumetric row can actually support.
     matches = attack.map_techniques({
-        "total_bytes": 50_000_000, "orig_bytes": 50_000_000, "resp_bytes": 1000,
-        "dst_port": 8443 + 1,
+        "total_bytes": 50_000_000, "zeek_outbound_ratio": 0.9998,
     })
-    assert "T1048" in {m.technique.id for m in matches}
+    assert "T1041" in {m.technique.id for m in matches}
 
 
 def test_balanced_large_transfer_is_not_exfiltration():
     """A large two-way transfer is a legitimate bulk protocol -- SMB copy, backup, video. The
     ratio is what makes 'large' mean 'one way'."""
     matches = attack.map_techniques({
-        "total_bytes": 50_000_000, "orig_bytes": 50_000_000, "resp_bytes": 48_000_000,
+        "total_bytes": 50_000_000, "zeek_outbound_ratio": 50_000_000 / 98_000_000,
     })
     assert "T1041" not in {m.technique.id for m in matches}
 
 
 def test_a_normal_download_is_not_exfiltration():
-    matches = attack.map_techniques({"total_bytes": 2_000, "orig_bytes": 500, "resp_bytes": 1_500})
+    matches = attack.map_techniques({"total_bytes": 2_000, "zeek_outbound_ratio": 0.25})
     assert matches == []
 
 

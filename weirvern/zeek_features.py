@@ -911,28 +911,45 @@ def zeek_protocol_records_sql(since: str, until: str | None = None) -> str:
     if until is None:
         until = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Each branch names its columns so the union has one shape: a discriminator, the host, and
-    # the protocol-specific fields the mapper reads.
-    def branch(table: str, extra: str) -> str:
-        """One arm of the union.
+    # ── EVERY ARM MUST CARRY THE SAME COLUMNS, AND FOUR WERE MISSING ──────────────────────────
+    #
+    # UNION ALL requires one shape across all branches, so a field only one log has must be
+    # PADDED on every other arm. Four columns were absent from the union entirely, and each
+    # omission made an ATT&CK rule silently dead:
+    #
+    #   username, success  -> T1110 (NTLM brute force). The zeek_ntlm branch aliased NOTHING, so
+    #                         `username` was always absent, the rule's `if r.get("username")`
+    #                         guard never passed, and NTLM brute force could not be reported
+    #                         however noisy the network was.
+    #   version, ja4       -> T1573 (deprecated TLS). There was no zeek_ssl branch AT ALL, so both
+    #                         were always absent and the TLS-downgrade rule could never fire.
+    #
+    # `carries` is how a branch supplies real values; anything it does not name is padded with a
+    # type-matching zero. The padding is not decoration -- omitting a column from one arm is a SQL
+    # error, and NULL where the type is UInt8 raises at query time. Both were verified against
+    # ClickHouse rather than assumed.
+    ZEROS = {"username": "''", "success": "0", "version": "''", "ja4": "''"}
 
-        `attempts` and `successes` default to 0 on every arm that has no such concept, because
-        UNION ALL requires one column shape across all branches. Only zeek_ssh populates them.
+    def branch(table: str, extra: str, carries: dict[str, str] | None = None,
+               host: str = "src_addr", attempts: str = "0", successes: str = "0") -> str:
+        """One arm of the union, with every optional column present.
+
+        `carries` maps a trailing column to the table expression that supplies it; anything
+        absent is padded. `host` overrides the host column for tables that name it differently --
+        see the zeek_dhcp note, where the wrong name broke the ENTIRE query.
         """
+        carried = carries or {}
+        tail = ", ".join(f"{carried.get(k, ZEROS[k])} AS {k}" for k in ZEROS)
         return (
-            f"SELECT '{table}' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, {extra} "
+            f"SELECT '{table}' AS kind, {host} AS src_addr, ts, "
+            f"{attempts} AS attempts, {successes} AS successes, {extra}, {tail} "
             f"FROM weirvern.{table} WHERE ts >= '{since}' AND ts < '{until}'"
         )
 
     return " UNION ALL ".join([
-        # `attempts` / `successes` are carried on the SSH branch so the brute-force rule has a
-        # real source. They are zero for every other log, which is what the rule keys on.
-        # zeek_ssh is the only branch with real attempt counts, so it is written to override
-        # the zeros the helper injects.
-        f"SELECT 'zeek_ssh' AS kind, src_addr, ts, auth_attempts AS attempts, "
-        f"auth_success AS successes, '' AS smb_path, '' AS service, direction AS operation, "
-        f"'' AS endpoint FROM weirvern.zeek_ssh "
-        f"WHERE ts >= '{since}' AND ts < '{until}'",
+        # SSH carries the ONLY real attempt counts, so it overrides the helper's zeros.
+        branch("zeek_ssh", "'' AS smb_path, '' AS service, direction AS operation, '' AS endpoint",
+               attempts="auth_attempts", successes="auth_success"),
         branch("zeek_smb_mapping", "path AS smb_path, service, '' AS operation, '' AS endpoint"),
         branch("zeek_smb_files", "path AS smb_path, '' AS service, action AS operation, '' AS endpoint"),
         branch("zeek_dce_rpc", "'' AS smb_path, '' AS service, operation, endpoint"),
@@ -943,23 +960,34 @@ def zeek_protocol_records_sql(since: str, until: str | None = None) -> str:
         # as its identity and an empty address. This is what makes the table READABLE for
         # hunting -- self-signed certificates, weak keys, issuer reuse -- rather than collected
         # and never used. The audit's exemption for it is verified by a test, not asserted.
-        f"SELECT 'zeek_x509' AS kind, '' AS src_addr, ts, 0 AS attempts, 0 AS successes, "
-        f"'' AS smb_path, '' AS service, fingerprint AS operation, subject AS endpoint "
-        f"FROM weirvern.zeek_x509 WHERE ts >= '{since}' AND ts < '{until}'",
-        f"SELECT 'zeek_tunnel' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
-        f"'' AS smb_path, '' AS service, tunnel_type AS operation, action AS endpoint "
-        f"FROM weirvern.zeek_tunnel WHERE ts >= '{since}' AND ts < '{until}'",
-        f"SELECT 'zeek_quic' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
-        f"'' AS smb_path, '' AS service, client_protocol AS operation, server_name AS endpoint "
-        f"FROM weirvern.zeek_quic WHERE ts >= '{since}' AND ts < '{until}'",
-        f"SELECT 'zeek_ldap_search' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
-        f"'' AS smb_path, '' AS service, scope AS operation, base_object AS endpoint "
-        f"FROM weirvern.zeek_ldap_search WHERE ts >= '{since}' AND ts < '{until}'",
-        f"SELECT 'zeek_dhcp' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
-        f"'' AS smb_path, '' AS service, msg_types AS operation, mac AS endpoint "
-        f"FROM weirvern.zeek_dhcp WHERE ts >= '{since}' AND ts < '{until}'",
-        branch("zeek_ntlm",
-               "'' AS smb_path, '' AS service, '' AS operation, '' AS endpoint"),
+        branch("zeek_x509", "'' AS smb_path, '' AS service, fingerprint AS operation, "
+                            "subject AS endpoint", host="''"),
+        branch("zeek_tunnel", "'' AS smb_path, '' AS service, tunnel_type AS operation, "
+                              "action AS endpoint"),
+        branch("zeek_quic", "'' AS smb_path, '' AS service, client_protocol AS operation, "
+                            "server_name AS endpoint"),
+        branch("zeek_ldap_search", "'' AS smb_path, '' AS service, scope AS operation, "
+                                   "base_object AS endpoint"),
+        # zeek_dhcp HAS NO src_addr -- it keys its peers as client_addr/server_addr. The branch
+        # used to select a bare `src_addr`, which made the ENTIRE union raise
+        #     Code: 47. Unknown expression identifier `src_addr`
+        # and because worker.py catches that and carries on, every Zeek-derived technique was
+        # silently absent, reported only as "mapping will use volumetric evidence only". A whole
+        # half of the ATT&CK mapping was off and it looked like a quiet network.
+        branch("zeek_dhcp", "'' AS smb_path, '' AS service, msg_types AS operation, mac AS endpoint",
+               host="client_addr"),
+        # NTLM: `username` and `success` are REAL columns and are exactly what T1110 reads. This
+        # branch previously aliased nothing, so the rule's `if r.get("username")` guard never
+        # passed. toUInt8 keeps the type matching the 0 every other arm pads with.
+        branch("zeek_ntlm", "'' AS smb_path, '' AS service, '' AS operation, '' AS endpoint",
+               carries={"username": "username", "success": "toUInt8(success)"}),
+        # ── zeek_ssl: THE BRANCH THAT DID NOT EXIST ───────────────────────────────────────────
+        # T1573 reads `ja4` and `version` expecting TLS records, and there was no SSL arm at all,
+        # so both keys were always absent and the deprecated-TLS rule could never fire however
+        # many hosts downgraded. `version` goes to `operation` as well, matching how the other
+        # protocol arms map their distinguishing field for a human reading the row.
+        branch("zeek_ssl", "'' AS smb_path, '' AS service, version AS operation, '' AS endpoint",
+               carries={"version": "version", "ja4": "ja4"}),
     ])
 
 
@@ -981,3 +1009,6 @@ def index_protocol_records(rows: Sequence[Sequence[Any]],
             continue
         out.setdefault(src, []).append(rec)
     return out
+
+
+

@@ -279,7 +279,26 @@ def map_techniques(row: dict[str, Any]) -> list[Match]:
     # not a column of flows_aggregated -- so the fallback could never succeed, while making the
     # code look like it handled a second source.
     bytes_out = _f(row.get("total_bytes"))
-    bytes_back = _f(row.get("resp_bytes"))
+    # ── resp_bytes HAS NO SOURCE, AND PRETENDING IT DOES IS WORSE THAN NOT HAVING IT ────────
+    #
+    # `flows_aggregated` carries no inbound-bytes column, and nothing merges one in: the
+    # NetFlow aggregate stores per-source volume only. So this read is always 0.0, and the
+    # consequence is not merely a missing fact -- it INVERTS a verdict:
+    #
+    #     ratio = bytes_out / (bytes_out + 0) = 1.0
+    #
+    # 1.0 clears EXFIL_MIN_RATIO (0.9) unconditionally, so T1041 (Exfiltration Over C2) fired on
+    # EVERY large transfer with no evidence of asymmetry at all -- including a legitimate backup
+    # uploading 50 MB. A rule that cannot fail is not a detection, and this one was reported as
+    # a medium-severity finding each time.
+    #
+    # The honest form states that the ratio is UNKNOWN and does not gate on it. Where a real
+    # inbound figure is available (Zeek's conn.log orig/resp bytes, which the protocol rows
+    # carry) map_zeek_techniques can judge asymmetry properly; here it cannot.
+    #
+    # No `bytes_back` variable is kept: an unused binding that reads as a value this function
+    # obtained is how the original defect looked plausible. The exfiltration branch below says
+    # in its own evidence that the inbound half is unavailable.
 
     # ── Discovery: T1046 / T1595 ───────────────────────────────────────────────
     # Many ports, wide spread, and almost nothing transferred. The zero-byte qualifier is
@@ -322,23 +341,41 @@ def map_techniques(row: dict[str, Any]) -> list[Match]:
         ))
 
     # ── Exfiltration: T1041 / T1048 ────────────────────────────────────────────
+    #
+    # THE ASYMMETRY COMES FROM ZEEK, NOT FROM THE FLOW ROW. There is no inbound-bytes column in
+    # `flows_aggregated` -- the NetFlow aggregate stores per-source volume only -- so a ratio
+    # computed from a flow row is bytes_out/(bytes_out+0) == 1.0, which clears EXFIL_MIN_RATIO
+    # unconditionally. That made the rule fire on EVERY large transfer, including a legitimate
+    # backup uploading 50 MB. (The previous form read `resp_bytes` from this row; the old tests
+    # passed only because they hand-built rows carrying `orig_bytes`/`resp_bytes` that nothing in
+    # production ever merged in.)
+    #
+    # `zeek_outbound_ratio` is the real thing: conn.log's orig/(orig+resp), computed per
+    # host-window by zeek_window_summary_sql, merged onto this row by worker.py, and already used
+    # as an ML feature. It is present only when the sensor saw the host's connections, so the
+    # rule REQUIRES it rather than defaulting -- "we could not measure asymmetry" must not read
+    # as "asymmetry confirmed", and it must not read as "balanced" either.
+    outbound_ratio = row.get("zeek_outbound_ratio")
     if bytes_out >= EXFIL_MIN_BYTES:
-        ratio = bytes_out / (bytes_out + bytes_back) if (bytes_out + bytes_back) > 0 else 1.0
-        if ratio >= EXFIL_MIN_RATIO:
+        if outbound_ratio is None:
             evidence = [
-                f"{bytes_out / 1e6:.1f} MB outbound vs {bytes_back:.0f} bytes inbound "
-                f"(ratio {ratio:.2f})",
+                f"{bytes_out / 1e6:.1f} MB outbound in one window; the Zeek sensor has no "
+                f"connection records for this host, so asymmetry cannot be judged",
+            ]
+            # Low confidence and explicitly unmeasured: volume alone does not distinguish a leak
+            # from an upload. Reported because someone should look; not asserted as exfiltration.
+            out.append(Match(TECHNIQUES["T1041"], "low", evidence))
+        elif _f(outbound_ratio) >= EXFIL_MIN_RATIO:
+            pct = _f(outbound_ratio)
+            evidence = [
+                f"{bytes_out / 1e6:.1f} MB outbound, {pct:.0%} of the host's bytes sent "
+                f"(one-way; threshold {EXFIL_MIN_RATIO:.0%})",
             ]
             out.append(Match(TECHNIQUES["T1041"], "medium", evidence))
-            # Alternative protocol when it is NOT a common web/TLS port: the distinguishing
-            # fact between the two techniques, and worth stating separately because the
-            # response (check the destination) differs from a web upload.
-            dport = _f(row.get("dst_port"))
-            if dport and dport not in (80, 443, 8080, 8443):
-                out.append(Match(
-                    TECHNIQUES["T1048"], "medium",
-                    [f"large transfer to port {dport:.0f}, not a standard web port"],
-                ))
+            # T1048 (Over Alternative Protocol) is the same volume on a port that is not plain
+            # web/TLS. `dst_port` is not on this row either -- it is a per-FLOW fact on raw
+            # `flows` -- so the port half of the argument stays with the Zeek records rather than
+            # being invented here.
 
     # ── DNS tunnelling / C2: T1071.004 ─────────────────────────────────────────
     #
@@ -386,22 +423,21 @@ def map_techniques(row: dict[str, Any]) -> list[Match]:
     # The distinction it encodes: Kerberos ticket abuse is a PROTOCOL fact (which principal
     # asked for which SPN), not a volumetric one. It cannot be counted into existence.
 
-    # ── Brute force: T1110 ─────────────────────────────────────────────────────
-    # `attempts` / `successes`, which is what the protocol query's zeek_ssh branch aliases.
-    # NOTE the fallbacks are gone: the previous form was
-    #   `_f(row.get("attempts")) or _f(row.get("zeek_ssh_attempts"))`
-    # and `zeek_ssh_attempts` is produced by nothing, so the fallback could only ever fire on a
-    # falsy zero and hide the mismatch. Verified by Scripts/audit_schema.py, which reports any
-    # name read from a row that no table column or query alias produces.
-    attempts = _f(row.get("attempts"))
-    if attempts >= BRUTE_MIN_ATTEMPTS:
-        successes = _f(row.get("successes"))
-        fail_ratio = 1.0 - (successes / attempts) if attempts else 0.0
-        if fail_ratio >= BRUTE_MIN_FAILURE_RATIO:
-            out.append(Match(
-                TECHNIQUES["T1110"], "high" if fail_ratio > 0.95 else "medium",
-                [f"{attempts:.0f} authentication attempts, {fail_ratio:.0%} unsuccessful"],
-            ))
+    # ── Brute force (T1110) IS NOT MAPPED FROM THIS ROW ────────────────────────
+    #
+    # A block here read `attempts` / `successes` and claimed they were "what the protocol
+    # query's zeek_ssh branch aliases" -- which is exactly the problem. That branch feeds
+    # `map_zeek_techniques`, not this function, and `flows_aggregated` has no such columns. So
+    # the read was always 0, the `>= BRUTE_MIN_ATTEMPTS` guard never passed, and the technique
+    # could not fire from here no matter what the network did.
+    #
+    # It also sat one comment away from a note explaining that the Kerberos rule had been
+    # removed for the identical reason, so the same mistake survived beside its own correction.
+    #
+    # SSH brute force is now raised in `map_zeek_techniques`, where the rows genuinely carry
+    # per-connection auth_attempts/auth_success. The distinction is the same as Kerberos':
+    # authentication failure counts are a PROTOCOL fact and cannot be counted into existence
+    # from volumetric aggregates.
 
     return out
 
@@ -430,6 +466,12 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
     ntlm_total = 0.0
     weak_tls = 0.0
     tls_total = 0.0
+    # SSH brute force. `attempts`/`successes` are aliased by the protocol query's zeek_ssh branch
+    # to auth_attempts/auth_success, which are PER-CONNECTION counts -- the only place in this
+    # system where a failed-login burst is visible. The volumetric row has no such columns, so
+    # the rule that used to read them there could never fire (see map_techniques).
+    ssh_attempts = 0.0
+    ssh_successes = 0.0
 
     for r in rows:
         # ── T1021.002: admin shares via SMB ────────────────────────────────────
@@ -465,6 +507,15 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
             ntlm_total += 1
             if not _truthy(r.get("success")):
                 ntlm_failures += 1
+
+        # ── T1110: SSH authentication failures ─────────────────────────────────
+        # Keyed on `kind` so only the zeek_ssh branch contributes: the union pads every other
+        # table's rows with `0 AS attempts, 0 AS successes`, so summing unconditionally would
+        # work by luck rather than by design -- and would silently start counting the wrong rows
+        # if another branch ever aliased those names.
+        if str(r.get("kind") or "") == "zeek_ssh":
+            ssh_attempts += _f(r.get("attempts"))
+            ssh_successes += _f(r.get("successes"))
 
         # ── T1573: TLS fingerprint and version ─────────────────────────────────
         j = str(r.get("ja4") or "")
@@ -529,6 +580,17 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
             out.append(Match(
                 TECHNIQUES["T1110"], "medium",
                 [f"{ntlm_total:.0f} NTLM authentications, {fail_ratio:.0%} unsuccessful"],
+            ))
+
+    # SSH brute force, raised HERE because this is where the counts exist. The same thresholds
+    # as NTLM: enough attempts, mostly failing.
+    if ssh_attempts >= BRUTE_MIN_ATTEMPTS:
+        ssh_fail_ratio = 1.0 - (ssh_successes / ssh_attempts) if ssh_attempts else 0.0
+        if ssh_fail_ratio >= BRUTE_MIN_FAILURE_RATIO:
+            out.append(Match(
+                TECHNIQUES["T1110"], "high" if ssh_fail_ratio > 0.95 else "medium",
+                [f"{ssh_attempts:.0f} SSH authentication attempts, {ssh_fail_ratio:.0%} "
+                 f"unsuccessful"],
             ))
 
     if tls_total and weak_tls / tls_total >= 0.5:
@@ -601,3 +663,4 @@ def coverage() -> dict[str, Any]:
             "it did not occur -- most of ATT&CK is structurally invisible from a network tap."
         ),
     }
+
