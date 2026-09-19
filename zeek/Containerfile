@@ -88,6 +88,7 @@ ENV ZKG_HOME=/usr/local/zeek/var/lib/zkg
 # the step that failed.
 # The prune script is copied in BEFORE the step that runs it.
 COPY prune-ja4plus.sh /tmp/prune-ja4plus.sh
+COPY verify-ja4.sh /tmp/verify-ja4.sh
 
 RUN zkg install --force foxio/ja4-zeek-scripts
 
@@ -116,19 +117,16 @@ RUN sh /tmp/prune-ja4plus.sh \
 # parse needs no capture interface.
 RUN zeek -e 'exit(0)' 2>&1 | head -3 ; true
 
-# Prove at BUILD time that the pruned package still LOADS and still emits JA4. Without
-# this, the prune could leave a package that parses but produces no fingerprint -- a
-# silently useless sensor, which is the failure this whole image exists to avoid. A tiny
-# synthetic TLS trace is not needed: loading the policy is enough to catch a broken @load.
-RUN set -eu; \
-    cd /tmp && rm -rf ja4check && mkdir ja4check && cd ja4check; \
-    cat > local.zeek <<'ZEEK'; \
-@load /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
-ZEEK
-    if ! zeek -e 'exit(0)' local.zeek > parse.txt 2>&1; then \
-        echo "ASSERT FAIL: the pruned package no longer loads"; cat parse.txt; exit 1; \
-    fi; \
-    echo "assertions passed: the pruned package loads cleanly"
+# Prove at BUILD time that the pruned package still LOADS. Without this, the prune could
+# leave a package that parses but produces no fingerprint -- a silently useless sensor, which
+# is the failure this whole image exists to avoid.
+#
+# THIS CHECK IS A SCRIPT, NOT AN INLINE HEREDOC. The first version wrote local.zeek with an
+# inline `cat > file <<'ZEEK'` inside a line-continued RUN, which Dockerfile syntax does not
+# support -- the build failed with "unterminated heredoc". Moving it to the same script that
+# does the pruning keeps the mechanism testable outside a container as well.
+RUN sh /tmp/verify-ja4.sh \
+        /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
 
 # Record WHY we ship this package, what its license split is, and that JA4+ was REMOVED,
 # inside the image, so an operator inspecting a running sensor can see it without reading

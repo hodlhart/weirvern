@@ -233,7 +233,18 @@ class FailOpenWatchdog:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._restored = False
-        self._forwarding = ForwardingMonitor()
+        # PRIMED WITH THE CURRENT COUNTER, not with the default zero.
+        #
+        # ForwardingMonitor reads "the counter is greater than my last sample" as evidence of
+        # forwarding. Constructed with the default 0, the FIRST call therefore always looked
+        # like progress -- the real counter is in the millions on any live host -- which set
+        # `_forwarding_observed = True` without a single packet having been forwarded.
+        #
+        # Consequence, measured on a live intercept: the watchdog believed forwarding was
+        # already proven working, so the first quiet second became a "stall" and weir failed
+        # open on a healthy network. Everything below depends on `_forwarding_observed`
+        # meaning something, and it was being set by arithmetic rather than by evidence.
+        self._forwarding = ForwardingMonitor(sample=max(0, ForwardingMonitor.read()))
         self._stall_strikes = 0
         # Whether forwarding has EVER been seen to work since the mappings went in. Until
         # it has, a still counter is uninformative -- an idle segment looks identical to a

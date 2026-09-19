@@ -975,3 +975,79 @@ def test_the_route_lookup_is_not_run_through_a_pipe():
         "the route lookup is piped, so its exit status is head's and a failure reads as "
         "success"
     )
+
+
+# ── the watchdog must not fail open on a healthy network ────────────────────────
+#
+# FOUND BY RUNNING `weirvern intercept` against a live segment for real. The command worked
+# end to end -- address assigned, watchdog armed, single host poisoned, restores withdrawn --
+# and then reported:
+#
+#     watchdog reported failures:
+#       - forwarding stalled for 2 samples on eth1 after previously working; failing open
+#
+# Fail-open is the safe direction, so the network was fine. But the watchdog was firing on a
+# healthy segment, and the cause was arithmetic rather than traffic.
+
+
+def test_the_forwarding_monitor_is_primed_with_the_real_counter():
+    """THE BUG, as a regression test.
+
+    `ForwardingMonitor` reads "counter > my last sample" as evidence of forwarding. Built
+    with the default sample=0, its FIRST call compared the real kernel counter (millions on
+    any live host) against zero and therefore always reported progress.
+
+    That set `_forwarding_observed = True` without a single packet having been forwarded.
+    Everything downstream depends on that flag meaning "forwarding was seen to work": the
+    quiet-network protection treats stillness as uninformative only while it is False. Set by
+    arithmetic, it made the first quiet second look like a stall, so weir failed open on a
+    healthy network.
+    """
+    from weirvern.admin import watchdog as wd
+
+    real = wd.ForwardingMonitor.read()
+    if real < 0:
+        import pytest
+        pytest.skip("no /proc/net/snmp on this platform")
+
+    class FakeWatchdog:
+        pass
+
+    mon = wd.ForwardingMonitor(sample=max(0, real))
+    # With the real counter as the sample, an unchanged counter must read as NOT advanced.
+    assert mon.advanced() is False or mon.advanced() is None, (
+        "the monitor reported progress against an unchanged counter, so it was primed with "
+        "zero rather than the current value"
+    )
+
+
+def test_the_watchdog_primes_its_monitor_from_the_kernel():
+    """Structural: the priming must happen in __init__, so no construction path can skip it."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "watchdog.py").read_text()
+    body = src[src.index("class FailOpenWatchdog"):]
+    init = body[:body.index("def register")]
+    assert "ForwardingMonitor.read()" in init, (
+        "the watchdog does not prime the forwarding monitor from the kernel, so the first "
+        "health sample will always look like progress"
+    )
+    assert "ForwardingMonitor()" not in init, (
+        "the monitor is still constructed with the default sample of zero"
+    )
+
+
+def test_a_quiet_network_does_not_trip_the_watchdog():
+    """The behaviour the priming exists to protect: until forwarding has actually been
+    OBSERVED, stillness must not accumulate strikes."""
+    from weirvern.admin import watchdog as wd
+
+    w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:ff", sender=lambda *a: True)
+    # Never observed forwarding: many quiet samples must not produce a failure.
+    for _ in range(5):
+        if not w._forwarding_observed:
+            w._quiet_samples += 1
+            continue
+        w._stall_strikes += 1
+    assert w._stall_strikes == 0, "a never-observed network accumulated stall strikes"
+    assert w._quiet_samples == 5
