@@ -209,3 +209,33 @@ def test_the_readme_does_not_advertise_a_feature_that_was_removed():
     assert not stale, f"the README mentions removed mode names: {stale}"
     # And the modes it does describe must be the ones the code knows.
     assert mentioned & known, "the README mentions no mode the code actually implements"
+
+
+def test_the_linter_is_pinned_to_an_exact_version():
+    """THE FAILURE THAT MOTIVATED THIS: a green local `ruff check` and a RED CI on the same commit.
+
+    `ruff>=0.6,<1` let CI resolve a newer ruff than the one used locally, and the two disagree --
+    F601 (duplicate dictionary key in a test fixture) fires in 0.16 but was not reported by the
+    older version installed here. The failure therefore surfaced only after a push, which is the
+    worst place to discover a build-tool difference.
+
+    A linter is part of the build, so its version is part of the build. Pinned exactly.
+    """
+    import re
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    m = re.search(r'"(ruff[^"]*)"', pyproject)
+    assert m, "ruff is not declared as a dependency"
+    assert re.fullmatch(r"ruff==\d+\.\d+\.\d+", m.group(1)), (
+        f"ruff is declared as {m.group(1)!r}. A range lets CI and a developer's environment "
+        f"resolve different versions, and they do not always agree on the same code."
+    )
+
+
+def test_the_ci_workflow_runs_the_same_checks_as_the_gate():
+    """The gate is ruff + mypy + pytest. CI must run all three, or a local pass means nothing."""
+    workflows = list((ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "no workflow found"
+    text = "\n".join(w.read_text() for w in workflows)
+    assert "ruff check" in text, "CI does not lint"
+    assert "mypy" in text, "CI does not type-check"
+    assert "pytest" in text, "CI does not run the tests"

@@ -173,7 +173,7 @@ def test_ldap_search_records_the_filter_which_is_the_enumeration_signal():
     """AD enumeration is defined by filter CONTENT, and nothing else in the corpus exposes directory
     queries at all."""
     row = row_of(ZEEK_MAPPERS["ldap_search"][1], {
-        "ts": "1758200000.0", "id.orig_h": "10.0.0.1", "id.orig_h": "10.0.0.1",
+        "ts": "1758200000.0", "id.orig_h": "10.0.0.1", "id.orig_p": "49152",
         "id.resp_h": "10.0.0.9", "id.resp_p": "389",
         "filter": "(objectClass=user)", "base_object": "DC=corp,DC=local",
         "scope": "sub", "result_count": "4200", "result": "success",
