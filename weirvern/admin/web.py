@@ -40,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import web_api
 
@@ -56,6 +57,10 @@ STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    # The SOC views' chart code, kept in its own file so the core dashboard bundle does not
+    # grow every time a view is added. Loaded after app.js (see index.html) because it calls
+    # the shared helpers -- chartFrame, svgEl, el, fmtBytes -- that app.js defines.
+    "/soc.js": ("soc.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -156,6 +161,16 @@ def _build_handler(ctx: GuiContext):
                 return self._evidence(query)
             if path == "/api/models":
                 return self._models(query)
+            if path == "/api/netflow":
+                return self._netflow(query)
+            if path == "/api/zeek":
+                return self._zeek(query)
+            # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
+            # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
+            # restart the GUI and hide the real problem); this one exists precisely to answer
+            # "is data still arriving", which requires reading it.
+            if path == "/api/health":
+                return self._health(query)
             if path == "/api/healthz":
                 # Liveness for the Kubernetes probe. Deliberately does NOT touch
                 # ClickHouse: a probe that fails when the database is slow would
@@ -248,6 +263,78 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.models_payload(data))
+
+        def _netflow(self, query: dict) -> None:
+            """Netflow shape: volume trend, protocols, ports, fan-out, talkers.
+
+            Every sub-query returns {"available", "reason"} rather than a bare list, and a
+            failure in one does NOT take the others down -- a chart that cannot be drawn
+            says so in place, while the charts beside it still render. Returns 200 even
+            when ClickHouse is unreachable, for the same reason `_models` does: an error
+            page for one panel would blank the views around it.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            try:
+                with self._with_client() as client:
+                    volume = soc_mod.flow_volume_series(client, hours=hours)
+                    proto = soc_mod.protocol_mix(client, hours=hours)
+                    ports = soc_mod.top_ports(client, hours=hours)
+                    spread = soc_mod.destination_spread(client, hours=hours)
+                    talkers = status_mod.top_talkers(client, hours=hours, limit=12)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("netflow view unavailable: %s", exc)
+                return self._json({"volume": empty, "protocols": empty, "ports": empty,
+                                   "spread": empty, "talkers": [],
+                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers))
+
+        def _zeek(self, query: dict) -> None:
+            """Zeek shape: per-log counts, protocol timeline, services, DNS names.
+
+            The counts helper reports a table it could not count SEPARATELY from a table
+            with no rows, because those are different facts and conflating them is how an
+            empty panel comes to look like a quiet network.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            try:
+                with self._with_client() as client:
+                    counts = soc_mod.zeek_counts(client, hours=hours)
+                    timeline = soc_mod.zeek_timeline(client, hours=hours)
+                    services = soc_mod.zeek_services(client, hours=hours)
+                    dns = soc_mod.zeek_dns_names(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("zeek view unavailable: %s", exc)
+                return self._json({"counts": empty, "timeline": empty, "services": empty,
+                                   "dns": empty,
+                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.zeek_payload(counts, timeline, services, dns))
+
+        def _health(self, query: dict) -> None:
+            """DEEP health: the checks, ingestion trend, table sizes, and the sensor.
+
+            NOT the liveness probe. /api/healthz answers {"ok": true} without touching the
+            database so that a slow database cannot restart the GUI; this one reads it,
+            because "is data still arriving" cannot be answered otherwise. The two are
+            different questions and this endpoint is the second.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            report = None
+            sensor: dict = {}
+            ingest, sizes = empty, empty
+            try:
+                with self._with_client() as client:
+                    report = status_mod.collect_health(client, ctx.settings)
+                    sensor = status_mod.sensor_status(client)
+                    ingest = soc_mod.ingestion_series(client, hours=hours)
+                    sizes = soc_mod.table_sizes(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("health view unavailable: %s", exc)
+                return self._json({"health": None, "ingest": empty, "tables": empty,
+                                   "sensor": {}, "data_error": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor))
 
         def _host(self, query: dict) -> None:
             addr = (query.get("addr") or [""])[0].strip()

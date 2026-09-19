@@ -25,8 +25,11 @@
 <nav id="tabs">
   <button class="tab active" data-view="overview">Overview</button>
   <button class="tab" data-view="anomalies">Anomalies</button>
-  <button class="tab" data-view="host">Host drill-down</button>
+  <button class="tab" data-view="host">Hosts</button>
+  <button class="tab" data-view="netflow">Netflow</button>
+  <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="models">Models</button>
+  <button class="tab" data-view="health">Health</button>
   <button class="tab" data-view="about">About</button>
 </nav>
 
@@ -42,10 +45,6 @@
         <h2>Health</h2>
         <table id="health-table"><tbody></tbody></table>
       </div>
-      <div class="card">
-        <h2>Workloads</h2>
-        <table id="workloads-table"><tbody></tbody></table>
-      </div>
     </div>
     <div class="card">
       <h2>Recent anomalies</h2>
@@ -55,11 +54,82 @@
       </table>
     </div>
     <div class="card">
-      <h2>Top talkers <span class="muted">last 24h</span></h2>
+      <h2>Top talkers <span class="muted">last 24h — bar length is bytes</span></h2>
+      <div id="talkers-chart"></div>
       <table id="talkers-table">
         <thead><tr><th>Host</th><th>Bytes</th><th>Flows</th><th>Destinations</th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ── Netflow ──────────────────────────────────────────────────────── -->
+  <section id="view-netflow" class="view">
+    <div class="card">
+      <h2>Netflow <span class="muted" id="nf-window"></span></h2>
+      <p class="muted" id="nf-summary">loading…</p>
+      <div class="controls">
+        <label>hours <input type="number" id="nf-hours" value="24" min="1" max="336"></label>
+        <button id="nf-reload">Reload</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Flow volume over time <span class="muted">bytes per bucket</span></h2>
+      <div id="nf-volume"></div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Talkers <span class="muted">click a bar to drill down</span></h2>
+        <div id="nf-talkers"></div>
+      </div>
+      <div class="card">
+        <h2>Protocol mix <span class="muted">flows by protocol</span></h2>
+        <div id="nf-proto"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Top destination ports</h2>
+        <div id="nf-ports"></div>
+      </div>
+      <div class="card">
+        <h2>Destination spread <span class="muted">distinct destinations per host</span></h2>
+        <div id="nf-spread"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Zeek ─────────────────────────────────────────────────────────── -->
+  <section id="view-zeek" class="view">
+    <div class="card">
+      <h2>Zeek <span class="muted" id="zk-window"></span></h2>
+      <p class="muted" id="zk-summary">loading…</p>
+      <div class="controls">
+        <label>hours <input type="number" id="zk-hours" value="24" min="1" max="336"></label>
+        <button id="zk-reload">Reload</button>
+      </div>
+      <p class="muted">Zeek sees what NetFlow cannot: services, TLS, DNS answers, file
+        transfers, authentication. A table that is empty here is a log nothing has written
+        yet — which is a different state from a query that failed, and they are stated
+        differently below.</p>
+    </div>
+    <div class="card">
+      <h2>Protocol records over time <span class="muted">rows per bucket, by log</span></h2>
+      <div id="zk-timeline"></div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Log volume <span class="muted">rows in window</span></h2>
+        <div id="zk-counts"></div>
+      </div>
+      <div class="card">
+        <h2>Services observed</h2>
+        <div id="zk-services"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>DNS queried names <span class="muted">top by count</span></h2>
+      <div id="zk-dns"></div>
     </div>
   </section>
 
@@ -217,6 +287,40 @@
     </div>
   </section>
 
+  <!-- ── Health ───────────────────────────────────────────────────────── -->
+  <section id="view-health" class="view">
+    <div class="card">
+      <h2>Health <span class="muted" id="hp-window"></span></h2>
+      <p class="muted" id="hp-summary">loading…</p>
+      <div class="controls">
+        <label>hours <input type="number" id="hp-hours" value="24" min="1" max="336"></label>
+        <button id="hp-reload">Reload</button>
+      </div>
+      <p class="muted">This is the DEEP check — it reads ClickHouse, so it answers "is data
+        flowing". The Kubernetes liveness probe deliberately does not, because a probe that
+        fails when the database is slow would restart the GUI and hide the real problem.
+        The two are different questions and this page asks the first one.</p>
+    </div>
+    <div class="card">
+      <h2>Ingestion over time <span class="muted">rows per bucket, by pipeline stage</span></h2>
+      <div id="hp-ingest"></div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Checks</h2>
+        <table id="hp-checks"><thead><tr><th>Check</th><th>State</th><th>Value</th><th>Latency</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Table sizes</h2>
+        <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Sensor</h2>
+      <div id="hp-sensor"><p class="muted">loading…</p></div>
+    </div>
+  </section>
+
   <!-- ── About ────────────────────────────────────────────────────────── -->
   <section id="view-about" class="view">
     <div class="card">
@@ -237,5 +341,7 @@
 </main>
 
 <script src="/app.js"></script>
+<script src="/soc.js"></script>
 </body>
 </html>
+

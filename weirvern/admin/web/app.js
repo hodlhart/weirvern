@@ -21,6 +21,12 @@ const API = {
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
     (end ? `&end=${encodeURIComponent(end)}` : ""),
+  // The SOC views. `health` is the DEEP check (reads ClickHouse), NOT /api/healthz, which
+  // is the Kubernetes liveness probe and answers a bare {"ok":true} without touching the
+  // database so a slow database cannot restart the GUI.
+  netflow: "/api/netflow",
+  zeek: "/api/zeek",
+  health: "/api/health",
 };
 
 let timer = null;
@@ -241,25 +247,6 @@ async function loadOverview() {
     }
   }
 
-  const wt = document.querySelector("#workloads-table tbody");
-  wt.replaceChildren();
-  if (!data.workloads.length) {
-    emptyRow(wt, 2, data.capabilities && data.capabilities.reason
-      ? "No workloads: " + data.capabilities.reason
-      : "No workloads reported.");
-  } else {
-    for (const w of data.workloads) {
-      wt.appendChild(el("tr", {}, [
-        el("td", {}, [
-          el("strong", { text: w.name }),
-          el("div", { class: "muted mono", text: w.detail || "" }),
-        ]),
-        el("td", { class: w.state === "running" ? "ok" : "muted",
-                   text: w.state + (w.health ? " · " + w.health : "") }),
-      ]));
-    }
-  }
-
   const at = document.querySelector("#overview-anomalies tbody");
   at.replaceChildren();
   if (!data.anomalies.length) {
@@ -282,6 +269,23 @@ async function loadOverview() {
   const tt = document.querySelector("#talkers-table tbody");
   tt.replaceChildren();
   const known = new Set();
+
+  // A BAR CHART BESIDE THE TABLE, not instead of it. The table carries the exact figures an
+  // analyst may quote; the bars carry the comparison the table makes you compute. Both read
+  // the same rows, so they cannot disagree.
+  renderBars("talkers-chart", {
+    available: true,
+    points: (data.top_talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })),
+  }, {
+    label: (r) => r.src_addr,
+    value: (r) => r.bytes,
+    format: fmtBytes,
+    limit: 10,
+    onClick: (r) => openHost(r.src_addr),
+    title: (r) => `${r.src_addr} — ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to drill down.`,
+    emptyText: "No flow volume in the last 24h — check the collector is receiving.",
+  });
+
   if (!data.top_talkers.length) {
     emptyRow(tt, 4, "No flow volume in the last 24h — check the collector is receiving.");
   } else {
@@ -643,7 +647,13 @@ function showView(name) {
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") loadModels().then(clearError).catch(showError);
-  }
+  // The SOC views load on demand rather than on every refresh cycle: they run several
+  // aggregate queries each, and firing them every 15s in the background would put load on
+  // ClickHouse for panels nobody is looking at.
+  if (name === "netflow") loadNetflow().then(clearError).catch(showError);
+  if (name === "zeek") loadZeek().then(clearError).catch(showError);
+  if (name === "health") loadHealthDeep().then(clearError).catch(showError);
+}
 
 async function refreshAll() {
   try {
@@ -685,6 +695,22 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
     });
+  }
+  // SOC view controls. Each reload is explicit rather than automatic for the reason given
+  // in showView: these run aggregate queries and should not fire on a background timer.
+  for (const [id, fn] of [
+    ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep],
+  ]) {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));
+  }
+  for (const [id, fn] of [
+    ["nf-hours", loadNetflow], ["zk-hours", loadZeek], ["hp-hours", loadHealthDeep],
+  ]) {
+    const i = document.getElementById(id);
+    // onchange rather than a button: picking 24h and then pressing Reload is a two-step
+    // control for a one-step intent, which the Models view already settled for this codebase.
+    if (i) i.addEventListener("change", () => fn().then(clearError).catch(showError));
   }
   refreshAll();
   startAuto(15);

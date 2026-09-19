@@ -336,3 +336,52 @@ def models_payload(data: dict) -> dict:
         spread = ", ".join(f"{k} {v}" for k, v in sorted(sev.items()))
         out["summary"] = f"{n} anomaly(ies) from {runs} training run(s) ({spread})."
     return out
+
+
+# ── SOC views: Netflow, Zeek, Health ────────────────────────────────────────────────────────
+#
+# Each payload carries `available` and `reason` straight through from the query layer rather
+# than flattening to a bare list. A chart drawn from an empty list and a chart whose query
+# failed look identical on screen, and the two need different actions from the operator --
+# so the distinction is preserved all the way to the DOM, where the panel states it in words.
+
+
+def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
+                    talkers: list[tuple]) -> dict:
+    return {
+        "volume": volume,
+        "protocols": proto,
+        "ports": ports,
+        "spread": spread,
+        "talkers": [
+            {"src_addr": r[0], "hostname": _hostname(r[0]),
+             "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),
+             "destinations": _jsonable(r[3])}
+            for r in (talkers or []) if len(r) >= 4
+        ],
+    }
+
+
+def zeek_payload(counts: dict, timeline: dict, services: dict, dns: dict) -> dict:
+    return {
+        "counts": counts,
+        "timeline": timeline,
+        "services": services,
+        "dns": dns,
+    }
+
+
+def health_deep_payload(report, ingest: dict, sizes: dict, sensor: dict) -> dict:
+    """The DEEP health payload -- reads ClickHouse, unlike /api/healthz.
+
+    The Kubernetes probe must not touch the database: a probe that fails when the database is
+    slow restarts the GUI and hides the real problem, which is why /api/healthz answers a
+    bare {"ok": true} and says so in its comment. That is right for liveness and useless for
+    an operator asking "is data still arriving". This endpoint is the second question.
+    """
+    return {
+        "health": health_payload(report) if report is not None else None,
+        "ingest": ingest,
+        "tables": sizes,
+        "sensor": sensor or {},
+    }

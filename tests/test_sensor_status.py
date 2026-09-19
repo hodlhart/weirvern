@@ -337,12 +337,19 @@ def test_no_orphan_placeholder_elements_remain():
     `id="about-mode"` was exactly that: declared in the HTML, never written to, and with no
     backend field behind it. That is the silent-empty pattern this project has had to fix
     three times, so it is checked rather than left to review.
+
+    EVERY SCRIPT IS SCANNED, not just app.js. When soc.js was added, its panels were reported
+    as orphans because only app.js was read -- the elements WERE populated, just from the
+    other file. Widening the scan to the whole web directory is the fix; adding the ids to
+    the exemption list would have been the opposite, turning a real check off to accommodate
+    the new code.
     """
-    html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
-    js = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
-    css = (ROOT / "weirvern" / "admin" / "web" / "style.css").read_text()
+    web = ROOT / "weirvern" / "admin" / "web"
+    html = (web / "index.html").read_text()
+    css = (web / "style.css").read_text()
+    scripts = "\n".join(p.read_text() for p in sorted(web.glob("*.js")))
     ids = set(re.findall(r'id="([a-z][a-z0-9-]*)"', html))
-    referenced = set(re.findall(r'getElementById\("([a-z][a-z0-9-]*)"\)', js))
+    referenced = set(re.findall(r'getElementById\("([a-z][a-z0-9-]*)"\)', scripts))
     referenced |= set(re.findall(r'for="([a-z][a-z0-9-]*)"', html))
 
     # Elements that are deliberately not written by JS, each for a reason. Without this
@@ -351,11 +358,12 @@ def test_no_orphan_placeholder_elements_remain():
     #   h-hint: hint text set once in the markup
     #   ev-notice-card: shown/hidden, not populated
     structural = {"view-overview", "view-anomalies", "view-evidence", "view-host",
-                  "view-about", "view-models", "tabs", "statusline", "h-hint",
+                  "view-about", "view-models", "view-netflow", "view-zeek", "view-health",
+                  "tabs", "statusline", "h-hint",
                   "ev-notice-card"}
 
     orphans = {i for i in ids
-               if i not in referenced and i not in js and i not in structural}
+               if i not in referenced and i not in scripts and i not in structural}
     assert not orphans, (
         f"HTML elements nothing populates: {sorted(orphans)}. An element that is declared, "
         f"never written to, and has no backend field renders as blank forever -- the "
