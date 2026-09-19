@@ -309,3 +309,7 @@ td.link:hover, .link:hover { text-decoration: underline; }
   text-align: right; word-break: break-all; }
 /* A secret shows "(set, N chars)" rather than a value; muted so it does not read as data. */
 .setting-val.secret { color: var(--muted); font-style: italic; }
+/* A setting's provenance: where the value came from. Small and muted, because it qualifies the
+ * value rather than competing with it -- but present, so a blank is never ambiguous. */
+.setting-src { margin-left: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted); opacity: .7; }

@@ -33,7 +33,7 @@ class _Settings:
     """A settings object carrying a recognisable secret value."""
 
     clickhouse_password = SECRET
-    pushover_token = SECRET
+    pushover_api_token = SECRET
     clickhouse_user = "default"
     clickhouse_host = "clickhouse"
     clickhouse_port = 8123
@@ -101,17 +101,22 @@ def test_an_unset_secret_reads_as_not_set_rather_than_as_hidden():
     """`(not set)` and `(set, N chars)` are different facts and must not collapse."""
     rows = _flat(status.settings_overview(settings=_Settings()))
     # Derived, not hardcoded: a second copy of the number is a copy that can drift.
-    assert rows["pushover_token"]["value"] == f"(set, {len(SECRET)} chars)"   # present in stub
-    assert rows["pushover_user"]["value"] == "(not set)"                      # absent in stub
-    assert rows["pushover_token"]["secret"] is True
-    assert rows["pushover_user"]["secret"] is True
+    # Real field names: the `pushover_user`/`pushover_token` spellings do not exist and read
+    # "(not set)" even when Pushover is configured -- caught by reading the live endpoint.
+    assert rows["pushover_api_token"]["value"] == f"(set, {len(SECRET)} chars)"
+    assert rows["pushover_user_key"]["value"] == "(not set)"   # absent in this stub
+    assert rows["pushover_api_token"]["secret"] is True
+    assert rows["pushover_user_key"]["secret"] is True
 
 
 def test_a_boolean_setting_reads_as_enabled_or_disabled():
     """A bare True/False in a config table reads as a raw value rather than a state."""
     rows = _flat(status.settings_overview(settings=_Settings()))
     assert rows["pushover_enabled"]["value"] == "enabled"
-    assert rows["capture_password"]["value"] == "disabled"
+    # `capture_password` is NOT a Settings field (verified by grep) so it is no longer a row;
+    # the boolean-rendering rule it used to exercise is covered by pushover_enabled above and by
+    # test_a_boolean_is_never_treated_as_a_secret below.
+    assert rows["pushover_enabled"]["secret"] is False
 
 
 # ── 3. read-only, and said so ──────────────────────────────────────────────────────────────
@@ -197,3 +202,154 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert "loadSettings" in app_js, "nothing loads the Settings view"
     src = (WEB.parent / "web.py").read_text()
     assert '"/api/settings"' in src, "there is no /api/settings route"
+
+
+# ── the version row, which reported a version the deployment was not running ───────────────
+#
+# Found by reading the LIVE endpoint rather than the tests: the Settings page said 0.4.0 while
+# the deployment ran 0.5.6. The package's `__version__` literal had never been bumped, so the
+# page confidently told an operator they were running a version they were not -- and a wrong
+# version makes every other row on that page suspect. These tests pin the fix.
+
+
+def test_the_version_row_comes_from_the_running_image_not_the_package_literal():
+    """The running image is authoritative; the package literal drifts."""
+    from weirvern.admin.runtime import ServiceState
+
+    class _Backend:
+        def ps(self):
+            return [
+                ServiceState(name="weirvern-gui", state="running",
+                             image="weirvern-worker:9.9.9"),
+                ServiceState(name="weirvern-worker", state="running",
+                             image="weirvern-worker:9.9.9"),
+            ]
+
+    payload = status.settings_overview(settings=_Settings(), backend=_Backend())
+    rows = _flat(payload)
+    assert rows["version"]["value"] == "9.9.9", (
+        "the version row did not read the running image. Report (unknown) rather than the "
+        "package literal -- a plausible wrong version is worse than an absent one."
+    )
+
+
+def test_the_version_row_prefers_the_gui_image():
+    """The page IS the GUI, so its own image is the closest answer."""
+    from weirvern.admin.runtime import ServiceState
+
+    class _Backend:
+        def ps(self):
+            return [
+                ServiceState(name="weirvern-worker", state="running", image="weirvern-worker:1.1.1"),
+                ServiceState(name="weirvern-gui", state="running", image="weirvern-worker:2.2.2"),
+            ]
+
+    rows = _flat(status.settings_overview(settings=_Settings(), backend=_Backend()))
+    assert rows["version"]["value"] == "2.2.2"
+
+
+def test_the_version_row_says_unknown_rather_than_guessing_without_a_backend():
+    """With no cluster access there is no honest answer, and a guess would be worse."""
+    rows = _flat(status.settings_overview(settings=_Settings(), backend=None))
+    assert rows["version"]["value"] == "(unknown)"
+
+
+def test_the_namespace_row_resolves_from_runtime_rather_than_rendering_unknown():
+    """It read '(unknown)' live because the caller passed nothing. runtime.NAMESPACE is the
+    single definition the backends use, so asking it cannot disagree with the cluster."""
+    rows = _flat(status.settings_overview(settings=_Settings()))
+    assert rows["namespace"]["value"] == "weirvern"
+
+
+def test_no_row_is_reported_for_a_field_that_does_not_exist():
+    """`capture_password` and `strong_signal` were listed and are NOT Settings fields -- they
+    exist only in prose comments. A row with no field behind it shows '(not set)' forever, which
+    is the silent-empty pattern this project keeps having to fix."""
+    from weirvern.config import Settings
+
+    payload = status.settings_overview(settings=Settings())
+    keys = {r["key"] for rows in payload["groups"].values() for r in rows}
+    for phantom in ("capture_password", "strong_signal"):
+        assert phantom not in keys, f"{phantom} is reported but is not a Settings field"
+    # Every remaining key must either BE a Settings attribute or be marked as env-only. A row
+    # that is neither is a row with nothing behind it, which can only ever show "(not set)".
+    payload_all = status.settings_overview(settings=Settings())
+    offenders = []
+    for rows in payload_all["groups"].values():
+        for r in rows:
+            if r["source"] == "setting" and not hasattr(Settings(), r["key"]):
+                offenders.append(r["key"])
+            elif r["source"] == "env" and hasattr(Settings(), r["key"]):
+                offenders.append(r["key"] + " (marked env but IS a setting)")
+    assert not offenders, (
+        f"these rows misdeclare where their value comes from, so a blank renders the same as a "
+        f"missing field: {offenders}"
+    )
+    # The env-only rows are legitimate but must be labelled.
+    env_rows = {r["key"] for rows in payload_all["groups"].values() for r in rows
+                if r["source"] == "env"}
+    assert env_rows, "no env-sourced rows at all; the provenance field is not being set"
+    for k in ("intercept_segment", "intercept_addr", "intercept_gateway"):
+        assert k in env_rows, f"{k} should be reported as an env-sourced key"
+
+
+def test_the_pushover_rows_use_the_real_field_names():
+    """`pushover_user` does not exist; the fields are pushover_user_key / pushover_api_token.
+    The wrong names read '(not set)' while Pushover was in fact configured."""
+    rows = _flat(status.settings_overview(settings=_Settings()))
+    for real in ("pushover_user_key", "pushover_api_token"):
+        assert real in rows, f"{real} is missing from the Settings rows"
+    assert "pushover_user" not in rows and "pushover_token" not in rows
+    # The Pushover user KEY is a credential and must be treated as one.
+    assert rows["pushover_user_key"]["secret"] is True
+
+
+def test_the_package_version_matches_the_image_tag_declared_in_the_transformer():
+    """The root cause of the wrong-version bug: nothing tied the two together.
+
+    The image tag lives in k8s/kustomization.yaml and the package version in
+    weirvern/__init__.py, and they drifted (0.4.0 vs 0.5.6) with no check to notice. A version
+    that appears in three places must be asserted in one.
+    """
+    import re as _re
+
+    import weirvern
+
+    kustom = (Path(__file__).resolve().parent.parent / "k8s" / "kustomization.yaml").read_text()
+    m = _re.search(r'name:\s*weirvern-worker\s*\n\s*newTag:\s*"([^"]+)"', kustom)
+    assert m, "the image tag is no longer declared in kustomization.yaml"
+    tag = m.group(1)
+    assert weirvern.__version__ == tag, (
+        f"weirvern/__init__.py says {weirvern.__version__} but the image tag is {tag}. Bump "
+        f"both together -- the Settings page reports one and the deployment runs the other."
+    )
+
+
+def test_a_boolean_is_never_treated_as_a_secret():
+    """`capture_password` name-matches "password" but is a switch, not a credential. Hiding it
+    as "(not set)" removed exactly the fact an operator needs: are we capturing passwords?"""
+    assert status._redact("capture_password", False) == "disabled"
+    assert status._redact("capture_password", True) == "enabled"
+    assert status._is_secret("capture_password") is True  # it IS name-flagged...
+    # ...but the bool branch wins, so its VALUE is still reported. The two are different
+    # questions: "is this sensitive" and "is this value a switch".
+    assert status._redact("pushover_enabled", True) == "enabled"
+
+
+def test_every_row_declares_where_its_value_came_from():
+    """Provenance, so a blank is not ambiguous.
+
+    Three rows for NON-EXISTENT fields rendered as "(not set)" and survived review, because
+    "the field does not exist" and "the field is unset" looked identical. Now each row says
+    whether it came from the settings object, the environment, or was derived.
+    """
+    payload = status.settings_overview(settings=_Settings(), backend=None)
+    for rows in payload["groups"].values():
+        for r in rows:
+            assert r["source"] in ("setting", "env", "derived"), (
+                f"{r['key']} has source={r['source']!r}"
+            )
+    derived = {r["key"] for rows in payload["groups"].values() for r in rows
+               if r["source"] == "derived"}
+    for k in ("reverse_dns", "namespace", "version"):
+        assert k in derived, f"{k} is computed, not read from Settings, so it must say 'derived'"

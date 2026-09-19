@@ -203,7 +203,7 @@ _SECRET_HINTS = ("password", "token", "secret", "key", "credential", "passwd")
 # otherwise sail through -- `pushover_user` is the Pushover USER KEY, an account identifier that
 # is only useful together with the API token, so it is a secret with an innocuous name.
 # Pattern first, then explicit: a name that does not announce itself still has to be listed.
-_SECRET_NAMES = frozenset({"pushover_user"})
+_SECRET_NAMES = frozenset({"pushover_user_key", "pushover_api_token"})
 
 
 def _is_secret(name: str) -> bool:
@@ -244,7 +244,6 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("detect_interval_s", "detect interval (s)"),
         ("base_threshold", "alert threshold"),
         ("min_agreement", "minimum agreement"),
-        ("strong_signal", "strong signal"),
     ]),
     ("sensor", "Sensor", [
         ("sensor_mode", "mode"),
@@ -253,8 +252,13 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("zeek_log_dir", "Zeek log dir"),
         ("tail_file", "NetFlow tail file"),
         ("intercept_targets", "intercept targets"),
-        ("intercept_seconds", "intercept duration (s)"),
+        # These three are NOT Settings attributes -- the CLI reads them from the environment
+        # directly (`weirvern intercept` falls back to them) and they are ConfigMap keys. They
+        # are still worth showing, because enabling weir mode depends on them. `_SOURCE` records
+        # that they come from the environment rather than from the settings object, so the row
+        # does not pretend to be a preference it is not.
         ("intercept_segment", "intercept segment"),
+        ("intercept_addr", "intercept address"),
         ("intercept_gateway", "intercept gateway"),
         ("reverse_dns", "reverse DNS"),
     ]),
@@ -266,16 +270,47 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("clickhouse_password", "ClickHouse password"),
         ("model_dir", "model directory"),
         ("pushover_enabled", "Pushover"),
-        ("pushover_user", "Pushover user"),
-        ("pushover_token", "Pushover token"),
-        ("capture_password", "capture passwords"),
+        ("pushover_user_key", "Pushover user key"),
+        ("pushover_api_token", "Pushover API token"),
+        ("pushover_cooldown_s", "Pushover cooldown (s)"),
+        ("pushover_max_per_hour", "Pushover max/hour"),
         ("namespace", "namespace"),
         ("version", "version"),
     ]),
 ]
 
 
-def settings_overview(settings=None, namespace: str = "") -> dict:
+def _running_version(backend) -> str:
+    """The image tag the pod is actually running.
+
+    Asked of the cluster because the in-package `__version__` literal DRIFTS: it read 0.4.0
+    while the deployment ran 0.5.6, which would misreport the version of every other setting
+    shown beside it. Returns "(unknown)" rather than falling back to the literal -- an operator
+    who sees "unknown" will look; one who sees a plausible wrong number will not.
+    """
+    if backend is None:
+        return "(unknown)"
+    try:
+        ps = backend.ps()
+    except Exception:  # noqa: BLE001
+        return "(unknown)"
+    best = ""
+    for svc in ps or []:
+        name = (getattr(svc, "name", "") or "").lower()
+        image = getattr(svc, "image", "") or ""
+        if not image:
+            continue
+        tag = image.rsplit(":", 1)[-1] if ":" in image else image
+        # Prefer the GUI's own image (this page IS the GUI), then the worker: both are built from
+        # the same Containerfile, so either answers "what version is deployed".
+        if "gui" in name:
+            return tag
+        if "worker" in name and not best:
+            best = tag
+    return best or "(unknown)"
+
+
+def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
     """The EFFECTIVE configuration, for the Settings tab. Read-only by design.
 
     WHY READ-ONLY. The GUI is served on a LAN port with no authentication. Anything an HTTP
@@ -293,23 +328,39 @@ def settings_overview(settings=None, namespace: str = "") -> dict:
         out: list[dict] = []
         for attr, label in fields:
             value = getattr(settings, attr, None) if settings is not None else None
+            # WHERE the value came from. Without this, "the field does not exist", "the field is
+            # set but empty" and "the field is unset" all render identically as "(not set)" --
+            # which is how three rows for non-existent fields survived review.
+            source = ("setting" if (settings is not None and hasattr(settings, attr))
+                      else "env")
+            if attr in ("reverse_dns", "namespace", "version"):
+                source = "derived"
             if attr == "reverse_dns":
                 # Not a Settings field: the resolver reads it from the environment directly.
                 value = os.environ.get("WEIRVERN_REVERSE_DNS") or "private (default)"
             elif attr == "namespace":
+                # runtime.NAMESPACE is the single definition the backends use; asking it rather
+                # than threading a parameter means this row cannot disagree with the cluster the
+                # rest of the page is describing.
+                if not namespace:
+                    try:
+                        from weirvern.admin.runtime import NAMESPACE as _NS  # noqa: PLC0415
+
+                        namespace = _NS
+                    except Exception:  # noqa: BLE001
+                        namespace = "(unknown)"
                 value = namespace or "(unknown)"
             elif attr == "version":
-                try:
-                    from weirvern import __version__
-
-                    value = __version__
-                except Exception:  # noqa: BLE001
-                    value = "(unknown)"
+                # NOT `weirvern.__version__`: that literal reads 0.4.0 while the image tag is
+                # 0.5.6, so it would tell an operator they are running a version they are not.
+                # A wrong version is worse than no version -- it makes every other row suspect.
+                # The running image is authoritative, and it is only knowable from the cluster.
+                value = _running_version(backend)
             elif value is None:
-                # Fall back to the environment, since these settings are env-driven and the
-                # process may be reading them from the ConfigMap rather than a literal default.
-                env_name = attr.upper()
-                value = os.environ.get(env_name)
+                # Fall back to the environment: these keys are env-driven and the process may be
+                # reading them from the ConfigMap rather than a literal default. The name is
+                # uppercased, which is the convention every key in this project follows.
+                value = os.environ.get(attr.upper())
             out.append({
                 "key": attr,
                 "label": label,
@@ -317,6 +368,9 @@ def settings_overview(settings=None, namespace: str = "") -> dict:
                 # A secret is flagged so the UI can say WHY it shows no value, instead of leaving
                 # the reader to wonder whether the field is broken.
                 "secret": _is_secret(attr),
+                # setting | env | derived -- so the UI can show that a blank is an env-only key
+                # rather than a broken preference.
+                "source": source,
             })
         rows[key] = out
     return {"available": True, "reason": "", "groups": rows,

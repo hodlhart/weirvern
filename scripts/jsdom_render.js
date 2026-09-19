@@ -134,19 +134,26 @@ async function main() {
     titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
     groups: {
       detect: [
-        { key: "retrain_every_h", label: "retrain every (h)", value: 6, secret: false },
-        { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false },
+        { key: "retrain_every_h", label: "retrain every (h)", value: 6, secret: false,
+          source: "setting" },
+        { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false,
+          source: "setting" },
       ],
       sensor: [
-        { key: "sensor_mode", label: "mode", value: "loch", secret: false },
-        { key: "reverse_dns", label: "reverse DNS", value: "private (default)", secret: false },
+        { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting" },
+        { key: "reverse_dns", label: "reverse DNS", value: "private", secret: false,
+          source: "derived" },
+        { key: "intercept_segment", label: "intercept segment", value: "(not set)",
+          secret: false, source: "env" },
       ],
       runtime: [
-        { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false },
+        { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
+          source: "setting" },
         { key: "clickhouse_password", label: "ClickHouse password",
-          value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true },
-        { key: "pushover_token", label: "Pushover token", value: "(not set)", secret: true },
-        { key: "capture_password", label: "capture passwords", value: "disabled", secret: false },
+          value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true, source: "setting" },
+        { key: "pushover_api_token", label: "Pushover API token", value: "(not set)",
+          secret: true, source: "setting" },
+        { key: "version", label: "version", value: "0.5.6", secret: false, source: "derived" },
       ],
     },
   };
@@ -566,8 +573,18 @@ async function main() {
         /\d+ settings in effect/.test(stSummary.textContent));
 
   const vals = [...doc.querySelectorAll("#view-settings .setting")];
+  // DERIVED from the payload, not hardcoded: a literal row count is a second copy of a fact and
+  // it drifted the moment a group gained a row (rendered 9 against a hardcoded 10).
+  const expectedRows = Object.values(SETTINGS_PAYLOAD.groups)
+    .reduce((n, rows) => n + rows.length, 0);
   check("every setting renders as a key/value row, not a JSON blob",
-        vals.length === 8, `rendered ${vals.length} rows`);
+        vals.length === expectedRows,
+        `rendered ${vals.length} rows, payload has ${expectedRows}`);
+
+  // Provenance must be visible, so a blank cannot be confused with a field that does not exist.
+  const srcs = [...doc.querySelectorAll("#view-settings .setting-src")].map(n => n.textContent);
+  check("an env-only key is labelled as env", srcs.includes("env"), `srcs: ${srcs.join(",")}`);
+  check("a derived value is labelled as derived", srcs.includes("derived"));
 
   const shown = doc.getElementById("clickhouse_host");
   check("an ordinary setting shows its value",

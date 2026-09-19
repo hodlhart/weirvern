@@ -484,8 +484,10 @@ def _build_handler(ctx: GuiContext):
             """
             del query  # no parameters: the configuration is whatever is running
             try:
+                # The backend is passed so the VERSION row can report the running image tag
+                # rather than the package's own literal, which had drifted (0.4.0 vs 0.5.6).
                 payload = status_mod.settings_overview(
-                    settings=ctx.settings, namespace=getattr(ctx, "namespace", "") or ""
+                    settings=ctx.settings, backend=ctx.backend
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("settings view unavailable: %s", exc)

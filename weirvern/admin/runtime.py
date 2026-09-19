@@ -107,6 +107,10 @@ class ServiceState:
     state: str = "unknown"        # running | exited | created | suspended | unknown
     health: str = ""              # healthy | unhealthy | starting | ""
     detail: str = ""
+    # The image the workload is actually running. Carried because the version a deployment
+    # REPORTS and the version it RUNS are different facts, and the package's own __version__
+    # literal drifted from the image tag (0.4.0 vs 0.5.6) -- see weirvern/admin/status.py.
+    image: str = ""
 
     @property
     def running(self) -> bool:
@@ -505,6 +509,15 @@ class K8sBackend:
     def _state_from_object(self, name: str, kind: str, obj: dict) -> ServiceState:
         status = obj.get("status", {}) or {}
         spec = obj.get("spec", {}) or {}
+        # The running container's image, for the version row. Read from the pod template because
+        # that is what WILL run; a rollout in progress would otherwise report the new tag against
+        # the old pods, so the pod list is preferred when it is legible.
+        image = ""
+        try:
+            containers = (spec.get("template", {}).get("spec", {}) or {}).get("containers") or []
+            image = containers[0].get("image", "") if containers else ""
+        except (AttributeError, IndexError, TypeError):
+            image = ""
         desired = spec.get("replicas", 1)
         ready = status.get("readyReplicas") or 0
         available = status.get("numberAvailable") or 0
@@ -517,22 +530,26 @@ class K8sBackend:
             # distinguish that from "no node matches the selector".
             if selector.get(self._SUSPEND_LABEL) == "true":
                 return ServiceState(name=name, state="suspended",
+                    image=image,
                                     detail="suspended — not capturing")
             if desired == 0:
-                return ServiceState(
+                return ServiceState(image=image,
                     name=name, state="pending",
                     detail="no node matches the nodeSelector (label a sensor node)")
         else:
             if desired == 0:
-                return ServiceState(name=name, state="stopped", detail="scaled to 0")
+                return ServiceState(name=name, state="stopped", image=image, detail="scaled to 0")
 
         if ready >= desired and desired > 0:
             return ServiceState(name=name, state="running", health="healthy",
+                image=image,
                                 detail=f"{ready}/{desired} ready")
         if ready == 0:
             return ServiceState(name=name, state="starting", health="unhealthy",
+                image=image,
                                 detail=f"0/{desired} ready")
         return ServiceState(name=name, state="starting", health="starting",
+            image=image,
                             detail=f"{ready}/{desired} ready, {available} available")
 
     def stats(self) -> dict[str, str]:

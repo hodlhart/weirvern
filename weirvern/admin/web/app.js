@@ -167,8 +167,15 @@ async function loadSettings() {
       continue;
     }
     for (const r of rows) {
+      // Provenance, so a blank is not ambiguous. "The setting does not exist" and "the setting is
+      // unset" used to render identically -- three rows for non-existent fields survived review
+      // that way. An env-only key is legitimate (the CLI reads it) and is labelled as such.
+      const srcTag = r.source === "env" ? "env" : (r.source === "derived" ? "derived" : "");
       host.appendChild(el("div", { class: "setting" }, [
-        el("span", { class: "setting-key", text: r.label, title: r.key }),
+        el("span", { class: "setting-key", title: r.key }, [
+          el("span", { text: r.label }),
+          srcTag ? el("span", { class: "setting-src", text: srcTag }) : null,
+        ]),
         el("span", {
           class: "setting-val" + (r.secret ? " secret" : ""),
           // A secret is visibly marked so the reader knows the blank is deliberate.
