@@ -145,4 +145,20 @@ redef KRB::ignored_errors -= { "Need to use PA-ENC-TIMESTAMP/PA-PK-AS-REQ" };
 #    It is added because without it a `FILE_WRITE`-based feature is structurally always zero --
 #    the failure mode this project has already shipped twice (dead ja3/ja3s columns; three tables
 #    ingested and read by nothing).
-redef SMB::logged_file_actions += { FILE_WRITE };
+#
+#    THE ENUM VALUE MUST BE NAMESPACED, AND THE REASON IS NOT COSMETIC. Measured: with the bare
+#    `FILE_WRITE` the sensor would not start at all --
+#
+#        error in /zeek/site/weirvern-local.zeek, line 148: unknown identifier FILE_WRITE
+#
+#    -- and CrashLoopBackOff, because this script is passed to `zeek` as a BARE PATH (see
+#    32-zeek.yaml: `exec zeek -i "$IFACE" -C /zeek/site/weirvern-local.zeek ...`). A bare path is
+#    parsed BEFORE the default closure is in scope, so the SMB module's identifiers do not exist
+#    yet at this line. `SMB::FILE_WRITE` resolves against the loaded module and parses; the
+#    unqualified name does not. The KRB redefs above survive only because they compare STRINGS
+#    against a set[string], not enum values.
+#
+#    Verified by reproducing the pod's exact invocation in the zeek image: bare `FILE_WRITE` fails
+#    on line 148, `SMB::FILE_WRITE` parses, and the value is present in the effective set.
+redef SMB::logged_file_actions += { SMB::FILE_WRITE };
+
