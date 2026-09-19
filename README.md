@@ -33,6 +33,7 @@ lesson map.
 - [Operations](#operations)
 - [Configuration](#configuration)
 - [Detection and alerting](#detection-and-alerting)
+- [The web GUI](#the-web-gui)
 - [Scaling and limitations](#scaling-and-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Security and privacy](#security-and-privacy)
@@ -82,10 +83,13 @@ lesson map.
 |---|---|---|---|
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
-| `zeek` | **DaemonSet** | `zeek/zeek:lts` | Packet sniffer: conn/DNS/TLS/notice logs from a NIC or mirror port |
+| `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
 | `weirvern-worker` | Deployment | `weirvern-worker:0.4.0` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.4.0` | Read-only web UI on NodePort 30088 |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.4.0` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.4.0` | Applies the ClickHouse schema |
 
-Two details of this table are Kubernetes design statements, not incidentals:
+Three details of this table are Kubernetes design statements, not incidentals:
 
 - **Zeek is a DaemonSet with `hostNetwork: true`** because a packet sniffer can
   only see traffic on the interface it is attached to — a property of the *node*,
@@ -93,6 +97,79 @@ Two details of this table are Kubernetes design statements, not incidentals:
 - **`goflow2` and `weirvern-worker` are node-pinned and single-replica** because
   the collector writes a file that the worker tails. See
   [Scaling and limitations](#scaling-and-limitations).
+- **The Zeek image is DERIVED** (`zeek/Containerfile`), not upstream `zeek/zeek:lts`.
+  Zeek 9.x core ships no TLS-fingerprint policy at all, so JA4 comes from a package
+  installed at build time — and the FoxIO-licensed half of it is **deleted during the
+  build**. See [TLS fingerprinting and licensing](#tls-fingerprinting-and-licensing).
+
+### Sensor modes: `loch` and `weir`
+
+`SENSOR_MODE` decides how Weirvern gets packets, and the two modes differ in whether
+Weirvern can affect the network at all. That difference is the whole point of naming them.
+
+| Mode | What it does | Can it affect traffic? |
+|---|---|---|
+| **`loch`** (default) | Passive capture. Zeek listens on a promiscuous NIC fed by a switch SPAN/mirror port or a passive TAP, and observes. | **No.** Still water. |
+| **`weir`** | In-path intercept. ARP-forges the gateway mapping so chosen hosts send their off-link traffic to Weirvern, which relays it in the kernel. | **Yes** — Weirvern becomes a router, so it must fail open. |
+
+```bash
+weirvern mode                      # what mode is configured, and can it run here
+weirvern mode --set loch           # passive (what most deployments want)
+weirvern intercept --dry-run       # inspect a weir plan without touching the network
+```
+
+**`weir` is opt-in and gated** because failing in it means an outage, not a blind spot.
+It requires `CAP_NET_ADMIN` (the passive sensor deliberately does not have it), and
+`weirvern intercept` runs a preflight that refuses to start rather than poison a segment
+it cannot relay for. `--dry-run` reports the blast radius — every host whose ARP cache
+would be forged — and offers addresses that answered no ARP.
+
+**`weir` is an L2/L3 redirect, not a TLS intercept.** Nothing is decrypted, no certificate
+is substituted, and no payload is inspected. It is also not a man-in-the-middle in the
+cryptographic sense: TLS sessions continue to authenticate end to end.
+
+Safety in `weir` mode comes from the **fail-open watchdog**, which is required rather than
+optional. It restores every forged mapping if the process is stopped, killed, or crashes,
+and it fails open when forwarding stalls. Two properties are worth knowing before trusting it:
+
+- **Poison frames refresh continuously.** ARP entries age, and a host's real gateway traffic
+  refreshes them, so a single poisoning does not hold.
+- **A quiet network does not trip it.** The watchdog only treats a still forwarding counter
+  as a stall once it has actually *observed* forwarding working — an idle segment looks
+  identical to a broken one, and conflating them makes `weir` flap.
+
+### TLS fingerprinting and licensing
+
+Weirvern ingests **JA4** TLS client fingerprints (`zeek_ssl.ja4`), and **ships no JA4+**.
+
+The upstream package is split-licensed and the two halves are not interchangeable:
+
+| Component | License | Permitted use |
+|---|---|---|
+| **JA4** (TLS client fingerprint) | **BSD 3-Clause** | any use, including commercial |
+| **JA4+** — JA4S, JA4H, JA4X, JA4SSH, JA4T, JA4TS, JA4L, JA4D | **FoxIO License 1.1** | internal / academic only; **not** for monetization; methods patent pending |
+
+The JA4+ submodules, the package's recorded JA4+ test output, the loader lines referencing
+them, and the options that gated them are **deleted at image build time** by
+`zeek/prune-ja4plus.sh`, which **fails the build** if any of that did not take — and equally
+if JA4's own options were removed, since an over-eager filter would leave a sensor that runs
+and fingerprints nothing.
+
+It is deleted rather than switched off for a specific reason. The package gates its
+submodules with `@if (JA4S_enabled) @load ./ja4s @endif`, and `@if` is evaluated **when the
+file is loaded**, so a disable placed after the package loaded is silently ignored — measured
+on a live sensor, `ja4s` populated in 28 of 28 records while the configuration claimed it was
+off. That was fixable by load ordering, but it left licensed code in the image with only a
+three-line sequence preventing its distribution. There is now nothing to mis-order.
+
+Two consequences for operators:
+
+- **The sensor image and the site policy must be deployed together.** The policy must not
+  contain `redef FINGERPRINT::JA4*_enabled = F` lines any more — those options no longer
+  exist, and Zeek aborts at startup with `"redef" used but not previously defined`.
+- **`anthonykasza/ja4` is not used** despite being pure BSD-3-Clause, because it fails its
+  own unit tests on Zeek 9.0.0 and cannot be installed. A fingerprint that is subtly wrong
+  is worse than none: it silently fails to match threat-intel data.
 
 ### Why both sensors?
 
@@ -204,24 +281,43 @@ kubectl label node "$NODE" weirvern.io/sensor-node=true
 ssh "$NODE" 'sudo install -d -m 0775 -g 10001 /var/lib/weirvern/flows /var/lib/weirvern/zeek'
 ```
 
-### 3. Build and push the worker image
+### 3. Build and push the images
 
 A cluster cannot build an image, so this is a prerequisite rather than an
-optional step:
+optional step. **There are two images**: the worker (which also serves the GUI
+and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
 podman build -t registry.example.com/weirvern-worker:0.4.0 .
 podman push registry.example.com/weirvern-worker:0.4.0
+
+# The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
+# prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
+podman build -t registry.example.com/weirvern-zeek:0.4.0 -f zeek/Containerfile zeek/
+podman push registry.example.com/weirvern-zeek:0.4.0
 ```
 
-Then point the manifests at it — one place, no per-file editing:
+The Zeek build **fails deliberately** if the JA4+ removal did not complete, or if
+it removed too much and JA4 itself would no longer work. A licensing guarantee that
+depends on someone reading a comment is not a guarantee, and the failure mode —
+shipping licensed code in a distributed image — is invisible at runtime. See
+[TLS fingerprinting and licensing](#tls-fingerprinting-and-licensing).
+
+Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
 kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.4.0
+kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 cd ..
 ```
+
+> **Deploy the sensor image and the site policy together.** The policy lives in a
+> ConfigMap generated from `k8s/zeek/weirvern-local.zeek`, and it must not carry
+> `redef FINGERPRINT::JA4*_enabled = F` lines — those options no longer exist in the
+> image, and Zeek aborts at startup with `"redef" used but not previously defined`.
+> If you upgrade the sensor without re-applying, the pod crash-loops.
 
 > If the image is private, create an image-pull secret and reference it in
 > `k8s/33-worker.yaml` and `k8s/50-schema-job.yaml` under `imagePullSecrets`.
@@ -566,7 +662,7 @@ Four detectors, each contributing a normalised 0–1 score:
 
 | Detector | What it catches | Notes |
 |---|---|---|
-| Isolation Forest | Multivariate outliers across 14 flow features | Calibrated against its own training distribution |
+| Isolation Forest | Multivariate outliers across the full feature vector | Calibrated against its own training distribution |
 | Gradient Boosting | Non-linear patterns, trained on IF's labels (a distillation) | Probability calibrated; class-imbalanced weighting |
 | DBSCAN | Dense clusters vs. outliers — port diversity, fan-out | Best signal for scanning behaviour |
 | Adaptive Baseline | Per-host percentile deviation (p95/p99/p999) | Learns each host's normal; needs ≥10 observations |
@@ -579,6 +675,54 @@ zero-byte port scan, which volume-based models cannot see). A single strong
 signal without corroboration alerts at `medium` — it is not escalated and not
 silenced. This gate exists because measurement showed a 90-false-positive storm
 without it.
+
+### What the models see: NetFlow *and* Zeek
+
+Every model trains and scores on features from **both** sensors. The NetFlow half describes
+volume and breadth — bytes, packets, destination and port diversity, time of day. The Zeek
+half describes **what the traffic is**, which volume alone cannot express:
+
+| Zeek feature group | What it adds | Example |
+|---|---|---|
+| Connection-state mix | `s0_ratio`, `rej_ratio`, `completed_ratio` | A measured host-window: 89 connections, **88 unanswered SYNs**, zero response bytes. NetFlow reports modest traffic; the state mix is unmistakably a scan. |
+| DNS behaviour | query entropy and length, NXDOMAIN and no-answer ratios | Tunnelling and DGA show as high-entropy, long, frequently-failing lookups |
+| Service variety | distinct protocols, and novelty against the host's own baseline | A host that begins speaking something it never has |
+| TLS | distinct JA4 fingerprints, modern-version ratio | A client changing TLS stack, or downgrading |
+| Zeek's own signals | notice and weird counts | A second opinion on the same traffic |
+
+Two design points matter when reading the numbers:
+
+- **`zeek_present` is a feature in its own right.** Zeek and NetFlow are separate sensors and
+  may observe different hosts — measured on a test deployment: 91 NetFlow hosts against 35
+  Zeek hosts with an overlap of **2**. Without a presence flag the models would learn that
+  most host-windows are defined by empty features, which is a fact about the deployment
+  rather than about the network. Absence is therefore distinguishable from "observed, and
+  nothing unusual".
+- **The join is LEFT, on `(5-minute window, host)`.** An inner join would silently drop every
+  host Zeek did not see; joining on host alone would compare a five-minute window against all
+  of that host's history. `weirvern status` reports the actual coverage, and the Adaptive
+  Baseline warns when no host has a Zeek behavioural baseline — i.e. when it is silently
+  running volume-only.
+
+### The web GUI
+
+Read-only by design, served from the worker image on **NodePort 30088**. It cannot start,
+stop, or apply anything: a monitoring surface that can mutate the thing it monitors turns a
+UI bug into an outage.
+
+| View | What it answers |
+|---|---|
+| Overview | Sensor state, health probes, recent anomalies, top talkers |
+| Anomalies | Every anomaly with score, agreement and the "why" line; click through to **evidence** |
+| Host drill-down | One host: its flows, Zeek sessions, DNS, and detected anomalies |
+| Models | Training history, score distribution, model agreement, and per-feature deviations |
+| Evidence | The raw flows and Zeek records inside a specific alert's window |
+
+The **Models** view is deliberately built from data that is deep at any volume — training
+runs, every score including sub-threshold ones, and the per-feature deviation JSON — rather
+than from a scatter of the anomalies themselves. A young deployment has very few anomalies,
+and a chart of three points is indistinguishable from a rendering bug. Every panel either
+draws real data or states in words what is absent and why.
 
 ### Alert hygiene
 

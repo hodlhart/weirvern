@@ -1,5 +1,116 @@
 # Changelog
 
+## Unreleased — in-path intercept, Zeek in the models, and JA4+ removed
+
+### Added — in-path intercept (`weir` mode)
+
+`weirvern intercept` puts Weirvern **in** the path: it ARP-forges the gateway mapping for
+chosen hosts so their off-link traffic arrives at Weirvern, which relays it in the kernel.
+This is an L2/L3 redirect, not a TLS intercept — nothing is decrypted and no certificate is
+substituted.
+
+**Verified end to end against a real host on a live segment.** A real device's off-link
+traffic arrived at our MAC while its ARP cache named us as the gateway, *and* the kernel
+forwarded it (`ForwDatagrams` rose in the same window). Both halves matter: traffic arriving
+with the counter flat means the host was cut off, not relayed.
+
+- `--hosts` targets named hosts rather than a whole segment, because poisoning everything
+  makes a crash an outage for every device until ARP caches expire. A requested host that did
+  not answer the sweep is **reported**, not silently dropped.
+- `--dry-run` prints the plan, the blast radius, and free addresses before changing anything.
+- The command assigns its own address on the capture interface and **withdraws it on every
+  exit path**, including failure and Ctrl-C.
+
+Three bugs found by running it rather than by testing it:
+
+- **The poison frame was silently ignored.** Linux does not update a neighbour entry in
+  `REACHABLE` state from an unsolicited ARP *reply*, and a host's gateway entry is always
+  reachable — so the frame was byte-perfect and discarded every time. Measured: reply
+  ignored, forged *request* took effect, gratuitous broadcast ignored. Interception had been
+  a no-op that logged success. Now sends an announcement.
+- **Relayed traffic left by the wrong interface.** `ip_forward=1` makes the kernel willing to
+  forward; it does not decide *where*. A relayed packet matched the default route and would
+  have left via the **management** interface carrying the victim's source address onto the
+  wrong segment. Fixed with a one-armed-router policy route, installed before any poison
+  frame exists.
+- **The watchdog fired on a healthy network.** `ForwardingMonitor` was built with its
+  default sample of zero, so the first health check compared the real kernel counter against
+  zero and always reported progress — setting "forwarding has been observed working" without
+  a packet being forwarded. The one case the quiet-network protection exists for (an idle
+  segment) was the case it could never protect. Now primed from the kernel.
+
+### Added — Zeek features in every model
+
+All four detectors train and score on **both** sensors. The NetFlow half describes volume and
+breadth; the Zeek half describes what the traffic *is*: connection-state mix, DNS entropy and
+failure rates, service variety and novelty, JA4 diversity, TLS version mix, and Zeek's own
+notices and weirds. One measured host-window showed 89 connections of which **88 were
+unanswered SYNs with zero response bytes** — a scan that NetFlow reports as modest traffic.
+
+- `zeek_present` is a feature in its own right, because the two sensors may observe different
+  hosts (measured: 91 NetFlow hosts, 35 Zeek hosts, **2 overlapping**). Without it the models
+  would learn that most host-windows are defined by empty features, which is a fact about the
+  deployment rather than the network.
+- The join is a LEFT JOIN on `(5-minute window, host)`. An inner join would drop every host
+  Zeek did not see; joining on host alone would compare one window against all its history.
+- The Adaptive Baseline gained a **behavioural** norm alongside the volumetric one, and
+  `weirvern status` reports the actual NetFlow/Zeek coverage.
+
+Three bugs found by running the queries against a live database:
+
+- A five-way `FULL OUTER JOIN` with `coalesce` over the join keys returned **epoch zero** and
+  an empty host — every feature row keyed on nothing. Rebuilt as UNION-of-keys then LEFT JOIN,
+  which also removed a row cross-multiplication that inflated every count.
+- `zeek_present` was a feature but not a SQL column, so the training query named a column
+  that did not exist.
+- Feature names and SQL column names differed, so *every* training query failed.
+
+### Changed — JA4+ is **removed** from the sensor image, not disabled
+
+JA4 (BSD 3-Clause) is kept; the JA4+ methods (FoxIO License 1.1 — internal/academic only, not
+for monetization, patent pending) are **deleted at build time** rather than switched off.
+
+The previous design redefined ten `FINGERPRINT::JA4*_enabled = F` options, and it worked — but
+the package gates its submodules with `@if`, which is evaluated when the file is **loaded**, so
+a disable placed after the package loaded was silently ignored. That was measured: `ja4s`
+populated in **28 of 28** records while the configuration claimed it was off. It was fixed by
+load ordering, which left licensed code in the image with a three-line sequence as the only
+thing preventing its distribution.
+
+`zeek/prune-ja4plus.sh` now deletes the submodule directories, the package's recorded JA4+
+test output, the loader lines and the options — and **fails the build** if any of that did not
+take, or if it removed too much and JA4 would no longer work.
+
+> **Upgrading:** the sensor image and the site policy must ship together. The policy must not
+> carry `redef FINGERPRINT::JA4*_enabled = F` any more; those options no longer exist and Zeek
+> aborts at startup with `"redef" used but not previously defined`.
+
+### Added — Models view in the web GUI
+
+Training history (log-scaled, one line per retrain), score distribution including
+sub-threshold scores, model agreement, and per-feature deviations against each host's own
+baseline. Hand-rolled SVG — the GUI stays dependency-free because it has to work on an
+isolated sensor network.
+
+Built from data that is deep at any volume rather than from the anomalies themselves: a young
+deployment has very few, and a chart of three points is indistinguishable from a rendering
+bug. Every panel either draws real data or says in words what is absent and why.
+
+### Fixed
+
+- **`arp_sweep` reported 0 hosts on a live segment with 11.** It read `/proc/net/arp`, which
+  the kernel only populates for addresses the interface *owns*, and it sent a whole /24 before
+  reading any replies — ARP replies are unicast, so a full socket buffer dropped most of them.
+- **`forwarding_path_problems` aborted every intercept.** It used `ip route get <dst> iif
+  <iface>`, which errors without a source address, and read that error as "misrouted" — so it
+  refused to run against a correctly configured host while telling the operator to fix it.
+- **Preflight demanded the policy route that `start()` installs**, a prerequisite nothing
+  could satisfy, so the command could never reach the code that fixed the problem.
+- **`INTERCEPT_SEGMENT` / `INTERCEPT_ADDR` / `INTERCEPT_GATEWAY`** were read by the CLI and
+  appeared in neither `config.py` nor `.env.example`.
+- **The prune tests read the wall clock** at all 11 call sites despite `plan_prune` accepting
+  `now`, making the grace-period assertions depend on how long the suite took.
+
 ## v0.4.0 — Kubernetes-native deployment, control plane, and a
 ## packaging bug that would have deployed an empty database
 
