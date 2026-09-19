@@ -135,6 +135,7 @@ def test_the_new_routes_are_registered_and_have_handlers():
         ("/api/assets", "_assets"),
         ("/api/graph", "_graph"),
         ("/api/zeeklog", "_zeeklog"),
+        ("/api/flows", "_flows"),
     ):
         assert routes.get(path) == handler, (
             f"{path} is not routed to {handler}; found {routes.get(path)!r}"
@@ -267,3 +268,65 @@ def test_the_graph_reports_when_it_truncated():
     src = inspect.getsource(assets.connection_graph)
     assert '"truncated"' in src, "connection_graph does not report truncation"
     assert "truncated" in ASSETS_JS, "the graph view ignores the truncation flag"
+
+# ── the Netflow click-through ──────────────────────────────────────────────────────────────
+
+
+def test_the_netflow_port_and_protocol_charts_are_clickable():
+    """User requirement: BOTH zeek and netflow need to be clickable.
+
+    The talkers and spread charts already drilled down; ports and protocols did not, which left
+    the two charts an analyst most wants to enter as dead ends.
+    """
+    code = _code(SOC_JS)
+    for chart in ("nf-proto", "nf-ports"):
+        i = code.find(f'renderBars("{chart}"')
+        assert i > 0, f"{chart} is not rendered -- update this test"
+        call = code[i : code.index("});", i)]
+        assert "onClick" in call, (
+            f"{chart} has no onClick, so its bars are decoration. Both directions are needed: "
+            f"a protocol bar and a port bar must both lead into the underlying flows."
+        )
+        assert "loadFlowDetail" in call, f"{chart} does not call the drill-down"
+
+
+def test_the_flow_drilldown_demands_a_filter_and_the_route_enforces_it():
+    """An unfiltered request would be a full-table scan behind one bar click."""
+    from weirvern.admin import soc
+
+    d = soc.flows_matching(client=None, hours=24)
+    assert d["available"] is False, "an unfiltered flow query must refuse rather than scan"
+    assert "port or a protocol" in d["reason"]
+
+    src = (WEB.parent / "web.py").read_text()
+    i = src.find("def _flows")
+    assert i > 0, "_flows handler not found"
+    body = src[i : i + 1400]
+    assert "port or proto is required" in body, "the route does not require a filter"
+
+
+def test_the_flow_drilldown_reports_truncation_and_the_total():
+    """A capped list that does not say it was capped looks complete."""
+    import inspect
+
+    from weirvern.admin import soc
+
+    src = inspect.getsource(soc.flows_matching)
+    for key in ("total_pairs", "total_flows", "truncated"):
+        assert key in src, f"flows_matching does not report {key}"
+    assert 'truncated' in ASSETS_JS, "the view ignores the truncation flag"
+    assert "total_pairs" in ASSETS_JS, "the view does not report how many pairs exist"
+
+
+def test_the_flow_drilldown_excludes_port_zero():
+    """Port 0 means 'not recorded' in NetFlow, and including it dominates every real service."""
+    import inspect
+
+    from weirvern.admin import soc
+
+    src = inspect.getsource(soc.flows_matching)
+    # top_ports documents this; flows_matching must not silently reintroduce the problem.
+    assert "dst_port = %(port)s" in src, "the port filter is not applied literally"
+    assert "dst_port > 0" in inspect.getsource(soc.top_ports), (
+        "top_ports must keep excluding port 0"
+    )

@@ -21,6 +21,9 @@ const ASSET_API = {
     `/api/graph?hours=${hours}` +
     (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : ""),
   zeeklog: (log, hours) => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}`,
+  flows: (params, hours) => `/api/flows?hours=${hours}` +
+    (params.port !== undefined ? `&port=${params.port}` : "") +
+    (params.proto !== undefined ? `&proto=${params.proto}` : ""),
 };
 
 /* State kept in one place: the hosts the operator has chosen to track, and the raw payload so
@@ -423,6 +426,79 @@ function zeekWindow() {
   const sel = document.getElementById("zk-hours");
   const n = sel ? Number(sel.value) : NaN;
   return Number.isFinite(n) && n > 0 ? n : ASSETS_STATE.hours;
+}
+
+/* ── Netflow: the port/protocol drill-down ─────────────────────────────────── */
+
+/* "Top ports" answers which ports carry the most bytes and stops there; the next question is
+ * always which hosts and to where. This is the way in from both the protocol and the port
+ * charts. `params` carries whichever filter was clicked -- a port, a protocol, or both. */
+function loadFlowDetail(params) {
+  const host = document.getElementById("nf-detail");
+  const table = document.querySelector("#nf-detail-table tbody");
+  const title = document.getElementById("nf-detail-title");
+  const note = document.getElementById("nf-detail-note");
+  if (!host) return Promise.resolve();
+  title.textContent = params.name || "flow detail";
+  note.textContent = "Host-to-host pairs behind this bar, busiest first.";
+  host.replaceChildren();
+  table.replaceChildren();
+
+  const url = (typeof ASSET_API !== "undefined" && ASSET_API.flows)
+    ? ASSET_API.flows(params, ASSETS_STATE.hours)
+    : `/api/flows?hours=${ASSETS_STATE.hours}` +
+      (params.port !== undefined ? `&port=${params.port}` : "") +
+      (params.proto !== undefined ? `&proto=${params.proto}` : "");
+
+  return getJSON(url)
+    .then((d) => {
+      if (d.available === false) {
+        host.appendChild(chartEmpty(`Cannot read the flows: ${d.reason}.`));
+        emptyRow(table, 6, "Nothing to show.");
+        return;
+      }
+      const rows = d.points || [];
+      if (!rows.length) {
+        host.appendChild(chartEmpty("No flows matched in this window."));
+        emptyRow(table, 6, "No rows.");
+        return;
+      }
+      // Say when the list is capped: a truncated list that does not mention it looks complete.
+      if (d.truncated) {
+        note.textContent =
+          `Showing the ${rows.length} busiest of ${d.total_pairs} host pairs ` +
+          `(${d.total_flows} flows total).`;
+      } else {
+        note.textContent = `${rows.length} host pair(s), ${d.total_flows} flows.`;
+      }
+      renderBars("nf-detail", {
+        available: true,
+        points: rows.map((r) => ({
+          label: `${r.src_addr} → ${r.dst_addr}`, value: r.bytes, row: r,
+        })),
+      }, {
+        onClick: (r) => openHost(r.row.src_addr),
+        format: (v) => fmtBytes(v),
+        colour: () => "#4ea1ff",
+        title: (r) => `drill into ${r.row.src_addr}`,
+      });
+      table.replaceChildren(...rows.map((r) => {
+        const tr = el("tr", { class: "clickable" }, [
+          el("td", { class: "link mono", text: r.src_addr }),
+          el("td", { class: "mono", text: r.dst_addr }),
+          el("td", { class: "mono", text: String(r.dst_port) }),
+          el("td", { class: "mono", text: fmtBytes(r.bytes) }),
+          el("td", { class: "mono", text: String(r.flows) }),
+          el("td", {}, [el("span", { class: "muted", text: "drill down →" })]),
+        ]);
+        tr.addEventListener("click", () => openHost(r.src_addr));
+        return tr;
+      }));
+    })
+    .catch((err) => {
+      host.appendChild(chartEmpty(`Cannot read the flows: ${err.message}.`));
+      emptyRow(table, 6, "Nothing to show.");
+    });
 }
 
 /* ── Zeek: the per-log drill-down ──────────────────────────────────────────── */

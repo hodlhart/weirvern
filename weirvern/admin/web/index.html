@@ -159,6 +159,21 @@
         <div id="nf-spread"></div>
       </div>
     </div>
+
+    <!--
+      THE DRILL-DOWN. "Top ports" answers which ports carry the most bytes and stops there; the
+      next question is always which hosts and to where. A chart you cannot enter is a report.
+    -->
+    <div class="card">
+      <h2>Flow detail <span class="muted" id="nf-detail-title">click a bar above</span></h2>
+      <p class="muted" id="nf-detail-note">Click any bar in <em>Protocol mix</em> or
+        <em>Top ports</em> to see the host-to-host pairs behind it.</p>
+      <div id="nf-detail"></div>
+      <table id="nf-detail-table">
+        <thead><tr><th>Source</th><th>Destination</th><th>Port</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <!-- ── Zeek ─────────────────────────────────────────────────────────── -->

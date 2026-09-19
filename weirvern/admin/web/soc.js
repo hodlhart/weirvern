@@ -185,11 +185,16 @@ async function loadNetflow() {
 
   renderBars("nf-proto", d.protocols,
              { label: (r) => r.label, value: (r) => r.bytes, format: fmtBytes,
+               // Clicking a protocol drills into the hosts behind it. A chart that cannot be
+               // entered is a report; the SOC requirement is that every bar leads somewhere.
+               onClick: (r) => loadFlowDetail({ proto: r.proto, name: r.label }).catch(showError),
+               title: (r) => `${r.label}: ${fmtBytes(r.bytes)} across ${r.flows} flows — click for the hosts`,
                emptyText: "No protocol records in this window." });
 
   renderBars("nf-ports", d.ports,
              { label: (r) => `:${r.port}`, value: (r) => r.bytes, format: fmtBytes,
-               title: (r) => `port ${r.port}, proto ${r.proto} — ${r.flows} flows`,
+               onClick: (r) => loadFlowDetail({ port: r.port, name: `port ${r.port}` }).catch(showError),
+               title: (r) => `port ${r.port}, proto ${r.proto} — ${r.flows} flows. Click for the hosts.`,
                emptyText: "No destination ports recorded in this window." });
 
   renderBars("nf-spread", d.spread,

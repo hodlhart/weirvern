@@ -388,6 +388,81 @@ def ingestion_series(client, hours: int = 24) -> dict:
             "series": stages}
 
 
+def flows_matching(client, port: int | None = None, proto: int | None = None,
+                   hours: int = 24, limit: int = 25) -> dict:
+    """The hosts behind one destination port and/or one IP protocol, for click-through.
+
+    WHY THIS IS THE DRILL-DOWN. `top_ports` answers "which ports carry the most bytes" and
+    `protocol_mix` answers "how much of the traffic is TCP" -- and both end there. The next
+    question an analyst has is "which hosts, and to where", which needs the source and
+    destination addresses. Without that the charts are a report rather than a way in.
+
+    READS RAW `flows`, because `flows_aggregated` has no dst_port, no proto and no dst_addr --
+    all three are per-FLOW facts the aggregate has already discarded.
+
+    BOTH FILTERS ARE OPTIONAL AND INDEPENDENT: a port click supplies `port`, a protocol click
+    supplies `proto`, and supplying neither would return every flow, which is a legitimate
+    request but not a drill-down. At least one is required here so a caller cannot accidentally
+    ask for the whole table and get a slow page.
+
+    `port > 0` is enforced for the same reason as in `top_ports`: NetFlow uses 0 for "not
+    recorded", and including it produces a bar that dominates every real service.
+    """
+    if port is None and proto is None:
+        return _unavailable("give a port or a protocol to drill into")
+
+    where = ["timestamp >= now() - INTERVAL %(h)s HOUR"]
+    params: dict = {"h": hours, "n": limit}
+    if port is not None:
+        where.append("dst_port = %(port)s")
+        params["port"] = int(port)
+    if proto is not None:
+        where.append("proto = %(proto)s")
+        params["proto"] = int(proto)
+    clause = " AND ".join(where)
+
+    try:
+        # Grouped by destination so the answer is "host X sent N bytes to Y:port", which is
+        # actionable; a bare per-source total would not say where the traffic went.
+        rows = client.query(
+            f"SELECT src_addr, dst_addr, dst_port, sum(bytes) AS bytes, count() AS flows "  # noqa: S608
+            f"FROM weirvern.flows WHERE {clause} "
+            "GROUP BY src_addr, dst_addr, dst_port ORDER BY bytes DESC LIMIT %(n)s",
+            parameters=params,
+        ).result_rows
+        # The total, so the panel can say how much of it is shown. A capped list that does not
+        # say it was capped looks complete.
+        total_rows = client.query(
+            f"SELECT count() FROM weirvern.flows WHERE {clause}",  # noqa: S608
+            parameters={k: v for k, v in params.items() if k != "n"},
+        ).result_rows
+        distinct_rows = client.query(
+            f"SELECT uniqExact((src_addr, dst_addr)) FROM weirvern.flows WHERE {clause}",  # noqa: S608
+            parameters={k: v for k, v in params.items() if k != "n"},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("flows_matching failed: %s", exc)
+        return _unavailable(f"flow drill-down failed: {type(exc).__name__}")
+
+    out = [
+        {"src_addr": str(r[0]), "dst_addr": str(r[1]), "dst_port": int(r[2] or 0),
+         "bytes": int(r[3] or 0), "flows": int(r[4] or 0)}
+        for r in rows
+    ]
+    total_pairs = int(distinct_rows[0][0] or 0) if distinct_rows else len(out)
+    return {
+        "available": True,
+        "reason": "",
+        "port": port,
+        "proto": proto,
+        "hours": hours,
+        "points": out,
+        "total_flows": int(total_rows[0][0] or 0) if total_rows else 0,
+        "total_pairs": total_pairs,
+        # Stated, not implied, for the same reason the graph reports truncation.
+        "truncated": total_pairs > len(out),
+    }
+
 def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int = 25) -> dict:
     """Which hosts appear in ONE Zeek log, and how often, for click-through from the Zeek view.
 

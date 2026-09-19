@@ -170,6 +170,9 @@ def _build_handler(ctx: GuiContext):
                 return self._netflow(query)
             if path == "/api/zeek":
                 return self._zeek(query)
+            # Click-through from the Netflow charts: the hosts behind one port or one protocol.
+            if path == "/api/flows":
+                return self._flows(query)
             # The asset inventory and the connection graph. Separate endpoints from /api/host
             # because /api/host answers "tell me about THIS address" while these answer "what
             # hosts exist" and "how are they wired" -- and the graph needs different tables
@@ -325,6 +328,35 @@ def _build_handler(ctx: GuiContext):
                                    "dns": empty,
                                    "data_error": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.zeek_payload(counts, timeline, services, dns))
+
+        def _flows(self, query: dict) -> None:
+            """The hosts behind one destination port or one IP protocol.
+
+            `port` and `proto` are both optional but ONE is required -- the query refuses an
+            unfiltered request, because "every flow" is not a drill-down and would make a chart
+            click into a slow full-table scan.
+            """
+            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            # -1 means "not supplied". Declared as Optional because the sentinel is replaced by
+            # None before use, and leaving the variable typed `int` while assigning None is the
+            # mismatch mypy flags.
+            port_raw = _int_arg(query, "port", -1, -1, 65535)
+            proto_raw = _int_arg(query, "proto", -1, -1, 255)
+            port: int | None = port_raw if port_raw >= 0 else None
+            proto: int | None = proto_raw if proto_raw >= 0 else None
+            if port is None and proto is None:
+                return self._error(400, "port or proto is required, e.g. /api/flows?port=443")
+            try:
+                with self._with_client() as client:
+                    payload = soc_mod.flows_matching(client, port=port, proto=proto, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("flow drill-down unavailable: %s", exc)
+                return self._json({
+                    "available": False, "points": [],
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "data_error": str(exc),
+                })
+            self._json(payload)
 
         def _health(self, query: dict) -> None:
             """DEEP health: the checks, ingestion trend, table sizes, and the sensor.

@@ -66,7 +66,7 @@ async function main() {
                       .join("\n;\n");
   const epilogue = `
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
-                   loadNetwork, drawGraph, toggleTracked, loadZeekLog, openHost,
+                   loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                    chartFrame, svgEl, fmtBytes, el };
   `;
   try {
@@ -81,6 +81,15 @@ async function main() {
   // jsdom an unstubbed fetch rejects -- which would set the graph to "unavailable" and
   // re-render over the state each assertion is about to inspect. Stubbing it keeps the
   // click-to-track path testable end to end.
+  const FLOWS_PAYLOAD = {
+    available: true, reason: "", port: 443, proto: null, hours: 24,
+    points: [
+      { src_addr: "192.0.2.10", dst_addr: "203.0.113.15", dst_port: 443,
+        bytes: 271422406, flows: 374 },
+      { src_addr: "192.0.2.10", dst_addr: "192.0.2.1", dst_port: 443, bytes: 900000, flows: 40 },
+    ],
+    total_flows: 414, total_pairs: 276, truncated: true,
+  };
   const GRAPH_PAYLOAD = {
     available: true, hours: 24,
     nodes: [
@@ -100,6 +109,8 @@ async function main() {
                      : String(url).includes("/api/assets")
                        ? { available: true, hours: 24, hosts: [], unreadable: [],
                            sources_read: [], sources_failed: [], reason: "" }
+                     : String(url).includes("/api/flows")
+                       ? FLOWS_PAYLOAD
                        : { available: true, reason: "", log: "ssl", points: [] }),
   });
 
@@ -294,6 +305,39 @@ async function main() {
   H.renderAssets();
   check("a failed inventory query names the reason",
         doc.getElementById("as-note").textContent.includes("cannot reach ClickHouse"));
+
+  // ── the Netflow click-through ──────────────────────────────────────────────────────────
+  check("loadFlowDetail() is defined and reachable as a global",
+        typeof window.loadFlowDetail === "function", `typeof = ${typeof window.loadFlowDetail}`);
+
+  await window.loadFlowDetail({ port: 443, name: "port 443" });
+  await new Promise((r) => setTimeout(r, 40));
+  const fdRows = doc.querySelectorAll("#nf-detail-table tbody tr");
+  check("the flow drill-down renders one row per host pair", fdRows.length === 2,
+        `rows=${fdRows.length}`);
+  check("the drill-down names the bar that was clicked",
+        doc.getElementById("nf-detail-title").textContent.includes("443"),
+        doc.getElementById("nf-detail-title").textContent);
+  check("the drill-down states that the list was CAPPED",
+        doc.getElementById("nf-detail-note").textContent.includes("busiest of"),
+        doc.getElementById("nf-detail-note").textContent);
+  check("the drill-down draws a bar chart too", !!doc.querySelector("#nf-detail .bar-row"));
+  check("a drill-down row is clickable through to the host",
+        !!fdRows[0] && fdRows[0].className.includes("clickable"));
+
+  // A failed query must say so, not render an empty panel.
+  window.fetch = async (url) => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => (String(url).includes("/api/flows")
+      ? { available: false, points: [], reason: "the flow drill-down failed" }
+      : { available: true, hours: 24, hosts: [], unreadable: [], sources_read: [],
+          sources_failed: [], reason: "" }),
+  });
+  await window.loadFlowDetail({ proto: 6, name: "TCP" });
+  await new Promise((r) => setTimeout(r, 40));
+  check("a failed flow drill-down names the reason",
+        doc.getElementById("nf-detail").textContent.includes("flow drill-down failed"),
+        doc.getElementById("nf-detail").textContent.slice(0, 90));
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,
