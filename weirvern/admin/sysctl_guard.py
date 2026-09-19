@@ -1,4 +1,32 @@
 """Save and restore the node's network sysctls around an intercept.
+PRIOR ART -- CHECKED AGAINST THE TOOLS THAT HAVE DONE THIS FOR TWENTY YEARS.
+
+This was written before checking, which was backwards: these projects have hit every footgun in this
+area and their source is free. The comparison is worth recording, because it confirms the design and
+names an alternative that would avoid the problem entirely.
+
+BETTERCAP does EXACTLY what this module does. It reads /proc/sys/net/ipv4/ip_forward, records the
+original in `f.forwarding`, and `Restore()` writes that recorded value back -- not a constant --
+guarded by a `restore bool` so it runs once. Same record-then-restore shape, same idempotence flag.
+So this is established practice rather than an invention.
+
+ETTERCAP solves the problem differently, and the difference is instructive. `ec_main.c` calls
+`disable_ip_forward()` with the comment:
+
+    "always disable the kernel ip forwarding ... the forwarding will be done by ettercap"
+
+It forwards in USERSPACE. The kernel never routes relayed traffic, so ettercap needs NEITHER
+`rp_filter=0` NOR `send_redirects=0` -- the two settings that make this module necessary at all.
+
+SCAPY's ARP-spoof documentation does neither: it tells the OPERATOR to run
+`sysctl net.ipv4.conf.<iface>.send_redirects=0` and `sysctl net.ipv4.ip_forward=1` by hand, with no
+automation and no restore. That is the situation Weirvern was in before this module existed.
+
+THE CHOICE WEIRVERN MAKES, stated plainly: kernel forwarding, because it is far faster than userspace
+and this sensor must relay at line rate. That speed is bought with node-level mutation, and the price
+is that the mutation MUST be undone. Userspace forwarding would remove this entire class of hazard at
+a throughput cost -- a legitimate alternative for a future revision, not a bug to be fixed now.
+
 
 WHY THIS EXISTS. `weir` mode changes THREE NODE-WIDE sysctls:
 
