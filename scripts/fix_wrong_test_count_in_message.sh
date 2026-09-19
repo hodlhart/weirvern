@@ -59,15 +59,29 @@ FILTER_BRANCH_SQUELCH_WARNING=1 \
     exit 1
 }
 
-echo
-echo "  after the rewrite:"
-git log --format=%B -1 "$TARGET" | tail -4 | sed 's/^/    /'
+# VERIFY BY SUBJECT, NOT BY THE OLD SHA. A rewrite produces a NEW commit id, so looking up
+# $TARGET afterwards reads the BACKUP ref (refs/original/...), which by definition still holds the
+# old message -- the first version of this check did exactly that and reported "the wrong figure
+# is still present" while the rewrite had in fact succeeded. The subject is the stable handle.
+NEW_SHA=$(git log --format='%H %s' --all \
+    | grep -F "threat hunt team" \
+    | grep -v "^$(git rev-parse refs/original/refs/heads/main 2>/dev/null)" \
+    | head -1 | cut -d' ' -f1)
 
-if git log --format=%B -1 "$TARGET" | grep -qF "$WRONG"; then
+if [ -z "$NEW_SHA" ]; then
+    echo "  FAILED: could not find the rewritten commit by subject."
+    exit 1
+fi
+
+echo
+echo "  after the rewrite ($NEW_SHA):"
+git log --format=%B -1 "$NEW_SHA" | tail -4 | sed 's/^/    /'
+
+if git log --format=%B -1 "$NEW_SHA" | grep -qF "$WRONG"; then
     echo "  FAILED: the wrong figure is still present."
     exit 1
 fi
-if ! git log --format=%B -1 "$TARGET" | grep -qF "928 passed"; then
+if ! git log --format=%B -1 "$NEW_SHA" | grep -qF "928 passed"; then
     echo "  FAILED: the corrected figure is not present."
     exit 1
 fi

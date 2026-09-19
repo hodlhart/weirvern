@@ -241,6 +241,28 @@ async function loadZeek() {
                    loadZeekLog(r.label).catch(showError);
                  }
                } });
+  // A ZERO NEEDS ITS REASON. The bar chart shows what is in the window; this line explains the
+  // bars that are zero, which is the question an operator is actually asking. Before this, a
+  // wall of zeros read as a broken dashboard when the truth was that http/ssh/files had rows
+  // from ~40h earlier and simply none inside the default 24h window.
+  const zeroed = (counts.points || []).filter((p) => p.rows === 0 && (p.total || 0) > 0);
+  const never = (counts.points || []).filter((p) => (p.total || 0) === 0 && p.rows === 0);
+  if (zeroed.length) {
+    const oldest = zeroed
+      .map((p) => p.last_ts)
+      .filter(Boolean)
+      .sort()[0];
+    document.getElementById("zk-counts").appendChild(chartEmpty(
+      `${zeroed.length} log${zeroed.length === 1 ? "" : "s"} recorded nothing in this window but `
+      + `have rows from earlier: ${zeroed.map((p) => p.log).join(", ")}. The newest of those rows `
+      + `is ${oldest ? fmtTime(oldest) : "unknown"} — widen the window to see them.`));
+  }
+  if (never.length) {
+    document.getElementById("zk-counts").appendChild(chartEmpty(
+      `${never.length} log${never.length === 1 ? "" : "s"} have NEVER produced a row `
+      + `(${never.map((p) => p.log).join(", ")}). That is a different fact from a quiet window: `
+      + `either the traffic does not exist on this segment or the analyzer is not enabled.`));
+  }
   if ((counts.unreadable || []).length) {
     document.getElementById("zk-counts").appendChild(chartEmpty(
       `Could not count: ${counts.unreadable.join(", ")} — these are unreadable, which is not the same as empty.`));

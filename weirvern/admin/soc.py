@@ -227,12 +227,41 @@ def zeek_counts(client, hours: int = 24) -> dict:
     unreadable: list[str] = []
     for label, table in ZEEK_LOGS:
         try:
+            # ONE QUERY, THREE NUMBERS, because a bare zero is unreadable on its own.
+            #
+            # "http 0" in the window has two completely different meanings and the panel could not
+            # tell them apart: either http.log has NEVER produced a row (a policy or analyzer
+            # problem worth fixing) or it produced rows earlier and none in this window (the
+            # segment simply had no HTTP traffic). An operator seeing a wall of zeros concluded
+            # the dashboard was broken; the truth was that the interesting protocol data is OLDER
+            # than the default 24h window -- http/ssh/files rows existed, from ~40h earlier.
+            #
+            # So the count carries its own context: `total` (all time) and `last_ts` (when it was
+            # last written). The panel can then say "0 in this window, last row 40h ago" instead of
+            # leaving the reader to guess. Same principle as everywhere else here: state what is
+            # absent and why.
             rows = client.query(
-                f"SELECT count() FROM weirvern.{table} "  # noqa: S608 - table from ZEEK_LOGS, not input
-                "WHERE ts >= now() - INTERVAL %(h)s HOUR",
+                f"SELECT countIf(ts >= now() - INTERVAL %(h)s HOUR) AS in_window, "  # noqa: S608
+                f"count() AS total, max(ts) AS last_ts FROM weirvern.{table}",
                 parameters={"h": hours},
             ).result_rows
-            out.append({"log": label, "table": table, "rows": int(rows[0][0] or 0)})
+            in_window = int(rows[0][0] or 0)
+            total = int(rows[0][1] or 0)
+            last = rows[0][2]
+            out.append({
+                "log": label,
+                "table": table,
+                "rows": in_window,
+                "total": total,
+                "last_ts": last.isoformat() if hasattr(last, "isoformat") else (str(last) if last else ""),
+                # The three states a zero can be in. Computed here so every consumer reads the
+                # same words rather than each inventing its own.
+                "state": (
+                    "empty-forever" if total == 0
+                    else "idle" if in_window == 0
+                    else "active"
+                ),
+            })
         except Exception as exc:  # noqa: BLE001
             logger.debug("zeek count failed for %s: %s", table, exc)
             unreadable.append(label)
