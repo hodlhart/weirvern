@@ -50,9 +50,14 @@ ML_MODULES = [
     #
     # The lesson is the point of this file: a coverage audit is only as good as its list of readers,
     # and a reader left off the list becomes a defect that does not exist.
+    #
+    # These are the REAL module paths, checked against the tree -- an earlier version listed
+    # `models/ensemble.py` and `models/trainer.py`, which do not exist (guessed names), and the
+    # reference test caught it. Inventing a path is worse than omitting one: the audit would silently
+    # scan nothing and under-report coverage again.
     "weirvern/models/detectors.py",
-    "weirvern/models/ensemble.py",
-    "weirvern/models/trainer.py",
+    "weirvern/models/scoring.py",
+    "weirvern/models/base.py",
 ]
 
 # Modules that READ the data but do NOT feed a model. Listed so the report can name the difference

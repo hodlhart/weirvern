@@ -195,6 +195,11 @@ POISON_HOLDS=0
 POISON_LOST=0
 HB_AGE=""
 HB_MODE=""
+# How stale the intercept's OWN LOG may get before it counts as not-relaying. The intercept writes
+# to it continuously while it works, so this needs no database and is the primary liveness signal.
+# 90s is generous: the process may write in bursts, and a tight bound would false-positive on a
+# quiet moment -- the failure mode this whole block exists to avoid.
+LOG_STALE_S=90
 # Times the heartbeat check itself failed. Reported: a run with many unreadable checks is weakly
 # evidenced even when it completes.
 HB_UNREADABLE=0   # total failures across the run
@@ -221,27 +226,73 @@ while [ $i -lt $SAMPLES ]; do
   # in-path intercept with nothing watching it.
   #
   # The rule this violated: an inability to MEASURE is not evidence of a failure.
-  HB_RAW=$(kubectl -n $NS exec "$W" -c worker -- python /tmp/intercept_detached.py --status 2>/dev/null \
-           | sed -n 's/^HEARTBEAT=\([0-9.]*\)s ago mode=\(.*\)/\1 \2/p' | head -1) || HB_RAW=""
+  #
+  # ── SECOND MEASURED FAILURE, 2026-09-19, AND IT BROKE THE FIX ABOVE ─────────────────────────────
+  #
+  # The three-state logic was right and still stopped a LIVE intercept, because the single signal it
+  # read was itself database-backed. Measured at 06:10:25 on the box:
+  #
+  #     runner: "!! no live heartbeat at 4m ... the intercept has stopped reporting"
+  #     node:   intercepts=1  rule100=1  table100=1        <- in-path the whole time
+  #
+  # ClickHouse went briefly unreadable. The heartbeat query then returned an OLD row (from the
+  # worker's own `loch` beat, mode 'loch', 62s old) rather than nothing -- so the check did not land
+  # in the UNKNOWN branch, it landed in DEAD with a stale age, and the sampler stopped a healthy run.
+  # The teardown needs the same dependency, so it then sat for 28 minutes while the intercept relayed
+  # with nothing watching it.
+  #
+  # TWO FIXES, and the second is the one that matters:
+  #
+  #   1. THE PRIMARY SIGNAL IS NOW THE PROCESS'S OWN LOG (LOG_AGE), which needs no database. Log
+  #      staleness is direct evidence: the intercept writes to it continuously while relaying. The
+  #      heartbeat is still read for the MODE (it is what the GUI shows) but no longer decides life.
+  #   2. A STALE HEARTBEAT IS ONLY DEAD WHEN IT PERSISTS. One stale reading is a blip; three
+  #      consecutive ones (6 minutes) is a stopped process. A single sample must not be able to stop
+  #      a live run -- that is the same false-negative the comment above warns about, arriving
+  #      through a different door.
+  STATUS_RAW=$(kubectl -n $NS exec "$W" -c worker -- python /tmp/intercept_detached.py --status 2>/dev/null) || STATUS_RAW=""
+  LOG_AGE=$(echo "$STATUS_RAW" | sed -n 's/^LOG_AGE=\([0-9.]*\)$/\1/p' | head -1)
+  HB_RAW=$(echo "$STATUS_RAW" | sed -n 's/^HEARTBEAT=\([0-9.]*\)s ago mode=\(.*\)/\1 \2/p' | head -1)
   HB_AGE=$(echo "$HB_RAW" | awk '{print $1}')
   HB_MODE=$(echo "$HB_RAW" | awk '{print $2}')
 
-  case "$HB_AGE" in
-    ''|*[!0-9.]*)
+  # Liveness verdict, most-trustworthy signal first. LOG_STALE is the only state that is evidence.
+  if [ -z "$STATUS_RAW" ]; then
+    LIVENESS=UNKNOWN            # the status call itself failed to run
+  elif [ -n "$LOG_AGE" ] && [ "${LOG_AGE%%.*}" -le "$LOG_STALE_S" ]; then
+    LIVENESS=ALIVE              # the intercept is writing its log right now
+  elif [ -n "$LOG_AGE" ]; then
+    LIVENESS=LOG_STALE          # it stopped writing -- genuinely suspicious
+  elif [ -n "$HB_AGE" ] && [ "${HB_AGE%%.*}" -le 60 ]; then
+    LIVENESS=ALIVE              # no log age reported, but a fresh heartbeat
+  elif [ -n "$HB_AGE" ]; then
+    LIVENESS=HB_STALE
+  else
+    LIVENESS=UNKNOWN
+  fi
+
+  case "$LIVENESS" in
+    UNKNOWN|HB_STALE)
       HB_UNREADABLE=$((HB_UNREADABLE + 1))
       HB_STREAK=$((HB_STREAK + 1))
       HB_AGE=""
       # BOTH numbers: the streak says whether this is a passing blip (streak 1) or a persistent
       # condition (streak 3+), and the total is what the evidence-quality claim rests on.
-      echo "  ${ELAPSED}m  heartbeat UNREADABLE (streak $HB_STREAK, total $HB_UNREADABLE) -- NOT treating" | tee -a "$OUT"
-      echo "       this as a stopped intercept: an unanswerable check is not evidence of failure" | tee -a "$OUT"
-      ;;
-    *)
-      if [ "${HB_AGE%%.*}" -gt 60 ]; then
-        echo "  !! no live heartbeat at ${ELAPSED}m (newest ${HB_AGE}s old, mode '$HB_MODE') -- the" | tee -a "$OUT"
-        echo "     intercept has stopped reporting. See /tmp/weir_intercept_detached.log" | tee -a "$OUT"
+      echo "  ${ELAPSED}m  liveness UNKNOWN ($LIVENESS; streak $HB_STREAK, total $HB_UNREADABLE) -- NOT" | tee -a "$OUT"
+      echo "       treating this as a stopped intercept: an unanswerable check is not evidence" | tee -a "$OUT"
+      # A PERSISTENT stale heartbeat, with no log age to contradict it, is now evidence. 3 consecutive
+      # samples = 6 minutes of a process that is neither writing nor beating.
+      if [ "$HB_STREAK" -ge 3 ]; then
+        echo "  !! liveness UNKNOWN for $HB_STREAK consecutive samples (${ELAPSED}m) and no log" | tee -a "$OUT"
+        echo "     activity: treating the intercept as DEAD after repeated unreadable checks." | tee -a "$OUT"
         break
       fi
+      ;;
+    LOG_STALE)
+      echo "  !! the intercept has written no log for ${LOG_AGE}s at ${ELAPSED}m -- it is not relaying." | tee -a "$OUT"
+      break
+      ;;
+    ALIVE)
       HB_STREAK=0
       ;;
   esac
