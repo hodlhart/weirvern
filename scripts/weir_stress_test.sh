@@ -123,6 +123,12 @@ except Exception as e:
   if ip addr del $OUR_IP/24 dev $IFACE 2>/dev/null; then
     echo "  (host-side address removed)" | tee -a "$OUT"
   fi
+  # Also REMOVE the policy rule, not merely flush the table. A leftover `ip rule` sends ALL traffic
+  # arriving on the interface to table 100 -- which, once the address is gone, is a table with no
+  # routes. This is what left a live intercept's routing in place when the in-pod teardown failed.
+  if ip rule del from $SEGMENT lookup 100 2>/dev/null; then
+    echo "  (host-side policy rule removed)" | tee -a "$OUT"
+  fi
   ip rule del from $SEGMENT lookup 100 2>/dev/null && echo "  (host-side rule also removed)" | tee -a "$OUT"
   ip route flush table 100 2>/dev/null && echo "  (host-side table 100 flushed)" | tee -a "$OUT"
   echo "  ip_forward=$(sysctl -n net.ipv4.ip_forward) rp_filter=$(sysctl -n net.ipv4.conf.all.rp_filter) send_redirects=$(sysctl -n net.ipv4.conf.all.send_redirects)" | tee -a "$OUT"
@@ -131,6 +137,16 @@ except Exception as e:
   echo "  eth1 address : '$(ip -o -4 addr show $IFACE 2>/dev/null | awk '{print $4}' | tr -d '\n')'  (must be empty)" | tee -a "$OUT"
   echo "  rule lookup100: $(ip rule show 2>/dev/null | grep -c 'lookup 100')  (must be 0)" | tee -a "$OUT"
   echo "  table 100     : $(ip route show table 100 2>/dev/null | wc -l)  (must be 0)" | tee -a "$OUT"
+
+  # LOUD IF ANYTHING REMAINS -- the orphan that prompted this was silent. The teardown reported a
+  # clean segment from the parts it could check while an intercept kept running in the pod.
+  REMAIN_ADDR=$(ip -o -4 addr show $IFACE 2>/dev/null | wc -l)
+  REMAIN_RULE=$(ip rule show 2>/dev/null | grep -c 'lookup 100')
+  if [ "$REMAIN_ADDR" != "0" ] || [ "$REMAIN_RULE" != "0" ]; then
+    echo "  !! TEARDOWN INCOMPLETE: $REMAIN_ADDR address(es) and $REMAIN_RULE rule(s) remain on $IFACE." | tee -a "$OUT"
+    echo "     A live intercept may still be running in the pod. Check with:" | tee -a "$OUT"
+    echo "       kubectl -n $NS exec <worker> -c worker -- python /tmp/intercept_detached.py --status" | tee -a "$OUT"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -179,6 +195,9 @@ POISON_HOLDS=0
 POISON_LOST=0
 HB_AGE=""
 HB_MODE=""
+# Times the heartbeat check itself failed. Reported: a run with many unreadable checks is weakly
+# evidenced even when it completes.
+HB_UNREADABLE=0
 FORW_PREV=""
 FORW_BEFORE=$(awk '/^Ip:/{if(n==0){for(i=1;i<=NF;i++)h[i]=$i;n=1;next} for(i=1;i<=NF;i++) if(h[i]=="ForwDatagrams") print $i+0; exit}' /proc/net/snmp)
 i=0
@@ -187,28 +206,41 @@ while [ $i -lt $SAMPLES ]; do
   i=$((i+1))
   ELAPSED=$(( i * 2 ))
   # Is the intercept still alive? Asked of the SENSOR'S OWN HEARTBEAT, not a local pid.
+  # Is the intercept still alive? THREE STATES, NOT TWO.
   #
-  # A local pid answers "is our client alive", which is not the question -- and with the launch now
-  # DETACHED there is no local pid at all. The intercept publishes to sensor_status every 15s and
-  # that survives the client entirely; it is the same signal the GUI uses. So a stale heartbeat is
-  # the real evidence that it stopped, and an absent one is the evidence it never started.
+  #   ALIVE   a fresh heartbeat was read          -> keep going
+  #   DEAD    a heartbeat was read and is stale   -> break
+  #   UNKNOWN the check itself could not reach ClickHouse -> keep going and COUNT it
   #
-  # The empty-value guards are load-bearing: `set -u` is on, so a malformed value here aborts the
-  # whole script at the numeric comparison -- which is exactly how the previous version of this
-  # block destroyed a run.
-  HB=$(kubectl -n $NS exec "$W" -c worker -- python /tmp/intercept_detached.py --status 2>/dev/null \
-       | sed -n 's/^HEARTBEAT=\([0-9.]*\)s ago mode=\(.*\)/\1 \2/p' | head -1) || HB=""
-  [ -n "$HB" ] || HB="999 none"
-  HB_AGE=$(echo "$HB" | awk '{print $1}')
-  HB_MODE=$(echo "$HB" | awk '{print $2}')
+  # Conflating UNKNOWN with DEAD is a false negative, and it cost a real run: a transient DNS
+  # failure inside the cluster made this check unreadable, the sampler STOPPED a healthy intercept
+  # (the last sample showed forwarding +438, poison held), and because the teardown could not exec
+  # either, the intercept was left RUNNING and unmonitored -- eth1 with its address, rule 100 and
+  # table 100 all still installed. A monitoring call that failed converted a blip into a live
+  # in-path intercept with nothing watching it.
+  #
+  # The rule this violated: an inability to MEASURE is not evidence of a failure.
+  HB_RAW=$(kubectl -n $NS exec "$W" -c worker -- python /tmp/intercept_detached.py --status 2>/dev/null \
+           | sed -n 's/^HEARTBEAT=\([0-9.]*\)s ago mode=\(.*\)/\1 \2/p' | head -1) || HB_RAW=""
+  HB_AGE=$(echo "$HB_RAW" | awk '{print $1}')
+  HB_MODE=$(echo "$HB_RAW" | awk '{print $2}')
+
   case "$HB_AGE" in
-    ''|*[!0-9.]*) HB_AGE=999 ;;
+    ''|*[!0-9.]*)
+      HB_UNREADABLE=$((HB_UNREADABLE + 1))
+      HB_AGE=""
+      echo "  ${ELAPSED}m  heartbeat UNREADABLE ($HB_UNREADABLE so far) -- NOT treating this as a" | tee -a "$OUT"
+      echo "       stopped intercept: an unanswerable check is not evidence of failure" | tee -a "$OUT"
+      ;;
+    *)
+      if [ "${HB_AGE%%.*}" -gt 60 ]; then
+        echo "  !! no live heartbeat at ${ELAPSED}m (newest ${HB_AGE}s old, mode '$HB_MODE') -- the" | tee -a "$OUT"
+        echo "     intercept has stopped reporting. See /tmp/weir_intercept_detached.log" | tee -a "$OUT"
+        break
+      fi
+      HB_UNREADABLE=0
+      ;;
   esac
-  if [ "${HB_AGE%%.*}" -gt 60 ]; then
-    echo "  !! no live heartbeat at ${ELAPSED}m (newest ${HB_AGE}s old, mode '$HB_MODE') -- the" | tee -a "$OUT"
-    echo "     intercept has stopped reporting. See /tmp/weir_intercept_detached.log" | tee -a "$OUT"
-    break
-  fi
   # Forwarding counters: the relay must still be moving packets.
   #
   # RESOLVED BY FIELD NAME, not by position. The first version used fixed columns and printed
@@ -319,6 +351,7 @@ if [ "$POISON_HOLDS" = "0" ] && [ "$POISON_LOST" = "0" ]; then
   echo "     clean teardown is NOT evidence the intercept worked. Find why the loop stopped." | tee -a "$OUT"
 fi
 echo "  poison held in $POISON_HOLDS sample(s), lost in $POISON_LOST" | tee -a "$OUT"
-echo "  last heartbeat mode: $HB_MODE (age ${HB_AGE}s) -- 'weir' means the intercept was reporting" | tee -a "$OUT"
+echo "  last heartbeat mode: ${HB_MODE:-n/a} (age ${HB_AGE:-n/a})" | tee -a "$OUT"
+echo "  heartbeat checks that FAILED TO READ: $HB_UNREADABLE -- evidence quality: $([ "$HB_UNREADABLE" -eq 0 ] && echo full || echo PARTIAL)" | tee -a "$OUT"
 echo "  ForwDatagrams at start: $FORW_BEFORE" | tee -a "$OUT"
 echo "  full log: $OUT"
