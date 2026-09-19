@@ -54,6 +54,17 @@ MANAGEMENT_SEGMENT = "203.0.113.0/24"
 
 MAPPING: list[tuple[str, str]] = [
     # The lab's own segments. eth1 was the capture side, eth0 the management side.
+    #
+    # THE WILDCARD FORM IS COVERED FIRST, and it has to be. Every rule below requires a DIGIT in
+    # the last octet, so prose like "the 192.168.3.x segment" passed the guard untouched -- it
+    # named the network just as plainly as a full address does, and it leaked into a commit
+    # message where the digit-only rules could not see it. A description of a real segment is
+    # still a description of a real segment, and commit messages are published surface.
+    #
+    # Verified: `192.168.3.x` and `192.168.2.x` are flagged by the guard and rewritten here.
+    (r"192\.168\.3\.[xX*]", "198.51.100.x"),
+    (r"192\.168\.2\.[xX*]", "203.0.113.x"),
+    (r"192\.168\.1\.[xX*]", "192.0.2.x"),
     (r"192\.168\.3\.(\d+)", r"198.51.100.\1"),
     (r"192\.168\.2\.(\d+)", r"203.0.113.\1"),
     (r"192\.168\.1\.(\d+)", r"192.0.2.\1"),

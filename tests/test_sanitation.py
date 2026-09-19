@@ -184,3 +184,27 @@ def test_gitignore_blocks_captures(gitignore_line: str):
         f".gitignore does not block {gitignore_line}; a capture could be committed with "
         f"`git add -A`"
     )
+
+
+def test_a_segment_written_with_a_wildcard_is_still_a_real_segment():
+    """`192.168.3.x` names the network as plainly as `192.168.3.250` does.
+
+    THE GAP THIS CLOSES. Every segment rule in MAPPING captured a DIGIT in the last octet, so prose
+    like "the 192.168.3.x segment" passed the guard untouched. One such phrase reached a commit
+    message, where it is published surface -- found by the gate, not by review.
+
+    A wildcard is not a redaction: it still tells a reader which network the lab runs on, which is
+    exactly what the sanitation directive forbids. So the wildcard forms are mapped to the
+    documentation ranges, in the same shape as the address rules.
+    """
+    from weirvern.tools.sanitize_identifiers import scrub_text
+
+    for raw, expected_prefix in [
+        ("the 192.168.3.x segment", "198.51.100."),
+        ("the 192.168.2.x side", "203.0.113."),
+        ("the 192.168.1.x range", "192.0.2."),
+    ]:
+        out, count = scrub_text(raw)
+        assert count == 1, f"{raw!r} was not rewritten at all -- the guard has a hole: {out!r}"
+        assert expected_prefix in out, f"{raw!r} -> {out!r} did not use the documentation range"
+        assert "192.168." not in out, f"{raw!r} -> {out!r} still names the real segment"
