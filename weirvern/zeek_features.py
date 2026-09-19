@@ -96,6 +96,31 @@ ZEEK_FEATURES = [
     # NetFlow gives bytes, Zeek gives the orig/resp split per connection.
     "zeek_outbound_ratio",
     "zeek_unique_dst_ips",
+    # ── Tier 3: L2 identity, certificates, encapsulation, the TLS blind spot ──────────────
+    #
+    # DHCP. The only log with L2 identity -- but the FEATURES are lease behaviour, because that
+    # is what can be anomalous. `dhcp_mac_count` > 1 is MAC spoofing or address churn;
+    # `dhcp_server_count` > 1 means a server_addr that is not ours, i.e. a rogue DHCP server.
+    "zeek_dhcp_events",
+    "zeek_dhcp_mac_count",
+    "zeek_dhcp_server_count",
+    "zeek_dhcp_lease_mean",
+    # Tunnel. The existence of a row is the finding, so the feature is whether encapsulation
+    # occurred and of how many kinds.
+    "zeek_tunnel_events",
+    "zeek_tunnel_type_count",
+    # QUIC. Closes the TLS blind spot: QUIC never reaches ssl.log, so a host that moves to QUIC
+    # was previously unnamed. `quic_ratio` is against this host's own TLS traffic.
+    "zeek_quic_count",
+    "zeek_quic_server_count",
+    "zeek_quic_ratio",
+    # LDAP. Enumeration is defined by filter content; `result_count` is the numeric signal and
+    # `ldap_filter_shapes` counts how many DISTINCT filters the host issued -- a burst of unique
+    # filter shapes is the enumeration pattern.
+    "zeek_ldap_search_count",
+    "zeek_ldap_filter_shapes",
+    "zeek_ldap_results_mean",
+    "zeek_ldap_results_max",
     # ── SSH (zeek_ssh: also previously contributing NOTHING to the models) ───────────────
     #
     # The clearest brute-force signal on a tap, and invisible to NetFlow: a failed password
@@ -311,6 +336,90 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         --   ssh_server_ratio     whether this host is mostly the CLIENT or the SERVER of its
         --                        SSH sessions. A workstation that starts accepting logins is a
         --                        change in role, not in volume.
+        -- ── Tier 3: L2 identity, certificates, encapsulation, the TLS blind spot ──
+        --
+        -- Chosen from two independent research passes over every log Zeek 9.0.0 ships.
+        -- See weirvern/schema/006_zeek_tier3.sql.
+        --
+        -- DHCP is the only log with L2 IDENTITY, which is what makes a per-host baseline stable:
+        -- a MAC persists across leases and an IP does not. The features here are about LEASE
+        -- BEHAVIOUR rather than identity, because that is what can be anomalous:
+        --   dhcp_distinct_macs     a host claiming many MACs is MAC spoofing or address churn
+        --   dhcp_rogue_servers     a server_addr that is not ours is a rogue DHCP server, which
+        --                          is the whole detection for this log
+        --   dhcp_lease_time        how long this host's leases are; a sudden drop to seconds is
+        --                          a starvation attack or a misconfiguration
+        dhcp_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                src_addr,
+                count()                                          AS dhcp_events,
+                uniqExactIf(mac, mac != '')                      AS dhcp_macs,
+                uniqExactIf(server_addr, server_addr != '0.0.0.0') AS dhcp_servers,
+                avg(lease_time)                                  AS dhcp_lease_mean
+            FROM weirvern.zeek_dhcp
+            WHERE ts BETWEEN '{start}' AND '{end}'
+            GROUP BY w, src_addr
+        ),
+        -- x509 is deliberately NOT a feature source, and the reason is structural.
+        --
+        -- The feature join is (5-minute window, src_addr). x509.log has NO src_addr: it is keyed
+        -- on the certificate FINGERPRINT, because one certificate is presented by many hosts and
+        -- Zeek deduplicates it per certificate rather than per connection. There is therefore no
+        -- way to attribute a certificate to a host from this log.
+        --
+        -- Joining it by a constant would give one row whose columns read the default for EVERY
+        -- host -- a feature that is always 0.0 and indistinguishable from a quiet network. That
+        -- is the defect this project has already shipped twice (dead ja3/ja3s columns; the six
+        -- Tier-2 tables with no mapper), so the table is ingested and queryable for HUNTING
+        -- ("is this certificate self-signed?", "which hosts share this issuer?" -- both joins via
+        -- ssl.log's cert_chain_fps) but contributes no ML feature.
+        --
+        -- A test enforces this: test_every_aggregation_is_joined_not_just_selected fails if a
+        -- CTE is defined but never joined, which is how this was caught.
+        -- Tunnel: the EXISTENCE of a row is the signal, so the feature is simply whether
+        -- encapsulation occurred and of how many kinds. conn.log has tunnel_parents (UIDs) and
+        -- never the type.
+        tunnel_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                src_addr,
+                count()                                          AS tunnel_events,
+                uniqExact(tunnel_type)                            AS tunnel_types
+            FROM weirvern.zeek_tunnel
+            WHERE ts BETWEEN '{start}' AND '{end}'
+            GROUP BY w, src_addr
+        ),
+        -- QUIC closes the TLS blind spot: it never reaches ssl.log, so without this a host's
+        -- QUIC destinations are unnamed.
+        --   quic_ratio              share of this host's named TLS-like traffic that is QUIC.
+        --                           A host moving to QUIC has been invisible until now.
+        --   quic_server_count       distinct QUIC destinations
+        quic_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                src_addr,
+                count()                                          AS quic_count,
+                uniqExactIf(server_name, server_name != '')      AS quic_servers
+            FROM weirvern.zeek_quic
+            WHERE ts BETWEEN '{start}' AND '{end}'
+            GROUP BY w, src_addr
+        ),
+        -- LDAP: enumeration is defined by filter CONTENT, and nothing else exposes directory
+        -- queries at all. The numeric signal is result_count; the categorical is filter novelty,
+        -- which needs a per-host history and is therefore computed as a COUNT here.
+        ldap_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                src_addr,
+                count()                                          AS ldap_searches,
+                uniqExactIf(ldap_filter, ldap_filter != '')      AS ldap_filter_shapes,
+                avg(result_count)                                AS ldap_results_mean,
+                max(result_count)                                AS ldap_results_max
+            FROM weirvern.zeek_ldap_search
+            WHERE ts BETWEEN '{start}' AND '{end}'
+            GROUP BY w, src_addr
+        ),
         ssh_agg AS (
             SELECT
                 toStartOfFiveMinute(ts) AS w,
@@ -387,6 +496,10 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             SELECT w, src_addr FROM conn_agg
             UNION DISTINCT SELECT w, src_addr FROM dns_agg
             UNION DISTINCT SELECT w, src_addr FROM ssl_agg
+            UNION DISTINCT SELECT w, src_addr FROM dhcp_agg
+            UNION DISTINCT SELECT w, src_addr FROM tunnel_agg
+            UNION DISTINCT SELECT w, src_addr FROM quic_agg
+            UNION DISTINCT SELECT w, src_addr FROM ldap_agg
             UNION DISTINCT SELECT w, src_addr FROM ssh_agg
             UNION DISTINCT SELECT w, src_addr FROM http_agg
             UNION DISTINCT SELECT w, src_addr FROM files_agg
@@ -410,6 +523,24 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             coalesce(s.ja4_count, 0)                               AS zeek_ja4_count,
             coalesce(n.notice_count, 0)                            AS zeek_notice_count,
             coalesce(ww.weird_count, 0)                            AS zeek_weird_count,
+            -- Tier 3. Counts, ratios and bounded categoricals only -- no identifier becomes a
+            -- feature (fingerprints, MACs and uids are join keys, never inputs).
+            coalesce(dh.dhcp_events, 0)                            AS zeek_dhcp_events,
+            coalesce(dh.dhcp_macs, 0)                              AS zeek_dhcp_mac_count,
+            coalesce(dh.dhcp_servers, 0)                           AS zeek_dhcp_server_count,
+            coalesce(dh.dhcp_lease_mean, 0)                        AS zeek_dhcp_lease_mean,
+            coalesce(tn.tunnel_events, 0)                          AS zeek_tunnel_events,
+            coalesce(tn.tunnel_types, 0)                           AS zeek_tunnel_type_count,
+            coalesce(qq.quic_count, 0)                             AS zeek_quic_count,
+            coalesce(qq.quic_servers, 0)                           AS zeek_quic_server_count,
+            if(coalesce(qq.quic_count, 0) + coalesce(s.ssl_count, 0) > 0,
+               coalesce(qq.quic_count, 0) / (coalesce(qq.quic_count, 0)
+                                             + coalesce(s.ssl_count, 0)), 0)
+                                                                   AS zeek_quic_ratio,
+            coalesce(lp.ldap_searches, 0)                          AS zeek_ldap_search_count,
+            coalesce(lp.ldap_filter_shapes, 0)                     AS zeek_ldap_filter_shapes,
+            coalesce(lp.ldap_results_mean, 0)                      AS zeek_ldap_results_mean,
+            coalesce(lp.ldap_results_max, 0)                       AS zeek_ldap_results_max,
             -- SSH. The failure RATIO is the signal; `ssh_attempts` is carried so the ratio has
             -- a scale attached (a 100% failure rate over two attempts is not a finding).
             coalesce(ss.ssh_conns, 0)                              AS zeek_ssh_count,
@@ -479,6 +610,10 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         LEFT JOIN ssl_agg    s  ON s.w  = k.w AND s.src_addr  = k.src_addr
         LEFT JOIN notice_agg n  ON n.w  = k.w AND n.src_addr  = k.src_addr
         LEFT JOIN weird_agg  ww ON ww.w = k.w AND ww.src_addr = k.src_addr
+        LEFT JOIN dhcp_agg   dh ON dh.w = k.w AND dh.src_addr = k.src_addr
+        LEFT JOIN tunnel_agg tn ON tn.w = k.w AND tn.src_addr = k.src_addr
+        LEFT JOIN quic_agg   qq ON qq.w = k.w AND qq.src_addr = k.src_addr
+        LEFT JOIN ldap_agg   lp ON lp.w = k.w AND lp.src_addr = k.src_addr
         LEFT JOIN ssh_agg    ss ON ss.w = k.w AND ss.src_addr = k.src_addr
         LEFT JOIN http_agg   hh ON hh.w = k.w AND hh.src_addr = k.src_addr
         LEFT JOIN files_agg  ff ON ff.w = k.w AND ff.src_addr = k.src_addr
@@ -803,6 +938,26 @@ def zeek_protocol_records_sql(since: str, until: str | None = None) -> str:
         branch("zeek_dce_rpc", "'' AS smb_path, '' AS service, operation, endpoint"),
         branch("zeek_kerberos",
                "'' AS smb_path, '' AS service, request_type AS operation, service AS endpoint"),
+        # x509 is included in the PROTOCOL query even though it cannot be a per-host ML feature.
+        # It has no src_addr (keyed on the certificate fingerprint), so it gets the fingerprint
+        # as its identity and an empty address. This is what makes the table READABLE for
+        # hunting -- self-signed certificates, weak keys, issuer reuse -- rather than collected
+        # and never used. The audit's exemption for it is verified by a test, not asserted.
+        f"SELECT 'zeek_x509' AS kind, '' AS src_addr, ts, 0 AS attempts, 0 AS successes, "
+        f"'' AS smb_path, '' AS service, fingerprint AS operation, subject AS endpoint "
+        f"FROM weirvern.zeek_x509 WHERE ts >= '{since}' AND ts < '{until}'",
+        f"SELECT 'zeek_tunnel' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
+        f"'' AS smb_path, '' AS service, tunnel_type AS operation, action AS endpoint "
+        f"FROM weirvern.zeek_tunnel WHERE ts >= '{since}' AND ts < '{until}'",
+        f"SELECT 'zeek_quic' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
+        f"'' AS smb_path, '' AS service, client_protocol AS operation, server_name AS endpoint "
+        f"FROM weirvern.zeek_quic WHERE ts >= '{since}' AND ts < '{until}'",
+        f"SELECT 'zeek_ldap_search' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
+        f"'' AS smb_path, '' AS service, scope AS operation, base_object AS endpoint "
+        f"FROM weirvern.zeek_ldap_search WHERE ts >= '{since}' AND ts < '{until}'",
+        f"SELECT 'zeek_dhcp' AS kind, src_addr, ts, 0 AS attempts, 0 AS successes, "
+        f"'' AS smb_path, '' AS service, msg_types AS operation, mac AS endpoint "
+        f"FROM weirvern.zeek_dhcp WHERE ts >= '{since}' AND ts < '{until}'",
         branch("zeek_ntlm",
                "'' AS smb_path, '' AS service, '' AS operation, '' AS endpoint"),
     ])

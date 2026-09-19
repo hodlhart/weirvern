@@ -47,14 +47,45 @@ def test_every_ingested_zeek_table_is_read_by_the_summary_query():
     # asserts that, so this list cannot become a place to hide an unread table.
     PROTOCOL_ONLY = {"zeek_kerberos", "zeek_dce_rpc", "zeek_smb_mapping", "zeek_smb_files",
                      "zeek_ntlm"}
+    # NOT A FEATURE SOURCE, for a structural reason rather than a judgement: the feature join is
+    # (window, src_addr) and x509.log HAS NO src_addr -- it is keyed on the certificate
+    # fingerprint, because one certificate is presented by many hosts and Zeek deduplicates per
+    # certificate. It cannot be attributed to a host, so joining it would fill every host's
+    # columns with the default: a feature that is always 0.0, indistinguishable from a quiet
+    # network. That is the dead-column defect this project has already shipped twice.
+    #
+    # It is ingested and queryable for HUNTING -- self-signed and issuer-reuse questions are
+    # joins through ssl.log's cert_chain_fps -- which the next test asserts.
+    NO_HOST_KEY = {"zeek_x509"}
     for log_type, (target, _fn) in sorted(ZEEK_MAPPERS.items()):
         table = target.split(".")[-1]
-        if table in PROTOCOL_ONLY:
+        if table in PROTOCOL_ONLY or table in NO_HOST_KEY:
             continue
         assert f"weirvern.{table}" in sql, (
             f"{log_type}.log is ingested into {table} but the feature query never reads it, so "
             f"its data is collected and discarded"
         )
+
+
+def test_the_table_excluded_from_features_has_a_structural_reason():
+    """THE EXEMPTION ABOVE MUST BE EARNED, not assumed. Assert the reason is real: the table has
+    no src_addr column, so a (window, host) join cannot attribute it."""
+    import re as _re
+    from pathlib import Path as _P
+    sql = "\n".join(ln.split("--")[0] for ln in
+                     (_P(__file__).resolve().parents[1] / "weirvern" / "schema" /
+                      "006_zeek_tier3.sql").read_text().splitlines())
+    m = _re.search(r"CREATE TABLE IF NOT EXISTS weirvern\.zeek_x509\s*\((.*?)\n\)", sql, _re.S)
+    assert m, "zeek_x509 DDL not found"
+    cols = [ln.strip().rstrip(",").split()[0] for ln in m.group(1).splitlines() if ln.strip()]
+    assert "src_addr" not in cols, (
+        "zeek_x509 now HAS a src_addr, so it CAN be joined as a per-host feature -- either add "
+        "the features or update this exemption's justification"
+    )
+    assert "fingerprint" in cols, (
+        "zeek_x509 is keyed on fingerprint; without that column it could not be joined to "
+        "ssl.log for hunting either, and this exemption would leave it unreadable"
+    )
 
 
 def test_protocol_only_tables_are_still_read_by_something():

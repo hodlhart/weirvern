@@ -610,6 +610,188 @@ def map_zeek_ntlm(rec: dict[str, str]) -> dict[str, Any] | None:
     }
 
 
+def map_zeek_dhcp(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek dhcp.log record -> zeek_dhcp row.
+
+    THE ONLY LOG WITH L2 IDENTITY. It converts an IP address into a MAC and a hostname, which is
+    what makes every other log attributable after a lease expires -- and what lets a per-host
+    baseline key on something stable, since a MAC persists across leases and an IP does not.
+
+    A `server_addr` that is not this network's DHCP server is a rogue DHCP server, which is the
+    whole detection for this log.
+
+    NO ADDRESS PAIR IS REQUIRED, unlike every other mapper here: DHCP is broadcast, so
+    `id.orig_h` is 0.0.0.0 in a DISCOVER and there is no meaningful source/destination pair. The
+    row is keyed on the MAC instead, which is the field that identifies the client.
+    """
+    ts = _safe_float(rec.get("ts"), 0.0)
+    mac = rec.get("mac") or ""
+    # `client_addr` is 0.0.0.0 for a DISCOVER, which is legitimate, not missing -- so this
+    # mapper does not reject on a zero address the way the identity mappers do.
+    client = zeek_value(rec.get("client_addr", "")) or "0.0.0.0"
+    server = zeek_value(rec.get("server_addr", "")) or "0.0.0.0"
+
+    # `uids` is a SET in Zeek: one DHCP transaction can span several connections. Joined because
+    # nothing needs per-element identity and a vector is awkward to query.
+    uids = rec.get("uids") or ""
+    if uids:
+        uids = uids.replace("\x01", ",").replace(",", ",")  # Zeek's set separator is a comma
+
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uids": uids,
+        "client_addr": _to_ip(client),
+        "server_addr": _to_ip(server),
+        "mac": mac,
+        "host_name": rec.get("host_name") or "",
+        "client_fqdn": rec.get("client_fqdn") or "",
+        "domain": rec.get("domain") or "",
+        "requested_addr": _to_ip(zeek_value(rec.get("requested_addr", "")) or "0.0.0.0"),
+        "assigned_addr": _to_ip(zeek_value(rec.get("assigned_addr", "")) or "0.0.0.0"),
+        # `lease_time` and `duration` are Zeek INTERVALS -- seconds, possibly fractional.
+        "lease_time": _safe_float(rec.get("lease_time"), 0.0),
+        "msg_types": (rec.get("msg_types") or "").replace("\x01", ","),
+        "duration": _safe_float(rec.get("duration"), 0.0),
+    }
+
+
+def map_zeek_x509(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek x509.log record -> zeek_x509 row.
+
+    WHAT ssl.log STRUCTURALLY CANNOT SAY. It carries `cert_chain_fps`, a vector of fingerprint
+    strings -- so it can identify a certificate but not describe one. Whether that certificate is
+    self-signed, a CA, expired, short-key, or carries a SAN contradicting the SNI exists only here.
+
+    `subject == issuer` is the self-signed test, and it is a comparison between two stored columns,
+    which is why both are kept verbatim rather than parsed.
+
+    Zeek's x509 record is NESTED: certificate.subject, san.dns, basic_constraints.ca. The columns
+    are flattened here so a query does not have to walk the nesting, and so the schema does not
+    depend on a record layout that a Zeek upgrade could change.
+    """
+    ts = _safe_float(rec.get("ts"), 0.0)
+    fingerprint = rec.get("fingerprint") or ""
+    if not fingerprint:
+        # Without the fingerprint this row cannot be joined to ssl.log, which is its only purpose.
+        return None
+
+    def _epoch(key: str) -> datetime:
+        return _epoch_or_zero(rec.get(key))
+
+    def _bool(key: str) -> int:
+        # Zeek writes "T"/"F" for booleans, and `-` for unset. Anything not recognisably true is
+        # false -- an unset CA flag must not read as "this is a CA", which is the opposite of safe.
+        v = zeek_value(rec.get(key, ""))
+        return 1 if v is not None and v.lower() in ("t", "true", "1") else 0
+
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "fingerprint": fingerprint,
+        "subject": rec.get("certificate.subject") or rec.get("subject") or "",
+        "issuer": rec.get("certificate.issuer") or rec.get("issuer") or "",
+        "common_name": rec.get("certificate.cn") or rec.get("certificate.common_name") or "",
+        "not_valid_before": _epoch("certificate.not_valid_before"),
+        "not_valid_after": _epoch("certificate.not_valid_after"),
+        "key_alg": rec.get("certificate.key_alg") or "",
+        "key_length": _safe_int(rec.get("certificate.key_length"), 0),
+        "sig_alg": rec.get("certificate.sig_alg") or "",
+        "is_ca": _bool("basic_constraints.ca"),
+        # The SAN list joined: `server_name NOT IN san_dns` needs the whole list to mean anything.
+        "san_dns": (rec.get("san.dns") or "").replace("\x01", ","),
+        "host_cert": _bool("host_cert"),
+        "client_cert": _bool("client_cert"),
+    }
+
+
+def map_zeek_tunnel(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek tunnel.log record -> zeek_tunnel row.
+
+    THE EXISTENCE OF A ROW IS THE FINDING. Zeek's own documentation says an unexpected
+    tunnel.log entry is worth investigating in its own right, which is unusual -- most logs need
+    interpretation before they mean anything.
+
+    conn.log carries `tunnel_parents`, a set of UIDs: it says a connection is related to a tunnel
+    but never what KIND. The encapsulation type (GRE, TEREDO, VXLAN, IP-in-IP, ...) is only here,
+    and it is the difference between "expected site-to-site" and "protocol tunnelling for evasion".
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        # Both addresses are needed: a tunnel is a relationship, and half of one cannot be
+        # reported or acted on.
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "tunnel_type": rec.get("tunnel_type") or "",
+        "action": rec.get("action") or "",
+    }
+
+
+def map_zeek_quic(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek quic.log record -> zeek_quic row.
+
+    THE TLS BLIND SPOT. QUIC is encrypted at the transport layer and never reaches ssl.log, so a
+    host that moves its C2 to QUIC is invisible to a corpus built on TLS records. This recovers
+    the SNI (`server_name`) and the ALPN protocol, which is what makes the connection nameable
+    rather than merely visible.
+
+    `version` is kept because QUIC version distinguishes implementations, and the handshake
+    `history` is deliberately NOT kept: it is Zeek's connection-state string, and the equivalent
+    is already a conn.log feature.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "server_name": rec.get("server_name") or "",
+        "client_protocol": rec.get("client_protocol") or "",
+        "version": rec.get("version") or "",
+    }
+
+
+def map_zeek_ldap_search(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek ldap_search.log record -> zeek_ldap_search row.
+
+    AD ENUMERATION IS DEFINED BY FILTER CONTENT. Nothing else in the corpus exposes directory
+    queries at all -- no other log can say what was searched for. `result_count` is a clean numeric
+    outlier feature (a search returning thousands of objects is enumeration), and the filter's
+    NOVELTY is the BloodHound-style signal.
+
+    NO CREDENTIAL IS STORED, and that is Zeek's default rather than a choice made here:
+    `default_capture_password` is false, so bind arguments are redacted before they reach the log.
+    Recorded because a reader seeing an LDAP table would reasonably ask.
+    """
+    src = zeek_value(rec.get("id.orig_h", ""))
+    dst = zeek_value(rec.get("id.resp_h", ""))
+    if not src or not dst:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "uid": rec.get("uid") or "",
+        "src_addr": _to_ip(src),
+        "dst_addr": _to_ip(dst),
+        "dst_port": _safe_int(rec.get("id.resp_p"), 0),
+        "ldap_filter": rec.get("filter") or "",
+        "base_object": rec.get("base_object") or "",
+        "scope": rec.get("scope") or "",
+        "deref_aliases": rec.get("deref_aliases") or "",
+        "result_count": _safe_int(rec.get("result_count"), 0),
+        "result": rec.get("result") or "",
+    }
+
+
 ZEEK_MAPPERS = {
     "conn": ("weirvern.zeek_conn", map_zeek_conn),
     "dns": ("weirvern.zeek_dns", map_zeek_dns),
@@ -630,6 +812,14 @@ ZEEK_MAPPERS = {
     "smb_mapping": ("weirvern.zeek_smb_mapping", map_zeek_smb_mapping),
     "smb_files": ("weirvern.zeek_smb_files", map_zeek_smb_files),
     "ntlm": ("weirvern.zeek_ntlm", map_zeek_ntlm),
+    # Tier 3: identity attributes, encapsulation, and the TLS blind spot. Chosen from two
+    # independent research passes over every log Zeek 9.0.0 ships; see
+    # weirvern/schema/006_zeek_tier3.sql for why these five and why not the other sixty-odd.
+    "dhcp": ("weirvern.zeek_dhcp", map_zeek_dhcp),
+    "x509": ("weirvern.zeek_x509", map_zeek_x509),
+    "tunnel": ("weirvern.zeek_tunnel", map_zeek_tunnel),
+    "quic": ("weirvern.zeek_quic", map_zeek_quic),
+    "ldap_search": ("weirvern.zeek_ldap_search", map_zeek_ldap_search),
 }
 
 # Insert column order per Zeek table (first key is the row's identity column).
@@ -666,6 +856,18 @@ ZEEK_COLUMNS = {
                   "filename", "size", "prev_name"],
     "ntlm": ["ts", "uid", "src_addr", "dst_addr", "username", "hostname", "domainname",
              "success"],
+    # Tier 3. These MUST match the CREATE TABLE order in 006_zeek_tier3.sql -- the writer builds
+    # a positional INSERT, so a mismatch writes values into the wrong columns silently.
+    "dhcp": ["ts", "uids", "client_addr", "server_addr", "mac", "host_name", "client_fqdn",
+             "domain", "requested_addr", "assigned_addr", "lease_time", "msg_types", "duration"],
+    "x509": ["ts", "fingerprint", "subject", "issuer", "common_name", "not_valid_before",
+             "not_valid_after", "key_alg", "key_length", "sig_alg", "is_ca", "san_dns",
+             "host_cert", "client_cert"],
+    "tunnel": ["ts", "uid", "src_addr", "dst_addr", "tunnel_type", "action"],
+    "quic": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "server_name", "client_protocol",
+             "version"],
+    "ldap_search": ["ts", "uid", "src_addr", "dst_addr", "dst_port", "ldap_filter", "base_object",
+                    "scope", "deref_aliases", "result_count", "result"],
 }
 
 

@@ -77,3 +77,40 @@ event zeek_init()
     {
     print fmt("[Weirvern] Zeek site policy loaded at %s", strftime("%Y-%m-%d %H:%M:%S", network_time()));
     }
+
+# ── Tier 3: the logs added for L2 identity, encapsulation and the TLS blind spot ──────────
+#
+# WHICH OF THESE ACTUALLY NEED A LOAD is MEASURED rather than assumed. `ls /zeek/logs/` on the
+# running sensor is the ground truth, and it shows dhcp already being written (DHCP exists on
+# this segment) while x509/quic/tunnel/ldap have produced nothing yet -- for four different
+# reasons, which is why they are recorded instead of guessed at:
+#
+#   dhcp / known_hosts / known_services / software
+#       ALREADY WRITING. Nothing to do; confirmed in the sensor's log directory.
+#
+#   x509
+#       IN THE DEFAULT CLOSURE and needs no @load -- base/files/x509 is loaded by
+#       base/init-default.zeek. It has produced no rows only because no certificate has been
+#       observed since this sensor started. Nothing to change.
+#
+#   quic
+#       IN THE DEFAULT CLOSURE as well. QUIC is a default analyzer in Zeek 9, so this log appears
+#       when QUIC traffic does. This matters: QUIC is now a large share of egress on modern
+#       networks, so a corpus without it has a growing unnamed hole.
+#
+#   tunnel
+#       NEEDS AN EXPLICIT LOAD. Tunnel detection is not enabled by default; without this the log
+#       file is never even created. This is the one genuine configuration addition in the
+#       Tier 3 set.
+#
+#   ldap_search
+#       The LDAP analyzer ships and logs to separate streams for messages and searches. Nothing
+#       extra is required; it appears when LDAP is on the wire. No LDAP traffic on this segment
+#       yet, which is why the table is empty.
+#
+# @load base/frameworks/tunnels
+#
+# (Commented out because it is a BEHAVIOUR change rather than a bug fix: enabling tunnel
+# detection adds analyzer work on every packet. Turn it on when you want tunnel.log, and note
+# that the ingest is already in place -- `zeek_tunnel` exists, the mapper and features are
+# wired, and the table is simply empty until the log is produced.)
