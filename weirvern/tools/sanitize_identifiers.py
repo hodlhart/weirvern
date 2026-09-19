@@ -277,8 +277,20 @@ def main(argv: list[str] | None = None) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true", help="report only; exit 1 if anything found")
     g.add_argument("--write", action="store_true", help="rewrite files in place")
+    g.add_argument(
+        "--filter", action="store_true",
+        help="read stdin, write the scrubbed text to stdout (for `git filter-branch --msg-filter`)",
+    )
     ap.add_argument("--history", action="store_true", help="also scan git commit messages")
     args = ap.parse_args(argv)
+
+    if args.filter:
+        # Used by scripts/scrub_git_messages.sh via `git filter-branch --msg-filter`. Sharing
+        # MAPPING matters here: a second, hand-copied list in the shell script would drift from
+        # this one, and the drift would be silent -- messages scrubbed by a stale table while the
+        # file scrubber moved on.
+        sys.stdout.write(scrub_text(sys.stdin.read())[0])
+        return 0
 
     root = Path(
         subprocess.run(

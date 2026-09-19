@@ -4,12 +4,11 @@
 #
 # WHY THIS EXISTS. Two scrub bugs already shipped into 23 files:
 #
-#   1. A rule that replaced only an address PREFIX turned `10.0.0.0/16` into `198.51.100./16`
-#      and `10.0.0.5` into `198.51.100.` -- dropping the octet that carried the meaning, and
-#      turning a valid CIDR into a parse error.
-#   2. The same class of error left stale packed bytes in an ARP test: the address moved to
-#      198.51.100.1 but the assertion still compared against 0a000001 (10.0.0.1), so the test
-#      failed and the comment beside it lied.
+#   1. A rule that replaced only an address PREFIX dropped the final octet, turning a valid CIDR
+#      into something unparseable (a trailing dot where the last octet had been), in 23 files.
+#   2. The same class of error left stale PACKED BYTES in an ARP test: the address moved but the
+#      assertion still compared against the bytes of the old one, so the test failed and the
+#      comment beside it described the wrong address.
 #
 # Both were invisible in a diff and only appeared when the tests ran. This harness checks the
 # INVARIANT instead: an address-shaped token must still parse after the scrub, and the count of
