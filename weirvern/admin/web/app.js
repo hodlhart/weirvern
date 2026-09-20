@@ -1329,6 +1329,58 @@ function renderFeatureDeviations(rows) {
     "z around 1 is normal noise, 3+ is genuinely unusual for that host." }));
 }
 
+/* SOC-2: near misses -- what almost alerted.
+ *
+ * The anomalies list can only ever show what was FLAGGED, so a threshold can only
+ * be tuned by guessing without this. Each row carries the score, the bar it faced (the
+ * adaptive per-host threshold, not the global setting), and which of the two gates
+ * dropped it. Sorted by score descending server-side, so the closest calls are on top.
+ *
+ * The unavailable state is rendered as its own message, never as an empty table: "the
+ * near-miss table does not exist yet" and "nothing nearly alerted" are different facts
+ * and the second is a much stronger claim.
+ */
+function renderNearMisses(data) {
+  const note = document.getElementById("m-near-note");
+  const body = document.querySelector("#m-near tbody");
+  if (!note || !body) return;
+  note.replaceChildren();
+  body.replaceChildren();
+
+  if (!data.near_misses_available) {
+    note.appendChild(el("p", { class: "muted", text:
+      data.near_misses_reason || "near-miss data is unavailable" }));
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", text: "—", attrs: { colspan: 6 } }),
+    ]));
+    return;
+  }
+  const rows = data.near_misses || [];
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted",
+                 text: "No near misses in this window — nothing scored close to the bar.",
+                 attrs: { colspan: 6 } }),
+    ]));
+    return;
+  }
+  note.appendChild(el("p", { class: "muted", text:
+    `${rows.length} window(s) within reach of the bar. Raising the threshold would `
+    + `reclassify the below-threshold rows; lowering it would surface the gate rows.` }));
+  for (const nm of rows) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: fmtTime(nm.window_start) }),
+      el("td", {}, [hostCell(nm.src_addr, nm.hostname)]),
+      el("td", { class: "num", text: Number(nm.score || 0).toFixed(3) }),
+      el("td", { class: "num", text: Number(nm.threshold || 0).toFixed(3) }),
+      el("td", { text: nm.reason === "agreement-gate"
+                   ? "agreement gate (too few models agreed)"
+                   : "below threshold" }),
+      el("td", { text: (nm.models || []).join(", ") || "—" }),
+    ]));
+  }
+}
+
 async function loadModels() {
   const hours = (document.getElementById("m-hours") || {}).value || "72";
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
@@ -1355,6 +1407,7 @@ async function loadModels() {
   renderScoreDistribution(data.scores || {});
   renderAgreement(data.model_counts || {});
   renderFeatureDeviations(data.feature_deviations || []);
+  renderNearMisses(data);
 
   const body = document.querySelector("#m-points tbody");
   body.innerHTML = "";

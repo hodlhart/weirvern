@@ -605,6 +605,40 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
          "max_abs_z": v["max_z"], "n": v["n"]}
         for k, v in sorted(features.items())
     ]
+
+    # 5. NEAR MISSES (soc-2): windows that came close to the bar, or cleared it and were
+    #    dropped by the agreement gate. These are the false-negative surface -- the evidence
+    #    a tuning loop needs that the Anomalies view structurally cannot show (it lists only
+    #    what was flagged). Degrades to an empty list with a reason rather than failing the
+    #    whole view: on a deployment that has not re-run its schema job since this feature
+    #    shipped, the table does not exist yet, and "the panel is blank because the table is
+    #    new" is a different statement from "nothing nearly alerted".
+    try:
+        nm_rows = client.query(
+            "SELECT window_start, window_end, src_addr, anomaly_score, threshold_used, "
+            "reason, model_agreement, isolation_forest_score, gradient_boosting_score, "
+            "dbscan_score, baseline_score, detected_by_models "
+            "FROM weirvern.near_misses FINAL "
+            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY anomaly_score DESC LIMIT 100",
+            parameters={"h": hours},
+        ).result_rows
+        out["near_misses"] = [
+            {"window_start": _iso(r[0]), "window_end": _iso(r[1]), "src_addr": r[2],
+             "score": float(r[3] or 0), "threshold": float(r[4] or 0),
+             "reason": r[5], "agreement": float(r[6] or 0),
+             "models": [m for m in (r[11] or "").split(",") if m.strip()]}
+            for r in nm_rows
+        ]
+        out["near_misses_available"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("near_misses unavailable: %s", exc)
+        out["near_misses"] = []
+        out["near_misses_available"] = False
+        out["near_misses_reason"] = (
+            "the near-miss table has not been created on this deployment yet "
+            "(it arrives with the schema job on the version that added it)"
+        )
     return out
 
 

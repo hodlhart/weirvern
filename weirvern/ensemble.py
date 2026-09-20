@@ -193,12 +193,22 @@ def detect_flows(
     detectors: list[BaseDetector],
     settings: Settings,
     cfg: ModelConfig,
+    near_misses: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
     Each verdict carries per-model scores, agreement, adaptive threshold used,
     explainability fields, and a severity — everything the alerting layer and
     ClickHouse row need.
+
+    NEAR MISSES (soc-2). The two `continue` paths below used to throw their scores away, so
+    "what almost alerted" was unanswerable -- the audit's note that the data "exists, it just
+    is not queried" was wrong: measured, the scores were computed and discarded. When the
+    caller passes a `near_misses` list, every window dropped by the BAND (scored within
+    reach of the bar) or by the AGREEMENT GATE (cleared the bar, too few models agreed) is
+    appended to it: identity, score, the threshold it faced, which reason dropped it, and
+    the per-detector scores. The caller decides whether and where to store them; passing
+    None (every existing caller) changes nothing.
     """
     # Index diversity/temporal data if the caller supplied it (worker joins);
     # flows here are already enriched by the worker.
@@ -257,6 +267,27 @@ def detect_flows(
 
         threshold = adaptive_threshold_for(flow, settings.base_threshold)
         if final_score < threshold:
+            # NEAR MISS (band): scored close to the bar but under it. The band floor is
+            # threshold * near_miss_band -- measured against the threshold this host faced,
+            # not the global default, so a host with a raised adaptive bar does not flood
+            # the table with its ordinary traffic.
+            if near_misses is not None and final_score >= threshold * cfg.near_miss_band:
+                near_misses.append({
+                    "window_start": flow["window_start"],
+                    "window_end": flow.get("window_end"),
+                    "src_addr": src,
+                    "anomaly_score": round(final_score, 4),
+                    "threshold_used": round(threshold, 4),
+                    "reason": "below-threshold",
+                    "model_agreement": round(
+                        len([n for n, s in scores.items() if s > 0.20])
+                        / max(1, len([d for d in detectors if d.is_ready()])), 4),
+                    "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
+                    "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
+                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
+                    "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
+                    "detected_by_models": ",".join(n for n, s in scores.items() if s > 0.20),
+                })
             continue
 
         detected_by = [n for n, s in scores.items() if s > 0.20]
@@ -284,6 +315,25 @@ def detect_flows(
             else max(cfg.min_agreement_floor, settings.min_agreement - cfg.min_agreement_margin)
         )
         if agreement < min_agreement:
+            # NEAR MISS (agreement gate): cleared the score bar and was dropped anyway
+            # because too few detectors agreed. A lone-specialist window that never got
+            # corroboration is precisely what a tuning loop needs to see -- it is the
+            # difference between "nothing was there" and "we decided not to look".
+            if near_misses is not None:
+                near_misses.append({
+                    "window_start": flow["window_start"],
+                    "window_end": flow.get("window_end"),
+                    "src_addr": src,
+                    "anomaly_score": round(final_score, 4),
+                    "threshold_used": round(threshold, 4),
+                    "reason": "agreement-gate",
+                    "model_agreement": round(agreement, 4),
+                    "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
+                    "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
+                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
+                    "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
+                    "detected_by_models": ",".join(detected_by),
+                })
             continue
 
         # Strong corroboration: how many detectors independently scored high.

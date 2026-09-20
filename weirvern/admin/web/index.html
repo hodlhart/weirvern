@@ -306,6 +306,21 @@
     </div>
 
     <div class="card">
+      <h2>Near misses <span class="muted">what almost alerted, and why it did not</span></h2>
+      <p class="muted">Windows that scored close to the bar, or that cleared it and were
+      stopped by the agreement gate. The anomalies list can only show what was flagged;
+      this is the other half — the surface a threshold change should be judged against.
+      An empty list with the table unavailable message below means the feature has not
+      been deployed yet, not that nothing nearly alerted.</p>
+      <div id="m-near-note"></div>
+      <table id="m-near">
+        <thead><tr><th>Window</th><th>Host</th><th>Score</th><th>Threshold</th>
+        <th>Why dropped</th><th>Models</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2>Anomalies</h2>
       <p class="muted">Click a row to open its evidence.</p>
       <table id="m-points">

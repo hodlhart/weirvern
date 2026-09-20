@@ -89,7 +89,7 @@ async function main() {
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -707,6 +707,52 @@ async function main() {
         doc.getElementById("m-stale-note").textContent.slice(0, 100));
   check("the note distinguishes never-trained from merely overdue",
         doc.getElementById("m-stale-note").textContent.includes("never trained"));
+
+  // ── the near-miss panel (SOC-2) ────────────────────────────────────────────────────────
+  // The anomalies list shows what was FLAGGED; this panel exists because "nothing nearly
+  // alerted" and "the near-miss table does not exist yet" are different facts, and an
+  // empty table renders them identically.
+  H.renderNearMisses({
+    near_misses_available: true,
+    near_misses: [
+      { window_start: "2026-01-03T10:00:00", src_addr: "198.51.100.44", score: 0.66,
+        threshold: 0.70, reason: "below-threshold", agreement: 0.5,
+        models: ["Isolation Forest", "DBSCAN"] },
+      { window_start: "2026-01-03T10:05:00", src_addr: "198.51.100.45", score: 0.81,
+        threshold: 0.70, reason: "agreement-gate", agreement: 0.2,
+        models: ["Gradient Boosting"] },
+    ],
+  });
+  const nearRows = doc.querySelectorAll("#m-near tbody tr");
+  check("the near-miss table renders one row per recorded near miss",
+        nearRows.length === 2, `rows=${nearRows.length}`);
+  check("a below-threshold near miss is labelled as such",
+        doc.getElementById("m-near").textContent.includes("below threshold"),
+        doc.getElementById("m-near").textContent.slice(0, 140));
+  check("a gate-dropped near miss states the gate",
+        doc.getElementById("m-near").textContent.includes("agreement gate"),
+        "an agreement-gate row rendered without its reason");
+  check("the score and the bar it faced are both shown",
+        doc.getElementById("m-near").textContent.includes("0.66")
+          && doc.getElementById("m-near").textContent.includes("0.70"),
+        "score/threshold pair missing from the row");
+  check("the panel states what a threshold change would do",
+        doc.getElementById("m-near-note").textContent.includes("Raising the threshold"),
+        doc.getElementById("m-near-note").textContent.slice(0, 120));
+
+  // The two states that must NOT render identically.
+  H.renderNearMisses({ near_misses_available: false, near_misses: [],
+                       near_misses_reason: "the near-miss table has not been created on this "
+                         + "deployment yet (it arrives with the schema job on the version "
+                         + "that added it)" });
+  check("an unavailable near-miss table names the schema job, not an empty list",
+        doc.getElementById("m-near-note").textContent.includes("schema job"),
+        doc.getElementById("m-near-note").textContent.slice(0, 120));
+  H.renderNearMisses({ near_misses_available: true, near_misses: [] });
+  check("an empty near-miss list is distinguishable from an unavailable one",
+        doc.getElementById("m-near").textContent.includes("No near misses")
+          && !doc.getElementById("m-near-note").textContent.includes("schema job"),
+        "empty and unavailable collapse to the same rendering");
 
 
   // The nav's LANDING state, captured before any navigation in this file changes it.

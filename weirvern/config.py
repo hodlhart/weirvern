@@ -273,6 +273,14 @@ class ModelConfig:
     min_flows_for_full_confidence: int = 10
     thin_window_floor: float = 0.35
 
+    # SOC-2: the near-miss band, as a FRACTION of the threshold this host faced. A window
+    # scoring at or above threshold * this value (and below the threshold) is recorded as a
+    # near miss rather than thrown away. 0.85 puts the floor at e.g. 0.60 against a 0.70
+    # bar -- wide enough to see a host drifting up, narrow enough that ordinary traffic
+    # does not fill the table. Setting it to 1.0 disables banding entirely (nothing is
+    # strictly below and at/above the threshold).
+    near_miss_band: float = 0.85
+
     # Structural port-scan signature (diversity metrics) — lets a lone strong
     # specialist escalate when the window itself is direct scan evidence.
     port_scan_min_ports: int = 50
