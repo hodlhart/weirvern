@@ -388,7 +388,11 @@ def test_no_orphan_placeholder_elements_remain():
                   #   zk-drill-card: the Zeek drill-down wrapper, likewise shown/hidden
                   #   nw-detail-card: the graph's click-result wrapper; its CONTENTS
                   #     (#nw-detail, #nw-detail-table) are what get populated
-                  "ev-notice-card", "zk-drill-card", "nw-detail-card"}
+                  "ev-notice-card", "zk-drill-card", "nw-detail-card",
+                  #   st-auth-card / st-stage-card: wrappers whose CONTENTS are populated
+                  #     (#st-auth-note, #st-stage-list/#st-stage-note); the cards themselves
+                  #     are only shown or hidden
+                  "st-auth-card", "st-stage-card"}
 
     orphans = {i for i in ids
                if i not in referenced and i not in scripts and i not in structural}

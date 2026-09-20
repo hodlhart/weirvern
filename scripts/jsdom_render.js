@@ -68,6 +68,7 @@ async function main() {
     window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
+                     STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
   `;
   try {
@@ -129,8 +130,11 @@ async function main() {
   // if it ever appears in the rendered DOM the harness fails, which makes "the page does not
   // leak the credential" an executed check rather than a claim about the code.
   const SECRET_SENTINEL = "ZZ-SENTINEL-DO-NOT-PRINT-ZZ";
+  // An editable key list and write state, shaped like the real payload.
   const SETTINGS_PAYLOAD = {
     available: true, reason: "",
+    writes: { enabled: true, reason: "" },
+    editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "intercept_segment"],
     titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
     groups: {
       detect: [
@@ -156,6 +160,39 @@ async function main() {
         { key: "version", label: "version", value: "0.5.6", secret: false, source: "derived" },
       ],
     },
+  };
+
+  // What the write routes were asked to do. Captured so the harness can assert the REQUEST, not
+  // just the render -- a staged change that never reaches /api/settings/apply is the failure mode
+  // that looks like success on screen.
+  const POSTED = [];
+  // SHAPED LIKE THE REAL SERVER: proposals for the changes REQUESTED, not a fixed list. A stub
+  // that answers with keys the caller never sent hides the bug where the UI acts on a proposal for
+  // a change nobody made -- which is exactly what happened the first time.
+  const PLAN_FOR = {
+    base_threshold: { restarts: "deploy/weirvern-worker", blast: "restarts the detection worker",
+                      warning: "" },
+    sensor_mode: { restarts: "ds/zeek", blast: "restarts the capture sensor (brief capture gap)",
+                   warning: "in-path interception puts this host in the traffic path." },
+    retrain_every_h: { restarts: "deploy/weirvern-worker", blast: "restarts the detection worker",
+                       warning: "" },
+  };
+  function planReply(changes) {
+    const proposals = [];
+    for (const key of Object.keys(changes || {})) {
+      const meta = PLAN_FOR[key] || { restarts: "", blast: "", warning: "" };
+      proposals.push({ key, current: "", proposed: String(changes[key]),
+                       restarts: meta.restarts, blast: meta.blast, warning: meta.warning });
+    }
+    const targets = [];
+    for (const p of proposals) {
+      if (p.restarts && !targets.includes(p.restarts)) targets.push(p.restarts);
+    }
+    return { ok: true, proposals, restart_targets: targets };
+  }
+  const APPLY_REPLY = {
+    ok: true, applied: { base_threshold: "0.5" }, restarted: ["deploy/weirvern-worker"],
+    restart_errors: [], note: "restarted deploy/weirvern-worker",
   };
 
   const H = window.__H;
@@ -502,8 +539,24 @@ async function main() {
   // A failed query must say so, not render an empty panel.
   // NOTE: this stub is installed LATER than the first one, so it is the one in force for
   // everything below this point. Any payload a later check needs must be served HERE --
-  // /api/settings was silently falling through to this default and rendering "0 settings".
-  window.fetch = async (url) => ({
+  // /api/settings was silently falling through to this default and rendering "0 settings", and
+  // the same trap applies to every write route.
+  window.fetch = async (url, opts) => {
+    const u = String(url);
+    // A POST is a WRITE. Record it and answer with the right shape, so the harness can assert the
+    // request that was actually made rather than only what ended up on screen.
+    if (opts && String(opts.method || "").toUpperCase() === "POST") {
+      POSTED.push({ url: u, headers: opts.headers || {}, body: opts.body || "" });
+      let sent = {};
+      try { sent = JSON.parse(opts.body || "{}"); } catch (_e) { sent = {}; }
+      const reply = u.includes("/api/settings/plan") ? planReply(sent.changes)
+                  : u.includes("/api/settings/apply")
+                    ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
+                        restart_errors: [], note: "restarted deploy/weirvern-worker" }
+                  : { ok: false, error: "no write route at " + u };
+      return { ok: true, status: 200, statusText: "OK", json: async () => reply };
+    }
+    return ({
     ok: true, status: 200, statusText: "OK",
     json: async () => (String(url).includes("/api/flows")
       ? { available: false, points: [], reason: "the flow drill-down failed" }
@@ -511,7 +564,8 @@ async function main() {
         ? SETTINGS_PAYLOAD
       : { available: true, hours: 24, hosts: [], unreadable: [], sources_read: [],
           sources_failed: [], reason: "" }),
-  });
+    });
+  };
   await window.loadFlowDetail({ proto: 6, name: "TCP" });
   await new Promise((r) => setTimeout(r, 40));
   check("a failed flow drill-down names the reason",
@@ -547,6 +601,126 @@ async function main() {
   check("the note distinguishes never-trained from merely overdue",
         doc.getElementById("m-stale-note").textContent.includes("never trained"));
 
+
+  // The nav's LANDING state, captured before any navigation in this file changes it.
+  const navAtLoad = [...doc.querySelectorAll("nav .tab")].map((b) => b.dataset.view);
+  const healthWasActive =
+    doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
+
+  // ── operator access and staged writes ──────────────────────────────────────────────────────
+  // Everything below drives the SHIPPING functions against the SHIPPING markup and asserts the
+  // OUTCOME. The riskiest thing here is a write, so the checks cover what was actually POSTed, not
+  // just what rendered.
+
+  check("the operator token field exists and is not readonly",
+        !!doc.getElementById("st-token") && !doc.getElementById("st-token").readOnly);
+  check("the token field is a password input (a token left on screen is a token leaked)",
+        doc.getElementById("st-token").type === "password");
+  check("the page states the no-TLS boundary where the operator will read it",
+        /no TLS|plain HTTP/i.test(doc.getElementById("st-auth-card").textContent),
+        doc.getElementById("st-auth-card").textContent.slice(0, 120));
+
+  // An editable setting renders an INPUT; a secret renders text and a read-only tag.
+  // NAVIGATE AND LOAD HERE, in this block. Depending on another section having already done it is
+  // the ordering trap that broke the graph checks: that block ran after one which deliberately
+  // replaced the state it needed.
+  H.showView("settings");
+  await H.loadSettings();
+  const inputs = [...doc.querySelectorAll("#view-settings .setting-input")];
+  const editableKeys = inputs.map((n) => n.dataset.key);
+  check("editable settings render as inputs", editableKeys.includes("base_threshold"),
+        `inputs: ${editableKeys.join(",")}`);
+  check("a SECRET is never editable from the page",
+        !editableKeys.includes("clickhouse_password"), `inputs: ${editableKeys.join(",")}`);
+  check("a non-editable row says so rather than looking broken",
+        /read-only/.test(doc.getElementById("view-settings").textContent));
+
+  // THESE TWO DESCRIBE THE PRE-EDIT STATE, so they are asserted NOW, before anything is staged.
+  // They ran after an apply initially, which is how they became flaky assertions about a state the
+  // block itself had already changed.
+  const applyBtn0 = doc.getElementById("st-stage-apply");
+  check("there IS an apply control now (the operator asked for one)", !!applyBtn0);
+  check("apply is DISABLED until something is staged", applyBtn0.disabled === true,
+        `disabled=${applyBtn0.disabled}`);
+  check("the page states that nothing is written on edit",
+        /edit a value above to stage one/i.test(doc.getElementById("st-stage-note").textContent),
+        doc.getElementById("st-stage-note").textContent);
+
+  // STAGING: an edit must NOT write. This is the single most important assertion here.
+  const before = POSTED.length;
+  const bt = inputs.find((n) => n.dataset.key === "base_threshold");
+  bt.value = "0.5";
+  bt.dispatchEvent(new window.Event("input", { bubbles: true }));
+  check("editing a setting stages it without writing anything", POSTED.length === before,
+        `${POSTED.length - before} request(s) were sent on edit`);
+  check("the staged change is listed for review",
+        doc.getElementById("st-stage-list").textContent.includes("base_threshold"));
+  check("the staged count is stated", /1 staged/.test(doc.getElementById("st-stage-count").textContent));
+  check("Apply is enabled once something is staged",
+        doc.getElementById("st-stage-apply").disabled === false);
+
+  // THE PLAN: fetched from the server, so validation and blast radius come from the code that
+  // will do the write rather than a second copy in JavaScript.
+  await H.planStage();
+  check("the plan was requested from the server",
+        POSTED.some((r) => r.url.includes("/api/settings/plan")),
+        POSTED.map((r) => r.url).join(","));
+  const planBody = JSON.parse((POSTED.find((r) => r.url.includes("/api/settings/plan")) || {}).body || "{}");
+  check("the plan carries the staged change", planBody.changes && planBody.changes.base_threshold === "0.5",
+        JSON.stringify(planBody));
+  check("the blast radius is shown BEFORE apply",
+        /restart/i.test(doc.getElementById("st-stage-list").textContent),
+        doc.getElementById("st-stage-list").textContent.slice(0, 160));
+
+  // APPLY: the request must carry the token header and the staged values.
+  H.setToken("test-token-value");
+  await H.applyStage();
+  const applied = POSTED.find((r) => r.url.includes("/api/settings/apply"));
+  check("apply POSTs to the apply route", !!applied, POSTED.map((r) => r.url).join(","));
+  const aBody = JSON.parse((applied || {}).body || "{}");
+  check("apply sends the staged change", aBody.changes && aBody.changes.base_threshold === "0.5",
+        JSON.stringify(aBody));
+  check("apply sends the operator token as a header",
+        (applied || {}).headers && applied.headers["X-Weirvern-Token"] === "test-token-value",
+        JSON.stringify((applied || {}).headers));
+  check("the outcome is reported in the server's terms",
+        /saved|restarted|not applied/i.test(doc.getElementById("st-stage-note").textContent),
+        doc.getElementById("st-stage-note").textContent.slice(0, 140));
+  check("staging is cleared after a successful apply",
+        Object.keys(H.STAGE.changes).length === 0);
+
+  // DISCARD: staged changes are dropped and the view reloads from the server's values.
+  const bt2 = [...doc.querySelectorAll("#view-settings .setting-input")]
+    .find((n) => n.dataset.key === "base_threshold");
+  if (bt2) {
+    bt2.value = "0.9";
+    bt2.dispatchEvent(new window.Event("input", { bubbles: true }));
+  }
+  check("a second edit stages again", Object.keys(H.STAGE.changes).length === 1);
+  H.discardStage();
+  check("discard clears the staged set", Object.keys(H.STAGE.changes).length === 0);
+
+  // A REFUSED WRITE MUST SAY SO, and must not look like a success.
+  window.fetch = async (url, opts) => {
+    if (opts && String(opts.method || "").toUpperCase() === "POST") {
+      return { ok: false, status: 401, statusText: "Unauthorized",
+               json: async () => ({ error: "a valid operator token is required to change settings" }) };
+    }
+    return { ok: true, status: 200, statusText: "OK", json: async () => SETTINGS_PAYLOAD };
+  };
+  const bt3 = [...doc.querySelectorAll("#view-settings .setting-input")]
+    .find((n) => n.dataset.key === "base_threshold");
+  if (bt3) {
+    bt3.value = "0.7";
+    bt3.dispatchEvent(new window.Event("input", { bubbles: true }));
+  }
+  await H.applyStage();
+  check("a refused write reports the server's reason",
+        /not applied/i.test(doc.getElementById("st-stage-note").textContent),
+        doc.getElementById("st-stage-note").textContent.slice(0, 140));
+  check("a refused write does NOT clear the staged changes (nothing was saved)",
+        Object.keys(H.STAGE.changes).length === 1);
+
   // ── the tab restructure ───────────────────────────────────────────────────────────────────
   // Asserted BEFORE any navigation: these describe the landing state (Health first, Health
   // active, no Overview). Reading them after showView("settings") would assert the state this
@@ -556,7 +730,8 @@ async function main() {
   check("the Overview tab is gone from the nav", !navTabs.includes("overview"),
         `nav is ${navTabs.join(", ")}`);
   check("Health is first and active (it inherited the landing role)",
-        navTabs[0] === "health" && firstTabActive);
+        navAtLoad[0] === "health" && healthWasActive,
+        `first=${navAtLoad[0]} active=${healthWasActive}`);
   check("the Settings tab is in the nav", navTabs.includes("settings"));
   check("the Overview SECTION is gone from the DOM",
         doc.getElementById("view-overview") === null);
@@ -606,9 +781,13 @@ async function main() {
         /read-only|cannot change/i.test(doc.getElementById("view-settings").textContent));
   check("the settings view says where the settings CAN be changed",
         doc.getElementById("view-settings").textContent.includes("weirvern config set"));
-  check("there is no Save or Apply control on the settings tab",
-        ![...doc.querySelectorAll("#view-settings button")]
-          .some(b => /save|apply|submit/i.test(b.textContent)));
+  // The page used to have no write control at all. It now has one, because an operator asked for
+  // it -- so the assertion changes to the property that still matters: the APPLY control must be
+  // DISABLED until something is staged, so a stray click cannot write the cluster configuration.
+  const applyBtn = doc.getElementById("st-stage-apply");
+  check("the apply control reflects whether anything is staged",
+        applyBtn.disabled === (Object.keys(H.STAGE.changes).length === 0),
+        `disabled=${applyBtn.disabled} staged=${Object.keys(H.STAGE.changes).length}`);
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,

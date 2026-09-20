@@ -388,8 +388,8 @@ def test_the_failure_delay_is_bounded():
     """A lockout would let anyone on the LAN deny an operator access to their own sensor."""
     a = gui_auth.AuthState("t")
     for _ in range(100):
-        a._record_failure("10.0.0.9")  # noqa: SLF001
-    assert a.delay_for("10.0.0.9") <= gui_auth._MAX_DELAY_S
+        a._record_failure("198.51.100.9")  # noqa: SLF001
+    assert a.delay_for("198.51.100.9") <= gui_auth._MAX_DELAY_S
 
 
 def test_the_response_never_says_whether_a_token_is_configured():

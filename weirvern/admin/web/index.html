@@ -511,6 +511,28 @@
       </div>
     </div>
 
+    <!--
+      THE TOKEN CONTROL. Shown when writes are disabled (so the operator knows what to set) and
+      when they are enabled (so the UI can request a token on a fresh page load). Writes are
+      opt-in server-side: this control cannot enable anything, it can only present a token the
+      server will check.
+    -->
+    <div class="card" id="st-auth-card">
+      <h2>Operator access</h2>
+      <p class="muted" id="st-auth-note">checking…</p>
+      <div class="controls" id="st-auth-controls">
+        <input id="st-token" type="password" placeholder="operator token" autocomplete="off"
+               spellcheck="false">
+        <button id="st-token-save">Use token</button>
+        <button id="st-token-clear">Forget token</button>
+      </div>
+      <p class="muted">The token is kept in this browser tab only (sessionStorage) and is sent as
+        the <code>X-Weirvern-Token</code> header. This page is served over plain HTTP with no TLS,
+        so anyone who can read the network between you and the sensor can read it — use it on a
+        trusted network, and treat the token as a LAN credential rather than a secret of
+        record.</p>
+    </div>
+
     <div class="card">
       <h2>Detection</h2>
       <p class="muted">Thresholds and cadence. A model scored against a stale baseline is still
@@ -521,6 +543,19 @@
     <div class="card">
       <h2>Sensor</h2>
       <div id="st-sensor" class="grid-inline"></div>
+    </div>
+
+    <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
+         the blast radius comes from the same code that will perform the write, not from a second
+         copy of the rules in JavaScript. -->
+    <div class="card" id="st-stage-card">
+      <h2>Pending changes <span class="muted" id="st-stage-count"></span></h2>
+      <p class="muted" id="st-stage-note">No changes staged. Edit a value above to stage one.</p>
+      <div id="st-stage-list"></div>
+      <div class="controls">
+        <button id="st-stage-apply" class="primary" disabled>Apply changes</button>
+        <button id="st-stage-discard" disabled>Discard</button>
+      </div>
     </div>
 
     <div class="card">

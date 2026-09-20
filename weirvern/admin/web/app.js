@@ -136,6 +136,211 @@ async function getJSON(url) {
  * an authentication failure needs to distinguish those two, and the value must not cross an
  * unauthenticated port.
  */
+/* ── operator token ─────────────────────────────────────────────────────────
+ *
+ * Held in sessionStorage, not localStorage and not a cookie: it dies with the tab, and it is not
+ * attached to every request to this origin by the browser the way a cookie would be. The server
+ * accepts a cookie too (so a reload does not force re-entry) but it is not the primary mechanism.
+ *
+ * This control cannot ENABLE writes. Whether writes are permitted is decided server-side by
+ * whether a token is configured at all -- a browser cannot talk the server into accepting one.
+ */
+const TOKEN_KEY = "weirvern-token";
+
+function getToken() {
+  try { return window.sessionStorage.getItem(TOKEN_KEY) || ""; } catch (_e) { return ""; }
+}
+
+function setToken(v) {
+  try {
+    if (v) window.sessionStorage.setItem(TOKEN_KEY, v);
+    else window.sessionStorage.removeItem(TOKEN_KEY);
+  } catch (_e) { /* private mode: the token simply does not persist */ }
+}
+
+/** A POST to a write route, with the token attached. Throws with the server's reason. */
+async function postJSON(path, body) {
+  const token = getToken();
+  const resp = await window.fetch(path, {
+    method: "POST",
+    headers: Object.assign({ "Content-Type": "application/json" }, token ? { "X-Weirvern-Token": token } : {}),
+    body: JSON.stringify(body),
+  });
+  let payload = null;
+  try { payload = await resp.json(); } catch (_e) { payload = null; }
+  if (!resp.ok) {
+    // The server's own words. A 401/403 here is a real answer, not a transport failure.
+    const err = new Error((payload && payload.error) || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    err.payload = payload;
+    throw err;
+  }
+  return payload || {};
+}
+
+/* ── staged changes ─────────────────────────────────────────────────────────
+ *
+ * NOTHING IS WRITTEN UNTIL APPLY. Every edit stages locally; the plan is then fetched from the
+ * server so the validation and the blast radius come from the SAME code that will perform the
+ * write. A second copy of the rules in JavaScript would drift from the server's, and the copy
+ * that drifts is the one nobody tests -- so the browser never decides whether a value is legal.
+ */
+const STAGE = { changes: {}, plan: null };
+
+function stageChange(key, value, original) {
+  // A new edit supersedes the previous apply's message: leaving a stale "saved" line next to a
+  // fresh staged change would claim a state that no longer holds.
+  LAST_APPLY.text = "";
+  if (value === original) delete STAGE.changes[key];
+  else STAGE.changes[key] = value;
+  STAGE.plan = null;   // any edit invalidates a previously fetched plan
+  renderStage();
+}
+
+function discardStage() {
+  STAGE.changes = {};
+  STAGE.plan = null;
+  // Re-render from the server's values so the inputs and the table agree again.
+  loadSettings().catch(showError);
+}
+
+/** The outcome of the last apply, shown until the next apply. Survives a settings reload. */
+const LAST_APPLY = { text: "" };
+
+function renderStage() {
+  const keys = Object.keys(STAGE.changes);
+  const count = document.getElementById("st-stage-count");
+  const note = document.getElementById("st-stage-note");
+  const list = document.getElementById("st-stage-list");
+  const apply = document.getElementById("st-stage-apply");
+  const discard = document.getElementById("st-stage-discard");
+  if (!list) return;
+
+  if (count) count.textContent = keys.length ? `${keys.length} staged` : "";
+  if (apply) apply.disabled = keys.length === 0;
+  if (discard) discard.disabled = keys.length === 0;
+
+  list.replaceChildren();
+  if (!keys.length) {
+    // THE RESULT OF THE LAST APPLY OUTLIVES THE RELOAD. loadSettings() runs after an apply and
+    // calls this function, which would otherwise erase the confirmation an operator just waited
+    // for -- they would see "no changes staged" and have to guess whether it worked.
+    if (note) {
+      note.textContent = LAST_APPLY.text
+        || "No changes staged. Edit a value above to stage one.";
+    }
+    return;
+  }
+  if (note) {
+    note.textContent = "Staged, not applied. Apply will write the cluster configuration and "
+      + "restart whatever reads it.";
+  }
+
+  // A staged edit whose value the server would reject is shown BEFORE apply, so nobody discovers
+  // a typo by pressing the button.
+  const bad = [];
+  for (const key of keys) {
+    const row = el("div", { class: "stage-row" }, [
+      el("span", { class: "stage-key mono", text: key }),
+      el("span", { class: "stage-arrow", text: "→" }),
+      el("span", { class: "stage-val mono", text: STAGE.changes[key] || "(empty)" }),
+    ]);
+    if (STAGE.plan) {
+      const p = (STAGE.plan.proposals || []).find((x) => x.key === key);
+      if (p && p.warning) {
+        row.appendChild(el("div", { class: "stage-warn", text: "⚠ " + p.warning }));
+        bad.push(key);
+      }
+    }
+    list.appendChild(row);
+  }
+  if (STAGE.plan) {
+    const targets = STAGE.plan.restart_targets || [];
+    list.appendChild(el("div", { class: "stage-blast" }, [
+      el("strong", { text: targets.length ? "Will restart: " : "No restart needed." }),
+      el("span", {
+        text: targets.join(", "),
+        attrs: { title: "A ConfigMap value is read at process start, so a change is inert until " +
+                        "the reader restarts." },
+      }),
+    ]));
+  }
+}
+
+/** Ask the server what the staged changes would do. Touches nothing. */
+async function planStage() {
+  const body = { changes: STAGE.changes };
+  STAGE.plan = await postJSON("/api/settings/plan", body);
+  renderStage();
+  return STAGE.plan;
+}
+
+/** Apply, then report exactly what happened. */
+async function applyStage() {
+  const note = document.getElementById("st-stage-note");
+  const keys = Object.keys(STAGE.changes);
+  if (!keys.length) return;
+  if (note) note.textContent = "applying…";
+  try {
+    // Plan first, always: the server may insist on explicit confirmation, and a plan the operator
+    // never saw is not consent. This also surfaces a rejected value before anything is written.
+    await planStage();
+    // ONLY the staged keys. The server returns proposals for what was sent, but filtering here
+    // means a stray proposal can never block an apply with a confirmation prompt for a change the
+    // operator did not make.
+    const stagedKeys = new Set(Object.keys(STAGE.changes));
+    const warns = (STAGE.plan.proposals || [])
+      .filter((p) => p.warning && stagedKeys.has(p.key));
+    if (warns.length) {
+      const ok = window.confirm(
+        "This change is allowed but costly:\n\n" +
+        warns.map((p) => `${p.key}: ${p.warning}`).join("\n\n") +
+        "\n\nApply anyway?");
+      if (!ok) { if (note) note.textContent = "not applied — you declined the warning"; return; }
+    }
+    const res = await postJSON("/api/settings/apply", { changes: STAGE.changes, confirmed: true });
+
+    // Report the outcome in the server's terms. A saved-but-not-restarted change is INERT, so it
+    // is shown as a problem rather than folded into a success line.
+    STAGE.changes = {};
+    STAGE.plan = null;
+    const parts = ["saved: " + Object.entries(res.applied || {}).map(([k, v]) => `${k}=${v || "(empty)"}`).join(", ")];
+    if ((res.restarted || []).length) parts.push("restarted " + res.restarted.join(", "));
+    if ((res.restart_errors || []).length) {
+      parts.push("NOT APPLIED — " + res.restart_errors.join("; "));
+    }
+    LAST_APPLY.text = parts.join(" · ");
+    if (note) note.textContent = LAST_APPLY.text;
+    await loadSettings();
+  } catch (err) {
+    // A refused write states the server's reason: a missing token, an RBAC gap, a bad value.
+    if (note) note.textContent = "not applied — " + (err.message || err);
+    if (err.status === 401) { setToken(""); await refreshAuthNote(); }
+  }
+}
+
+
+window.LAST_APPLY = LAST_APPLY;
+
+/** The auth card: what the server said about write access. */
+async function refreshAuthNote() {
+  const note = document.getElementById("st-auth-note");
+  const controls = document.getElementById("st-auth-controls");
+  if (!note) return;
+  let data = null;
+  try { data = await getJSON("/api/settings"); } catch (_e) { data = null; }
+  const w = (data && data.writes) || {};
+  if (!w.enabled) {
+    note.textContent = w.reason || "write access is not available";
+    if (controls) controls.classList.add("hidden");
+    return;
+  }
+  if (controls) controls.classList.remove("hidden");
+  note.textContent = getToken()
+    ? "Write access is enabled and this tab holds a token. Settings below can be changed."
+    : "Write access is enabled. Enter the operator token to change settings.";
+}
+
 async function loadSettings() {
   const data = await getJSON("/api/settings");
   const sum = document.getElementById("st-summary");
@@ -166,24 +371,48 @@ async function loadSettings() {
       host.appendChild(chartEmpty(`No ${(titles[key] || key).toLowerCase()} settings reported.`));
       continue;
     }
+    const editable = new Set(data.editable_keys || []);
+    const canWrite = Boolean(data.writes && data.writes.enabled);
     for (const r of rows) {
       // Provenance, so a blank is not ambiguous. "The setting does not exist" and "the setting is
       // unset" used to render identically -- three rows for non-existent fields survived review
       // that way. An env-only key is legitimate (the CLI reads it) and is labelled as such.
       const srcTag = r.source === "env" ? "env" : (r.source === "derived" ? "derived" : "");
-      host.appendChild(el("div", { class: "setting" }, [
-        el("span", { class: "setting-key", title: r.key }, [
-          el("span", { text: r.label }),
-          srcTag ? el("span", { class: "setting-src", text: srcTag }) : null,
-        ]),
-        el("span", {
+      // A SECRET IS NEVER EDITABLE FROM HERE. It is reported as set/not-set by design, and a
+      // field that let you overwrite a credential through an unauthenticated-by-default,
+      // no-TLS port is a different feature with a different threat model.
+      const isEditable = editable.has(r.key) && !r.secret;
+      const staged = STAGE.changes[r.key];
+      const shown = staged !== undefined ? staged : String(r.value);
+
+      let valueNode;
+      if (isEditable) {
+        valueNode = el("input", {
+          class: "setting-input", type: "text", value: shown,
+          attrs: { "data-key": r.key, spellcheck: "false", autocomplete: "off" },
+          on: { input: (ev) => stageChange(r.key, ev.target.value, String(r.value)) },
+        });
+      } else {
+        valueNode = el("span", {
           class: "setting-val" + (r.secret ? " secret" : ""),
           // A secret is visibly marked so the reader knows the blank is deliberate.
           text: String(r.value),
-          title: r.secret ? "reported as set/not-set only; this page is unauthenticated" : "",
-        }),
+          title: r.secret
+            ? "reported as set/not-set only; secrets are never editable from this page"
+            : "",
+        });
+      }
+
+      host.appendChild(el("div", { class: "setting" + (staged !== undefined ? " staged" : "") }, [
+        el("span", { class: "setting-key", title: r.key }, [
+          el("span", { text: r.label }),
+          srcTag ? el("span", { class: "setting-src", text: srcTag }) : null,
+          isEditable ? null : el("span", { class: "setting-src", text: "read-only" }),
+        ]),
+        valueNode,
       ]));
     }
+    renderStage();
   }
 
   // State the boundary explicitly rather than leaving the reader to discover it by looking for
@@ -600,6 +829,22 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const [id, fn] of [
     ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep],
     ["st-reload", loadSettings],
+    // The token controls. `Use token` stores it and re-reads the page so the server's answer about
+    // write access is what updates the UI -- the browser never assumes it succeeded.
+    ["st-token-save", async () => {
+      const field = document.getElementById("st-token");
+      setToken(field ? field.value.trim() : "");
+      if (field) field.value = "";
+      await refreshAuthNote();
+      await loadSettings();
+    }],
+    ["st-token-clear", async () => {
+      setToken("");
+      await refreshAuthNote();
+      await loadSettings();
+    }],
+    ["st-stage-apply", () => applyStage().catch(showError)],
+    ["st-stage-discard", () => discardStage()],
   ]) {
     const b = document.getElementById(id);
     if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));
