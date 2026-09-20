@@ -998,32 +998,22 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         # different shape.
         "error": None,
     }
-    try:
-        # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
-        # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
-        # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
-        # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
-        # alternated between them on every refresh. The data was never wrong; the reader was
-        # picking by wall-clock instead of by meaning.
-        #
-        # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
-        # being clever in SQL and much easier to reason about.
-        rows = list(client.query(
-            "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
-              "restores, refreshes, failures, ts, "
-              # Capture loss is the ONLY signal that the sensor is dropping packets.
-              # Selected so a surface can show the measurement instead of pattern-matching
-              # a prose failure string. NULL means not measured and is preserved as None.
-              "capture_loss_pct, packets_recv, packets_dropped "
-            "FROM weirvern.sensor_status FINAL "
-            "ORDER BY ts DESC"
-        ).named_results())
-    except Exception as exc:  # noqa: BLE001
+    # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
+    # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
+    # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
+    # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
+    # alternated between them on every refresh. The data was never wrong; the reader was
+    # picking by wall-clock instead of by meaning.
+    #
+    # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
+    # being clever in SQL and much easier to reason about. The read is shared with
+    # weir_liveness via _sensor_rows so the two answers cannot disagree about one dataset.
+    rows, err = _sensor_rows(client)
+    if err is not None:
         # A missing table is the normal state before the schema Job runs, and it must not
         # be reported as "not running" -- those are different facts and conflating them
         # sends an operator looking for a dead sensor that was never started.
-        logger.debug("sensor_status unavailable: %s", exc)
-        out["error"] = "sensor status is unavailable"
+        out["error"] = err
         return out
 
     if not rows:
@@ -1156,6 +1146,152 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
             )
     else:
         out["error"] = "the sensor heartbeat has an unreadable timestamp"
+    return out
+
+
+def _sensor_rows(client) -> tuple[list[dict], str | None]:
+    """Every sensor_status row, or an error string. Never raises.
+
+    Split out of sensor_status so weir_liveness can apply its own rule over the same
+    rows: sensor_status answers "which mode is this sensor in", while the liveness
+    question is "does ANY row carry intercept evidence". Reading them with one query
+    keeps the two answers from disagreeing about the same data.
+    """
+    try:
+        rows = list(client.query(
+            "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
+              "restores, refreshes, failures, ts, "
+              "capture_loss_pct, packets_recv, packets_dropped "
+            "FROM weirvern.sensor_status FINAL "
+            "ORDER BY ts DESC"
+        ).named_results())
+        return rows, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sensor_status unavailable: %s", exc)
+        return [], "sensor status is unavailable"
+
+
+def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = None) -> dict:
+    """Whether a weir-CONFIGURED sensor has intercept evidence RIGHT NOW.
+
+    SENSOR_MODE=weir is a statement of INTENT -- a fact about a ConfigMap, which outlives
+    every process that read it. An intercept is a RUNNING process that publishes its own
+    heartbeat. The two agree exactly when nothing is wrong, and disagree in the worst way
+    when something is.
+
+    WHY THIS CHECK EXISTS (weir-1): an in-cluster deployment with SENSOR_MODE=weir sets
+    the sysctls, prints "mode weir -- IN-PATH intercept" in the Zeek container, and
+    redirects ZERO hosts, because the intercept is operator-triggered and nothing in the
+    cluster runs it. Every surface that only reads the config reports a healthy in-path
+    sensor. The defect class is the one the changelog keeps naming: a failure that renders
+    identically to a successful measurement of zero.
+
+    WHAT COUNTS AS EVIDENCE, and why the naive answers are wrong:
+      * mode=='weir' alone is not enough -- in a weir deployment the WORKER's own row
+        also carries mode='weir' (observe() publishes the configured value) with zero
+        mappings, so a config-read would pass while nothing intercepts. VERIFIED against
+        the live box's sensor_status: `Weirvern weir 10 20 0` (the intercept's own row,
+        since gone stale) and worker rows like `... loch 0 0 1`.
+      * `running` alone is not enough -- the worker's `running` means "Zeek logs are
+        fresh", which is true on a healthy passive sensor too.
+      * A fresh row is required -- a stale intercept row is a PAST intercept, reported
+        separately as `stopped` (an intercept ran; whether it restored is unknowable
+        from here).
+      * So: intercept evidence is a FRESH row with mode 'weir' AND mappings > 0.
+        `mappings` is written only by an intercept (the worker always writes 0) and an
+        intercept only starts after forging at least one mapping -- which is exactly the
+        question being asked. A worker row with mode 'weir', mappings 0, running 1 is
+        NOT evidence and must not pass this check.
+
+    Returns a dict; never raises. `error` is the loud explanation when a weir-configured
+    sensor has no live intercept, and None otherwise.
+    """
+    out: dict = {
+        "applicable": str(configured_mode or "") == MODE_WEIR,
+        "configured_mode": str(configured_mode or ""),
+        "live": False,
+        "stopped": False,
+        "verified": False,
+        "hosts": 0,
+        "mappings": 0,
+        "age_s": None,
+        "error": None,
+    }
+    if not out["applicable"]:
+        # Passive mode has no intercept to expect. Returning before the query keeps this
+        # check free for every loch deployment, which is most of them.
+        return out
+
+    rows, err = _sensor_rows(client)
+    if err is not None:
+        # "Cannot tell" is its own answer -- it must not be reported as "no intercept"
+        # (a claim we cannot support) nor as live (a claim in the unsafe direction).
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but whether an intercept is running cannot "
+            f"be determined: {err}."
+        )
+        return out
+    if not rows:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but no sensor has ever reported a heartbeat, "
+            "so no intercept can be confirmed. The sensor writes one every few seconds "
+            "while it runs, so this means it has not started or cannot reach ClickHouse."
+        )
+        return out
+
+    now_aware = _aware(now or datetime.datetime.now())
+    out["verified"] = True
+
+    def _age_s(row: dict) -> float | None:
+        ts_value = row.get("ts")
+        if not isinstance(ts_value, datetime.datetime):
+            return None
+        return (now_aware - _aware(ts_value)).total_seconds()
+
+    stopped = False
+    fresh_evidence: dict | None = None
+    for row in rows:
+        if str(row.get("mode") or "") != MODE_WEIR:
+            continue
+        age = _age_s(row)
+        fresh = age is not None and age <= HEARTBEAT_STALE_S
+        if fresh and int(row.get("mappings") or 0) > 0:
+            fresh_evidence = row
+            break
+        if not fresh:
+            # An intercept that RAN and went stale. Whether it restored its mappings is
+            # unknowable from here; report the uncertainty rather than either answer.
+            stopped = True
+
+    out["stopped"] = stopped
+    if fresh_evidence is not None:
+        out["live"] = True
+        out["hosts"] = int(fresh_evidence.get("hosts") or 0)
+        out["mappings"] = int(fresh_evidence.get("mappings") or 0)
+        out["age_s"] = round(_age_s(fresh_evidence) or 0.0, 1)
+        return out
+
+    # --- applicable, verified, and NOT live. This is the loud case. ---
+    if stopped:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured and an intercept RAN on this sensor but is no "
+            "longer running. Whether its forged ARP entries were restored cannot be "
+            "determined from here: if the process was killed uncatchably (kill -9, or a "
+            "SIGKILLed kubectl-exec client that outran the self-destruct deadline), hosts "
+            "on the intercepted segment may still be routing through a sensor that is no "
+            "longer relaying. Check the node's neighbour tables, or re-run an intercept "
+            "to overwrite the mappings with the truth."
+        )
+    else:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but NO intercept is running and none has "
+            "ever reported. This is the EXPECTED state of an in-cluster weir deployment: "
+            "the intercept is operator-triggered (`weirvern intercept --iface ... "
+            "--segment ...`) and nothing in the cluster runs it, so no host traffic is "
+            "being redirected. If you intended interception, run the command above; if "
+            "this sensor should be passive, set SENSOR_MODE=loch (it also drops the "
+            "extra privileges weir mode requires)."
+        )
     return out
 
 

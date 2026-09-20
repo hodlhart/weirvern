@@ -124,6 +124,12 @@ It requires `CAP_NET_ADMIN` (the passive sensor deliberately does not have it), 
 it cannot relay for. `--dry-run` reports the blast radius — every host whose ARP cache
 would be forged — and offers addresses that answered no ARP.
 
+**The intercept is operator-triggered and `weirvern status` says so.** Setting
+`SENSOR_MODE=weir` configures the *intent*; nothing in the cluster starts an intercept.
+`weirvern status` therefore FAILS, with an explanation, when the mode is `weir` but no
+intercept has a live heartbeat — because a config that reads "in-path" while redirecting
+nothing is exactly the failure mode this project refuses to ship.
+
 **`weir` is an L2/L3 redirect, not a TLS intercept.** Nothing is decrypted, no certificate
 is substituted, and no payload is inspected. It is also not a man-in-the-middle in the
 cryptographic sense: TLS sessions continue to authenticate end to end.

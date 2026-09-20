@@ -595,6 +595,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         # a workstation without the operator setting one up by hand.
         with admin_client(settings) as client:
             report = status_mod.collect_health(client, settings)
+            # WEIR-1 LOUD CHECK: a weir-CONFIGURED sensor with no live intercept is the
+            # state where every config-derived surface says "in-path" while nothing is
+            # redirected. Read the CONFIGURED mode from the cluster (where the sensor
+            # actually gets it), falling back to this environment.
+            configured_mode = (
+                (_cluster_config().get("SENSOR_MODE") or settings.sensor_mode or "")
+            )
+            liveness = status_mod.weir_liveness(configured_mode, client)
     except Exception as exc:  # noqa: BLE001
         _bad(f"cannot reach ClickHouse: {_condense(str(exc), 160)}")
         print(_c("dim", "    Tried to tunnel to svc/clickhouse automatically. "
@@ -606,7 +614,28 @@ def cmd_status(args: argparse.Namespace) -> int:
     for p in report.probes:
         marker = _c("green", "✓") if p.ok else _c("red", "✗")
         print(f"  {marker} {p.name:<18} {p.detail}")
+
+    # The mode row, then the liveness verdict. Order matters: the mode line states what
+    # is CONFIGURED, and the verdict states whether that is actually true -- printing the
+    # config first and the reality second is the only order in which the pair is honest.
+    if liveness.get("applicable"):
+        print()
+        if liveness.get("live"):
+            _ok(f"weir intercept LIVE — {liveness['hosts']} host(s), "
+                f"{liveness['mappings']} mapping(s), heartbeat {liveness['age_s']}s old")
+        else:
+            _bad("SENSOR_MODE=weir is configured but no intercept is live:")
+            for line in _wrap(str(liveness.get("error") or ""), 74):
+                print(f"    {line}")
+            return EXIT_FAIL
     return EXIT_OK if report.ok else EXIT_FAIL
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Soft-wrap for the status output's indented blocks. textwrap keeps the code short
+    at the call site and the width consistent with the probe lines above."""
+    import textwrap
+    return textwrap.wrap(text, width=width) or [""]
 
 
 # ---------------------------------------------------------------------------
