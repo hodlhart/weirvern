@@ -147,12 +147,77 @@ def test_GET_routes_do_not_consult_the_auth_state():
     assert "ctx.auth" not in _code_only(get_route), "a read route references the auth state"
 
 
-def test_the_settings_read_reports_whether_writes_are_possible():
-    """The UI has to know, or it cannot disable the controls or explain why."""
-    src = WEB.read_text()
-    i = src.index('payload["writes"]')
-    snippet = src[i:i + 400]
-    assert '"enabled"' in snippet and '"reason"' in snippet, snippet
+def test_the_settings_ROUTE_actually_returns_the_write_state():
+    """Read from the RESPONSE, not from the source text.
+
+    THE TEST THIS REPLACES WAS USELESS AND PASSED DURING A REAL OUTAGE. It searched web.py for the
+    string `payload["writes"]`, which was present -- inside the WRONG handler. `/api/settings`
+    returned no write state, so the GUI could not tell that writes were enabled and would render no
+    editable fields at all, while every test stayed green. A source search cannot tell which method
+    a line lives in, so this calls the real method and inspects what it emitted.
+    """
+    import importlib
+
+    web = importlib.import_module("weirvern.admin.web")
+
+    class _Auth:
+        enabled = True
+        reason = ""
+
+    class _Ctx:
+        settings = None
+        backend = None
+        auth = _Auth()
+
+    # `_build_handler(ctx)` CLOSES OVER ctx, so this factory is the only way to bind a handler to a
+    # context the test controls. Patching a module attribute would never reach the closure -- which
+    # is exactly the mistake that made the /api/settings bug invisible.
+    handler_cls = web._build_handler(_Ctx())
+    assert hasattr(handler_cls, "_settings"), "the handler no longer exposes _settings"
+
+    emitted: dict = {}
+    inst = handler_cls.__new__(handler_cls)          # no socket, no __init__
+    inst._json = lambda payload, code=200: emitted.update(payload)
+
+    inst._settings({})
+
+    assert "writes" in emitted, (
+        f"the settings route emitted no 'writes' key, so the UI cannot know whether it may offer "
+        f"editable fields. Keys returned: {sorted(emitted)}"
+    )
+    assert emitted["writes"]["enabled"] is True, emitted["writes"]
+    assert "editable_keys" in emitted, (
+        "the route does not report which keys it will accept, so the UI would guess"
+    )
+    assert "CLICKHOUSE_PASSWORD" not in emitted["editable_keys"]
+    assert "BASE_THRESHOLD" in emitted["editable_keys"]
+
+
+def test_the_settings_route_reports_writes_DISABLED_when_no_token_is_set():
+    """The other half: an unconfigured deployment must render no editable fields and say why."""
+    import importlib
+
+    web = importlib.import_module("weirvern.admin.web")
+
+    class _Auth:
+        enabled = False
+        reason = "write access is disabled: WEIRVERN_GUI_TOKEN is not set"
+
+    class _Ctx:
+        settings = None
+        backend = None
+        auth = _Auth()
+
+    emitted: dict = {}
+    handler_cls = web._build_handler(_Ctx())
+    inst = handler_cls.__new__(handler_cls)
+    inst._json = lambda payload, code=200: emitted.update(payload)
+    inst._settings({})
+
+    assert emitted.get("writes", {}).get("enabled") is False
+    assert "WEIRVERN_GUI_TOKEN" in emitted.get("writes", {}).get("reason", ""), (
+        "a disabled deployment does not say what to set"
+    )
 
 
 # ── 5. the write is verified by read-back ──────────────────────────────────────────────────

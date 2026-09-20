@@ -481,24 +481,6 @@ def _build_handler(ctx: GuiContext):
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
                 })
-            # Whether the UI may offer writes, and why not when it may not. Sent with every
-            # settings read so the panel can DISABLE rather than hide: a control that vanishes
-            # teaches nothing, a disabled one with a stated reason tells the operator to set the
-            # token.
-            auth = getattr(ctx, "auth", None)
-            payload["writes"] = {
-                "enabled": bool(auth and auth.enabled),
-                "reason": (auth.reason if auth else
-                           "authentication is not available in this build"),
-            }
-            # The editable keys, so the UI offers exactly what the server will accept -- derived
-            # here rather than duplicated in JavaScript.
-            try:
-                from weirvern.admin.cluster_config import EDITABLE_KEYS
-
-                payload["editable_keys"] = list(EDITABLE_KEYS)
-            except Exception:  # noqa: BLE001
-                payload["editable_keys"] = []
             self._json(payload)
 
         # -- writes ---------------------------------------------------------
@@ -739,12 +721,16 @@ def _build_handler(ctx: GuiContext):
             return False, False
 
         def _settings(self, query: dict) -> None:
-            """The effective configuration. READ-ONLY, and deliberately so.
+            """The effective configuration, plus whether this client may CHANGE it.
 
-            This GUI is served on a LAN port with no authentication, so any write it accepted
-            would be a way to reconfigure the sensor from the network. It reports what is
-            running and where to change it instead. Secrets are reported as set or not set by
-            `status.settings_overview`, never in value.
+            The view is a READ; writes go to /api/settings/plan and /api/settings/apply, which are
+            token-gated. So this reports two things: the values in effect, and whether writes are
+            enabled -- the UI needs the second to decide whether to render editable fields or
+            read-only text, and a control that vanishes teaches nothing while a disabled one with a
+            stated reason tells the operator exactly what to set.
+
+            Secrets are reported as set or not set by `status.settings_overview`, never in value,
+            and are never editable from here regardless of token state.
             """
             del query  # no parameters: the configuration is whatever is running
             try:
@@ -759,6 +745,25 @@ def _build_handler(ctx: GuiContext):
                     "available": False, "groups": {},
                     "reason": f"could not read the configuration: {type(exc).__name__}",
                 })
+            # Whether the UI may offer writes, and why not when it may not. Sent with every
+            # settings read so the panel can DISABLE rather than hide: a control that vanishes
+            # teaches nothing, a disabled one with a stated reason tells the operator to set the
+            # token.
+            auth = getattr(ctx, "auth", None)
+            payload["writes"] = {
+                "enabled": bool(auth and auth.enabled),
+                "reason": (auth.reason if auth else
+                           "authentication is not available in this build"),
+            }
+            # The editable keys, so the UI offers exactly what the server will accept -- derived
+            # here rather than duplicated in JavaScript.
+            try:
+                from weirvern.admin.cluster_config import EDITABLE_KEYS
+
+                payload["editable_keys"] = list(EDITABLE_KEYS)
+            except Exception:  # noqa: BLE001
+                payload["editable_keys"] = []
+
             self._json(payload)
 
         def _host(self, query: dict) -> None:
