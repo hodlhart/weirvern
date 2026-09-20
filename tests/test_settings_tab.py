@@ -161,15 +161,32 @@ def test_every_write_route_is_token_gated():
     assert "_json(" in body, "the settings handler does not return a JSON payload"
 
 
-def test_the_view_states_that_it_is_read_only_and_where_to_change_things():
-    """A settings page that does not say this invites a hunt for a Save button."""
+def test_the_view_states_when_it_is_read_only_and_when_it_is_not():
+    """The settings page must state the boundary honestly -- BOTH states, because both are real.
+
+    The copy used to assert unconditionally that the page could not change anything. That was
+    true before the write path existed and became FALSE when it shipped: two static strings
+    contradicted the auth card beside them (which correctly reported writes as enabled), and a
+    reader had to guess which one the page meant. The rule now is that the strings reflect the
+    server's `writes` answer, so the two cannot disagree.
+    """
     app_js = (WEB / "app.js").read_text()
     index = (WEB / "index.html").read_text()
-    assert "cannot change them" in index or "read-only" in index.lower(), (
-        "the Settings markup does not state that it cannot change the configuration"
+    # The markup states the conditional case, not a flat claim.
+    assert "read-only" in index.lower(), (
+        "the Settings markup does not mention the read-only case at all"
+    )
+    assert "cannot change them" not in index, (
+        "the markup still asserts unconditionally that the page cannot change the values; with "
+        "the token write path live that contradicts the auth card"
     )
     assert "weirvern config set" in index, (
         "the page does not say where the settings CAN be changed, which leaves the reader stuck"
+    )
+    # The rendered note must be conditional on the server's answer, not one fixed string.
+    assert "writesOn" in app_js or "writes && data.writes.enabled" in app_js or \
+        "data.writes" in app_js, (
+        "the rendered note does not consult the server's `writes` state, so it can contradict it"
     )
     assert "never in value" in app_js, (
         "the panel does not explain why a secret shows no value"

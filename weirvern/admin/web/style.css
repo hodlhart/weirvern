@@ -17,6 +17,13 @@
   --warn: #d29922;
   --crit: #f85149;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Aliases used by a few rules before they were defined here. An undefined custom property
+   * makes the whole declaration invalid, so `.attack-meta` silently inherited the body colour
+   * and `.setting-input` rendered with NO background -- both look like a styling choice rather
+   * than a missing token. Defined once, here, so a future rename moves them together. */
+  --muted-foreground: var(--muted);
+  --danger: #e05c5c;
+  --card: var(--panel2);
 }
 
 * { box-sizing: border-box; }

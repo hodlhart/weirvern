@@ -13,10 +13,29 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { JSDOM, VirtualConsole } = require("/tmp/node_modules/jsdom");
+
+// RESOLVE jsdom THE NORMAL WAY FIRST. The original hardcoded /tmp/node_modules/jsdom, which
+// is a path that exists only on one machine: anywhere else the harness died on the require
+// before running a single check. A local `npm install jsdom` (or `npm ci`) is the documented
+// setup, so plain "jsdom" is tried first; the old path is kept as a fallback.
+function loadJsdom() {
+  for (const candidate of ["jsdom", "/tmp/node_modules/jsdom"]) {
+    try {
+      return require(candidate);
+    } catch (_e) { /* try the next candidate */ }
+  }
+  console.error("jsdom is not installed. Run `npm install jsdom` in the repository root,");
+  console.error("then re-run: node scripts/jsdom_render.js");
+  process.exit(2);
+}
+const { JSDOM, VirtualConsole } = loadJsdom();
 
 const BASE = process.argv[2] || "http://127.0.0.1:8099";
-const WEB = "/home/hart/Documents/flowforge/weirvern/admin/web";
+// RESOLVED RELATIVE TO THIS FILE, not to a hardcoded home directory. It used to point at the
+// original author's Documents/flowforge checkout, so on any other machine the harness read a
+// nonexistent directory and reported its checks against nothing. Overridable for a
+// checkout that wants to test a different web root.
+const WEB = process.env.WEIRVERN_WEB || path.resolve(__dirname, "..", "weirvern", "admin", "web");
 
 const failures = [];
 const notes = [];

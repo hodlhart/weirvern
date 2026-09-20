@@ -120,10 +120,21 @@ function emptyRow(tbody, cols, message) {
   ]));
 }
 
+/* The ONE JSON fetch helper, shared by every script. scripts/jsdom_render.js evaluates all
+ * three files as one scope and a test pins this as the sole definition: it used to exist TWICE
+ * (here and in assets.js), and because <script> tags share a global scope, the later-loaded
+ * copy silently won for every call site -- app.js's and soc.js's error semantics were decided
+ * by script order, which nothing would have caught if the order changed. Kept here because
+ * this file loads first and the other shared helpers live here too. */
 async function getJSON(url) {
   const res = await fetch(url, { headers: { Accept: "application/json" } });
+  // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
+  // "undefined", and a 200 with a bad body must not throw here with a parse error where the
+  // caller expects the payload contract.
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+  if (!res.ok) {
+    throw new Error((body && body.error) || `${res.status} ${res.statusText}`.trim());
+  }
   return body;
 }
 
@@ -427,13 +438,19 @@ async function loadSettings() {
   }
 
   // State the boundary explicitly rather than leaving the reader to discover it by looking for
-  // a Save button that does not exist.
+  // a Save button that does not exist. CONDITIONAL on the server's answer, because both states
+  // are real: without a token this page cannot write, and with one it deliberately can. The
+  // unconditional "read-only" that used to sit here contradicted the auth card beside it.
   const note = document.getElementById("st-note");
   if (note) {
+    const writesOn = Boolean(data.writes && data.writes.enabled);
     note.replaceChildren();
-    note.appendChild(chartEmpty(
-      "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
-      "Secrets are reported as set or not set, never in value."));
+    note.appendChild(chartEmpty(writesOn
+      ? "Write access is enabled: edits are staged and written only on Apply. This page is " +
+        "read-only without an operator token; without one, change values with " +
+        "`weirvern config set` or the TUI. Secrets are reported as set or not set, never in value."
+      : "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
+        "Secrets are reported as set or not set, never in value."));
   }
 }
 /* ── anomalies ──────────────────────────────────────────────────────────── */
