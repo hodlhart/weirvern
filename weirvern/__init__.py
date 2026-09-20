@@ -3,4 +3,4 @@
 Pipeline: GoFlow2 (netflow/sflow) -> ClickHouse -> scikit-learn ensemble -> Pushover.
 """
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"

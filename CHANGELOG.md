@@ -1,5 +1,123 @@
 # Changelog
 
+## Unreleased — the audit fixes: the review loop, the near-miss surface, and the weir safety gaps
+
+A fresh audit of the running system, fixed finding by finding. The theme running through all of
+it: the system was good at showing what it found and bad at showing what it decided. The headline
+fixes were verified against the live deployment, not just the test suite.
+
+### Added — an alert review lifecycle (SOC-1)
+
+The GUI could show an anomaly and explain it, and then the workflow ended: no acknowledge, no
+resolve, no false-positive marking, and no way to clear a recurring benign alert, so the anomalies
+list only ever grew. Each anomaly now carries a review state — `ack`, `resolved`, `false_positive`
+— persisted per `(window_start, src_addr)` in a new `alert_reviews` table, rendered as a chip with
+disposition buttons on the row, and filterable to unreviewed-only. Those dispositions are the
+labels a feedback loop needs later, which is why they are recorded now.
+
+Found by running it, not by testing it: the first version wrote review keys with timezone-aware
+datetimes and looked them up with tz-stripped ones, so every review merged as a silent miss. The
+unit fakes used naive datetimes throughout and could not have caught it; the live box did, on the
+first end-to-end POST. Both sides now normalise through the same function, and the regression test
+feeds tz-aware rows on purpose.
+
+### Added — the near-miss surface (SOC-2)
+
+The Anomalies view lists what was flagged. Nothing showed what almost was: a window at 0.66 against
+a 0.70 bar, or one that cleared the bar and died at the agreement gate. Without that surface a
+threshold can only be tuned by guessing, because the only feedback is "an alert fired" or "nothing
+happened" — and the second collapses "traffic was normal" with "we nearly alerted and did not".
+
+The audit said this data "exists, it just is not queried". It did not exist. Measured against
+`detect_flows`: both drop paths `continue`d before anything was recorded, so the scores were
+computed and thrown away — following the audit literally would have produced a panel over an empty
+table forever. The fix therefore records as well as reads: both drop paths append to an optional
+near-miss list (score, the adaptive threshold that host faced, which of the two gates dropped it,
+per-detector scores), the worker stores it best-effort, and a table with a 7-day TTL —
+deliberately shorter than the anomalies' 30 days, because a near miss is a tuning observation, not
+an incident record — holds it. The Models view grows the panel, which measured live caught windows
+at 0.3465 against a 0.35 bar within minutes of deployment. Its unavailable state renders as its
+own message, never an empty table: "the table does not exist yet" and "nothing nearly alerted" are
+different facts, and the second is a much stronger claim.
+
+### Added — the alert audit, not just a count of it (SOC-8)
+
+The worker writes every alert decision to `alert_events` — sent, suppressed by cooldown, dropped at
+the rate cap, or log-only when Pushover is unconfigured. The GUI surfaced it as one number in the
+Health checks table: on the live deployment, five decisions sat in the table and the only visible
+fact was "0 alerts", which reads as "nothing happened" when the truth was "five anomalies fired and
+the layer acted on each". The Health tab now shows the outcome breakdown and the recent decisions,
+and counts SUPPRESSED (cooldown, cap) separately from LOG-ONLY — the second is a configuration
+state, not a withheld alert, and conflating them overstates what the system did.
+
+### Added — a detection-quality harness, gated in CI (ML-1)
+
+Nothing measured whether the pipeline actually detected the attacks it exists for. `f1_score`
+appeared in the training report and never in a gate, so a detector that stopped detecting would
+have shipped green. `scripts/eval_detection.py` seeds demo attacks into a scratch ClickHouse, runs
+the real detection sweep against the real materialised views, and asserts the FINAL verdicts: the
+port scan must reach critical, the beacon medium, the exfil spike critical, and a seeded-benign
+host must stay quiet. A negative control — the same run with no attacks seeded — proves the
+harness can fail, because a guard that cannot fail is decoration. It runs as a gating CI job on
+every push.
+
+### Fixed — the weir safety batch: six gaps between what the code claimed and what it enforced
+
+- `NEVER_INTERCEPT` was advisory text in a comment. It is enforced now, and the refusal is
+  reported rather than silent.
+- An IPv6 segment failed late and confusingly. It is refused up front, by name.
+- `quiet_samples` was accounted and never read. `status` surfaces it.
+- The watchdog's `failures` list was unbounded and partial. Capped.
+- The batch-drain window divided by a near-zero denominator. The formula is defined at the
+  boundary rather than being approximately right.
+- The node-restore command was computed and never shown. `weirvern status` shows it.
+
+### Fixed — the ARP-expiry backstop, measured at last, and a self-destruct deadline (WEIR-2/2b)
+
+The watchdog's comments described recovery behaviour nobody had measured. Measured on a real
+segment: a graceful stop restores traffic immediately; after a hard kill an idle host's entry
+sits reachable until gc, goes stale at ~65 s, and nothing recovers it until the host next sends —
+at which point the first packet re-resolves within seconds. A busy host recovers in ~55 s. The
+module docstring now carries the measurement instead of the claim.
+
+And the case no signal can reach: a SIGKILLed `kubectl exec` client or a vanished SSH session
+delivers nothing, ever. Non-TTY runs now require `--seconds` — someone must be there to stop it —
+and every bounded run carries a self-destruct deadline: default `--seconds` + 120, an explicit
+`--max-runtime` wins, and an unbounded interactive run has none, because nobody asked. When the
+deadline fires it restores, loudly, and says that nothing requested the stop.
+
+### Fixed — a weir-configured sensor with no live intercept now says so (WEIR-1)
+
+`SENSOR_MODE=weir` is a fact about a ConfigMap. An intercept is a RUNNING process. The two were
+treated as the same thing, so a sensor whose intercept had ended reported as healthy. `weirvern status`
+now distinguishes three honest states — intercept live / intercept RAN and stopped, node may still
+be in-path / cannot tell — by scanning every `sensor_status` row for intercept evidence rather
+than trusting the ranked best row, because in a weir deployment the worker itself publishes a
+zero-mapping row that would otherwise masquerade as evidence. The loud state exits 1; verified
+against the box's real rows, including the real intercept from September 19.
+
+### Fixed — the GUI batch (SOC-3/5/6/7)
+
+- `jsdom_render.js` was hardcoded to the author's machine, with a require path that could not
+  work anywhere else. It is machine-independent now, so the DOM harness runs anywhere.
+- Two `getJSON` definitions existed and the last-loaded won, with different error semantics.
+  One definition remains, with shared helpers.
+- Three CSS variables were referenced and never defined (`--card`, `--danger`,
+  `--muted-foreground`). Defined, and pinned by a stylesheet test.
+- The Settings page copy contradicted itself in two places. Corrected.
+
+### Fixed — the ML batch: a config key that did nothing, and three measured corrections (ML-2/3/4)
+
+- `STRONG_SIGNAL` was editable through the GUI, validated, and read by no code — a config key
+  that changed nothing, of exactly the class this changelog keeps finding. Wired end-to-end and
+  verified on the live deployment.
+- Training data included the attacks it was scoring. Flagged host-windows are now excluded from
+  retraining, verified against ClickHouse with a tuple match on both columns.
+- DBSCAN's score divided by a hardcoded 5.0. It is calibrated against the measured score
+  distribution now.
+- The Adaptive Baseline's flat stddev floor distorted z-scores for low-count hosts. Dispersions
+  are measured per field now rather than assumed.
+
 ## Unreleased — Tier 3 Zeek logs, chosen from research rather than guesswork
 
 ### Added — five logs, and a recorded reason for the eleven that were not
