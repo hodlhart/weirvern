@@ -1,4 +1,5 @@
 from weirvern.models.scoring import (
+    calibrate_distance,
     calibrate_isolation_forest,
     calibrate_probability,
     normalize_isolation_forest,
@@ -99,3 +100,45 @@ def test_probability_calibration_tiers_and_monotonic():
 
 def test_probability_calibration_fallback():
     assert calibrate_probability(0.9, {}) == normalize_probability(0.9)
+
+
+# --- percentile calibration of DBSCAN distances -------------------------------
+# The bug this fixes: the score was `min(0.99, distance / 5.0)` -- a magic divisor unrelated
+# to the data. Tight clusters (typical distances ~1.5) mapped everything to <=0.3 and the
+# detector could never corroborate; loose ones saturated at 0.99. Graded against the training
+# distribution now, like every other detector.
+
+DCAL = {"p50": 2.0, "p95": 4.0, "p99": 6.0}
+
+
+def test_distance_calibration_zeroes_the_normal_half():
+    """Half the training data sits at/below p50; ordinary traffic must score zero."""
+    assert calibrate_distance(1.0, DCAL) == 0.0
+    assert calibrate_distance(2.0, DCAL) == 0.0
+
+
+def test_distance_calibration_tiers_and_monotonic():
+    prev = -1.0
+    for d in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 12.0):
+        v = calibrate_distance(d, DCAL)
+        assert v >= prev, f"not monotonic at {d}"
+        assert 0.0 <= v <= 0.99
+        prev = v
+    assert calibrate_distance(3.0, DCAL) <= 0.60          # p50..p95
+    assert 0.60 <= calibrate_distance(5.0, DCAL) <= 0.85  # p95..p99
+    assert calibrate_distance(12.0, DCAL) >= 0.85         # beyond p99
+
+
+def test_distance_calibration_scales_with_the_cluster_tightness():
+    """The point of calibrating: a distance of 3 is unremarkable for one deployment and
+    extreme for another, and the same absolute number must score differently."""
+    tight = {"p50": 0.5, "p95": 1.0, "p99": 1.5}
+    loose = {"p50": 5.0, "p95": 10.0, "p99": 15.0}
+    assert calibrate_distance(3.0, tight) >= 0.85, "3 sigma from a tight cluster is extreme"
+    assert calibrate_distance(3.0, loose) <= 0.60, "3 sigma toward a loose cluster is ordinary"
+
+
+def test_distance_calibration_falls_back_to_the_old_shape():
+    """An artifact trained before the calibration existed must keep its behaviour until the
+    next retrain replaces it -- not crash, not silently rescale."""
+    assert calibrate_distance(2.5, {}) == min(0.99, 2.5 / 5.0)

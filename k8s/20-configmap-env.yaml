@@ -154,6 +154,13 @@ data:
   RETRAIN_WINDOW_H: "72"
   BASE_THRESHOLD: "0.35"
   MIN_AGREEMENT: "0.33"
+  # The corroboration bar: a detector scoring at/above this counts as a STRONG
+  # signal, and high/critical severity needs two-or-more (or one plus a
+  # structural signature). Editable from the GUI. It was editable BEFORE the
+  # worker actually read it -- the edit validated, the worker restarted, and the
+  # behaviour was identical, which is the silent no-op this comment exists to
+  # prevent recurring.
+  STRONG_SIGNAL: "0.85"
 
   # ── Alerting ───────────────────────────────────────────────────────────────
   # PUSHOVER_ENABLED is the master switch for real push delivery, and it MUST be

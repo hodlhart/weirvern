@@ -323,15 +323,30 @@ def test_the_namespace_row_resolves_from_runtime_rather_than_rendering_unknown()
 
 
 def test_no_row_is_reported_for_a_field_that_does_not_exist():
-    """`capture_password` and `strong_signal` were listed and are NOT Settings fields -- they
-    exist only in prose comments. A row with no field behind it shows '(not set)' forever, which
-    is the silent-empty pattern this project keeps having to fix."""
+    """`capture_password` was listed and is NOT a Settings field -- it exists only in prose
+    comments. A row with no field behind it shows '(not set)' forever, which is the
+    silent-empty pattern this project keeps having to fix.
+
+    `strong_signal` was in this list too, and the fix was the opposite one: rather than
+    deleting the row, the field was given a REAL Settings attribute and wired into the
+    ensemble, because the GUI advertised it as editable while nothing read the env var --
+    an edit that validated and changed nothing. Both directions are covered here: a row
+    must never exist without a field, and a field the GUI advertises must be readable.
+    """
     from weirvern.config import Settings
 
     payload = status.settings_overview(settings=Settings())
     keys = {r["key"] for rows in payload["groups"].values() for r in rows}
-    for phantom in ("capture_password", "strong_signal"):
-        assert phantom not in keys, f"{phantom} is reported but is not a Settings field"
+    assert "capture_password" not in keys, (
+        "capture_password is reported but is not a Settings field"
+    )
+    assert "strong_signal" in keys, (
+        "strong_signal lost its settings row, but it is now a real Settings field the GUI "
+        "advertises as editable -- removing the row would hide a working control"
+    )
+    # The settings object really carries it, so the row can never show '(not set)' for a
+    # field that does not exist.
+    assert hasattr(Settings(), "strong_signal")
     # Every remaining key must either BE a Settings attribute or be marked as env-only. A row
     # that is neither is a row with nothing behind it, which can only ever show "(not set)".
     payload_all = status.settings_overview(settings=Settings())

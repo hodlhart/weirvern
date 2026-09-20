@@ -192,15 +192,15 @@ def test_force_unsafe_overrides_only_the_intent_dependent_roles(monkeypatch, cap
 def test_never_intercept_hits_flags_the_derivable_roles(monkeypatch):
     """The derivation reads the real sources: our address, the gateway, resolv.conf,
     MGMT_ADDR and KUBERNETES_SERVICE_HOST."""
-    monkeypatch.setattr(ic, "_resolv_nameservers", lambda: ["10.0.0.53"])
-    monkeypatch.setenv("MGMT_ADDR", "10.0.0.9")
-    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+    monkeypatch.setattr(ic, "_resolv_nameservers", lambda: ["198.51.100.53"])
+    monkeypatch.setenv("MGMT_ADDR", "198.51.100.9")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "203.0.113.10")
     hits = ic.never_intercept_hits(
-        {"10.0.0.53", "10.0.0.9", "10.96.0.1", "198.51.100.77", "198.51.100.50"},
+        {"198.51.100.53", "198.51.100.9", "203.0.113.10", "198.51.100.77", "198.51.100.50"},
         our_ip="198.51.100.50", gateway_ip="198.51.100.1")
-    assert "10.0.0.53" in hits and "resolver" in hits["10.0.0.53"]
-    assert "10.0.0.9" in hits and "management" in hits["10.0.0.9"]
-    assert "10.96.0.1" in hits and "API" in hits["10.96.0.1"]
+    assert "198.51.100.53" in hits and "resolver" in hits["198.51.100.53"]
+    assert "198.51.100.9" in hits and "management" in hits["198.51.100.9"]
+    assert "203.0.113.10" in hits and "API" in hits["203.0.113.10"]
     assert "198.51.100.50" in hits, "our own address must be flagged"
     assert "198.51.100.77" not in hits, "an ordinary host was flagged, so valid plans refuse"
 

@@ -14,6 +14,7 @@ persists artifacts; predict() is pure (no DB calls).
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime
 from typing import Any
@@ -31,6 +32,7 @@ from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
 from weirvern.models.scoring import (
+    calibrate_distance,
     calibrate_isolation_forest,
     calibrate_probability,
     normalize_zscore,
@@ -65,6 +67,45 @@ def _zeek_clause(start: str, end: str, columns: list[str] | None = None) -> tupl
         columns = ZEEK_FEATURES
     select = ",\n".join(f"                z.{c}" for c in columns)
     return zeek_join_cte(start, end), select, ZEEK_JOIN_ON
+
+
+def _flagged_exclusion_clause(start: str, end: str, cfg: ModelConfig) -> str:
+    """WHERE-fragment excluding host-windows the system already flagged, or "" to disable.
+
+    WHY THIS EXISTS: a training window is the last RETRAIN_WINDOW_H of traffic, which
+    includes any ongoing incident. Isolation Forest's contamination~6% EXPECTS outliers in
+    training, so a sustained attack lasting days quietly becomes part of the learned
+    "normal" -- and no metric can show it, because the model looks healthiest exactly when
+    it has stopped recognising the thing it was trained on.
+
+    The exclusion uses the system's OWN prior detections: rows in netflow_anomalies at
+    high/critical severity for the same (host, window). It is the minimum defence rather
+    than the full one -- a slow attack that never reaches those tiers still trains in, and
+    the stronger design (a frozen benign baseline with champion/challenger disagreement as
+    its own signal) remains on the audit backlog. But between "trust every row" and "use
+    the rows we already decided were anomalous", this is strictly the better half.
+
+    Returns a fragment that begins with "AND", or "" when disabled -- callers splice it
+    after their own WHERE conditions, so a disabled clause changes nothing.
+    """
+    if not getattr(cfg, "exclude_flagged_from_training", True):
+        return ""
+    # The severity tiers are the ones severity_of can emit; 'medium' and below are NOT
+    # excluded, deliberately -- ordinary noise and tuning misses must remain trainable,
+    # or the exclusion list grows to swallow the whole segment.
+    #
+    # TUPLE NOT IN rather than NOT EXISTS with a correlated subquery: ClickHouse's
+    # correlated-subquery support is deliberately limited, while tuple membership
+    # against a derived table is a first-class form. VERIFIED against a live
+    # clickhouse-server:26.8 (the deployed image), including that the filter actually
+    # drops flagged rows and leaves everything else -- see test_ml_hygiene_exclusion.py.
+    return f"""
+              AND (a.src_addr, toStartOfFiveMinutes(a.window_start)) NOT IN (
+                  SELECT src_addr, toStartOfFiveMinutes(window_start)
+                  FROM weirvern.netflow_anomalies
+                  WHERE window_start BETWEEN '{start}' AND '{end}'
+                    AND severity IN ('high', 'critical')
+              )"""
 
 
 class RobustPreprocessor:
@@ -109,6 +150,9 @@ class IsolationForestDetector(BaseDetector):
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
         zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e)
+        # Training hygiene: do not learn from windows the system already flagged (see
+        # _flagged_exclusion_clause). Empty string when disabled.
+        excl = _flagged_exclusion_clause(s, e, self.cfg)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
             WITH {zeek_cte}
             SELECT
@@ -143,7 +187,7 @@ class IsolationForestDetector(BaseDetector):
                       SELECT unique_dst_ports FROM weirvern.flows_aggregated_diversity
                       WHERE window_start BETWEEN '{s}' AND '{e}'
                       ORDER BY unique_dst_ports DESC LIMIT {int(self.cfg.if_extremes)})
-              )
+              ){excl}
             LIMIT {int(self.cfg.if_n_samples)}
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
@@ -298,6 +342,9 @@ class DBSCANDetector(BaseDetector):
         self.cfg = cfg or ModelConfig()
         self.cluster_centers: list[np.ndarray] = []
         self.preprocessor = RobustPreprocessor()
+        # Percentile calibration of training distances to the nearest centre (set at
+        # train time). See calibrate_distance for why the old fixed /5.0 had to go.
+        self.calibration: dict[str, float] = {}
 
     def is_ready(self) -> bool:
         return len(self.cluster_centers) > 0
@@ -306,6 +353,9 @@ class DBSCANDetector(BaseDetector):
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
         zeek_cte, zeek_cols, zeek_join = _zeek_clause(s, e, ZEEK_DBSCAN_FEATURES)
+        # Training hygiene: do not learn from windows the system already flagged (see
+        # _flagged_exclusion_clause). Empty string when disabled.
+        excl = _flagged_exclusion_clause(s, e, self.cfg)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
             WITH {zeek_cte}
             SELECT
@@ -326,7 +376,7 @@ class DBSCANDetector(BaseDetector):
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
               AND a.total_bytes > 0
-              AND sipHash64(a.src_addr) % 5 == 1
+              AND sipHash64(a.src_addr) % 5 == 1{excl}
             LIMIT {int(self.cfg.dbscan_n_samples)}
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
@@ -337,10 +387,31 @@ class DBSCANDetector(BaseDetector):
         labels = DBSCAN(eps=self.cfg.dbscan_eps, min_samples=self.cfg.dbscan_min_samples).fit_predict(Xs)
         self.cluster_centers = [np.mean(Xs[labels == cid], axis=0) for cid in set(labels) if cid != -1]
         n_clusters, n_outliers = len(self.cluster_centers), int((labels == -1).sum())
+
+        # CALIBRATE THE DISTANCE MAPPING against the training distribution.
+        #
+        # The predict() score was `distance / 5.0` -- a fixed divisor unrelated to the
+        # data's scale, which made the detector un-corroborable on tight clusters and
+        # saturated on loose ones. Every training sample's distance to its NEAREST
+        # cluster centre is recorded here by percentile, so predict() can grade a new
+        # distance against what normal looked like for THIS deployment.
+        if self.cluster_centers:
+            dists = np.array([
+                min(float(np.linalg.norm(x - c)) for c in self.cluster_centers)
+                for x in Xs
+            ])
+            self.calibration = {
+                "p50": float(np.percentile(dists, 50)),
+                "p95": float(np.percentile(dists, 95)),
+                "p99": float(np.percentile(dists, 99)),
+            }
+
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
             feature_columns=DBSCAN_FEATURES,
-            params={"eps": self.cfg.dbscan_eps, "min_samples": self.cfg.dbscan_min_samples, "n_samples": len(Xs)},
+            params={"eps": self.cfg.dbscan_eps, "min_samples": self.cfg.dbscan_min_samples,
+                    "n_samples": len(Xs),
+                    "calibration": {k: round(v, 6) for k, v in self.calibration.items()}},
             metrics={"clusters": n_clusters, "outliers": n_outliers},
             window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
         )
@@ -355,7 +426,11 @@ class DBSCANDetector(BaseDetector):
             vec = np.asarray(feature_vector(features or {}, DBSCAN_FEATURES), dtype=float)
             Xp = self.preprocessor.transform(np.asarray([vec], dtype=float))[0]
             dist = min(float(np.linalg.norm(Xp - c)) for c in self.cluster_centers)
-            return min(0.99, dist / 5.0)
+            # Graded against the training distribution (see calibrate_distance), not a
+            # fixed divisor; falls back to the old shape for artifacts trained before
+            # the calibration existed, so a stale artifact keeps its behaviour until
+            # the next retrain replaces it.
+            return calibrate_distance(dist, self.calibration)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Prediction error %s: %s", self.name, exc)
             return 0.0
@@ -388,17 +463,66 @@ class AdaptiveBaselineDetector(BaseDetector):
         to read them is from the same list. The positional literals this replaces assumed seven
         Zeek columns where the query emits fifty, so every value landed on a different
         measurement without raising.
+
+        The four dispersion columns AFTER the feature block are the measured sigmas (see the
+        training query's comment); their read is guarded so a row-shaped-otherwise (a test
+        fixture, or a future query edit) degrades to the sqrt-mean fallback rather than
+        raising -- the same honesty rule the rest of this module follows.
         """
         base = 9  # src_addr, 6 volume stats, 2 quantile arrays
         idx = {name: base + i for i, name in enumerate(ZEEK_FEATURES)}
+        sd_base = base + len(ZEEK_FEATURES) + 1  # +1: the zeek_seen flag
+
+        def _col(i: int, default: float) -> float:
+            try:
+                return float(r[i]) if r[i] is not None else default
+            except (IndexError, TypeError, ValueError):
+                return default
+
+        avg_conn = _col(idx["zeek_conn_count"], 0.0)
+        avg_s0 = _col(idx["zeek_s0_ratio"], 0.0)
+        avg_notices = _col(idx["zeek_notice_count"], 0.0)
+        conn_sd = _col(sd_base, 0.0)
+        s0_count_avg = _col(sd_base + 1, 0.0)
+        s0_count_sd = _col(sd_base + 2, 0.0)
+        notice_sd = _col(sd_base + 3, 0.0)
+
+        def _sigma(measured: float, mean: float, *, count_like: bool) -> float:
+            """The divisor for a z-score: the measured sigma, else sqrt(mean), else 1.0.
+
+            Three cases, in order, because each is a different kind of "we do not know
+            the spread":
+
+              * the measured sigma is positive -> use it. This is the honest number.
+              * sigma is 0 BUT the mean is positive -> every training bucket was
+                identical, which is itself unusual; sqrt(mean) is the Poisson floor for
+                count-like data (sigma ~ sqrt(mu)) and is deliberately LESS than the mean,
+                so a new event is priced as rare rather than impossible. A ratio keeps
+                sqrt(mean) too: a ratio with mean m has variance <= m(1-m) <= m.
+              * nothing to go on (mean 0) -> 1.0. A variance floor, so a division by
+                ~zero cannot invent an infinite z-score out of an idle host.
+            """
+            if measured > 0:
+                return measured
+            if mean > 0:
+                return max(1.0, math.sqrt(mean)) if count_like else math.sqrt(mean)
+            return 1.0
+
         return {
             "zeek_seen": bool(r[base + len(ZEEK_FEATURES)]),
-            "avg_conn": float(r[idx["zeek_conn_count"]] or 0),
-            "stddev_conn": float(r[idx["zeek_conn_count"]] or 1),
-            "avg_s0": float(r[idx["zeek_s0_ratio"]] or 0),
-            "stddev_s0": float(r[idx["zeek_s0_ratio"]] or 1),
-            "avg_services": float(r[idx["zeek_service_count"]] or 0),
-            "avg_notices": float(r[idx["zeek_notice_count"]] or 0),
+            "avg_conn": avg_conn,
+            "stddev_conn": _sigma(conn_sd, avg_conn, count_like=True),
+            "avg_s0": avg_s0,
+            "stddev_s0": _sigma(s0_count_sd, avg_s0, count_like=True),
+            # Count-scale S0 statistics for the z-score in predict(). `avg_s0_count`/
+            # `stddev_s0_count` are absent from pre-change artifacts; the .get() in
+            # predict() falls back to the ratio-scale pair, which reproduces the old
+            # behaviour until the next retrain replaces the artifact.
+            "avg_s0_count": s0_count_avg,
+            "stddev_s0_count": _sigma(s0_count_sd, s0_count_avg, count_like=True),
+            "avg_services": _col(idx["zeek_service_count"], 0.0),
+            "avg_notices": avg_notices,
+            "stddev_notices": _sigma(notice_sd, avg_notices, count_like=True),
         }
 
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
@@ -415,6 +539,9 @@ class AdaptiveBaselineDetector(BaseDetector):
         # because the question is "what is normal for this host" rather than "what happened
         # in this bucket". Averages and percentiles are the right shape for that.
         zeek_cte, zeek_select, zeek_join = _zeek_clause(s, e)
+        # Training hygiene: do not learn from windows the system already flagged (see
+        # _flagged_exclusion_clause). Empty string when disabled.
+        excl = _flagged_exclusion_clause(s, e, self.cfg)
         # The shared helper returns `z.<feature>` per column, correct for a per-row SELECT. This
         # query GROUPS BY src_addr, so each column has to sit under an aggregate. Built here
         # from the same ZEEK_FEATURES list the helper uses, so the names still cannot drift --
@@ -453,10 +580,31 @@ class AdaptiveBaselineDetector(BaseDetector):
                 -- in GROUP BY keys`. `avg` for the measurements, `max` for the presence flag
                 -- (mean presence is meaningless; "seen at any point" is the question).
                 {zeek_select},
-                max(coalesce(z.zeek_conn_count, 0) > 0)  AS zeek_seen
+                max(coalesce(z.zeek_conn_count, 0) > 0)  AS zeek_seen,
+                -- THE BEHAVIOURAL DISPERSIONS, MEASURED RATHER THAN COPIED FROM THE MEAN.
+                --
+                -- These were previously faked in Python: `stddev_conn` was a copy of
+                -- `avg_conn` and the notices z-score divided by `max(avg_notices, 1.0)`.
+                -- A mean-copy prices one new event on a quiet host as if it were a
+                -- mu-sigma event -- for a host averaging 5 conns, one extra refused
+                -- connection read as a 1-sigma-ish signal and 50 read as 9-sigma,
+                -- saturating. Poisson-ish counts have sigma ~ sqrt(mu); the honest
+                -- number comes from the SAME sqrt(varPop(...)) estimator the volume
+                -- stats above use, applied per host across the training window.
+                --
+                -- The S0 columns are COUNT-scale on purpose: predict() compares a
+                -- window's S0 COUNT (ratio x conns) against the baseline, so the
+                -- baseline must live in the same units. Comparing a count observation
+                -- to a ratio baseline was a units mismatch the old 1.0 floor masked.
+                sqrt(varPop(coalesce(z.zeek_conn_count, 0)))            AS zeek_conn_sd,
+                avg(coalesce(z.zeek_s0_ratio, 0)
+                    * coalesce(z.zeek_conn_count, 0))                   AS zeek_s0_count_avg,
+                sqrt(varPop(coalesce(z.zeek_s0_ratio, 0)
+                    * coalesce(z.zeek_conn_count, 0)))                  AS zeek_s0_count_sd,
+                sqrt(varPop(coalesce(z.zeek_notice_count, 0)))          AS zeek_notice_sd
             FROM weirvern.flows_aggregated a
             {zeek_join}
-            WHERE a.window_start BETWEEN '{s}' AND '{e}'
+            WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}
             GROUP BY a.src_addr
             HAVING count() >= {int(self.cfg.baseline_min_obs)}
             LIMIT 100000
@@ -544,13 +692,24 @@ class AdaptiveBaselineDetector(BaseDetector):
                 conn = float(features.get("zeek_conn_count", 0.0) or 0.0)
                 s0 = float(features.get("zeek_s0_ratio", 0.0) or 0.0)
                 conn_z = (conn - b["avg_conn"]) / max(b["stddev_conn"], 1.0)
-                # The ratio is compared against the host's own typical S0 COUNT scaled to the
-                # window, because the ratio alone is 1.0 for a host that sends a single SYN.
-                s0_z = (s0 * max(conn, 1.0) - b["avg_s0"]) / max(b["stddev_s0"], 1.0)
+                # The observation is an S0 COUNT (ratio x conns) and is compared against the
+                # host's own typical S0 COUNT, in the same units. The old ratio-vs-count
+                # comparison was a units mismatch papered over by a 1.0 floor; the
+                # count-scale baseline arrived with the measured dispersions, and the
+                # .get() pair keeps pre-change artifacts working until the next retrain.
+                s0_count = s0 * max(conn, 1.0)
+                avg_s0_count = float(b.get("avg_s0_count", b.get("avg_s0", 0.0)) or 0.0)
+                sd_s0_count = float(
+                    b.get("stddev_s0_count", b.get("stddev_s0", 1.0)) or 1.0
+                )
+                s0_z = (s0_count - avg_s0_count) / max(sd_s0_count, 1.0)
                 # Notices are Zeek's own opinion; a host that normally raises none raising
-                # several is worth weighing even when its volume is unremarkable.
+                # several is worth weighing even when its volume is unremarkable. The
+                # divisor is the measured sigma when available (was: the mean itself).
                 notices = float(features.get("zeek_notice_count", 0.0) or 0.0)
-                notice_z = (notices - b["avg_notices"]) / max(b["avg_notices"], 1.0)
+                notice_z = (notices - b["avg_notices"]) / max(
+                    float(b.get("stddev_notices", b["avg_notices"]) or 0.0), 1.0
+                )
                 s_z = max(normalize_zscore(conn_z), normalize_zscore(s0_z),
                           normalize_zscore(notice_z))
 

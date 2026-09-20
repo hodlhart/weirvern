@@ -20,7 +20,19 @@ logger = logging.getLogger(__name__)
 # A detector score at/above this counts as a STRONG independent signal.
 # Two-or-more strong signals are required to escalate to high/critical severity
 # (see severity_of for the measured rationale).
+#
+# THE DEFAULT ONLY. The live value comes from Settings.strong_signal (env STRONG_SIGNAL),
+# because this was editable through the GUI/ConfigMap while nothing read the env var --
+# an edit that validated, restarted the worker, and changed nothing. The constant remains
+# for callers that have no Settings (tests, tools).
 STRONG_SIGNAL = 0.85
+
+
+def strong_signal_threshold(settings: Settings | None = None) -> float:
+    """The corroboration bar in force: the configured value, else the constant."""
+    if settings is None:
+        return STRONG_SIGNAL
+    return float(getattr(settings, "strong_signal", STRONG_SIGNAL) or STRONG_SIGNAL)
 
 
 @lru_cache(maxsize=8192)
@@ -92,7 +104,7 @@ def detection_confidence_factor(flow: dict, cfg) -> float:
 
 
 def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dict | None,
-                            cfg) -> bool:
+                            cfg, strong_signal: float | None = None) -> bool:
     """Is a lone strong detector corroborated by a direct structural signature?
 
     MEASURED PROBLEM: a pure SYN port scan (305 flows, 0 bytes, 300 ports) was
@@ -106,9 +118,13 @@ def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dic
     (diversity metrics are computed from the raw flows, independent of the ML
     scoring — they are evidence, not inference).
 
+    `strong_signal` is the configured corroboration bar (Settings.strong_signal);
+    None falls back to the module default so existing callers are unchanged.
+
     Returns True when the lone strong signal is backed by such a signature.
     """
-    strong = {n: s for n, s in scores.items() if s >= STRONG_SIGNAL}
+    bar = STRONG_SIGNAL if strong_signal is None else float(strong_signal)
+    strong = {n: s for n, s in scores.items() if s >= bar}
     if len(strong) != 1 or not diversity:
         return False
     ports = float(diversity.get("unique_dst_ports", 0) or 0)
@@ -272,9 +288,14 @@ def detect_flows(
 
         # Strong corroboration: how many detectors independently scored high.
         # Gates escalation to high/critical (see severity_of docstring).
-        strong_models = sum(1 for s in scores.values() if s >= STRONG_SIGNAL)
+        # The bar is the CONFIGURED one (STRONG_SIGNAL / Settings.strong_signal), which the
+        # GUI and ConfigMap advertise as editable -- reading the constant here meant an
+        # operator's edit validated and then changed nothing.
+        bar = strong_signal_threshold(settings)
+        strong_models = sum(1 for s in scores.values() if s >= bar)
         # Or a lone specialist backed by a direct structural signature.
-        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg)
+        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
+                                            strong_signal=bar)
 
         results.append({
             "window_start": flow["window_start"],

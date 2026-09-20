@@ -244,6 +244,10 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("detect_interval_s", "detect interval (s)"),
         ("base_threshold", "alert threshold"),
         ("min_agreement", "minimum agreement"),
+        # The corroboration bar for high/critical escalation. Now a real Settings field:
+        # it was previously a detector constant that the GUI advertised as editable, so an
+        # edit validated and changed nothing. A row exists only while a field exists behind it.
+        ("strong_signal", "strong signal bar"),
     ]),
     ("sensor", "Sensor", [
         ("sensor_mode", "mode"),
