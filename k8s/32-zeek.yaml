@@ -334,6 +334,62 @@ spec:
                 echo "[zeek] rotation: cap ${ZEEK_MAX_MB} MB, enforced by the prune CronJob"
               fi
               # Bare script path => loaded as a script (see the note above).
+              # ── CAPTURE FILTER (BPF) ────────────────────────────────────────
+              #
+              # A scanner sweeping the VLAN produces one-shot flow volume that is a picture of the
+              # scanner rather than of the network: every address a "new" destination, every port a
+              # "new" service. Dropping it at the SOCKET means Zeek never writes a log line for it,
+              # which is cheaper than filtering later and is the only way to keep it out of the
+              # files entirely.
+              #
+              # IT IS SEPARATE FROM THE INGEST-LAYER LIST, and deliberately so. This destroys the
+              # record before it exists, so nothing can be re-examined afterwards -- fine for a
+              # scanner, wrong for traffic you might want evidence about. `WEIRVERN_EXCLUDE_CIDRS`
+              # is the ingest list (counted, keeps the row out of the store only), and THIS is
+              # `WEIRVERN_CAPTURE_EXCLUDE_CIDRS`.
+              #
+              # UNVALIDATED EXPRESSIONS ARE THE DANGEROUS KIND: a bad one either fails Zeek at
+              # startup OR matches nothing and yields an empty-but-healthy capture that reads as a
+              # quiet network. So we build it here, print it, and let Zeek reject it loudly.
+              BPF=""
+              if [ -n "${WEIRVERN_CAPTURE_EXCLUDE_CIDRS:-}" ]; then
+                for net in $(echo "$WEIRVERN_CAPTURE_EXCLUDE_CIDRS" | tr ',' ' '); do
+                  case "$net" in
+                    *:*)  # an IPv6 literal: a v4-style `net` term would match nothing.
+                      echo "[zeek] FATAL: capture filter does not support IPv6 ('$net')." >&2
+                      echo "[zeek] FATAL: use WEIRVERN_EXCLUDE_CIDRS for it instead, which" >&2
+                      echo "[zeek] FATAL: filters at ingest and handles both families." >&2
+                      exit 1 ;;
+                    *.*/*)
+                      # An explicit prefix: libpcap honours it, and the mask is visible in the
+                      # compiled filter (verified: /24 emits `and #0xffffff00`).
+                      BPF="$BPF or net $net" ;;
+                    *.*)
+                      # A bare address. MEASURED: libpcap infers /32 here -- the compiled
+                      # bytecode for `net 203.0.113.5` is identical to `host 203.0.113.5`, with no
+                      # mask applied. That inference is a libpcap convenience a reader cannot
+                      # verify from this file, so it is written as /32 explicitly: same filter,
+                      # self-evident expression.
+                      BPF="$BPF or net $net/32" ;;
+                    *)
+                      echo "[zeek] FATAL: '$net' in WEIRVERN_CAPTURE_EXCLUDE_CIDRS is not a" >&2
+                      echo "[zeek] FATAL: CIDR or address. Refusing to start with a filter that" >&2
+                      echo "[zeek] FATAL: would silently match nothing." >&2
+                      exit 1 ;;
+                  esac
+                done
+                # `not (...)` so everything EXCEPT the listed networks is captured.
+                BPF="not ( ${BPF# or } )"
+                echo "[zeek] capture filter: $BPF"
+              fi
+              if [ -n "$BPF" ]; then
+                exec zeek -i "$IFACE" \
+                     -C \
+                     -f "$BPF" \
+                     /zeek/site/weirvern-local.zeek \
+                     Log::default_rotation_interval=1hr \
+                     Log::default_logdir=/zeek/logs
+              fi
               exec zeek -i "$IFACE" \
                    -C \
                    /zeek/site/weirvern-local.zeek \
@@ -345,6 +401,18 @@ spec:
                 configMapKeyRef:
                   name: weirvern-env
                   key: ZEEK_IFACE
+            # THE CAPTURE EXCLUSION LIST, DECLARED HERE OR IT DOES NOTHING. The startup
+            # script builds its BPF filter from this variable, and an UNDECLARED variable is
+            # EMPTY at runtime -- so the filter would silently never apply while the manifest
+            # appeared to configure it. Caught by tests/test_config_wiring.py, which is the
+            # point of having it. Read from the ConfigMap so the value the GUI writes is the
+            # one the sensor reads.
+            - name: WEIRVERN_CAPTURE_EXCLUDE_CIDRS
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: WEIRVERN_CAPTURE_EXCLUDE_CIDRS
+                  optional: true
             # Read only to WARN. The cap itself is enforced by the prune CronJob
             # (35-prune-cronjob.yaml), because this image has no python3 and the worker
             # mounts this directory read-only. But a cap that nothing enforces is the

@@ -258,8 +258,16 @@ def test_the_config_write_uses_the_SERVICEACCOUNT_not_kubectl():
     # explanation reads as the defect it documents.
     code = _code_only(src)
     assert "subprocess" not in code, "the write path shells out"
-    assert "kubectl" not in code, "the write path shells out to kubectl"
+    # `kubectl` now appears as the ANNOTATION KEY the API expects for a rollout
+    # (`kubectl.kubernetes.io/restartedAt`) -- a string sent TO the API, not a subprocess. So the
+    # assertion is on the MECHANISM: no shell invocation of any kind.
+    for shelling in ("subprocess.run", "subprocess.Popen", "os.system", "os.exec", "shutil.which"):
+        assert shelling not in code, f"the write path shells out via {shelling}"
     assert "urllib.request" in code, "the write does not call the API over HTTP"
+    assert "kubectl.kubernetes.io/restartedAt" in code, (
+        "the rollout annotation is not the one kubectl uses, so the two tools would see different "
+        "rollouts of the same workload"
+    )
 
 
 def test_a_403_explains_the_RBAC_requirement_rather_than_reporting_a_bare_failure():

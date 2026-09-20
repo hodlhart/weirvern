@@ -261,6 +261,10 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("intercept_addr", "intercept address"),
         ("intercept_gateway", "intercept gateway"),
         ("reverse_dns", "reverse DNS"),
+        # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
+        # thing an operator needs to respond to without a redeploy.
+        ("exclude_cidrs", "exclude from learning"),
+        ("capture_exclude_cidrs", "exclude at capture"),
     ]),
     ("runtime", "Storage and runtime", [
         ("clickhouse_host", "ClickHouse host"),

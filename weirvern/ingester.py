@@ -121,11 +121,61 @@ def map_flow(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# The exclusion filter, set once by the worker at startup. Module-level rather than passed through
+# every mapper because the mappers are pure functions used by tests, and threading a filter through
+# twenty of them would make each one harder to call for no benefit. `None` means "nothing excluded",
+# which is the behaviour every existing caller and test already expects.
+class ExclusionFilter(Protocol):
+    """What the ingester needs from a filter.
+
+    A Protocol rather than the concrete class so this module does not import `exclude` -- the
+    mappers are used standalone in tests and must not drag the whole exclusion stack in with them.
+    """
+
+    def excluded(self, *addrs: str | None) -> str | None: ...
+
+
+_FILTER: ExclusionFilter | None = None
+
+
+def set_traffic_filter(f: ExclusionFilter | None) -> None:
+    """Install the exclusion filter for this process. Called once, at worker startup."""
+    global _FILTER
+    _FILTER = f
+
+
+def traffic_filter() -> ExclusionFilter | None:
+    """The installed filter, or None."""
+    return _FILTER
+
+
+def _excluded(row: dict[str, Any]) -> bool:
+    """Whether this row names an excluded address. Counts the drop as a side effect."""
+    f = _FILTER
+    if f is None:
+        return False
+    return f.excluded(str(row.get("src_addr") or ""), str(row.get("dst_addr") or "")) is not None
+
+
 def insert_batch(client: Inserter, rows: list[dict[str, Any]]) -> int:
+    """Write flow rows, dropping any that name an excluded address.
+
+    FILTERED HERE BECAUSE THIS IS THE FUNNEL. Every flow row reaches the store through this one
+    function, so a filter here cannot be bypassed by a new caller the way a per-caller filter
+    would be. It is also the last point where BOTH addresses are still available in Python: after
+    this the row is a positional tuple.
+
+    The drop is COUNTED by the filter (`TrafficFilter.excluded`), not silent. A quiet reduction in
+    row count is indistinguishable from a broken ingester, and this project has already paid for
+    that confusion once.
+    """
     if not rows:
         return 0
-    client.insert("weirvern.flows", [[r[c] for c in _COLUMNS] for r in rows], column_names=_COLUMNS)
-    return len(rows)
+    keep = [r for r in rows if not _excluded(r)]
+    if not keep:
+        return 0
+    client.insert("weirvern.flows", [[r[c] for c in _COLUMNS] for r in keep], column_names=_COLUMNS)
+    return len(keep)
 
 
 # =============================================================================
@@ -1024,6 +1074,12 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             rec = {k: ("" if v == "-" else v) for k, v in rec.items()}
             row = mapper(rec)
             if row is None:
+                continue
+            # EXCLUSION APPLIES TO ZEEK ROWS TOO. A scanner shows up in conn.log exactly as it
+            # does in NetFlow, and the two paths must agree about what the sensor refuses to learn
+            # from -- one filter, installed once, consulted by both. Counting happens inside the
+            # filter, so a drop is reported rather than inferred from a smaller number.
+            if _excluded(row):
                 continue
             batch.append([row.get(c) for c in columns])
             if len(batch) >= BATCH_SIZE:

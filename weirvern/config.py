@@ -123,6 +123,19 @@ class Settings:
     # Data input (goflow2 JSONL sink)
     tail_file: str = field(default_factory=lambda: os.environ.get("TAIL_FILE", "/data/flows.jsonl"))
 
+    # Addresses the sensor refuses to LEARN from: scanners, synthetic test ranges, noisy hosts.
+    # Comma-separated CIDRs. Applied at the row layer so the traffic is counted rather than
+    # vanishing, which keeps the evidence available for a manual look.
+    exclude_cidrs: str = field(
+        default_factory=lambda: os.environ.get("WEIRVERN_EXCLUDE_CIDRS", "")
+    )
+    # Addresses dropped at the CAPTURE socket instead. Empty by default, and separate from the
+    # above on purpose: this destroys the record before it exists, so it must be chosen
+    # deliberately rather than inherited from a list added for ingest.
+    capture_exclude_cidrs: str = field(
+        default_factory=lambda: os.environ.get("WEIRVERN_CAPTURE_EXCLUDE_CIDRS", "")
+    )
+
     # Zeek packet-level logs (optional second sensor). Empty = NetFlow only.
     zeek_log_dir: str = field(default_factory=lambda: os.environ.get("ZEEK_LOG_DIR", ""))
 

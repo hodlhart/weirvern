@@ -117,6 +117,10 @@ def test_the_startup_script_and_the_env_list_agree(docs):
     internal = {
         "IFACE", "MGMT", "MODE", "DEFROUTE", "CAPS", "IFLAGS", "HOME", "PATH", "PWD",
         "SHELL", "HOSTNAME", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
+        # BPF is the script's OWN local: it is built from WEIRVERN_CAPTURE_EXCLUDE_CIDRS and
+        # assigned before use (`BPF=""` then appended to). Requiring it in env: would be wrong for
+        # the same reason MODE and MGMT are wrong -- it is derived, not configured.
+        "BPF",
     }
     missing = {v for v in referenced if v not in declared and v not in internal}
     assert not missing, (

@@ -23,6 +23,7 @@ says "saved" over a change that did not land is worse than one that errors.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
 import logging
 import ssl
@@ -64,6 +65,8 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "INTERCEPT_ADDR",
     "INTERCEPT_GATEWAY",
     "SENSOR_MODE",
+    "WEIRVERN_EXCLUDE_CIDRS",
+    "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
 )
 
 # Which workload must restart for a key to take effect. A ConfigMap env var is read at process
@@ -90,6 +93,12 @@ _RESTART_FOR: dict[str, tuple[str, str]] = {
     "PUSHOVER_COOLDOWN_S": ("deploy/weirvern-worker", "restarts the detection worker"),
     "PUSHOVER_MAX_PER_HOUR": ("deploy/weirvern-worker", "restarts the detection worker"),
     "WEIRVERN_REVERSE_DNS": ("deploy/weirvern-worker", "restarts the detection worker"),
+    # The worker installs the ingest filter at startup; Zeek reads the capture list at
+    # startup too, so BOTH restart for a change to either to take effect.
+    "WEIRVERN_EXCLUDE_CIDRS": ("deploy/weirvern-worker",
+                               "restarts the detection worker"),
+    "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": ("ds/zeek",
+                                      "restarts the capture sensor (brief capture gap)"),
 }
 
 
@@ -206,6 +215,38 @@ def validate(key: str, value: str) -> str:
     if key == "PUSHOVER_ENABLED":
         if raw.lower() not in ("true", "false", "1", "0", "yes", "no", ""):
             raise ConfigError(f"{key} must be true or false, not '{raw}'")
+        return ""
+
+    if key in ("WEIRVERN_EXCLUDE_CIDRS", "WEIRVERN_CAPTURE_EXCLUDE_CIDRS"):
+        # VALIDATED HERE, at the point of write, using the SAME parser the ingester uses. A value
+        # that reaches the worker and fails to parse does not degrade gracefully: the worker
+        # REFUSES TO START, so a typo in this field is an outage rather than a no-op. Catching it
+        # before it is written is the difference between a refused form and a dead sensor.
+        from weirvern import exclude as exclude_mod
+
+        try:
+            nets = exclude_mod.parse_cidrs(raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from None
+        if key == "WEIRVERN_CAPTURE_EXCLUDE_CIDRS":
+            v6 = [n for n in nets if n.version != 4]
+            if v6:
+                raise ConfigError(
+                    f"the capture filter does not support IPv6 ({', '.join(str(n) for n in v6)}). "
+                    f"A v4-shaped BPF term for a v6 network matches nothing and yields an "
+                    f"empty-but-healthy capture. Use {exclude_mod.EXCLUDE_ENV} for IPv6."
+                )
+            if nets:
+                # Stated before it is applied, because this one cannot be undone for traffic that
+                # has already passed.
+                return ("dropped at the capture socket: Zeek will not record this traffic at all, "
+                        "so it cannot be reviewed later. Use the ingest list if you may want the "
+                        "evidence.")
+            return ""
+        if nets:
+            return (f"{len(nets)} network(s) excluded from learning. The traffic still reaches the "
+                    f"sensor and is counted, not stored — use the capture list for traffic that "
+                    f"should never be recorded.")
         return ""
 
     if key == "WEIRVERN_REVERSE_DNS":
@@ -364,33 +405,60 @@ class ClusterConfig:
     def restart(self, target: str) -> None:
         """Roll a workload so it re-reads the ConfigMap.
 
-        A ConfigMap env var is read at process start, so without this the change is inert and the
-        operator has no way to tell. Done via the API rather than kubectl for the same reason as
-        the write.
+        A ConfigMap env var is read at process start, so a change without a restart is INERT -- the
+        operator would be told "saved" about something that is not in effect.
+
+        THERE IS NO /restart ENDPOINT. This first version POSTed to
+        `.../deployments/<name>/restart`, which does not exist: the live deployment answered 403
+        and the change sat unapplied while reporting success-with-a-caveat. `kubectl rollout
+        restart` works by PATCHING the pod template with a timestamp annotation, which changes the
+        template hash and rolls the pods. That is what this does now.
         """
         kind, _, name = target.partition("/")
         if kind not in ("deploy", "ds", "statefulset"):
             raise ConfigError(f"cannot restart '{target}': unknown workload kind '{kind}'")
-        path = {
-            "deploy": "deployments",
-            "ds": "daemonsets",
-            "statefulset": "statefulsets",
-        }[kind]
-        url = (f"{self.api_host}/apis/apps/v1/namespaces/{self.namespace}/{path}/{name}"
-               f"/restart")
-        req = urllib.request.Request(url, data=b"{}", method="POST")
+        path = {"deploy": "deployments", "ds": "daemonsets",
+                "statefulset": "statefulsets"}[kind]
+        url = f"{self.api_host}/apis/apps/v1/namespaces/{self.namespace}/{path}/{name}"
+
+        # THE SAME KEY kubectl uses, so either tool sees the other's rollout. A stable,
+        # ISO-8601 second-resolution stamp: two restarts inside one second would produce the same
+        # annotation and the second would be a no-op.
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        patch = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {"kubectl.kubernetes.io/restartedAt": stamp}
+                    }
+                }
+            }
+        }
+        body = json.dumps(patch).encode()
+        req = urllib.request.Request(url, data=body, method="PATCH")
         req.add_header("Authorization", f"Bearer {self.token()}")
-        req.add_header("Content-Type", "application/json")
+        # Merge patch, so only the annotation changes: a strategic or JSON patch here could
+        # reorder containers, and an update PUT would replace the whole workload spec.
+        req.add_header("Content-Type", "application/merge-patch+json")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout,
                                         context=self._ssl_context()):
                 return
         except urllib.error.HTTPError as exc:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = exc.read().decode()[:300]
+            if exc.code == 403:
+                raise ConfigError(
+                    f"the configuration was SAVED but {target} could not be restarted (403). The "
+                    f"GUI's ServiceAccount needs patch on {path} in {self.namespace}. Until it is "
+                    f"rolled, {target} is still running the old settings."
+                ) from exc
             raise ConfigError(
-                f"the configuration was saved but {target} could not be restarted ({exc.code}). "
-                f"Roll it by hand to apply the change."
+                f"the configuration was SAVED but {target} could not be restarted ({exc.code}): "
+                f"{detail}"
             ) from exc
         except urllib.error.URLError as exc:
             raise ConfigError(
-                f"the configuration was saved but {target} could not be restarted: {exc.reason}"
+                f"the configuration was SAVED but {target} could not be restarted: {exc.reason}"
             ) from exc

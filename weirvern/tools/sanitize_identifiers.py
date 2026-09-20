@@ -143,6 +143,20 @@ UNIVERSAL_EXAMPLES = {
     "172.16.0.0", "172.16.0.1", "172.16.0.5",
     "192.168.0.0", "192.168.0.1", "192.168.1.1",
     "100.64.0.0",
+    # SOFTWARE DEFAULTS, not observations. These are the networks a stock Kubernetes install and a
+    # stock Docker daemon choose for themselves, and the product has to name them to exclude its
+    # own plumbing from the data it learns from. They are the same on every deployment, so they
+    # describe the SOFTWARE rather than anyone's network -- which is what separates them from a
+    # lab address.
+    #
+    # Added BY VALUE and per network, deliberately: the value-based list is as narrow as an
+    # exemption gets, and a file-wide or range-wide allowance is what let a real address through
+    # before. Verified these are the real defaults on the deployment's own node (cni0 10.42.0.1/24,
+    # service CIDR 10.43.0.0/16, docker0 172.17.0.1/16) -- a drift here would make the exclusion
+    # rules silently match nothing.
+    "10.42.0.0", "10.42.0.1",
+    "10.43.0.0", "10.43.0.1",
+    "172.17.0.0", "172.17.0.1",
 }
 
 # A MAC that is obviously SYNTHETIC rather than captured -- the test is whether the octets look

@@ -470,6 +470,24 @@ def main() -> None:
     cfg = ModelConfig()
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    # INSTALL THE EXCLUSION FILTER BEFORE ANY ROW IS WRITTEN. Set at startup rather than per
+    # batch so the ingest paths cannot disagree, and so a malformed CIDR refuses to start the
+    # worker instead of appearing to work while filtering nothing.
+    try:
+        from weirvern import exclude as exclude_mod
+        from weirvern import ingester as ingester_mod
+
+        _filter = exclude_mod.from_env()
+        ingester_mod.set_traffic_filter(_filter)
+        if _filter.enabled:
+            logger.info("Traffic exclusion rules: %s", ", ".join(_filter.rules))
+    except ValueError as exc:
+        # A malformed list is a CONFIGURATION error, and starting anyway would silently filter
+        # the wrong thing (or nothing). Refusing is the honest failure.
+        logger.error("WEIRVERN_EXCLUDE_CIDRS is invalid: %s", exc)
+        raise SystemExit(2) from exc
+
     client = db.connect(settings)
     db.apply_schema(client, settings)
     logger.info("Schema ready — starting Weirvern worker")
