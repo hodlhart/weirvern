@@ -151,6 +151,11 @@ def host_payload(detail: dict) -> dict:
         "src_addr": src,
         "hostname": _hostname(src),
         "hours": hours,
+        # THE FAILURES TRAVEL WITH THE DATA. status.host_detail records a failed sub-query in
+        # `_errors`; dropping it here made a broken query render as "No flows from <addr>" --
+        # the same class of defect as the Zeek chart that drew an empty axis over a correct
+        # payload. A zero and an unmeasured value must not look alike.
+        "errors": detail.get("_errors") or None,
         "totals": totals_obj,
         "top_destinations": [
             {"dst_addr": r[0], "hostname": _hostname(r[0]),

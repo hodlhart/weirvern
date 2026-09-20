@@ -819,7 +819,12 @@ def alert_evidence(client, src_addr: str, window_start: str,
         res = client.query(
             "SELECT window_start, window_end, anomaly_score, severity, "
             "detected_by_models, baseline_comparison, primary_deviation_feature, "
-            "primary_deviation_zscore, feature_contributions "
+            "primary_deviation_zscore, feature_contributions, "
+            # The worker writes these on every anomaly and the Pushover alert prints them, but
+            # the evidence query never selected them -- so the ONE page an analyst opens to read
+            # the measurement behind an alert could never show a technique. The front end asks
+            # for parseTechniques(d.anomaly.attack_techniques) and got undefined every time.
+            "attack_techniques, attack_label "
             "FROM weirvern.netflow_anomalies WHERE src_addr = %(a)s "
             "AND window_start = parseDateTime64BestEffort(%(w)s) LIMIT 1",
             parameters={"a": src_addr, "w": window_start},
@@ -834,6 +839,7 @@ def alert_evidence(client, src_addr: str, window_start: str,
                 "primary_deviation_feature": row[6],
                 "primary_deviation_zscore": row[7],
                 "feature_contributions": row[8],
+                "attack_techniques": row[9], "attack_label": row[10],
             }
     except Exception as exc:  # noqa: BLE001
         logger.warning("alert_evidence window lookup failed: %s", exc)

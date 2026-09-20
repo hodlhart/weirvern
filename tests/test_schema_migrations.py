@@ -21,6 +21,7 @@ next person to add a column cannot skip it by not knowing about it.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -99,10 +100,36 @@ def test_every_column_read_by_the_worker_is_created_somewhere():
     # wrong statement -- first the ml_models insert (the first `client.insert` in the file),
     # then a SELECT against netflow_anomalies -- and so failed while asserting nothing about
     # the insert at all. Anchoring on the full insert call is what makes the check real.
-    insert_start = worker.index('client.insert("weirvern.netflow_anomalies"')
-    assert "attack_techniques" in worker[insert_start:insert_start + 900], (
+    # The column LIST is now a module-level tuple (_ANOMALY_COLUMNS) so the row/column arity can
+    # be checked at the insert site. Follow it: the point of this assertion is that the column is
+    # actually POPULATED, not that its name appears in a particular window of text.
+    cols_start = worker.index("_ANOMALY_COLUMNS")
+    cols_end = worker.index(")", cols_start)
+    assert "attack_techniques" in worker[cols_start:cols_end], (
         "the worker does not pass attack_techniques on the anomaly insert, so the column would "
         "always hold its default and the migration would be pointless"
+    )
+    assert "attack_label" in worker[cols_start:cols_end]
+
+    # AND THE OTHER HALF, which nothing checked before and which is how the two drifted: the ROW
+    # must supply a value for every column name. Asserting only that the name appears let the row
+    # fall two values short, so every insert raised ProgrammingError inside the worker loop -- a
+    # total detection outage that the status page reported as a quiet network.
+    # Count with the AST, not a regex over text: the row literal contains nested calls
+    # (json.dumps(...), datetime.now()) and a comma-split cannot tell an argument separator from
+    # an element separator. An off-by-one here would make this guard lie in the quiet direction.
+    tree = ast.parse(worker)
+    n_values = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append" and node.args
+                and isinstance(node.args[0], ast.List)):
+            n_values = len(node.args[0].elts)
+    assert n_values is not None, "could not find the anomaly row literal"
+    n_columns = len(re.findall(r'"([a-z_]+)"', worker[cols_start:cols_end]))
+    assert n_values == n_columns, (
+        f"the anomaly insert writes {n_values} values against {n_columns} column names; "
+        "a positional INSERT must agree in length and order or every insert raises"
     )
 
 

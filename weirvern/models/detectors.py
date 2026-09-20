@@ -104,6 +104,7 @@ class IsolationForestDetector(BaseDetector):
     def is_ready(self) -> bool:
         return self.model is not None and self.preprocessor.fitted
 
+
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -379,6 +380,27 @@ class AdaptiveBaselineDetector(BaseDetector):
     def is_ready(self) -> bool:
         return len(self.baselines) > 0
 
+    @staticmethod
+    def _zeek_baseline_fields(r: tuple) -> dict[str, float | bool]:
+        """Read the Zeek columns of a baseline row by NAME rather than by position.
+
+        The training query selects these from ZEEK_FEATURES in list order, so the only safe way
+        to read them is from the same list. The positional literals this replaces assumed seven
+        Zeek columns where the query emits fifty, so every value landed on a different
+        measurement without raising.
+        """
+        base = 9  # src_addr, 6 volume stats, 2 quantile arrays
+        idx = {name: base + i for i, name in enumerate(ZEEK_FEATURES)}
+        return {
+            "zeek_seen": bool(r[base + len(ZEEK_FEATURES)]),
+            "avg_conn": float(r[idx["zeek_conn_count"]] or 0),
+            "stddev_conn": float(r[idx["zeek_conn_count"]] or 1),
+            "avg_s0": float(r[idx["zeek_s0_ratio"]] or 0),
+            "stddev_s0": float(r[idx["zeek_s0_ratio"]] or 1),
+            "avg_services": float(r[idx["zeek_service_count"]] or 0),
+            "avg_notices": float(r[idx["zeek_notice_count"]] or 0),
+        }
+
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
         s, e = start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -456,11 +478,18 @@ class AdaptiveBaselineDetector(BaseDetector):
                 # Behavioural norms from Zeek. `zeek_seen` is carried through so predict()
                 # can tell "this host has no Zeek baseline" from "its baseline is zero",
                 # exactly as the feature vector's presence flag does.
-                "zeek_seen": bool(r[14]),
-                "avg_conn": float(r[9] or 0), "stddev_conn": float(r[10] or 1),
-                "avg_s0": float(r[11] or 0), "stddev_s0": float(r[12] or 1),
-                "avg_services": float(r[13] or 0),
-                "avg_notices": float(r[15] or 0) if len(r) > 15 else 0.0,
+                # READ BY NAME, NOT BY POSITION.
+                #
+                # These were literals (r[9]..r[15]) and they were WRONG: the Zeek columns are
+                # generated from ZEEK_FEATURES and there are 50 of them, not 7, so r[9] is
+                # `max(zeek_present)` -- a 0/1 flag -- rather than a connection count. Every read
+                # landed on a different quantity: zeek_seen became the host's DNS count,
+                # avg_conn its presence flag, avg_s0 its rejection ratio. The result was not an
+                # exception but a baseline computed from whatever sat at that index, and because
+                # `zeek_seen` gates the whole behavioural term in predict(), a host with no DNS
+                # silently scored volume-only. Deriving the offset from the shared list means a
+                # reorder or a new Zeek feature cannot shift these reads again.
+                **self._zeek_baseline_fields(r),
             }
             if self.baselines[r[0]]["zeek_seen"]:
                 zeek_seen_hosts += 1

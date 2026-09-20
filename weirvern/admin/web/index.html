@@ -396,20 +396,6 @@
     </div>
 
     <div class="card">
-      <h2>Look up one address</h2>
-      <div class="controls">
-        <label>address
-          <input type="text" id="h-addr" placeholder="203.0.113.42" list="known-hosts">
-          <datalist id="known-hosts"></datalist>
-        </label>
-        <label>hours <input type="number" id="h-hours" value="24" min="1" max="336"></label>
-        <button id="h-go">Look up</button>
-      </div>
-      <p class="muted" id="h-hint">Shows volume, destinations, ports and every anomaly for one
-        address.</p>
-    </div>
-
-    <div class="card">
       <h2>Host drill-down</h2>
       <div class="controls">
         <label>address
@@ -519,7 +505,7 @@
     -->
     <div class="card" id="st-auth-card">
       <h2>Operator access</h2>
-      <p class="muted" id="st-auth-note">checking…</p>
+      <p class="muted" id="st-auth-note"></p>
       <div class="controls" id="st-auth-controls">
         <input id="st-token" type="password" placeholder="operator token" autocomplete="off"
                spellcheck="false">

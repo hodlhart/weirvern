@@ -37,6 +37,12 @@ function el(tag, opts = {}, children = []) {
   const node = document.createElement(tag);
   if (opts.class) node.className = opts.class;
   if (opts.text !== undefined) node.textContent = String(opts.text);
+  // `value` is not `text`. An <input> has no textContent, so a value passed through opts.text
+  // set nothing and every editable settings field rendered BLANK: the operator could not see the
+  // value they were about to change, and a stray keystroke would stage an empty string over a
+  // working setting. `=== null` is handled because an unset secret reports null, and
+  // String(null) would render the word "null".
+  if (opts.value !== undefined) node.value = opts.value === null ? "" : String(opts.value);
   if (opts.title) node.title = String(opts.title);
   if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v);
   if (opts.on) for (const [ev, fn] of Object.entries(opts.on)) node.addEventListener(ev, fn);
@@ -342,6 +348,11 @@ async function refreshAuthNote() {
 }
 
 async function loadSettings() {
+  // Resolve the auth note on LOAD, not only when a token button is clicked. It shipped as
+  // "checking…" and stayed that way until the operator happened to click Use/Forget token, so the
+  // one card that says whether writes are even possible reported a state that would never
+  // resolve -- the orphaned-"loading…" defect again.
+  await refreshAuthNote();
   const data = await getJSON("/api/settings");
   const sum = document.getElementById("st-summary");
   const win = document.getElementById("st-window");
@@ -478,10 +489,17 @@ async function loadHost(addr, hours) {
 
   const stats = document.getElementById("h-stats");
   stats.replaceChildren();
+  // SAY WHY WHEN THE QUERY FAILED. A failed sub-query and a host that sent nothing used to
+  // produce the identical "No flows" line, so a broken query was indistinguishable from a quiet
+  // host -- on the view an analyst opens to answer "did this host do anything". The evidence view
+  // already routes its failures through showDataError; this is the same treatment.
+  showDataError(d.errors ? Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join(" | ") : null);
   const t = d.totals;
   if (!t) {
     stats.appendChild(el("p", { class: "empty",
-      text: `No flows from ${d.src_addr} in the last ${d.hours}h.` }));
+      text: d.errors
+        ? "Host totals could not be read — see the message above."
+        : `No flows from ${d.src_addr} in the last ${d.hours}h.` }));
   } else {
     const items = [
       ["bytes", fmtBytes(t.bytes)], ["packets", String(t.packets ?? "—")],
@@ -754,8 +772,14 @@ function showDataError(msg) {
   }));
 }
 function clearError() {
-  const b = document.getElementById("err-banner");
-  if (b) b.remove();
+  // BOTH banners, not just one. showError() creates #err-banner and showDataError() creates
+  // #data-banner, but this only removed the first -- so a data error stayed pinned to the top of
+  // the page after the operator moved to another view, describing a tab they had left. Either id
+  // may or may not exist, hence the loop rather than two lookups.
+  for (const id of ["err-banner", "data-banner"]) {
+    const b = document.getElementById(id);
+    if (b) b.remove();
+  }
 }
 
 function showView(name) {

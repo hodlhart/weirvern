@@ -97,9 +97,16 @@ def format_message(verdict: dict) -> str:
     #                          would be noise on every alert that lacks one, and worse, it
     #                          would appear to clear the window. Absence of a mapping is
     #                          absence of a mapping; the alert already says what was measured.
-    techniques = verdict.get("attack_techniques") or []
-    if techniques:
-        lines.append(f"ATT&CK: {attack.summarise(techniques)}")
+    # PREFER THE MATCH OBJECTS. `attack_techniques` is the JSON form (a list of dicts) written to
+    # the database; summarise() needs Match objects. Reading the dicts here raised AttributeError
+    # on `.confidence` and took the whole alert with it -- a crash in the formatter lost the alert
+    # entirely rather than degrading one line of it. The dict form is converted rather than
+    # ignored so an alert stays renderable from a stored row too.
+    matches = verdict.get("_attack_matches")
+    if matches is None:
+        matches = [attack.Match.from_dict(t) for t in (verdict.get("attack_techniques") or [])]
+    if matches:
+        lines.append(f"ATT&CK: {attack.summarise(matches)}")
     return "\n".join(lines)
 
 

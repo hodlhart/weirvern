@@ -235,6 +235,31 @@ class Match:
             "evidence": list(self.evidence),
             "network_visibility": self.technique.network_visibility,
         }
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Match:
+        """Rebuild a Match from the JSON form that as_dict() produces.
+
+        THE ROUND TRIP IS THE POINT. `attack_techniques` is stored as JSON (a list of dicts) and
+        the alert formatter needs Match objects; when only the dict form was available, reading
+        `.confidence` on it raised AttributeError and the alert was lost entirely. Keeping the
+        inverse of as_dict() beside it means the two shapes cannot drift silently, and the
+        technique is looked up by id so a renamed technique cannot resurrect a stale name.
+        """
+        tid = d.get("id") or ""
+        tech = TECHNIQUES.get(tid)
+        if tech is None:
+            tech = Technique(
+                id=tid,
+                name=str(d.get("name") or tid),
+                tactic=str(d.get("tactic") or "unknown"),
+                network_visibility=str(d.get("network_visibility") or "partial"),
+            )
+        return cls(
+            technique=tech,
+            confidence=str(d.get("confidence") or "low"),
+            evidence=list(d.get("evidence") or []),
+        )
+
 
 
 def _f(v: Any, default: float = 0.0) -> float:

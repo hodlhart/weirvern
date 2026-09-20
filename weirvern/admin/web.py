@@ -758,9 +758,17 @@ def _build_handler(ctx: GuiContext):
             # The editable keys, so the UI offers exactly what the server will accept -- derived
             # here rather than duplicated in JavaScript.
             try:
-                from weirvern.admin.cluster_config import EDITABLE_KEYS
+                from weirvern.admin.cluster_config import EDITABLE_KEYS, to_row_key
 
-                payload["editable_keys"] = list(EDITABLE_KEYS)
+                # LOWER-CASED TO MATCH THE ROW KEYS. EDITABLE_KEYS are the ConfigMap's own
+                # key names (BASE_THRESHOLD, ...) because that is what an apply writes; the
+                # settings rows the GUI renders use lowercase Settings attribute names
+                # (base_threshold, ...). Sending the upper-case form made the intersection the
+                # front end computes empty, so EVERY field rendered read-only and Apply was
+                # disabled forever: the whole token/plan/apply path was unreachable while the
+                # server would have accepted a POST. Normalise here, at the boundary, so the
+                # two vocabularies only ever meet in one place.
+                payload["editable_keys"] = [to_row_key(k) for k in EDITABLE_KEYS]
             except Exception:  # noqa: BLE001
                 payload["editable_keys"] = []
 

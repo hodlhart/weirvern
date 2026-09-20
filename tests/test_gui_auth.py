@@ -30,6 +30,7 @@ import pytest
 
 from weirvern.admin import cluster_config as cc
 from weirvern.admin import gui_auth
+from weirvern.admin import status as status_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "weirvern" / "admin" / "web.py"
@@ -190,7 +191,23 @@ def test_the_settings_ROUTE_actually_returns_the_write_state():
         "the route does not report which keys it will accept, so the UI would guess"
     )
     assert "CLICKHOUSE_PASSWORD" not in emitted["editable_keys"]
-    assert "BASE_THRESHOLD" in emitted["editable_keys"]
+    # ROW KEYS, not ConfigMap keys. This assertion used to require "BASE_THRESHOLD", which pinned
+    # the defect in place: the route sent the ConfigMap vocabulary while every settings ROW is
+    # named for a Settings attribute, so the front end's intersection was empty and all 30 fields
+    # rendered read-only with Apply disabled forever. The contract that matters is that the keys
+    # the route advertises actually match rows the settings payload renders.
+    assert "base_threshold" in emitted["editable_keys"]
+    assert "BASE_THRESHOLD" not in emitted["editable_keys"], (
+        "the route must speak the settings-ROW vocabulary; ConfigMap keys never match a row"
+    )
+    rendered_rows = {
+        k for _g, _t, rows in status_mod._SETTINGS_GROUPS for k, _label in rows
+    }
+    matched = set(emitted["editable_keys"]) & rendered_rows
+    assert len(matched) >= 15, (
+        f"only {len(matched)} of {len(emitted['editable_keys'])} advertised keys match a rendered "
+        "settings row, so the operator cannot edit them"
+    )
 
 
 def test_the_settings_route_reports_writes_DISABLED_when_no_token_is_set():

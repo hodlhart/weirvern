@@ -10,6 +10,7 @@ Run as:  python -m weirvern.worker
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -213,6 +214,19 @@ def _record_model_metadata(client: Client, detectors) -> None:
             logger.warning("Could not record metadata for %s: %s", d.name, exc)
 
 
+# The anomaly row's column names, defined ONCE. The row literal in detection_sweep and this tuple
+# must agree in length AND order; separating the two definitions is what let them drift by two
+# columns (the ATT&CK pair was added here and not to the row).
+_ANOMALY_COLUMNS: tuple[str, ...] = (
+    "detected_at", "window_start", "window_end", "src_addr", "anomaly_score",
+    "confidence", "isolation_forest_score", "gradient_boosting_score",
+    "dbscan_score", "baseline_score", "model_agreement",
+    "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
+    "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
+    "attack_techniques", "attack_label",
+)
+
+
 def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> list[dict]:
     """One detection pass over the last DETECT_INTERVAL_S of aggregates.
 
@@ -393,7 +407,14 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         techniques = attack.map_techniques(f)
         zeek_rows = protocol_by_host.get(v["src_addr"]) or []
         techniques += attack.map_zeek_techniques(zeek_rows)
+        # BOTH SHAPES, deliberately. The DB column needs JSON-serialisable dicts; the alert
+        # formatter needs the Match objects, because attack.summarise() reads `.confidence` and
+        # `.technique.id`. Storing only dicts made the ATT&CK line raise AttributeError inside
+        # push_alert -- which is swallowed by the worker loop, so every detection that DID carry a
+        # technique attribution was silently lost: the alert most worth having was the one that
+        # never arrived. Keep the objects under a private key the row writer does not read.
         v["attack_techniques"] = [m.as_dict() for m in techniques]
+        v["_attack_matches"] = techniques
         v["attack_label"] = attack.label(techniques)
         rows.append([
             datetime.now(), v["window_start"], f.get("window_end"), v["src_addr"],
@@ -403,7 +424,22 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             exp["primary_deviation_zscore"], exp["deviation_magnitude"],
             exp["feature_contributions"], exp["baseline_comparison"],
             v["detected_by_models"], v["severity"],
+            # ATT&CK LAST, matching _ANOMALY_COLUMNS. json.dumps because the column is a String
+            # holding a list of objects: a raw list would be stringified by the driver into Python
+            # repr, which is not JSON and cannot be parsed back.
+            json.dumps(v["attack_techniques"]), v["attack_label"],
         ])
+    # THE GUARD THAT SHOULD HAVE CAUGHT THIS. A positional INSERT is correct only while the row
+    # and the column list agree in length AND order, and they used to live 20 lines apart.
+    # clickhouse-connect does raise on a mismatch (driver/insert.py:94), but it raises INSIDE the
+    # worker loop, where the generic handler turns it into "a quiet network". Fail here instead,
+    # where the message can name the cause.
+    for _row in rows:
+        if len(_row) != len(_ANOMALY_COLUMNS):
+            raise ValueError(
+                f"anomaly row has {len(_row)} values but {len(_ANOMALY_COLUMNS)} column names; "
+                "a positional INSERT must agree in length and order"
+            )
     skipped = len(verdicts) - len(fresh)
     if skipped:
         logger.info("⏭️  Skipped %d already-recorded host-windows", skipped)
@@ -412,16 +448,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # detections that were already alerted in an earlier sweep.
         return []
 
-    client.insert("weirvern.netflow_anomalies", rows, column_names=[
-        "detected_at", "window_start", "window_end", "src_addr", "anomaly_score",
-        "confidence", "isolation_forest_score", "gradient_boosting_score",
-        "dbscan_score", "baseline_score", "model_agreement",
-        "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
-        "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
-        # The ATT&CK columns. Positional insert: these must stay LAST and in the same order as
-        # the values appended above, or every value after them lands in the wrong column.
-        "attack_techniques", "attack_label",
-    ])
+    client.insert("weirvern.netflow_anomalies", rows, column_names=list(_ANOMALY_COLUMNS))
     logger.info("🚨 %d anomalies recorded", len(rows))
     return fresh
 

@@ -69,6 +69,38 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
 )
 
+# ROW KEY -> CONFIGMAP KEY, for the entries where lower-casing is not enough.
+#
+# The GUI's settings rows are named after Settings attributes (exclude_cidrs), while the cluster's
+# ConfigMap uses WEIRVERN_-prefixed names (WEIRVERN_EXCLUDE_CIDRS). Four keys differ by more than
+# case, so a blanket .upper() cannot recover them -- and without this table those four rows would
+# render read-only with no way to tell why.
+ROW_TO_CONFIGMAP: dict[str, str] = {
+    "exclude_cidrs": "WEIRVERN_EXCLUDE_CIDRS",
+    "capture_exclude_cidrs": "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
+    "reverse_dns": "WEIRVERN_REVERSE_DNS",
+    # `strong_signal` has no settings ROW, because STRONG_SIGNAL is a constant in the detector
+    # rather than a Settings attribute. Mapped anyway so an apply of that name validates instead
+    # of being rejected as uneditable.
+    "strong_signal": "STRONG_SIGNAL",
+}
+
+
+def to_configmap_key(row_key: str) -> str:
+    """The ConfigMap key an apply would write for a settings row key."""
+    k = (row_key or "").strip()
+    return ROW_TO_CONFIGMAP.get(k.lower(), k.upper())
+
+
+def to_row_key(configmap_key: str) -> str:
+    """The settings row key that edits a given ConfigMap key (the inverse of the above)."""
+    k = (configmap_key or "").strip()
+    for row, cm in ROW_TO_CONFIGMAP.items():
+        if cm == k:
+            return row
+    return k.lower()
+
+
 # Which workload must restart for a key to take effect. A ConfigMap env var is read at process
 # start, so a change is inert until the reader restarts -- and WHICH reader matters: restarting
 # the worker for a Zeek interface change does nothing, and the operator would be told it applied.
@@ -284,7 +316,10 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
     """
     out = Plan()
     for key, value in changes.items():
-        key = key.strip().upper()
+        # A ROW key arrives here from the GUI (exclude_cidrs); the ConfigMap and validate() speak
+        # CONFIGMAP keys (WEIRVERN_EXCLUDE_CIDRS). Translate at the boundary, because four keys
+        # differ by more than case and validate() rejects anything not in EDITABLE_KEYS.
+        key = to_configmap_key(key)
         warning = validate(key, value)
         was = current.get(key, "")
         target, blast = _RESTART_FOR.get(key, ("", ""))
@@ -390,7 +425,7 @@ class ClusterConfig:
         settings UI that reports success over a change that did not take is worse than one that
         errors.
         """
-        want = {k.strip().upper(): (v or "").strip() for k, v in changes.items()}
+        want = {to_configmap_key(k): (v or "").strip() for k, v in changes.items()}
         self._request("PATCH", {"data": want})
 
         landed = self.read()
