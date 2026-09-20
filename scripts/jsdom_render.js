@@ -906,6 +906,13 @@ async function main() {
   console.log(`\n  all ${notes.length} checks passed
 
 `);
+  // EXIT EXPLICITLY. jsdom keeps a live window (and its timers) alive after the checks finish, so
+  // the process never returns on its own -- the success path used to fall off the end of main() and
+  // hang. Every run in this session LOOKED fine only because it was piped through `grep`, which
+  // returns as soon as the pipe closes: the harness reported success and then sat there. A test
+  // runner that never exits cannot be a gate, and a CI timeout would be read as the tests failing
+  // rather than as the harness failing to finish.
+  process.exit(0);
 }
 
 main().catch((e) => { console.error("harness error:", e); process.exit(2); });
