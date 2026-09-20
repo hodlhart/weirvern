@@ -236,3 +236,99 @@ def test_no_enrichment_uses_safe_defaults():
 
 def _settings_lite():
     return Settings()
+
+
+# ── STRONG_SIGNAL is wired, not decorative ──────────────────────────────────────
+#
+# The defect: STRONG_SIGNAL was a module constant in ensemble.py while the GUI and the
+# ConfigMap advertised it as editable and VALIDATED the value on apply. Changing it wrote
+# a perfectly valid ConfigMap key that no code ever read -- the edit validated, the worker
+# restarted, and the behaviour was identical. These tests drive detect_flows end to end
+# with two different configured values and assert the severity ANSWER changes.
+
+class _FixedDetector:
+    """A detector that returns a scripted score, so the ensemble maths is isolated."""
+
+    def __init__(self, name, score):
+        self.name = name
+        self._score = score
+
+    def predict(self, flow, features=None):  # noqa: ANN001
+        return self._score
+
+    def is_ready(self):
+        return True
+
+
+def _strong_signal_flow():
+    return {
+        "window_start": "2026-09-19 10:00:00",
+        "src_addr": "203.0.113.5",
+        "flow_count": 60, "unique_dst_ips": 30, "total_bytes": 400_000,
+    }
+
+
+def test_the_configured_strong_signal_bar_decides_severity():
+    """Two detectors at 0.86: 'strong' at the default 0.85 bar (two strong -> escalation),
+    but NOT strong at a 0.90 bar (zero strong -> medium). Same scores, different setting,
+    different verdict -- which is what "editable" has to mean."""
+    import dataclasses
+
+    scores = {"Isolation Forest": 0.86, "DBSCAN": 0.86, "Gradient Boosting": 0.0,
+              "Adaptive Baseline": 0.0}
+    dets = [_FixedDetector(n, s) for n, s in scores.items()]
+
+    default = dataclasses.replace(Settings(), strong_signal=0.85, base_threshold=0.30)
+    raised = dataclasses.replace(Settings(), strong_signal=0.90, base_threshold=0.30)
+
+    low = ensemble.detect_flows([_strong_signal_flow()], dets, default, ModelConfig())
+    high = ensemble.detect_flows([_strong_signal_flow()], dets, raised, ModelConfig())
+
+    assert low, "the window fell below the alert threshold; adjust the fixture"
+    assert high, "the window fell below the alert threshold; adjust the fixture"
+    assert low[0]["severity"] == "high", low[0]["severity"]
+    assert high[0]["severity"] == "medium", (
+        f"raising STRONG_SIGNAL to 0.90 did not change the verdict ({high[0]['severity']}), "
+        f"so the setting is not being read"
+    )
+
+
+def test_the_signature_gate_uses_the_configured_bar_too():
+    """A LONE specialist at 0.86 with a scan signature escalates when the bar is 0.80 but not
+    when it is 0.90 -- the second place the constant was read. The signature path only applies
+    to a lone strong detector (see signature_corroboration), so exactly one detector fires."""
+    import dataclasses
+
+    scores = {"Isolation Forest": 0.0, "DBSCAN": 0.86, "Gradient Boosting": 0.0,
+              "Adaptive Baseline": 0.0}
+    dets = [_FixedDetector(n, s) for n, s in scores.items()]
+    scan = _strong_signal_flow()
+    scan["_diversity"] = {"unique_dst_ports": 300, "port_entropy": 8.2}
+
+    lower = dataclasses.replace(Settings(), strong_signal=0.80, base_threshold=0.30)
+    higher = dataclasses.replace(Settings(), strong_signal=0.90, base_threshold=0.30)
+
+    a = ensemble.detect_flows([dict(scan)], dets, lower, ModelConfig())[0]
+    b = ensemble.detect_flows([dict(scan)], dets, higher, ModelConfig())[0]
+    assert a["strong_models"] == 1 and b["strong_models"] == 0, (
+        f"the bar did not move the strong count: {a['strong_models']} vs {b['strong_models']}"
+    )
+    assert a["signature"] is True, "the scan signature was not recognised at the lower bar"
+    assert a["severity"] == "high", (
+        f"the signature gate did not escalate at the 0.80 bar ({a['severity']})"
+    )
+    assert b["severity"] == "medium", (
+        f"a 0.86 specialist stayed escalated at the 0.90 bar ({b['severity']}), so the "
+        f"signature gate is still reading the constant"
+    )
+
+
+def test_strong_signal_threshold_reads_settings_and_falls_back():
+    assert ensemble.strong_signal_threshold(None) == ensemble.STRONG_SIGNAL
+    import dataclasses
+    s = dataclasses.replace(Settings(), strong_signal=0.91)
+    assert ensemble.strong_signal_threshold(s) == 0.91
+    # A settings object without the attribute (an older caller) must not crash the sweep.
+    class _Bare:
+        pass
+    assert ensemble.strong_signal_threshold(_Bare()) == ensemble.STRONG_SIGNAL

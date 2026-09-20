@@ -31,6 +31,40 @@ jobs:
       - name: Test
         run: pytest
 
+  # DETECTION QUALITY, MEASURED. The suite above proves components; this job proves
+  # OUTCOMES -- a seeded port scan, beacon and exfil spike must reach final verdicts
+  # through the real aggregation (materialized views), the real training and the real
+  # sweep. ML-1: detection quality was never measured, and an arity bug that stopped
+  # ALL detection shipped past 1000+ component tests. This job is the gap closed.
+  detection-quality:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.8
+        ports:
+          - 8123:8123
+        env:
+          CLICKHOUSE_SKIP_USER_SETUP: 1
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[admin,dev]"
+      - name: Seeded-attack detection eval
+        env:
+          CLICKHOUSE_HOST: 127.0.0.1
+          CLICKHOUSE_PORT: "8123"
+          MODEL_DIR: /tmp/models
+        run: python scripts/eval_detection.py --minutes 90 --devices 12
+
   # The manifests are a deployment artifact, so validate them like one: schema
   # correctness AND assembly. kustomize build catches a class of error that
   # per-file validation cannot — a reference to a ConfigMap or volume that no

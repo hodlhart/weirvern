@@ -183,12 +183,19 @@ def _install_db_stubs(monkeypatch, existing_anomalies):
 
 def _capturing_client():
     inserted: list = []
+    by_table: dict[str, list] = {}
 
     class FakeCH:
         def insert(self, table, rows, column_names=None):  # noqa: ANN001
             inserted.extend(rows)
+            by_table.setdefault(table, []).extend(rows)
 
     fake: Any = FakeCH()
+    # SOC-2: a sweep now writes to more than one table (anomalies AND near misses),
+    # so a test asserting on "anything inserted" cannot tell a stored anomaly from a
+    # stored near miss. `by_table` is the precise view; `inserted` stays a flat sum
+    # for the tests that genuinely mean "any row at all".
+    fake.by_table = by_table
     return fake, inserted
 
 
@@ -243,11 +250,20 @@ def test_min_agreement_setting_actually_gates_detections(monkeypatch):
                  StubDetector(0.01)]
 
     # Default MIN_AGREEMENT (0.33): a lone-detector 0.25 agreement is suppressed.
+    # SOC-2: "suppressed" no longer means "gone" -- the window is recorded as a near
+    # miss instead. The anomaly-side assertion goes through by_table so it keeps
+    # meaning exactly what it always meant, and the near-miss side is pinned below.
     _install_db_stubs(monkeypatch, existing_anomalies=[])
     fake_ch, rows = _capturing_client()
     assert detection_sweep(fake_ch, detectors, Settings(), ModelConfig()) == [], \
         "a 0.25 agreement must not pass the default 0.33 gate"
-    assert rows == []
+    assert fake_ch.by_table.get("weirvern.netflow_anomalies", []) == [], \
+        "a suppressed window must not be recorded as an anomaly"
+    gate_rows = fake_ch.by_table.get("weirvern.near_misses", [])
+    assert len(gate_rows) == 1, (
+        "the suppressed window should be recorded as a near miss (SOC-2); "
+        f"near-miss rows captured: {len(gate_rows)}"
+    )
 
     # Relax MIN_AGREEMENT below 0.25: the same window must now pass. If the
     # setting is inert, this assertion is what fails.
@@ -259,7 +275,7 @@ def test_min_agreement_setting_actually_gates_detections(monkeypatch):
         "MIN_AGREEMENT=0.18 did not let a 0.25-agreement detection through, "
         "which means the setting is not being read"
     )
-    assert len(rows2) == 1
+    assert len(fake_ch2.by_table.get("weirvern.netflow_anomalies", [])) == 1
     assert verdicts[0]["model_agreement"] == 0.25
 
 

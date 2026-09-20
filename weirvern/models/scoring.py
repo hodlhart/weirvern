@@ -101,3 +101,36 @@ def score_by_percentile(v: float, p95: float, p99: float, p999: float) -> float:
     if v <= p999:
         return 0.6 + ((v - p99) / (p999 - p99 + 1e-9)) * 0.25
     return min(0.99, 0.85 + ((v - p999) / (p999 + 1e-9)) * 0.1)
+
+
+def calibrate_distance(d: float, cal: dict[str, float]) -> float:
+    """Percentile-calibrated DBSCAN distance scoring.
+
+    WHY THIS EXISTS: DBSCAN's score was `min(0.99, distance / 5.0)` -- a magic divisor
+    unrelated to the data. Feature vectors are standardized, so distances are in
+    sigma-units whose scale depends entirely on how tight the clusters were at train
+    time: tight clusters (typical distances ~1.5) mapped everything to <=0.3 and the
+    detector could never corroborate; loose ones saturated everything at 0.99. Every
+    other detector here grades against percentiles of its own training distribution;
+    this gives DBSCAN the same treatment.
+
+    `cal` holds distances of the TRAINING samples to their nearest cluster centre
+    (p50/p95/p99). Grading mirrors score_by_percentile's tiers so the detectors stay
+    comparable:
+      <= p50   -> 0.0              (the normal half of training data)
+      p50..p95 -> 0.0 .. 0.6
+      p95..p99 -> 0.6 .. 0.85
+      > p99    -> 0.85 .. 0.99
+    """
+    if not cal or "p50" not in cal:
+        # No calibration (an artifact trained before this existed): keep the old shape
+        # so behaviour is unchanged until the next retrain replaces it.
+        return min(0.99, d / 5.0)
+    p50, p95, p99 = cal["p50"], cal.get("p95", cal["p50"]), cal.get("p99", cal.get("p95", cal["p50"]))
+    if d <= p50:
+        return 0.0
+    if d <= p95:
+        return 0.60 * ((d - p50) / (p95 - p50 + 1e-9))
+    if d <= p99:
+        return 0.60 + 0.25 * ((d - p95) / (p99 - p95 + 1e-9))
+    return min(0.99, 0.85 + 0.14 * min(1.0, (d - p99) / max(p99, 1e-9)))

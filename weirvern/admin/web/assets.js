@@ -45,15 +45,9 @@ const ASSETS_STATE = {
   pageSize: 15,
 };
 
-async function getJSON(url) {
-  const r = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!r.ok) {
-    let detail = "";
-    try { detail = (await r.json()).error || ""; } catch (_) { /* non-JSON error body */ }
-    throw new Error(detail || `${r.status} ${r.statusText}`);
-  }
-  return r.json();
-}
+/* getJSON lives in app.js -- ONE definition for the whole page. The duplicate that used to
+ * sit here silently overrode app.js's version for every call site (scripts share one scope,
+ * later declaration wins), so the effective error semantics depended on load order. */
 
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 

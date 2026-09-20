@@ -33,11 +33,14 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import logging
+import os
 import signal
 import socket
 import struct
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from weirvern.admin.sysctl_guard import SysctlGuard
@@ -79,14 +82,111 @@ def parse_cidr(value: str) -> list[str]:
     Excludes network and broadcast. A /24 is the common case; a /16 would be 65534 hosts
     and is refused rather than silently attempted, because poisoning 65k entries is not a
     thing anyone means to do by accident.
+
+    IPv4 ONLY, refused explicitly rather than degraded. The whole dataplane is v4: the
+    frames are built with `inet_aton`, the sysctls are `net.ipv4.*`, and the relay path
+    is v4 routing. An IPv6 segment that reached the sweep would fail per-send with a
+    swallowed OSError and present as "no hosts answered" -- the false-empty-network shape
+    this module produces whenever a refusal is missing instead of explicit.
     """
     net = ipaddress.ip_network(value, strict=False)
+    if net.version != 4:
+        raise ValueError(
+            f"{value} is IPv6; weir mode is IPv4-only (ARP, the forwarding sysctls and "
+            f"the relay are all v4), so a v6 segment cannot be intercepted. Use loch "
+            f"mode, which observes without being in the path."
+        )
     if net.num_addresses > 1024:
         raise ValueError(
             f"{value} contains {net.num_addresses} addresses; intercepting more than "
             f"1024 hosts at once is refused as almost certainly a mistake"
         )
     return [str(h) for h in net.hosts()]
+
+
+# Path to the resolver list. Module-level so a test can point it at a fixture rather than
+# depending on the machine's real resolver configuration.
+RESOLV_CONF_PATH = "/etc/resolv.conf"
+
+
+def _resolv_nameservers() -> list[str]:
+    """Nameservers listed in /etc/resolv.conf, best-effort.
+
+    A missing or unreadable file returns no nameservers rather than raising: the check
+    this feeds is an extra refusal, and a host without a resolv.conf must not lose the
+    ability to intercept at all.
+    """
+    out: list[str] = []
+    try:
+        text = Path(RESOLV_CONF_PATH).read_text()
+    except OSError:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "nameserver":
+            out.append(parts[1])
+    return out
+
+
+def never_intercept_hits(targets: Iterable[str], *, our_ip: str = "",
+                         gateway_ip: str = "") -> dict[str, str]:
+    """Which targets match a never-intercept role that is derivable ON THIS HOST.
+
+    `mode.py`'s NEVER_INTERCEPT list states the roles; this turns the DERIVABLE ones into
+    an enforcement check, because a list rendered only as prose is advice, and advice
+    does not stop a `--hosts` argument. Forging the mappings for one of these breaks the
+    thing the sensor itself depends on: the resolver it uses, the control plane it
+    reports to, or (via the gateway) its own path out.
+
+    Only roles establishable from this host are included, and the omission of the rest is
+    deliberate -- an unverifiable guess would either refuse valid plans or, worse, be
+    trusted as complete. Derivable here:
+
+      * our own address and the gateway being claimed (structural, always known)
+      * every nameserver in /etc/resolv.conf -- the sensor's own resolver; poisoning it
+        breaks name resolution for the sensor AND for every host it relays for
+      * MGMT_ADDR -- the sensor's management address, when configured separately from
+        the intercept address
+      * KUBERNETES_SERVICE_HOST -- the API server, whose address exists in every pod's
+        environment; forging it breaks the sensor's own control plane
+
+    Returns {ip: role}; empty means nothing derivable matches.
+    """
+    known: dict[str, str] = {}
+    if our_ip:
+        known[our_ip] = "the sensor's own address"
+    if gateway_ip:
+        known[gateway_ip] = "the gateway whose address is being claimed"
+    for ns in _resolv_nameservers():
+        known.setdefault(ns, "a DNS resolver this sensor itself uses")
+    mgmt = (os.environ.get("MGMT_ADDR") or "").strip()
+    if mgmt:
+        known.setdefault(mgmt, "the sensor's management address")
+    api = (os.environ.get("KUBERNETES_SERVICE_HOST") or "").strip()
+    if api:
+        known.setdefault(api, "the Kubernetes API server")
+
+    target_set = set(targets)
+    return {ip: role for ip, role in known.items() if ip in target_set}
+
+
+# Requests per batch. See arp_sweep for why a whole /24 cannot be sent at once.
+ARP_BATCH = 32
+
+
+def _drain_window(timeout_s: float, n_targets: int) -> float:
+    """How long to drain replies for ONE batch of up to ARP_BATCH requests.
+
+    `timeout_s` is the TOTAL drain budget, divided across the batches that will be sent,
+    with a 0.5s floor per batch (a LAN reply arrives in milliseconds; the floor covers a
+    slow stack). One batch gets the full budget; a /24 gets 3s across 8 batches.
+
+    Separated from the socket loop so the arithmetic is testable without root: the
+    previous formula divided by a flooring count, which handed every segment under 64
+    targets the FULL timeout for EVERY batch while its comment claimed a bounded window.
+    """
+    batches = max(1, (n_targets + ARP_BATCH - 1) // ARP_BATCH)
+    return max(0.5, timeout_s / batches)
 
 
 def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
@@ -128,14 +228,17 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
         # live segment: all-at-once found 1 host, batched found 11.
         #
         # 32 per batch with a bounded drain window is enough for a /24 on a LAN; larger
-        # segments simply take more batches, which is what the loop is for.
-        for start in range(0, len(targets), 32):
-            for ip in targets[start:start + 32]:
+        # segments simply take more batches, which is what the loop is for. The window
+        # comes from _drain_window so the total budget is divided across the batches
+        # rather than repeated per batch.
+        drain_s = _drain_window(timeout_s, len(targets))
+        for start in range(0, len(targets), ARP_BATCH):
+            for ip in targets[start:start + ARP_BATCH]:
                 try:
                     sock.send(request_tmpl(ip))
                 except OSError:
                     continue
-            end = time.time() + max(0.5, timeout_s / max(1, len(targets) // 32))
+            end = time.time() + drain_s
             while time.time() < end:
                 try:
                     frame = sock.recv(2048)
@@ -252,7 +355,8 @@ class InterceptPlan:
 
 def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
                exclude: set[str] | None = None,
-               only: set[str] | None = None) -> InterceptPlan | None:
+               only: set[str] | None = None,
+               force_unsafe: bool = False) -> InterceptPlan | None:
     """Discover what exists on `segment` and decide what to intercept.
 
     `only` restricts interception to named hosts. THAT IS THE SAFER DEFAULT FOR A FIRST
@@ -264,6 +368,16 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     A named host that did NOT answer the sweep is reported rather than silently dropped:
     the operator asked for it, so silently intercepting fewer hosts than requested would
     look like success while testing less than they think.
+
+    NEVER-INTERCEPT ROLES ARE ENFORCED, not just advised. `mode.py` states the roles a
+    target must never hold; the ones derivable on this host (our own address, the
+    claimed gateway, the sensor's configured resolver, its management address, the
+    cluster API server) are REFUSED here with the role named, so the reasoning is
+    visible rather than a bare rejection. A separate `--force-unsafe` on the CLI
+    bypasses the extra check only for the roles whose harm depends on intent (a
+    resolver that is genuinely a target of investigation); the structural ones -- our
+    own address and the gateway -- remain impossible regardless, because forging them
+    cannot relay anything at all.
 
     Returns None (with a reason logged) rather than raising, because every failure here is
     an environmental one -- no MAC, no gateway MAC, nothing alive -- and each has a
@@ -285,6 +399,35 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     except ValueError as exc:
         logger.error("bad segment %r: %s", segment, exc)
         return None
+
+    # ENFORCE THE NEVER-INTERCEPT ROLES for hosts the operator NAMED. A whole-segment
+    # sweep cannot contain our own address or the gateway (both are in `skip`), but
+    # `--hosts` names are not filtered through `skip` until much later -- the named form
+    # is exactly where a resolver or management address could be requested, and it is the
+    # form a first test uses. Refusing here, with the role named, turns a prose warning
+    # into a check that fires.
+    if only:
+        hits = never_intercept_hits(only, our_ip=our_ip, gateway_ip=gateway_ip)
+        structural = {ip: role for ip, role in hits.items()
+                      if role in ("the sensor's own address",
+                                  "the gateway whose address is being claimed")}
+        if structural:
+            for ip, role in sorted(structural.items()):
+                logger.error("refusing to intercept %s: it is %s", ip, role)
+            return None
+        if hits and not force_unsafe:
+            for ip, role in sorted(hits.items()):
+                logger.error(
+                    "refusing to intercept %s: it is %s. Forging this mapping breaks the "
+                    "sensor's own path while it relays. If the host is genuinely the object "
+                    "of investigation, pass --force-unsafe to accept the risk.",
+                    ip, role,
+                )
+            return None
+        if hits and force_unsafe:
+            for ip, role in sorted(hits.items()):
+                logger.warning(
+                    "intercepting %s despite it being %s (--force-unsafe)", ip, role)
 
     # SWEEP FIRST, THEN TAKE THE GATEWAY'S MAC FROM THE SAME MECHANISM.
     #
@@ -349,12 +492,16 @@ class Intercept:
     """
 
     def __init__(self, plan: InterceptPlan, sender=None, refresh_s: float = DEFAULT_REFRESH_S,
-                 forwarding: ForwardingState | None = None) -> None:
+                 forwarding: ForwardingState | None = None,
+                 max_runtime_s: float | None = None) -> None:
         self.plan = plan
         self._sender = sender or ArpSender(plan.iface)
         self.refresh_s = refresh_s
         self.forwarding = forwarding
         self.watchdog: FailOpenWatchdog | None = None
+        # Propagated to the watchdog's self-destruct deadline (weir-2): the outermost
+        # bound on how long forged mappings can outlive their operator.
+        self.max_runtime_s = max_runtime_s
         self._started = False
         self.started_at: float = 0.0
         # Records the node's network sysctls BEFORE this intercept changes them, so `stop()` can put
@@ -437,6 +584,7 @@ class Intercept:
         self.watchdog = FailOpenWatchdog(
             iface=self.plan.iface, our_mac=self.plan.our_mac, sender=self._sender,
             refresh_s=self.refresh_s,
+            max_runtime_s=self.max_runtime_s,
         )
         for ic in self.plan.mappings():
             self.watchdog.register(ic)
@@ -478,6 +626,18 @@ class Intercept:
                 "Set them back by hand.",
                 len(unrestored), ", ".join(unrestored),
             )
+            # PRINT THE WAY BACK, not just the problem. In the deployed container /proc/sys is
+            # read-only, so this process CANNOT restore the node -- the sysctls were set by the
+            # overlay's init container. `node_restore_command()` builds the exact shell line from
+            # the values recorded BEFORE the intercept changed them; it was written for this and
+            # had no caller, so the operator learned about the unrestored state (if they saw the
+            # log) with no way back that did not involve reconstructing values by hand.
+            command = self._sysctls.snapshot.node_restore_command()
+            if command:
+                logger.warning(
+                    "run this on the node to put the sysctls back (values recorded before "
+                    "this intercept changed anything):\n%s", command,
+                )
         self._started = False
 
     @property
@@ -505,9 +665,12 @@ class Intercept:
         WHAT NEITHER COVERS, and the honest limit of this code: a `kubectl exec` client that is
         SIGKILLed, or an SSH session that vanishes, may deliver NO signal to the in-pod process at
         all. No handler can run if no signal arrives. The protections that actually hold in that
-        case are (a) `--seconds`, which bounds the run inside the process, and (b) the forged ARP
-        entries EXPIRING, which is why the watchdog's expiry backstop exists and why SIGKILL is
-        explicitly documented there.
+        case are (a) `--seconds`, which bounds the run inside the process, (b) the self-destruct
+        deadline (`--max-runtime`, defaulted to `--seconds` + 120s), which restores from a timer
+        thread even when nothing can signal or stop this process from outside -- the loop above
+        returns when it fires -- and (c) the forged ARP entries EXPIRING as the last resort,
+        measured and documented in the watchdog's module docstring (~1 minute for an active
+        host, seconds from the next packet for an idle one).
 
         So this handler is a BELT: it covers SIGHUP (a dropped SSH session usually does deliver
         SIGHUP) and gives the loop a clean stop path that unwinds the caller. It is not the primary
@@ -539,6 +702,12 @@ class Intercept:
                 time.sleep(0.5)
                 if deadline is not None and time.time() >= deadline:
                     return
+                # The self-destruct deadline (weir-2) restores the mappings from its own
+                # timer thread; when that fires, this loop must ALSO return so the caller
+                # unwinds -- the case it exists for is precisely one where no signal will
+                # ever arrive to break this loop.
+                if self.watchdog is not None and self.watchdog.deadline_reached:
+                    return
         except KeyboardInterrupt:
             return
         finally:
@@ -565,4 +734,14 @@ class Intercept:
             "watchdog_restores": self.watchdog.restored_count if self.watchdog else 0,
             "watchdog_refreshes": self.watchdog.refresh_count if self.watchdog else 0,
             "watchdog_failures": list(self.watchdog.failures) if self.watchdog else [],
+            "watchdog_failures_overflow": self.watchdog.failures_overflow if self.watchdog else 0,
+            # Health ticks where forwarding had NEVER been observed. "Quiet" and "broken"
+            # look identical until forwarding has been seen working at least once, and this
+            # count is how an operator tells which one they are looking at.
+            "quiet_samples": self.watchdog.quiet_samples if self.watchdog else 0,
+            "forwarding_observed": bool(self.watchdog and self.watchdog.forwarding_observed),
+            # Whether the self-destruct deadline fired (no signal, no caller -- the
+            # orphaned-session case). Reported so the end of the run does not read like
+            # an orderly stop when it was nothing of the kind.
+            "deadline_reached": bool(self.watchdog and self.watchdog.deadline_reached),
         }

@@ -226,10 +226,11 @@
       <div class="controls">
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
+        <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
       </div>
-      <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window.</p>
+      <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window. Mark a row with ack / resolve / FP to record what you did about it — a recurring benign alert stays cleared that way. Reviews need the operator token (same write gate as Settings).</p>
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th></tr></thead>
+        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Review</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -302,6 +303,21 @@
       <p class="muted">Which features the models keep flagging, and how far from normal
       they sit. Features that never deviate are not earning their place.</p>
       <div id="m-features" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>Near misses <span class="muted">what almost alerted, and why it did not</span></h2>
+      <p class="muted">Windows that scored close to the bar, or that cleared it and were
+      stopped by the agreement gate. The anomalies list can only show what was flagged;
+      this is the other half — the surface a threshold change should be judged against.
+      An empty list with the table unavailable message below means the feature has not
+      been deployed yet, not that nothing nearly alerted.</p>
+      <div id="m-near-note"></div>
+      <table id="m-near">
+        <thead><tr><th>Window</th><th>Host</th><th>Score</th><th>Threshold</th>
+        <th>Why dropped</th><th>Models</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
 
     <div class="card">
@@ -457,6 +473,23 @@
       <h2>Ingestion over time <span class="muted">rows per bucket, by pipeline stage</span></h2>
       <div id="hp-ingest"></div>
     </div>
+    <div class="card">
+      <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span></h2>
+      <p class="muted">The worker records every decision it makes, not just the deliveries.
+      An alert eaten by a cooldown or dropped at the rate cap leaves a row here — which is
+      the only way to tell "nothing fired" apart from "it fired and was withheld".</p>
+      <div id="hp-alerts-note"><p class="muted">loading…</p></div>
+      <div class="grid">
+        <div>
+          <table id="hp-alerts-reasons"><thead><tr><th>Outcome</th><th>Count</th>
+          <th>Last</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <table id="hp-alerts-recent"><thead><tr><th>Time</th><th>Host</th><th>Severity</th>
+          <th>Score</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
     <div class="grid">
       <div class="card">
         <h2>Checks</h2>
@@ -488,10 +521,11 @@
       <h2>Settings <span class="muted" id="st-window"></span></h2>
       <p class="muted" id="st-summary">loading…</p>
       <p class="muted">These are the values the running deployment is using, read from the
-        cluster. <strong>This page cannot change them.</strong> It is served without
-        authentication, so anything an HTTP request could write would be a way to reconfigure the
-        sensor from the network. Change them with <code>weirvern config set</code> or the TUI,
-        then apply.</p>
+        cluster. Without an operator token this page is read-only; with one it can stage changes
+        and apply them, because writes are gated on the token rather than on the page. It is
+        served without authentication for reads, so anything an HTTP request could write
+        without the token would be a way to reconfigure the sensor from the network. To change
+        values without a token, use <code>weirvern config set</code> or the TUI, then apply.</p>
       <div class="controls">
         <button id="st-reload">Reload</button>
       </div>

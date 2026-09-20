@@ -1,0 +1,310 @@
+"""SOC-1: alert review state -- the analyst's disposition of an anomaly.
+
+THE GAP THIS CLOSES. The GUI could show an anomaly and explain it, and then the
+workflow ended: no acknowledge, no resolve, no false-positive, no note. The same
+recurring benign alert (a nightly backup, a scanner you own) re-appeared forever
+with no way to clear it, and there was no record of what had been reviewed.
+
+Phase 1 (this file) is the state machine and its persistence:
+  * one disposition per (window_start, src_addr) -- the anomaly's own key, so no id
+    is minted, passed around, and eventually mis-typed;
+  * three real states plus a REAL "cleared" (empty string), which is the honest
+    representation of undo;
+  * and a distinct "unavailable" wire value: when the reviews table cannot be read
+    (schema job not re-run yet), the UI must not render every row as confidently
+    unreviewed -- that is the confident-empty failure this codebase treats as a bug
+    class, not a cosmetic choice.
+
+WHY THE WRITE GOES THROUGH THE OPERATOR TOKEN. The reviews are written from the
+same unauthenticated LAN port as the rest of the GUI. Reads staying open is a
+deliberate design choice; WRITES are not, so the review route reuses the settings
+write gate. An alert marked "false positive" by whoever can reach the port would
+be worse than no review state at all.
+"""
+from __future__ import annotations
+
+import datetime
+import re
+from pathlib import Path
+
+import pytest
+
+from weirvern.admin import status
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "weirvern" / "admin" / "web"
+
+
+# ── the schema ──────────────────────────────────────────────────────────────────
+
+
+def test_the_schema_defines_alert_reviews():
+    sql = (ROOT / "weirvern" / "schema" / "008_alert_reviews.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS weirvern.alert_reviews" in sql
+    for col in ("window_start", "src_addr", "state", "note", "reviewed_at", "reviewed_by"):
+        assert col in sql, f"alert_reviews is missing {col}"
+    assert "ReplacingMergeTree" in sql, (
+        "a review is the CURRENT disposition; a plain MergeTree would accumulate "
+        "contradictory rows and FINAL would not resolve them"
+    )
+    # Keyed like the anomaly it reviews, so the join is (window_start, src_addr) with no id.
+    assert "ORDER BY (window_start, src_addr)" in sql
+
+
+def test_the_schema_documents_the_states_the_code_writes():
+    """One vocabulary: the comments, the code tuple, and the route's validation."""
+    sql = (ROOT / "weirvern" / "schema" / "008_alert_reviews.sql").read_text()
+    assert "ack" in sql and "resolved" in sql and "false_positive" in sql
+    # And the code's own list agrees with the docstring's claim about 'cleared'.
+    assert "" in status.VALID_REVIEW_STATES, (
+        "the empty string must be a valid state -- it is how a review is cleared, "
+        "and without it there is no undo"
+    )
+    assert set(s for s in status.VALID_REVIEW_STATES if s) == {
+        "ack", "resolved", "false_positive"}
+
+
+# ── the write path ──────────────────────────────────────────────────────────────
+
+
+class _Ins:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def insert(self, table, data, column_names=None):
+        self.calls.append((table, data, column_names))
+        return len(data)
+
+
+def test_write_review_inserts_one_row_keyed_like_the_anomaly():
+    c = _Ins()
+    ok = status.write_review(c, window_start="2026-09-20 10:05:00",
+                             src_addr="198.51.100.9", state="ack", note="watching")
+    assert ok
+    table, data, cols = c.calls[0]
+    assert table == "weirvern.alert_reviews"
+    assert cols == ["window_start", "src_addr", "state", "note", "reviewed_at"]
+    assert data[0][1] == "198.51.100.9" and data[0][2] == "ack" and data[0][3] == "watching"
+    assert isinstance(data[0][0], datetime.datetime), "window_start must be a real stamp"
+
+
+def test_write_review_refuses_an_unknown_state():
+    """Both layers refuse: the route gives a 400; this guard means code that skips
+    the route still cannot write a state the UI cannot render."""
+    c = _Ins()
+    with pytest.raises(ValueError):
+        status.write_review(c, window_start="2026-09-20 10:05:00",
+                            src_addr="198.51.100.9", state="handled-ish")
+    assert not c.calls, "an invalid state reached the database"
+
+
+def test_clearing_a_review_is_a_write_not_a_delete():
+    """Empty state = back to unreviewed. It must write the empty state rather than
+    fail -- that is the undo."""
+    c = _Ins()
+    assert status.write_review(c, window_start="2026-09-20 10:05:00",
+                               src_addr="198.51.100.9", state="")
+    assert c.calls[0][1][0][2] == ""
+
+
+def test_write_review_refuses_an_unparseable_window():
+    c = _Ins()
+    with pytest.raises(ValueError):
+        status.write_review(c, window_start="not-a-time", src_addr="198.51.100.9", state="ack")
+
+
+def test_parse_stamp_takes_both_forms_the_server_sends():
+    """The browser round-trips the server's own value, so both ISO strings and real
+    datetimes must parse -- and the key must not SHIFT between the two."""
+    naive = datetime.datetime(2026, 9, 20, 10, 5, 0)
+    for value in ("2026-09-20 10:05:00", "2026-09-20T10:05:00",
+                  "2026-09-20T10:05:00Z", "2026-09-20T10:05:00+00:00", naive):
+        parsed = status._parse_stamp(value)
+        assert parsed is not None, f"{value!r} did not parse"
+        assert parsed.replace(microsecond=0) == naive, (
+            f"{value!r} parsed to {parsed}, shifting the key and orphaning the review"
+        )
+
+
+def test_parse_stamp_rejects_garbage():
+    for value in ("", "   ", None, "yesterday", 12345):
+        assert status._parse_stamp(value) is None
+
+
+# ── the read path ───────────────────────────────────────────────────────────────
+
+
+class _Result:
+    def __init__(self, rows):
+        self.result_rows = rows
+
+
+class _Reader:
+    def __init__(self, rows=None, fail=False):
+        self.rows = rows or []
+        self.fail = fail
+        self.query_text = ""
+
+    def query(self, sql, parameters=None):
+        self.query_text = sql
+        if self.fail:
+            raise RuntimeError("simulated clickhouse failure")
+        return _Result(self.rows)
+
+
+def test_review_index_reads_final_and_keys_by_the_anomaly_pair():
+    stamp = datetime.datetime(2026, 9, 20, 10, 5, 0)
+    c = _Reader([[stamp, "198.51.100.9", "false_positive", "it is our scanner", stamp]])
+    idx, err = status.review_index(c)
+    assert err is None
+    assert idx[(stamp, "198.51.100.9")]["state"] == "false_positive"
+    assert "FINAL" in c.query_text.upper(), (
+        "without FINAL a ReplacingMergeTree can return superseded dispositions"
+    )
+
+
+def test_a_TIMEZONE_AWARE_stamp_merges_with_its_naive_twin():
+    """THE LIVE-BOX BUG, as a regression test.
+
+    ClickHouse returns window_start TZ-AWARE (the server's zone); the write path and the
+    lookup both work in naive wall-clock. Building the index with the raw aware value
+    while looking up with a naive one made KEY EQUALITY FAIL for every row: the review was
+    stored and read back correctly, and then silently not merged -- a false-positive
+    marking looked like it never saved. Caught only on the deployed box; the unit fakes
+    had used naive datetimes on both sides, which is why every test was green.
+
+    Both sides must normalise through _parse_stamp, so this pins the INDEX side and
+    attach_reviews pins the lookup side.
+    """
+    aware = datetime.datetime(2026, 9, 20, 10, 5, 0,
+                              tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
+    naive = datetime.datetime(2026, 9, 20, 10, 5, 0)
+
+    # The index, built from what ClickHouse actually returned (aware)...
+    idx, err = status.review_index(_Reader([[aware, "198.51.100.9", "ack", "", aware]]))
+    assert err is None
+    # ...must merge onto a row whose value round-tripped as naive (what the API sends
+    # the browser, and what the browser sends back).
+    rows = [{"window_start": naive, "src_addr": "198.51.100.9"}]
+    status.attach_reviews(rows, idx, None)
+    assert rows[0]["review_state"] == "ack", (
+        "an aware index key did not match its naive twin -- the review is stored, read "
+        "back, and then silently dropped at merge time"
+    )
+
+
+def test_a_missing_table_is_unavailable_not_empty():
+    """THE THREE-VALUED RULE. 'Cannot read the reviews' must not collapse into
+    'nothing has been reviewed' -- the analyst would stop looking for their own
+    earlier decisions."""
+    idx, err = status.review_index(_Reader(fail=True))
+    assert idx == {}
+    assert err and "unavailable" in err
+
+
+def test_attach_reviews_marks_every_row_unavailable_when_the_read_failed():
+    rows = [{"window_start": datetime.datetime(2026, 9, 20, 10, 5), "src_addr": "198.51.100.9"}]
+    status.attach_reviews(rows, {}, "review state is unavailable")
+    assert rows[0]["review_state"] == status.REVIEW_UNAVAILABLE
+    assert rows[0]["review_state"] != "", (
+        "a failed read rendered as 'unreviewed' -- the confident-empty failure"
+    )
+
+
+def test_attach_reviews_merges_a_known_review():
+    stamp = datetime.datetime(2026, 9, 20, 10, 5)
+    rows = [{"window_start": stamp, "src_addr": "198.51.100.9"}]
+    idx = {(stamp, "198.51.100.9"): {"state": "ack", "note": "seen",
+                                     "reviewed_at": stamp}}
+    status.attach_reviews(rows, idx, None)
+    assert rows[0]["review_state"] == "ack"
+    assert rows[0]["review_note"] == "seen"
+    assert rows[0]["reviewed_at"], "the review time must survive serialisation"
+
+
+def test_attach_reviews_leaves_unmatched_rows_empty_when_read_succeeded():
+    rows = [{"window_start": datetime.datetime(2026, 9, 20, 10, 5), "src_addr": "198.51.100.9"}]
+    status.attach_reviews(rows, {}, None)
+    assert rows[0]["review_state"] == ""
+    assert rows[0]["review_note"] == ""
+    assert rows[0]["reviewed_at"] is None
+
+
+# ── the route ───────────────────────────────────────────────────────────────────
+
+
+def test_the_review_route_exists_and_goes_through_the_operator_gate():
+    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    assert '"/api/review"' in src, "the review POST route is gone"
+    # The gate must be consulted inside _review -- the check every write route owes.
+    body = src[src.index("def _review(self)"):]
+    body = body[:body.index("\n        def _settings_plan")]
+    assert "self._authorize()" in body, (
+        "the review route does not consult the operator token, so anyone on the LAN "
+        "could mark alerts as handled"
+    )
+    assert "VALID_REVIEW_STATES" in body, (
+        "the route no longer validates the state against the one tuple, so the UI and "
+        "the database can disagree about the vocabulary"
+    )
+
+
+def test_the_anomalies_route_merges_reviews_and_filters_only_when_readable():
+    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    body = src[src.index("def _anomalies(self,"):]
+    body = body[:body.index("\n        def _models")]
+    assert "review_index" in body and "attach_reviews" in body
+    # THE SUBTLE ONE: the unreviewed filter must not run on a FAILED read.
+    assert "rev_err is None" in body or "rev_err is not None" in body, (
+        "the filter no longer guards on the review read; filtering a failed read "
+        "answers 'nothing is unreviewed' from a query that returned nothing"
+    )
+
+
+# ── the frontend ────────────────────────────────────────────────────────────────
+
+
+def test_the_gui_has_the_review_column_and_controls():
+    html = (WEB / "index.html").read_text()
+    assert "<th>Review</th>" in html, "the Review column header is gone"
+    assert 'id="f-unreviewed"' in html, "the unreviewed-only filter is gone"
+    app = (WEB / "app.js").read_text()
+    assert "reviewCell" in app and "postReview" in app
+    assert 'review: "/api/review"' in app, "the API map lost the review route"
+
+
+def test_every_review_state_the_server_validates_has_a_ui_label():
+    """A state the server accepts but the UI cannot name would render its raw wire
+    value -- or worse, 'undefined'. The mappings must cover the server's list."""
+    app = (WEB / "app.js").read_text()
+    for state in ("ack", "resolved", "false_positive", status.REVIEW_UNAVAILABLE):
+        assert f'"{state}"' in app, f"the GUI has no label mapping for {state!r}"
+    # And 'cleared' renders as the unreviewed chip, not as a blank.
+    assert '"": "unreviewed"' in app
+
+
+def test_the_review_chip_renders_server_state_never_local_guesses():
+    """After a click the list reloads and the chip shows the server's answer. An
+    optimistic local update would display a decision that a failed write never
+    recorded -- the one thing a triage tool must not do."""
+    app = (WEB / "app.js").read_text()
+    body = app[app.index("async function postReview"):]
+    body = body[:body.index("async function loadAnomalies")]
+    assert "loadAnomalies()" in body, (
+        "postReview no longer reloads from the server after a write; the chip would "
+        "reflect the click rather than the stored disposition"
+    )
+    # And a failed write must surface, not be swallowed.
+    assert "showError" in body
+
+
+def test_the_harness_covers_the_review_flow():
+    js = (ROOT / "scripts" / "jsdom_render.js").read_text()
+    assert "ANOMALIES_PAYLOAD" in js and "review_state" in js, (
+        "the DOM harness has no review-state payload, so the column's rendering is "
+        "not exercised by the only test that runs the real DOM"
+    )
+    assert '"/api/review"' in js, "the harness cannot exercise the review POST"
+    assert re.search(r"POSTs the disposition to /api/review", js), (
+        "the harness no longer asserts the review request, only the render"
+    )

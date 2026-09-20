@@ -175,3 +175,77 @@ def test_the_harness_settings_stub_matches_what_the_server_advertises():
         f"the harness's settings stub offers keys the server cannot advertise: {impossible}. "
         "A check that passes on an impossible payload proves nothing about the product."
     )
+
+
+# ── the harness reads the checkout it runs from ─────────────────────────────────
+
+def test_the_dom_harness_reads_the_checkout_relative_to_itself():
+    """The harness hardcoded a home-directory path for the web root and /tmp/node_modules/jsdom
+    -- paths that exist on exactly one machine. Anywhere else it either died on the require before
+    checking anything, or (worse) read a directory that was not the code under test. The web
+    root must resolve relative to the harness file, and jsdom must resolve normally.
+    """
+    harness = (ROOT / "scripts" / "jsdom_render.js").read_text()
+    web_line = next((ln for ln in harness.splitlines() if ln.startswith("const WEB =")), "")
+    assert web_line, "no WEB assignment found in the harness"
+    assert "/home/" not in web_line and "Documents" not in web_line, (
+        f"the WEB root still contains a hardcoded home path: {web_line}"
+    )
+    assert "path.resolve(__dirname" in web_line, (
+        "the web root is not resolved relative to the harness file, so it is machine-dependent"
+    )
+    # jsdom must be resolvable by the normal Node resolution (a local npm install). Check the
+    # CODE, not comments: strip comment lines first, or the explanatory note about the old path
+    # reads as the defect it documents.
+    code = "\n".join(ln for ln in harness.splitlines() if not ln.strip().startswith(("//", "/*", "*")))
+    assert '["jsdom", "/tmp/node_modules/jsdom"]' in code, (
+        "the jsdom resolution no longer tries the local install first"
+    )
+    assert 'require("/tmp/node_modules/jsdom")' not in code, (
+        "the harness still requires the old absolute path directly"
+    )
+
+
+# ── one definition per shared helper ────────────────────────────────────────────
+
+def test_getJSON_is_defined_exactly_once():
+    """getJSON existed in BOTH app.js and assets.js, and because script tags share one global
+    scope the later declaration silently overrode the earlier for every call site -- so the
+    error semantics of app.js's callers were decided by script load order. Functions do not
+    collide loudly (a const would have been a SyntaxError), which is why nothing caught it.
+    """
+    import re
+    web = ROOT / "weirvern" / "admin" / "web"
+    defs = []
+    for name in ("app.js", "soc.js", "assets.js"):
+        src = (web / name).read_text()
+        if re.search(r"^\s*async function getJSON\(", src, re.M) or \
+           re.search(r"^\s*function getJSON\(", src, re.M):
+            defs.append(name)
+    assert defs == ["app.js"], (
+        f"getJSON must be defined exactly once (in app.js, which loads first); found in {defs}. "
+        "Two top-level definitions mean the later file's version silently wins."
+    )
+
+
+# ── the CSS tokens a few rules reference ────────────────────────────────────────
+
+def test_every_css_custom_property_that_is_used_is_defined():
+    """`.attack-meta` used var(--muted-foreground), `.setting-input` used var(--card), and
+    `.chip .x:hover` used var(--danger) -- none of them defined in :root. An undefined custom
+    property makes the whole declaration invalid, so the attack metadata inherited the body
+    colour and the setting input rendered with no background: both look like styling choices
+    rather than missing tokens.
+    """
+    import re
+    css = (ROOT / "weirvern" / "admin" / "web" / "style.css").read_text()
+    root = css[css.index(":root"):css.index("}", css.index(":root"))]
+    defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", root))
+    # var(--name) or var(--name, fallback) -- only flag ones with NO fallback and no definition.
+    used = {}
+    for m in re.finditer(r"var\(\s*(--[a-z0-9-]+)\s*(,?)\s*([^)]*)\)", css):
+        name, comma, fallback = m.group(1), m.group(2), m.group(3).strip()
+        if not comma:            # a fallback exists: a missing definition degrades safely
+            used.setdefault(name, fallback)
+    missing = sorted(n for n in used if n not in defined)
+    assert not missing, f"CSS custom properties used without definition or fallback: {missing}"

@@ -119,6 +119,17 @@ class Settings:
     retrain_window_h: int = field(default_factory=lambda: _env_int("RETRAIN_WINDOW_H", 72))
     base_threshold: float = field(default_factory=lambda: _env_float("BASE_THRESHOLD", 0.35))
     min_agreement: float = field(default_factory=lambda: _env_float("MIN_AGREEMENT", 0.33))
+    # The corroboration bar: a detector scoring at/above this counts as a STRONG signal,
+    # and high/critical severity requires two-or-more (or one plus a structural signature).
+    #
+    # WIRED, not decorative. This was a module constant in ensemble.py that the GUI and
+    # the ConfigMap advertised as editable and VALIDATED on apply -- so changing it wrote
+    # a perfectly valid ConfigMap key that no code ever read. The edit validated, the
+    # worker restarted, and the behaviour was identical: the exact silent no-op this
+    # setting is supposed to be the opposite of. It now reads from the environment like
+    # its neighbours, and detect_flows uses the value for both the strong-model count and
+    # the signature gate.
+    strong_signal: float = field(default_factory=lambda: _env_float("STRONG_SIGNAL", 0.85))
 
     # Data input (goflow2 JSONL sink)
     tail_file: str = field(default_factory=lambda: os.environ.get("TAIL_FILE", "/data/flows.jsonl"))
@@ -209,6 +220,8 @@ class Settings:
             raise ValueError(f"BASE_THRESHOLD must be in (0, 1], got {self.base_threshold}")
         if not 0.0 < self.min_agreement <= 1.0:
             raise ValueError(f"MIN_AGREEMENT must be in (0, 1], got {self.min_agreement}")
+        if not 0.0 < self.strong_signal <= 1.0:
+            raise ValueError(f"STRONG_SIGNAL must be in (0, 1], got {self.strong_signal}")
         if self.detect_interval_s < 10:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")
         if self.retrain_every_h < 1:
@@ -260,6 +273,14 @@ class ModelConfig:
     min_flows_for_full_confidence: int = 10
     thin_window_floor: float = 0.35
 
+    # SOC-2: the near-miss band, as a FRACTION of the threshold this host faced. A window
+    # scoring at or above threshold * this value (and below the threshold) is recorded as a
+    # near miss rather than thrown away. 0.85 puts the floor at e.g. 0.60 against a 0.70
+    # bar -- wide enough to see a host drifting up, narrow enough that ordinary traffic
+    # does not fill the table. Setting it to 1.0 disables banding entirely (nothing is
+    # strictly below and at/above the threshold).
+    near_miss_band: float = 0.85
+
     # Structural port-scan signature (diversity metrics) — lets a lone strong
     # specialist escalate when the window itself is direct scan evidence.
     port_scan_min_ports: int = 50
@@ -284,6 +305,25 @@ class ModelConfig:
     #   badly chosen MIN_AGREEMENT cannot disable the gate entirely.
     min_agreement_margin: float = 0.08
     min_agreement_floor: float = 0.20
+
+    # ── Training hygiene: do not learn the attack ────────────────────────────
+    # Detectors train on the last RETRAIN_WINDOW_H of traffic, which INCLUDES any
+    # ongoing incident. Isolation Forest's contamination=0.06 expects ~6% of
+    # training samples to be outliers, so a sustained attack lasting days becomes
+    # part of the learned "normal" -- a model poisoned by the very traffic it is
+    # supposed to catch, with no metric able to show it.
+    #
+    # With this enabled, host-windows ALREADY FLAGGED at high/critical severity
+    # (in netflow_anomalies, over the same window) are excluded from the next
+    # training pass. That is the minimum defence and a deliberate one: it uses
+    # the system's own prior detections as evidence about which rows not to trust,
+    # so it can only be as wrong as the detector that flagged them -- which is
+    # strictly better than trusting everything unconditionally.
+    #
+    # NOT the full answer: a slow attack that never crosses the severity bar still
+    # trains in, and a frozen benign-baseline model (champion/challenger, alerting
+    # when the two disagree) is the stronger design recorded in the audit backlog.
+    exclude_flagged_from_training: bool = True
 
     # Score normalization parameters
     z_activation_k: float = 0.4

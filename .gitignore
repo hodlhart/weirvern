@@ -35,6 +35,9 @@ dist/
 .coverage
 htmlcov/
 
+# ── Node (the DOM harness in scripts/ needs jsdom) ───────────────────────────
+node_modules/
+
 # ── IDE ──────────────────────────────────────────────────────────────────────
 .idea/
 .vscode/

@@ -244,6 +244,10 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("detect_interval_s", "detect interval (s)"),
         ("base_threshold", "alert threshold"),
         ("min_agreement", "minimum agreement"),
+        # The corroboration bar for high/critical escalation. Now a real Settings field:
+        # it was previously a detector constant that the GUI advertised as editable, so an
+        # edit validated and changed nothing. A row exists only while a field exists behind it.
+        ("strong_signal", "strong signal bar"),
     ]),
     ("sensor", "Sensor", [
         ("sensor_mode", "mode"),
@@ -601,6 +605,40 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
          "max_abs_z": v["max_z"], "n": v["n"]}
         for k, v in sorted(features.items())
     ]
+
+    # 5. NEAR MISSES (soc-2): windows that came close to the bar, or cleared it and were
+    #    dropped by the agreement gate. These are the false-negative surface -- the evidence
+    #    a tuning loop needs that the Anomalies view structurally cannot show (it lists only
+    #    what was flagged). Degrades to an empty list with a reason rather than failing the
+    #    whole view: on a deployment that has not re-run its schema job since this feature
+    #    shipped, the table does not exist yet, and "the panel is blank because the table is
+    #    new" is a different statement from "nothing nearly alerted".
+    try:
+        nm_rows = client.query(
+            "SELECT window_start, window_end, src_addr, anomaly_score, threshold_used, "
+            "reason, model_agreement, isolation_forest_score, gradient_boosting_score, "
+            "dbscan_score, baseline_score, detected_by_models "
+            "FROM weirvern.near_misses FINAL "
+            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY anomaly_score DESC LIMIT 100",
+            parameters={"h": hours},
+        ).result_rows
+        out["near_misses"] = [
+            {"window_start": _iso(r[0]), "window_end": _iso(r[1]), "src_addr": r[2],
+             "score": float(r[3] or 0), "threshold": float(r[4] or 0),
+             "reason": r[5], "agreement": float(r[6] or 0),
+             "models": [m for m in (r[11] or "").split(",") if m.strip()]}
+            for r in nm_rows
+        ]
+        out["near_misses_available"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("near_misses unavailable: %s", exc)
+        out["near_misses"] = []
+        out["near_misses_available"] = False
+        out["near_misses_reason"] = (
+            "the near-miss table has not been created on this deployment yet "
+            "(it arrives with the schema job on the version that added it)"
+        )
     return out
 
 
@@ -994,32 +1032,22 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         # different shape.
         "error": None,
     }
-    try:
-        # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
-        # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
-        # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
-        # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
-        # alternated between them on every refresh. The data was never wrong; the reader was
-        # picking by wall-clock instead of by meaning.
-        #
-        # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
-        # being clever in SQL and much easier to reason about.
-        rows = list(client.query(
-            "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
-              "restores, refreshes, failures, ts, "
-              # Capture loss is the ONLY signal that the sensor is dropping packets.
-              # Selected so a surface can show the measurement instead of pattern-matching
-              # a prose failure string. NULL means not measured and is preserved as None.
-              "capture_loss_pct, packets_recv, packets_dropped "
-            "FROM weirvern.sensor_status FINAL "
-            "ORDER BY ts DESC"
-        ).named_results())
-    except Exception as exc:  # noqa: BLE001
+    # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
+    # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
+    # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
+    # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
+    # alternated between them on every refresh. The data was never wrong; the reader was
+    # picking by wall-clock instead of by meaning.
+    #
+    # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
+    # being clever in SQL and much easier to reason about. The read is shared with
+    # weir_liveness via _sensor_rows so the two answers cannot disagree about one dataset.
+    rows, err = _sensor_rows(client)
+    if err is not None:
         # A missing table is the normal state before the schema Job runs, and it must not
         # be reported as "not running" -- those are different facts and conflating them
         # sends an operator looking for a dead sensor that was never started.
-        logger.debug("sensor_status unavailable: %s", exc)
-        out["error"] = "sensor status is unavailable"
+        out["error"] = err
         return out
 
     if not rows:
@@ -1155,6 +1183,152 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     return out
 
 
+def _sensor_rows(client) -> tuple[list[dict], str | None]:
+    """Every sensor_status row, or an error string. Never raises.
+
+    Split out of sensor_status so weir_liveness can apply its own rule over the same
+    rows: sensor_status answers "which mode is this sensor in", while the liveness
+    question is "does ANY row carry intercept evidence". Reading them with one query
+    keeps the two answers from disagreeing about the same data.
+    """
+    try:
+        rows = list(client.query(
+            "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
+              "restores, refreshes, failures, ts, "
+              "capture_loss_pct, packets_recv, packets_dropped "
+            "FROM weirvern.sensor_status FINAL "
+            "ORDER BY ts DESC"
+        ).named_results())
+        return rows, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sensor_status unavailable: %s", exc)
+        return [], "sensor status is unavailable"
+
+
+def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = None) -> dict:
+    """Whether a weir-CONFIGURED sensor has intercept evidence RIGHT NOW.
+
+    SENSOR_MODE=weir is a statement of INTENT -- a fact about a ConfigMap, which outlives
+    every process that read it. An intercept is a RUNNING process that publishes its own
+    heartbeat. The two agree exactly when nothing is wrong, and disagree in the worst way
+    when something is.
+
+    WHY THIS CHECK EXISTS (weir-1): an in-cluster deployment with SENSOR_MODE=weir sets
+    the sysctls, prints "mode weir -- IN-PATH intercept" in the Zeek container, and
+    redirects ZERO hosts, because the intercept is operator-triggered and nothing in the
+    cluster runs it. Every surface that only reads the config reports a healthy in-path
+    sensor. The defect class is the one the changelog keeps naming: a failure that renders
+    identically to a successful measurement of zero.
+
+    WHAT COUNTS AS EVIDENCE, and why the naive answers are wrong:
+      * mode=='weir' alone is not enough -- in a weir deployment the WORKER's own row
+        also carries mode='weir' (observe() publishes the configured value) with zero
+        mappings, so a config-read would pass while nothing intercepts. VERIFIED against
+        the live box's sensor_status: `Weirvern weir 10 20 0` (the intercept's own row,
+        since gone stale) and worker rows like `... loch 0 0 1`.
+      * `running` alone is not enough -- the worker's `running` means "Zeek logs are
+        fresh", which is true on a healthy passive sensor too.
+      * A fresh row is required -- a stale intercept row is a PAST intercept, reported
+        separately as `stopped` (an intercept ran; whether it restored is unknowable
+        from here).
+      * So: intercept evidence is a FRESH row with mode 'weir' AND mappings > 0.
+        `mappings` is written only by an intercept (the worker always writes 0) and an
+        intercept only starts after forging at least one mapping -- which is exactly the
+        question being asked. A worker row with mode 'weir', mappings 0, running 1 is
+        NOT evidence and must not pass this check.
+
+    Returns a dict; never raises. `error` is the loud explanation when a weir-configured
+    sensor has no live intercept, and None otherwise.
+    """
+    out: dict = {
+        "applicable": str(configured_mode or "") == MODE_WEIR,
+        "configured_mode": str(configured_mode or ""),
+        "live": False,
+        "stopped": False,
+        "verified": False,
+        "hosts": 0,
+        "mappings": 0,
+        "age_s": None,
+        "error": None,
+    }
+    if not out["applicable"]:
+        # Passive mode has no intercept to expect. Returning before the query keeps this
+        # check free for every loch deployment, which is most of them.
+        return out
+
+    rows, err = _sensor_rows(client)
+    if err is not None:
+        # "Cannot tell" is its own answer -- it must not be reported as "no intercept"
+        # (a claim we cannot support) nor as live (a claim in the unsafe direction).
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but whether an intercept is running cannot "
+            f"be determined: {err}."
+        )
+        return out
+    if not rows:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but no sensor has ever reported a heartbeat, "
+            "so no intercept can be confirmed. The sensor writes one every few seconds "
+            "while it runs, so this means it has not started or cannot reach ClickHouse."
+        )
+        return out
+
+    now_aware = _aware(now or datetime.datetime.now())
+    out["verified"] = True
+
+    def _age_s(row: dict) -> float | None:
+        ts_value = row.get("ts")
+        if not isinstance(ts_value, datetime.datetime):
+            return None
+        return (now_aware - _aware(ts_value)).total_seconds()
+
+    stopped = False
+    fresh_evidence: dict | None = None
+    for row in rows:
+        if str(row.get("mode") or "") != MODE_WEIR:
+            continue
+        age = _age_s(row)
+        fresh = age is not None and age <= HEARTBEAT_STALE_S
+        if fresh and int(row.get("mappings") or 0) > 0:
+            fresh_evidence = row
+            break
+        if not fresh:
+            # An intercept that RAN and went stale. Whether it restored its mappings is
+            # unknowable from here; report the uncertainty rather than either answer.
+            stopped = True
+
+    out["stopped"] = stopped
+    if fresh_evidence is not None:
+        out["live"] = True
+        out["hosts"] = int(fresh_evidence.get("hosts") or 0)
+        out["mappings"] = int(fresh_evidence.get("mappings") or 0)
+        out["age_s"] = round(_age_s(fresh_evidence) or 0.0, 1)
+        return out
+
+    # --- applicable, verified, and NOT live. This is the loud case. ---
+    if stopped:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured and an intercept RAN on this sensor but is no "
+            "longer running. Whether its forged ARP entries were restored cannot be "
+            "determined from here: if the process was killed uncatchably (kill -9, or a "
+            "SIGKILLed kubectl-exec client that outran the self-destruct deadline), hosts "
+            "on the intercepted segment may still be routing through a sensor that is no "
+            "longer relaying. Check the node's neighbour tables, or re-run an intercept "
+            "to overwrite the mappings with the truth."
+        )
+    else:
+        out["error"] = (
+            "SENSOR_MODE=weir is configured but NO intercept is running and none has "
+            "ever reported. This is the EXPECTED state of an in-cluster weir deployment: "
+            "the intercept is operator-triggered (`weirvern intercept --iface ... "
+            "--segment ...`) and nothing in the cluster runs it, so no host traffic is "
+            "being redirected. If you intended interception, run the command above; if "
+            "this sensor should be passive, set SENSOR_MODE=loch (it also drops the "
+            "extra privileges weir mode requires)."
+        )
+    return out
+
+
 def _opt_count(value) -> int | None:
     """A packet count, or None when it was not measured.
 
@@ -1168,6 +1342,128 @@ def _opt_count(value) -> int | None:
         return max(0, int(value))
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# alert review state (soc-1)
+# ---------------------------------------------------------------------------
+
+# The dispositions an analyst can set. Empty string is a REAL state, not absence: it means
+# "cleared" -- the row goes back to unreviewed. Kept in one tuple so the API, the schema
+# comment, and the tests cannot drift.
+VALID_REVIEW_STATES = ("ack", "resolved", "false_positive", "")
+
+# The wire value for "the reviews table could not be read". Distinct from both the empty
+# string ("not reviewed") and any real state, because reporting a read failure as
+# "unreviewed" would tell the analyst nothing has been reviewed when the truth is that we
+# cannot see whether anything has.
+REVIEW_UNAVAILABLE = "unavailable"
+
+
+def write_review(client, *, window_start: str, src_addr: str, state: str,
+                 note: str = "") -> bool:
+    """Record an analyst's disposition of one anomaly. Returns whether it landed.
+
+    The review is keyed (window_start, src_addr) -- the same key as the anomaly it reviews
+    -- so no id is minted or passed around. ReplacingMergeTree(reviewed_at): a later write
+    replaces the earlier one, which is what "current disposition" means.
+
+    Raises ValueError for a state outside VALID_REVIEW_STATES. That is a programming/API
+    error (the route validates first), not a runtime failure, and both layers refusing it
+    is deliberate: the route gives the caller a 400 with a reason, and this guard means a
+    future caller that skips the route still cannot write a state the UI cannot render.
+    """
+    if state not in VALID_REVIEW_STATES:
+        raise ValueError(
+            f"unknown review state {state!r}; expected one of {VALID_REVIEW_STATES}"
+        )
+    stamp = _parse_stamp(window_start)
+    if stamp is None:
+        raise ValueError(f"unreadable window_start {window_start!r}")
+    client.insert(
+        "weirvern.alert_reviews",
+        [[stamp, src_addr, state, note, datetime.datetime.now()]],
+        column_names=["window_start", "src_addr", "state", "note", "reviewed_at"],
+    )
+    return True
+
+
+def _parse_stamp(value) -> datetime.datetime | None:
+    """A window_start from either a datetime (ClickHouse result) or an ISO string (JSON body).
+
+    The browser round-trips the exact value the server sent it, so both forms must parse.
+    Naive and aware inputs are both kept as wall-clock: ClickHouse's DateTime64 carries no
+    zone, and re-deriving one here would shift the key and orphan the review from its row.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None]:
+    """Reviews keyed by (window_start, src_addr), for merging into anomaly rows.
+
+    Returns (index, error). The error string is the honest "cannot tell": a missing
+    alert_reviews table (schema job has not run yet on an older deployment) must not read
+    as "nothing has been reviewed", so the caller distinguishes the two and the UI renders
+    a distinct chip for each.
+    """
+    try:
+        res = client.query(
+            "SELECT window_start, src_addr, state, note, reviewed_at "
+            "FROM weirvern.alert_reviews FINAL "
+            "WHERE window_start >= now() - INTERVAL %(h)s HOUR",
+            parameters={"h": hours},
+        )
+        idx: dict[tuple, dict] = {}
+        for row in res.result_rows:
+            # NORMALISED THROUGH _parse_stamp, the same function attach_reviews uses for
+            # the lookup. Measured on the live box: ClickHouse returns window_start as a
+            # TZ-AWARE datetime (the server's timezone), and building the index with the
+            # raw value while looking it up with a naive one made key equality FAIL for
+            # every row -- the review was stored and read back correctly, and then silently
+            # not merged, so a false-positive marking looked like it never saved.
+            key = (_parse_stamp(row[0]), row[1])
+            idx[key] = {"state": row[2], "note": row[3], "reviewed_at": row[4]}
+        return idx, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("alert_reviews unavailable: %s", exc)
+        return {}, "review state is unavailable (has the schema job run since this feature deployed?)"
+
+
+def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None) -> list[dict]:
+    """Merge review state onto anomaly dicts, in place. Returns the rows.
+
+    Every row gains `review_state` and `review_note` so a consumer never has to
+    distinguish a missing key from a null value -- the rule the sensor payload already
+    follows. On a read failure every row is marked REVIEW_UNAVAILABLE rather than left
+    looking unreviewed.
+    """
+    for row in rows:
+        key = (_parse_stamp(row.get("window_start")), row.get("src_addr"))
+        found = idx.get(key)
+        if found is not None:
+            row["review_state"] = found["state"]
+            row["review_note"] = found["note"]
+            row["reviewed_at"] = _json_safe_stamp(found.get("reviewed_at"))
+        else:
+            row["review_state"] = "" if error is None else REVIEW_UNAVAILABLE
+            row["review_note"] = ""
+            row["reviewed_at"] = None
+    return rows
+
+
+def _json_safe_stamp(value):
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return value
 
 
 def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",

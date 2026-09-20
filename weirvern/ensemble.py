@@ -20,7 +20,19 @@ logger = logging.getLogger(__name__)
 # A detector score at/above this counts as a STRONG independent signal.
 # Two-or-more strong signals are required to escalate to high/critical severity
 # (see severity_of for the measured rationale).
+#
+# THE DEFAULT ONLY. The live value comes from Settings.strong_signal (env STRONG_SIGNAL),
+# because this was editable through the GUI/ConfigMap while nothing read the env var --
+# an edit that validated, restarted the worker, and changed nothing. The constant remains
+# for callers that have no Settings (tests, tools).
 STRONG_SIGNAL = 0.85
+
+
+def strong_signal_threshold(settings: Settings | None = None) -> float:
+    """The corroboration bar in force: the configured value, else the constant."""
+    if settings is None:
+        return STRONG_SIGNAL
+    return float(getattr(settings, "strong_signal", STRONG_SIGNAL) or STRONG_SIGNAL)
 
 
 @lru_cache(maxsize=8192)
@@ -92,7 +104,7 @@ def detection_confidence_factor(flow: dict, cfg) -> float:
 
 
 def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dict | None,
-                            cfg) -> bool:
+                            cfg, strong_signal: float | None = None) -> bool:
     """Is a lone strong detector corroborated by a direct structural signature?
 
     MEASURED PROBLEM: a pure SYN port scan (305 flows, 0 bytes, 300 ports) was
@@ -106,9 +118,13 @@ def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dic
     (diversity metrics are computed from the raw flows, independent of the ML
     scoring — they are evidence, not inference).
 
+    `strong_signal` is the configured corroboration bar (Settings.strong_signal);
+    None falls back to the module default so existing callers are unchanged.
+
     Returns True when the lone strong signal is backed by such a signature.
     """
-    strong = {n: s for n, s in scores.items() if s >= STRONG_SIGNAL}
+    bar = STRONG_SIGNAL if strong_signal is None else float(strong_signal)
+    strong = {n: s for n, s in scores.items() if s >= bar}
     if len(strong) != 1 or not diversity:
         return False
     ports = float(diversity.get("unique_dst_ports", 0) or 0)
@@ -177,12 +193,22 @@ def detect_flows(
     detectors: list[BaseDetector],
     settings: Settings,
     cfg: ModelConfig,
+    near_misses: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
     Each verdict carries per-model scores, agreement, adaptive threshold used,
     explainability fields, and a severity — everything the alerting layer and
     ClickHouse row need.
+
+    NEAR MISSES (soc-2). The two `continue` paths below used to throw their scores away, so
+    "what almost alerted" was unanswerable -- the audit's note that the data "exists, it just
+    is not queried" was wrong: measured, the scores were computed and discarded. When the
+    caller passes a `near_misses` list, every window dropped by the BAND (scored within
+    reach of the bar) or by the AGREEMENT GATE (cleared the bar, too few models agreed) is
+    appended to it: identity, score, the threshold it faced, which reason dropped it, and
+    the per-detector scores. The caller decides whether and where to store them; passing
+    None (every existing caller) changes nothing.
     """
     # Index diversity/temporal data if the caller supplied it (worker joins);
     # flows here are already enriched by the worker.
@@ -241,6 +267,27 @@ def detect_flows(
 
         threshold = adaptive_threshold_for(flow, settings.base_threshold)
         if final_score < threshold:
+            # NEAR MISS (band): scored close to the bar but under it. The band floor is
+            # threshold * near_miss_band -- measured against the threshold this host faced,
+            # not the global default, so a host with a raised adaptive bar does not flood
+            # the table with its ordinary traffic.
+            if near_misses is not None and final_score >= threshold * cfg.near_miss_band:
+                near_misses.append({
+                    "window_start": flow["window_start"],
+                    "window_end": flow.get("window_end"),
+                    "src_addr": src,
+                    "anomaly_score": round(final_score, 4),
+                    "threshold_used": round(threshold, 4),
+                    "reason": "below-threshold",
+                    "model_agreement": round(
+                        len([n for n, s in scores.items() if s > 0.20])
+                        / max(1, len([d for d in detectors if d.is_ready()])), 4),
+                    "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
+                    "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
+                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
+                    "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
+                    "detected_by_models": ",".join(n for n, s in scores.items() if s > 0.20),
+                })
             continue
 
         detected_by = [n for n, s in scores.items() if s > 0.20]
@@ -268,13 +315,37 @@ def detect_flows(
             else max(cfg.min_agreement_floor, settings.min_agreement - cfg.min_agreement_margin)
         )
         if agreement < min_agreement:
+            # NEAR MISS (agreement gate): cleared the score bar and was dropped anyway
+            # because too few detectors agreed. A lone-specialist window that never got
+            # corroboration is precisely what a tuning loop needs to see -- it is the
+            # difference between "nothing was there" and "we decided not to look".
+            if near_misses is not None:
+                near_misses.append({
+                    "window_start": flow["window_start"],
+                    "window_end": flow.get("window_end"),
+                    "src_addr": src,
+                    "anomaly_score": round(final_score, 4),
+                    "threshold_used": round(threshold, 4),
+                    "reason": "agreement-gate",
+                    "model_agreement": round(agreement, 4),
+                    "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
+                    "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
+                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
+                    "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
+                    "detected_by_models": ",".join(detected_by),
+                })
             continue
 
         # Strong corroboration: how many detectors independently scored high.
         # Gates escalation to high/critical (see severity_of docstring).
-        strong_models = sum(1 for s in scores.values() if s >= STRONG_SIGNAL)
+        # The bar is the CONFIGURED one (STRONG_SIGNAL / Settings.strong_signal), which the
+        # GUI and ConfigMap advertise as editable -- reading the constant here meant an
+        # operator's edit validated and then changed nothing.
+        bar = strong_signal_threshold(settings)
+        strong_models = sum(1 for s in scores.values() if s >= bar)
         # Or a lone specialist backed by a direct structural signature.
-        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg)
+        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
+                                            strong_signal=bar)
 
         results.append({
             "window_start": flow["window_start"],

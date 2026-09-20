@@ -370,6 +370,80 @@ async function loadHealthDeep() {
     document.getElementById("hp-sensor").replaceChildren(
       el("p", { class: "muted", text: "The sensor has not reported." }));
   }
+
+  // SOC-8: the alert audit. "Nothing fired" and "it fired and was withheld" look identical
+  // on every other surface, so the suppressed count is stated in the note rather than left
+  // for the reader to infer from a table of outcome rows.
+  renderAlertAudit(d.alerts || {});
+}
+
+/* The alert audit tables. `reason` is the worker's outcome vocabulary: sent, cooldown,
+ * cap, log-only, pushover-error. The note deliberately distinguishes SUPPRESSED (cooldown
+ * or cap -- the system chose not to deliver) from LOG-ONLY (nothing was configured to
+ * deliver): the second is a configuration state, not a withheld alert, and calling it
+ * suppressed would overstate what the system did.
+ */
+function renderAlertAudit(a) {
+  const note = document.getElementById("hp-alerts-note");
+  const rbody = document.querySelector("#hp-alerts-reasons tbody");
+  const tbody = document.querySelector("#hp-alerts-recent tbody");
+  if (!note || !rbody || !tbody) return;
+  note.replaceChildren();
+  rbody.replaceChildren();
+  tbody.replaceChildren();
+
+  if (!a.available) {
+    note.appendChild(el("p", { class: "muted", text:
+      "Alert audit unavailable — " + (a.reason || "cannot reach ClickHouse") + "." }));
+    rbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 3 },
+                                              text: "—" })]));
+    tbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+                                               text: "—" })]));
+    return;
+  }
+
+  const rows = a.by_reason || [];
+  if (!rows.length) {
+    note.appendChild(el("p", { class: "muted",
+      text: "No alert decisions in this window — nothing fired at all." }));
+  } else {
+    const suppressed = a.suppressed || 0;
+    const logOnly = rows.filter((r) => r.reason === "log-only" && !r.sent)
+      .reduce((n, r) => n + r.count, 0);
+    const bits = [`${rows.reduce((n, r) => n + r.count, 0)} decision(s) recorded`];
+    if (suppressed) bits.push(`${suppressed} suppressed (cooldown or cap)`);
+    if (logOnly) {
+      bits.push(`${logOnly} log-only — Pushover is not configured, so these were `
+        + "recorded, not withheld");
+    }
+    note.appendChild(el("p", { class: "muted", text: bits.join("; ") + "." }));
+  }
+  for (const r of rows) {
+    const label = r.reason === "log-only"
+      ? "log-only (not configured)"
+      : (r.sent ? "sent" : `${r.reason} (suppressed)`);
+    rbody.appendChild(el("tr", {}, [
+      el("td", { text: label }),
+      el("td", { class: "num", text: String(r.count) }),
+      el("td", { class: "mono", text: fmtTime(r.last_at) }),
+    ]));
+  }
+
+  const recent = a.recent || [];
+  for (const ev of recent) {
+    tbody.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: fmtTime(ev.sent_at) }),
+      el("td", {}, [hostCell(ev.src_addr, ev.hostname)]),
+      el("td", {}, [el("span", { class: "sev " + (ev.severity || "low"),
+                                 text: ev.severity || "" })]),
+      el("td", { class: "num", text: Number(ev.score || 0).toFixed(2) }),
+      el("td", { text: ev.sent ? "sent" : ev.reason }),
+    ]));
+  }
+  if (!recent.length) {
+    tbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+                                               text: "no decisions in this window" })]));
+  }
 }
 
 /** One sentence of sensor state, from the fields the heartbeat actually carries.

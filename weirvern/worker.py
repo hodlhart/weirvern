@@ -299,6 +299,10 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     div_idx = index(div_cols, div_rows)
     tmp_idx = index(tmp_cols, tmp_rows)
 
+    # SOC-2: near misses are collected during detection and stored in the same sweep.
+    # Owned here so the ensemble stays a pure function of its inputs.
+    near_misses: list[dict] = []
+
     flows: list[dict] = [dict(zip(agg_cols, r, strict=True)) for r in agg_rows]
     for f in flows:
         key = (f["window_start"], f["src_addr"])
@@ -342,7 +346,27 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
                 if k not in f:
                     f[k] = v
 
-    verdicts = ensemble.detect_flows(flows, detectors, settings, cfg)
+    verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses)
+    if near_misses:
+        # BEST-EFFORT, and deliberately so: a failure to record near misses must not cost a
+        # real alert. They are a tuning aid, not the product.
+        try:
+            client.insert(
+                "weirvern.near_misses",
+                [[m["window_start"], m["window_end"], m["src_addr"], m["anomaly_score"],
+                  m["threshold_used"], m["reason"], m["model_agreement"],
+                  m["isolation_forest_score"], m["gradient_boosting_score"],
+                  m["dbscan_score"], m["baseline_score"], m["detected_by_models"],
+                  datetime.now()] for m in near_misses],
+                column_names=["window_start", "window_end", "src_addr", "anomaly_score",
+                              "threshold_used", "reason", "model_agreement",
+                              "isolation_forest_score", "gradient_boosting_score",
+                              "dbscan_score", "baseline_score", "detected_by_models",
+                              "replaced_at"],
+            )
+            logger.info("Recorded %d near miss(es)", len(near_misses))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not record near misses (continuing): %s", exc)
     if not verdicts:
         return []
 

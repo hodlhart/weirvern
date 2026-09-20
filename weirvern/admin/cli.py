@@ -595,6 +595,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         # a workstation without the operator setting one up by hand.
         with admin_client(settings) as client:
             report = status_mod.collect_health(client, settings)
+            # WEIR-1 LOUD CHECK: a weir-CONFIGURED sensor with no live intercept is the
+            # state where every config-derived surface says "in-path" while nothing is
+            # redirected. Read the CONFIGURED mode from the cluster (where the sensor
+            # actually gets it), falling back to this environment.
+            configured_mode = (
+                _cluster_config().get("SENSOR_MODE") or settings.sensor_mode or ""
+            )
+            liveness = status_mod.weir_liveness(configured_mode, client)
     except Exception as exc:  # noqa: BLE001
         _bad(f"cannot reach ClickHouse: {_condense(str(exc), 160)}")
         print(_c("dim", "    Tried to tunnel to svc/clickhouse automatically. "
@@ -606,7 +614,28 @@ def cmd_status(args: argparse.Namespace) -> int:
     for p in report.probes:
         marker = _c("green", "✓") if p.ok else _c("red", "✗")
         print(f"  {marker} {p.name:<18} {p.detail}")
+
+    # The mode row, then the liveness verdict. Order matters: the mode line states what
+    # is CONFIGURED, and the verdict states whether that is actually true -- printing the
+    # config first and the reality second is the only order in which the pair is honest.
+    if liveness.get("applicable"):
+        print()
+        if liveness.get("live"):
+            _ok(f"weir intercept LIVE — {liveness['hosts']} host(s), "
+                f"{liveness['mappings']} mapping(s), heartbeat {liveness['age_s']}s old")
+        else:
+            _bad("SENSOR_MODE=weir is configured but no intercept is live:")
+            for line in _wrap(str(liveness.get("error") or ""), 74):
+                print(f"    {line}")
+            return EXIT_FAIL
     return EXIT_OK if report.ok else EXIT_FAIL
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Soft-wrap for the status output's indented blocks. textwrap keeps the code short
+    at the call site and the width consistent with the probe lines above."""
+    import textwrap
+    return textwrap.wrap(text, width=width) or [""]
 
 
 # ---------------------------------------------------------------------------
@@ -1339,7 +1368,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "crash is an outage for all of it. Use when the segment has no "
                         "interactive users (servers only), where a brief loss is tolerable")
     s.add_argument("--seconds", type=int,
-                   help="intercept for this long, then restore (default: until Ctrl-C)")
+                   help="intercept for this long, then restore (default: until Ctrl-C; "
+                        "required when stdin is not a terminal)")
+    s.add_argument("--max-runtime", type=int, metavar="S", dest="max_runtime",
+                   help="self-destruct deadline: restore and exit after S seconds even if "
+                        "no signal ever arrives (covers a killed kubectl exec client; "
+                        "default: --seconds + 120 when --seconds is given, else off)")
+    s.add_argument("--force-unsafe", action="store_true",
+                   help="override a refusal to intercept a host holding a never-intercept "
+                        "role (the sensor's resolver, management address, or the cluster "
+                        "API). The sensor's own address and the gateway remain refused "
+                        "regardless: forging them cannot relay anything")
     s.set_defaults(func=cmd_intercept)
 
     s = sub.add_parser("version", help="show version and detected runtime")
@@ -1565,16 +1604,43 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     if refusal is not None:
         print(refusal)
         return EXIT_FAIL
+
+    # REQUIRE --seconds WHEN STDIN IS NOT A TERMINAL (weir-2). A non-interactive run -- the
+    # documented in-cluster pattern is `kubectl exec` without a TTY, and a scripted run is
+    # the same shape -- has no Ctrl-C path a human can press, and if the client is killed
+    # no signal may reach this process at all. The protections that survive that case are
+    # the --seconds bound and ARP expiry; making the bound mandatory here is what turns
+    # "the session might be orphaned" into "the run ends by itself". Interactive runs keep
+    # the unbounded form because the operator is present to stop it.
+    if not args.seconds and not args.dry_run and not sys.stdin.isatty():
+        _bad("stdin is not a terminal, so there is no Ctrl-C path: an unbounded run could "
+             "be orphaned when the client or connection goes away, leaving poisoned ARP "
+             "caches until they expire.")
+        print("  Give it a bound:  --seconds 300")
+        return EXIT_USAGE
+
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
-                             gateway_ip=gateway, only=only or None)
+                             gateway_ip=gateway, only=only or None,
+                             force_unsafe=bool(getattr(args, "force_unsafe", False)))
     if plan is None:
         return EXIT_FAIL
 
+    # THE SELF-DESTRUCT DEADLINE (weir-2, part 3). --seconds bounds the WAIT loop; this
+    # bounds the mappings' lifetime when no signal can reach the process at all (a
+    # SIGKILLed kubectl-exec client leaves the in-pod process alive and unreachable, and
+    # no handler runs). Default: --seconds + 120s grace, so the normal path always wins
+    # and the deadline only fires when something went wrong. Explicit --max-runtime wins;
+    # without --seconds there is no default deadline (nobody asked for a bound).
+    max_runtime_s = _effective_max_runtime(args)
+
     print(_c("bold", "Intercept plan"))
     print(plan.describe())
+    if max_runtime_s:
+        print(f"  self-destruct deadline: restore and exit after {max_runtime_s}s "
+              f"regardless of signals")
     print()
 
-    runner = ic_mod.Intercept(plan)
+    runner = ic_mod.Intercept(plan, max_runtime_s=max_runtime_s)
     problems = runner.preflight()
 
     if args.dry_run:
@@ -1638,6 +1704,26 @@ def cmd_intercept(args: argparse.Namespace) -> int:
             print(f"  withdrew {our_ip} from {iface}")
 
 
+def _effective_max_runtime(args: argparse.Namespace) -> int | None:
+    """The self-destruct deadline for this run, or None for no deadline.
+
+    Default policy (weir-2): a bounded run (--seconds) gets --seconds + 120s of grace, so
+    the normal restore path always wins and the deadline exists purely for the case where
+    that path never got to run (a SIGKILLed kubectl-exec client leaves the in-pod process
+    alive and unsignalable). An unbounded interactive run gets NO default deadline --
+    nobody asked for a bound, and Ctrl-C is present. Explicit --max-runtime always wins;
+    a non-positive value disables it.
+
+    A separate function so the policy is testable without mocking a live intercept.
+    """
+    explicit = getattr(args, "max_runtime", None)
+    if explicit is not None:
+        return explicit if explicit > 0 else None
+    if getattr(args, "seconds", None):
+        return int(args.seconds) + 120
+    return None
+
+
 def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     """Start the intercept, wait, and restore. Split out so the address teardown can wrap
     the whole thing in one finally block rather than being repeated on each return path."""
@@ -1688,6 +1774,21 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     st = runner.status()
     print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
           f"{st['watchdog_refreshes']} refresh(es)")
+    # The deadline firing is the orphaned-session case: no signal arrived, no caller asked
+    # for the stop, and the mappings were withdrawn anyway. It must not read like a normal end.
+    if st.get("deadline_reached"):
+        _warn("the self-destruct deadline fired: no signal or caller stopped this "
+              "intercept, so it restored itself. Check whether the session that "
+              "started it died without delivering a signal.")
+    # "Quiet" and "broken" are different answers to the same silent counter, so the count
+    # of never-observed ticks is reported rather than left in the object. A run that ended
+    # with forwarding never seen has an ambiguous record; a run that saw it working and
+    # then stopped is a real finding, and the two must not read the same.
+    quiet = int(st.get("quiet_samples") or 0)
+    if quiet and not st.get("forwarding_observed"):
+        print(f"  note: forwarding was NEVER observed working during this run "
+              f"({quiet} quiet sample(s)) -- on an idle segment that is expected; on a "
+              f"busy one it means the relay never carried traffic.")
     if failure:
         _bad(f"the intercept loop failed: {failure}")
         return EXIT_FAIL
@@ -1695,6 +1796,9 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
         _bad("watchdog reported failures:")
         for f in list(st["watchdog_failures"]):  # type: ignore[call-overload]
             print(f"    - {f}")
+        overflow = int(st.get("watchdog_failures_overflow") or 0)
+        if overflow:
+            print(f"    ... and {overflow} more (list capped): the same failure repeated")
         return EXIT_FAIL
     return EXIT_OK
 

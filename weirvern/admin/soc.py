@@ -523,3 +523,67 @@ def table_sizes(client, limit: int = 14) -> dict:
     return {"available": True, "reason": "",
             "points": [{"table": str(r[0]), "rows": int(r[1] or 0), "bytes": int(r[2] or 0)}
                        for r in rows]}
+
+
+def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
+    """THE ALERT AUDIT TRAIL (soc-8): every alert decision, not just the delivered ones.
+
+    The worker writes EVERY decision to `alert_events` -- sent, suppressed by cooldown,
+    dropped at the rate cap, and the log-only path when Pushover is not configured. That
+    is a complete account of "what did the alerting layer decide, and why did it not
+    reach me", and until now the GUI surfaced it as a single count on the Health probe
+    row. A suppressed alert was therefore invisible: the operator saw "0 alerts" with no
+    way to learn that three fired and were eaten by a cooldown.
+
+    Two views, because they answer different questions:
+      * `by_reason` -- the outcome breakdown ("what did the layer DO"). `sent=0` on a
+        non-log-only reason is the suppressed case and is called out in the note text.
+      * `recent`    -- the events themselves, newest first, with the message that would
+        have been sent (or was). Capped; an unbounded audit list is a way to make the
+        database do arbitrary work from an HTTP request.
+
+    Returns the standard {available, reason, points} shape, plus the two lists. The
+    unavailable case carries a reason so the panel never renders an empty audit as
+    "nothing was suppressed", which would be a much stronger and possibly false claim.
+    """
+    base = {"available": True, "reason": "", "by_reason": [], "recent": [], "suppressed": 0}
+    try:
+        by_reason = client.query(
+            "SELECT reason, sent, count() AS n, max(sent_at) AS last_at "
+            "FROM weirvern.alert_events "
+            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR "
+            "GROUP BY reason, sent ORDER BY n DESC",
+            parameters={"h": hours},
+        ).result_rows
+        recent = client.query(
+            "SELECT sent_at, src_addr, severity, score, sent, reason, message "
+            "FROM weirvern.alert_events "
+            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY sent_at DESC LIMIT %(n)s",
+            parameters={"h": hours, "n": limit},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("alert_audit failed: %s", exc)
+        base["available"] = False
+        base["reason"] = f"alert audit query failed: {type(exc).__name__}"
+        return base
+
+    base["by_reason"] = [
+        {"reason": str(r[0]), "sent": bool(r[1]), "count": int(r[2] or 0),
+         "last_at": str(r[3])[:19] if r[3] is not None else ""}
+        for r in by_reason
+    ]
+    # SUPPRESSED is deliberately not "sent == falsy": the log-only path is also sent=0,
+    # and counting it as suppressed would claim alerts were withheld when nothing was
+    # configured to withhold them. Suppression is the reasons that MEAN withheld.
+    base["suppressed"] = sum(
+        p["count"] for p in base["by_reason"]
+        if p["reason"] in ("cooldown", "cap") and not p["sent"]
+    )
+    base["recent"] = [
+        {"sent_at": str(r[0])[:19], "src_addr": str(r[1]), "severity": str(r[2]),
+         "score": float(r[3] or 0), "sent": bool(r[4]), "reason": str(r[5]),
+         "message": str(r[6])}
+        for r in recent
+    ]
+    return base

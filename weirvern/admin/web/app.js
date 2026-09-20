@@ -16,7 +16,9 @@
 
 const API = {
   overview: "/api/overview",
-  anomalies: (min, limit) => `/api/anomalies?min_score=${min}&limit=${limit}`,
+  anomalies: (min, limit, unreviewed) =>
+    `/api/anomalies?min_score=${min}&limit=${limit}` + (unreviewed ? "&unreviewed=1" : ""),
+  review: "/api/review",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
@@ -120,10 +122,21 @@ function emptyRow(tbody, cols, message) {
   ]));
 }
 
+/* The ONE JSON fetch helper, shared by every script. scripts/jsdom_render.js evaluates all
+ * three files as one scope and a test pins this as the sole definition: it used to exist TWICE
+ * (here and in assets.js), and because <script> tags share a global scope, the later-loaded
+ * copy silently won for every call site -- app.js's and soc.js's error semantics were decided
+ * by script order, which nothing would have caught if the order changed. Kept here because
+ * this file loads first and the other shared helpers live here too. */
 async function getJSON(url) {
   const res = await fetch(url, { headers: { Accept: "application/json" } });
+  // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
+  // "undefined", and a 200 with a bad body must not throw here with a parse error where the
+  // caller expects the payload contract.
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+  if (!res.ok) {
+    throw new Error((body && body.error) || `${res.status} ${res.statusText}`.trim());
+  }
   return body;
 }
 
@@ -427,29 +440,125 @@ async function loadSettings() {
   }
 
   // State the boundary explicitly rather than leaving the reader to discover it by looking for
-  // a Save button that does not exist.
+  // a Save button that does not exist. CONDITIONAL on the server's answer, because both states
+  // are real: without a token this page cannot write, and with one it deliberately can. The
+  // unconditional "read-only" that used to sit here contradicted the auth card beside it.
   const note = document.getElementById("st-note");
   if (note) {
+    const writesOn = Boolean(data.writes && data.writes.enabled);
     note.replaceChildren();
-    note.appendChild(chartEmpty(
-      "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
-      "Secrets are reported as set or not set, never in value."));
+    note.appendChild(chartEmpty(writesOn
+      ? "Write access is enabled: edits are staged and written only on Apply. This page is " +
+        "read-only without an operator token; without one, change values with " +
+        "`weirvern config set` or the TUI. Secrets are reported as set or not set, never in value."
+      : "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
+        "Secrets are reported as set or not set, never in value."));
   }
 }
 /* ── anomalies ──────────────────────────────────────────────────────────── */
 
+/* SOC-1: REVIEW STATE.
+ *
+ * Before this, the workflow ended at "here is an anomaly": no acknowledge, no resolve,
+ * no false-positive, no way to clear the recurring benign alert. The analyst saw the
+ * same rows forever and there was no record of what had been looked at.
+ *
+ * The chip renders what the SERVER says -- `review_state` merged onto every row by the
+ * anomalies route -- never local state. A click posts, the list reloads, and what is on
+ * screen after the reload is the server's answer. Optimistic local updates would show a
+ * decision that a failed write never recorded, which is the one thing a triage tool must
+ * not do.
+ *
+ * "unavailable" is a REAL state, not an error style: the reviews table could not be read
+ * (schema job not re-run yet). It must look different from "unreviewed", because claiming
+ * nothing has been reviewed when we cannot see it is the confident-empty failure this
+ * codebase treats as a bug class.
+ */
+const REVIEW_LABELS = {
+  "": "unreviewed",
+  "ack": "ack",
+  "resolved": "resolved",
+  "false_positive": "false positive",
+  "unavailable": "review unavailable",
+};
+
+/** The chip's class for a state. Static selectors in style.css; this maps the state onto them. */
+function reviewClass(state) {
+  if (state === "false_positive") return "review-fp";
+  if (state === "unavailable") return "review-unavailable";
+  if (state === "ack") return "review-ack";
+  if (state === "resolved") return "review-resolved";
+  return "review-none";
+}
+
+/** One review cell: the state chip, then the actions that are not the current state. */
+function reviewCell(a) {
+  const state = a.review_state || "";
+  const wrap = el("div", {});
+
+  wrap.appendChild(el("span", {
+    class: "review-chip " + reviewClass(state),
+    text: REVIEW_LABELS[state] !== undefined ? REVIEW_LABELS[state] : state,
+    title: a.reviewed_at ? "reviewed " + fmtTime(a.reviewed_at) : "not reviewed yet",
+  }));
+
+  // No actions while the review store is unreadable: a write against a store we cannot
+  // read would fail after the click, and offering it anyway would advertise a control
+  // that cannot work.
+  if (state === "unavailable") return wrap;
+
+  wrap.appendChild(el("div", { class: "review-acts" }, [
+    ...[["ack", "ack"], ["resolved", "resolve"], ["false_positive", "FP"]]
+      .filter(([st]) => st !== state)
+      .map(([st, label]) => el("button", {
+        class: "review-act", text: label, attrs: { type: "button" },
+        title: `mark this anomaly as ${st.replace("_", " ")}`,
+        on: { click: (e) => { e.stopPropagation(); postReview(a, st); } },
+      })),
+    state
+      ? el("button", {
+          class: "review-act", text: "clear", attrs: { type: "button" },
+          title: "back to unreviewed",
+          on: { click: (e) => { e.stopPropagation(); postReview(a, ""); } },
+        })
+      : null,
+  ]));
+  return wrap;
+}
+
+/** Post a disposition and re-render from the server's answer. Failures surface, never pass. */
+async function postReview(a, state) {
+  try {
+    await postJSON(API.review, {
+      window_start: a.window_start, src_addr: a.src_addr, state,
+    });
+  } catch (err) {
+    // A refused write states the server's reason (missing token, unknown state, database
+    // down). Rendering it beats a chip that silently did not change.
+    showError(err);
+    return;
+  }
+  await loadAnomalies();
+}
+
 async function loadAnomalies() {
   const min = document.getElementById("f-min-score").value || "0";
   const limit = document.getElementById("f-limit").value || "100";
-  const rows = await getJSON(API.anomalies(min, limit));
+  const unrev = document.getElementById("f-unreviewed");
+  const unreviewedOnly = !!(unrev && unrev.checked);
+  const rows = await getJSON(API.anomalies(min, limit, unreviewedOnly));
 
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
   if (!rows.length) {
-    const note = Number(min) > 0
-      ? `No anomalies at or above score ${min}.`
-      : "No anomalies recorded yet.";
-    emptyRow(tbody, 7, note);
+    const note = unreviewedOnly
+      ? (Number(min) > 0
+          ? `No unreviewed anomalies at or above score ${min}.`
+          : "No unreviewed anomalies — everything has been triaged.")
+      : (Number(min) > 0
+          ? `No anomalies at or above score ${min}.`
+          : "No anomalies recorded yet.");
+    emptyRow(tbody, 8, note);
     return;
   }
   for (const a of rows) {
@@ -472,6 +581,7 @@ async function loadAnomalies() {
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
       ]),
+      el("td", {}, [reviewCell(a)]),
     ]));
   }
 }
@@ -843,7 +953,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("h-addr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("h-go").click();
   });
-  for (const id of ["f-min-score", "f-limit"]) {
+  for (const id of ["f-min-score", "f-limit", "f-unreviewed"]) {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
     });
@@ -1219,6 +1329,58 @@ function renderFeatureDeviations(rows) {
     "z around 1 is normal noise, 3+ is genuinely unusual for that host." }));
 }
 
+/* SOC-2: near misses -- what almost alerted.
+ *
+ * The anomalies list can only ever show what was FLAGGED, so a threshold can only
+ * be tuned by guessing without this. Each row carries the score, the bar it faced (the
+ * adaptive per-host threshold, not the global setting), and which of the two gates
+ * dropped it. Sorted by score descending server-side, so the closest calls are on top.
+ *
+ * The unavailable state is rendered as its own message, never as an empty table: "the
+ * near-miss table does not exist yet" and "nothing nearly alerted" are different facts
+ * and the second is a much stronger claim.
+ */
+function renderNearMisses(data) {
+  const note = document.getElementById("m-near-note");
+  const body = document.querySelector("#m-near tbody");
+  if (!note || !body) return;
+  note.replaceChildren();
+  body.replaceChildren();
+
+  if (!data.near_misses_available) {
+    note.appendChild(el("p", { class: "muted", text:
+      data.near_misses_reason || "near-miss data is unavailable" }));
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", text: "—", attrs: { colspan: 6 } }),
+    ]));
+    return;
+  }
+  const rows = data.near_misses || [];
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted",
+                 text: "No near misses in this window — nothing scored close to the bar.",
+                 attrs: { colspan: 6 } }),
+    ]));
+    return;
+  }
+  note.appendChild(el("p", { class: "muted", text:
+    `${rows.length} window(s) within reach of the bar. Raising the threshold would `
+    + `reclassify the below-threshold rows; lowering it would surface the gate rows.` }));
+  for (const nm of rows) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: fmtTime(nm.window_start) }),
+      el("td", {}, [hostCell(nm.src_addr, nm.hostname)]),
+      el("td", { class: "num", text: Number(nm.score || 0).toFixed(3) }),
+      el("td", { class: "num", text: Number(nm.threshold || 0).toFixed(3) }),
+      el("td", { text: nm.reason === "agreement-gate"
+                   ? "agreement gate (too few models agreed)"
+                   : "below threshold" }),
+      el("td", { text: (nm.models || []).join(", ") || "—" }),
+    ]));
+  }
+}
+
 async function loadModels() {
   const hours = (document.getElementById("m-hours") || {}).value || "72";
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
@@ -1245,6 +1407,7 @@ async function loadModels() {
   renderScoreDistribution(data.scores || {});
   renderAgreement(data.model_counts || {});
   renderFeatureDeviations(data.feature_deviations || []);
+  renderNearMisses(data);
 
   const body = document.querySelector("#m-points tbody");
   body.innerHTML = "";

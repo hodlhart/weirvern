@@ -270,10 +270,24 @@ def _build_handler(ctx: GuiContext):
         def _anomalies(self, query: dict) -> None:
             limit = _int_arg(query, "limit", 100, 1, 1000)
             min_score = _float_arg(query, "min_score", 0.0, 0.0, 1.0)
+            unreviewed_only = (_query_bool(query, "unreviewed") is True)
             try:
                 with self._with_client() as client:
                     rows = status_mod.anomalies_detailed(
                         client, limit=limit, min_score=min_score)
+                    # SOC-1: merge review state. Read separately (one small query) rather
+                    # than joined in SQL because the reviews table may not exist yet on a
+                    # deployment whose schema job has not re-run -- a join would make the
+                    # WHOLE anomalies view fail, where this degrades to per-row
+                    # "review state unavailable" chips while the alerts still render.
+                    idx, rev_err = status_mod.review_index(client)
+                    status_mod.attach_reviews(rows, idx, rev_err)
+                    # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
+                    # state we could not read would answer "nothing is unreviewed" -- a
+                    # confident claim built from a failed query. Better to return the rows
+                    # unfiltered, carrying the unavailable marker, and let the UI say why.
+                    if unreviewed_only and rev_err is None:
+                        rows = [r for r in rows if r.get("review_state") == ""]
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.anomalies_payload(rows))
@@ -383,17 +397,24 @@ def _build_handler(ctx: GuiContext):
             report = None
             sensor: dict = {}
             ingest, sizes = empty, empty
+            audit: dict = {"available": False, "reason": "cannot reach ClickHouse",
+                           "by_reason": [], "recent": [], "suppressed": 0}
             try:
                 with self._with_client() as client:
                     report = status_mod.collect_health(client, ctx.settings)
                     sensor = status_mod.sensor_status(client)
                     ingest = soc_mod.ingestion_series(client, hours=hours)
                     sizes = soc_mod.table_sizes(client)
+                    # SOC-8: the alert audit rides on the health payload -- it is the same
+                    # question ("is the system doing what it should") and it does not
+                    # deserve a route of its own that nobody would look at.
+                    audit = soc_mod.alert_audit(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("health view unavailable: %s", exc)
                 return self._json({"health": None, "ingest": empty, "tables": empty,
-                                   "sensor": {}, "data_error": f"cannot reach ClickHouse: {exc}"})
-            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor))
+                                   "sensor": {}, "alerts": audit,
+                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor, audit))
 
         def _assets(self, query: dict) -> None:
             """The asset inventory: every host seen, with a per-host summary.
@@ -559,7 +580,53 @@ def _build_handler(ctx: GuiContext):
                 return self._settings_plan()
             if path == "/api/settings/apply":
                 return self._settings_apply()
+            # SOC-1: the alert review write. A write like the settings routes, so it goes
+            # through the same operator-token gate -- an unauthenticated port must not let
+            # anyone on the LAN mark alerts as handled.
+            if path == "/api/review":
+                return self._review()
             self._error(404, f"no write route at {path}")
+
+        def _review(self) -> None:
+            """Record an analyst's disposition of one anomaly (ack / resolve / false-positive).
+
+            Body: {"window_start": "...", "src_addr": "...", "state": "ack",
+                   "note": "optional"}.  An empty state clears the review.
+
+            Returns the stored review so the caller can render from what LANDED rather
+            than from what it hoped -- the same read-back rule the settings apply path
+            follows for the ConfigMap.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            window_start = body.get("window_start")
+            src_addr = str(body.get("src_addr") or "").strip()
+            state = str(body.get("state") or "").strip()
+            note = str(body.get("note") or "")[:500]
+
+            if not window_start or not src_addr:
+                return self._error(400, "'window_start' and 'src_addr' are required")
+            if state not in status_mod.VALID_REVIEW_STATES:
+                return self._json({
+                    "ok": False,
+                    "error": f"unknown review state {state!r}",
+                    "valid_states": [s for s in status_mod.VALID_REVIEW_STATES if s],
+                }, 400)
+            try:
+                with self._with_client() as client:
+                    status_mod.write_review(
+                        client, window_start=window_start, src_addr=src_addr,
+                        state=state, note=note)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"could not record the review: {exc}")
+            self._json({"ok": True, "state": state, "note": note})
 
         def _settings_plan(self) -> None:
             """Validate and describe a proposed change WITHOUT touching anything.
@@ -846,6 +913,19 @@ def _float_arg(query: dict, name: str, default: float, lo: float, hi: float) -> 
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, value))
+
+
+def _query_bool(query: dict, name: str) -> bool | None:
+    """A tri-state query flag: True, False, or None when the parameter is absent.
+
+    None is distinct from False on purpose: `unreviewed=` with no value is not the same
+    statement as `unreviewed` absent entirely, and a caller that wanted the second must
+    not silently get the first. Only explicit truthy spellings turn the flag on.
+    """
+    if name not in query:
+        return None
+    raw = (query.get(name) or [""])[0]
+    return str(raw).strip().lower() in ("1", "true", "yes", "on", "")
 
 
 class GuiServer:
