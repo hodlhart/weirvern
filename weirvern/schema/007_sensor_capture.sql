@@ -17,11 +17,15 @@
 ALTER TABLE weirvern.sensor_status
     ADD COLUMN IF NOT EXISTS capture_loss_pct Nullable(Float32) AFTER refreshes;
 
+-- ALSO NULLABLE, FOR THE SAME REASON AS THE PERCENTAGE. Measured on the live sensor, this Zeek
+-- build's capture_loss.log declares `ts ts_delta peer gaps acks percent_lost` -- there is no
+-- pkts_recv/pkts_drop column. A NOT NULL count would force a missing field to store 0, reporting
+-- "zero packets" for a sensor receiving millions. NULL keeps not-measured distinct from zero.
 ALTER TABLE weirvern.sensor_status
-    ADD COLUMN IF NOT EXISTS packets_recv UInt64 AFTER capture_loss_pct;
+    ADD COLUMN IF NOT EXISTS packets_recv Nullable(UInt64) AFTER capture_loss_pct;
 
 ALTER TABLE weirvern.sensor_status
-    ADD COLUMN IF NOT EXISTS packets_dropped UInt64 AFTER packets_recv;
+    ADD COLUMN IF NOT EXISTS packets_dropped Nullable(UInt64) AFTER packets_recv;
 
 -- WHAT IS DELIBERATELY NOT HERE: an interface *byte counter*. Zeek's capture_loss.log carries
 -- packets received/dropped, which is the quantity that answers "are packets arriving at the

@@ -35,7 +35,10 @@ def test_the_capture_loss_column_is_nullable():
         "capture_loss_pct must be Nullable. A non-nullable column forces an unmeasured sensor "
         "to store 0.0, which reads as a perfect sensor -- the silent-empty pattern."
     )
-    assert "packets_recv UInt64" in code and "packets_dropped UInt64" in code
+    # The counters are Nullable too: measured live, this Zeek build's capture_loss.log has no
+    # pkts_recv/pkts_drop field, so a NOT NULL count would report 0 packets for a busy sensor.
+    assert "packets_recv Nullable(UInt64)" in code, code[-400:]
+    assert "packets_dropped Nullable(UInt64)" in code
 
 
 def test_the_migration_is_ADDITIVE_so_it_can_run_against_a_live_table():
@@ -175,4 +178,90 @@ def test_a_per_mode_row_carries_its_loss_too():
     snippet = src[i:src.index("})", i)]
     assert "capture_loss_pct" in snippet, (
         "per-mode rows omit capture loss, so a comparison cannot show which mode dropped packets"
+    )
+
+
+# ── the counters, against the field set the SENSOR ACTUALLY WRITES ─────────────────────────
+#
+# The FIELD NAMES below are Zeek's, which are public and documented; the VALUES are invented.
+# Measured on the live node, this build's capture_loss.log declares
+#     #fields  ts  ts_delta  peer  gaps  acks  percent_lost
+# and has NO pkts_recv/pkts_drop column. Code that assumed those fields read nothing and returned
+# 0, which reports "zero packets received" for a sensor receiving millions -- the same
+# not-measured/measured-zero confusion the nullable percentage column exists to prevent.
+#
+# No value here comes from the sensor: a real log line is a record of a real network and must not
+# be committed, which is what tests/test_sanitation.py enforces.
+
+LIVE_FIELDS = "ts\tts_delta\tpeer\tgaps\tacks\tpercent_lost"
+LIVE_ROW = "1000000000.000000\t900.000000\tpeer0\t0\t0\t0.0"
+
+
+def _write_loss(tmp_path, fields=LIVE_FIELDS, rows=(LIVE_ROW,)):
+    f = tmp_path / "capture_loss.log"
+    f.write_text("#separator \\x09\n#fields\t" + fields + "\n" + "\n".join(rows) + "\n")
+    return f
+
+
+def test_counters_use_the_REAL_field_set_and_do_not_report_zero_when_absent(tmp_path):
+    """The live field set has no pkts_recv, so the reader must not claim a measured zero."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from weirvern.admin import sensorwatch
+
+    _write_loss(tmp_path)
+    recv, dropped = sensorwatch.capture_counters(log_dir=tmp_path)
+    # The fallback reads `acks`/`gaps`, which ARE present, so a real value is available here.
+    assert recv == 0 and dropped == 0, (recv, dropped)
+    assert recv is not None, "the count must be a number when a real field supplies it"
+
+
+def test_counters_return_None_when_the_log_has_no_counter_field_at_all(tmp_path):
+    """A log with only the percentage must yield None, NOT 0."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from weirvern.admin import sensorwatch
+
+    _write_loss(tmp_path, fields="ts\tts_delta\tpercent_lost", rows=("1000000000.000000\t900.000000\t0.0",))
+    recv, dropped = sensorwatch.capture_counters(log_dir=tmp_path)
+    assert recv is None and dropped is None, (
+        f"an absent counter field must read as unmeasured (None), got {(recv, dropped)}. "
+        f"Returning 0 reports 'zero packets received' for a sensor that is receiving traffic."
+    )
+
+
+def test_counters_prefer_pkts_recv_when_the_log_HAS_it(tmp_path):
+    """Other Zeek builds do write these fields; the fallback must not shadow them."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from weirvern.admin import sensorwatch
+
+    _write_loss(tmp_path, fields="ts\tpkts_recv\tpkts_drop\tpercent_lost",
+                rows=("1000000000.000000\t9000000\t12\t0.3",))
+    recv, dropped = sensorwatch.capture_counters(log_dir=tmp_path)
+    assert (recv, dropped) == (9000000, 12), (recv, dropped)
+
+
+def test_the_counter_is_passed_through_as_null_when_unmeasured():
+    """heartbeat() must not coerce None to 0 on the way into a Nullable column."""
+    src = (ROOT / "weirvern" / "admin" / "status.py").read_text()
+    assert "_opt_count(packets_recv)" in src, (
+        "the counters are coerced on write; an unmeasured count becomes a measured zero"
+    )
+    body = src[src.index("def _opt_count("):]
+    body = body[:body.index("def heartbeat(")]
+    # STRIP DOCSTRINGS AND COMMENTS FIRST. `_opt_count`'s own docstring QUOTES the wrong pattern
+    # it replaced ("max(0, int(value or 0))` looked defensive and was wrong"), and a naive search
+    # reads that explanation as the defect it documents -- the same trap this project hit with the
+    # ATT&CK mapper's docstrings.
+    import re as _re
+
+    code = _re.sub(r'""".*?"""', "", body, flags=_re.S)
+    code = "\n".join(ln.split("#")[0] for ln in code.splitlines())
+    assert "if value is None:" in code, code[:300]
+    assert "value or 0" not in code, (
+        f"`or 0` collapses not-measured into measured-zero: {code[:300]}"
     )

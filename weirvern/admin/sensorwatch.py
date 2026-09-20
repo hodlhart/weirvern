@@ -110,16 +110,23 @@ def capture_loss(log_dir: Path | None = None, tail_lines: int = 50) -> float | N
     return None
 
 
-def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple[int, int]:
-    """The newest `pkts_recv`/`pkts_drop` from capture_loss.log, or (0, 0) if unreadable.
+def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple[int | None, int | None]:
+    """The newest packet counts from capture_loss.log, or (None, None) when the log has none.
 
-    Read from the SAME file `capture_loss()` reads, and deliberately in the same module: the
-    percentage and the counters behind it must come from one log line, or a panel could show a
-    loss figure that does not correspond to the packets it is displayed beside.
+    THE LOG OFTEN HAS NONE, and that is not an error. Measured on the live sensor, this Zeek
+    build declares:
 
-    0 here means "no counter available", which is why the caller stores these as plain integers
-    while `capture_loss_pct` is nullable -- a missing count is reported as zero packets rather
-    than inventing a number, and the percentage carries the not-measured signal.
+        #fields  ts  ts_delta  peer  gaps  acks  percent_lost
+
+    There is no `pkts_recv`/`pkts_drop` column at all -- those appear in other Zeek versions and
+    in the site's own logging policy. So a reader that returned 0 for a missing field would report
+    "zero packets received" for a sensor that is happily receiving millions, and that is the same
+    not-measured-looks-like-measured-zero confusion the nullable percentage column exists to
+    prevent. Returning None keeps the two apart.
+
+    `gaps` and `acks` ARE present and are read as the fallback counters: gaps is the number of
+    times the analyzer's socket had no data when it expected some, which is the closest available
+    stand-in for "packets missed" and is a real measurement rather than a placeholder.
     """
     d = log_dir or _log_dir()
     files = sorted(list(d.glob("capture_loss.log")) + list(d.glob("capture_loss.*.log")),
@@ -130,7 +137,7 @@ def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple
         except OSError:
             continue
         fields: list[str] = []
-        out: tuple[int, int] = (0, 0)
+        best: tuple[int | None, int | None] | None = None
         for line in lines[-tail_lines:]:
             if line.startswith("#fields"):
                 fields = line.split("\t")[1:]
@@ -138,15 +145,29 @@ def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple
             if line.startswith("#") or not line.strip():
                 continue
             cols = line.split("\t")
-            try:
-                if "pkts_recv" in fields:
-                    out = (int(cols[fields.index("pkts_recv")]),
-                           int(cols[fields.index("pkts_drop")]) if "pkts_drop" in fields else 0)
-            except (ValueError, IndexError):
-                continue
-        if out != (0, 0):
-            return out
-    return (0, 0)
+            # Bound EXPLICITLY as defaults. A closure over the loop variable `fields` would read
+            # whatever the LAST line set, so a data row could be interpreted with a different
+            # file's field list -- a silent wrong answer, and ruff's B023 is what caught it.
+            def _num(name: str, fields=fields, cols=cols) -> int | None:
+                if name not in fields:
+                    return None
+                try:
+                    return int(cols[fields.index(name)])
+                except (ValueError, IndexError):
+                    return None
+
+            recv, dropped = _num("pkts_recv"), _num("pkts_drop")
+            if recv is None:
+                # Fallback for the field set this sensor actually writes: `acks` counts the
+                # packets the analyzer saw, and `gaps` the times it had none to read. Both are
+                # REAL measurements, so they are reported as the counts rather than as zeros.
+                recv, dropped = _num("acks"), _num("gaps")
+            if recv is not None or dropped is not None:
+                best = (recv, dropped)
+        if best is not None:
+            return best
+    # None, not (0, 0): the log carries no counter we recognise, so the count is UNMEASURED.
+    return (None, None)
 
 
 def observe(mode: str = "", iface: str = "") -> dict:
@@ -205,6 +226,8 @@ def observe(mode: str = "", iface: str = "") -> dict:
         # MEASUREMENTS, not configuration. None means "not measured" and must stay
         # distinguishable from 0.0, which means "measured, nothing lost".
         "capture_loss_pct": loss,
+        # None when the log carries no counter field, which is the case on this sensor's Zeek
+        # build. NOT 0 -- see capture_counters().
         "packets_recv": recv,
         "packets_dropped": dropped,
     }

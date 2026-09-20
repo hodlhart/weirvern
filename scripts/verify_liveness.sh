@@ -42,11 +42,12 @@ EOF
     rm -rf "$STUB"
 }
 
-# ALIVE: a fresh heartbeat. Must not break, and must not count as unreadable.
-run_case "ALIVE: fresh weir heartbeat" "HEARTBEAT=3.5s ago mode=weir"
+# ALIVE: a real intercept process. Must not break, and must not count as unreadable.
+run_case "ALIVE: an intercept process is present" "REAL_INTERCEPTS=1"
 
-# DEAD: a heartbeat that was READ and is stale. This is the only state that should break.
-run_case "DEAD: stale heartbeat, was read" "HEARTBEAT=900.0s ago mode=weir"
+# DEAD: the process count was READ and is zero. This is the only state that should break --
+# positive evidence of absence, which a client-side pid check cannot give across a boundary.
+run_case "DEAD: no intercept process (read, and zero)" "REAL_INTERCEPTS=0"
 
 # UNKNOWN: the check could not read anything. Must NOT break, and MUST count.
 run_case "UNKNOWN: unreadable (empty output)" ""
@@ -68,6 +69,14 @@ OUT
 EOF
 chmod +x "$STUB/kubectl"
 # Drive the block three times: unreadable, readable, unreadable -- then check the total is 2.
+#
+# THE STUB MUST EMIT THE SIGNAL THAT ACTUALLY DECIDES. This test originally stubbed a HEARTBEAT
+# line, because liveness was once heartbeat-driven. It is not any more: the deciding signal is now
+# count_intercepts' REAL_INTERCEPTS (positional-argv matching, no database), which is why the
+# "readable" middle pass stayed UNKNOWN and the check reported TOTAL=3 STREAK=3 -- the run really
+# did have three unreadable checks, and the assertion was describing a mechanism that no longer
+# exists. A gate check that tests an obsolete signal is worse than no check: it reports the
+# harness as broken while the shipping logic is correct.
 RESULT=$(
     PATH="$STUB:$PATH"
     NS=x; W=x; OUT=/dev/null; ELAPSED=2; HB_UNREADABLE=0; HB_STREAK=0
@@ -78,9 +87,10 @@ exit 1
 EOF
     chmod +x "$STUB/kubectl"
     . "$BLOCK"
+    # The READABLE pass: a real intercept process is what makes liveness ALIVE.
     cat > "$STUB/kubectl" <<'EOF'
 #!/bin/sh
-echo "HEARTBEAT=3.0s ago mode=weir"
+echo "REAL_INTERCEPTS=1"
 EOF
     chmod +x "$STUB/kubectl"
     . "$BLOCK"

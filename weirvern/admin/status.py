@@ -1117,8 +1117,11 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
           # not be able to masquerade as one.
           "capture_loss_pct": (None if r.get("capture_loss_pct") is None
                                else float(r["capture_loss_pct"])),
-          "packets_recv": int(r.get("packets_recv") or 0),
-          "packets_dropped": int(r.get("packets_dropped") or 0),
+          # None preserved, for the same reason as the percentage: an unmeasured count must not
+          # read as a measured zero.
+          "packets_recv": (None if r.get("packets_recv") is None else int(r["packets_recv"])),
+          "packets_dropped": (None if r.get("packets_dropped") is None
+                              else int(r["packets_dropped"])),
     })
 
     ts = r.get("ts")
@@ -1142,12 +1145,28 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     return out
 
 
+def _opt_count(value) -> int | None:
+    """A packet count, or None when it was not measured.
+
+    `max(0, int(value or 0))` looked defensive and was wrong: it converts an UNMEASURED count into
+    a measured zero, so a sensor whose log carries no counter field reports "0 packets received"
+    while it is receiving millions. The column is Nullable so this can stay honest.
+    """
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",
               hosts: int = 0, mappings: int = 0, running: bool = False,
               uptime_s: float = 0.0, restores: int = 0, refreshes: int = 0,
               failures: list[str] | None = None,
               capture_loss_pct: float | None = None,
-              packets_recv: int = 0, packets_dropped: int = 0) -> bool:
+              packets_recv: int | None = None,
+              packets_dropped: int | None = None) -> bool:
     """Write one heartbeat row. Returns whether it landed.
 
     Never raises: a sensor that cannot report its status must still capture traffic. The
@@ -1164,7 +1183,7 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
               # means "measured, nothing lost", so a sensor with no capture_loss.log would
               # read as a perfect one.
               None if capture_loss_pct is None else float(capture_loss_pct),
-              max(0, int(packets_recv or 0)), max(0, int(packets_dropped or 0))]],
+              _opt_count(packets_recv), _opt_count(packets_dropped)]],
             column_names=["sensor_id", "mode", "iface", "segment", "hosts", "mappings",
                           "running", "uptime_s", "restores", "refreshes", "failures",
                           "ts",

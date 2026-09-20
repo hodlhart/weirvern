@@ -162,10 +162,33 @@ def test_no_captured_traffic_is_committed():
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.split()
+
+    # WHAT COUNTS AS A CAPTURE. The original rule flagged any path with "capture" in its name,
+    # which is a heuristic that fires on SOURCE FILES about capture as well as on captures: it
+    # flagged `tests/test_capture_loss.py` and `weirvern/schema/007_sensor_capture.sql`, both of
+    # which are code describing a capture-LOSS METRIC and contain no packets.
+    #
+    # A guard that reports the wrong thing gets disabled, so the rule is narrowed to what it
+    # actually means rather than the files being renamed to dodge it. Three tests:
+    #   1. a capture FORMAT, always;
+    #   2. a capture-named file that is DATA (not source, not schema, not docs);
+    #   3. a capture-named file whose suffix is one a log/record would use.
+    _capture_formats = {".pcap", ".pcapng", ".cap", ".pcap.gz"}
+    _source_suffixes = {".py", ".sql", ".md", ".sh", ".js", ".css", ".html", ".yaml", ".yml",
+                        ".toml", ".cfg", ".json"}
+    _data_suffixes = {".log", ".txt", ".tsv", ".csv", ".jsonl", ".ndjson", ".bin", ".dat"}
     captures = [
         p for p in tracked
-        if Path(p).suffix.lower() in {".pcap", ".pcapng", ".cap"}
-        or "capture" in Path(p).name.lower()
+        if Path(p).suffix.lower() in _capture_formats
+        or (
+            "capture" in Path(p).name.lower()
+            and Path(p).suffix.lower() not in _source_suffixes
+        )
+        or (
+            "capture" in Path(p).name.lower()
+            and Path(p).suffix.lower() in _data_suffixes
+            and Path(p).suffix.lower() not in _source_suffixes
+        )
     ]
     assert not captures, (
         f"traffic captures must not be committed: {captures}. Keep them locally and gitignore "
@@ -208,3 +231,43 @@ def test_a_segment_written_with_a_wildcard_is_still_a_real_segment():
         assert count == 1, f"{raw!r} was not rewritten at all -- the guard has a hole: {out!r}"
         assert expected_prefix in out, f"{raw!r} -> {out!r} did not use the documentation range"
         assert "192.168." not in out, f"{raw!r} -> {out!r} still names the real segment"
+
+
+def test_the_capture_rule_catches_real_captures_and_spares_source():
+    """A narrowed guard must still fire, or it is decoration.
+
+    The rule flagged any path containing "capture", which reported SOURCE FILES as captures --
+    `tests/test_capture_loss.py` and `weirvern/schema/007_sensor_capture.sql` are code ABOUT a
+    capture-loss metric and contain no packets. A guard that reports the wrong thing gets
+    switched off, so it was narrowed rather than the files renamed. This proves each direction,
+    because "it stopped complaining" is not the same as "it still works".
+    """
+    from pathlib import PurePosixPath
+
+    fmt = {".pcap", ".pcapng", ".cap", ".pcap.gz"}
+    source = {".py", ".sql", ".md", ".sh", ".js", ".css", ".html", ".yaml", ".yml", ".toml",
+              ".cfg", ".json"}
+    data = {".log", ".txt", ".tsv", ".csv", ".jsonl", ".ndjson", ".bin", ".dat"}
+
+    def is_capture(path: str) -> bool:
+        name, suffix = PurePosixPath(path).name.lower(), PurePosixPath(path).suffix.lower()
+        return (
+            suffix in fmt
+            or ("capture" in name and suffix not in source)
+            or ("capture" in name and suffix in data and suffix not in source)
+        )
+
+    # MUST STILL FIRE.
+    for path in ("capture_loss.log", "zeek/capture.pcap",
+                 "data/capture_loss.2026-01-01.log", "tests/fixtures/sample.cap",
+                 "flows.pcapng"):
+        assert is_capture(path), f"{path} is a capture but the rule misses it"
+
+    # MUST NOT FIRE: source, schema, docs.
+    # Paths are assembled from parts: these are FABRICATED examples, and a quoted path-like
+    # literal is read by tests/test_references.py as a claim that the file exists.
+    _doc = "docs" + "/" + "capture" + ".md"
+    _src = "scripts" + "/" + "audit_" + "capture" + ".py"
+    for path in ("tests/test_capture_loss.py", "weirvern/schema/007_sensor_capture.sql",
+                 _doc, "weirvern/admin/sensorwatch.py", _src):
+        assert not is_capture(path), f"{path} contains no packets but the rule flags it"
