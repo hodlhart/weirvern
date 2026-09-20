@@ -1,0 +1,95 @@
+"""ML-1: detection quality is MEASURED, and the measurement is wired in.
+
+THE FINDING THIS FILE EXISTS FOR. Nothing measured whether the pipeline detected the
+attacks it exists for. `f1_score` appeared once in the codebase -- fidelity of Gradient
+Boosting to its teacher, not accuracy on real attacks -- and the demo seed tool plus a
+README smoke test are not a measurement. Meanwhile an arity bug that stopped ALL
+detection passed 1089 tests, because every test checked components and none checked
+outcomes: "insert writes N values", "the scorer adds up", "the fixture parses". The
+question nobody asked was the operator's: "if a port scan happens, does an alert come
+out the end?"
+
+THE ANSWER IS A HARNESS, AND THE HARNESS IS GATED. `scripts/eval_detection.py` seeds
+attacks through the real generator, the real materialized views, the real training and
+the real sweep, then asserts the final verdicts. The CI job `detection-quality` runs it
+against a service ClickHouse on every push and PR. These tests pin the parts that would
+silently rot:
+
+  * the harness exists and its assertions are the OUTCOME level ones (verdicts), not
+    component level (a helper returning a number);
+  * CI runs it -- a harness nobody runs is the same class of failure as `f1_score`
+    appearing once: a measurement capability that measures nothing;
+  * the negative direction is real: the harness distinguishes attacks from benign
+    traffic, or its "detected!" would mean nothing. Verified live: with every attack
+    switch off, the scanner host's worst severity was medium, not high/critical;
+  * it drives the REAL pipeline. An earlier draft re-implemented the worker's
+    enrichment, which would have tested a copy of the pipeline instead of the pipeline.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+HARNESS = ROOT / "scripts" / "eval_detection.py"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def test_the_harness_exists_and_runs_the_real_pipeline():
+    assert HARNESS.exists(), (
+        "scripts/eval_detection.py is gone. Nothing then measures whether the pipeline "
+        "detects seeded attacks, which is the gap ML-1 exists to close."
+    )
+    src = HARNESS.read_text()
+    # The real pieces, by name: the generator, the sweep, the trainers.
+    assert "demo_flows" in src, "the harness no longer seeds via the real generator"
+    assert "detection_sweep" in src, (
+        "the harness no longer calls the worker's real detection sweep, so it is testing "
+        "a copy of the pipeline rather than the pipeline"
+    )
+    assert "build_detectors" in src, "the harness no longer builds the real detectors"
+    assert "db.connect" in src or "from weirvern import db" in src, (
+        "the harness does not touch a real database"
+    )
+
+
+def test_the_assertions_are_on_final_verdicts_not_components():
+    """The whole point: verdicts, not helper return values."""
+    src = HARNESS.read_text()
+    assert "worst_severity" in src, (
+        "the harness no longer reduces verdicts to severities, so it cannot assert the "
+        "outcome an operator cares about"
+    )
+    for level in ('"high"', '"critical"'):
+        assert level in src, f"the harness no longer checks for {level} severity"
+    # And it must FAIL when the attacks are not detected -- every check must feed a
+    # failure counter that decides the exit code.
+    assert "failures += 1" in src, "a failed assertion no longer counts toward the exit code"
+    assert "return 1" in src, "the harness cannot exit non-zero, so CI cannot fail on it"
+
+
+def test_ci_gates_on_the_harness():
+    src = CI.read_text()
+    assert "eval_detection.py" in src, (
+        "CI no longer runs the detection eval. A harness nobody runs measures nothing -- "
+        "exactly the 'f1_score appears once' state ML-1 flagged."
+    )
+    job = src[src.index("detection-quality"):]
+    assert "clickhouse" in job, (
+        "the detection-quality job lost its ClickHouse service; the harness needs a real "
+        "database or it cannot run the materialized views"
+    )
+    assert "MODEL_DIR" in job, (
+        "the job does not set MODEL_DIR; the default /models is not writable on a runner"
+    )
+
+
+def test_the_seeded_attacks_and_benign_hosts_are_named_constants():
+    """One definition, so the assertions and the seed cannot disagree about who is who."""
+    src = HARNESS.read_text()
+    assert "SCANNER" in src and "BEACON" in src and "EXFIL" in src, (
+        "the harness no longer names its seeded attackers"
+    )
+    assert "BENIGN" in src, (
+        "the harness lost its benign-host set, so it cannot check the other direction -- "
+        "that ordinary traffic is NOT all alerted on"
+    )
