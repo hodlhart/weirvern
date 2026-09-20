@@ -443,3 +443,88 @@ def test_the_json_body_must_be_an_object():
     src = WEB.read_text()
     i = src.index("def _read_body(")
     assert "isinstance(parsed, dict)" in src[i:i + 900]
+
+
+# ── the cluster-side grant the write path needs ────────────────────────────────────────────
+#
+# A write path that the cluster refuses is a feature that does not work. These assert the grant
+# exists AND is scoped, because "give the GUI a ServiceAccount" is exactly the kind of change that
+# gets widened later by someone in a hurry.
+
+
+def _k8s(name: str):
+    import yaml
+
+    return [d for d in yaml.safe_load_all((ROOT / "k8s" / name).read_text()) if d]
+
+
+def test_the_gui_pod_has_the_operator_serviceaccount_and_a_token():
+    """Measured live: the image ships no kubectl and the pod had no token, so every write was
+    refused before this. Both halves are needed -- the SA without a mounted token is inert."""
+    spec = _k8s("34-gui.yaml")[0]["spec"]["template"]["spec"]
+    assert spec.get("serviceAccountName") == "weirvern-operator", (
+        "the GUI pod does not use the operator ServiceAccount, so it cannot reach the API"
+    )
+    assert spec.get("automountServiceAccountToken") is True, (
+        "no token is mounted, so the ServiceAccount is inert"
+    )
+
+
+def test_the_operator_role_can_patch_configmaps():
+    docs = _k8s("60-rbac.yaml")
+    role = next(d for d in docs if d.get("kind") == "Role"
+                and d["metadata"]["name"] == "weirvern-operator")
+    rules = [r for r in role["rules"] if "configmaps" in r.get("resources", [])]
+    assert rules, "the operator Role cannot touch configmaps, so a settings write is refused"
+    verbs = set(rules[0]["verbs"])
+    assert "patch" in verbs, "the role cannot patch"
+    assert "get" in verbs, "the role cannot read back, so a write cannot be verified"
+
+
+def test_the_operator_role_does_NOT_get_UPDATE_on_configmaps():
+    """`update` is a PUT, which REPLACES the whole ConfigMap -- it would wipe every key the GUI
+    never showed. A merge patch changes only the keys sent, which is what the write path uses."""
+    docs = _k8s("60-rbac.yaml")
+    role = next(d for d in docs if d.get("kind") == "Role"
+                and d["metadata"]["name"] == "weirvern-operator")
+    for rule in role["rules"]:
+        if "configmaps" in rule.get("resources", []):
+            assert "update" not in rule["verbs"], (
+                "the role can PUT the ConfigMap, which would replace every key"
+            )
+
+
+def test_the_grant_is_namespaced_not_cluster_wide():
+    """A Role + RoleBinding cannot reach another namespace. A ClusterRole would, and this does not
+    need to: the GUI manages one sensor's configuration."""
+    docs = _k8s("60-rbac.yaml")
+    kinds = {d.get("kind") for d in docs}
+    assert "Role" in kinds, "the operator grant is not a namespaced Role"
+    assert "ClusterRole" not in kinds, (
+        "a ClusterRole would let this grant reach other namespaces' configuration"
+    )
+
+
+def test_every_other_workload_still_declines_a_token():
+    """The GUI is the exception FOR A REASON. If the others quietly gained tokens, the exception
+    would stop being one -- and nothing else here needs to call the API."""
+    import yaml
+
+    # Parse each file's pod specs and check the ones that HAVE pods. Written in one pass rather
+    # than two: an earlier version had a dead loop left in it from drafting.
+    for path in sorted((ROOT / "k8s").glob("*.yaml")):
+        if path.name == "34-gui.yaml":
+            continue
+        for doc in [d for d in yaml.safe_load_all(path.read_text()) if d]:
+            spec = (doc.get("spec") or {}).get("template", {}).get("spec")
+            if not spec:
+                continue
+            name = doc["metadata"].get("name", path.name)
+            # INVERTED LOGIC CAUGHT BY ITS OWN FAILURE: this read `is not False` and therefore
+            # failed on the workloads that do the right thing. The claim is that the field IS
+            # explicitly false -- not absent, which would default to true.
+            assert spec.get("automountServiceAccountToken") is False, (
+                f"{name} does not set automountServiceAccountToken: false (got "
+                f"{spec.get('automountServiceAccountToken')!r}). Only the GUI needs a token; a "
+                f"workload holding one for no reason is standing privilege."
+            )

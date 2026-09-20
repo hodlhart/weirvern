@@ -43,7 +43,17 @@ spec:
         app.kubernetes.io/name: weirvern-gui
         app.kubernetes.io/part-of: weirvern
     spec:
-      automountServiceAccountToken: false
+      # WHY THIS POD IS THE EXCEPTION. Every other workload here sets this false, and for a
+      # read-only service that is right. The GUI now WRITES configuration, and it does so by
+      # calling the Kubernetes API directly (the image ships no kubectl), so it needs the
+      # ServiceAccount token.
+      #
+      # The grant is deliberately narrow: weirvern-operator's Role covers get+patch on
+      # configmaps in this namespace plus workload restarts. A token in this pod is also NOT by
+      # itself enough to change anything -- writes are additionally gated on the operator
+      # token, so even a compromised pod cannot reconfigure the sensor without it.
+      automountServiceAccountToken: true
+      serviceAccountName: weirvern-operator
       securityContext:
         runAsUser: 10001
         runAsGroup: 10001

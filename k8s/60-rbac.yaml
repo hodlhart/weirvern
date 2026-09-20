@@ -87,6 +87,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log", "pods/portforward"]
     verbs: ["get", "create"]
+  # THE CONFIG WRITE PATH. The GUI patches weirvern-env to change settings, and rolls the
+  # workload that reads it. Scoped to this namespace (this is a Role, not a ClusterRole), so the
+  # grant cannot reach another namespace’s configuration.
+  #
+  # `patch` on configmaps is the whole of what a settings change needs. `update` is deliberately
+  # NOT granted: a PUT replaces every key, which would wipe values the GUI never showed.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
