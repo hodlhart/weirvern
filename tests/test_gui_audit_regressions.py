@@ -150,3 +150,28 @@ def test_every_id_the_js_looks_up_exists_in_the_document():
     created = set(re.findall(r'id:\s*"([A-Za-z0-9_-]+)"', JS)) | set(re.findall(r"id:\s*'([A-Za-z0-9_-]+)'", JS))
     missing = sorted(wanted - present - created)
     assert not missing, f"the JS looks up ids that nothing defines or creates: {missing}"
+
+
+# ── the harness must not prove things about payloads the server cannot send ─────
+
+def test_the_harness_settings_stub_matches_what_the_server_advertises():
+    """The jsdom harness passed 133 checks while the settings write path was unreachable, because
+    its /api/settings stub declared `editable_keys` in a shape the server did not emit.
+
+    A stub that flatters the front end only proves the front end works against fiction. This holds
+    the harness to the server's own declaration, so the two cannot drift apart silently again --
+    which is the failure mode, since nothing about a passing harness suggests its inputs are fake.
+    """
+    import re
+    harness = (ROOT / "scripts" / "jsdom_render.js").read_text()
+    start = harness.index("const SETTINGS_PAYLOAD")
+    m = re.search(r"editable_keys:\s*\[([^\]]*)\]", harness[start:start + 1200])
+    assert m, "the harness no longer declares editable_keys in its settings stub"
+    offered = [k.strip().strip('"').strip("'") for k in m.group(1).split(",") if k.strip()]
+
+    advertised = {cc.to_row_key(k) for k in cc.EDITABLE_KEYS}
+    impossible = [k for k in offered if k not in advertised]
+    assert not impossible, (
+        f"the harness's settings stub offers keys the server cannot advertise: {impossible}. "
+        "A check that passes on an impossible payload proves nothing about the product."
+    )
