@@ -103,6 +103,116 @@ def test_a_huge_segment_is_refused_rather_than_attempted():
         ic.parse_cidr("198.51.100.0/16")
 
 
+def test_an_ipv6_segment_is_refused_with_a_reason():
+    """The dataplane is v4-only. Letting a v6 segment reach the sweep would fail per-send
+    with a swallowed OSError and present as 'no hosts answered' -- the false-empty-network
+    shape, when the honest answer is 'this can never work'."""
+    with pytest.raises(ValueError, match="IPv6"):
+        ic.parse_cidr("2001:db8::/120")
+    # And the refusal must say WHY, not just that it failed: a bare refusal sends the
+    # operator looking for a v6 flag that does not exist.
+    try:
+        ic.parse_cidr("2001:db8::/120")
+    except ValueError as exc:
+        assert "loch" in str(exc), (
+            "the v6 refusal does not point at the alternative (passive mode)"
+        )
+
+
+# ── never-intercept roles are ENFORCED, not just advised ────────────────────────
+#
+# `mode.py` lists the roles a target must never hold. Rendered only as a warning, that
+# list was advice -- and advice does not stop a --hosts argument. These tests pin the
+# refusal: the derivable roles are checked, the structural ones cannot be overridden,
+# and the intent-dependent ones can be overridden only explicitly.
+
+
+def test_named_targets_matching_a_derivable_role_are_refused(monkeypatch, caplog):
+    """A --hosts target that is the sensor's own resolver must be refused BY NAME."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "198.51.100.53": "0d:0d:0d:0d:0d:0d",
+    })
+    # The resolver file is pointed at a fixture rather than the machine's real one.
+    monkeypatch.setattr(ic, "RESOLV_CONF_PATH", "/dev/null")
+    monkeypatch.setattr(ic, "_resolv_nameservers", lambda: ["198.51.100.53"])
+    with caplog.at_level("ERROR"):
+        plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.50", "198.51.100.1",
+                             only={"198.51.100.53"})
+    assert plan is None, (
+        "a named target holding a never-intercept role was accepted, so the prose list "
+        "is still just advice"
+    )
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    assert "resolver" in rendered, "the refusal does not name the role"
+    assert "--force-unsafe" in rendered, (
+        "the refusal does not say how to override it deliberately"
+    )
+
+
+def test_our_own_address_and_the_gateway_cannot_even_be_forced(monkeypatch, caplog):
+    """The structural roles are impossible regardless of intent: poisoning the address we
+    are claiming, or our own, cannot relay anything -- it can only break things."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "198.51.100.50": "aa:bb:cc:dd:ee:ff",   # our own address
+        "198.51.100.1": "11:22:33:44:55:66",    # the gateway
+    })
+    for addr in ("198.51.100.50", "198.51.100.1"):
+        with caplog.at_level("ERROR"):
+            plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.50", "198.51.100.1",
+                                 only={addr}, force_unsafe=True)
+        assert plan is None, (
+            f"{addr} was accepted even with --force-unsafe; the structural refusals "
+            f"must not be overridable"
+        )
+
+
+def test_force_unsafe_overrides_only_the_intent_dependent_roles(monkeypatch, caplog):
+    """A resolver genuinely under investigation is a legitimate target, so the operator
+    can accept the risk explicitly -- with the acceptance recorded."""
+    monkeypatch.setattr(ic, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(ic, "resolve_mac", lambda _i, _ip: "11:22:33:44:55:66")
+    monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
+        "198.51.100.53": "0d:0d:0d:0d:0d:0d",
+    })
+    monkeypatch.setattr(ic, "_resolv_nameservers", lambda: ["198.51.100.53"])
+    with caplog.at_level("WARNING"):
+        plan = ic.build_plan("eth1", "198.51.100.0/24", "198.51.100.50", "198.51.100.1",
+                             only={"198.51.100.53"}, force_unsafe=True)
+    assert plan is not None, "--force-unsafe did not override the intent-dependent refusal"
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    assert "force-unsafe" in rendered, (
+        "the override was silent: an accepted risk must be recorded"
+    )
+
+
+def test_never_intercept_hits_flags_the_derivable_roles(monkeypatch):
+    """The derivation reads the real sources: our address, the gateway, resolv.conf,
+    MGMT_ADDR and KUBERNETES_SERVICE_HOST."""
+    monkeypatch.setattr(ic, "_resolv_nameservers", lambda: ["10.0.0.53"])
+    monkeypatch.setenv("MGMT_ADDR", "10.0.0.9")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+    hits = ic.never_intercept_hits(
+        {"10.0.0.53", "10.0.0.9", "10.96.0.1", "198.51.100.77", "198.51.100.50"},
+        our_ip="198.51.100.50", gateway_ip="198.51.100.1")
+    assert "10.0.0.53" in hits and "resolver" in hits["10.0.0.53"]
+    assert "10.0.0.9" in hits and "management" in hits["10.0.0.9"]
+    assert "10.96.0.1" in hits and "API" in hits["10.96.0.1"]
+    assert "198.51.100.50" in hits, "our own address must be flagged"
+    assert "198.51.100.77" not in hits, "an ordinary host was flagged, so valid plans refuse"
+
+
+def test_the_resolver_reader_survives_a_missing_file(monkeypatch, tmp_path):
+    """A host without /etc/resolv.conf must not lose the ability to intercept: the check
+    is an EXTRA refusal, and its own failure mode is 'no nameservers found'."""
+    missing = tmp_path / "nope.conf"
+    monkeypatch.setattr(ic, "RESOLV_CONF_PATH", str(missing))
+    assert ic._resolv_nameservers() == []
+
+
 # ── the plan ────────────────────────────────────────────────────────────────────
 
 
@@ -507,12 +617,25 @@ def test_arp_sweep_sends_in_batches_and_drains_between_them():
            "intercept.py").read_text()
     body = src[src.index("def arp_sweep"):]
     body = body[:body.index("\ndef ", 10)]
-    assert "range(0, len(targets), 32)" in body, (
+    assert "range(0, len(targets), ARP_BATCH)" in body, (
         "the sweep does not batch its sends, so most replies will be dropped"
     )
     assert "sock.settimeout" in body, (
         "no socket timeout: a recv loop without one blocks forever on a quiet segment"
     )
+
+
+def test_the_drain_window_divides_the_budget_across_batches():
+    """The budget must be divided, not repeated. An earlier formula handed every segment
+    under 64 targets the FULL timeout for EVERY batch while its comment claimed a bounded
+    window -- so a /25 with 8 batches would drain for 8 x 3s instead of 3s total."""
+    assert ic._drain_window(3.0, 1) == 3.0, "a single batch gets the full budget"
+    assert ic._drain_window(3.0, 254) < 1.0, (
+        "a /24's per-batch window is not a fraction of the total budget, so the sweep "
+        "takes batches x budget seconds"
+    )
+    # The floor keeps a slow stack covered even when the division goes tiny.
+    assert ic._drain_window(3.0, 4096) >= 0.5
 
 
 def test_the_sweep_does_not_source_from_0000():

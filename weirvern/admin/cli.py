@@ -1339,7 +1339,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "crash is an outage for all of it. Use when the segment has no "
                         "interactive users (servers only), where a brief loss is tolerable")
     s.add_argument("--seconds", type=int,
-                   help="intercept for this long, then restore (default: until Ctrl-C)")
+                   help="intercept for this long, then restore (default: until Ctrl-C; "
+                        "required when stdin is not a terminal)")
+    s.add_argument("--force-unsafe", action="store_true",
+                   help="override a refusal to intercept a host holding a never-intercept "
+                        "role (the sensor's resolver, management address, or the cluster "
+                        "API). The sensor's own address and the gateway remain refused "
+                        "regardless: forging them cannot relay anything")
     s.set_defaults(func=cmd_intercept)
 
     s = sub.add_parser("version", help="show version and detected runtime")
@@ -1565,8 +1571,24 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     if refusal is not None:
         print(refusal)
         return EXIT_FAIL
+
+    # REQUIRE --seconds WHEN STDIN IS NOT A TERMINAL (weir-2). A non-interactive run -- the
+    # documented in-cluster pattern is `kubectl exec` without a TTY, and a scripted run is
+    # the same shape -- has no Ctrl-C path a human can press, and if the client is killed
+    # no signal may reach this process at all. The protections that survive that case are
+    # the --seconds bound and ARP expiry; making the bound mandatory here is what turns
+    # "the session might be orphaned" into "the run ends by itself". Interactive runs keep
+    # the unbounded form because the operator is present to stop it.
+    if not args.seconds and not args.dry_run and not sys.stdin.isatty():
+        _bad("stdin is not a terminal, so there is no Ctrl-C path: an unbounded run could "
+             "be orphaned when the client or connection goes away, leaving poisoned ARP "
+             "caches until they expire.")
+        print("  Give it a bound:  --seconds 300")
+        return EXIT_USAGE
+
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
-                             gateway_ip=gateway, only=only or None)
+                             gateway_ip=gateway, only=only or None,
+                             force_unsafe=bool(getattr(args, "force_unsafe", False)))
     if plan is None:
         return EXIT_FAIL
 
@@ -1688,6 +1710,15 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     st = runner.status()
     print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
           f"{st['watchdog_refreshes']} refresh(es)")
+    # "Quiet" and "broken" are different answers to the same silent counter, so the count
+    # of never-observed ticks is reported rather than left in the object. A run that ended
+    # with forwarding never seen has an ambiguous record; a run that saw it working and
+    # then stopped is a real finding, and the two must not read the same.
+    quiet = int(st.get("quiet_samples") or 0)
+    if quiet and not st.get("forwarding_observed"):
+        print(f"  note: forwarding was NEVER observed working during this run "
+              f"({quiet} quiet sample(s)) -- on an idle segment that is expected; on a "
+              f"busy one it means the relay never carried traffic.")
     if failure:
         _bad(f"the intercept loop failed: {failure}")
         return EXIT_FAIL
@@ -1695,6 +1726,9 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
         _bad("watchdog reported failures:")
         for f in list(st["watchdog_failures"]):  # type: ignore[call-overload]
             print(f"    - {f}")
+        overflow = int(st.get("watchdog_failures_overflow") or 0)
+        if overflow:
+            print(f"    ... and {overflow} more (list capped): the same failure repeated")
         return EXIT_FAIL
     return EXIT_OK
 

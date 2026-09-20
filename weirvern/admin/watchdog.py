@@ -256,9 +256,25 @@ class FailOpenWatchdog:
         self._quiet_samples = 0
         self._threads: list[threading.Thread] = []
         # Recorded so status output can explain WHY the watchdog fired.
+        #
+        # CAPPED, with an overflow count. A restore-send failure is recorded on every
+        # failed send, and the refresh loop re-sends every few seconds -- so on a flapping
+        # NIC this list grew without bound over a long intercept and every status read
+        # returned the whole thing. The count is what matters ("it happened 400 times");
+        # the first few are the diagnostic sample.
         self.failures: list[str] = []
+        self.failures_overflow = 0
         self.restored_count = 0
         self.refresh_count = 0
+
+    MAX_FAILURES_RECORDED = 20
+
+    def _record_failure(self, msg: str) -> None:
+        """Append to the failure log, keeping it bounded."""
+        if len(self.failures) < self.MAX_FAILURES_RECORDED:
+            self.failures.append(msg)
+        else:
+            self.failures_overflow += 1
 
     # -- registration ----------------------------------------------------------
     def register(self, ic: Interception) -> None:
@@ -275,6 +291,26 @@ class FailOpenWatchdog:
             ic = self._interceptions.pop((host_ip, claim_ip), None)
         if ic is not None:
             self._send(ic.restore_frame(), "restore")
+
+    @property
+    def quiet_samples(self) -> int:
+        """Health ticks where forwarding had never yet been observed.
+
+        Read by status output so an operator can tell "quiet segment" from "broken relay":
+        until forwarding has been seen working at least once, a still counter is
+        uninformative, and this count is the evidence of how long the ambiguity lasted.
+        """
+        return self._quiet_samples
+
+    @property
+    def forwarding_observed(self) -> bool:
+        """Whether the forwarding counter has EVER advanced since the mappings went in.
+
+        The latch that makes stillness interpretable: False means a still counter proves
+        nothing (an idle segment looks identical to a broken relay), True means a stall is
+        meaningful because we know we broke something that was working.
+        """
+        return self._forwarding_observed
 
     @property
     def active(self) -> int:
@@ -387,7 +423,7 @@ class FailOpenWatchdog:
             msg = (f"forwarding stalled for {self._stall_strikes} samples on "
                    f"{self.iface} after previously working; failing open")
             logger.error(msg)
-            self.failures.append(msg)
+            self._record_failure(msg)
             self.stop()
             return
 
@@ -432,7 +468,7 @@ class FailOpenWatchdog:
             msg = f"{kind} send failed on {self.iface}: {exc}"
             logger.error(msg)
             if kind == "restore":
-                self.failures.append(msg)
+                self._record_failure(msg)
             return False
 
 
