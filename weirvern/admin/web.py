@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -91,11 +92,19 @@ class GuiContext:
     request and makes one slow query block the whole UI.
     """
 
-    def __init__(self, connect_factory, settings, backend=None, capabilities=None):
+    def __init__(self, connect_factory, settings, backend=None, capabilities=None,
+                 auth=None, config_client=None):
         self.connect_factory = connect_factory
         self.settings = settings
         self.backend = backend
         self.capabilities = capabilities
+        # Whether WRITES are permitted. Reads never consult it, so a monitoring surface
+        # stays usable without a token -- during an incident is exactly when nobody
+        # wants to stop and log in.
+        self.auth = auth
+        # The ConfigMap client, for the write path. Held rather than constructed per
+        # request so a write and a dry run see the same object.
+        self.config_client = config_client
 
 
 def _build_handler(ctx: GuiContext):
@@ -472,7 +481,262 @@ def _build_handler(ctx: GuiContext):
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
                 })
+            # Whether the UI may offer writes, and why not when it may not. Sent with every
+            # settings read so the panel can DISABLE rather than hide: a control that vanishes
+            # teaches nothing, a disabled one with a stated reason tells the operator to set the
+            # token.
+            auth = getattr(ctx, "auth", None)
+            payload["writes"] = {
+                "enabled": bool(auth and auth.enabled),
+                "reason": (auth.reason if auth else
+                           "authentication is not available in this build"),
+            }
+            # The editable keys, so the UI offers exactly what the server will accept -- derived
+            # here rather than duplicated in JavaScript.
+            try:
+                from weirvern.admin.cluster_config import EDITABLE_KEYS
+
+                payload["editable_keys"] = list(EDITABLE_KEYS)
+            except Exception:  # noqa: BLE001
+                payload["editable_keys"] = []
             self._json(payload)
+
+        # -- writes ---------------------------------------------------------
+        def _client_addr(self) -> str:
+            return self.client_address[0] if self.client_address else ""
+
+        def _authorize(self) -> bool:
+            """Whether this request may write. Sends the refusal itself.
+
+            Returns False having already written the response, so every caller reads the same:
+            `if not self._authorize(): return`.
+            """
+            auth = getattr(ctx, "auth", None)
+            if auth is None:
+                self._error(503, "write access is not available: the GUI started without an "
+                                 "authentication module")
+                return False
+            if not auth.enabled:
+                # 403 with the REASON, so a client can say what is missing rather than guessing.
+                self._error(403, auth.reason)
+                return False
+            from weirvern.admin import gui_auth
+
+            presented = gui_auth.token_from_request(self)
+            addr = self._client_addr()
+            if auth.check(presented, client=addr):
+                return True
+            # Escalating delay, bounded. The response never distinguishes absent, empty and wrong.
+            delay = auth.delay_for(addr)
+            if delay:
+                time.sleep(delay)
+            logger.warning("rejected an unauthorised settings write from %s", addr or "unknown")
+            self._error(401, "a valid operator token is required to change settings")
+            return False
+
+        def _read_body(self, limit: int = 65536) -> dict:
+            """The request body as JSON, or raise ValueError.
+
+            Bounded: an unbounded read on a LAN port is a memory-growth path.
+            """
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                raise ValueError("a JSON body is required")
+            if length > limit:
+                raise ValueError(f"body too large ({length} bytes)")
+            raw = self.rfile.read(length)
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError(f"body is not valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("body must be a JSON object")
+            return parsed
+
+        def do_POST(self) -> None:  # noqa: N802
+            """The only write surface. Every route here is token-gated.
+
+            Reads stay on GET and stay open. This exists so an operator can manage settings from
+            the GUI instead of the TUI; it is deliberately narrow (a key allow-list, staged apply,
+            stated blast radius) because the port has no TLS and the token is the only control.
+            """
+            try:
+                self._route_post()
+            except BrokenPipeError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("GUI write failed for %s: %s", self.path, exc)
+                with contextlib.suppress(Exception):
+                    self._error(500, f"internal error: {exc}")
+
+        def _route_post(self) -> None:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+
+            if path == "/api/settings/plan":
+                return self._settings_plan()
+            if path == "/api/settings/apply":
+                return self._settings_apply()
+            self._error(404, f"no write route at {path}")
+
+        def _settings_plan(self) -> None:
+            """Validate and describe a proposed change WITHOUT touching anything.
+
+            The UI calls this first and shows the result, so the blast radius is stated before the
+            change rather than discovered after. Requires the token too: even a dry run reveals the
+            deployment's configuration shape.
+            """
+            if not self._authorize():
+                return
+            from weirvern.admin import cluster_config as cc
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            changes = body.get("changes")
+            if not isinstance(changes, dict) or not changes:
+                return self._error(400, "a non-empty 'changes' object is required")
+
+            try:
+                current = cc.ClusterConfig().read() if ctx.config_client is None else \
+                    ctx.config_client.read()
+            except cc.ConfigError as exc:
+                return self._error(502, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not read the configuration: {exc}")
+
+            try:
+                p = cc.plan({k: str(v) for k, v in changes.items()}, current)
+            except cc.ConfigError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+
+            self._json({
+                "ok": True,
+                "proposals": [
+                    {"key": x.key, "current": x.current, "proposed": x.proposed,
+                     "restarts": x.restarts, "blast": x.blast, "warning": x.warning}
+                    for x in p.proposals
+                ],
+                "restart_targets": p.restart_targets,
+            })
+
+        def _settings_apply(self) -> None:
+            """Write the configuration, then restart what reads it.
+
+            The write is verified by READ-BACK inside ClusterConfig.apply, so a merge-patch that
+            matched nothing is reported as a failure rather than as success. The restart is what
+            makes the change take effect -- a ConfigMap env var is read at process start, so
+            without it the operator would be told "saved" about a change that is inert.
+            """
+            if not self._authorize():
+                return
+            from weirvern.admin import cluster_config as cc
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            changes = body.get("changes")
+            if not isinstance(changes, dict) or not changes:
+                return self._error(400, "a non-empty 'changes' object is required")
+            confirmed = bool(body.get("confirmed"))
+
+            client = ctx.config_client or cc.ClusterConfig()
+            try:
+                current = client.read()
+                p = cc.plan({k: str(v) for k, v in changes.items()}, current)
+            except cc.ConfigError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not read the configuration: {exc}")
+
+            # A change with a warning must be confirmed explicitly. The warning exists because the
+            # value is legal but costly, and a plan the caller never saw is not consent.
+            if not confirmed and any(x.warning for x in p.proposals):
+                return self._json({
+                    "ok": False,
+                    "needs_confirmation": True,
+                    "proposals": [
+                        {"key": x.key, "current": x.current, "proposed": x.proposed,
+                         "warning": x.warning} for x in p.proposals if x.warning
+                    ],
+                }, 409)
+
+            # The mode change gets the CLI's OWN gate, imported rather than reimplemented: two
+            # copies of a safety check drift, and the one that drifts is the one nobody tests.
+            mode_error = self._mode_gate(changes)
+            if mode_error:
+                return self._json({"ok": False, "error": mode_error}, 409)
+
+            try:
+                landed = client.apply({k: str(v) for k, v in changes.items()})
+            except cc.ConfigError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 502)
+
+            restarted: list[str] = []
+            restart_errors: list[str] = []
+            for target in p.restart_targets:
+                try:
+                    client.restart(target)
+                    restarted.append(target)
+                except cc.ConfigError as exc:
+                    restart_errors.append(str(exc))
+
+            self._json({
+                "ok": True,
+                "applied": {k: landed.get(k, "") for k in changes},
+                "restarted": restarted,
+                # A saved-but-not-restarted change is INERT, so it is reported as a failure of
+                # applying rather than quietly folded into success.
+                "restart_errors": restart_errors,
+                "note": ("restarted " + ", ".join(restarted)) if restarted
+                        else "no workload needed a restart",
+            })
+
+        def _mode_gate(self, changes: dict) -> str:
+            """Reject a mode change that the mode's own prerequisites forbid. "" when fine.
+
+            The gate is `mode.validate`, which is what `weirvern mode weir` uses. A GUI session must
+            not be a way around it: enabling in-path interception without forwarding working takes
+            the segment down, and the check that prevents that has to be the same check.
+            """
+            wanted = None
+            for k, v in changes.items():
+                if k.strip().upper() == "SENSOR_MODE":
+                    wanted = str(v)
+            if wanted is None:
+                return ""
+            from weirvern.admin import mode as mode_mod
+
+            normalised = mode_mod.normalise(wanted)
+            has_net_admin, has_net_raw = self._sensor_caps()
+            verdict = mode_mod.validate(normalised, has_net_admin=has_net_admin,
+                                        has_net_raw=has_net_raw, watchdog_available=True)
+            if verdict.ok:
+                return ""
+            reasons = "; ".join(getattr(verdict, "blockers", []) or [])
+            return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
+
+        def _sensor_caps(self) -> tuple[bool, bool]:
+            """Whether the SENSOR can do NET_ADMIN/NET_RAW, read from the cluster.
+
+            Deliberately the cluster's capabilities rather than this process's: the GUI runs on the
+            operator's network namespace and would answer about the wrong container, which is the
+            configured-vs-actual error.
+            """
+            try:
+                if ctx.backend is not None:
+                    for svc in ctx.backend.ps() or []:
+                        _ = svc
+                    # The capability check proper needs the sensor pod spec; absent a positive
+                    # answer, report "unknown" as False rather than assuming a capability that
+                    # would take the segment down.
+            except Exception:  # noqa: BLE001
+                pass
+            return False, False
 
         def _settings(self, query: dict) -> None:
             """The effective configuration. READ-ONLY, and deliberately so.
@@ -619,7 +883,33 @@ def build_context(connect_factory, settings, project_dir: Path,
             backend = get_backend(project_dir, caps)
     except Exception as exc:  # noqa: BLE001
         logger.debug("GUI starting without cluster access: %s", exc)
-    return GuiContext(connect_factory, settings, backend=backend, capabilities=caps)
+    # WRITES ARE OFF UNLESS A TOKEN IS CONFIGURED. `from_env` reads it once, so a partially
+    # applied ConfigMap cannot serve a half-written token mid-request.
+    auth = None
+    try:
+        from weirvern.admin import gui_auth
+
+        auth = gui_auth.from_env()
+        if auth.enabled:
+            logger.info("GUI writes enabled (operator token configured)")
+        else:
+            logger.info("GUI is read-only: %s", auth.reason)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not initialise GUI auth: %s", exc)
+
+    # The ConfigMap client, for the write path. Constructed unconditionally: whether the
+    # in-cluster token exists is discovered when a write is attempted, and a read-only GUI
+    # must still start on a box with no cluster at all.
+    try:
+        from weirvern.admin.cluster_config import ClusterConfig
+
+        config_client = ClusterConfig()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("no cluster config client: %s", exc)
+        config_client = None
+
+    return GuiContext(connect_factory, settings, backend=backend, capabilities=caps,
+                      auth=auth, config_client=config_client)
 
 
 def run(connect_factory, settings, project_dir: Path, namespace: str,

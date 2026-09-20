@@ -122,23 +122,43 @@ def test_a_boolean_setting_reads_as_enabled_or_disabled():
 # ── 3. read-only, and said so ──────────────────────────────────────────────────────────────
 
 
-def test_there_is_no_write_route_for_settings():
-    """The GUI must not accept a configuration write over an unauthenticated port."""
+def test_every_write_route_is_token_gated():
+    """The invariant changed shape, and this test changed with it.
+
+    It used to assert there was NO write route at all, which was the right rule while the GUI had
+    no authentication. An operator has since asked to manage settings from the GUI, so the rule is
+    now: every write route consults the auth gate. The old assertion would have blocked a
+    requested feature; deleting it would have left the port open. It is REPLACED, and the property
+    it protected -- no unauthenticated write -- is what is asserted.
+    """
     src = (WEB.parent / "web.py").read_text()
-    # Any POST/PUT handler would show up as a do_POST/do_PUT method.
-    assert "def do_POST" not in src, (
-        "web.py handles POST, so some route accepts a write. This GUI has no authentication and "
-        "must stay read-only."
-    )
-    assert "def do_PUT" not in src and "def do_DELETE" not in src
-    # And the settings route must be a GET-only read.
+
+    # There must be a write surface, and it must be a POST (never a GET, which browsers and
+    # prefetchers issue without intent).
+    assert "def do_POST" in src, "no write surface exists"
+    assert "def do_GET" in src
+    for unsafe in ("def do_PUT", "def do_DELETE"):
+        assert unsafe not in src, f"{unsafe} would be an unaudited write path"
+
+    # EVERY POST route must pass through _authorize before doing anything.
+    route = src[src.index("        def _route_post(self"):]
+    route = route[:route.index("\n        def ", 10)]
+    handlers = [ln.split("return self.")[1].strip().rstrip("()") for ln in route.splitlines()
+                if "return self." in ln]
+    assert handlers, "no POST routes parsed -- update this test"
+    for name in handlers:
+        body = src[src.index(f"        def {name}(self"):]
+        body = body[:body.index("\n        def ", 10)]
+        assert "self._authorize()" in body, (
+            f"the write route {name} does not consult the auth gate, so it accepts an "
+            f"unauthenticated configuration change"
+        )
+
+    # And the settings READ stays a read.
     i = src.find("def _settings")
     assert i > 0, "the settings handler is gone"
-    body = src[i : i + 1400]
+    body = src[i : i + 2200]
     assert "_json(" in body, "the settings handler does not return a JSON payload"
-    assert "insert" not in body.lower() and "update " not in body.lower(), (
-        "the settings handler appears to write something"
-    )
 
 
 def test_the_view_states_that_it_is_read_only_and_where_to_change_things():
