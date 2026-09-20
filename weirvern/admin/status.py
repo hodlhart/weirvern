@@ -1390,7 +1390,14 @@ def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None
         )
         idx: dict[tuple, dict] = {}
         for row in res.result_rows:
-            idx[(row[0], row[1])] = {"state": row[2], "note": row[3], "reviewed_at": row[4]}
+            # NORMALISED THROUGH _parse_stamp, the same function attach_reviews uses for
+            # the lookup. Measured on the live box: ClickHouse returns window_start as a
+            # TZ-AWARE datetime (the server's timezone), and building the index with the
+            # raw value while looking it up with a naive one made key equality FAIL for
+            # every row -- the review was stored and read back correctly, and then silently
+            # not merged, so a false-positive marking looked like it never saved.
+            key = (_parse_stamp(row[0]), row[1])
+            idx[key] = {"state": row[2], "note": row[3], "reviewed_at": row[4]}
         return idx, None
     except Exception as exc:  # noqa: BLE001
         logger.debug("alert_reviews unavailable: %s", exc)

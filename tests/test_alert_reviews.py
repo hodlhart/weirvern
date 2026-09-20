@@ -163,6 +163,36 @@ def test_review_index_reads_final_and_keys_by_the_anomaly_pair():
     )
 
 
+def test_a_TIMEZONE_AWARE_stamp_merges_with_its_naive_twin():
+    """THE LIVE-BOX BUG, as a regression test.
+
+    ClickHouse returns window_start TZ-AWARE (the server's zone); the write path and the
+    lookup both work in naive wall-clock. Building the index with the raw aware value
+    while looking up with a naive one made KEY EQUALITY FAIL for every row: the review was
+    stored and read back correctly, and then silently not merged -- a false-positive
+    marking looked like it never saved. Caught only on the deployed box; the unit fakes
+    had used naive datetimes on both sides, which is why every test was green.
+
+    Both sides must normalise through _parse_stamp, so this pins the INDEX side and
+    attach_reviews pins the lookup side.
+    """
+    aware = datetime.datetime(2026, 9, 20, 10, 5, 0,
+                              tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
+    naive = datetime.datetime(2026, 9, 20, 10, 5, 0)
+
+    # The index, built from what ClickHouse actually returned (aware)...
+    idx, err = status.review_index(_Reader([[aware, "198.51.100.9", "ack", "", aware]]))
+    assert err is None
+    # ...must merge onto a row whose value round-tripped as naive (what the API sends
+    # the browser, and what the browser sends back).
+    rows = [{"window_start": naive, "src_addr": "198.51.100.9"}]
+    status.attach_reviews(rows, idx, None)
+    assert rows[0]["review_state"] == "ack", (
+        "an aware index key did not match its naive twin -- the review is stored, read "
+        "back, and then silently dropped at merge time"
+    )
+
+
 def test_a_missing_table_is_unavailable_not_empty():
     """THE THREE-VALUED RULE. 'Cannot read the reviews' must not collapse into
     'nothing has been reviewed' -- the analyst would stop looking for their own
