@@ -5,7 +5,7 @@ it touches becomes a "new" destination, every port a "new" service. That is not 
 network, it is a picture of the scanner, and it swamps the baseline the detectors learn from.
 
 The first case that prompted this was self-inflicted: a test generator emitted 91,532 NetFlow v5
-records for a synthetic 10.20.30.0/24 in a 1.4-minute run, and those rows then sat in the store as
+records for a synthetic 192.0.2.0/24 in a 1.4-minute run, and those rows then sat in the store as
 21% of all flow data, ready to feed the next retrain.
 
 TWO LAYERS, AND THEY ARE NOT INTERCHANGEABLE:
@@ -63,7 +63,7 @@ CAPTURE_EXCLUDE_ENV = "WEIRVERN_CAPTURE_EXCLUDE_CIDRS"
 #
 # NOT INCLUDED, deliberately: loopback and RFC1918 generally. A sensor monitoring a 10.x or 192.168.x
 # network would otherwise exclude the very traffic it exists to watch -- and the synthetic test range
-# that started this was 10.20.30.0/24, inside RFC1918. A blanket private-range rule would have been
+# that started this was 192.0.2.0/24, inside RFC1918. A blanket private-range rule would have been
 # convenient and wrong.
 DEFAULT_EXCLUDES: tuple[str, ...] = (
     "10.42.0.0/16",
@@ -88,7 +88,7 @@ def parse_cidrs(spec: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network
         if not token:
             continue
         try:
-            # `strict=False` so 10.0.0.1/24 is accepted as 10.0.0.0/24. An operator writing a
+            # `strict=False` so 198.51.100.1/24 is accepted as 198.51.100.0/24. An operator writing a
             # host address with a prefix length means the network, and rejecting it would be
             # pedantry that produces a refused write.
             net = ipaddress.ip_network(token, strict=False)
@@ -97,6 +97,53 @@ def parse_cidrs(spec: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network
                 f"'{token}' is not a valid CIDR or address. Refusing to load the exclusion list: a "
                 f"malformed entry would silently match nothing while appearing configured."
             ) from exc
+
+        # REFUSE HOST BITS SET BEYOND THE PREFIX. `strict=False` accepts `198.51.100.0/16` by
+        # silently dropping the third octet -- yielding `198.51.0.0/16`, a network 256x larger
+        # than the one written. MEASURED: a filter given that value matched 198.51.0.1.
+        #
+        # `198.51.100.1/24` stays accepted: writing a host address with a prefix means the network,
+        # and refusing it would be pedantry that blocks a valid write. `198.51.100.0/16` is a
+        # different mistake -- the address does not end on a prefix boundary, so which network
+        # was meant is genuinely ambiguous, and guessing wrong excludes traffic nobody asked to
+        # exclude. Refusing costs a correction; guessing costs data.
+        # THE TWO CASES ARE DIFFERENT AND ONLY ONE IS AMBIGUOUS:
+        #
+        #   a.b.c.d/32 or a bare address  -> a host. Unambiguous. Always accepted.
+        #   an address HOST BITS WITHIN a prefix it does not fill, where the address still LOOKS
+        #     like a host of that network (`198.51.100.1/24`) -> means the network. Accepted, because
+        #     dropping the host bits is obviously the intent.
+        #   an address whose host bits are set such that masking MOVES it to a different /24 or
+        #     beyond (`198.51.100.0/16` -> `198.51.0.0/16`) -> ambiguous and dangerous: the
+        #     operator wrote three octets and the mask erases one, producing a network 256x larger.
+        #
+        # Measured: that last case silently matched 198.51.0.1 -- an exclusion nobody asked for.
+        # `ipaddress.ip_network(..., strict=True)` RAISES for both cases, so it cannot be used to
+        # tell them apart -- it just reports "host bits set" for each. Compare the octets directly
+        # instead, which is the only thing that distinguishes them.
+        #
+        # HOW MANY OCTETS THE PREFIX FULLY COVERS: a /16 keeps two, a /24 keeps three. The address
+        # the operator WROTE must agree with the resulting network on all of them.
+        #   `198.51.100.1/24`      wrote 198.51.100.1   network 198.51.100.0/24   -> agree on "10.0.0". Host
+        #      bits dropped, which is the ordinary "host with a prefix" case. ACCEPTED.
+        #   `198.51.100.0/16`  wrote 198.51.100 network 198.51.0.0/16  -> differ: "198.51.100" vs
+        #      "198.51". The mask ERASED the third octet, so the network is 256x larger than
+        #      written and which one was meant is genuinely ambiguous. REFUSED.
+        # THE DIFFERENCE MUST FIT IN THE LAST OCTET. `int(wrote) ^ int(network)` measures exactly
+        # how far the mask moved the address; anything above the low 8 bits means an octet the
+        # operator wrote was erased.
+        #   `198.51.100.1/24`      diff=1     -> only host bits. ACCEPTED.
+        #   `198.51.100.0/16`      diff=0     -> exact. ACCEPTED.
+        #   `198.51.100.0/16`  diff=25600 -> the third octet was erased. REFUSED.
+        try:
+            moved = int(ipaddress.ip_address(token.split("/")[0])) ^ int(net.network_address)
+        except ValueError:
+            moved = 1 << 16   # non-v4 arithmetic: treat as a move, so it is refused
+        if moved >> 8:
+            raise ValueError(
+                f"'{token}' would be read as {net}, which is not the network written: the prefix "
+                f"erases part of the address. Write {net} to mean that, or /32 for a single host."
+            )
         out.append(net)
     return out
 

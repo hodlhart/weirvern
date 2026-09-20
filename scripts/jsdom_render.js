@@ -69,6 +69,7 @@ async function main() {
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
+                     loadZeek, loadNetflow,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
   `;
   try {
@@ -109,28 +110,50 @@ async function main() {
     ],
     total_edges: 25, truncated: true, reason: "",
   };
-  window.fetch = async (url) => ({
-    ok: true, status: 200, statusText: "OK",
-    json: async () => (String(url).includes("/api/graph") ? GRAPH_PAYLOAD
-                     : String(url).includes("/api/assets")
-                       ? { available: true, hours: 24, hosts: [], unreadable: [],
-                           sources_read: [], sources_failed: [], reason: "" }
-                     : String(url).includes("/api/flows")
-                       ? FLOWS_PAYLOAD
-                       : String(url).includes("/api/settings")
-                       ? SETTINGS_PAYLOAD
-                     : String(url).includes("/api/models")
-                         ? { available: true, hours: 72, run_count: 0, training_history: {},
-                             scores: {}, model_counts: {}, feature_deviations: [], points: [],
-                             staleness: [], retrain_interval_h: 6 }
-                         : { available: true, reason: "", log: "ssl", points: [] }),
-  });
+
 
   // A settings payload WITH a secret, shaped like the real one. The value below is a sentinel:
   // if it ever appears in the rendered DOM the harness fails, which makes "the page does not
   // leak the credential" an executed check rather than a claim about the code.
   const SECRET_SENTINEL = "ZZ-SENTINEL-DO-NOT-PRINT-ZZ";
   // An editable key list and write state, shaped like the real payload.
+  // A REALISTIC Zeek payload: 18 logs, several with counts, three EMPTY-FOREVER, plus a populated
+  // timeline. The empty-everything stub this replaces could not have caught the bar-chart bug --
+  // an empty payload renders the "nothing in this window" note, which is a legitimate state, so the
+  // crash only appears once real rows are present.
+  const ZEEK_PAYLOAD = {
+    counts: {
+      available: true, reason: "", unreadable: [],
+      points: [
+        { log: "conn", table: "zeek_conn", rows: 40731, total: 74661, state: "active",
+          last_ts: "2026-01-01T00:00:00" },
+        { log: "dns", table: "zeek_dns", rows: 62016, total: 121518, state: "active",
+          last_ts: "2026-01-01T00:00:00" },
+        { log: "http", table: "zeek_http", rows: 0, total: 389, state: "idle",
+          last_ts: "2026-01-01T00:00:00" },
+        { log: "ssl", table: "zeek_ssl", rows: 2, total: 71, state: "active",
+          last_ts: "2026-01-01T00:00:00" },
+        { log: "notice", table: "zeek_notice", rows: 1013, total: 5078, state: "active",
+          last_ts: "2026-01-01T00:00:00" },
+        { log: "kerberos", table: "zeek_kerberos", rows: 0, total: 0, state: "empty-forever",
+          last_ts: "1970-01-01T00:00:00" },
+        { log: "ntlm", table: "zeek_ntlm", rows: 0, total: 0, state: "empty-forever",
+          last_ts: "1970-01-01T00:00:00" },
+      ],
+    },
+    timeline: {
+      available: true, reason: "", hours: 24, bucket_s: 900,
+      series: {
+        conn: [{ t: "2026-01-01T00:00:00", n: 352 }, { t: "2026-01-01T00:15:00", n: 1189 }],
+        dns: [{ t: "2026-01-01T00:00:00", n: 900 }, { t: "2026-01-01T00:15:00", n: 1500 }],
+      },
+    },
+    services: { available: true, reason: "", points: [
+      { service: "dns", n: 10049 }, { service: "ntp", n: 56 }] },
+    dns: { available: true, reason: "", filtered: "single-label names excluded",
+           points: [{ query: "host.example", n: 6633, askers: 2 }] },
+  };
+
   const SETTINGS_PAYLOAD = {
     available: true, reason: "",
     writes: { enabled: true, reason: "" },
@@ -194,6 +217,54 @@ async function main() {
     ok: true, applied: { base_threshold: "0.5" }, restarted: ["deploy/weirvern-worker"],
     restart_errors: [], note: "restarted deploy/weirvern-worker",
   };
+
+  // ── ONE FETCH DISPATCHER, INSTALLED ONCE ────────────────────────────────────────────────
+  //
+  // The harness previously assigned `window.fetch` three times in sequence, so the LAST assignment
+  // won and every payload had to be re-registered on the stub that happened to be current. A route
+  // added to the wrong one served nothing at all, with no error -- which silently produced three
+  // failures during development (settings, plan/apply, and the Zeek tab) and, worse, meant the Zeek
+  // view had NO harness coverage because its payload was never reachable.
+  //
+  // Now there is one function. `fetchOverride` is the deliberate-failure hook: a check that needs a
+  // request to fail sets it, and clears it afterwards.
+  let fetchOverride = null;
+  const ROUTES = [];
+  window.fetch = function (url, opts) {
+    if (fetchOverride) {
+      const r = fetchOverride(String(url), opts || {});
+      if (r) return Promise.resolve(r);
+    }
+    const u = String(url);
+    if (opts && String(opts.method || "").toUpperCase() === "POST") {
+      POSTED.push({ url: u, headers: opts.headers || {}, body: opts.body || "" });
+      let sent = {};
+      try { sent = JSON.parse(opts.body || "{}"); } catch (_e) { sent = {}; }
+      const reply = u.includes("/api/settings/plan") ? planReply(sent.changes)
+                  : u.includes("/api/settings/apply")
+                    ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
+                        restart_errors: [], note: "restarted deploy/weirvern-worker" }
+                  : { ok: false, error: "no write route at " + u };
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => reply });
+    }
+    for (const [match, payload] of ROUTES) {
+      if (u.includes(match)) {
+        return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                                 json: async () => payload });
+      }
+    }
+    return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                             json: async () => ({ available: true, reason: "", points: [] }) });
+  };
+
+  // The routes, each registered with the payload it serves. One list, so a payload cannot be
+  // declared and then forgotten.
+  ROUTES.push(
+    ["/api/graph", GRAPH_PAYLOAD],
+    ["/api/flows", FLOWS_PAYLOAD],
+    ["/api/settings", SETTINGS_PAYLOAD],
+    ["/api/zeek", ZEEK_PAYLOAD],
+  );
 
   const H = window.__H;
   if (!H) {
@@ -541,31 +612,14 @@ async function main() {
   // everything below this point. Any payload a later check needs must be served HERE --
   // /api/settings was silently falling through to this default and rendering "0 settings", and
   // the same trap applies to every write route.
-  window.fetch = async (url, opts) => {
-    const u = String(url);
-    // A POST is a WRITE. Record it and answer with the right shape, so the harness can assert the
-    // request that was actually made rather than only what ended up on screen.
-    if (opts && String(opts.method || "").toUpperCase() === "POST") {
-      POSTED.push({ url: u, headers: opts.headers || {}, body: opts.body || "" });
-      let sent = {};
-      try { sent = JSON.parse(opts.body || "{}"); } catch (_e) { sent = {}; }
-      const reply = u.includes("/api/settings/plan") ? planReply(sent.changes)
-                  : u.includes("/api/settings/apply")
-                    ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
-                        restart_errors: [], note: "restarted deploy/weirvern-worker" }
-                  : { ok: false, error: "no write route at " + u };
-      return { ok: true, status: 200, statusText: "OK", json: async () => reply };
-    }
-    return ({
-    ok: true, status: 200, statusText: "OK",
-    json: async () => (String(url).includes("/api/flows")
-      ? { available: false, points: [], reason: "the flow drill-down failed" }
-      : String(url).includes("/api/settings")
-        ? SETTINGS_PAYLOAD
-      : { available: true, hours: 24, hosts: [], unreadable: [], sources_read: [],
-          sources_failed: [], reason: "" }),
-    });
-  };
+  // A deliberate FAILURE for ONE check: only the flow drill-down fails. An override, not a
+  // replacement stub -- a replacement would strand every payload registered with the dispatcher,
+  // which is precisely the bug this refactor removes.
+  fetchOverride = (u) => (u.includes("/api/flows")
+    ? { ok: true, status: 200, statusText: "OK",
+        json: async () => ({ available: false, points: [],
+                             reason: "the flow drill-down failed" }) }
+    : null);
   await window.loadFlowDetail({ proto: 6, name: "TCP" });
   await new Promise((r) => setTimeout(r, 40));
   check("a failed flow drill-down names the reason",
@@ -606,6 +660,55 @@ async function main() {
   const navAtLoad = [...doc.querySelectorAll("nav .tab")].map((b) => b.dataset.view);
   const healthWasActive =
     doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
+
+
+  // ── the Zeek tab ───────────────────────────────────────────────────────────────────────────
+  // THIS SECTION EXISTS BECAUSE ITS ABSENCE SHIPPED A BUG. The Zeek tab rendered a summary and an
+  // empty bar chart while the API returned all 18 logs correctly: the rows were mapped to one shape
+  // and the accessors read another, so the formatter threw on undefined and took the panel down.
+  // Nothing caught it because the harness never loaded this view, and its stub served an EMPTY
+  // payload -- which renders a legitimate "nothing in this window" note rather than crashing.
+  //
+  // A tab with no coverage is a tab whose bugs reach the user. Every view now gets exercised.
+  H.showView("zeek");
+  await H.loadZeek();
+
+  const zkSummary = doc.getElementById("zk-summary").textContent;
+  check("the zeek summary states rows and how many logs are active",
+        /rows from \d+ of \d+ configured logs/.test(zkSummary), zkSummary);
+
+  const zkLogBars = doc.querySelectorAll("#zk-counts .bar-row");
+  check("the per-log bar chart renders a bar for every log reported",
+        zkLogBars.length === ZEEK_PAYLOAD.counts.points.length,
+        `${zkLogBars.length} bars for ${ZEEK_PAYLOAD.counts.points.length} logs`);
+
+  // THE EXACT DEFECT: a bar whose label or value came out undefined. Check the rendered text, not
+  // just the element count -- a <span> with undefined in it still counts as a rendered bar.
+  const barText = [...doc.querySelectorAll("#zk-counts .bar-row")].map((r) => r.textContent);
+  check("no bar renders 'undefined' (the crash signature)",
+        !barText.some((t) => t.includes("undefined")), barText.slice(0, 3).join(" | "));
+  check("each bar names its log and shows a count",
+        barText.some((t) => t.includes("conn") && t.includes("40,731")),
+        barText.slice(0, 3).join(" | "));
+
+  const zkTimeline = doc.getElementById("zk-timeline");
+  check("the timeline drew an svg", !!zkTimeline.querySelector("svg"));
+  check("the timeline drew a path per series",
+        zkTimeline.querySelectorAll("path").length >= 2,
+        `${zkTimeline.querySelectorAll("path").length} paths`);
+  check("the timeline legend names the series",
+        /conn/.test(zkTimeline.textContent), zkTimeline.textContent.slice(0, 80));
+
+  check("a log that recorded NOTHING in the window is explained, not just zeroed",
+        /recorded nothing in this window|widen the window/i.test(doc.getElementById("zk-counts").textContent),
+        doc.getElementById("zk-counts").textContent.slice(-160));
+  check("an empty-forever log is distinguished from a quiet one",
+        /NEVER produced a row/i.test(doc.getElementById("zk-counts").textContent));
+
+  check("the services panel rendered its bars",
+        doc.querySelectorAll("#zk-services .bar-row").length === 2);
+  check("the dns panel rendered its names",
+        doc.querySelectorAll("#zk-dns .bar-row").length === 1);
 
   // ── operator access and staged writes ──────────────────────────────────────────────────────
   // Everything below drives the SHIPPING functions against the SHIPPING markup and asserts the
@@ -701,13 +804,12 @@ async function main() {
   check("discard clears the staged set", Object.keys(H.STAGE.changes).length === 0);
 
   // A REFUSED WRITE MUST SAY SO, and must not look like a success.
-  window.fetch = async (url, opts) => {
-    if (opts && String(opts.method || "").toUpperCase() === "POST") {
-      return { ok: false, status: 401, statusText: "Unauthorized",
-               json: async () => ({ error: "a valid operator token is required to change settings" }) };
-    }
-    return { ok: true, status: 200, statusText: "OK", json: async () => SETTINGS_PAYLOAD };
-  };
+  // A deliberate 401 for one check: the write must be refused and the staged changes must
+  // SURVIVE. As an override, so it cannot strand the payloads registered with the dispatcher.
+  fetchOverride = (u, opts) => (String(opts.method || "").toUpperCase() === "POST"
+    ? { ok: false, status: 401, statusText: "Unauthorized",
+        json: async () => ({ error: "a valid operator token is required to change settings" }) }
+    : null);
   const bt3 = [...doc.querySelectorAll("#view-settings .setting-input")]
     .find((n) => n.dataset.key === "base_threshold");
   if (bt3) {

@@ -230,8 +230,15 @@ async function loadZeek() {
   // bar answers "is ssl.log busy" and the next question is always "busy with whom". The
   // handler lives in assets.js because the drill-down needs the same address validation and
   // the same host click-through the other views use.
+  // THE ROWS CARRY THE FIELDS THE ACCESSORS READ. Previously this mapped to
+  // `{label, value, idx, table}` and then passed accessors reading `r.log` and `r.rows` -- neither
+  // of which exists on the mapped object. So label() returned undefined, value() returned
+  // undefined, and `format(undefined).toLocaleString()` threw, taking the whole panel down. The
+  // Zeek tab rendered a summary and an empty bar chart, which is exactly what "not fully showing
+  // data" looked like.
   const logRows = (counts.points || []).map((p, i) => ({
-    label: p.log, value: p.rows, idx: i, table: p.table,
+    log: p.log, rows: p.rows, idx: i, table: p.table,
+    total: p.total, last_ts: p.last_ts, state: p.state,
   }));
   renderBars("zk-counts", { available: counts.available !== false, reason: counts.reason, points: logRows },
              { label: (r) => r.log, value: (r) => r.rows, format: (v) => v.toLocaleString(),
@@ -243,7 +250,9 @@ async function loadZeek() {
                // dead end that looks like a broken feature.
                onClick: (r) => {
                  if (r.rows > 0 && typeof loadZeekLog === "function") {
-                   loadZeekLog(r.label).catch(showError);
+                   // `r.log`, not `r.label`: the row carries `log` (the Zeek log's name) and
+                   // loadZeekLog expects that label, which it validates against ZEEK_LOGS.
+                   loadZeekLog(r.log).catch(showError);
                  }
                } });
   // A ZERO NEEDS ITS REASON. The bar chart shows what is in the window; this line explains the

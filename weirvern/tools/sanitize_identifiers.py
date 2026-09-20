@@ -81,8 +81,20 @@ MAPPING: list[tuple[str, str]] = [
     (r"10\.0\.0\.(\d+)", r"198.51.100.\1"),
     (r"10\.0\.5\.(\d+)", r"198.51.100.\1"),
     (r"10\.9\.9\.(\d+)", r"203.0.113.\1"),
-    (r"10\.20\.30\.(\d+)", r"192.0.2.\1"),
-    (r"10\.43\.0\.(\d+)", r"198.51.100.\1"),        # the platform's service CIDR, a default
+    # `10.20.30.0/24` is NOT rewritten, deliberately. It is the SYNTHETIC range this project's own
+    # NetFlow generator emits ("Documentation-range hosts so this never emits a real address by
+    # accident"), so it names nothing on anyone's network -- and rewriting it corrupted product code
+    # and tests, because a legitimate reference to the test data was treated as a leak. It is
+    # allowed by value in UNIVERSAL_EXAMPLES instead.
+    # `10.43.0.0/16` is the k3s SERVICE CIDR -- a software default, identical on every
+    # deployment, and one the product MUST name to exclude the cluster's own plumbing from what it
+    # learns. It is therefore NOT scrubbed: the rule that used to rewrite it (10.43.0.N ->
+    # 198.51.100.N) fired on the default and silently changed what the product excludes, because
+    # the exclusion list contained the rewritten value. A scrubber must not edit behaviour.
+    #
+    # The addresses it used to catch are in `10.42.0.0/16` (the pod CIDR) and the service range's
+    # .0/.1, both covered by UNIVERSAL_EXAMPLES by value. A real lab host in 10.43.0.0/16 would
+    # still be flagged as private-ipv4 and must be handled by value if one ever appears.
     (r"172\.16\.5\.(\d+)", r"192.0.2.\1"),
     # MAC addresses. RFC 7042 reserves 00:00:5E:00:53:00-FF for documentation.
     (r"a8:9c:6c:96:b6:2d", "00:00:5e:00:53:01"),    # the capture segment's gateway
@@ -122,7 +134,14 @@ SYNTHETIC_IPV4 = re.compile(
 # RFC 5737 documentation ranges. Not real, and recognised as such by every reader and tool.
 DOC_IPV4 = re.compile(r"^(?:198\.51\.100\.|203\.0\.113\.|192\.0\.2\.)")
 # Structural addresses: binding, broadcast, loopback, multicast.
-STRUCTURAL_IPV4 = re.compile(r"^(?:0\.0\.0\.0|255\.255\.255\.255|127\.|224\.|239\.)")
+STRUCTURAL_IPV4 = re.compile(
+    r"^(?:0\.0\.0\.0|255\.255\.255\.255|127\.|224\.|239\.|"
+    # LINK-LOCAL. Assigned by the kernel itself when DHCP fails, so it is a statement about the
+    # PROTOCOL rather than about anyone's network -- the same category as loopback and multicast.
+    # The product must name it to exclude meaningless flow, and a guard that flags it is a guard
+    # that gets switched off.
+    r"169\.254\.)"
+)
 # ANY private range, in every RFC 1918 block plus CGNAT -- not only 192.168.x. An earlier version
 # exempted 10/8 and 172.16/12 wholesale, which meant a lab address written in one of those ranges
 # was never reported.
@@ -157,6 +176,15 @@ UNIVERSAL_EXAMPLES = {
     "10.42.0.0", "10.42.0.1",
     "10.43.0.0", "10.43.0.1",
     "172.17.0.0", "172.17.0.1",
+    # THE MASKED RESULT of 198.51.100.0/16, which `ipaddress` produces with strict=False. It
+    # appears only where that over-match is explained and where it is asserted to be REFUSED -- it
+    # is the output of a documented operation, not an observed address. Allowed by value, which is
+    # as narrow as an exemption gets.
+    "198.51.0.0", "198.51.0.1",
+    # THE SYNTHETIC TEST RANGE, by value. Emitted only by this project's own generator, and
+    # referenced in the docs and tests that explain the exclusion feature. A real address in this
+    # range would still be reported as private-ipv4 -- only these exact values are allowed.
+    "10.20.30.0",
 }
 
 # A MAC that is obviously SYNTHETIC rather than captured -- the test is whether the octets look

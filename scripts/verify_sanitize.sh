@@ -43,7 +43,29 @@ echo
 echo "=== 1. every address-shaped token must still PARSE ==="
 python3 - <<'EOF'
 import ipaddress, re, subprocess, pathlib, sys
+
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
+
+# Tokens that were ALREADY unparseable BEFORE the scrub. A value written on purpose to be invalid
+# (a test that bad input is refused) parses in neither state, so it cannot be evidence that the
+# scrubber broke anything -- this check would otherwise fail forever on correct fixtures.
+BEFORE_INVALID = set()
+try:
+    for line in pathlib.Path("/tmp/sanitize_before.txt").read_text().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        tok = parts[1]
+        try:
+            if "/" in tok:
+                ipaddress.ip_network(tok, strict=False)
+            else:
+                ipaddress.ip_address(tok)
+        except ValueError:
+            BEFORE_INVALID.add(tok)
+except OSError:
+    pass
+
 bad = []
 out = subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split()
 for rel in out:
@@ -61,6 +83,14 @@ for rel in out:
             else:
                 ipaddress.ip_address(tok)
         except ValueError as e:
+            # A DELIBERATELY INVALID TOKEN IS NOT CORRUPTION. This check exists to catch the
+            # scrubber EATING part of a real address (measured: it once turned a valid CIDR into a
+            # truncated one). A malformed value written on purpose -- a test asserting that bad
+            # input is REFUSED -- parses in neither state, so it must be excluded from the
+            # comparison. Distinguished by whether the token is invalid BEFORE scrubbing too: if it
+            # never parsed, the scrubber did not break it.
+            if tok in BEFORE_INVALID:
+                continue
             bad.append(f"{rel}: {tok!r} -- {e}")
 if bad:
     print(f"  FAIL: {len(bad)} token(s) no longer parse -- the scrub ate part of an address:")

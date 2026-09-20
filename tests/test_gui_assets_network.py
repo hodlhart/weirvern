@@ -431,3 +431,65 @@ def test_clicking_an_edge_shows_that_pair_not_the_whole_host():
     assert "→" in edge or "&rarr;" in edge, (
         "the edge detail does not render the source→destination relationship visually"
     )
+
+
+# ── the Zeek tab's bar chart, which rendered nothing while the API looked correct ──────────
+#
+# FOUND LIVE, not by reading. The Zeek tab "was not fully showing data": a summary line appeared and
+# the bar chart beneath it was empty. The API returned all 18 logs with real counts, and the
+# timeline series were populated -- so the fault was between the payload and the pixels.
+#
+# The cause: the log rows were mapped to `{label, value, idx, table}` and then the accessors passed
+# to renderBars read `r.log` and `r.rows`, NEITHER of which exists on that object. So label()
+# returned undefined, value() returned undefined, and `format(undefined).toLocaleString()` threw --
+# taking the entire panel with it. Every existing test passed because they checked that the payload
+# had the right shape, not that the renderer consumed it.
+
+
+def test_the_zeek_log_rows_carry_the_fields_the_accessors_read():
+    """The mapped rows must have the properties `label:` and `value:` read.
+
+    A mismatch here is invisible in a payload test and fatal in the browser: the accessors read
+    undefined, the formatter throws on undefined, and the panel renders empty.
+    """
+    src = (WEB / "soc.js").read_text()
+    i = src.index("counts.points || []).map(")
+    mapping = src[i:i + 500]
+    # The fields the accessors read, right after the mapping.
+    j = src.index('renderBars("zk-counts"')
+    accessors = src[j:j + 400]
+    for field in ("r.log", "r.rows"):
+        assert field in accessors, f"the accessors do not read {field}"
+    # ...and each must be present on the object the map builds.
+    for field in ("log:", "rows:"):
+        assert field in mapping, (
+            f"the row mapping does not include {field.rstrip(':')}, but an accessor reads it — "
+            f"the accessor would return undefined and the formatter would throw"
+        )
+
+
+def test_the_zeek_drill_down_passes_the_log_label_not_a_missing_field():
+    """loadZeekLog validates its argument against ZEEK_LOGS, so passing undefined is a 400."""
+    src = (WEB / "soc.js").read_text()
+    i = src.index("loadZeekLog(")
+    call = src[i:i + 60]
+    assert "r.log" in call, f"the drill-down passes the wrong field: {call!r}"
+    assert "r.label" not in call, (
+        "the drill-down passes r.label, which the log rows do not carry — the click would 400"
+    )
+
+
+def test_every_renderBars_caller_declares_a_value_accessor():
+    """`format` receives whatever `value` returns, so a caller with a formatter but no value
+    accessor reads the DEFAULT field and can pass undefined to the formatter."""
+    src = (WEB / "soc.js").read_text()
+    for i, line in enumerate(src.splitlines()):
+        if "_renderBars(" not in line and "renderBars(" not in line:
+            continue
+        window = "\n".join(src.splitlines()[i:i + 4])
+        if "format:" in window and "value:" not in window and "label:" not in window:
+            # A call may span lines; only flag one that has a formatter and no value at all nearby.
+            wider = "\n".join(src.splitlines()[i:i + 10])
+            assert "value:" in wider, (
+                f"a renderBars call at line {i+1} has a formatter but no value accessor:\n{wider}"
+            )

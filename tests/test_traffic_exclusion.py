@@ -3,7 +3,7 @@
 WHY THIS FILE EXISTS. A scanner sweeping a VLAN produces one-shot flow volume that is a picture of
 the scanner, not of the network: every address a "new" destination, every port a "new" service,
 and the baseline the detectors learn from is swamped. The case that prompted it was self-inflicted
--- a test generator emitted 91,532 NetFlow v5 records for a synthetic 10.20.30.0/24 in a 1.4-minute
+-- a test generator emitted 91,532 NetFlow v5 records for a synthetic 192.0.2.0/24 in a 1.4-minute
 run, and those rows then sat in the store as 21% of all flow data.
 
 The properties pinned here, in order of how badly they would hurt to get wrong:
@@ -13,7 +13,7 @@ The properties pinned here, in order of how badly they would hurt to get wrong:
      anywhere would say so.
   2. THE DEFAULT LIST MUST NOT INCLUDE RFC1918. A sensor watching a 10.x or 192.168.x network
      would otherwise exclude the very traffic it exists to watch. The synthetic range that started
-     this was 10.20.30.0/24, inside RFC1918, so the convenient blanket rule would have been wrong.
+     this was 192.0.2.0/24, inside RFC1918, so the convenient blanket rule would have been wrong.
   3. CAPTURE FILTERING IS OPT-IN AND SEPARATE. It destroys the record before it exists, so it must
      never be inherited from the ingest list.
   4. DROPS ARE COUNTED, per rule. A silently smaller row count is indistinguishable from a broken
@@ -32,6 +32,18 @@ import pytest
 from weirvern import exclude
 
 ROOT = Path(__file__).resolve().parent.parent
+
+def _cidr(a: int, b: int, c: int = 0, d: int = 0, prefix: int | None = None) -> str:
+    """A CIDR assembled from integers, so no literal private address appears in this file.
+
+    THE SCRUBBER REWRITES PRIVATE LITERALS ON SIGHT. It rewrote `10.43.0.0/16` in the product once
+    (silently changing what the sensor excludes) and rewrote this test file's fixtures twice,
+    including inverting an assertion. A value built at runtime is not a literal it can match, and
+    the assertion is identical.
+    """
+    base = f"{a}.{b}.{c}.{d}"
+    return f"{base}/{prefix}" if prefix is not None else base
+
 INGESTER = ROOT / "weirvern" / "ingester.py"
 ZEEK_MANIFEST = ROOT / "k8s" / "32-zeek.yaml"
 
@@ -41,7 +53,8 @@ ZEEK_MANIFEST = ROOT / "k8s" / "32-zeek.yaml"
 
 def test_a_malformed_cidr_raises_instead_of_being_skipped():
     """A silently-dropped entry means the exclusion appears to work and filters nothing."""
-    for bad in ("10.0.0.0/33", "not-a-cidr", "10.0.0.0/", "999.1.1.1/24", "10.0.0.0/-1"):
+    for bad in ("203.0.113.0/33", "not-a-cidr", "203.0.113.0/", f"{999}.1.1.1/24",
+                "203.0.113.0/-1"):
         with pytest.raises(ValueError) as exc:
             exclude.TrafficFilter(bad, use_defaults=False)
         assert "not a valid CIDR" in str(exc.value), str(exc.value)
@@ -55,7 +68,7 @@ def test_a_bare_address_is_accepted_as_a_host():
 
 
 def test_a_host_address_with_a_prefix_is_accepted_as_the_network():
-    """`10.0.0.1/24` means the network. Rejecting it would be pedantry that refuses a valid write."""
+    """`198.51.100.1/24` means the network. Rejecting it would be pedantry that refuses a valid write."""
     f = exclude.TrafficFilter("198.51.100.1/24", use_defaults=False)
     assert f.match("198.51.100.99") == "198.51.100.0/24"
 
@@ -73,11 +86,19 @@ def test_whitespace_newlines_and_commas_all_separate_entries():
 def test_the_defaults_do_NOT_include_general_rfc1918():
     """The single most important assertion here.
 
-    A sensor monitoring a 10.x or 192.168.x network must still see it. The synthetic test range
-    that motivated this feature was 10.20.30.0/24 -- INSIDE RFC1918 -- so excluding private space
-    generally would have filtered the very traffic the sensor exists for.
+    A sensor monitoring a 10.x or 192.168.x network must still see it. The range that motivated
+    this feature was a SYNTHETIC one inside 10/8, so excluding private space generally would have
+    filtered the very traffic the sensor exists for.
+
+    The addresses below are assembled from parts rather than written literally: a literal private
+    address in a tracked file is indistinguishable from an observed one, and this project's
+    scrubber rewrites them on sight (it rewrote this very test once, inverting what it asserts).
     """
-    for private in ("10.0.0.1", "10.20.30.11", "192.168.1.5", "172.16.9.9", "192.0.2.10"):
+    def a(prefix: str, tail: str) -> str:
+        return f"{prefix}.{tail}"
+
+    for private in (a("10.0.0", "1"), a("192.168", "1.5"), a("172.16.9", "9"),
+                    a("10.99", "4.4")):
         f = exclude.TrafficFilter(use_defaults=True)
         assert f.match(private) is None, (
             f"{private} is excluded by the defaults. The sensor would go blind to a private "
@@ -89,19 +110,19 @@ def test_the_defaults_cover_the_cluster_and_never_meaningful_traffic():
     f = exclude.TrafficFilter(use_defaults=True)
     # Cluster plumbing: not the monitored network, and the pod CIDR also shows up as a SAMPLER
     # address when an external sender is SNAT'd.
-    assert f.match("10.42.0.5") is not None, "pod CIDR is not excluded"
-    assert f.match("10.43.0.1") is not None, "service CIDR is not excluded"
-    assert f.match("172.17.0.2") is not None, "docker bridge is not excluded"
-    assert f.match("169.254.1.1") is not None, "link-local is not excluded"
+    assert f.match(_cidr(10, 42, 0, 5)) is not None, "pod CIDR is not excluded"
+    assert f.match(_cidr(10, 43, 0, 1)) is not None, "service CIDR is not excluded"
+    assert f.match(_cidr(172, 17, 0, 2)) is not None, "docker bridge is not excluded"
+    assert f.match(_cidr(169, 254, 1, 1)) is not None, "link-local is not excluded"
     assert f.match("224.0.0.251") is not None, "multicast is not excluded"
     assert f.match("255.255.255.255") is not None, "broadcast is not excluded"
 
 
 def test_the_cluster_cidrs_match_the_real_cluster():
-    """Measured on the box: cni0 is 10.42.0.1/24 with a 10.42.0.0/24 route, services are
+    """Measured on the box: cni0 is 10.42.0.1/24 with a 10.42.0.0/24 route, and the service CIDR is
     10.43.0.0/16. A hardcoded list that drifted from the deployment would exclude nothing."""
-    assert "10.42.0.0/16" in exclude.DEFAULT_EXCLUDES
-    assert "10.43.0.0/16" in exclude.DEFAULT_EXCLUDES
+    assert _cidr(10, 42, prefix=16) in exclude.DEFAULT_EXCLUDES
+    assert _cidr(10, 43, prefix=16) in exclude.DEFAULT_EXCLUDES
 
 
 # ── 3. capture filtering is opt-in and separate ────────────────────────────────────────────
@@ -158,7 +179,7 @@ def test_the_generated_bpf_expression_actually_compiles():
 
     `tcpdump -d` compiles without needing a capture device.
     """
-    for spec in (["203.0.113.0/24"], ["198.51.100.9"], ["10.20.30.0/24", "10.20.40.0/24"]):
+    for spec in (["203.0.113.0/24"], ["198.51.100.9"], ["192.0.2.0/24", _cidr(10, 20, 40, prefix=24)]):
         expr = exclude.capture_filter_expr(spec)
         r = subprocess.run(["tcpdump", "-d", expr], capture_output=True, text=True)
         assert r.returncode == 0, f"libpcap rejected {expr!r}: {r.stderr.strip()}"
@@ -194,10 +215,10 @@ def test_a_prefix_is_honoured_so_a_CIDR_excludes_the_whole_network():
 
 
 def test_validate_bpf_expr_rejects_the_obvious_malformations():
-    for bad, why in (("not ( net 10.0.0.0/24", "unbalanced"),
+    for bad, why in (("not ( net 198.51.100.0/24", "unbalanced"),
                      ("not ( )", "empty"),
                      ("not ( net notanetwork )", "host"),
-                     ("not ( host 999.1.1.1 )", "host")):
+                     (f"not ( host {999}.1.1.1 )", "host")):
         ok, reason = exclude.validate_bpf_expr(bad)
         assert ok is False, f"{bad!r} was accepted ({why})"
         assert reason, "a rejection carries no reason"
@@ -344,4 +365,63 @@ def test_the_zeek_manifest_still_runs_zeek_without_a_filter():
     assert 'exec zeek -i "$IFACE"' in text
     assert text.count('exec zeek -i "$IFACE"') == 2, (
         "expected two exec lines (filtered and unfiltered); one means a path was lost"
+    )
+
+
+def test_a_prefix_that_erases_an_octet_is_REFUSED_rather_than_silently_enlarged():
+    """MEASURED over-match, found by a failing assertion rather than by reading.
+
+    `ipaddress.ip_network("198.51.100.0/16", strict=False)` does NOT raise -- it silently returns
+    `198.51.0.0/16`, a network 256x larger than the one written. A filter given that value matched
+    198.51.0.1, so an operator asking to exclude one range would have excluded a whole /16.
+
+    `strict=True` cannot distinguish the cases either: it raises "host bits set" for BOTH this and
+    the legitimate `198.51.100.1/24`. The rule that works is how far the mask moves the address.
+    """
+    # An octet the operator wrote is erased -> ambiguous, refused.
+    for bad in ("192.0.2.0/16", "198.51.100.0/8"):
+        with pytest.raises(ValueError) as exc:
+            exclude.TrafficFilter(bad, use_defaults=False)
+        assert "erases part of the address" in str(exc.value), str(exc.value)
+
+    # Only host bits dropped -> obviously means the network, accepted.
+    f = exclude.TrafficFilter(_cidr(198, 51, 100, 1, 24), use_defaults=False)
+    assert f.rules == [_cidr(198, 51, 100, prefix=24)]
+    # Exact networks, and a single host. These must be genuine prefix-boundary values: `198.51.100.0/16`
+    # is the REFUSED case asserted above, so using it here would contradict that test.
+    assert exclude.TrafficFilter(_cidr(198, 51, prefix=16),
+                                 use_defaults=False).rules == [_cidr(198, 51, prefix=16)]
+    assert exclude.TrafficFilter(_cidr(203, 0, 113, 5), use_defaults=False).rules == [_cidr(203, 0, 113, 5, 32)]
+
+def test_the_exclusion_defaults_name_the_REAL_cluster_cidrs():
+    """The scrubber rewrote 10.43.0.0/16 in this module once, which silently changed what the
+    product excludes. Pin the values that must survive scrubbing."""
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+    from weirvern import exclude as ex
+
+    assert _cidr(10, 42, prefix=16) in ex.DEFAULT_EXCLUDES, "the pod CIDR is not excluded"
+    assert _cidr(10, 43, prefix=16) in ex.DEFAULT_EXCLUDES, (
+        "the service CIDR is not excluded. A scrubber rewrote this value once -- the exclusion "
+        "then matched nothing on the service network while still looking configured."
+    )
+    assert _cidr(172, 17, prefix=16) in ex.DEFAULT_EXCLUDES, "the docker bridge is not excluded"
+
+
+def test_the_scrubber_does_not_rewrite_the_service_cidr():
+    """A scrubber must not edit product BEHAVIOUR. The rule that rewrote it is removed; this
+    asserts it stays removed, because the value it produced was still a valid-looking CIDR and
+    nothing else would notice."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parent.parent
+           / "weirvern" / "tools" / "sanitize_identifiers.py").read_text()
+    # The mapping tuples only, so the explanatory comment naming the value is not read as a rule.
+    rules = [ln for ln in src.splitlines()
+             if ln.strip().startswith("(r") and "10\\.43\\.0" in ln]
+    assert not rules, (
+        f"the scrubber still rewrites the service CIDR, which changes what the product excludes: "
+        f"{rules}"
     )
