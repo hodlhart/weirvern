@@ -4,17 +4,27 @@
   <img src="docs/logo.png" alt="Weirvern" width="220">
 </p>
 
-Network flow anomaly detection for Kubernetes. Weirvern ingests NetFlow/sFlow
-from your network, captures packet-level protocol behaviour with Zeek, stores
-both in ClickHouse, and runs an ensemble of machine-learning detectors to flag
-suspicious host behaviour — port scans, beaconing (C2-style callbacks),
-credential-stuffing patterns, and data-exfiltration spikes — then pushes alerts
-to your phone via Pushover.
+**Network flow anomaly detection for Kubernetes.** Weirvern turns the NetFlow/sFlow your
+network already exports — plus a Zeek sensor for the protocol layer — into per-host
+behavioural baselines, flags the deviations that match real attack shapes, and shows a
+human *why*, with the measurements that fired.
 
-This is the **v20 rebuild**: a from-scratch, production-minded rewrite of the
-original FlowForge experiment (an INF 678 class project). Every lesson from the
-v14–v19 lineage is baked in — see [CHANGELOG.md](CHANGELOG.md) for the full
-lesson map.
+Current release: **0.6.5** · Runs on any conformant Kubernetes · No payload inspection ·
+Alerts via [Pushover](https://pushover.net), or log-only.
+
+**What you get**
+
+- **Detections with evidence.** Port scans, C2-style beaconing, data-exfiltration spikes,
+  credential attacks, lateral-movement patterns — each alert carries the per-detector
+  scores, the adaptive threshold it crossed, and a MITRE ATT&CK mapping presented as a
+  hypothesis with its measurements, never as a bare conclusion.
+- **Two sensors, one model.** Volume (NetFlow) and behaviour (Zeek) each cover what the
+  other is blind to. Every detector trains and scores on both.
+- **A SOC surface that closes the loop.** A read-only web console with an alert review
+  lifecycle (ack / resolve / false-positive), a near-miss view for threshold tuning, and a
+  complete alert audit — plus a CLI and a TUI for operations.
+- **Fail-open by design.** The default mode is passive capture. In-path interception is
+  opt-in, gated, and defended by a watchdog with a measured recovery story.
 
 > **WARNING**: This tool is for monitoring networks **you own or are explicitly
 > authorized to monitor**. See [USAGE_POLICY.md](USAGE_POLICY.md). Unauthorized
@@ -24,21 +34,56 @@ lesson map.
 
 ## Contents
 
+- [Capabilities](#capabilities)
 - [Architecture](#architecture)
 - [Requirements](#requirements)
-- [Deploy in five steps](#deploy-in-five-steps)
-- [Verifying that detection actually works](#verifying-that-detection-actually-works)
-- [Upgrading](#upgrading)
-- [Removing Weirvern completely](#removing-weirvern-completely)
+- [Deployment](#deployment)
 - [Operations](#operations)
 - [Configuration](#configuration)
 - [Detection and alerting](#detection-and-alerting)
-- [The web GUI](#the-web-gui)
 - [Scaling and limitations](#scaling-and-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Security and privacy](#security-and-privacy)
 - [Development](#development)
 - [License](#license)
+
+---
+
+## Capabilities
+
+**Detect.**
+
+- Four independently trained detectors — Isolation Forest, Gradient Boosting, DBSCAN and a
+  per-host Adaptive Baseline — fused into one score with a corroboration gate for severity.
+- Alert hygiene built in: per-source cooldown, global hourly cap, and dedupe on
+  `(host, window)`.
+- Detection quality is *measured*, not assumed: a seeded-attack harness runs the real
+  pipeline in CI and asserts the final verdicts (see
+  [Detection and alerting](#detection-and-alerting)).
+
+**Investigate.**
+
+- Every anomaly links to its raw evidence: the flows and Zeek records inside that alert's
+  window.
+- An asset inventory and a connection graph, both built to say "this source could not be
+  read" rather than drawing an empty panel.
+- Review dispositions (`ack` / `resolved` / `false_positive`) per anomaly, with an
+  unreviewed-only filter — the workflow does not end at "here is an anomaly".
+
+**Operate.**
+
+- `weirvern` CLI: install checks, apply, wait, status, logs, lifecycle, tuning.
+- A read-only web console on a NodePort — it cannot start, stop, or apply anything.
+- Health probes, ingestion trends, table sizes, and an alert audit that shows every
+  decision the alerting layer made, including what it suppressed and why.
+
+**Deploy.**
+
+- Plain manifests and kustomize; no operators, no CRDs, no external services.
+- ClickHouse for storage, with per-table TTLs so high-volume data expires while high-value
+  records persist.
+- The whole stack fits a single node; the sensor node needs a capture NIC (see
+  [Requirements](#requirements)).
 
 ---
 
@@ -60,17 +105,19 @@ lesson map.
                                              │  flows_aggregated +   │
                                              │    diversity/temporal │
                                              │  zeek_conn/dns/ssl/   │
-                                             │    notice             │
+                                             │    notice/… (Tier 3)  │
                                              │  netflow_anomalies    │
+                                             │  alert_reviews        │
+                                             │  near_misses          │
                                              │  ml_models, baselines │
                                              │  alert_events         │
                                              └──────────┬────────────┘
                                                         ▼
-                                             ┌───────────────────────┐
-                                             │  weirvern-worker     │
-                                             │  ensemble detectors   │
-                                             │  (scikit-learn)       │
-                                             └──────────┬────────────┘
+                                             ┌───────────────────────┐      ┌──────────────┐
+                                             │  weirvern-worker     │      │ weirvern-gui │
+                                             │  ensemble detectors   │ ───► │ read-only    │
+                                             │  (scikit-learn)       │      │ SOC console  │
+                                             └──────────┬────────────┘      └──────────────┘
                                                         ▼
                                              ┌───────────────────────┐
                                              │  Pushover (phone)     │
@@ -84,10 +131,10 @@ lesson map.
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.4.0` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.4.0` | Read-only web UI on NodePort 30088 |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.4.0` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.4.0` | Applies the ClickHouse schema |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.6.5` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.6.5` | Read-only web UI on NodePort 30088 |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.6.5` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.6.5` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -213,6 +260,7 @@ depends on it.
 | `kubectl` | 1.24+ | Has kustomize built in, so the `kustomize` binary is optional |
 | Container registry | any | The worker image must be pushed somewhere the nodes can pull from |
 | Storage class | dynamic | Defaults to `local-path` (k0s/k3s). Change one field for others |
+| Python | 3.11+ | Only for the optional CLI/TUI — the deployment itself needs none |
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated), the
@@ -231,7 +279,6 @@ A 4-core / 8 GB node will run Weirvern, but it will be tight and ClickHouse will
 be the first thing to suffer. 8 cores / 16 GB is a more honest single-node
 homelab target. Do not set ClickHouse's memory limit below 2 GB; it uses whatever
 you give it, and below that its own memory-tracking starts refusing queries.
-
 
 **Sensor node.** The node that carries the mirrored/SPAN traffic (and therefore
 runs goflow2, Zeek and the worker) needs:
@@ -274,7 +321,7 @@ to that cable.
 
 ---
 
-## Deploy in five steps
+## Deployment
 
 ### 1. Label the sensor node
 
@@ -300,8 +347,8 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.4.0 .
-podman push registry.example.com/weirvern-worker:0.4.0
+podman build -t registry.example.com/weirvern-worker:0.6.5 .
+podman push registry.example.com/weirvern-worker:0.6.5
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
 # prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
@@ -319,7 +366,7 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.4.0
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.5
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 cd ..
 ```
@@ -485,15 +532,20 @@ If nothing is flagged, check in this order: `ingest_freshness` green in
 simulated range (not one collapsed window), then the worker log for training
 failures.
 
+The repository also ships the same idea as a CI gate: `scripts/eval_detection.py`
+seeds a port scan, a beacon and an exfil spike into a scratch database, runs the
+real sweep, and asserts the final verdicts — with a negative control proving the
+harness can fail. See [Detection and alerting](#detection-and-alerting).
+
 ### Upgrading
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.5.0 .
-podman push registry.example.com/weirvern-worker:0.5.0
+podman build -t registry.example.com/weirvern-worker:0.6.5 .
+podman push registry.example.com/weirvern-worker:0.6.5
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.5.0 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.5 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -533,7 +585,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.4.0
+podman rmi registry.example.com/weirvern-worker:0.6.5
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and
@@ -558,6 +610,9 @@ delete the application there.
 | `weirvern start / stop / restart [workload...]` | Lifecycle (see the mapping below) |
 | `weirvern config list / get / set / validate` | Inspect and edit `.env` for local runs |
 | `weirvern tune` | Guided threshold tuning, with a preview against real data |
+| `weirvern mode` | Show the configured sensor mode and whether it can run here |
+| `weirvern intercept` | In-path ARP intercept (`weir` mode); always `--dry-run` first |
+| `weirvern interfaces` | Probe a node's NICs ("which one is the capture port?") |
 | `weirvern tui` | The control panel |
 | `weirvern version` | Version, current context, manifest presence |
 | `weirvern down [--volumes]` | Delete the workloads; `--volumes` also destroys the data |
@@ -634,6 +689,7 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `MGMT_IFACE` | `eth0` | **Management port** — default route, SSH, cluster API. Not sniffed. Used to detect when `ZEEK_IFACE` points at the wrong NIC |
 | `ZEEK_LOG_DIR` | `/zeek/logs` | Where the worker reads Zeek logs |
 | `TAIL_FILE` | `/data/flows.jsonl` | goflow2 JSONL sink |
+| `SENSOR_MODE` | `loch` | `loch` = passive; `weir` = in-path intercept (see [Sensor modes](#sensor-modes-loch-and-weir)) |
 | `DETECT_INTERVAL_S` | 300 | Detection sweep cadence (s) |
 | `RETRAIN_EVERY_H` | 6 | Full retrain cadence (h) |
 | `RETRAIN_WINDOW_H` | 72 | Training data window (h, 3 days) |
@@ -654,6 +710,7 @@ measured rationale behind each of these):
 | `ModelConfig.min_flows_for_full_confidence` | 10 | Windows with fewer flows have their score damped (thin-window statistics are unreliable) |
 | `ModelConfig.thin_window_floor` | 0.35 | Lower bound of that damping multiplier |
 | `ModelConfig.port_scan_min_ports` / `..._entropy` | 50 / 4.0 | Structural scan signature that lets a lone strong specialist escalate |
+| `ModelConfig.near_miss_band` | 0.85 | Fraction of the threshold within which a dropped window is recorded as a near miss (see the Models view) |
 
 ### Editing the Zeek policy
 
@@ -675,7 +732,7 @@ Four detectors, each contributing a normalised 0–1 score:
 |---|---|---|
 | Isolation Forest | Multivariate outliers across the full feature vector | Calibrated against its own training distribution |
 | Gradient Boosting | Non-linear patterns, trained on IF's labels (a distillation) | Probability calibrated; class-imbalanced weighting |
-| DBSCAN | Dense clusters vs. outliers — port diversity, fan-out | Best signal for scanning behaviour |
+| DBSCAN | Dense clusters vs. outliers — port diversity, fan-out | Score calibrated against the measured distance distribution |
 | Adaptive Baseline | Per-host percentile deviation (p95/p99/p999) | Learns each host's normal; needs ≥10 observations |
 
 Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.
@@ -686,6 +743,19 @@ zero-byte port scan, which volume-based models cannot see). A single strong
 signal without corroboration alerts at `medium` — it is not escalated and not
 silenced. This gate exists because measurement showed a 90-false-positive storm
 without it.
+
+### Detection quality, measured
+
+Nothing ships on faith: detection quality is a **gated CI job**. The harness seeds
+a port scan, a beacon and an exfiltration spike into a scratch database, runs the
+real detection sweep against the real materialized views, and asserts the **final
+verdicts** — the scan reaches `critical`, the beacon `medium`, the spike
+`critical`, and a seeded-benign host stays quiet. A negative control (the same
+run with no attacks seeded) proves the harness can actually fail, because a guard
+that cannot fail is decoration.
+
+On a live deployment the same idea is reproducible by hand — see
+[Verifying that detection actually works](#verifying-that-detection-actually-works).
 
 ### MITRE ATT&CK mapping
 
@@ -747,7 +817,7 @@ half describes **what the traffic is**, which volume alone cannot express:
 | HTTP shape | URI entropy, error ratio, POST ratio | Encoded or high-entropy paths are how simple C2 hides and how data is smuggled through a query string; a host whose requests are overwhelmingly 404 is enumerating paths |
 | File transfer profile | count, mean/max size, MIME variety | NetFlow byte totals cannot distinguish one 500 MB transfer from 500 transfers of 1 MB |
 
-Two design points matter when reading the numbers:
+Three design points matter when reading the numbers:
 
 - **`zeek_present` is a feature in its own right.** Zeek and NetFlow are separate sensors and
   may observe different hosts — measured on a test deployment: 91 NetFlow hosts against 35
@@ -774,33 +844,28 @@ UI bug into an outage.
 
 | View | What it answers |
 |---|---|
-| Anomalies | Every anomaly with score, agreement and the "why" line; click through to **evidence** |
+| Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status), the health probes, ingestion trend, table sizes, and the **alert audit** — every alerting decision, including what was suppressed and why. The landing view |
+| Anomalies | Every anomaly with score, agreement and the "why" line — plus its **review state**: acknowledge, resolve, or mark false-positive, with an unreviewed-only filter. Click through to **evidence** |
 | Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
 | Network | Every host-to-host connection as a graph; **select any number of hosts to track only their connections** |
 | Netflow | Volume, protocol mix, top ports, destination spread; **click a protocol or port bar to see the host-to-host pairs behind it** |
 | Zeek | Per-log volume, a trend by log, observed services, DNS names; **click a log to see which hosts it contains**, then a host to drill into it |
-| Models | Training history, score distribution, model agreement, and per-feature deviations |
-| Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status) plus the health probes, ingestion trend and table sizes — the landing view |
+| Models | Training history, score distribution, model agreement, per-feature deviations — and **near misses**: the windows that scored close to the bar, or cleared it and were stopped by the agreement gate. The surface a threshold change should be judged against |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
 | Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version. Read-only, and it says so: the GUI is unauthenticated, so a settings form here would be a way to reconfigure a sensor from the network. Secrets show as `(set, N chars)` or `(not set)`, never in value |
 
-The **Assets** and **Network** views share one rule: an endpoint that could not be read is not an
-endpoint with nothing on it. Both name the sources they failed to read, so a short list is never
-mistaken for a quiet network.
+Three cross-cutting rules, each of which exists because its opposite shipped once:
 
-The **Zeek** view applies the same rule to a zero. A log with no rows in the window can be in one
-of three states, and they need different responses:
-
-| State | Meaning | What to do |
-|---|---|---|
-| active | rows in the window | nothing |
-| idle | rows exist, but none in this window | widen the window |
-| never written | no row has ever landed | check whether the traffic exists on the segment or the analyzer is enabled |
-
-This distinction exists because the opposite was shipped: on a real deployment `zeek_http`,
-`zeek_ssh` and `zeek_files` held 544, 245 and 394 rows between them but none inside the default
-24-hour window, so the panel showed `0` for each and the dashboard looked broken when it was
-reporting the truth.
+- **An endpoint that could not be read is not an endpoint with nothing on it.** The Assets and
+  Network views name the sources they failed to read, so a short list is never mistaken for a
+  quiet network.
+- **A zero is stated with its reason.** A Zeek log with no rows in the window is `idle`
+  (widen the window) or `never written` (check whether the traffic exists on the segment) —
+  measured on a real deployment, three logs held 544, 245 and 394 rows between them but none
+  inside the default window, and the panel showed `0` for each while reporting the truth.
+- **Absent is not the same as empty.** The near-miss panel says "the table does not exist on
+  this deployment yet" rather than rendering an empty list; "nothing nearly alerted" is a much
+  stronger claim and a different fact.
 
 **Hostnames come from reverse DNS, and the address is always shown alongside the name.** By
 default only private addresses are resolved, so the lookup stays on your network; set
@@ -813,7 +878,7 @@ Some tables are **live and empty on this deployment**, which is a fact about the
 than the code: `zeek_tunnel`, `zeek_quic` and `zeek_ldap_search` have no traffic on this segment, so
 their tables are correctly zero. `zeek_dhcp` has rows, which is the useful check — it is the one
 Tier-3 log this segment produces, and it ingests. See
-[Deploy in five steps](#deploy-in-five-steps) for how to confirm this on your own network.
+[Deployment](#deployment) for how to confirm this on your own network.
 
 The **Models** view is deliberately built from data that is deep at any volume — training
 runs, every score including sub-threshold ones, and the per-feature deviation JSON — rather
@@ -826,7 +891,11 @@ draws real data or states in words what is absent and why.
 - Severity tiers (critical/high/medium/low) from fused score and agreement.
 - Per-source cooldown + global hourly cap → no alert storms.
 - Dedupe keyed on `(src_addr, window_start)`; resend only on re-observation.
-- Every send recorded in `alert_events` for audit and testing.
+- Every send recorded in `alert_events` for audit and testing — and surfaced: the Health tab's
+  alert audit shows every decision, counting suppressed alerts separately from the log-only
+  path (a configuration state, not a withheld alert).
+- Review dispositions (`ack` / `resolved` / `false_positive`) are persisted per anomaly, which
+  is also the label stream a future feedback loop needs.
 
 ### Tuning
 
@@ -835,7 +904,10 @@ weirvern tune
 ```
 
 The guided tuner shows the alert-rate implication of a threshold change against
-the last 7 days of real data before you commit to it.
+the last 7 days of real data before you commit to it. To tune against almost-thresholds
+instead — the windows that *nearly* alerted — cross-reference the Models view's near-miss
+panel, which records both the "scored just under the bar" and the "cleared the bar, blocked
+by the agreement gate" cases.
 
 ---
 
@@ -994,23 +1066,25 @@ ruff check weirvern tests
 mypy weirvern --ignore-missing-imports
 kubeconform -strict -ignore-missing-schemas k8s/
 kustomize build k8s/ >/dev/null                 # manifests must assemble
+sh scripts/gate.sh                              # the full local gate
 ```
 
 CI runs lint, type-check and tests on every push
-(`.github/workflows/ci.yml`). The suite needs neither a cluster nor a database:
-workload-facing tests drive a fake `kubectl`, so the command construction is
-verified without one.
+(`.github/workflows/ci.yml`), plus two things a plain test run cannot prove: the
+manifests are validated against Kubernetes schemas and assemble, and the
+seeded-attack detection harness runs against a real ClickHouse. The suite needs
+neither a cluster nor a database: workload-facing tests drive a fake `kubectl`,
+so the command construction is verified without one.
 
 Model artifacts are versioned and persisted to `MODEL_DIR` — a worker restart
 **does not** lose learned baselines or models (this was a legacy failure mode).
 
 ### Checking the GUI
 
-The web UI has no build step and no test framework, so three things are checked instead:
+The web UI has no build step and no test framework, so two things are checked instead:
 
 ```bash
 node --check weirvern/admin/web/app.js          # and soc.js, assets.js
-sh scripts/gate.sh                              # includes the syntax check above
 ```
 
 The syntax check catches a broken view file, which would otherwise appear as a tab that does
@@ -1021,7 +1095,7 @@ For that, `scripts/jsdom_render.js` executes the shipping JavaScript against the
 in a DOM and asserts what appears. It needs a served GUI and one npm package:
 
 ```bash
-# 1. serve the GUI (any reachable instance; see below for a stub-backed local one)
+# 1. serve the GUI (any reachable instance)
 # 2. then:
 npm install jsdom
 node scripts/jsdom_render.js http://127.0.0.1:30088
@@ -1029,9 +1103,10 @@ node scripts/jsdom_render.js http://127.0.0.1:30088
 
 It renders the inventory and the graph from real-shaped payloads and checks the behaviours that
 matter: that a shift-click tracks a host instead of drilling into it, that several hosts can be
-tracked at once, that clearing the selection restores the whole graph, and that a **failed**
-query says so rather than drawing an empty panel. That last one is the point — an empty panel and
-a broken query look identical on screen, and this project has shipped that bug more than once.
+tracked at once, that clearing the selection restores the whole graph, that the review buttons
+on an anomaly post a disposition, and that a **failed** query says so rather than drawing an
+empty panel. That last one is the point — an empty panel and a broken query look identical on
+screen, and this project has shipped that bug more than once.
 
 ### End-to-end validation
 
@@ -1060,6 +1135,8 @@ weirvern/            application package
   ingester.py         tailers for goflow2 JSONL and Zeek TSV
   worker.py           the detection loop and retrain cadence
 k8s/                  manifests + kustomization + Zeek site policy
+docs/                 logo, research notes, decision records
+scripts/              eval harness, DOM render harness, local gate
 tests/                unit tests (no cluster, no database required)
 ```
 
