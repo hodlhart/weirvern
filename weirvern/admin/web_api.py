@@ -387,17 +387,26 @@ def zeek_payload(counts: dict, timeline: dict, services: dict, dns: dict) -> dic
     }
 
 
-def health_deep_payload(report, ingest: dict, sizes: dict, sensor: dict) -> dict:
+def health_deep_payload(report, ingest: dict, sizes: dict, sensor: dict,
+                        audit: dict | None = None) -> dict:
     """The DEEP health payload -- reads ClickHouse, unlike /api/healthz.
 
     The Kubernetes probe must not touch the database: a probe that fails when the database is
     slow restarts the GUI and hides the real problem, which is why /api/healthz answers a
     bare {"ok": true} and says so in its comment. That is right for liveness and useless for
     an operator asking "is data still arriving". This endpoint is the second question.
+
+    `audit` is the SOC-8 alert audit -- every alerting decision, not just the delivered
+    ones. Optional so callers that predate it (and tests that exercise the other panels)
+    keep working; it degrades to an explicitly unavailable block, never to silence.
     """
     return {
         "health": health_payload(report) if report is not None else None,
         "ingest": ingest,
         "tables": sizes,
         "sensor": sensor or {},
+        "alerts": audit if audit is not None else {
+            "available": False, "reason": "alert audit was not collected",
+            "by_reason": [], "recent": [], "suppressed": 0,
+        },
     }

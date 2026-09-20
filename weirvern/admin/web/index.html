@@ -473,6 +473,23 @@
       <h2>Ingestion over time <span class="muted">rows per bucket, by pipeline stage</span></h2>
       <div id="hp-ingest"></div>
     </div>
+    <div class="card">
+      <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span></h2>
+      <p class="muted">The worker records every decision it makes, not just the deliveries.
+      An alert eaten by a cooldown or dropped at the rate cap leaves a row here — which is
+      the only way to tell "nothing fired" apart from "it fired and was withheld".</p>
+      <div id="hp-alerts-note"><p class="muted">loading…</p></div>
+      <div class="grid">
+        <div>
+          <table id="hp-alerts-reasons"><thead><tr><th>Outcome</th><th>Count</th>
+          <th>Last</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <table id="hp-alerts-recent"><thead><tr><th>Time</th><th>Host</th><th>Severity</th>
+          <th>Score</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
     <div class="grid">
       <div class="card">
         <h2>Checks</h2>

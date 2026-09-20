@@ -89,7 +89,7 @@ async function main() {
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -938,6 +938,49 @@ async function main() {
         doc.getElementById("view-overview") === null);
   check("sensor state and the health checks live on the Health tab now",
         !!doc.getElementById("hp-sensor") && !!doc.getElementById("hp-checks"));
+  check("the alert audit panels are on the Health tab (SOC-8)",
+        !!doc.getElementById("hp-alerts-reasons")
+          && !!doc.getElementById("hp-alerts-recent")
+          && !!doc.getElementById("hp-alerts-note"));
+
+  // The alert audit (SOC-8) renders directly -- its payload rides on /api/health, which the
+  // harness drives through the real loader, so a direct call pins the renderer's three
+  // states without standing up the whole deep-health path.
+  const HEALTH_AUDIT = {
+    available: true,
+    suppressed: 3,
+    by_reason: [
+      { reason: "log-only", sent: false, count: 5, last_at: "2026-01-03T10:00:00" },
+      { reason: "cooldown", sent: false, count: 3, last_at: "2026-01-03T10:05:00" },
+    ],
+    recent: [
+      { sent_at: "2026-01-03T10:05:00", src_addr: "198.51.100.9", severity: "high",
+        score: 0.81, sent: false, reason: "cooldown", message: "" },
+    ],
+  };
+  H.renderAlertAudit(HEALTH_AUDIT);
+  check("the audit note counts suppressed separately from log-only",
+        doc.getElementById("hp-alerts-note").textContent.includes("3 suppressed"),
+        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+  check("a log-only outcome is labelled as not-configured, not suppressed",
+        doc.getElementById("hp-alerts-reasons").textContent.includes("log-only (not configured)"),
+        doc.getElementById("hp-alerts-reasons").textContent.slice(0, 160));
+  check("a cooldown outcome is labelled suppressed",
+        doc.getElementById("hp-alerts-reasons").textContent.includes("cooldown (suppressed)"),
+        "a withheld alert rendered without saying it was withheld");
+  check("the recent list renders the decision rows",
+        doc.querySelectorAll("#hp-alerts-recent tbody tr").length === 1,
+        `rows=${doc.querySelectorAll("#hp-alerts-recent tbody tr").length}`);
+
+  H.renderAlertAudit({ available: false, reason: "alert audit query failed: RuntimeError",
+                       by_reason: [], recent: [], suppressed: 0 });
+  check("an unavailable audit names the failure, not an empty list",
+        doc.getElementById("hp-alerts-note").textContent.includes("Alert audit unavailable"),
+        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+  H.renderAlertAudit({ available: true, by_reason: [], recent: [], suppressed: 0 });
+  check("an empty audit says nothing fired at all",
+        doc.getElementById("hp-alerts-note").textContent.includes("nothing fired"),
+        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
 
   // ── the Settings tab ───────────────────────────────────────────────────────────────────────
   // Now navigate to Settings the way a user would.

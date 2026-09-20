@@ -397,17 +397,24 @@ def _build_handler(ctx: GuiContext):
             report = None
             sensor: dict = {}
             ingest, sizes = empty, empty
+            audit: dict = {"available": False, "reason": "cannot reach ClickHouse",
+                           "by_reason": [], "recent": [], "suppressed": 0}
             try:
                 with self._with_client() as client:
                     report = status_mod.collect_health(client, ctx.settings)
                     sensor = status_mod.sensor_status(client)
                     ingest = soc_mod.ingestion_series(client, hours=hours)
                     sizes = soc_mod.table_sizes(client)
+                    # SOC-8: the alert audit rides on the health payload -- it is the same
+                    # question ("is the system doing what it should") and it does not
+                    # deserve a route of its own that nobody would look at.
+                    audit = soc_mod.alert_audit(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("health view unavailable: %s", exc)
                 return self._json({"health": None, "ingest": empty, "tables": empty,
-                                   "sensor": {}, "data_error": f"cannot reach ClickHouse: {exc}"})
-            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor))
+                                   "sensor": {}, "alerts": audit,
+                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor, audit))
 
         def _assets(self, query: dict) -> None:
             """The asset inventory: every host seen, with a per-host summary.

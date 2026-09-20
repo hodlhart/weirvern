@@ -116,24 +116,104 @@ def test_soc_js_only_calls_helpers_that_exist():
     """
     app = APP_JS.read_text()
 
-    def strip_comments(src: str) -> str:
-        """Remove /* */ and // comments.
+    def strip_noise(src: str) -> str:
+        """Remove comments and the CONTENTS of string/regex literals in ONE pass.
 
-        ESSENTIAL, not tidiness: a regex scan over raw source matches PROSE. The first
-        version of this test reported `Health`, `design`, `things` and `labels` as undefined
-        functions -- all of them words from the explanatory comments in soc.js. The tempting
-        fix is to widen the allow-list, and that is how a check quietly stops checking
-        anything.
+        WHY ONE PASS AND NOT TWO. A naive scanner over raw source matches PROSE, so the
+        comments and string contents have to go before the call graph is parsed -- but two
+        independent regex passes cannot see each other's context, and that is a correctness
+        bug, not a style choice. Measured: `re.sub(r"//[^\\n]*", ...)` eats the `//` inside
+        `"http://www.w3.org/2000/svg"`, which leaves an unterminated quote; the string pass
+        then swallows everything after it, INCLUDING `function svgEl` -- and this test
+        reported `svgEl` as an undefined call, i.e. it accused the code of the scanner's
+        own bug. (Earlier versions made the same mistake with comments, reporting `Health`,
+        `design`, `labels` as missing helpers.) The tempting fix at each step is to widen
+        the allow-list, which is how a check quietly stops checking anything.
+
+        This was written once, with both literals consumed by the same walk:
+          * comments: /* */ and // (a // INSIDE a string is not a comment);
+          * strings: ' " ` -- contents blanked, because "3 decision(s) recorded" is not a
+            call to `decision`;
+          * template interpolations (`${fmt(x)}`) ARE code and are kept, so real calls
+            inside them are still checked;
+          * regex literals: emitted intact rather than parsed. They contain `(` and quotes
+            and would otherwise derail the walk; a regex can never CALL a helper, so
+            leaving its text in place cannot create a false positive for this test. The
+            heuristic for "this / starts a regex, not a division" is the preceding
+            non-space character: after an identifier, `)` or `]` a slash divides.
         """
-        src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
-        return re.sub(r"//[^\n]*", "", src)
+        out: list[str] = []
+        i, n = 0, len(src)
+        prev = ""  # last significant char emitted, for the regex-vs-division decision
+        while i < n:
+            ch = src[i]
+            if ch == "/" and src.startswith("/*", i):
+                j = src.find("*/", i + 2)
+                i = n if j == -1 else j + 2
+                continue
+            if ch == "/" and src.startswith("//", i):
+                j = src.find("\n", i + 2)
+                i = n if j == -1 else j
+                continue
+            if ch == "/" and prev not in ")]}$" and not (prev.isalnum() or prev == "_"):
+                # Regex literal: consume it whole and emit it verbatim.
+                j = i + 1
+                in_class = False
+                while j < n:
+                    if src[j] == "\\":
+                        j += 2
+                        continue
+                    if src[j] == "[":
+                        in_class = True
+                    elif src[j] == "]":
+                        in_class = False
+                    elif src[j] == "/" and not in_class:
+                        j += 1
+                        break
+                    elif src[j] == "\n":
+                        break  # not actually a regex after all; bail out
+                    j += 1
+                out.append(src[i:j])
+                i = j
+                prev = "/"
+                continue
+            if ch in "\"'`":
+                quote = ch
+                i += 1
+                while i < n:
+                    if src[i] == "\\":
+                        i += 2
+                        continue
+                    if quote == "`" and src.startswith("${", i):
+                        depth, j = 1, i + 2
+                        while j < n and depth:
+                            if src[j] == "{":
+                                depth += 1
+                            elif src[j] == "}":
+                                depth -= 1
+                            j += 1
+                        out.append(strip_noise(src[i + 2:j - 1]))
+                        i = j
+                        continue
+                    if src[i] == quote:
+                        i += 1
+                        break
+                    i += 1
+                out.append('""')
+                prev = '"'
+                continue
+            out.append(ch)
+            if not ch.isspace():
+                prev = ch
+            i += 1
+        return "".join(out)
 
-    soc = strip_comments(SOC_JS.read_text())
-    app = strip_comments(app)
+    soc = strip_noise(SOC_JS.read_text())
+    app = strip_noise(app)
 
     known = set(re.findall(r"^function ([A-Za-z_$][\w$]*)", app, re.M))
     known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", app, re.M))
-    assets = strip_comments((SOC_JS.parent / "assets.js").read_text())
+    assets = strip_noise((SOC_JS.parent / "assets.js").read_text())
     known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", app, re.M))
     known |= set(re.findall(r"^function ([A-Za-z_$][\w$]*)", soc, re.M))
     # `async function` must be matched separately: the plain pattern requires `function` at
