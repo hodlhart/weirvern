@@ -491,12 +491,16 @@ class Intercept:
     """
 
     def __init__(self, plan: InterceptPlan, sender=None, refresh_s: float = DEFAULT_REFRESH_S,
-                 forwarding: ForwardingState | None = None) -> None:
+                 forwarding: ForwardingState | None = None,
+                 max_runtime_s: float | None = None) -> None:
         self.plan = plan
         self._sender = sender or ArpSender(plan.iface)
         self.refresh_s = refresh_s
         self.forwarding = forwarding
         self.watchdog: FailOpenWatchdog | None = None
+        # Propagated to the watchdog's self-destruct deadline (weir-2): the outermost
+        # bound on how long forged mappings can outlive their operator.
+        self.max_runtime_s = max_runtime_s
         self._started = False
         self.started_at: float = 0.0
         # Records the node's network sysctls BEFORE this intercept changes them, so `stop()` can put
@@ -579,6 +583,7 @@ class Intercept:
         self.watchdog = FailOpenWatchdog(
             iface=self.plan.iface, our_mac=self.plan.our_mac, sender=self._sender,
             refresh_s=self.refresh_s,
+            max_runtime_s=self.max_runtime_s,
         )
         for ic in self.plan.mappings():
             self.watchdog.register(ic)
@@ -659,9 +664,12 @@ class Intercept:
         WHAT NEITHER COVERS, and the honest limit of this code: a `kubectl exec` client that is
         SIGKILLed, or an SSH session that vanishes, may deliver NO signal to the in-pod process at
         all. No handler can run if no signal arrives. The protections that actually hold in that
-        case are (a) `--seconds`, which bounds the run inside the process, and (b) the forged ARP
-        entries EXPIRING, which is why the watchdog's expiry backstop exists and why SIGKILL is
-        explicitly documented there.
+        case are (a) `--seconds`, which bounds the run inside the process, (b) the self-destruct
+        deadline (`--max-runtime`, defaulted to `--seconds` + 120s), which restores from a timer
+        thread even when nothing can signal or stop this process from outside -- the loop above
+        returns when it fires -- and (c) the forged ARP entries EXPIRING as the last resort,
+        measured and documented in the watchdog's module docstring (~1 minute for an active
+        host, seconds from the next packet for an idle one).
 
         So this handler is a BELT: it covers SIGHUP (a dropped SSH session usually does deliver
         SIGHUP) and gives the loop a clean stop path that unwinds the caller. It is not the primary
@@ -692,6 +700,12 @@ class Intercept:
             while not stop:
                 time.sleep(0.5)
                 if deadline is not None and time.time() >= deadline:
+                    return
+                # The self-destruct deadline (weir-2) restores the mappings from its own
+                # timer thread; when that fires, this loop must ALSO return so the caller
+                # unwinds -- the case it exists for is precisely one where no signal will
+                # ever arrive to break this loop.
+                if self.watchdog is not None and self.watchdog.deadline_reached:
                     return
         except KeyboardInterrupt:
             return
@@ -725,4 +739,8 @@ class Intercept:
             # count is how an operator tells which one they are looking at.
             "quiet_samples": self.watchdog.quiet_samples if self.watchdog else 0,
             "forwarding_observed": bool(self.watchdog and self.watchdog.forwarding_observed),
+            # Whether the self-destruct deadline fired (no signal, no caller -- the
+            # orphaned-session case). Reported so the end of the run does not read like
+            # an orderly stop when it was nothing of the kind.
+            "deadline_reached": bool(self.watchdog and self.watchdog.deadline_reached),
         }

@@ -12,12 +12,34 @@ The verified behaviour this module relies on (measured on the test box):
 
   * A graceful stop that restores the real ARP mappings returns traffic IMMEDIATELY.
   * A hard kill (SIGKILL, power loss) leaves the forged entries in place, but they
-    EXPIRE on their own and traffic recovers unaided. Measured: after flushing the
-    poisoned caches the victim reached the internet directly again.
+    EXPIRE on their own and traffic recovers unaided.
 
-So there are two layers of safety, and both matter: an orderly restore on every path we
-control, and an expiry-based backstop for the paths we do not. This module implements
-the first and documents the second.
+THE EXPIRY BACKSTOP, MEASURED. The earlier version of this docstring said recovery was
+"measured" but quoted a MANUAL cache flush -- i.e. it measured us fixing it by hand, not
+the kernel's own timer. Re-measured properly, in a container with NET_ADMIN, poisoning a
+host's gateway entry and watching the neighbour state machine on stock Linux defaults
+(base_reachable_time_ms=30000, gc_stale_time=60, ucast_solicit=3):
+
+  * BUSY HOST (sending traffic the whole time): REACHABLE for ~44s, then
+    STALE -> DELAY (5s) -> PROBE -> FAILED -> the host re-resolves via broadcast
+    ARP. Measured recovery: ~55 seconds, worst observed ~60s.
+  * IDLE HOST (no traffic after the poison): the entry sits REACHABLE until gc, goes
+    STALE ~65s, and NOTHING recovers it until the host next tries to send -- at which
+    point the first packet triggers DELAY (5s) -> PROBE (3 unicast solicits) -> FAILED
+    -> broadcast re-resolve; measured ~8-10 seconds from that first packet. A host that
+    never sends never notices; a host that sends recovers within seconds of trying.
+
+So the honest bound for the orphan case is: traffic recovers WITHIN ABOUT A MINUTE for a
+host that is actively using the network, and within seconds of that host's next packet
+otherwise. It is not instantaneous, and it depends on kernel neighbour-table defaults
+that a deployment could have tuned -- which is why this module ALSO bounds the run from
+the inside (max_runtime_s below) rather than trusting the backstop alone.
+
+So there are three layers of safety, and all three matter: an orderly restore on every
+path we control, a self-destruct deadline for the paths where no signal arrives (a
+SIGKILLed `kubectl exec` client leaves the in-pod process ALIVE -- it just cannot be
+signalled from outside), and the kernel's expiry as the last resort. This module
+implements the first two and documents the third.
 
 WHAT IT DOES NOT DO: it does not forward packets. Forwarding is the kernel's job
 (ip_forward plus a route). This watches that the kernel is still doing it and acts when
@@ -222,12 +244,24 @@ class FailOpenWatchdog:
 
     def __init__(self, iface: str, our_mac: str, sender=None,
                  refresh_s: float = DEFAULT_REFRESH_S,
-                 health_s: float = DEFAULT_HEALTH_S) -> None:
+                 health_s: float = DEFAULT_HEALTH_S,
+                 max_runtime_s: float | None = None) -> None:
         self.iface = iface
         self.our_mac = our_mac
         self._sender = sender
         self.refresh_s = refresh_s
         self.health_s = health_s
+        # SELF-DESTRUCT DEADLINE (weir-2's third layer). Covers the case where the
+        # process is ALIVE but no signal can reach it -- a `kubectl exec` client that was
+        # SIGKILLed leaves the in-pod process running with nobody able to sign it. A
+        # graceful signal restores; this thread restores at the deadline regardless.
+        #
+        # It does NOT cover the process itself being SIGKILLed (that kills this thread
+        # too); the kernel's ARP expiry is the last resort there, measured and documented
+        # in the module docstring. None disables it.
+        self.max_runtime_s = max_runtime_s
+        self.deadline_reached = False
+        self._deadline_handle: threading.Timer | None = None
 
         self._interceptions: dict[tuple[str, str], Interception] = {}
         self._lock = threading.RLock()
@@ -326,6 +360,14 @@ class FailOpenWatchdog:
         cannot be forgotten.
         """
         self._install_signal_handlers()
+        if self.max_runtime_s is not None and self.max_runtime_s > 0:
+            # A Timer, not a third forever-loop: it fires exactly once and then the thread
+            # is done. Fires slightly AFTER the deadline value so a run stopped by its own
+            # wait() bound (which uses the same number) restores through the normal path
+            # first -- the Timer is the backstop for when that path never got to run.
+            self._deadline_handle = threading.Timer(self.max_runtime_s + 1.0, self._deadline)
+            self._deadline_handle.daemon = True
+            self._deadline_handle.start()
         for target, name in ((self._refresh_loop, "weirvern-weir-refresh"),
                              (self._health_loop, "weirvern-weir-health")):
             t = threading.Thread(target=target, name=name, daemon=True)
@@ -358,6 +400,27 @@ class FailOpenWatchdog:
             if self._send(ic.poison_frame(), kind):
                 sent += 1
         return sent
+
+    def _deadline(self) -> None:
+        """Fired when max_runtime_s elapsed. Restore, loudly.
+
+        The distinguishing property of this path is that NOTHING asked for the stop: no
+        signal, no caller. That makes it the one place where the log line is the only
+        evidence the operator will ever see, so it states the reason in full.
+
+        NOTE ON PROCESS EXIT: this runs on a Timer thread, and a SystemExit raised here
+        would end only this thread, not the process. The restore is what must happen
+        unconditionally and it does; the main thread finds `deadline_reached` set when
+        its wait loop next ticks and unwinds normally (see Intercept.wait).
+        """
+        if self._restored:
+            return
+        self.deadline_reached = True
+        msg = (f"self-destruct deadline reached ({self.max_runtime_s}s): restoring ARP "
+               f"mappings without being asked. No signal or caller arrived to stop this "
+               f"intercept, which is the orphaned-session case the deadline exists for.")
+        logger.warning(msg)
+        self.stop()
 
     def _install_signal_handlers(self) -> None:
         """SIGTERM/SIGINT restore before exiting.
@@ -441,6 +504,11 @@ class FailOpenWatchdog:
             self._stop.set()
             items = list(self._interceptions.values())
             self._interceptions.clear()
+        # The deadline Timer must not fire after a deliberate stop: it would log a
+        # self-destruct that never happened. Idempotent by itself, but the record would lie.
+        if self._deadline_handle is not None:
+            self._deadline_handle.cancel()
+            self._deadline_handle = None
 
         for ic in items:
             self._send(ic.restore_frame(), "restore")

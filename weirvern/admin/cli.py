@@ -1341,6 +1341,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seconds", type=int,
                    help="intercept for this long, then restore (default: until Ctrl-C; "
                         "required when stdin is not a terminal)")
+    s.add_argument("--max-runtime", type=int, metavar="S", dest="max_runtime",
+                   help="self-destruct deadline: restore and exit after S seconds even if "
+                        "no signal ever arrives (covers a killed kubectl exec client; "
+                        "default: --seconds + 120 when --seconds is given, else off)")
     s.add_argument("--force-unsafe", action="store_true",
                    help="override a refusal to intercept a host holding a never-intercept "
                         "role (the sensor's resolver, management address, or the cluster "
@@ -1592,11 +1596,22 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     if plan is None:
         return EXIT_FAIL
 
+    # THE SELF-DESTRUCT DEADLINE (weir-2, part 3). --seconds bounds the WAIT loop; this
+    # bounds the mappings' lifetime when no signal can reach the process at all (a
+    # SIGKILLed kubectl-exec client leaves the in-pod process alive and unreachable, and
+    # no handler runs). Default: --seconds + 120s grace, so the normal path always wins
+    # and the deadline only fires when something went wrong. Explicit --max-runtime wins;
+    # without --seconds there is no default deadline (nobody asked for a bound).
+    max_runtime_s = _effective_max_runtime(args)
+
     print(_c("bold", "Intercept plan"))
     print(plan.describe())
+    if max_runtime_s:
+        print(f"  self-destruct deadline: restore and exit after {max_runtime_s}s "
+              f"regardless of signals")
     print()
 
-    runner = ic_mod.Intercept(plan)
+    runner = ic_mod.Intercept(plan, max_runtime_s=max_runtime_s)
     problems = runner.preflight()
 
     if args.dry_run:
@@ -1660,6 +1675,26 @@ def cmd_intercept(args: argparse.Namespace) -> int:
             print(f"  withdrew {our_ip} from {iface}")
 
 
+def _effective_max_runtime(args: argparse.Namespace) -> int | None:
+    """The self-destruct deadline for this run, or None for no deadline.
+
+    Default policy (weir-2): a bounded run (--seconds) gets --seconds + 120s of grace, so
+    the normal restore path always wins and the deadline exists purely for the case where
+    that path never got to run (a SIGKILLed kubectl-exec client leaves the in-pod process
+    alive and unsignalable). An unbounded interactive run gets NO default deadline --
+    nobody asked for a bound, and Ctrl-C is present. Explicit --max-runtime always wins;
+    a non-positive value disables it.
+
+    A separate function so the policy is testable without mocking a live intercept.
+    """
+    explicit = getattr(args, "max_runtime", None)
+    if explicit is not None:
+        return explicit if explicit > 0 else None
+    if getattr(args, "seconds", None):
+        return int(args.seconds) + 120
+    return None
+
+
 def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     """Start the intercept, wait, and restore. Split out so the address teardown can wrap
     the whole thing in one finally block rather than being repeated on each return path."""
@@ -1710,6 +1745,12 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     st = runner.status()
     print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
           f"{st['watchdog_refreshes']} refresh(es)")
+    # The deadline firing is the orphaned-session case: no signal arrived, no caller asked
+    # for the stop, and the mappings were withdrawn anyway. It must not read like a normal end.
+    if st.get("deadline_reached"):
+        _warn("the self-destruct deadline fired: no signal or caller stopped this "
+              "intercept, so it restored itself. Check whether the session that "
+              "started it died without delivering a signal.")
     # "Quiet" and "broken" are different answers to the same silent counter, so the count
     # of never-observed ticks is reported rather than left in the object. A run that ended
     # with forwarding never seen has an ambiguous record; a run that saw it working and

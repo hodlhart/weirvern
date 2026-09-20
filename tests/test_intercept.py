@@ -1174,3 +1174,111 @@ def test_a_quiet_network_does_not_trip_the_watchdog():
         w._stall_strikes += 1
     assert w._stall_strikes == 0, "a never-observed network accumulated stall strikes"
     assert w._quiet_samples == 5
+
+
+# ── the self-destruct deadline (weir-2's third layer) ───────────────────────────
+#
+# The case this exists for: a `kubectl exec` client that is SIGKILLed leaves the in-pod
+# process ALIVE with nobody able to signal it. No handler runs (none can), so without a
+# deadline the forged mappings outlive every protection except the kernel's ARP timer
+# (~1 minute, measured). The deadline restores from a timer thread instead of trusting
+# that a signal will one day arrive.
+
+
+def test_the_deadline_fires_and_restores_without_any_signal():
+    """Drive the timer for real: short deadline, no signals, mappings must be withdrawn."""
+    import time as _t
+    from weirvern.admin import watchdog as wd
+
+    sent: list[tuple[bytes, str]] = []
+    w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:03",
+                            sender=lambda frame, kind: sent.append((frame, kind)),
+                            max_runtime_s=0.2, refresh_s=30, health_s=30)
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
+                               "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
+    w.start()
+    assert w.active == 1, "the mapping was not registered before the deadline could fire"
+    # The Timer fires at deadline+1.0; give it room without making the suite slow.
+    for _ in range(40):
+        _t.sleep(0.1)
+        if w.deadline_reached:
+            break
+    assert w.deadline_reached, (
+        "the self-destruct deadline never fired; the orphaned-session case (no signal can "
+        "reach the process) has no protection beyond the kernel's ARP expiry"
+    )
+    assert not w._interceptions, "the deadline fired but the mappings were not withdrawn"
+    assert any(kind == "restore" for _, kind in sent), (
+        "no restore frame was sent -- the hosts would stay poisoned"
+    )
+    assert w.failures == [], f"the deadline path recorded failures: {w.failures}"
+
+
+def test_a_deliberate_stop_disarms_the_deadline():
+    """Stop before the deadline: the timer must be cancelled, not merely idempotent.
+
+    A fired-after-stop timer would log a self-destruct that never happened -- and status
+    would report deadline_reached=True for an orderly run, poisoning the one signal that
+    distinguishes "orphaned" from "operator stopped it".
+    """
+    import time as _t
+    from weirvern.admin import watchdog as wd
+
+    w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:03",
+                            sender=lambda frame, kind: None,
+                            max_runtime_s=0.2, refresh_s=30, health_s=30)
+    w.register(wd.Interception("198.51.100.5", "aa:bb:cc:dd:ee:01", "198.51.100.1",
+                               "aa:bb:cc:dd:ee:02", "eth1", "aa:bb:cc:dd:ee:03"))
+    w.start()
+    w.stop()
+    _t.sleep(1.5)  # past deadline+1.0, had it not been cancelled
+    assert not w.deadline_reached, (
+        "the deadline fired after a deliberate stop; a clean run is being recorded as an "
+        "orphaned one"
+    )
+
+
+def test_max_runtime_defaults_from_seconds_only_for_bounded_runs():
+    """The CLI default: --seconds + 120 when bounded, else no deadline (nobody asked).
+
+    Explicit --max-runtime always wins; non-positive disables.
+    """
+    from weirvern.admin import cli
+
+    parser = cli.build_parser()
+    base = ["intercept", "--iface", "eth1", "--segment", "198.51.100.0/24",
+            "--our-ip", "198.51.100.50", "--gateway", "198.51.100.1"]
+
+    bounded = parser.parse_args(base + ["--seconds", "300"])
+    assert cli._effective_max_runtime(bounded) == 420, (
+        "a bounded run did not get the seconds+grace deadline, so an orphaned client "
+        "leaves the mappings up until the kernel's ARP timer"
+    )
+    unbounded = parser.parse_args(base)
+    assert cli._effective_max_runtime(unbounded) is None, (
+        "an interactive run got a default deadline nobody asked for"
+    )
+    explicit = parser.parse_args(base + ["--max-runtime", "60"])
+    assert cli._effective_max_runtime(explicit) == 60, "explicit --max-runtime was not honoured"
+    disabled = parser.parse_args(base + ["--max-runtime", "0"])
+    assert cli._effective_max_runtime(disabled) is None, "--max-runtime 0 did not disable it"
+
+
+def test_an_orphaned_run_is_reported_as_such():
+    """The status fields must distinguish deadline-fired from an orderly end.
+
+    Asserted on the shipping source because the full path needs an intercept; the two
+    fields are what the CLI keys its warning on.
+    """
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[1]
+    src = (root / "weirvern" / "admin" / "intercept.py").read_text()
+    assert '"deadline_reached"' in src, (
+        "status() no longer reports deadline_reached, so an orphaned restore is "
+        "indistinguishable from an orderly one"
+    )
+    cli_src = (root / "weirvern" / "admin" / "cli.py").read_text()
+    assert "self-destruct deadline fired" in cli_src, (
+        "the CLI no longer warns when the deadline fired; the operator would never learn "
+        "that their session died without a signal"
+    )

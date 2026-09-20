@@ -130,13 +130,18 @@ cryptographic sense: TLS sessions continue to authenticate end to end.
 
 Safety in `weir` mode comes from the **fail-open watchdog**, which is required rather than
 optional. It restores every forged mapping if the process is stopped, killed, or crashes,
-and it fails open when forwarding stalls. Two properties are worth knowing before trusting it:
+and it fails open when forwarding stalls. Three properties are worth knowing before trusting it:
 
 - **Poison frames refresh continuously.** ARP entries age, and a host's real gateway traffic
   refreshes them, so a single poisoning does not hold.
 - **A quiet network does not trip it.** The watchdog only treats a still forwarding counter
   as a stall once it has actually *observed* forwarding working — an idle segment looks
   identical to a broken one, and conflating them makes `weir` flap.
+- **There is a self-destruct deadline.** `--seconds` bounds the run; `--max-runtime`
+  (default: `--seconds + 120s`) restores from inside the process even when no signal can
+  ever reach it — the killed-`kubectl exec`-client case. The last resort is the kernel's
+  own ARP expiry, measured on stock Linux defaults: **~1 minute** for a host actively
+  using the network, and **seconds from that host's next packet** for an idle one.
 
 ### TLS fingerprinting and licensing
 
