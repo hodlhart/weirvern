@@ -88,7 +88,7 @@ async function main() {
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
-                     loadZeek, loadNetflow,
+                     loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail };
   `;
   try {
@@ -237,6 +237,34 @@ async function main() {
     restart_errors: [], note: "restarted deploy/weirvern-worker",
   };
 
+  // ── the anomalies/review stub (SOC-1) ────────────────────────────────────────────────────
+  //
+  // Two rows deliberately: one UNREVIEWED and one already acked with a note. A single-row stub
+  // cannot catch a renderer that draws every row with the same chip, and the states are what the
+  // column exists to distinguish.
+  const ANOMALIES_PAYLOAD = [
+    { detected_at: "2026-01-02T09:12:00", window_start: "2026-01-02T09:10:00",
+      window_end: "2026-01-02T09:15:00", src_addr: "203.0.113.42", hostname: "workstation.lan",
+      anomaly_score: 0.91, confidence: 0.8, severity: "high",
+      detected_by_models: "Isolation Forest, DBSCAN", model_agreement: 0.7,
+      isolation_forest_score: 0.9, gradient_boosting_score: 0.4, dbscan_score: 0.8,
+      baseline_score: 0.2, primary_deviation_feature: "unique_dst_ports",
+      primary_deviation_zscore: 5.2, deviation_magnitude: 3.1,
+      feature_contributions: { unique_dst_ports: { z: 5.2 }, total_bytes: { z: 1.1 } },
+      baseline_comparison: "unique_dst_ports is 5.2 sigma above this host's baseline",
+      review_state: "", review_note: "", reviewed_at: null },
+    { detected_at: "2026-01-02T08:00:00", window_start: "2026-01-02T07:55:00",
+      window_end: "2026-01-02T08:00:00", src_addr: "192.0.2.40", hostname: "vault",
+      anomaly_score: 0.72, confidence: 0.6, severity: "medium",
+      detected_by_models: "Adaptive Baseline", model_agreement: 0.5,
+      isolation_forest_score: 0.4, gradient_boosting_score: 0.3, dbscan_score: 0.2,
+      baseline_score: 0.7, primary_deviation_feature: "total_bytes",
+      primary_deviation_zscore: 3.4, deviation_magnitude: 2.0,
+      feature_contributions: {}, baseline_comparison: "total_bytes is 3.4 sigma above baseline",
+      review_state: "ack", review_note: "nightly backup job",
+      reviewed_at: "2026-01-02T08:05:00" },
+  ];
+
   // ── ONE FETCH DISPATCHER, INSTALLED ONCE ────────────────────────────────────────────────
   //
   // The harness previously assigned `window.fetch` three times in sequence, so the LAST assignment
@@ -263,6 +291,8 @@ async function main() {
                   : u.includes("/api/settings/apply")
                     ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                         restart_errors: [], note: "restarted deploy/weirvern-worker" }
+                  : u.includes("/api/review")
+                    ? { ok: true, state: sent.state || "", note: sent.note || "" }
                   : { ok: false, error: "no write route at " + u };
       return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => reply });
     }
@@ -283,6 +313,10 @@ async function main() {
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
     ["/api/zeek", ZEEK_PAYLOAD],
+    // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
+    // cannot shadow the others; the dispatcher takes the first hit and /api/anomalies shares
+    // no prefix with any of the above.
+    ["/api/anomalies", ANOMALIES_PAYLOAD],
   );
 
   const H = window.__H;
@@ -909,6 +943,66 @@ async function main() {
   check("the apply control reflects whether anything is staged",
         applyBtn.disabled === (Object.keys(H.STAGE.changes).length === 0),
         `disabled=${applyBtn.disabled} staged=${Object.keys(H.STAGE.changes).length}`);
+
+  // ── the review column (SOC-1) ──────────────────────────────────────────────────────────────
+  //
+  // The workflow this closes: before SOC-1 the anomalies list was read-only -- no ack, no
+  // resolve, no false-positive -- and the same recurring benign alert re-appeared forever.
+  // These checks drive the SHIPPING renderer and the SHIPPING post path against the stub
+  // payload and assert what was POSTed, not just what rendered.
+  //
+  // The 401 override above is CLEARED here, deliberately: it simulates a refused write, and
+  // leaving it on would make the review POST below fail for a reason that has nothing to do
+  // with the code under test. (Which is exactly what the review checks caught the first time.)
+  fetchOverride = null;
+
+  H.showView("anomalies");
+  await H.loadAnomalies();
+
+  const anomRows = doc.querySelectorAll("#anomalies-table tbody tr");
+  check("the anomalies table renders a row per payload entry", anomRows.length === 2,
+        `${anomRows.length} rows`);
+
+  const chips = [...doc.querySelectorAll("#anomalies-table .review-chip")];
+  check("every anomaly row carries a review chip", chips.length === anomRows.length,
+        `${chips.length} chips for ${anomRows.length} rows`);
+  check("an UNREVIEWED row says so", chips.some((c) => c.textContent === "unreviewed"));
+  check("a REVIEWED row shows its state, not 'unreviewed'",
+        chips.some((c) => c.textContent === "ack"), chips.map((c) => c.textContent).join(", "));
+
+  const actBtns = [...doc.querySelectorAll("#anomalies-table .review-act")];
+  check("the row offers the dispositions that are not its current state",
+        actBtns.length > 0, `${actBtns.length} action buttons`);
+  // `[title*='ack']` matched "back to unreviewed" -- substring traps. Match the exact
+  // affordance instead: the acked row must not offer "as ack", the unreviewed row must.
+  const rowsArr = [...doc.querySelectorAll("#anomalies-table tbody tr")];
+  check("the current state is not offered as an action on its own row",
+        !rowsArr[1].querySelector(".review-act[title*='as ack']"),
+        rowsArr[1].textContent.slice(0, 120));
+  check("an unreviewed row DOES offer ack",
+        !!rowsArr[0].querySelector(".review-act[title*='as ack']"));
+
+  // Click "resolve" on the first (unreviewed) row and assert the REQUEST.
+  const firstRowResolve = [...doc.querySelectorAll("#anomalies-table tbody tr")][0]
+    .querySelector(".review-act[title*='resolved']");
+  check("the resolve control exists on the unreviewed row", !!firstRowResolve);
+  if (firstRowResolve) {
+    const postedBefore = POSTED.length;
+    firstRowResolve.click();
+    await new Promise((r) => setTimeout(r, 120));
+    const reviewReq = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/review"));
+    check("a click POSTs the disposition to /api/review", !!reviewReq,
+          POSTED.slice(postedBefore).map((r) => r.url).join(","));
+    if (reviewReq) {
+      let body = {};
+      try { body = JSON.parse(reviewReq.body || "{}"); } catch (_e) { body = {}; }
+      check("the POST carries the anomaly's identity and the new state",
+            body.src_addr === "203.0.113.42" && body.state === "resolved",
+            `src_addr=${body.src_addr} state=${body.state}`);
+      check("the POST carries the window_start the server keyed the row by",
+            !!body.window_start, String(body.window_start));
+    }
+  }
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,

@@ -226,10 +226,11 @@
       <div class="controls">
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
+        <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
       </div>
-      <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window.</p>
+      <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window. Mark a row with ack / resolve / FP to record what you did about it — a recurring benign alert stays cleared that way. Reviews need the operator token (same write gate as Settings).</p>
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th></tr></thead>
+        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Review</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

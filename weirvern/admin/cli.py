@@ -600,7 +600,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             # redirected. Read the CONFIGURED mode from the cluster (where the sensor
             # actually gets it), falling back to this environment.
             configured_mode = (
-                (_cluster_config().get("SENSOR_MODE") or settings.sensor_mode or "")
+                _cluster_config().get("SENSOR_MODE") or settings.sensor_mode or ""
             )
             liveness = status_mod.weir_liveness(configured_mode, client)
     except Exception as exc:  # noqa: BLE001

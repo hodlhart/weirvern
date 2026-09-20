@@ -185,7 +185,6 @@ def test_the_dom_harness_reads_the_checkout_relative_to_itself():
     checking anything, or (worse) read a directory that was not the code under test. The web
     root must resolve relative to the harness file, and jsdom must resolve normally.
     """
-    import re
     harness = (ROOT / "scripts" / "jsdom_render.js").read_text()
     web_line = next((ln for ln in harness.splitlines() if ln.startswith("const WEB =")), "")
     assert web_line, "no WEB assignment found in the harness"

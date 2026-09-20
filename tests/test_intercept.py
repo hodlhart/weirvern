@@ -1188,6 +1188,7 @@ def test_a_quiet_network_does_not_trip_the_watchdog():
 def test_the_deadline_fires_and_restores_without_any_signal():
     """Drive the timer for real: short deadline, no signals, mappings must be withdrawn."""
     import time as _t
+
     from weirvern.admin import watchdog as wd
 
     sent: list[tuple[bytes, str]] = []
@@ -1222,6 +1223,7 @@ def test_a_deliberate_stop_disarms_the_deadline():
     distinguishes "orphaned" from "operator stopped it".
     """
     import time as _t
+
     from weirvern.admin import watchdog as wd
 
     w = wd.FailOpenWatchdog(iface="eth1", our_mac="aa:bb:cc:dd:ee:03",

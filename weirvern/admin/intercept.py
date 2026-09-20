@@ -38,9 +38,10 @@ import signal
 import socket
 import struct
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from weirvern.admin.sysctl_guard import SysctlGuard
 from weirvern.admin.watchdog import FailOpenWatchdog, Interception

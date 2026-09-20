@@ -1310,6 +1310,121 @@ def _opt_count(value) -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# alert review state (soc-1)
+# ---------------------------------------------------------------------------
+
+# The dispositions an analyst can set. Empty string is a REAL state, not absence: it means
+# "cleared" -- the row goes back to unreviewed. Kept in one tuple so the API, the schema
+# comment, and the tests cannot drift.
+VALID_REVIEW_STATES = ("ack", "resolved", "false_positive", "")
+
+# The wire value for "the reviews table could not be read". Distinct from both the empty
+# string ("not reviewed") and any real state, because reporting a read failure as
+# "unreviewed" would tell the analyst nothing has been reviewed when the truth is that we
+# cannot see whether anything has.
+REVIEW_UNAVAILABLE = "unavailable"
+
+
+def write_review(client, *, window_start: str, src_addr: str, state: str,
+                 note: str = "") -> bool:
+    """Record an analyst's disposition of one anomaly. Returns whether it landed.
+
+    The review is keyed (window_start, src_addr) -- the same key as the anomaly it reviews
+    -- so no id is minted or passed around. ReplacingMergeTree(reviewed_at): a later write
+    replaces the earlier one, which is what "current disposition" means.
+
+    Raises ValueError for a state outside VALID_REVIEW_STATES. That is a programming/API
+    error (the route validates first), not a runtime failure, and both layers refusing it
+    is deliberate: the route gives the caller a 400 with a reason, and this guard means a
+    future caller that skips the route still cannot write a state the UI cannot render.
+    """
+    if state not in VALID_REVIEW_STATES:
+        raise ValueError(
+            f"unknown review state {state!r}; expected one of {VALID_REVIEW_STATES}"
+        )
+    stamp = _parse_stamp(window_start)
+    if stamp is None:
+        raise ValueError(f"unreadable window_start {window_start!r}")
+    client.insert(
+        "weirvern.alert_reviews",
+        [[stamp, src_addr, state, note, datetime.datetime.now()]],
+        column_names=["window_start", "src_addr", "state", "note", "reviewed_at"],
+    )
+    return True
+
+
+def _parse_stamp(value) -> datetime.datetime | None:
+    """A window_start from either a datetime (ClickHouse result) or an ISO string (JSON body).
+
+    The browser round-trips the exact value the server sent it, so both forms must parse.
+    Naive and aware inputs are both kept as wall-clock: ClickHouse's DateTime64 carries no
+    zone, and re-deriving one here would shift the key and orphan the review from its row.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None]:
+    """Reviews keyed by (window_start, src_addr), for merging into anomaly rows.
+
+    Returns (index, error). The error string is the honest "cannot tell": a missing
+    alert_reviews table (schema job has not run yet on an older deployment) must not read
+    as "nothing has been reviewed", so the caller distinguishes the two and the UI renders
+    a distinct chip for each.
+    """
+    try:
+        res = client.query(
+            "SELECT window_start, src_addr, state, note, reviewed_at "
+            "FROM weirvern.alert_reviews FINAL "
+            "WHERE window_start >= now() - INTERVAL %(h)s HOUR",
+            parameters={"h": hours},
+        )
+        idx: dict[tuple, dict] = {}
+        for row in res.result_rows:
+            idx[(row[0], row[1])] = {"state": row[2], "note": row[3], "reviewed_at": row[4]}
+        return idx, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("alert_reviews unavailable: %s", exc)
+        return {}, "review state is unavailable (has the schema job run since this feature deployed?)"
+
+
+def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None) -> list[dict]:
+    """Merge review state onto anomaly dicts, in place. Returns the rows.
+
+    Every row gains `review_state` and `review_note` so a consumer never has to
+    distinguish a missing key from a null value -- the rule the sensor payload already
+    follows. On a read failure every row is marked REVIEW_UNAVAILABLE rather than left
+    looking unreviewed.
+    """
+    for row in rows:
+        key = (_parse_stamp(row.get("window_start")), row.get("src_addr"))
+        found = idx.get(key)
+        if found is not None:
+            row["review_state"] = found["state"]
+            row["review_note"] = found["note"]
+            row["reviewed_at"] = _json_safe_stamp(found.get("reviewed_at"))
+        else:
+            row["review_state"] = "" if error is None else REVIEW_UNAVAILABLE
+            row["review_note"] = ""
+            row["reviewed_at"] = None
+    return rows
+
+
+def _json_safe_stamp(value):
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return value
+
+
 def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",
               hosts: int = 0, mappings: int = 0, running: bool = False,
               uptime_s: float = 0.0, restores: int = 0, refreshes: int = 0,

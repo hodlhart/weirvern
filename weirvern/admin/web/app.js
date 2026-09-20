@@ -16,7 +16,9 @@
 
 const API = {
   overview: "/api/overview",
-  anomalies: (min, limit) => `/api/anomalies?min_score=${min}&limit=${limit}`,
+  anomalies: (min, limit, unreviewed) =>
+    `/api/anomalies?min_score=${min}&limit=${limit}` + (unreviewed ? "&unreviewed=1" : ""),
+  review: "/api/review",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
@@ -455,18 +457,108 @@ async function loadSettings() {
 }
 /* ── anomalies ──────────────────────────────────────────────────────────── */
 
+/* SOC-1: REVIEW STATE.
+ *
+ * Before this, the workflow ended at "here is an anomaly": no acknowledge, no resolve,
+ * no false-positive, no way to clear the recurring benign alert. The analyst saw the
+ * same rows forever and there was no record of what had been looked at.
+ *
+ * The chip renders what the SERVER says -- `review_state` merged onto every row by the
+ * anomalies route -- never local state. A click posts, the list reloads, and what is on
+ * screen after the reload is the server's answer. Optimistic local updates would show a
+ * decision that a failed write never recorded, which is the one thing a triage tool must
+ * not do.
+ *
+ * "unavailable" is a REAL state, not an error style: the reviews table could not be read
+ * (schema job not re-run yet). It must look different from "unreviewed", because claiming
+ * nothing has been reviewed when we cannot see it is the confident-empty failure this
+ * codebase treats as a bug class.
+ */
+const REVIEW_LABELS = {
+  "": "unreviewed",
+  "ack": "ack",
+  "resolved": "resolved",
+  "false_positive": "false positive",
+  "unavailable": "review unavailable",
+};
+
+/** The chip's class for a state. Static selectors in style.css; this maps the state onto them. */
+function reviewClass(state) {
+  if (state === "false_positive") return "review-fp";
+  if (state === "unavailable") return "review-unavailable";
+  if (state === "ack") return "review-ack";
+  if (state === "resolved") return "review-resolved";
+  return "review-none";
+}
+
+/** One review cell: the state chip, then the actions that are not the current state. */
+function reviewCell(a) {
+  const state = a.review_state || "";
+  const wrap = el("div", {});
+
+  wrap.appendChild(el("span", {
+    class: "review-chip " + reviewClass(state),
+    text: REVIEW_LABELS[state] !== undefined ? REVIEW_LABELS[state] : state,
+    title: a.reviewed_at ? "reviewed " + fmtTime(a.reviewed_at) : "not reviewed yet",
+  }));
+
+  // No actions while the review store is unreadable: a write against a store we cannot
+  // read would fail after the click, and offering it anyway would advertise a control
+  // that cannot work.
+  if (state === "unavailable") return wrap;
+
+  wrap.appendChild(el("div", { class: "review-acts" }, [
+    ...[["ack", "ack"], ["resolved", "resolve"], ["false_positive", "FP"]]
+      .filter(([st]) => st !== state)
+      .map(([st, label]) => el("button", {
+        class: "review-act", text: label, attrs: { type: "button" },
+        title: `mark this anomaly as ${st.replace("_", " ")}`,
+        on: { click: (e) => { e.stopPropagation(); postReview(a, st); } },
+      })),
+    state
+      ? el("button", {
+          class: "review-act", text: "clear", attrs: { type: "button" },
+          title: "back to unreviewed",
+          on: { click: (e) => { e.stopPropagation(); postReview(a, ""); } },
+        })
+      : null,
+  ]));
+  return wrap;
+}
+
+/** Post a disposition and re-render from the server's answer. Failures surface, never pass. */
+async function postReview(a, state) {
+  try {
+    await postJSON(API.review, {
+      window_start: a.window_start, src_addr: a.src_addr, state,
+    });
+  } catch (err) {
+    // A refused write states the server's reason (missing token, unknown state, database
+    // down). Rendering it beats a chip that silently did not change.
+    showError(err);
+    return;
+  }
+  await loadAnomalies();
+}
+
 async function loadAnomalies() {
   const min = document.getElementById("f-min-score").value || "0";
   const limit = document.getElementById("f-limit").value || "100";
-  const rows = await getJSON(API.anomalies(min, limit));
+  const unrev = document.getElementById("f-unreviewed");
+  const unreviewedOnly = !!(unrev && unrev.checked);
+  const rows = await getJSON(API.anomalies(min, limit, unreviewedOnly));
 
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
   if (!rows.length) {
-    const note = Number(min) > 0
-      ? `No anomalies at or above score ${min}.`
-      : "No anomalies recorded yet.";
-    emptyRow(tbody, 7, note);
+    const note = unreviewedOnly
+      ? (Number(min) > 0
+          ? `No unreviewed anomalies at or above score ${min}.`
+          : "No unreviewed anomalies — everything has been triaged.")
+      : (Number(min) > 0
+          ? `No anomalies at or above score ${min}.`
+          : "No anomalies recorded yet.");
+    emptyRow(tbody, 8, note);
     return;
   }
   for (const a of rows) {
@@ -489,6 +581,7 @@ async function loadAnomalies() {
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
       ]),
+      el("td", {}, [reviewCell(a)]),
     ]));
   }
 }
@@ -860,7 +953,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("h-addr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("h-go").click();
   });
-  for (const id of ["f-min-score", "f-limit"]) {
+  for (const id of ["f-min-score", "f-limit", "f-unreviewed"]) {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
     });
