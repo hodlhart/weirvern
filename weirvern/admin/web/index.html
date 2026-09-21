@@ -521,11 +521,14 @@
       <h2>Settings <span class="muted" id="st-window"></span></h2>
       <p class="muted" id="st-summary">loading…</p>
       <p class="muted">These are the values the running deployment is using, read from the
-        cluster. Without an operator token this page is read-only; with one it can stage changes
-        and apply them, because writes are gated on the token rather than on the page. It is
-        served without authentication for reads, so anything an HTTP request could write
-        without the token would be a way to reconfigure the sensor from the network. To change
-        values without a token, use <code>weirvern config set</code> or the TUI, then apply.</p>
+        cluster. Each setting is shown as the control that changes it — a toggle for on/off, a
+        dropdown for a choice, a bounded number for a number — with a <strong>?</strong> beside
+        every row explaining what it does and what happens when it moves. Without an operator
+        token this page is read-only; with one it can stage changes and apply them together,
+        because writes are gated on the token rather than on the page. It is served without
+        authentication for reads, so anything an HTTP request could write without the token
+        would be a way to reconfigure the sensor from the network. To change values without a
+        token, use <code>weirvern config set</code> or the TUI, then apply.</p>
       <div class="controls">
         <button id="st-reload">Reload</button>
       </div>

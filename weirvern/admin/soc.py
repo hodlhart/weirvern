@@ -568,18 +568,27 @@ def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
         base["reason"] = f"alert audit query failed: {type(exc).__name__}"
         return base
 
-    base["by_reason"] = [
-        {"reason": str(r[0]), "sent": bool(r[1]), "count": int(r[2] or 0),
-         "last_at": str(r[3])[:19] if r[3] is not None else ""}
-        for r in by_reason
-    ]
-    # SUPPRESSED is deliberately not "sent == falsy": the log-only path is also sent=0,
-    # and counting it as suppressed would claim alerts were withheld when nothing was
-    # configured to withhold them. Suppression is the reasons that MEAN withheld.
-    base["suppressed"] = sum(
-        p["count"] for p in base["by_reason"]
-        if p["reason"] in ("cooldown", "cap") and not p["sent"]
-    )
+    rows_by_reason: list[dict[str, object]] = []
+    suppressed = 0
+    for r in by_reason:
+        reason = str(r[0])
+        sent = bool(r[1])
+        count = int(r[2] or 0)
+        rows_by_reason.append({
+            "reason": reason, "sent": sent, "count": count,
+            "last_at": str(r[3])[:19] if r[3] is not None else "",
+        })
+        # SUPPRESSED is deliberately not "sent == falsy": the log-only path is also sent=0,
+        # and counting it as suppressed would claim alerts were withheld when nothing was
+        # configured to withhold them. Suppression is the reasons that MEAN withheld.
+        #
+        # Computed in this loop, not by a later sum() over the dicts: the dicts infer as
+        # dict[str, object], and summing `object` is a type error the mypy gate catches.
+        # Here `count` is a real int with the narrowing stated in code.
+        if reason in ("cooldown", "cap") and not sent:
+            suppressed += count
+    base["by_reason"] = rows_by_reason
+    base["suppressed"] = suppressed
     base["recent"] = [
         {"sent_at": str(r[0])[:19], "src_addr": str(r[1]), "severity": str(r[2]),
          "score": float(r[3] or 0), "sent": bool(r[4]), "reason": str(r[5]),

@@ -237,6 +237,12 @@ def _redact(name: str, value):
 # The settings worth showing, grouped as the Settings tab displays them. Listed EXPLICITLY rather
 # than introspected: a settings object is not a data model, and dumping every attribute would
 # expose internals (paths, credentials) through an unauthenticated port by accident.
+#
+# EVERY row also carries a plain-language explanation (see `_SETTINGS_HELP` below), rendered as
+# the "?" help on the Settings tab. Written for an operator setting this up for the first time:
+# what the setting does, what the default is, and what happens when it changes. A settings page
+# that shows a value without explaining it forces the reader into the source, which is the
+# opposite of "setup should be easy".
 _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("detect", "Detection", [
         ("retrain_every_h", "retrain every (h)"),
@@ -286,6 +292,143 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("version", "version"),
     ]),
 ]
+
+
+# PLAIN-LANGUAGE EXPLANATIONS, one per settings row, rendered as the "?" help on the Settings
+# tab. Written for an operator who has just deployed Weirvern and is reading the panel top to
+# bottom: what this value DOES, what the default is, and what happens when it changes. Kept
+# beside the row list so a new row cannot ship without someone having to write one -- a test
+# asserts every rendered row has help text.
+_SETTINGS_HELP: dict[str, str] = {
+    # -- detection
+    "retrain_every_h": (
+        "How often the detectors are retrained on the last training window. Default 6 hours. "
+        "Shorter means the models track a changing network faster but use more CPU; longer "
+        "means training happens less often and a shift in traffic takes longer to be learned. "
+        "The worker restarts are not needed for this one -- it is read on the next sweep."),
+    "retrain_window_h": (
+        "How much history is used to train the detectors, in hours. Default 72 (3 days). This "
+        "window should cover at least one full work-week-ish cycle of your network so 'normal' "
+        "includes both busy and quiet periods. Longer is better for stability but slows training "
+        "and uses more memory."),
+    "detect_interval_s": (
+        "How often the detection sweep runs, in seconds. Default 300 (5 minutes). Every sweep "
+        "scores the newest flow windows and can raise an alert, so this is also the maximum "
+        "delay between suspicious traffic happening and an alert firing."),
+    "base_threshold": (
+        "The score a host-window must reach (0-1) before it is considered an anomaly at all. "
+        "Default 0.35. Lower means more alerts and more false positives; higher means fewer "
+        "alerts but a real attack may pass unnoticed. The Models tab's near-miss panel shows "
+        "what almost crossed this line, which is the honest way to move it."),
+    "min_agreement": (
+        "The fraction of detectors that must agree (0-1) before a score is taken seriously. "
+        "Default 0.33. At 0.33 with four detectors, two of them agreeing is enough. Raising it "
+        "toward 1.0 demands consensus and cuts false positives, at the cost of missing attacks "
+        "only one detector's method can see."),
+    "strong_signal": (
+        "The score (0-1) at which a single detector counts as a STRONG signal for escalation to "
+        "high/critical severity. Default 0.85. A single strong detector escalates only when "
+        "corroborated by a second detector or by a structural signature (like a zero-byte scan)."),
+    # -- sensor
+    "sensor_mode": (
+        "'loch' (default) watches traffic passively from a mirrored/SPAN port or TAP -- it "
+        "cannot affect your network. 'weir' puts this host in the traffic path by ARP-forging "
+        "the gateway mapping, so it can see traffic a mirror cannot AND must never fail closed. "
+        "Changing this restarts the Zeek sensor and briefly interrupts capture."),
+    "zeek_iface": (
+        "The network interface the sensor CAPTURES from -- the dedicated NIC connected to a "
+        "switch mirror/SPAN port or a passive TAP. It must not be the same interface as the "
+        "management port, and should not be a bridge member: a sensor pointed at the wrong NIC "
+        "captures mostly broadcast noise and looks healthy while seeing almost nothing."),
+    "mgmt_iface": (
+        "The interface carrying the default route, SSH and the cluster API. The sensor never "
+        "captures from it; it is used to DETECT when the capture interface is pointed at the "
+        "wrong NIC. Changing it restarts the capture sensor briefly."),
+    "zeek_log_dir": (
+        "Where the worker reads Zeek's logs from inside the pod. Default /zeek/logs, shared "
+        "between the Zeek sensor and the worker via a host directory. Change only if you moved "
+        "that mount in the manifests."),
+    "tail_file": (
+        "The file goflow2 writes NetFlow/sFlow records to as JSONL, which the worker tails. "
+        "Default /data/flows.jsonl. Both processes are pinned to the same node because this is "
+        "a file, not a network stream."),
+    "intercept_targets": (
+        "Which hosts the weir intercept targets, when SENSOR_MODE is 'weir'. Comma-separated "
+        "addresses to intercept, or 'all' for the whole segment. Only used when an operator "
+        "runs 'weirvern intercept'; this list is the default the command reads."),
+    "intercept_segment": (
+        "The network segment (CIDR) the weir intercept operates on. Used as the fallback when "
+        "'weirvern intercept' is run without the --segment flag. Must match the segment you are "
+        "authorised to monitor."),
+    "intercept_addr": (
+        "The address the intercept assumes on the capture interface while it relays traffic "
+        "(the 'one-armed router' address). Fallback for 'weirvern intercept --addr'."),
+    "intercept_gateway": (
+        "The gateway address whose identity is forged for the targeted hosts during a weir "
+        "intercept. Fallback for 'weirvern intercept --gateway'. The watchdog restores these "
+        "mappings on every exit path, including crashes."),
+    "reverse_dns": (
+        "'private' (default) resolves only private addresses, so lookups stay on your network. "
+        "'all' also resolves public addresses, which sends every external destination in your "
+        "flow data to a DNS resolver -- that leaks what you talk to, so it is explicit. 'off' "
+        "disables lookups entirely; addresses display without names."),
+    "exclude_cidrs": (
+        "Networks excluded from LEARNING, comma-separated (e.g. 192.0.2.0/24). Traffic from "
+        "these networks still reaches the sensor and is counted, but the models are not trained "
+        "on it, so known-busy scanners do not become each host's 'normal'. Use this for hosts "
+        "whose traffic would drown out real anomalies."),
+    "capture_exclude_cidrs": (
+        "Networks dropped AT CAPTURE, comma-separated. Zeek never records this traffic at all, "
+        "so it cannot be reviewed later -- prefer the learning-exclusion list above if you may "
+        "want the evidence. Use this only for traffic that must never be stored."),
+    # -- runtime
+    "clickhouse_host": (
+        "Hostname of the ClickHouse service. Default 'clickhouse', the in-cluster Service name. "
+        "Change only for an external database."),
+    "clickhouse_port": (
+        "ClickHouse's HTTP interface port. Default 8123. Change only for an external database "
+        "on a non-standard port."),
+    "clickhouse_db": (
+        "The database holding Weirvern's tables. Default 'weirvern'. The schema Job creates it "
+        "if missing."),
+    "clickhouse_user": (
+        "The ClickHouse user the worker connects as. Default 'weirvern', created by the schema "
+        "Job alongside the password below."),
+    "clickhouse_password": (
+        "The ClickHouse password for the user above. Reported as set/not-set only, never in "
+        "value, and never editable from this page: it is a credential, read from the "
+        "'weirvern-secrets' Secret at startup."),
+    "model_dir": (
+        "Where trained model artifacts are saved. Default /models, on a PersistentVolume, so "
+        "retrained baselines survive pod restarts. Point this at a volume or you will retrain "
+        "from scratch after every restart."),
+    "pushover_enabled": (
+        "Whether real push notifications are sent. 'off' (default) logs only: every alert is "
+        "formatted, recorded to alert_events with reason 'log-only', and nothing is sent. Turn "
+        "it ON only after setting both Pushover keys below; enabling without keys fails "
+        "visibly, not silently."),
+    "pushover_user_key": (
+        "Your Pushover user key (from your Pushover account dashboard). Set/not-set only, "
+        "never in value. Required before push notifications can be enabled."),
+    "pushover_api_token": (
+        "The Pushover application API token (created under 'Create an Application' on "
+        "pushover.net). Set/not-set only, never in value. Together with the user key above, "
+        "this is what delivers alerts to your phone."),
+    "pushover_cooldown_s": (
+        "Per-source alert cooldown in seconds. Default 1800 (30 minutes): after an alert for a "
+        "host, further alerts for the SAME host are suppressed for this long, so one noisy host "
+        "cannot flood your phone."),
+    "pushover_max_per_hour": (
+        "Global cap on alerts per hour. Default 20. Once reached, additional alerts are "
+        "suppressed (and counted as suppressed in the Health tab's alert audit) until the hour "
+        "rolls over."),
+    "namespace": (
+        "The Kubernetes namespace the deployment runs in. Default 'weirvern'. Shown for "
+        "reference; changing it requires re-applying the manifests, not this page."),
+    "version": (
+        "The image tag the deployment is actually running, read from the cluster. A version "
+        "that differs from what you deployed means a rollout did not finish."),
+}
 
 
 def _running_version(backend) -> str:
@@ -403,6 +546,10 @@ def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
                 # setting | env | derived -- so the UI can show that a blank is an env-only key
                 # rather than a broken preference.
                 "source": source,
+                # The plain-language explanation, rendered as the row's "?" help. "" only when a
+                # row was added without one, which a test fails on -- the explanation is part of
+                # the row's contract, not a nice-to-have.
+                "help": _SETTINGS_HELP.get(attr, ""),
             })
         rows[key] = out
     return {"available": True, "reason": "", "groups": rows,

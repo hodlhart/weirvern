@@ -89,7 +89,7 @@ async function main() {
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -176,30 +176,48 @@ async function main() {
   const SETTINGS_PAYLOAD = {
     available: true, reason: "",
     writes: { enabled: true, reason: "" },
-    editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "intercept_segment"],
+    editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "intercept_segment",
+                    "pushover_enabled"],
+    // The control spec rides with the payload (see cluster_config.SETTING_CONTROLS): the browser
+    // renders the natural control from the SERVER's rule -- bounds and options included -- so
+    // what the control permits and what the write path accepts cannot drift apart.
+    controls: {
+      retrain_every_h: { control: "number", min: 1, max: 720, step: 1, unit: "hours" },
+      base_threshold: { control: "number", min: 0, max: 1, step: 0.01, unit: "a score fraction" },
+      sensor_mode: { control: "select", options: ["loch", "weir"] },
+      intercept_segment: { control: "text" },
+      pushover_enabled: { control: "toggle" },
+    },
     titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
     groups: {
       detect: [
         { key: "retrain_every_h", label: "retrain every (h)", value: 6, secret: false,
-          source: "setting" },
+          source: "setting", help: "How often the detectors are retrained. Default 6 hours." },
         { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false,
-          source: "setting" },
+          source: "setting",
+          help: "The score a host-window must reach before it counts as an anomaly. Default 0.35." },
       ],
       sensor: [
-        { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting" },
+        { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting",
+          help: "loch watches passively; weir puts this host in the traffic path. Default loch." },
         { key: "reverse_dns", label: "reverse DNS", value: "private", secret: false,
-          source: "derived" },
+          source: "derived", help: "Resolves only private addresses by default." },
         { key: "intercept_segment", label: "intercept segment", value: "(not set)",
-          secret: false, source: "env" },
+          secret: false, source: "env", help: "The segment the weir intercept operates on." },
       ],
       runtime: [
         { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
-          source: "setting" },
+          source: "setting", help: "Hostname of the ClickHouse service. Default clickhouse." },
         { key: "clickhouse_password", label: "ClickHouse password",
-          value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true, source: "setting" },
+          value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true, source: "setting",
+          help: "Read from the weirvern-secrets Secret at startup. Never shown in value." },
+        { key: "pushover_enabled", label: "Pushover", value: "disabled", secret: false,
+          source: "setting",
+          help: "Whether real push notifications are sent. Off logs only." },
         { key: "pushover_api_token", label: "Pushover API token", value: "(not set)",
-          secret: true, source: "setting" },
-        { key: "version", label: "version", value: "0.5.6", secret: false, source: "derived" },
+          secret: true, source: "setting", help: "The Pushover application token." },
+        { key: "version", label: "version", value: "0.5.6", secret: false, source: "derived",
+          help: "The image tag the deployment is actually running." },
       ],
     },
   };
@@ -1032,6 +1050,78 @@ async function main() {
   check("the apply control reflects whether anything is staged",
         applyBtn.disabled === (Object.keys(H.STAGE.changes).length === 0),
         `disabled=${applyBtn.disabled} staged=${Object.keys(H.STAGE.changes).length}`);
+
+  // ── the control revision: natural controls + "?" help on every row ────────────────────────
+  // The operator asked for toggles / buttons / dropdowns instead of free-text boxes, and a "?"
+  // explanation on every setting. These checks drive the SHIPPING renderer against the stub
+  // payload and assert the OUTCOME, including that choosing still only STAGES (never writes).
+
+  const helpBtns = [...doc.querySelectorAll("#view-settings .setting-help-btn")];
+  const settingRows = [...doc.querySelectorAll("#view-settings .setting")];
+  check("every setting row carries a ? help button", helpBtns.length === settingRows.length,
+        `${helpBtns.length} buttons for ${settingRows.length} rows`);
+
+  // Clicking "?" must reveal the SERVER's explanation for THAT row, not a placeholder.
+  const firstHelp = settingRows[0].querySelector(".setting-help");
+  const hiddenBefore = firstHelp.classList.contains("hidden");
+  helpBtns[0].click();
+  check("clicking ? reveals the row's explanation",
+        hiddenBefore && !firstHelp.classList.contains("hidden"),
+        `hidden before=${hiddenBefore} after=${firstHelp.classList.contains("hidden")}`);
+  check("the explanation is the row's own text from the server",
+        firstHelp.textContent.includes("retrained"), firstHelp.textContent.slice(0, 90));
+  helpBtns[0].click();
+  check("clicking ? again hides the explanation", firstHelp.classList.contains("hidden"));
+
+  // A choice setting is a DROPDOWN carrying the server's options.
+  const modeSel = doc.querySelector('#view-settings select[data-key="sensor_mode"]');
+  check("a choice setting renders as a dropdown", !!modeSel);
+  const modeOpts = modeSel ? [...modeSel.options].map((o) => o.value) : [];
+  check("the dropdown carries the server's option list",
+        modeOpts.includes("loch") && modeOpts.includes("weir"), modeOpts.join(","));
+  const postsBeforeChoice = POSTED.length;
+  if (modeSel) {
+    modeSel.value = "weir";
+    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  check("choosing from the dropdown stages the choice without writing",
+        POSTED.length === postsBeforeChoice, `${POSTED.length - postsBeforeChoice} request(s) sent`);
+  check("the staged choice is the chosen value", H.STAGE.changes.sensor_mode === "weir",
+        JSON.stringify(H.STAGE.changes));
+  if (modeSel) {
+    modeSel.value = "loch";   // back to the running value: un-stages it again
+    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+
+  // A numeric setting is a NUMBER input carrying the server's own bounds.
+  const btNum = doc.querySelector('#view-settings input[data-key="base_threshold"]');
+  check("a numeric setting renders as a number input", !!btNum && btNum.type === "number",
+        btNum ? btNum.type : "missing");
+  check("the number control carries the server's bounds",
+        !!btNum && btNum.getAttribute("min") === "0" && btNum.getAttribute("max") === "1",
+        btNum ? `${btNum.getAttribute("min")}..${btNum.getAttribute("max")}` : "missing");
+
+  // An on/off setting is a TOGGLE whose state is stated in words.
+  const poToggle = doc.querySelector('#view-settings input[data-key="pushover_enabled"]');
+  check("an on/off setting renders as a toggle", !!poToggle && poToggle.type === "checkbox",
+        poToggle ? poToggle.type : "missing");
+  check("the toggle is OFF for a disabled value", !!poToggle && poToggle.checked === false);
+  const poStateWord = poToggle
+    ? poToggle.closest(".setting-toggle-label").querySelector(".setting-toggle-state") : null;
+  check("the toggle states its position in words", !!poStateWord && poStateWord.textContent === "off",
+        poStateWord ? poStateWord.textContent : "missing");
+  if (poToggle) {
+    poToggle.checked = true;
+    poToggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  check("toggling stages the canonical true/false value",
+        H.STAGE.changes.pushover_enabled === "true", JSON.stringify(H.STAGE.changes));
+  if (poToggle) {
+    poToggle.checked = false;
+    poToggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  check("flipping a switch back to its running state un-stages it (no phantom change)",
+        H.STAGE.changes.pushover_enabled === undefined, JSON.stringify(H.STAGE.changes));
 
   // ── the review column (SOC-1) ──────────────────────────────────────────────────────────────
   //

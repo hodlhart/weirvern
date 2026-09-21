@@ -43,6 +43,7 @@ the TODOs at the bottom).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -125,7 +126,6 @@ def run_detection(client, cfg_settings, window_minutes: int):
     import dataclasses
 
     from weirvern import db
-    from weirvern.config import ModelConfig
     from weirvern.worker import build_detectors, detection_sweep
 
     settings, cfg = cfg_settings
@@ -199,10 +199,8 @@ def main() -> int:
     # Start clean so a re-run is deterministic. The harness owns this database.
     for t in ("flows", "flows_aggregated", "flows_aggregated_diversity",
               "flows_aggregated_temporal", "netflow_anomalies"):
-        try:
+        with contextlib.suppress(Exception):
             client.command(f"TRUNCATE TABLE IF EXISTS weirvern.{t}")
-        except Exception:  # noqa: BLE001
-            pass
 
     t0 = time.time()
     n = seed(client, args.minutes, args.devices, args.seed, [])
