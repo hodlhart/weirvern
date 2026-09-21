@@ -489,15 +489,23 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
 
 
-def _heartbeat_thread(settings) -> None:
+def _heartbeat_thread(settings, siphon=None) -> None:
     """Publish the sensor's observed state every `heartbeat_interval_s`, forever.
 
     Beats IMMEDIATELY on start, so a freshly deployed worker populates the dashboard
     without waiting an interval -- otherwise the panel says "never reported" for the first
     15s of every deploy and looks broken.
 
-    Never raises: the cost of a missing heartbeat is a dashboard reading "unknown", which
+    NEVER RAISES: the cost of a missing heartbeat is a dashboard reading "unknown", which
     is recoverable, while an exception here must not be able to kill ingestion.
+
+    `siphon` is the in-process supervisor (worker's own), or None. While it reports that
+    the worker should NOT publish (a live intercept child owns the row, or a clean re-arm
+    seam that is seconds from the next run), this thread skips its write: the
+    `(sensor_id, 'siphon')` row is keyed one-per-sensor-and-mode, and two writers would
+    clobber each other and make the liveness check flap. The decision lives on the
+    supervisor (worker_should_publish) because the supervisor knows whether a child is
+    running, whether one just crashed, and whether a clean re-arm is imminent.
     """
     from weirvern.admin import sensorwatch, status
 
@@ -508,8 +516,30 @@ def _heartbeat_thread(settings) -> None:
 
     while not _stop.is_set():
         try:
+            # ONE WRITER, BY AGREEMENT (see SiphonSupervisor.worker_should_publish). A live
+            # intercept child owns the (sensor_id, 'siphon') row with its authoritative
+            # numbers; the worker writes it only when the supervisor says so -- on loch, on
+            # a refused plan, after a crash, and after a clean exit once the seam would
+            # otherwise read as stale.
+            if siphon is not None and not siphon.worker_should_publish:
+                _stop.wait(interval)
+                continue
+            fields = sensorwatch.observe()
+            # THE SUPERVISOR'S OWN PROBLEMS RIDE ALONG. When siphon mode is
+            # configured the worker supervises the intercept (admin/siphon_supervisor);
+            # a plan it refused to run, or a child that keeps crashing, is otherwise
+            # invisible -- the heartbeat would say "loch"-shaped healthy while nothing
+            # is intercepted. The note is set by the supervisor in THIS process.
+            try:
+                from weirvern.admin import siphon_supervisor as sup_mod
+
+                extra = sup_mod.notes()
+                if extra:
+                    fields["failures"] = list(fields.get("failures") or []) + extra
+            except Exception:  # noqa: BLE001
+                logger.debug("siphon supervisor notes unavailable", exc_info=True)
             with db.connect(settings, retries=1, delay_s=1) as client:
-                status.heartbeat(client, sensor_id=sid, **sensorwatch.observe())
+                status.heartbeat(client, sensor_id=sid, **fields)
         except Exception as exc:  # noqa: BLE001
             logger.debug("sensor heartbeat failed: %s", exc)
         _stop.wait(interval)
@@ -592,9 +622,42 @@ def main() -> None:
     # Its own thread because the heartbeat interval (15s) is independent of the detection
     # interval (300s): sharing the detection loop would make the sensor look dead between
     # cycles. Every failure is swallowed, so a monitoring problem never stops detection.
+    # IN-PATH INTERCEPT SUPERVISION (siphon mode only).
+    #
+    # When SENSOR_MODE=siphon is configured WITH a complete plan, the worker keeps
+    # the intercept running as a supervised child (see admin/siphon_supervisor.py
+    # for why a child rather than an in-process intercept). In loch mode -- or with
+    # an incomplete plan, which is the safe state -- start() states the reason and
+    # returns; nothing is spawned.
+    #
+    # STARTED BEFORE THE HEARTBEAT THREAD so a refusal note exists by the first beat:
+    # the heartbeat carries the note (see _heartbeat_thread), and starting this after
+    # would leave the dashboard's first impression "healthy" for one interval.
+    siphon = None
+    try:
+        from weirvern.admin import siphon_supervisor as siphon_mod
+
+        siphon = siphon_mod.SiphonSupervisor(siphon_mod.config_from_env())
+        siphon.start()
+    except Exception:  # noqa: BLE001
+        # Non-fatal BY DESIGN: a supervision problem must not stop ingest, detection
+        # or alerting. The failure is visible in the log and, via notes(), on the
+        # sensor panel -- and `weirvern status` fails loudly when siphon mode is
+        # configured with no live intercept.
+        logger.error("siphon supervisor could not start", exc_info=True)
+        siphon = None
+
+    # Report what the SENSOR is doing, observed from its log files. The sensor container
+    # has no python3 (busybox/ash, perl and Zeek only -- verified on the live pod), so it
+    # cannot report itself, and the worker is the only component with both Python and a
+    # read-only view of the logs.
+    #
+    # Its own thread because the heartbeat interval (15s) is independent of the detection
+    # interval (300s): sharing the detection loop would make the sensor look dead between
+    # cycles. Every failure is swallowed, so a monitoring problem never stops detection.
     threading.Thread(
         target=_heartbeat_thread,
-        args=(settings,),
+        args=(settings, siphon),
         daemon=True,
         name="sensor-heartbeat",
     ).start()
@@ -649,6 +712,18 @@ def main() -> None:
         # Sleep the remainder of the detection interval
         elapsed = time.time() - cycle_start
         _stop.wait(max(1, settings.detect_interval_s - int(elapsed)))
+
+    # ORDERLY SIPHON SHUTDOWN. SIGTERM the supervised intercept BEFORE we exit so it
+    # restores every forged ARP mapping while this container still has a network stack
+    # to send the restore frames from. If this were skipped, the pod's stop would
+    # SIGKILL the child at the end of the grace period and the mappings would wait on
+    # ARP expiry instead -- correct but slower, and not the path to leave as the
+    # common case.
+    if siphon is not None:
+        try:
+            siphon.stop()
+        except Exception:  # noqa: BLE001
+            logger.error("siphon supervisor shutdown failed", exc_info=True)
 
     logger.info("Worker exited cleanly")
     sys.exit(0)

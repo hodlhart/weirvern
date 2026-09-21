@@ -241,24 +241,31 @@ async function main() {
   // SHAPED LIKE THE REAL SERVER: proposals for the changes REQUESTED, not a fixed list. A stub
   // that answers with keys the caller never sent hides the bug where the UI acts on a proposal for
   // a change nobody made -- which is exactly what happened the first time.
+  //
+  // `restarts` is an ARRAY now: siphon keys restart both the sensor and the worker (the worker
+  // supervises the intercept). The UI only reads `restart_targets`, so this stub must flatten
+  // the same way the server does.
   const PLAN_FOR = {
-    base_threshold: { restarts: "deploy/weirvern-worker", blast: "restarts the detection worker",
+    base_threshold: { restarts: ["deploy/weirvern-worker"], blast: "restarts the detection worker",
                       warning: "" },
-    sensor_mode: { restarts: "ds/zeek", blast: "restarts the capture sensor (brief capture gap)",
+    sensor_mode: { restarts: ["ds/zeek", "deploy/weirvern-worker"],
+                   blast: "restarts the capture sensor (brief capture gap) and the worker",
                    warning: "in-path interception puts this host in the traffic path." },
-    retrain_every_h: { restarts: "deploy/weirvern-worker", blast: "restarts the detection worker",
+    retrain_every_h: { restarts: ["deploy/weirvern-worker"], blast: "restarts the detection worker",
                        warning: "" },
   };
   function planReply(changes) {
     const proposals = [];
     for (const key of Object.keys(changes || {})) {
-      const meta = PLAN_FOR[key] || { restarts: "", blast: "", warning: "" };
+      const meta = PLAN_FOR[key] || { restarts: [], blast: "", warning: "" };
       proposals.push({ key, current: "", proposed: String(changes[key]),
                        restarts: meta.restarts, blast: meta.blast, warning: meta.warning });
     }
     const targets = [];
     for (const p of proposals) {
-      if (p.restarts && !targets.includes(p.restarts)) targets.push(p.restarts);
+      for (const t of (p.restarts || [])) {
+        if (t && !targets.includes(t)) targets.push(t);
+      }
     }
     return { ok: true, proposals, restart_targets: targets };
   }

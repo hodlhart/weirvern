@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — 0.8.0: the intercept runs itself, and a one-command install
+
+**WEIR-1 closed: siphon mode now actually intercepts in-cluster.** The remaining gap from
+the 0.7.0 audit: `SENSOR_MODE=siphon` configured an INTENT, and nothing in the cluster
+ever ran the intercept — the mode could read "in-path" on every surface while redirecting
+zero hosts. The WORKER now supervises the intercept (`admin/siphon_supervisor.py`): with
+the mode set and a complete plan (segment, address, gateway, at least one target), it
+runs `weirvern intercept` as a supervised child, restarts it when bounded runs end, backs
+off on crashes, and reports every refusal on the sensor heartbeat.
+
+- **A child process, not an in-process intercept.** The intercept's fail-open watchdog
+  installs SIGTERM/SIGINT handlers that restore the ARP mappings AND end the process;
+  in the worker's main process they would replace the worker's own graceful shutdown, so
+  a pod termination would tear down ingest and detection as a side effect of a restore.
+  As a child, the intercept owns its signals and the restore contract is the one the CLI
+  already proves in the field.
+- **Each run is bounded (`--seconds`, default 1h).** The child restores on its way out
+  and a new run starts seconds later, so every seam is a working proof of the restore
+  path. The CLI's non-TTY rule (a non-interactive run must carry `--seconds`) is
+  respected, not bypassed.
+- **Readiness is rechecked before every spawn attempt** (NET_RAW+NET_ADMIN from CapEff,
+  the three sysctls from /proc) — a pod that starts before the overlay's init container
+  finishes self-heals on the next attempt instead of refusing forever.
+- **One owner per heartbeat row.** `sensor_status` is keyed `(sensor_id, mode)`; the
+  worker and the child share both. The supervisor decides who publishes
+  (`worker_should_publish`): the child while it runs, the worker on loch, on a refused
+  plan, after a crash, and after a clean seam once the row would go stale. Two writers
+  would have made the liveness check flap.
+- **Settings changes restart the workers that read them.** `SENSOR_MODE` now restarts
+  `ds/zeek` AND `deploy/weirvern-worker` (the daemonset states the mode and runs the
+  sysctl init container; the worker supervises the intercept). The intercept-plan keys
+  restart the WORKER — they were mapped to `ds/zeek` before, a restart that applied
+  nothing because the sensor does not read them.
+- `siphon_liveness`'s "no intercept running" message updated: this is no longer the
+  expected steady state — it is a fault with a stated cause (the supervisor's note rides
+  the heartbeat's `failures`).
+
+**`install.sh` — one command from a bare Ubuntu box to a running deployment.** Installs
+docker (image builder ONLY), k3s (the runtime) and kustomize; gets the repo; prepares the
+node (host directories, sensor-node label, interface detection with management/capture
+roles); builds both images and imports them into k3s's containerd (the step local
+deployments fail on); applies the manifests; creates the Secret once and never rotates
+it; replaces the schema Job (immutable after creation — a changed Job fails while the
+rest of the apply silently succeeds) and restarts the readers; waits for the schema
+Job's completion and every pod Ready, naming any that is not; prints the sign-in URL and
+the one-time admin password from the GUI log. `--siphon` also applies the overlay so the
+in-path mode's capabilities exist BEFORE anyone flips the switch in Settings. Idempotent
+throughout: re-running converges, and it never overwrites credentials or models.
+
 ## Unreleased — siphon mode, a dropdown that lied, and a capability probe that refused forever
 
 **The in-path mode is renamed: `weir` -> `siphon`.** The name was asked for and never

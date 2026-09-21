@@ -320,10 +320,14 @@ def test_a_failed_restart_is_reported_as_a_failure_not_as_success():
 
 
 def test_the_restart_targets_are_real_workload_kinds():
-    for key, (target, _blast) in cc._RESTART_FOR.items():
-        kind = target.partition("/")[0]
-        assert kind in ("deploy", "ds", "statefulset"), f"{key} targets unknown kind {kind!r}"
-        assert target.partition("/")[2], f"{key} has no workload name"
+    """Each key maps to a TUPLE of targets now (siphon keys restart both the sensor
+    and the worker). Every target inside every tuple must be a real workload kind."""
+    for key, (targets, _blast) in cc._RESTART_FOR.items():
+        assert isinstance(targets, tuple) and targets, f"{key} declares no restart target"
+        for target in targets:
+            kind = target.partition("/")[0]
+            assert kind in ("deploy", "ds", "statefulset"), f"{key} targets unknown kind {kind!r}"
+            assert target.partition("/")[2], f"{key} has no workload name"
 
 
 # ── 7. the mode gate is the CLI's own ─────────────────────────────────────────────────────
@@ -430,8 +434,25 @@ def test_the_plan_reports_the_current_and_proposed_values_and_the_blast_radius()
     p = cc.plan({"BASE_THRESHOLD": "0.5"}, {"BASE_THRESHOLD": "0.35"})
     (prop,) = p.proposals
     assert prop.current == "0.35" and prop.proposed == "0.5"
-    assert prop.restarts == "deploy/weirvern-worker"
+    assert prop.restarts == ("deploy/weirvern-worker",)
     assert prop.blast, "the proposal does not state what applying it will interrupt"
+    assert p.restart_targets == ["deploy/weirvern-worker"]
+
+
+def test_the_siphon_mode_change_restarts_BOTH_the_sensor_and_the_worker():
+    """WEIR-1's fix, pinned at the mapping layer: SENSOR_MODE must reach the capture
+    DaemonSet (which states the mode and runs the sysctl init container) AND the
+    worker (which supervises the intercept). Restarting only one of the two was the
+    shape where the config said 'siphon' while nothing ran an intercept."""
+    p = cc.plan({"SENSOR_MODE": "siphon"}, {"SENSOR_MODE": "loch"})
+    assert p.restart_targets == ["ds/zeek", "deploy/weirvern-worker"]
+
+
+def test_the_intercept_plan_keys_restart_the_worker_which_reads_them():
+    """The intercept plan is read by the WORKER's supervisor, not the sensor. An
+    earlier mapping restarted ds/zeek for these -- a restart that applied nothing."""
+    p = cc.plan({"INTERCEPT_TARGETS": "198.51.100.10",
+                 "INTERCEPT_SEGMENT": "198.51.100.0/24"}, {})
     assert p.restart_targets == ["deploy/weirvern-worker"]
 
 
