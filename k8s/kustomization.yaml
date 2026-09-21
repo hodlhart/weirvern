@@ -109,4 +109,4 @@ images:
   # A roll-forward must change THIS value, not the live object:
   #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.4.3
   - name: weirvern-worker
-    newTag: "0.6.5"
+    newTag: "0.6.6"

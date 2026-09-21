@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased — the Settings tab becomes a real setup surface
+
+Every editable setting renders as the control that changes it, and every setting — editable or
+not — carries a "?" with a plain-language explanation. The request was literal ("toggles or
+buttons or drop downs… question mark icon with an explanation… setup should be easy"), and the
+implementation takes the parts of it that are testable properties rather than styling.
+
+### Changed — controls, chosen per key, bounded by the write path's own rules
+
+The Settings tab rendered every editable value as a free-text box: the operator typed a value,
+and the first honest answer about whether it was legal came back from the server on Apply. The
+fix is a single registry (`cluster_config.SETTING_CONTROLS`) that says which control each key
+renders as:
+
+- **Toggles** for booleans, with the state stated in words beside the box — for the Pushover
+  switch the difference between "checked means enabled, right?" and a wrong guess is alerts
+  that never send. The toggle normalises across every spelling the configuration actually
+  carries (`enabled`/`disabled` from the settings payload, `1`/`on`/`yes` from a hand-edited
+  ConfigMap), including for the changed-or-not comparison, so flipping a switch back to its
+  running state un-stages it instead of leaving a phantom change.
+- **Dropdowns** for closed sets (sensor mode, reverse-DNS mode) carrying exactly the values
+  the write path accepts; if the running value is none of them — a hand-edited ConfigMap — it
+  is spliced into the list so the control shows reality rather than a different value.
+- **Number inputs** with the validator's own bounds and step, and the range printed beside
+  them. The bounds are not a second copy: `NUMERIC_RANGES` feeds both the control and
+  `validate()`, and a test drives the real validator at both endpoints and just outside them.
+- **Text** remains a per-key decision for the genuinely free-text keys (interface names,
+  addresses, CIDR lists) — not a fallback for a forgotten spec, which a test enforces: every
+  editable key must have an explicit control, so nothing can silently regress to a text box.
+
+### Added — an explanation on every row
+
+A "?" on every setting that opens a paragraph under it: what the value does, its default, and
+what changing it costs. Written for someone who has just deployed Weirvern and is reading the
+panel top to bottom, because a settings page that shows a value without explaining it forces
+the reader into the source — which is the opposite of "setup should be easy". Read-only rows
+carry the help too: an unexplained value gets misconfigured whether or not it is editable.
+
+### Fixed — two defects the DOM harness caught, not review
+
+- `el()` applies attributes via `attrs` → `setAttribute`, and a bare `type:` option is silently
+  ignored. The first version of the number and toggle controls passed `type` at the top level
+  and rendered as text inputs; the harness's check for `type === "number"` failed and found it.
+  (The old text input passed `type: "text"` the same wrong way and looked correct only because
+  text is the default.)
+- The harness's stub payload had no `controls`, and every new control fell back to text while
+  every server-side test stayed green — the same shape of gap the harness exists to close, this
+  time caught by it.
+
+### Fixed — four latent gate failures, found by running the gate
+
+`scripts/gate.sh` had not been run on this branch; it would have caught these and the same
+failures would have surfaced in CI:
+
+- `scripts/eval_detection.py`: an unused import and a `try/except/pass` (ruff).
+- `weirvern/admin/soc.py`: `alert_audit` summed a value the type checker saw as `object`; the
+  accumulation now happens where the int is actually typed (mypy).
+- `scripts/audit_schema.py`: `review_state` was reported as a phantom reference because the
+  audit only knew SQL aliases — it now also counts row keys **produced in Python**
+  (`row["x"] = ...`), symmetric with how it finds readers.
+- `scripts/verify_liveness.sh`: defaulted to an absolute path from the original author's
+  machine; it resolves beside itself now, so the liveness proof runs anywhere.
+
 ## Unreleased — the audit fixes: the review loop, the near-miss surface, and the weir safety gaps
 
 A fresh audit of the running system, fixed finding by finding. The theme running through all of
