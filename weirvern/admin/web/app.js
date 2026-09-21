@@ -206,6 +206,117 @@ async function postJSON(path, body) {
  */
 const STAGE = { changes: {}, plan: null };
 
+/* ── setting controls ─────────────────────────────────────────────────────────
+ *
+ * EVERY EDITABLE SETTING RENDERS AS ITS NATURAL CONTROL -- a toggle for on/off, a dropdown for a
+ * choice, a constrained number input for a number -- instead of a free-text box. The operator
+ * picks a value rather than typing one, so the two failure modes a text box invites both
+ * disappear: a typo that the server rejects only after Apply, and a value whose legal range
+ * was never visible in the first place.
+ *
+ * The control spec (kind, bounds, options) comes from the SERVER (`controls` on the settings
+ * payload), derived from the same table `validate()` enforces -- so what the control permits and
+ * what the write path accepts cannot drift apart. The JS never decides what is legal; it only
+ * renders the bounds the server stated.
+ *
+ * `text` remains for the genuinely free-text keys (interface names, addresses, CIDR lists) --
+ * it is a deliberate per-key choice in the registry, not a fallback for missing specs.
+ */
+
+/** One editable setting rendered as its natural control. Stages on change; never writes. */
+function settingControl(row, shown, spec) {
+  const key = row.key;
+  const stage = (v) => stageChange(key, v, String(row.value));
+  const s = spec || { control: "text" };
+
+  if (s.control === "toggle") {
+    // A BOOLEAN AS A TOGGLE, not a text field reading "true"/"false".
+    //
+    // The running value arrives in whichever spelling its owner uses: the settings payload
+    // renders booleans as "enabled"/"disabled", a hand-edited ConfigMap may say "1"/"on", and
+    // the validator accepts true/false/1/0/yes/no. They all MEAN the same switch, so the toggle
+    // normalises on read and stages the canonical true/false the write path accepts -- including
+    // for the comparison that decides whether anything was actually changed, so flipping a
+    // switch back to its running state un-stages it instead of leaving a phantom change.
+    const canon = (v) => {
+      const t = String(v).toLowerCase();
+      if (["true", "1", "yes", "on", "enabled"].includes(t)) return "true";
+      if (["false", "0", "no", "off", "disabled"].includes(t)) return "false";
+      return String(v);
+    };
+    const on = canon(shown) === "true";
+    // The state word beside the box: "checked means enabled, right?" must not be a guess, so the
+    // switch says on/off in words and the word follows the box.
+    const stateWord = el("span", { class: "setting-toggle-state", text: on ? "on" : "off" });
+    const box = el("input", {
+      class: "setting-toggle",
+      attrs: { type: "checkbox", "data-key": key },
+      on: { change: (ev) => {
+        const now = ev.target.checked;
+        stateWord.textContent = now ? "on" : "off";
+        stageChange(key, now ? "true" : "false", canon(row.value));
+      } },
+    });
+    box.checked = on;
+    return el("span", { class: "setting-ctl-group" }, [
+      el("label", { class: "setting-toggle-label" }, [box, stateWord]),
+    ]);
+  }
+
+  if (s.control === "select") {
+    // A DROPDOWN, with the current value selected. If the running value is not among the
+    // options (a hand-edited ConfigMap), it is added so the control shows reality instead of
+    // silently displaying a different value than what is running.
+    const opts = (s.options || []).slice();
+    if (shown !== "" && !opts.includes(String(shown))) opts.push(String(shown));
+    const sel = el("select", {
+      class: "setting-select",
+      attrs: { "data-key": key },
+      on: { change: (ev) => stage(ev.target.value) },
+    });
+    for (const o of opts) {
+      const opt = el("option", { value: o, text: o });
+      if (String(shown) === o) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+
+  if (s.control === "number") {
+    // A NUMBER INPUT with the server's own bounds and step. min/max mean the browser refuses
+    // most bad values before Apply; the server still validates (it must), and the hint states
+    // the range so the constraint is visible rather than enforced-by-surprise.
+    //
+    // `type` rides in attrs: `el()` applies attrs via setAttribute, and a bare `type:` option
+    // is silently ignored -- the input would default to text and the control would be the thing
+    // this revision exists to remove. (The old text input passed `type: "text"` the same way and
+    // looked correct only because "text" is the default.)
+    const input = el("input", {
+      class: "setting-input setting-number", value: shown,
+      attrs: { type: "number", "data-key": key, inputmode: "decimal", spellcheck: "false",
+               autocomplete: "off" },
+      on: { input: (ev) => stage(ev.target.value) },
+    });
+    if (s.min !== undefined) input.setAttribute("min", String(s.min));
+    if (s.max !== undefined) input.setAttribute("max", String(s.max));
+    if (s.step !== undefined) input.setAttribute("step", String(s.step));
+    const range = (s.min !== undefined && s.max !== undefined)
+      ? `${s.min}–${s.max}${s.unit ? " " + s.unit : ""}` : "";
+    return el("span", { class: "setting-ctl-group" }, [
+      input,
+      range ? el("span", { class: "setting-unit", text: range }) : null,
+    ]);
+  }
+
+  // text -- the deliberate free-text keys. data-key kept so the DOM harness and any other
+  // selector can find it by key regardless of control kind.
+  return el("input", {
+    class: "setting-input", value: shown,
+    attrs: { type: "text", "data-key": key, spellcheck: "false", autocomplete: "off" },
+    on: { input: (ev) => stage(ev.target.value) },
+  });
+}
+
 function stageChange(key, value, original) {
   // A new edit supersedes the previous apply's message: leaving a stale "saved" line next to a
   // fresh staged change would claim a state that no longer holds.
@@ -409,31 +520,48 @@ async function loadSettings() {
       const staged = STAGE.changes[r.key];
       const shown = staged !== undefined ? staged : String(r.value);
 
-      let valueNode;
-      if (isEditable) {
-        valueNode = el("input", {
-          class: "setting-input", type: "text", value: shown,
-          attrs: { "data-key": r.key, spellcheck: "false", autocomplete: "off" },
-          on: { input: (ev) => stageChange(r.key, ev.target.value, String(r.value)) },
-        });
-      } else {
-        valueNode = el("span", {
-          class: "setting-val" + (r.secret ? " secret" : ""),
-          // A secret is visibly marked so the reader knows the blank is deliberate.
-          text: String(r.value),
-          title: r.secret
-            ? "reported as set/not-set only; secrets are never editable from this page"
-            : "",
-        });
-      }
+      const valueNode = isEditable
+        ? settingControl(r, shown, (data.controls || {})[r.key])
+        : el("span", {
+            class: "setting-val" + (r.secret ? " secret" : ""),
+            // A secret is visibly marked so the reader knows the blank is deliberate.
+            text: String(r.value),
+            title: r.secret
+              ? "reported as set/not-set only; secrets are never editable from this page"
+              : "",
+          });
 
-      host.appendChild(el("div", { class: "setting" + (staged !== undefined ? " staged" : "") }, [
+      // THE "?" IS ON EVERY ROW, editable or not. A value whose meaning has to be guessed is a
+      // value that gets misconfigured, and the explanation is where an operator new to the
+      // product learns what a setting does without reading the source.
+      const help = el("div", {
+        class: "setting-help hidden",
+        text: r.help || "No explanation is recorded for this setting.",
+      });
+      const helpBtn = el("button", {
+        class: "setting-help-btn", text: "?",
+        attrs: { type: "button", "aria-label": `explain ${r.label}`,
+                 "aria-expanded": "false", title: "what this setting does" },
+        on: { click: (ev) => {
+          // stopPropagation so a click on "?" can never be read as a click on the row.
+          ev.stopPropagation();
+          const nowHidden = help.classList.toggle("hidden");
+          helpBtn.setAttribute("aria-expanded", nowHidden ? "false" : "true");
+          helpBtn.classList.toggle("open", !nowHidden);
+        } },
+      });
+
+      host.appendChild(el("div", {
+        class: "setting" + (staged !== undefined ? " staged" : ""),
+        attrs: { "data-key": r.key },
+      }, [
         el("span", { class: "setting-key", title: r.key }, [
           el("span", { text: r.label }),
           srcTag ? el("span", { class: "setting-src", text: srcTag }) : null,
           isEditable ? null : el("span", { class: "setting-src", text: "read-only" }),
         ]),
-        valueNode,
+        el("span", { class: "setting-ctl" }, [valueNode, helpBtn]),
+        help,
       ]));
     }
     renderStage();

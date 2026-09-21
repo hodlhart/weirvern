@@ -183,6 +183,43 @@ _GUARDS: dict[str, tuple[str, ...]] = {
     "DETECT_INTERVAL_S": ("alerts are delayed by up to this interval",),
 }
 
+# NUMERIC bounds for every editable numeric key: (low, high, what, step). `validate()` enforces
+# the bounds; the Settings tab uses `step` for its number inputs. ONE definition, so the control
+# the operator manipulates and the rule the write path enforces cannot disagree.
+NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
+    "BASE_THRESHOLD": (0.0, 1.0, "a score fraction", 0.01),
+    "MIN_AGREEMENT": (0.0, 1.0, "a fraction of models", 0.01),
+    "STRONG_SIGNAL": (0.0, 1.0, "a score fraction", 0.01),
+    "DETECT_INTERVAL_S": (30, 86400, "seconds", 1),
+    "RETRAIN_EVERY_H": (1, 720, "hours", 1),
+    "RETRAIN_WINDOW_H": (1, 8760, "hours", 1),
+    "PUSHOVER_COOLDOWN_S": (0, 86400, "seconds", 1),
+    "PUSHOVER_MAX_PER_HOUR": (0, 1000, "alerts per hour", 1),
+}
+
+# HOW THE SETTINGS TAB RENDERS EACH EDITABLE KEY: its natural control, so an operator CHOOSES a
+# value instead of typing one and cannot type a value the write path will reject.
+#
+# EVERY editable key has an explicit entry, ON PURPOSE (a test enforces it): without one, a new
+# editable key would silently fall back to a raw text box -- which is the "setup should be easy"
+# failure this registry exists to remove. `text` is a deliberate choice for the genuinely
+# free-text keys (interface names, addresses, CIDR lists), not a fallback.
+SETTING_CONTROLS: dict[str, dict] = {
+    **{k: {"control": "number", "min": lo, "max": hi, "step": step, "unit": what}
+       for k, (lo, hi, what, step) in NUMERIC_RANGES.items()},
+    "PUSHOVER_ENABLED": {"control": "toggle"},
+    "SENSOR_MODE": {"control": "select", "options": ["loch", "weir"]},
+    "WEIRVERN_REVERSE_DNS": {"control": "select", "options": ["private", "all", "off"]},
+    "ZEEK_IFACE": {"control": "text"},
+    "MGMT_IFACE": {"control": "text"},
+    "INTERCEPT_TARGETS": {"control": "text"},
+    "INTERCEPT_SEGMENT": {"control": "text"},
+    "INTERCEPT_ADDR": {"control": "text"},
+    "INTERCEPT_GATEWAY": {"control": "text"},
+    "WEIRVERN_EXCLUDE_CIDRS": {"control": "text"},
+    "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": {"control": "text"},
+}
+
 
 def validate(key: str, value: str) -> str:
     """Check one proposed value, returning a warning ("" when there is nothing to say).
@@ -222,18 +259,9 @@ def validate(key: str, value: str) -> str:
             return f"'{raw}' does not look like a network interface name"
         return ""
 
-    numeric = {
-        "BASE_THRESHOLD": (0.0, 1.0, "a score fraction"),
-        "MIN_AGREEMENT": (0.0, 1.0, "a fraction of models"),
-        "STRONG_SIGNAL": (0.0, 1.0, "a score fraction"),
-        "DETECT_INTERVAL_S": (30, 86400, "seconds"),
-        "RETRAIN_EVERY_H": (1, 720, "hours"),
-        "RETRAIN_WINDOW_H": (1, 8760, "hours"),
-        "PUSHOVER_COOLDOWN_S": (0, 86400, "seconds"),
-        "PUSHOVER_MAX_PER_HOUR": (0, 1000, "alerts per hour"),
-    }
+    numeric = NUMERIC_RANGES
     if key in numeric:
-        lo, hi, what = numeric[key]
+        lo, hi, what, _step = numeric[key]
         try:
             number = float(raw)
         except ValueError:

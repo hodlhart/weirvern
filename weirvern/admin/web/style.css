@@ -328,12 +328,13 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .graph .edge-hit:hover { stroke: var(--accent); opacity: 0.22; }
 
 /* ── settings rows ──────────────────────────────────────────────────────────
- * A key/value list rather than a form: the page is read-only, and a form control implies an
- * editable field. Values are monospaced because they are configuration, not prose.
+ * A key/value list where EVERY row carries its natural control and a "?" help. The row wraps so
+ * the explanation lands on its own full-width line under the value, instead of squeezing into
+ * whatever space the flexbox has left.
  */
 .grid-inline { display: flex; flex-direction: column; gap: 2px; }
 .setting { display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
-  padding: 5px 0; border-bottom: 1px solid var(--border); }
+  padding: 5px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .setting:last-child { border-bottom: none; }
 .setting-key { color: var(--muted); font-size: 12px; }
 .setting-val { font-family: var(--mono); font-size: 13px; color: var(--fg);
@@ -345,6 +346,25 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .setting-src { margin-left: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
   color: var(--muted); opacity: .7; }
 
+/* The control cell: the widget plus its "?". Aligned right so the column of controls reads as
+ * one edge, which is what makes a list of settings scannable. */
+.setting-ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.setting-ctl-group { display: flex; align-items: center; gap: 8px; }
+/* The range hint beside a number input: visible so the legal range is never a surprise. */
+.setting-unit { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* THE "?" BUTTON. Round, quiet, and identical on every row -- it is a discovery affordance, not
+ * a control competing with the value beside it. `open` marks the expanded state. */
+.setting-help-btn { width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%;
+  font-size: 11px; line-height: 1; color: var(--muted); background: none;
+  border: 1px solid var(--border); cursor: pointer; font-family: var(--mono); }
+.setting-help-btn:hover { color: var(--fg); border-color: var(--accent); }
+.setting-help-btn.open { color: var(--accent); border-color: var(--accent); }
+/* The explanation itself: full width under the row, readable prose, visually distinct from
+ * values (not monospace) so it cannot be mistaken for data. */
+.setting-help { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--muted);
+  padding: 6px 0 4px 0; max-width: 720px; }
+
 /* ── editable settings and staged changes ──────────────────────────────────
  * An editable row looks different from a read-only one ON PURPOSE: a field that silently accepts
  * nothing is worse than no field, and the operator needs to see at a glance which values this page
@@ -354,8 +374,27 @@ td.link:hover, .link:hover { text-decoration: underline; }
   color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
   min-width: 180px; text-align: right; }
 .setting-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+/* A number control is narrower than a text one: its content is a number, and a wide empty box
+ * reads as "something is missing". */
+.setting-number { min-width: 110px; }
+/* A dropdown sized to its content family -- wide enough for the longest known option, not the
+ * full row. */
+.setting-select { font-family: var(--mono); font-size: 13px; background: var(--card);
+  color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+  min-width: 120px; text-align: right; }
+.setting-select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+/* THE STATE WORD beside a toggle: "on"/"off" in words, because a bare checkbox leaves the
+ * question "checked means enabled, right?" to be guessed -- and for the Pushover switch the
+ * guess is the difference between logging and sending. */
+.setting-toggle-label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.setting-toggle { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.setting-toggle-state { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 /* A staged row is marked so it is obvious the shown value is NOT what is running yet. */
-.setting.staged .setting-input { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.setting.staged .setting-input,
+.setting.staged .setting-select,
+.setting.staged .setting-toggle { border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent); }
+.setting.staged .setting-toggle { box-shadow: 0 0 0 1px var(--accent); }
 
 .stage-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; flex-wrap: wrap;
   border-bottom: 1px solid var(--border); }

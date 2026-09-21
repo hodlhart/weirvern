@@ -8,8 +8,9 @@
 # the SHIPPING logic rather than a paraphrase of it.
 set -u
 
-SRC="${1:-/home/hart/Documents/flowforge/scripts/weir_stress_test.sh}"
+SRC="${1:-$(dirname "$0")/weir_stress_test.sh}"
 BLOCK=$(mktemp)
+[ -f "$SRC" ] || { echo "  FAIL: $SRC does not exist"; exit 1; }
 sed -n '/# Is the intercept still alive? THREE STATES/,/^  esac/p' "$SRC" > "$BLOCK"
 [ -s "$BLOCK" ] || { echo "  FAIL: could not extract the liveness block"; exit 1; }
 echo "  extracted $(wc -l < "$BLOCK") lines of the real block"

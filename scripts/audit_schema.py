@@ -221,6 +221,14 @@ def main() -> int:
     for _name, (_f, cols) in tbl.items():
         produced |= set(cols)
     produced |= set(re.findall(r"\bAS (\w+)", blob))
+    # ROW KEYS PRODUCED IN PYTHON. Not every key the code reads comes from SQL: `attach_reviews`
+    # sets `row["review_state"]` and friends on rows it was handed, and the reader then does
+    # `row.get("review_state")`. Without this rule the audit reported review_state as a phantom
+    # reference -- a false positive that says "the code reads a name nothing produces" about a
+    # name the code itself produces, which is exactly the kind of unverified finding that gets a
+    # real one ignored. The pattern is deliberately SYMMETRIC with the reader scan below (same
+    # row-like variable names), so a key cannot be produced by one convention and read by another.
+    produced |= set(re.findall(r'(?:row|r|f|flow)\[\s*"([^"]+)"\s*\]\s*=', blob))
     # Feature-list literals are produced by construction.
     for fn in ("FEATURES", "ZEEK_FEATURES", "ZEEK_DBSCAN_FEATURES", "EXPLAINED_MEASUREMENTS"):
         m = re.search(rf"^{fn}\s*=\s*[\[\(](.*?)[\]\)]", blob, re.S | re.M)

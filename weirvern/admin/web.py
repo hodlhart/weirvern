@@ -825,7 +825,11 @@ def _build_handler(ctx: GuiContext):
             # The editable keys, so the UI offers exactly what the server will accept -- derived
             # here rather than duplicated in JavaScript.
             try:
-                from weirvern.admin.cluster_config import EDITABLE_KEYS, to_row_key
+                from weirvern.admin.cluster_config import (
+                    EDITABLE_KEYS,
+                    SETTING_CONTROLS,
+                    to_row_key,
+                )
 
                 # LOWER-CASED TO MATCH THE ROW KEYS. EDITABLE_KEYS are the ConfigMap's own
                 # key names (BASE_THRESHOLD, ...) because that is what an apply writes; the
@@ -836,8 +840,15 @@ def _build_handler(ctx: GuiContext):
                 # server would have accepted a POST. Normalise here, at the boundary, so the
                 # two vocabularies only ever meet in one place.
                 payload["editable_keys"] = [to_row_key(k) for k in EDITABLE_KEYS]
+                # The CONTROL each editable key renders as (toggle / select / number / text),
+                # in the ROW vocabulary, with numeric bounds and select options. The browser
+                # uses this to render the natural control instead of a free-text box, and the
+                # bounds come from the same table `validate()` enforces -- the control and the
+                # rule cannot disagree because they are one table.
+                payload["controls"] = {to_row_key(k): dict(v) for k, v in SETTING_CONTROLS.items()}
             except Exception:  # noqa: BLE001
                 payload["editable_keys"] = []
+                payload["controls"] = {}
 
             self._json(payload)
 
