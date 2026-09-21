@@ -319,9 +319,27 @@ async function doLogout() {
 }
 
 /** Change this account's own password. The server revokes every session for it, so the tab
- *  returns to the sign-in gate and proves the change by signing in again. */
+ *  returns to the sign-in gate and proves the change by signing in again.
+ *
+ *  A 401 here means the session ended (revoked, expired, or a restart) between the gate being
+ *  drawn and the form being submitted -- the account is NOT signed in and saying only "sign in
+ *  first" leaves the operator staring at a form that cannot work. Clear the dead session and
+ *  put the sign-in gate back up, which is what "sign in first" actually asks for.
+ */
 async function changePassword(current, next) {
-  const res = await postJSON("/api/password", { current, new: next });
+  let res;
+  try {
+    res = await postJSON("/api/password", { current, new: next });
+  } catch (err) {
+    if (err && err.status === 401) {
+      setSession("");
+      Object.assign(AUTH, { authenticated: false, username: "", role: "", must_change: false,
+                            via: "" });
+      refreshChrome();
+      showGate("auth", "Your session has ended. Sign in again, then change the password.");
+    }
+    throw err;
+  }
   setSession("");
   Object.assign(AUTH, { authenticated: false, username: "", role: "", must_change: false,
                         via: "" });

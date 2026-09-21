@@ -45,7 +45,16 @@ function check(label, ok, detail) {
 }
 
 async function main() {
-  const html = fs.readFileSync(path.join(WEB, "index.html"), "utf8");
+  // THE REAL STYLESHEET, INJECTED. jsdom does not fetch the <link> (external resources are off
+  // here), and the checks on the gates below read getComputedStyle -- the cascade, not class
+  // names -- because a class-name assertion cannot see a cascade collision: `.gate { display:
+  // flex }` came after `.hidden { display: none }` at equal specificity, every "hidden" gate
+  // stayed painted, and the forced-change form covered an unreachable sign-in form (reported
+  // from the box: "it says log in first. i cant change the password"). Injecting the real
+  // stylesheet is what makes the computed-style checks measure the shipping CSS.
+  const css = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
+  const html = fs.readFileSync(path.join(WEB, "index.html"), "utf8")
+    .replace("</head>", `<style>${css}</style></head>`);
 
   // Capture page errors: a TypeError inside a render function is invisible on screen -- the
   // panel just stays empty -- so it has to be collected here.
@@ -336,14 +345,16 @@ async function main() {
                            { ok: true, session: "test-session-token",
                              username: sent.username || "admin", role: "admin",
                              must_change: false })
-                        : { ok: false, error: "the username or password is not correct" })
+                        : { __http: 401, ok: false, error: "the username or password is not correct" })
                   : u.includes("/api/logout")
                     ? (Object.assign(SESSION_STUB, { authenticated: false, username: "",
                         role: "", must_change: false, via: "" }), { ok: true })
                   : u.includes("/api/password")
-                    ? (Object.assign(SESSION_STUB, { authenticated: false, username: "",
-                        role: "", must_change: false, via: "" }),
-                       { ok: true, signed_out: true, note: "password changed; sign in again" })
+                    ? (SESSION_STUB.authenticated
+                        ? (Object.assign(SESSION_STUB, { authenticated: false, username: "",
+                            role: "", must_change: false, via: "" }),
+                           { ok: true, signed_out: true, note: "password changed; sign in again" })
+                        : { __http: 401, ok: false, error: "sign in first" })
                   : u.includes("/api/users/create")
                     ? { ok: true, user: { username: sent.username || "newuser", role: sent.role || "viewer" } }
                   : u.includes("/api/users/reset")
@@ -359,7 +370,14 @@ async function main() {
                   : u.includes("/api/review")
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
                   : { ok: false, error: "no write route at " + u };
-      return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => reply });
+      // `__http` lets one reply carry a real status code: the failed sign-in and the dead-session
+      // password refusal are 401s on the real server, and the client decides whether to throw by
+      // `resp.ok` -- a stub answering 200-with-{ok:false} exercises a different branch than the
+      // one the operator runs.
+      const httpStatus = (reply && reply.__http) || 200;
+      return Promise.resolve({ ok: httpStatus === 200, status: httpStatus,
+                               statusText: httpStatus === 200 ? "OK" : "Refused",
+                               json: async () => reply });
     }
     for (const [match, payload] of ROUTES) {
       if (u.includes(match)) {
@@ -1249,6 +1267,16 @@ async function main() {
   check("the sign-in form is a password input, not plain text",
         doc.getElementById("gate-pass").type === "password");
 
+  // COMPUTED, NOT MERELY CLASSED. `classList.contains("hidden")` was TRUE for the whole
+  // outage: `.gate { display: flex }` sat after `.hidden { display: none }` at equal
+  // specificity, source order won, and both gates stayed painted -- the forced-change form
+  // covered the sign-in form and the dashboard was unreachable. Only the COMPUTED display
+  // decides what an operator sees, so every gate-state assertion below reads it.
+  const gateDisplay = (id) => window.getComputedStyle(doc.getElementById(id)).display;
+  check("no gate is PAINTED in the pre-accounts posture (computed style, not class names)",
+        gateDisplay("auth-gate") === "none" && gateDisplay("pw-gate") === "none",
+        `auth=${gateDisplay("auth-gate")} pw=${gateDisplay("pw-gate")}`);
+
   // 2. A FAILED SIGN-IN shows the server's reason -- and does NOT say which half was wrong.
   let loginErr = null;
   try { await H.doLogin("admin", "wrong-password"); } catch (e) { loginErr = e; }
@@ -1268,6 +1296,9 @@ async function main() {
         doc.getElementById("user-chip").textContent);
   check("the auth gate is hidden after signing in",
         doc.getElementById("auth-gate").classList.contains("hidden"));
+  check("no gate is painted once signed in (computed)",
+        gateDisplay("auth-gate") === "none" && gateDisplay("pw-gate") === "none",
+        `auth=${gateDisplay("auth-gate")} pw=${gateDisplay("pw-gate")}`);
   check("Sign out is offered to a signed-in account",
         !doc.getElementById("sign-out").classList.contains("hidden"));
 
@@ -1335,6 +1366,12 @@ async function main() {
         "pw gate hidden while must_change is set");
   check("the forced gate is not the sign-in gate (the account is signed in)",
         doc.getElementById("auth-gate").classList.contains("hidden"));
+  // THE EXACT COLLISION, asserted the only way it can be: the forced gate must be PAINTED
+  // (flex) while the sign-in gate, carrying the same `hidden` class and the same `.gate`
+  // display rule, must compute to none. Before the fix this read flex/flex.
+  check("must_change PAINTS the forced gate and leaves the sign-in gate unpainted (computed)",
+        gateDisplay("pw-gate") === "flex" && gateDisplay("auth-gate") === "none",
+        `pw=${gateDisplay("pw-gate")} auth=${gateDisplay("auth-gate")}`);
 
   // The change POSTs the current and new passwords, and returns to the sign-in gate.
   const pwBefore = POSTED.length;
@@ -1350,7 +1387,30 @@ async function main() {
   }
   check("after changing the password the tab returns to the sign-in gate",
         !doc.getElementById("auth-gate").classList.contains("hidden"));
+  check("after the change the sign-in gate is PAINTED and the forced gate is not (computed)",
+        gateDisplay("auth-gate") === "flex" && gateDisplay("pw-gate") === "none",
+        `auth=${gateDisplay("auth-gate")} pw=${gateDisplay("pw-gate")}`);
   SESSION_STUB.must_change = false;
+
+  // 6b. A DEAD SESSION ON THE PASSWORD FORM RETURNS TO SIGN-IN. The box report that motivated
+  //     this: the password form was submitted without a session, the server answered "sign in
+  //     first", and the UI dead-ended on a form that could not work. The client must clear the
+  //     dead state and put up the sign-in gate with a note that says what to do.
+  SESSION_STUB.accounts = true;
+  SESSION_STUB.authenticated = false;
+  H.setSession("stale-session-value");
+  await H.boot();
+  H.showGate("pw");  // the operator is looking at the forced-change form
+  let deadErr = null;
+  try { await H.changePassword("whatever", "a-new-password-1"); } catch (e) { deadErr = e; }
+  check("a password change with a dead session is refused", !!deadErr);
+  check("the dead session is cleared rather than left to be retried", H.getSession() === "",
+        `session=${H.getSession()}`);
+  check("the sign-in gate comes back up with a pointer, not a dead end",
+        gateDisplay("auth-gate") === "flex" && gateDisplay("pw-gate") === "none"
+        && /sign in again/i.test(doc.getElementById("gate-note").textContent),
+        `auth=${gateDisplay("auth-gate")} note=${doc.getElementById("gate-note").textContent}`);
+  SESSION_STUB.authenticated = true;
 
   // 7. SIGNING OUT clears the session and arms the gate again.
   SESSION_STUB.accounts = true;

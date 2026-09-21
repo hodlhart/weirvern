@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import os
 import re
 import sys
@@ -867,6 +868,15 @@ def cmd_gui(args: argparse.Namespace) -> int:
     """
     from weirvern.admin import web
     from weirvern.config import get_settings
+
+    # AUDIT LINES AT INFO ARE THE POINT. Without this, Python's last-resort handler prints only
+    # WARNING and above -- so a deployment's log showed the bootstrap password and rejected
+    # sign-ins but NOT one successful sign-in, password change, role change or account
+    # creation. Diagnosing "I can't sign in" needs exactly those lines, and the worker and
+    # ingester already configure the same level: a service that logs its failures but not its
+    # successes cannot be read.
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     settings = get_settings()
     host = args.host or os.environ.get("GUI_HOST", web.DEFAULT_HOST)
