@@ -1,28 +1,40 @@
-"""The web GUI: a read-only HTTP server over the same data the TUI shows.
+"""The web GUI: an HTTP server over the same data the TUI shows.
 
 WHY THE STANDARD LIBRARY, DELIBERATELY:
 
 No new runtime dependency. FastAPI + uvicorn is roughly 15 MB in the image for
-five read-only routes, and this project has repeatedly been bitten by deployment
+a surface this size, and this project has repeatedly been bitten by deployment
 friction (a missing extra broke CI once already, and the worker image is meant to
 stay small enough to pull quickly on a homelab). `http.server` is in every Python
 installation, so the GUI works with no extra install step at all — which matters
 more than idiom for a tool that has to be deployable by someone who has never seen
 it before.
 
-This is defensible specifically BECAUSE the surface is read-only and small. If this
-ever grows request bodies, auth, or websockets, that is the point to move to a real
-framework, and `web_api.py` is already framework-agnostic so only this file changes.
+This stayed defensible as the surface grew: request bodies are bounded, routes are
+explicit, and the write and account gates live in one class rather than in a
+framework's middleware. If this ever grows websockets or streaming, that is the
+point to move to a real framework, and `web_api.py` is already framework-agnostic
+so only this file changes.
 
-WHY READ-ONLY, AND WHY THAT IS A SECURITY DECISION:
+WHAT THIS SERVER IS NOW, AND WHAT IT IS NOT:
 
-There is no code path from an HTTP request to a mutating cluster operation. Start,
-stop and apply stay in the CLI and TUI, which the operator runs knowingly. That is
-what makes it acceptable to bind this to a LAN address at all: an unauthenticated
-dashboard that cannot change anything is a much smaller risk than one that can. If
-lifecycle buttons are ever added, they need authentication FIRST — this server has
-none, and adding a button without it would silently expose cluster control to
-anyone who can reach the port.
+It began read-only, and that was what made binding it to a LAN address acceptable.
+It now writes two things — the deployment configuration (settings) and accounts —
+under a signed-in admin account or the deployment operator token, and READS require
+a signed-in account (either role) whenever accounts are provisioned. There is
+still no code path from an HTTP request to a LIFECYCLE operation: start, stop and
+apply stay in the CLI and TUI. So the invariant worth stating is narrower and
+tested: every mutating route goes through one admin gate, and the only open routes
+are the liveness probe, the session probe the UI needs before it can show a login
+form, and the login door itself.
+
+WHY READS REQUIRE SIGN-IN. Flow data names hosts and services, which is the map of
+a network. "A viewer may read" only means anything if reading is attributable, so
+the gate exists once accounts do. When accounts are NOT provisioned (a workstation
+running `weirvern gui` against a remote database, or a fresh deployment whose
+bootstrap could not reach the cluster), the GUI falls back to its pre-accounts
+posture — open reads, token-gated writes — because demanding a sign-in nobody can
+satisfy would lock the operator out of their own dashboard.
 
 BINDING: defaults to 127.0.0.1 so that starting the GUI on a workstation does not
 unexpectedly publish it. The Kubernetes Deployment sets GUI_HOST=0.0.0.0
@@ -42,15 +54,23 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from weirvern.admin import assets as assets_mod
+from weirvern.admin import gui_auth, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
-from weirvern.admin import web_api
+from weirvern.admin import users as users_mod
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
+
+# GET routes that do not require a signed-in account, and why each is exempt:
+#   /api/healthz — the Kubernetes liveness/readiness probe, which cannot present a header.
+#   /api/session — how the UI learns whether it must show the sign-in gate at all. It returns
+#                  the caller's own auth state and nothing else, so it discloses nothing.
+# Static files stay open too: the login screen is built from them.
+READ_EXEMPT = ("/api/healthz", "/api/session")
 
 # Only these are served from web/. An explicit allow-list rather than a path join,
 # because the latter is a directory-traversal bug waiting to happen (`/../etc/...`)
@@ -93,18 +113,48 @@ class GuiContext:
     """
 
     def __init__(self, connect_factory, settings, backend=None, capabilities=None,
-                 auth=None, config_client=None):
+                 auth=None, config_client=None, user_store=None, sessions=None,
+                 throttle=None, accounts_note=""):
         self.connect_factory = connect_factory
         self.settings = settings
         self.backend = backend
         self.capabilities = capabilities
-        # Whether WRITES are permitted. Reads never consult it, so a monitoring surface
-        # stays usable without a token -- during an incident is exactly when nobody
-        # wants to stop and log in.
+        # The break-glass token gate: whether the deployment operator token can write,
+        # and whether one is configured at all. Checked only when a request presents a
+        # token; account sessions are resolved against `sessions`/`user_store` instead.
         self.auth = auth
         # The ConfigMap client, for the write path. Held rather than constructed per
         # request so a write and a dry run see the same object.
         self.config_client = config_client
+        # The account store, read once at startup then served from memory, so a login
+        # never puts a Kubernetes API call on the hot path.
+        self.user_store = user_store
+        # Sessions and the login throttle. Both in memory; see weirvern/admin/users.py
+        # for why a restart signing everyone out is the right trade.
+        self.sessions = sessions
+        self.throttle = throttle
+        # What the bootstrap did, or why it did not. Reported on /api/session so a
+        # deployment with no accounts SAYS so instead of rejecting every password.
+        self.accounts_note = accounts_note
+
+
+def _accounts_on(ctx) -> bool:
+    """Whether accounts are provisioned, i.e. whether the login gate is armed.
+
+    A module function rather than a ctx method so it works against the duck-typed
+    contexts the tests construct, and so the ONE definition is visible from every
+    call site that depends on it.
+    """
+    store = getattr(ctx, "user_store", None)
+    if store is None:
+        return False
+    try:
+        return bool(store.has_users())
+    except Exception:  # noqa: BLE001
+        # A store that cannot answer is not provisioned: the gate stays off and the
+        # pre-accounts posture applies (open reads, token-gated writes) rather than a
+        # broken store locking everyone out of the dashboard.
+        return False
 
 
 def _build_handler(ctx: GuiContext):
@@ -165,10 +215,28 @@ def _build_handler(ctx: GuiContext):
 
             if path in STATIC_FILES or path == "/":
                 return self._static(parsed.path)
+            # THE READ GATE. Static files stay open (the sign-in screen is built from them and
+            # they carry no data), and so do two API routes: the liveness probe, which cannot
+            # present a header, and the session probe, which is how the UI learns that a gate
+            # is needed at all. Every other API route requires a signed-in account -- or the
+            # break-glass token -- once accounts are provisioned. When they are NOT provisioned
+            # the gate passes everything, which is the pre-accounts posture: a workstation
+            # running `weirvern gui` has no store to sign in against, and locking its operator
+            # out of their own dashboard would be a bug, not a policy.
+            if path not in READ_EXEMPT and not self._require_read():
+                return
             if path == "/api/overview":
                 return self._overview()
             if path == "/api/anomalies":
                 return self._anomalies(query)
+            # Who the caller is, and whether the sign-in gate is armed. Exempt above; returns
+            # the CALLER'S OWN state and nothing about anyone else.
+            if path == "/api/session":
+                return self._session()
+            # Account management. A read route by method, but admin-only by content: the user
+            # list is account data, not monitoring data.
+            if path == "/api/users":
+                return self._users_list()
             if path == "/api/host":
                 return self._host(query)
             if path == "/api/evidence":
@@ -508,23 +576,117 @@ def _build_handler(ctx: GuiContext):
         def _client_addr(self) -> str:
             return self.client_address[0] if self.client_address else ""
 
+        def _identity(self) -> users_mod.Identity | None:
+            """The signed-in account for this request, or None.
+
+            Sessions are checked FIRST and the token never counts as an identity: a token has
+            no username and no password to change, and the Account panel says so rather than
+            offering a form that cannot work. `_token_role` below answers the separate
+            question of whether the break-glass token is presented.
+            """
+            sessions = getattr(ctx, "sessions", None)
+            if sessions is None:
+                return None
+            return sessions.get(gui_auth.session_from_request(self))
+
+        def _token_role(self) -> str:
+            """users_mod.ROLE_ADMIN when this request presents the operator token, else "".
+
+            The PASSIVE form of the token check, for reporting state (the session probe, the
+            settings payload). It records no failures and applies no delay -- those belong to
+            `_authorize`, which is the gate -- so a read that merely *might* carry a token
+            cannot be used to rack up delays against someone else's address.
+            """
+            auth = getattr(ctx, "auth", None)
+            if auth is None or not auth.enabled:
+                return ""
+            presented = gui_auth.token_from_request(self)
+            if presented and auth.check(presented, client=""):
+                return users_mod.ROLE_ADMIN
+            return ""
+
+        def _caller_role(self) -> tuple[str, str]:
+            """(role, via) for this request: ("admin"|"viewer"|"", "session"|"token"|"")."""
+            ident = self._identity()
+            if ident is not None:
+                role = users_mod.ROLE_ADMIN if ident.is_admin else users_mod.ROLE_VIEWER
+                return (role, "session")
+            role = self._token_role()
+            return (role, "token" if role else "")
+
+        def _require_read(self) -> bool:
+            """Whether this request may READ. Sends the refusal itself.
+
+            Open when accounts are not provisioned (see _route); otherwise a signed-in
+            account or the break-glass token is required. A `must_change` account is held at
+            the password gate: it can reach /api/session and the password route, and every
+            other read says why not, so the UI cannot render a dashboard behind the gate.
+            """
+            if not _accounts_on(ctx):
+                return True
+            ident = self._identity()
+            if ident is not None:
+                if ident.must_change:
+                    self._error(403, "a password change is required before using the dashboard")
+                    return False
+                return True
+            if self._token_role():
+                return True
+            self._error(401, "sign in to view this dashboard")
+            return False
+
+        def _require_session(self) -> users_mod.Identity | None:
+            """The signed-in identity, or None with the refusal already sent.
+
+            For the routes every account may use regardless of role -- signing out and
+            changing one's OWN password. Deliberately not satisfiable by the token: the
+            token has no account, so there is no password to change and nothing to sign out
+            of, and pretending otherwise would offer the operator a button that cannot work.
+            """
+            if not _accounts_on(ctx):
+                self._error(403, "this deployment has no accounts provisioned")
+                return None
+            ident = self._identity()
+            if ident is None:
+                self._error(401, "sign in first")
+                return None
+            return ident
+
         def _authorize(self) -> bool:
-            """Whether this request may write. Sends the refusal itself.
+            """Whether this request may WRITE. Sends the refusal itself.
+
+            Two credentials open the write path, both admin-equivalent:
+              * a signed-in admin account session (the normal case), or
+              * the deployment operator token -- break-glass: it recovers a lost admin
+                password and drives automation, and it is why losing every password cannot
+                lock a deployment out of its own configuration.
 
             Returns False having already written the response, so every caller reads the same:
             `if not self._authorize(): return`.
             """
+            ident = self._identity()
+            if ident is not None:
+                if ident.must_change:
+                    self._error(403, "change your password before changing anything else")
+                    return False
+                if ident.is_admin:
+                    return True
+                self._error(403, "this account is a viewer: it can read every view but cannot "
+                                 "change settings or manage accounts. Ask an admin.")
+                return False
             auth = getattr(ctx, "auth", None)
             if auth is None:
                 self._error(503, "write access is not available: the GUI started without an "
                                  "authentication module")
                 return False
             if not auth.enabled:
-                # 403 with the REASON, so a client can say what is missing rather than guessing.
-                self._error(403, auth.reason)
+                # No token configured and no session. When accounts exist, the useful thing to
+                # say is "sign in"; otherwise it is the token's own explanation.
+                if _accounts_on(ctx):
+                    self._error(403, "sign in with an admin account to change settings")
+                else:
+                    self._error(403, auth.reason)
                 return False
-            from weirvern.admin import gui_auth
-
             presented = gui_auth.token_from_request(self)
             addr = self._client_addr()
             if auth.check(presented, client=addr):
@@ -533,8 +695,9 @@ def _build_handler(ctx: GuiContext):
             delay = auth.delay_for(addr)
             if delay:
                 time.sleep(delay)
-            logger.warning("rejected an unauthorised settings write from %s", addr or "unknown")
-            self._error(401, "a valid operator token is required to change settings")
+            logger.warning("rejected an unauthenticated settings write from %s", addr or "unknown")
+            self._error(401, "a valid admin session or operator token is required to change "
+                             "settings")
             return False
 
         def _read_body(self, limit: int = 65536) -> dict:
@@ -576,6 +739,26 @@ def _build_handler(ctx: GuiContext):
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
 
+            # THE SIGN-IN DOOR. The only write route reachable without a session, because it
+            # is how a session is obtained. Its own throttle (per client address) stands in
+            # for the gate.
+            if path == "/api/login":
+                return self._login()
+            if path == "/api/logout":
+                return self._logout()
+            # The password change. Session-gated, not admin-gated: it is how a `must_change`
+            # account -- which every OTHER route refuses -- gets out of the gate.
+            if path == "/api/password":
+                return self._password()
+            # Account management. Admin-gated: creating, promoting and deleting accounts.
+            if path == "/api/users/create":
+                return self._users_create()
+            if path == "/api/users/role":
+                return self._users_role()
+            if path == "/api/users/delete":
+                return self._users_delete()
+            if path == "/api/users/reset":
+                return self._users_reset()
             if path == "/api/settings/plan":
                 return self._settings_plan()
             if path == "/api/settings/apply":
@@ -586,6 +769,271 @@ def _build_handler(ctx: GuiContext):
             if path == "/api/review":
                 return self._review()
             self._error(404, f"no write route at {path}")
+
+        # -- accounts -------------------------------------------------------
+
+        def _session(self) -> None:
+            """Who the caller is; whether the sign-in gate is armed. NEVER anyone else's data.
+
+            Answers for three callers: an anonymous browser deciding whether to show the gate,
+            a signed-in account refreshing its role, and the break-glass token (reported as an
+            admin `via: token` with no username, because that is exactly what it is).
+            """
+            ident = self._identity()
+            armed = _accounts_on(ctx)
+            payload: dict = {
+                "accounts": armed,
+                "note": getattr(ctx, "accounts_note", "") or "",
+            }
+            if ident is not None:
+                payload.update({"authenticated": True, "username": ident.username,
+                                "role": ident.role, "must_change": ident.must_change,
+                                "via": "session"})
+            elif self._token_role():
+                payload.update({"authenticated": True, "username": "", "role": users_mod.ROLE_ADMIN,
+                                "must_change": False, "via": "token"})
+            else:
+                payload.update({"authenticated": False, "username": "", "role": "",
+                                "must_change": False, "via": ""})
+            self._json(payload)
+
+        def _login(self) -> None:
+            """Verify a username and password, and mint a session.
+
+            The response NEVER says which half was wrong: "no such user" and "wrong password"
+            are one message, because distinguishing them enumerates accounts. Timing is
+            equalised the same way (`users.dummy_verify` runs a real scrypt for unknown
+            usernames). A deployment with NO accounts says so plainly instead -- that is a
+            setup fact its operator needs, not an oracle for an attacker.
+            """
+            if not _accounts_on(ctx):
+                note = getattr(ctx, "accounts_note", "") or (
+                    "this deployment has no accounts provisioned"
+                )
+                return self._json({"ok": False, "error": f"cannot sign in: {note}"}, 403)
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            username = str(body.get("username") or "").strip().lower()
+            password = str(body.get("password") or "")
+            addr = self._client_addr()
+            throttle = getattr(ctx, "throttle", None)
+
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            record = store.find(username) if username else None
+            if record is None:
+                # Equalise the cost of a miss with the cost of a wrong password.
+                users_mod.dummy_verify(password)
+                ok = False
+            else:
+                ok = users_mod.verify_password(password, record.hash)
+            if record is None or not ok:
+                if throttle is not None:
+                    throttle.record_failure(addr)
+                    delay = throttle.delay_for(addr)
+                    if delay:
+                        time.sleep(delay)
+                logger.warning("rejected a sign-in for %r from %s",
+                               username or "(empty)", addr or "unknown")
+                return self._json({
+                    "ok": False,
+                    "error": "the username or password is not correct",
+                }, 401)
+            if throttle is not None:
+                throttle.clear(addr)
+            identity = users_mod.Identity(username=record.username, role=record.role,
+                                          must_change=record.must_change)
+            token = ctx.sessions.create(identity)
+            logger.info("signed in %s from %s", record.username, addr or "unknown")
+            self._json({
+                "ok": True, "session": token, "username": identity.username,
+                "role": identity.role, "must_change": identity.must_change,
+            })
+
+        def _logout(self) -> None:
+            """Drop the caller's session.
+
+            A session is REQUIRED, for the same uniformity as every other account route: an
+            audit rule that says "every mutating route presents a session" is one somebody can
+            check at a glance, and an exception has to be re-justified forever. The client-side
+            flow is unaffected -- a tab whose session already expired catches the refusal and
+            clears its own state anyway, which is what signing out does.
+            """
+            ident = self._require_session()
+            if ident is None:
+                return
+            sessions = getattr(ctx, "sessions", None)
+            if sessions is not None:
+                sessions.revoke(gui_auth.session_from_request(self))
+            logger.info("signed out %s", ident.username)
+            self._json({"ok": True})
+
+        def _password(self) -> None:
+            """Change the signed-in account's own password.
+
+            Requires the CURRENT password for two reasons: it stops a stolen session token
+            from locking the owner out of their account, and it makes `must_change` an
+            informed change rather than a form the operator submits blind. Sessions are
+            revoked afterwards -- a password change is the one moment where dropping every
+            other session is exactly what the operator expects.
+            """
+            ident = self._require_session()
+            if ident is None:
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            current = str(body.get("current") or "")
+            new = str(body.get("new") or "")
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            record = store.find(ident.username)
+            if record is None:
+                return self._error(404, "this account no longer exists")
+            if not users_mod.verify_password(current, record.hash):
+                return self._json({
+                    "ok": False, "error": "the current password is not correct",
+                }, 401)
+            try:
+                store.set_password(ident.username, new, must_change=False)
+            except users_mod.UserError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not save the new password: {exc}")
+            # Every session for this account, including this one: the UI signs in again with
+            # the new password, which also proves the change took.
+            sessions = getattr(ctx, "sessions", None)
+            revoked = sessions.revoke_user(ident.username) if sessions is not None else 0
+            logger.info("password changed for %s (%d session(s) revoked)", ident.username, revoked)
+            self._json({"ok": True, "signed_out": True,
+                        "note": "password changed; sign in again with the new one"})
+
+        def _users_list(self) -> None:
+            """Every account, for an admin. Reads are admin-only: the account list is not
+            monitoring data, and a viewer has no use for it."""
+            role, _via = self._caller_role()
+            if role != users_mod.ROLE_ADMIN:
+                return self._error(403, "admin access is required to view accounts")
+            store = getattr(ctx, "user_store", None)
+            if store is None or not _accounts_on(ctx):
+                return self._json({"available": False, "users": [],
+                                   "reason": getattr(ctx, "accounts_note", "")
+                                   or "no accounts provisioned"})
+            self._json({"available": True, "users": store.public_users(),
+                        "roles": list(users_mod.ROLES)})
+
+        def _users_create(self) -> None:
+            """Create an account. Admin only."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            try:
+                record = store.create_user(
+                    str(body.get("username") or ""),
+                    str(body.get("role") or users_mod.ROLE_VIEWER),
+                    str(body.get("password") or ""),
+                    must_change=bool(body.get("must_change")),
+                )
+            except users_mod.UserError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not create the account: {exc}")
+            logger.info("created account %s with role %s", record.username, record.role)
+            self._json({"ok": True, "user": record.public()})
+
+        def _users_role(self) -> None:
+            """Change an account's role. Admin only, and the last admin is protected by the
+            store: demoting the only admin would leave nobody able to manage accounts."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            username = str(body.get("username") or "").strip().lower()
+            role = str(body.get("role") or "")
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            try:
+                store.set_role(username, role)
+            except users_mod.UserError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not change the role: {exc}")
+            # An open tab keeps acting under the old role until its session is dropped, so a
+            # role change revokes the account's sessions immediately.
+            sessions = getattr(ctx, "sessions", None)
+            if sessions is not None:
+                sessions.revoke_user(username)
+            logger.info("role for %s set to %s", username, role)
+            self._json({"ok": True, "username": username, "role": role})
+
+        def _users_delete(self) -> None:
+            """Delete an account. Admin only; the last admin cannot be deleted (store guard)."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            username = str(body.get("username") or "").strip().lower()
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            try:
+                store.delete_user(username)
+            except users_mod.UserError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not delete the account: {exc}")
+            sessions = getattr(ctx, "sessions", None)
+            if sessions is not None:
+                sessions.revoke_user(username)
+            logger.info("deleted account %s", username)
+            self._json({"ok": True, "username": username})
+
+        def _users_reset(self) -> None:
+            """Set a new password for ANOTHER account, and force a change at next sign-in.
+
+            The lost-password path that keeps this feature usable without email: an admin
+            mints a temporary password and hands it over, and the account is held at the
+            password gate until its owner replaces it.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            username = str(body.get("username") or "").strip().lower()
+            password = str(body.get("password") or "")
+            store = getattr(ctx, "user_store", None)
+            if store is None:
+                return self._error(503, "the account store is not available on this GUI")
+            try:
+                store.set_password(username, password, must_change=True)
+            except users_mod.UserError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(502, f"could not reset the password: {exc}")
+            sessions = getattr(ctx, "sessions", None)
+            if sessions is not None:
+                sessions.revoke_user(username)
+            logger.info("password reset for %s (must change at next sign-in)", username)
+            self._json({"ok": True, "username": username,
+                        "note": "the account must change this password at next sign-in"})
 
         def _review(self) -> None:
             """Record an analyst's disposition of one anomaly (ack / resolve / false-positive).
@@ -812,16 +1260,42 @@ def _build_handler(ctx: GuiContext):
                     "available": False, "groups": {},
                     "reason": f"could not read the configuration: {type(exc).__name__}",
                 })
-            # Whether the UI may offer writes, and why not when it may not. Sent with every
-            # settings read so the panel can DISABLE rather than hide: a control that vanishes
-            # teaches nothing, a disabled one with a stated reason tells the operator to set the
-            # token.
-            auth = getattr(ctx, "auth", None)
-            payload["writes"] = {
-                "enabled": bool(auth and auth.enabled),
-                "reason": (auth.reason if auth else
-                           "authentication is not available in this build"),
-            }
+            # Whether THIS caller may offer writes, and why not when they may not. Sent with
+            # every settings read so the panel can DISABLE rather than hide: a control that
+            # vanishes teaches nothing, a disabled one with a stated reason tells the operator
+            # what to do (sign in, ask an admin, change a forced password).
+            role, via = self._caller_role()
+            ident = self._identity()
+            if not _accounts_on(ctx):
+                # Pre-accounts posture: the token is the whole story, as before.
+                auth = getattr(ctx, "auth", None)
+                payload["writes"] = {
+                    "enabled": bool(auth and auth.enabled),
+                    "reason": (auth.reason if auth else
+                               "authentication is not available in this build"),
+                }
+            elif ident is not None and ident.must_change:
+                payload["writes"] = {
+                    "enabled": False,
+                    "reason": "change your password before changing settings",
+                }
+            elif role == users_mod.ROLE_ADMIN:
+                payload["writes"] = {"enabled": True, "reason": ""}
+            elif role == users_mod.ROLE_VIEWER:
+                payload["writes"] = {
+                    "enabled": False,
+                    "reason": "this account is a viewer: it can read every view but not change "
+                              "settings. Ask an admin, or sign in as one.",
+                }
+            else:
+                payload["writes"] = {
+                    "enabled": False,
+                    "reason": "sign in with an admin account to change settings.",
+                }
+            # WHO the settings write gate sees, for the panel to name the caller instead of
+            # saying "an operator" -- the audit trail starts with the page saying who you are.
+            payload["caller"] = {"username": (ident.username if ident else ""),
+                                 "role": role, "via": via}
             # The editable keys, so the UI offers exactly what the server will accept -- derived
             # here rather than duplicated in JavaScript.
             try:
@@ -1012,8 +1486,37 @@ def build_context(connect_factory, settings, project_dir: Path,
         logger.debug("no cluster config client: %s", exc)
         config_client = None
 
+    # THE ACCOUNT STORE. A second ConfigMap through the same in-cluster client -- see
+    # weirvern/admin/users.py for why accounts are a ConfigMap and not a Secret, and why
+    # they live in the cluster rather than in ClickHouse (a login gate must work when the
+    # database does not). Read once here; a login never touches the API.
+    user_store = None
+    sessions = users_mod.SessionRegistry()
+    throttle = users_mod.LoginThrottle()
+    accounts_note = ""
+    try:
+        from weirvern.admin.cluster_config import ClusterConfig as _CC
+
+        users_client = _CC(configmap=users_mod.USERS_CONFIGMAP)
+        store = users_mod.UserStore(users_client)
+        store.load()
+        # THE BOOTSTRAP, at startup rather than at first login. It logs the generated
+        # password ONCE; see users.bootstrap.
+        result = users_mod.bootstrap(store, log=logger)
+        if result.created:
+            accounts_note = ("the initial admin account was created on first startup; its "
+                             "password was logged once by this pod and is not recoverable. "
+                             "Use the reset flow if it was lost.")
+        elif result.note:
+            accounts_note = result.note
+        user_store = store
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not initialise the account store: %s", exc)
+        accounts_note = f"the account store could not be initialised: {exc}"
+
     return GuiContext(connect_factory, settings, backend=backend, capabilities=caps,
-                      auth=auth, config_client=config_client)
+                      auth=auth, config_client=config_client, user_store=user_store,
+                      sessions=sessions, throttle=throttle, accounts_note=accounts_note)
 
 
 def run(connect_factory, settings, project_dir: Path, namespace: str,

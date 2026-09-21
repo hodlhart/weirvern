@@ -1,5 +1,69 @@
 # Changelog
 
+## Unreleased — accounts: a default admin at setup, roles, and a sign-in gate
+
+The GUI has one credential until this release (the shared operator token), which is not an
+account: it cannot be given to a second person without giving them everything, it records
+nobody, and there is nothing to disable when someone leaves. This lands accounts and roles.
+
+### Added — accounts with two roles
+
+- **A default admin is created at first startup**, and its generated password is printed
+  **once** to the pod log (`kubectl -n weirvern logs deploy/weirvern-gui | grep "initial
+  admin"`). It is forced to change that password at first sign-in — enforced server-side, so
+  the dashboard genuinely stays locked until it does.
+- **admin / viewer, deliberately only two.** Admins read everything, change settings, and
+  manage accounts; viewers read everything and change nothing. A viewer's Settings page
+  renders every value **with no controls at all** rather than controls that fail on Apply.
+- **Account management in the GUI** (Settings → Users): create accounts (choose role, set the
+  initial password, forced change at first sign-in), change roles, delete, and **reset a
+  lost password** — the only recovery path that works without email on a deployment like
+  this. The last admin cannot be demoted or deleted; the server refuses and says why.
+- **Change your own password** from Settings → Account. The current password is required
+  (a stolen session cannot lock the owner out), and every session for the account is revoked
+  afterwards.
+
+### How it works — and the trade-offs, stated
+
+- **The account store is a `weirvern-users` ConfigMap**, created by the GUI on first startup
+  rather than shipped as a manifest (a placeholder manifest would be re-applied with empty
+  values on every `kubectl apply -k` and wipe live accounts — the same failure mode the
+  Secret carries a note about). Not a Secret: the GUI's ServiceAccount grant deliberately has
+  no access to Secrets, and that absence is what stops a compromised GUI pod from reading the
+  Pushover credentials; widening it to store password hashes would trade a proven guard for a
+  smaller one. Hashes are scrypt (stdlib `hashlib`, per-user salt, n=2^14), so the store's
+  exposure is bounded and stated in the module header.
+- **Not ClickHouse**, which already holds alert reviews: a login gate must work when the
+  database does not, and the first thing an operator wants during a database incident is the
+  health page.
+- **Sessions are in memory** with a 12-hour absolute TTL; a GUI restart signs everyone out.
+  The alternative — sessions in the ConfigMap — would write on every request.
+- **Reads now require a signed-in account** (either role) when accounts are provisioned.
+  Before accounts, reads were open so nobody had to log in during an incident; "a viewer may
+  read" only means something if reading is attributable, so the gate arrived with the roles.
+  A deployment whose store cannot be read falls back to the pre-accounts posture (open reads,
+  token-gated writes) rather than locking the operator out of their own dashboard.
+- **The operator token survives as the break-glass credential**: it works everywhere an admin
+  does and cannot be disabled by account state, so a lost admin password can never lock a
+  deployment out of its own configuration. It is not an account — no username, nothing to
+  sign out of — and the UI says so instead of offering a form that cannot work.
+
+### Security properties, pinned by tests
+
+- A wrong password and an unknown username are one message ("the username or password is not
+  correct"), and an unknown username burns the same scrypt cost as a wrong password
+  (`users.dummy_verify`), so neither the response nor the timing enumerates accounts.
+- Failed sign-ins get a bounded, escalating per-address delay — never a lockout, which on a
+  LAN tool would let anyone deny the operator access to their own sensor.
+- Sessions ride a **header, never a cookie**: a cookie would accompany cross-site requests,
+  a custom header cannot be set by a cross-site form.
+- `must_change` gates every route except the password change itself, server-side.
+- Role changes and deletions revoke the account's sessions immediately, so an open tab
+  cannot keep acting under the old role.
+- A transient store read failure is **never** read as "no accounts exist" — the tri-state
+  (`exists` True/False/None) keeps bootstrap from overwriting live accounts it merely could
+  not see, and the DOM harness drives all of it (44 Python tests + 26 harness checks).
+
 ## Unreleased — the Settings tab becomes a real setup surface
 
 Every editable setting renders as the control that changes it, and every setting — editable or

@@ -242,8 +242,15 @@ def test_the_about_tab_is_gone_and_its_facts_survive_elsewhere():
         "the reverse-DNS behaviour (private-only by default, 'all' to include public) was "
         "documented only in the About tab and is now gone from the README too"
     )
-    assert "Read-only by design" in readme, (
-        "the read-only / no-lifecycle-controls design decision is no longer documented"
+    # The no-lifecycle-controls decision: the GUI is no longer read-only (accounts landed,
+    # admins edit settings), but it still cannot start, stop or apply anything -- and that
+    # boundary is what must stay documented, together with the accounts model that replaced
+    # the old read-only claim.
+    assert "cannot start" in readme and "stop, or apply anything" in readme, (
+        "the no-lifecycle-controls design decision is no longer documented"
+    )
+    assert "admin" in readme and "viewer" in readme, (
+        "the roles are not documented where an operator will read them"
     )
 
 

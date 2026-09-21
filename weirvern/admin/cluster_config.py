@@ -143,6 +143,16 @@ class ConfigError(Exception):
     """
 
 
+class NotFoundError(ConfigError):
+    """The ConfigMap does not exist. Distinct from other failures ON PURPOSE.
+
+    The account store is created on first startup rather than shipped as a manifest, so
+    "this ConfigMap is not there yet" is a normal state that means "go ahead and create it".
+    Every other read failure means "you cannot see the state", and treating those the same
+    would let a transient failure overwrite live accounts with a fresh document.
+    """
+
+
 @dataclass
 class Proposal:
     """One proposed change, with what it will cost."""
@@ -423,6 +433,10 @@ class ClusterConfig:
             detail = ""
             with contextlib.suppress(Exception):
                 detail = exc.read().decode()[:400]
+            if exc.code == 404:
+                raise NotFoundError(
+                    f"{self.configmap!r} does not exist in {self.namespace}"
+                ) from exc
             if exc.code == 403:
                 raise ConfigError(
                     f"the cluster refused the write (403). The GUI's ServiceAccount needs "
@@ -443,6 +457,56 @@ class ClusterConfig:
         return dict(self._request("GET").get("data") or {})
 
     # -- write --------------------------------------------------------------
+
+    def patch_data(self, data: dict[str, str]) -> None:
+        """Merge-patch `data` keys into this ConfigMap, WITHOUT the read-back `apply` does.
+
+        Used by the account store, which reloads its own in-memory cache from what it wrote
+        and needs the merge semantics (`apply` is for the settings ConfigMap, where the
+        read-back is the point). Same credential, same URL: `self.configmap` is whatever this
+        client was constructed for.
+        """
+        self._request("PATCH", {"data": data})
+
+    def create(self, data: dict[str, str]) -> None:
+        """Create this ConfigMap. Raises ConfigError when it already exists.
+
+        THE FIRST WRITE TO A NAMESPACE THAT HAS NONE. The account store is created by the GUI
+        on first startup rather than shipped as a manifest: a placeholder manifest would be
+        re-applied with empty values on every `kubectl apply -k`, silently wiping live
+        accounts -- the same failure mode the Secret has a note about in kustomization.yaml.
+        """
+        url = f"{self.api_host}/api/v1/namespaces/{self.namespace}/configmaps"
+        body = json.dumps({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": self.configmap, "namespace": self.namespace},
+            "data": data,
+        }).encode()
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {self.token()}")
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=self._ssl_context()):
+                return
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = exc.read().decode()[:300]
+            if exc.code == 409:
+                raise ConfigError(f"the ConfigMap {self.configmap!r} already exists") from exc
+            if exc.code == 403:
+                raise ConfigError(
+                    f"the cluster refused creating {self.configmap!r} (403). The GUI's "
+                    f"ServiceAccount needs create permission on configmaps in {self.namespace}."
+                ) from exc
+            raise ConfigError(
+                f"the cluster rejected creating {self.configmap!r} ({exc.code}): {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ConfigError(f"could not reach the cluster API: {exc.reason}") from exc
 
     def apply(self, changes: dict[str, str]) -> dict[str, str]:
         """Merge the changes in, then READ BACK and prove they landed.

@@ -129,7 +129,7 @@ function emptyRow(tbody, cols, message) {
  * by script order, which nothing would have caught if the order changed. Kept here because
  * this file loads first and the other shared helpers live here too. */
 async function getJSON(url) {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetch(url, { headers: requestHeaders() });
   // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
   // "undefined", and a 200 with a bad body must not throw here with a parse error where the
   // caller expects the payload contract.
@@ -165,6 +165,7 @@ async function getJSON(url) {
  * whether a token is configured at all -- a browser cannot talk the server into accepting one.
  */
 const TOKEN_KEY = "weirvern-token";
+const SESSION_KEY = "weirvern-session";
 
 function getToken() {
   try { return window.sessionStorage.getItem(TOKEN_KEY) || ""; } catch (_e) { return ""; }
@@ -177,12 +178,163 @@ function setToken(v) {
   } catch (_e) { /* private mode: the token simply does not persist */ }
 }
 
-/** A POST to a write route, with the token attached. Throws with the server's reason. */
+function getSession() {
+  try { return window.sessionStorage.getItem(SESSION_KEY) || ""; } catch (_e) { return ""; }
+}
+
+function setSession(v) {
+  try {
+    if (v) window.sessionStorage.setItem(SESSION_KEY, v);
+    else window.sessionStorage.removeItem(SESSION_KEY);
+  } catch (_e) { /* private mode: the session simply does not persist */ }
+}
+
+/* Every request carries whatever credentials this tab holds, so a read and a write see the
+ * same identity. Sent as HEADERS and never as cookies: a cookie would ride along on cross-site
+ * requests (the classic CSRF shape), while a custom header cannot be set by a cross-site form. */
+function requestHeaders(base) {
+  const h = Object.assign({ Accept: "application/json" }, base || {});
+  const s = getSession();
+  if (s) h["X-Weirvern-Session"] = s;
+  const t = getToken();
+  if (t) h["X-Weirvern-Token"] = t;
+  return h;
+}
+
+/* ── who this tab is ─────────────────────────────────────────────────────────
+ *
+ * AUTH mirrors the server's /api/session answer and is the single source the UI consults for
+ * gating: whether accounts exist at all, who is signed in, and what role they carry. The
+ * browser never decides any of that -- it renders what the server said on the last probe, and
+ * re-probes after every action that could change it (sign in, sign out, password change).
+ */
+const AUTH = { accounts: false, authenticated: false, username: "", role: "",
+               must_change: false, via: "", note: "" };
+
+async function loadSession() {
+  const data = await getJSON("/api/session");
+  Object.assign(AUTH, {
+    accounts: !!(data && data.accounts),
+    authenticated: !!(data && data.authenticated),
+    username: (data && data.username) || "",
+    role: (data && data.role) || "",
+    must_change: !!(data && data.must_change),
+    via: (data && data.via) || "",
+    note: (data && data.note) || "",
+  });
+  return AUTH;
+}
+
+/** Show the sign-in gate, the forced-password gate, or neither. One place, one state. */
+function showGate(which, note) {
+  const authGate = document.getElementById("auth-gate");
+  const pwGate = document.getElementById("pw-gate");
+  const gnote = document.getElementById("gate-note");
+  if (note && gnote) gnote.textContent = note;
+  if (authGate) authGate.classList.toggle("hidden", which !== "auth");
+  if (pwGate) pwGate.classList.toggle("hidden", which !== "pw");
+  if (which === "pw") {
+    const cur = document.getElementById("pw-current");
+    if (cur) cur.focus();
+  }
+}
+
+/** The header chip and the sign-out button, from AUTH. */
+function refreshChrome() {
+  const chip = document.getElementById("user-chip");
+  const out = document.getElementById("sign-out");
+  if (!chip) return;
+  if (AUTH.authenticated && AUTH.via === "token") {
+    chip.textContent = "operator token (break-glass)";
+    chip.setAttribute("title", "Admin rights from the deployment operator token; no account.");
+    if (out) out.classList.add("hidden");
+  } else if (AUTH.authenticated) {
+    chip.textContent = `${AUTH.username} · ${AUTH.role}`;
+    chip.setAttribute("title", AUTH.must_change
+      ? "This account must change its password before it can be used"
+      : `Signed in as ${AUTH.username} (${AUTH.role})`);
+    if (out) out.classList.toggle("hidden", AUTH.via !== "session");
+  } else {
+    chip.textContent = "";
+    chip.setAttribute("title", "");
+    if (out) out.classList.add("hidden");
+  }
+}
+
+/** The Account card on Settings: who you are, and whether a password can be changed here. */
+function refreshAccountCard() {
+  const note = document.getElementById("st-account-note");
+  const pw = document.getElementById("st-account-pw");
+  if (!note) return;
+  if (!AUTH.accounts) {
+    note.textContent = "This deployment has no accounts provisioned: the operator token "
+      + "below is the credential that changes settings. An admin account is created "
+      + "automatically on the deployment's first startup.";
+    if (pw) pw.classList.add("hidden");
+    return;
+  }
+  if (AUTH.authenticated && AUTH.via === "token") {
+    note.textContent = "You are using the break-glass operator token: it grants admin rights "
+      + "with no account, so there is no password to change here. Use the Users panel below "
+      + "to manage accounts, or sign in with one.";
+    if (pw) pw.classList.add("hidden");
+    return;
+  }
+  if (AUTH.authenticated) {
+    note.textContent = `Signed in as ${AUTH.username} (${AUTH.role}).`
+      + (AUTH.must_change ? " This account must change its password." : "");
+    if (pw) pw.classList.remove("hidden");
+    return;
+  }
+  note.textContent = "Not signed in.";
+  if (pw) pw.classList.add("hidden");
+}
+
+/* ── accounts: sign in, sign out, password change ──────────────────────────── */
+
+async function doLogin(username, password) {
+  const resp = await window.fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  let payload = null;
+  try { payload = await resp.json(); } catch (_e) { payload = null; }
+  if (!resp.ok || !payload || !payload.ok) {
+    throw new Error((payload && payload.error) || `HTTP ${resp.status}`);
+  }
+  setSession(payload.session || "");
+  await loadSession();
+  refreshChrome();
+  return payload;
+}
+
+async function doLogout() {
+  try { await postJSON("/api/logout", {}); } catch (_e) { /* already gone is fine */ }
+  setSession("");
+  Object.assign(AUTH, { authenticated: false, username: "", role: "", must_change: false,
+                        via: "" });
+  refreshChrome();
+  showGate("auth", "Signed out. Sign in to continue.");
+}
+
+/** Change this account's own password. The server revokes every session for it, so the tab
+ *  returns to the sign-in gate and proves the change by signing in again. */
+async function changePassword(current, next) {
+  const res = await postJSON("/api/password", { current, new: next });
+  setSession("");
+  Object.assign(AUTH, { authenticated: false, username: "", role: "", must_change: false,
+                        via: "" });
+  refreshChrome();
+  showGate("auth", "Password changed. Sign in with the new one.");
+  return res;
+}
+
+/** A POST to a write route, with whatever credentials this tab holds. Throws with the server's reason. */
 async function postJSON(path, body) {
-  const token = getToken();
   const resp = await window.fetch(path, {
     method: "POST",
-    headers: Object.assign({ "Content-Type": "application/json" }, token ? { "X-Weirvern-Token": token } : {}),
+    headers: requestHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   let payload = null;
@@ -452,7 +604,7 @@ async function applyStage() {
 
 window.LAST_APPLY = LAST_APPLY;
 
-/** The auth card: what the server said about write access. */
+/** The auth card: what the server said about write access, and the break-glass token path. */
 async function refreshAuthNote() {
   const note = document.getElementById("st-auth-note");
   const controls = document.getElementById("st-auth-controls");
@@ -460,23 +612,39 @@ async function refreshAuthNote() {
   let data = null;
   try { data = await getJSON("/api/settings"); } catch (_e) { data = null; }
   const w = (data && data.writes) || {};
-  if (!w.enabled) {
-    note.textContent = w.reason || "write access is not available";
-    if (controls) controls.classList.add("hidden");
+  const caller = (data && data.caller) || {};
+  if (controls) controls.classList.remove("hidden");
+  if (!AUTH.accounts) {
+    // No accounts provisioned: the token is the whole story, as it was before accounts.
+    note.textContent = w.enabled
+      ? "This deployment has no accounts provisioned. Write access is enabled and this tab "
+        + "holds a token. An admin account is created automatically on first startup."
+      : (w.reason || "write access is not available");
     return;
   }
-  if (controls) controls.classList.remove("hidden");
-  note.textContent = getToken()
-    ? "Write access is enabled and this tab holds a token. Settings below can be changed."
-    : "Write access is enabled. Enter the operator token to change settings.";
+  if (caller.via === "token") {
+    note.textContent = "This tab holds the operator token: admin rights, no account. Use a "
+      + "signed-in account for day-to-day work; the token is the recovery path.";
+    return;
+  }
+  if (AUTH.authenticated) {
+    note.textContent = w.enabled
+      ? `Signed in as ${AUTH.username} (${caller.role || AUTH.role}): settings below can be `
+        + "changed and applied."
+      : `Signed in as ${AUTH.username}: ${w.reason || "no write access"}`;
+    return;
+  }
+  note.textContent = "Not signed in. Sign in with an admin account to change settings, or "
+    + "paste the operator token below as the break-glass credential.";
 }
 
 async function loadSettings() {
-  // Resolve the auth note on LOAD, not only when a token button is clicked. It shipped as
-  // "checking…" and stayed that way until the operator happened to click Use/Forget token, so the
-  // one card that says whether writes are even possible reported a state that would never
-  // resolve -- the orphaned-"loading…" defect again.
+  // Resolve the auth note and account card on LOAD, not only when a token button is clicked.
+  // It shipped as "checking…" and stayed that way until the operator happened to click a
+  // button, so the one card that says whether writes are even possible reported a state that
+  // would never resolve -- the orphaned-"loading…" defect again.
   await refreshAuthNote();
+  refreshAccountCard();
   const data = await getJSON("/api/settings");
   const sum = document.getElementById("st-summary");
   const win = document.getElementById("st-window");
@@ -507,6 +675,10 @@ async function loadSettings() {
       continue;
     }
     const editable = new Set(data.editable_keys || []);
+    // WHETHER THE CONTROLS RENDER AT ALL depends on the caller's write access, not just on
+    // whether the key is editable: a viewer (or a signed-out browser) sees every value and
+    // no control, which is what "read-only for viewers" means in pixels. The server still
+    // enforces this on Apply -- the UI is rendering the server's answer, not deciding policy.
     const canWrite = Boolean(data.writes && data.writes.enabled);
     for (const r of rows) {
       // Provenance, so a blank is not ambiguous. "The setting does not exist" and "the setting is
@@ -516,7 +688,7 @@ async function loadSettings() {
       // A SECRET IS NEVER EDITABLE FROM HERE. It is reported as set/not-set by design, and a
       // field that let you overwrite a credential through an unauthenticated-by-default,
       // no-TLS port is a different feature with a different threat model.
-      const isEditable = editable.has(r.key) && !r.secret;
+      const isEditable = canWrite && editable.has(r.key) && !r.secret;
       const staged = STAGE.changes[r.key];
       const shown = staged !== undefined ? staged : String(r.value);
 
@@ -569,18 +741,160 @@ async function loadSettings() {
 
   // State the boundary explicitly rather than leaving the reader to discover it by looking for
   // a Save button that does not exist. CONDITIONAL on the server's answer, because both states
-  // are real: without a token this page cannot write, and with one it deliberately can. The
-  // unconditional "read-only" that used to sit here contradicted the auth card beside it.
+  // are real: a viewer (or an anonymous caller) cannot write, and an admin deliberately can.
+  // The unconditional "read-only" that used to sit here contradicted the auth card beside it.
   const note = document.getElementById("st-note");
   if (note) {
     const writesOn = Boolean(data.writes && data.writes.enabled);
+    const viewer = AUTH.accounts && AUTH.authenticated && !writesOn;
     note.replaceChildren();
     note.appendChild(chartEmpty(writesOn
-      ? "Write access is enabled: edits are staged and written only on Apply. This page is " +
-        "read-only without an operator token; without one, change values with " +
-        "`weirvern config set` or the TUI. Secrets are reported as set or not set, never in value."
-      : "This page is read-only. Change these with `weirvern config set` or the TUI, then apply. " +
-        "Secrets are reported as set or not set, never in value."));
+      ? "Write access is enabled: edits are staged and written only on Apply. This page is "
+        + "read-only for viewer accounts; without write access, change values with "
+        + "`weirvern config set` or the TUI. Secrets are reported as set or not set, never in value."
+      : viewer
+        ? "This account is read-only: it sees every value but cannot change one. "
+          + "Admin accounts can stage and apply changes; secrets are reported as set or not "
+          + "set, never in value."
+        : "This page is read-only. Change these with `weirvern config set` or the TUI, then "
+          + "apply. Secrets are reported as set or not set, never in value."));
+  }
+  // The Users panel is admin-only; load it here so navigating to Settings does not leave a
+  // "loading…" nobody resolves -- the same orphaned-placeholder bug class.
+  await loadUsers();
+}
+
+/* ── accounts: the admin Users panel ─────────────────────────────────────────
+ *
+ * Renders ONLY from the server's answers: the user list comes from /api/users, and every
+ * action POSTs then reloads the list, so what is on screen is what the store holds. The
+ * last-admin guard and the role validation live server-side; this panel surfaces the
+ * refusals in the server's own words rather than duplicating the rules.
+ */
+
+let USERS_AVAILABLE = null;
+
+async function loadUsers() {
+  const card = document.getElementById("st-users-card");
+  const note = document.getElementById("st-users-note");
+  const body = document.querySelector("#st-users tbody");
+  if (!card || !note || !body) return;
+  const isAdmin = AUTH.accounts && AUTH.authenticated && AUTH.role === "admin";
+  card.classList.toggle("hidden", !isAdmin);
+  if (!isAdmin) return;
+  let data = null;
+  try { data = await getJSON("/api/users"); } catch (err) { data = { available: false, reason: err.message }; }
+  USERS_AVAILABLE = !!(data && data.available);
+  body.replaceChildren();
+  if (!data || !data.available) {
+    note.textContent = "Accounts are unavailable: " + ((data && data.reason) || "no reason given");
+    return;
+  }
+  const users = data.users || [];
+  note.textContent = `${users.length} account${users.length === 1 ? "" : "s"}. `
+    + "Admins edit everything; viewers read.";
+  const me = AUTH.username;
+  for (const u of users) {
+    const row = el("tr", {}, [
+      el("td", {}, [
+        el("span", { class: "mono", text: u.username }),
+        u.username === me ? el("span", { class: "setting-src", text: "you" }) : null,
+      ]),
+      el("td", {}, [
+        el("select", {
+          class: "user-role",
+          attrs: { "data-user": u.username, "aria-label": `role for ${u.username}` },
+          on: { change: (ev) => setRole(u.username, ev.target.value) },
+        }, ["viewer", "admin"].map((r) =>
+          el("option", { value: r, text: r, ...(u.role === r ? { selected: true } : {}) }))),
+      ]),
+      el("td", { class: "muted mono", text: u.created_at || "—" }),
+      el("td", {}, [
+        u.must_change
+          ? el("span", { class: "muted", text: "must change" })
+          : el("span", { class: "muted", text: "set" }),
+      ]),
+      el("td", {}, [
+        el("button", {
+          class: "user-act", text: "Reset password", attrs: { type: "button" },
+          title: `set a temporary password for ${u.username}`,
+          on: { click: () => resetUserPassword(u.username) },
+        }),
+        u.username === me ? null : el("button", {
+          class: "user-act danger", text: "Delete", attrs: { type: "button" },
+          title: `delete ${u.username}`,
+          on: { click: () => deleteUser(u.username) },
+        }),
+      ]),
+    ]);
+    body.appendChild(row);
+  }
+}
+
+function usersResult(message, isError) {
+  const out = document.getElementById("st-user-result");
+  if (!out) return;
+  out.textContent = message || "";
+  out.style.color = isError ? "var(--danger)" : "";
+}
+
+async function setRole(username, role) {
+  try {
+    await postJSON("/api/users/role", { username, role });
+    usersResult(`role for ${username} set to ${role}.`);
+    await loadUsers();
+  } catch (err) {
+    usersResult(String(err.message || err), true);
+    await loadUsers();
+  }
+}
+
+async function deleteUser(username) {
+  if (!window.confirm(`Delete the account ${username}? This cannot be undone.`)) return;
+  try {
+    await postJSON("/api/users/delete", { username });
+    usersResult(`deleted ${username}.`);
+    await loadUsers();
+  } catch (err) {
+    usersResult(String(err.message || err), true);
+    await loadUsers();
+  }
+}
+
+async function resetUserPassword(username) {
+  const temp = window.prompt(
+    `Temporary password for ${username} (at least 8 characters).\n\n` +
+    "It is shown only in this dialog; hand it to them directly. They will be required to " +
+    "change it at next sign-in.");
+  if (!temp) return;
+  try {
+    await postJSON("/api/users/reset", { username, password: temp });
+    usersResult(`temporary password set for ${username} — it must be changed at next sign-in.`);
+    await loadUsers();
+  } catch (err) {
+    usersResult(String(err.message || err), true);
+  }
+}
+
+async function createUser() {
+  const nameField = document.getElementById("st-new-user");
+  const roleField = document.getElementById("st-new-role");
+  const passField = document.getElementById("st-new-pass");
+  const username = (nameField && nameField.value || "").trim();
+  const role = (roleField && roleField.value) || "viewer";
+  const password = (passField && passField.value) || "";
+  if (!username || !password) {
+    usersResult("a username and an initial password are required.", true);
+    return;
+  }
+  try {
+    await postJSON("/api/users/create", { username, role, password, must_change: true });
+    usersResult(`created ${username} (${role}). It must change its password at first sign-in.`);
+    if (nameField) nameField.value = "";
+    if (passField) passField.value = "";
+    await loadUsers();
+  } catch (err) {
+    usersResult(String(err.message || err), true);
   }
 }
 /* ── anomalies ──────────────────────────────────────────────────────────── */
@@ -1174,9 +1488,94 @@ document.addEventListener("DOMContentLoaded", () => {
     renderNetwork();
   });
 
+  // ── accounts: the gates and their forms ────────────────────────────────────
+  const gateForm = document.getElementById("gate-form");
+  if (gateForm) gateForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = document.getElementById("gate-error");
+    const user = (document.getElementById("gate-user") || {}).value || "";
+    const pass = (document.getElementById("gate-pass") || {}).value || "";
+    if (err) err.textContent = "";
+    try {
+      await doLogin(user.trim(), pass);
+      await bootAuthed();
+    } catch (e) {
+      // The server's own words, never a client-side guess about which half was wrong.
+      if (err) err.textContent = String(e.message || e);
+      const pf = document.getElementById("gate-pass");
+      if (pf) { pf.value = ""; pf.focus(); }
+    }
+  });
+
+  const pwForm = document.getElementById("pw-form");
+  if (pwForm) pwForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = document.getElementById("pw-error");
+    const cur = (document.getElementById("pw-current") || {}).value || "";
+    const next = (document.getElementById("pw-new") || {}).value || "";
+    const confirm = (document.getElementById("pw-confirm") || {}).value || "";
+    if (err) err.textContent = "";
+    if (next !== confirm) { if (err) err.textContent = "the new passwords do not match"; return; }
+    try {
+      await changePassword(cur, next);
+    } catch (e) {
+      if (err) err.textContent = String(e.message || e);
+    }
+  });
+
+  const signOut = document.getElementById("sign-out");
+  if (signOut) signOut.addEventListener("click", () => doLogout().catch(showError));
+
+  const pwSave = document.getElementById("st-pw-save");
+  if (pwSave) pwSave.addEventListener("click", async () => {
+    const out = document.getElementById("st-pw-result");
+    const cur = (document.getElementById("st-pw-current") || {}).value || "";
+    const next = (document.getElementById("st-pw-new") || {}).value || "";
+    if (out) out.textContent = "";
+    try {
+      const res = await changePassword(cur, next);
+      if (out) out.textContent = res.note || "password changed";
+    } catch (e) {
+      if (out) out.textContent = String(e.message || e);
+    }
+  });
+
+  const userCreate = document.getElementById("st-user-create");
+  if (userCreate) userCreate.addEventListener("click", () => createUser());
+
+  // THE BOOT SEQUENCE. The gate is resolved BEFORE anything loads a dashboard panel: a read
+  // against the wrong identity would render an empty page that looks like a quiet network --
+  // the exact confusion the empty-vs-unavailable rule exists to prevent. When accounts are not
+  // provisioned this falls straight through, which is the pre-accounts posture.
+  boot().catch((err) => { showError(err); });
+});
+
+/** Sign in / gate resolution at page load. Renders the right gate or boots the dashboard. */
+async function boot() {
+  try {
+    await loadSession();
+  } catch (_e) {
+    // /api/session failed at the transport level. Boot anyway: the dashboard will surface the
+    // real error, and a deployment without accounts is a supported state.
+  }
+  refreshChrome();
+  if (!AUTH.accounts || AUTH.authenticated) return bootAuthed();
+  showGate("auth", AUTH.note || "Sign in to view this dashboard.");
+}
+
+/** What runs once there is (or may be) a usable identity: the pre-accounts posture or a
+ *  signed-in account, with the forced-change gate in between. */
+async function bootAuthed() {
+  refreshChrome();
+  refreshAccountCard();
+  if (AUTH.authenticated && AUTH.must_change) {
+    showGate("pw");
+    return;
+  }
+  showGate("");
   refreshAll();
   startAuto(15);
-});
+}
 
 /* ── models ───────────────────────────────────────────────────────────────────
  *

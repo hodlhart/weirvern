@@ -845,11 +845,12 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    """Serve the read-only web dashboard.
+    """Serve the web dashboard.
 
-    Read-only by design: no code path here reaches a mutating cluster operation,
-    which is what makes binding it to a LAN address acceptable without auth. See
-    weirvern/admin/web.py for the reasoning.
+    Accounts and roles: reads require a signed-in account, settings writes require an
+    admin (or the break-glass operator token). There is still no lifecycle control --
+    start, stop and apply stay in the CLI and TUI. See weirvern/admin/web.py for the
+    reasoning.
 
     ON THE PROJECT DIRECTORY: `project_dir()` used to be called unconditionally
     here, and it RAISES inside the container image -- the Containerfile copies only
@@ -874,8 +875,9 @@ def cmd_gui(args: argparse.Namespace) -> int:
     print(_c("bold", f"Weirvern GUI on http://{shown}:{port}"))
     if host in ("0.0.0.0", "::"):
         print(_c("dim", "    bound to all interfaces; anyone who can reach this "
-                        "port can read your flow data"))
-    print(_c("dim", "    read-only: no start/stop/apply actions are exposed"))
+                        "port can read your flow data once signed in"))
+    print(_c("dim", "    accounts: reads need a sign-in; settings changes need an admin"))
+    print(_c("dim", "    no start/stop/apply actions are exposed"))
 
     try:
         pdir = project_dir()

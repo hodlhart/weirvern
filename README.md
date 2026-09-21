@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 behavioural baselines, flags the deviations that match real attack shapes, and shows a
 human *why*, with the measurements that fired.
 
-Current release: **0.6.6** · Runs on any conformant Kubernetes · No payload inspection ·
+Current release: **0.6.7** · Runs on any conformant Kubernetes · No payload inspection ·
 Alerts via [Pushover](https://pushover.net), or log-only.
 
 **What you get**
@@ -20,9 +20,9 @@ Alerts via [Pushover](https://pushover.net), or log-only.
   hypothesis with its measurements, never as a bare conclusion.
 - **Two sensors, one model.** Volume (NetFlow) and behaviour (Zeek) each cover what the
   other is blind to. Every detector trains and scores on both.
-- **A SOC surface that closes the loop.** A read-only web console with an alert review
-  lifecycle (ack / resolve / false-positive), a near-miss view for threshold tuning, and a
-  complete alert audit — plus a CLI and a TUI for operations.
+- **A SOC surface that closes the loop.** A web console with accounts — admin and viewer
+  roles — and an alert review lifecycle (ack / resolve / false-positive), a near-miss view for
+  threshold tuning, and a complete alert audit — plus a CLI and a TUI for operations.
 - **Fail-open by design.** The default mode is passive capture. In-path interception is
   opt-in, gated, and defended by a watchdog with a measured recovery story.
 
@@ -73,7 +73,8 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 **Operate.**
 
 - `weirvern` CLI: install checks, apply, wait, status, logs, lifecycle, tuning.
-- A read-only web console on a NodePort — it cannot start, stop, or apply anything.
+- A web console on a NodePort with accounts and two roles (admin / viewer) — it cannot start,
+  stop, or apply anything.
 - Health probes, ingestion trends, table sizes, and an alert audit that shows every
   decision the alerting layer made, including what it suppressed and why.
 
@@ -115,8 +116,8 @@ Alerts via [Pushover](https://pushover.net), or log-only.
                                                         ▼
                                              ┌───────────────────────┐      ┌──────────────┐
                                              │  weirvern-worker     │      │ weirvern-gui │
-                                             │  ensemble detectors   │ ───► │ read-only    │
-                                             │  (scikit-learn)       │      │ SOC console  │
+                                             │  ensemble detectors   │ ───► │ SOC console  │
+                                             │  (scikit-learn)       │      │ (accounts)   │
                                              └──────────┬────────────┘      └──────────────┘
                                                         ▼
                                              ┌───────────────────────┐
@@ -131,10 +132,10 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.6.6` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.6.6` | Read-only web UI on NodePort 30088 |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.6.6` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.6.6` | Applies the ClickHouse schema |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.6.7` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.6.7` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.6.7` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.6.7` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -347,8 +348,8 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.6.6 .
-podman push registry.example.com/weirvern-worker:0.6.6
+podman build -t registry.example.com/weirvern-worker:0.6.7 .
+podman push registry.example.com/weirvern-worker:0.6.7
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
 # prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
@@ -366,7 +367,7 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.6
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.7
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 cd ..
 ```
@@ -541,11 +542,11 @@ harness can fail. See [Detection and alerting](#detection-and-alerting).
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.6.6 .
-podman push registry.example.com/weirvern-worker:0.6.6
+podman build -t registry.example.com/weirvern-worker:0.6.7 .
+podman push registry.example.com/weirvern-worker:0.6.7
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.6 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.7 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -585,7 +586,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.6.6
+podman rmi registry.example.com/weirvern-worker:0.6.7
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and
@@ -838,9 +839,35 @@ Three design points matter when reading the numbers:
 
 ### The web GUI
 
-Read-only by design, served from the worker image on **NodePort 30088**. It cannot start,
+**Accounts and roles**, served from the worker image on **NodePort 30088**. It cannot start,
 stop, or apply anything: a monitoring surface that can mutate the thing it monitors turns a
-UI bug into an outage.
+UI bug into an outage — but it does manage the deployment's configuration and its own
+accounts, and both are gated.
+
+**Setup is one step.** The GUI creates a default `admin` account on its first startup and
+prints the generated password **once** to the pod log:
+
+```
+kubectl -n weirvern logs deploy/weirvern-gui | grep "initial admin"
+```
+
+Sign in with `admin` and that password, choose your own password when prompted (the change
+is forced), then add accounts from **Settings → Users**. There is no email on this
+deployment: to help someone who lost their password, an admin uses **Reset password** on
+their row and hands over the temporary one, which the account is forced to change at next
+sign-in.
+
+Two roles, deliberately only two:
+
+- **admin** — reads everything, changes settings, manages accounts.
+- **viewer** — reads everything, changes nothing. Settings render as values with no controls.
+
+Reads require a signed-in account; writes require an admin. The deployment's operator token
+(in `weirvern-secrets`) still works everywhere an admin does — it is the break-glass
+credential that recovers a lost admin account and drives automation, so accounts can never
+lock a deployment out of its own configuration. Accounts live in a `weirvern-users`
+ConfigMap, created on first startup; password hashes are scrypt with a per-user salt, and
+sessions are in memory, so a restart signs everyone out.
 
 | View | What it answers |
 |---|---|
@@ -852,7 +879,7 @@ UI bug into an outage.
 | Zeek | Per-log volume, a trend by log, observed services, DNS names; **click a log to see which hosts it contains**, then a host to drill into it |
 | Models | Training history, score distribution, model agreement, per-feature deviations — and **near misses**: the windows that scored close to the bar, or cleared it and were stopped by the agreement gate. The surface a threshold change should be judged against |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
-| Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version. Read-only, and it says so: the GUI is unauthenticated, so a settings form here would be a way to reconfigure a sensor from the network. Secrets show as `(set, N chars)` or `(not set)`, never in value |
+| Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version — each setting rendered as the control that changes it (toggle / dropdown / bounded number) with a **?** explaining what it does, plus **Account** (change your password) and **Users** (admin-only account management). Secrets show as `(set, N chars)` or `(not set)`, never in value |
 
 Three cross-cutting rules, each of which exists because its opposite shipped once:
 

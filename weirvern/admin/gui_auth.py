@@ -6,9 +6,11 @@ reconfigure a sensor from the network. That was the right default and it is now 
 changed -- carefully -- because an operator asked to manage settings from the GUI rather than the
 TUI.
 
-WHAT CHANGES AND WHAT DOES NOT. Reads stay open: a monitoring surface that demands a password to
-show a chart is a monitoring surface nobody checks during an incident. WRITES require a token.
-Unset token means no writes, which is what a deployment that has not opted in must do.
+WHAT CHANGES AND WHAT DOES NOT. WRITES require admin rights: an admin session or the deployment
+operator token. READS were open until accounts were added; they now require a signed-in account
+(either role), because flow data is sensitive and "a viewer may read" only means something if
+reading is attributable. The break-glass token still works everywhere an admin does, so a lost
+admin password cannot lock a deployment out, and it remains the credential for automation.
 
 THREAT MODEL, STATED PLAINLY. This is not a public service and is not built like one. It defends
 against:
@@ -51,6 +53,19 @@ TOKEN_ENV = "WEIRVERN_GUI_TOKEN"
 # sessionStorage); the cookie exists so a page reload does not force re-entry.
 AUTH_HEADER = "X-Weirvern-Token"
 AUTH_COOKIE = "weirvern_token"
+
+# THE SESSION CREDENTIAL, which is a different thing from the operator token above and uses a
+# different header on purpose. The token is a deployment-wide break-glass admin credential: one
+# value that recovers a lost admin account and drives automation. A session belongs to ONE
+# signed-in account and is revoked by signing out. Conflating them would make signing out
+# either impossible or a rotation of the deployment secret.
+#
+# HEADER ONLY, NO COOKIE FALLBACK. A cookie would be attached to requests the browser makes
+# from any site, which is the classic CSRF shape; a custom header cannot be set by a
+# cross-site form, so header-only means a session cannot ride along on a forged request even
+# if the attacker can make the browser try. The UI stores the session in sessionStorage, so a
+# reload within the tab keeps it.
+SESSION_HEADER = "X-Weirvern-Session"
 
 # How many consecutive failures from one address before the delay grows. Not a lockout: a lockout
 # on a LAN tool is a way to deny an operator access to their own sensor. A delay costs a brute-force
@@ -201,3 +216,15 @@ def token_from_request(handler) -> str | None:
         if name == AUTH_COOKIE and value:
             return value.strip()
     return None
+
+
+def session_from_request(handler) -> str | None:
+    """The session a request presents. HEADER ONLY -- see SESSION_HEADER for the CSRF reason.
+
+    Same duck-typed interface as above, so the account tests need no socket either.
+    """
+    try:
+        header = handler.headers.get(SESSION_HEADER, "") or ""
+    except Exception:  # noqa: BLE001
+        return None
+    return header.strip() or None
