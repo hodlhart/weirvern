@@ -1,11 +1,10 @@
 # The web GUI.
 #
-# READ-ONLY BY DESIGN, and that is what makes exposing it acceptable. There is no
-# code path from an HTTP request to a mutating cluster operation: start, stop and
-# apply stay in the CLI and TUI, which an operator runs knowingly. If lifecycle
-# buttons are ever added here, authentication must come FIRST -- this Deployment
-# has none, and a button without it would silently hand cluster control to anyone
-# who can reach the NodePort.
+# AUTHENTICATED, AND THAT IS WHAT MAKES THE WRITES ACCEPTABLE. It began read-only by
+# design; it now writes the configuration and accounts under a signed-in admin account
+# (or the deployment operator token, as break-glass recovery). Reads require a signed-in
+# account whenever accounts are provisioned. Start, stop and apply still stay in the CLI
+# and TUI, which an operator runs knowingly -- there is no lifecycle control here.
 #
 # WHY A NodePort RATHER THAN AN INGRESS OR A PORT-FORWARD:
 #   * An ingress would need a controller, which a homelab may not have and which

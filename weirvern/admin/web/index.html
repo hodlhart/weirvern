@@ -9,6 +9,58 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!--
+  THE SIGN-IN GATE, and the forced-password-change gate beside it. Both sit at the top of
+  <body> and cover the page until satisfied; the app boots only after /api/session says the
+  caller may in. Rendered by app.js from the server's answer -- never decided client-side,
+  because a gate the browser controls is a gate the browser can skip.
+-->
+<div id="auth-gate" class="gate hidden">
+  <div class="gate-card">
+    <img class="mark" src="/logo.png" alt="" width="36" height="36">
+    <h2>Weirvern</h2>
+    <p class="muted" id="gate-note">Sign in to view this dashboard.</p>
+    <form id="gate-form" autocomplete="off">
+      <label class="gate-field">username
+        <input id="gate-user" type="text" autocomplete="username" spellcheck="false" required>
+      </label>
+      <label class="gate-field">password
+        <input id="gate-pass" type="password" autocomplete="current-password" required>
+      </label>
+      <button id="gate-submit" class="primary" type="submit">Sign in</button>
+      <p id="gate-error" class="gate-error" role="alert"></p>
+    </form>
+    <p class="muted gate-foot">This page is served over plain HTTP with no TLS, so a password
+      entered here crosses the network in the clear — use it on a trusted network, and treat
+      these credentials as LAN credentials rather than secrets of record.</p>
+  </div>
+</div>
+
+<!-- The forced change, shown when the server says must_change. It cannot be dismissed; the
+     only way past it is the password route, which is also the only route a must_change
+     account may call. -->
+<div id="pw-gate" class="gate hidden">
+  <div class="gate-card">
+    <img class="mark" src="/logo.png" alt="" width="36" height="36">
+    <h2>Choose a new password</h2>
+    <p class="muted">This account is still using the password it was created with. Pick your
+      own before continuing — the dashboard stays locked until you do.</p>
+    <form id="pw-form" autocomplete="off">
+      <label class="gate-field">current password
+        <input id="pw-current" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="gate-field">new password
+        <input id="pw-new" type="password" autocomplete="new-password" required>
+      </label>
+      <label class="gate-field">confirm new password
+        <input id="pw-confirm" type="password" autocomplete="new-password" required>
+      </label>
+      <button id="pw-submit" class="primary" type="submit">Change password</button>
+      <p id="pw-error" class="gate-error" role="alert"></p>
+    </form>
+  </div>
+</div>
+
 <header>
   <div class="brand">
     <img class="mark" src="/logo.png" alt="" width="28" height="28">
@@ -17,6 +69,8 @@
   <div class="status" id="statusline">
     <span class="pill" id="health-pill">loading…</span>
     <span class="muted" id="fetched"></span>
+    <span class="muted" id="user-chip" title=""></span>
+    <button id="sign-out" class="hidden" title="End this session">Sign out</button>
     <button id="refresh" title="Reload now">Refresh</button>
     <label class="auto"><input type="checkbox" id="autorefresh" checked> auto (15s)</label>
   </div>
@@ -509,12 +563,11 @@
 
   <!-- ── Settings ─────────────────────────────────────────────────────── -->
   <!--
-    READ-ONLY, AND THAT IS THE DESIGN RATHER THAN AN OMISSION. This GUI is served over a LAN port
-    with no authentication, and the About tab's removal note already recorded why: nothing an
-    unauthenticated HTTP request can do may change the deployment. So Settings shows the
-    EFFECTIVE configuration -- what is actually running, read from the cluster -- and states where
-    to change it (`weirvern config set`, or the TUI). Showing values without offering knobs is
-    more useful than offering knobs without authentication.
+    AUTHENTICATED, WITH ROLES. This GUI began read-only because it is served over a LAN port;
+    it now requires a signed-in account (either role), writes the configuration under an admin
+    account or the break-glass operator token, and manages accounts. Settings shows the
+    EFFECTIVE configuration -- what is actually running, read from the cluster -- and offers
+    the controls to change it to admins only. Viewers see every value, read-only.
   -->
   <section id="view-settings" class="view">
     <div class="card">
@@ -523,25 +576,71 @@
       <p class="muted">These are the values the running deployment is using, read from the
         cluster. Each setting is shown as the control that changes it — a toggle for on/off, a
         dropdown for a choice, a bounded number for a number — with a <strong>?</strong> beside
-        every row explaining what it does and what happens when it moves. Without an operator
-        token this page is read-only; with one it can stage changes and apply them together,
-        because writes are gated on the token rather than on the page. It is served without
-        authentication for reads, so anything an HTTP request could write without the token
-        would be a way to reconfigure the sensor from the network. To change values without a
-        token, use <code>weirvern config set</code> or the TUI, then apply.</p>
+        every row explaining what it does and what happens when it moves. Who may change a
+        setting depends on the account you signed in with: <strong>admins</strong> can stage and
+        apply changes, and <strong>viewers</strong> see every value read-only. Secrets
+        show as <code>(set, N chars)</code> or <code>(not set)</code>, never in value. To change
+        values without a web account, use <code>weirvern config set</code> or the TUI, then
+        apply.</p>
       <div class="controls">
         <button id="st-reload">Reload</button>
       </div>
     </div>
 
     <!--
-      THE TOKEN CONTROL. Shown when writes are disabled (so the operator knows what to set) and
-      when they are enabled (so the UI can request a token on a fresh page load). Writes are
-      opt-in server-side: this control cannot enable anything, it can only present a token the
-      server will check.
+      WHO YOU ARE, on the page where it changes what the controls do. Renders from the
+      server's answer about the current session: a signed-in account gets a change-password
+      form, the break-glass token gets a statement instead (it has no password to change).
+    -->
+    <div class="card" id="st-account-card">
+      <h2>Account</h2>
+      <p class="muted" id="st-account-note">checking…</p>
+      <div class="controls hidden" id="st-account-pw">
+        <input id="st-pw-current" type="password" placeholder="current password"
+               autocomplete="current-password" spellcheck="false">
+        <input id="st-pw-new" type="password" placeholder="new password"
+               autocomplete="new-password" spellcheck="false">
+        <button id="st-pw-save">Change password</button>
+      </div>
+      <p class="muted" id="st-pw-result"></p>
+    </div>
+
+    <!--
+      ACCOUNT MANAGEMENT, admin-only. The row for the signed-in account says "you" rather than
+      offering a delete button aimed at the reader. The last admin guard lives server-side;
+      the UI just surfaces whatever the server refuses.
+    -->
+    <div class="card hidden" id="st-users-card">
+      <h2>Users <span class="muted">admins edit everything; viewers read</span></h2>
+      <p class="muted" id="st-users-note">loading…</p>
+      <table id="st-users">
+        <thead><tr><th>User</th><th>Role</th><th>Created</th><th>Password</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="controls" id="st-user-add">
+        <input id="st-new-user" type="text" placeholder="username" autocomplete="off" spellcheck="false">
+        <select id="st-new-role">
+          <option value="viewer" selected>viewer</option>
+          <option value="admin">admin</option>
+        </select>
+        <input id="st-new-pass" type="password" placeholder="initial password"
+               autocomplete="new-password" spellcheck="false">
+        <button id="st-user-create">Add user</button>
+      </div>
+      <p class="muted" id="st-user-result"></p>
+      <p class="muted">A new account must change its password at first sign-in. There is no
+        email on this deployment — to help someone who lost theirs, use
+        <strong>Reset password</strong> on their row and hand them the temporary one.</p>
+    </div>
+
+    <!--
+      THE TOKEN CONTROL. Shown when no accounts are provisioned (so the operator knows what to
+      set) and when they are (so a token can still be used as the break-glass credential). The
+      token is the deployment-wide recovery credential: it recovers a lost admin account and
+      drives automation; it is not an account, so it cannot change its own password.
     -->
     <div class="card" id="st-auth-card">
-      <h2>Operator access</h2>
+      <h2>Break-glass access <span class="muted">operator token</span></h2>
       <p class="muted" id="st-auth-note"></p>
       <div class="controls" id="st-auth-controls">
         <input id="st-token" type="password" placeholder="operator token" autocomplete="off"
@@ -550,10 +649,11 @@
         <button id="st-token-clear">Forget token</button>
       </div>
       <p class="muted">The token is kept in this browser tab only (sessionStorage) and is sent as
-        the <code>X-Weirvern-Token</code> header. This page is served over plain HTTP with no TLS,
-        so anyone who can read the network between you and the sensor can read it — use it on a
-        trusted network, and treat the token as a LAN credential rather than a secret of
-        record.</p>
+        the <code>X-Weirvern-Token</code> header. It grants admin rights without an account —
+        use it to recover a lost admin password or from scripts, not for day-to-day reading.
+        This page is served over plain HTTP with no TLS, so anyone who can read the network
+        between you and the sensor can read it — use it on a trusted network, and treat the
+        token as a LAN credential rather than a secret of record.</p>
     </div>
 
     <div class="card">

@@ -89,7 +89,9 @@ async function main() {
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl };
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
+                   AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
+                   refreshChrome, getSession, setSession, createUser, setRole, changePassword };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -176,6 +178,7 @@ async function main() {
   const SETTINGS_PAYLOAD = {
     available: true, reason: "",
     writes: { enabled: true, reason: "" },
+    caller: { username: "", role: "", via: "" },
     editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "intercept_segment",
                     "pushover_enabled"],
     // The control spec rides with the payload (see cluster_config.SETTING_CONTROLS): the browser
@@ -293,6 +296,26 @@ async function main() {
   //
   // Now there is one function. `fetchOverride` is the deliberate-failure hook: a check that needs a
   // request to fail sets it, and clears it afterwards.
+  //
+  // THE SESSION STUB IS MUTABLE, and the POST replies below rewrite it, so the fake server
+  // behaves like the real one: signing in makes /api/session report an authenticated admin,
+  // signing out clears it. Checks then drive the REAL client code against a session state they
+  // set up, and the boot path can be re-run by calling H.boot() again. It starts at
+  // `accounts: false` so every check written before accounts existed still describes the
+  // pre-accounts posture this file has always covered.
+  const SESSION_STUB = { accounts: false, authenticated: false, username: "", role: "",
+                         must_change: false, via: "", note: "" };
+  const USERS_PAYLOAD = {
+    available: true,
+    roles: ["admin", "viewer"],
+    users: [
+      { username: "admin", role: "admin", must_change: false,
+        created_at: "2026-09-21T00:00:00Z", updated_at: "2026-09-21T00:00:00Z" },
+      { username: "reader", role: "viewer", must_change: true,
+        created_at: "2026-09-21T00:10:00Z", updated_at: "2026-09-21T00:10:00Z" },
+    ],
+  };
+
   let fetchOverride = null;
   const ROUTES = [];
   window.fetch = function (url, opts) {
@@ -305,7 +328,31 @@ async function main() {
       POSTED.push({ url: u, headers: opts.headers || {}, body: opts.body || "" });
       let sent = {};
       try { sent = JSON.parse(opts.body || "{}"); } catch (_e) { sent = {}; }
-      const reply = u.includes("/api/settings/plan") ? planReply(sent.changes)
+      const reply = u.includes("/api/login")
+                    ? (sent.password === "correct-password"
+                        ? (Object.assign(SESSION_STUB, { accounts: true, authenticated: true,
+                            username: sent.username || "admin", role: "admin",
+                            must_change: false, via: "session" }),
+                           { ok: true, session: "test-session-token",
+                             username: sent.username || "admin", role: "admin",
+                             must_change: false })
+                        : { ok: false, error: "the username or password is not correct" })
+                  : u.includes("/api/logout")
+                    ? (Object.assign(SESSION_STUB, { authenticated: false, username: "",
+                        role: "", must_change: false, via: "" }), { ok: true })
+                  : u.includes("/api/password")
+                    ? (Object.assign(SESSION_STUB, { authenticated: false, username: "",
+                        role: "", must_change: false, via: "" }),
+                       { ok: true, signed_out: true, note: "password changed; sign in again" })
+                  : u.includes("/api/users/create")
+                    ? { ok: true, user: { username: sent.username || "newuser", role: sent.role || "viewer" } }
+                  : u.includes("/api/users/reset")
+                    ? { ok: true, username: sent.username || "" }
+                  : u.includes("/api/users/role")
+                    ? { ok: true, username: sent.username || "", role: sent.role || "" }
+                  : u.includes("/api/users/delete")
+                    ? { ok: true, username: sent.username || "" }
+                  : u.includes("/api/settings/plan") ? planReply(sent.changes)
                   : u.includes("/api/settings/apply")
                     ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                         restart_errors: [], note: "restarted deploy/weirvern-worker" }
@@ -331,6 +378,8 @@ async function main() {
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
     ["/api/zeek", ZEEK_PAYLOAD],
+    ["/api/session", SESSION_STUB],
+    ["/api/users", USERS_PAYLOAD],
     // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
     // cannot shadow the others; the dispatcher takes the first hit and /api/anomalies shares
     // no prefix with any of the above.
@@ -1182,6 +1231,141 @@ async function main() {
             !!body.window_start, String(body.window_start));
     }
   }
+
+  // ── accounts: the sign-in gate, roles, and the Users panel ────────────────────────────────
+  //
+  // Everything below drives the SHIPPING code against the MUTABLE session stub, which behaves
+  // like the real server: signing in flips /api/session to an authenticated admin, signing out
+  // clears it. The checks assert OUTCOMES the operator would see -- gates shown/hidden, controls
+  // present/absent per role, the Users panel admin-only -- and never trust client-side state
+  // the server has not confirmed.
+
+  // 1. PRE-ACCOUNTS POSTURE: with no accounts provisioned, no gate is shown. This is the
+  //    state the rest of this file runs in, so asserting it here documents why nothing above
+  //    ever hit a login wall.
+  check("no accounts means no sign-in gate (the pre-accounts posture)",
+        doc.getElementById("auth-gate").classList.contains("hidden"),
+        "auth gate visible with accounts:false");
+  check("the sign-in form is a password input, not plain text",
+        doc.getElementById("gate-pass").type === "password");
+
+  // 2. A FAILED SIGN-IN shows the server's reason -- and does NOT say which half was wrong.
+  let loginErr = null;
+  try { await H.doLogin("admin", "wrong-password"); } catch (e) { loginErr = e; }
+  check("a wrong password is refused", !!loginErr, "doLogin resolved with a wrong password");
+  check("the refusal does not say whether the user exists",
+        loginErr && /username or password/.test(String(loginErr.message)),
+        loginErr ? String(loginErr.message) : "no error");
+
+  // 3. A SUCCESSFUL SIGN-IN mints a session, reports the account, and boots the dashboard.
+  SESSION_STUB.accounts = true;
+  await H.doLogin("admin", "correct-password");
+  await H.boot();
+  check("signing in stores a session token that requests then carry",
+        H.getSession() === "test-session-token", `session=${H.getSession()}`);
+  check("the user chip names the signed-in account and role",
+        /admin/.test(doc.getElementById("user-chip").textContent),
+        doc.getElementById("user-chip").textContent);
+  check("the auth gate is hidden after signing in",
+        doc.getElementById("auth-gate").classList.contains("hidden"));
+  check("Sign out is offered to a signed-in account",
+        !doc.getElementById("sign-out").classList.contains("hidden"));
+
+  // 4. AN ADMIN SEES THE USERS PANEL, with every account and the role control.
+  await H.loadSettings();
+  check("the Users card is visible to an admin",
+        !doc.getElementById("st-users-card").classList.contains("hidden"));
+  const userRows = doc.querySelectorAll("#st-users tbody tr");
+  check("the Users table renders a row per account", userRows.length === 2,
+        `${userRows.length} rows`);
+  check("the signed-in account is marked 'you' rather than offered a Delete aimed at itself",
+        /you/.test(userRows[0].textContent) && !userRows[0].querySelector(".user-act.danger"),
+        userRows[0].textContent.slice(0, 80));
+  check("another account carries the Delete control",
+        !!userRows[1].querySelector(".user-act.danger"));
+  check("a role control is present per account",
+        doc.querySelectorAll("#st-users .user-role").length === 2);
+
+  // Adding a user POSTs the account and the forced-change flag.
+  const createBefore = POSTED.length;
+  doc.getElementById("st-new-user").value = "newviewer";
+  doc.getElementById("st-new-pass").value = "initial-pass-1";
+  doc.getElementById("st-new-role").value = "viewer";
+  await H.createUser();
+  const createReq = POSTED.slice(createBefore).find((r) => r.url.includes("/api/users/create"));
+  check("Add user POSTs to /api/users/create", !!createReq,
+        POSTED.slice(createBefore).map((r) => r.url).join(","));
+  if (createReq) {
+    const cb = JSON.parse(createReq.body || "{}");
+    check("the new account carries its role and must_change",
+          cb.username === "newviewer" && cb.role === "viewer" && cb.must_change === true,
+          JSON.stringify(cb));
+  }
+
+  // 5. A VIEWER CAN READ AND CANNOT EDIT. The settings payload flips to writes-disabled, which
+  //    is what the server sends a viewer; the controls must disappear rather than merely fail
+  //    on Apply.
+  SETTINGS_PAYLOAD.writes.enabled = false;
+  SESSION_STUB.username = "reader";
+  SESSION_STUB.role = "viewer";
+  await H.loadSession();
+  await H.loadSettings();
+  const viewerInputs = [...doc.querySelectorAll("#view-settings .setting-input, "
+    + "#view-settings .setting-select, #view-settings .setting-toggle")];
+  check("a viewer gets NO edit controls at all", viewerInputs.length === 0,
+        `${viewerInputs.length} control(s) rendered for a viewer`);
+  check("a viewer still SEES the values",
+        [...doc.querySelectorAll(".setting-val")].some((n) => n.textContent === "clickhouse"));
+  check("the viewer's Users card is hidden (account data is admin-only)",
+        doc.getElementById("st-users-card").classList.contains("hidden"));
+  check("the page tells the viewer why it is read-only",
+        /read-only|viewer/i.test(doc.getElementById("st-note").textContent),
+        doc.getElementById("st-note").textContent.slice(0, 120));
+  SETTINGS_PAYLOAD.writes.enabled = true;
+
+  // 6. A FORCED PASSWORD CHANGE gates the whole dashboard: the pw gate is shown and the auth
+  //    gate stays hidden (the account IS signed in; it just cannot use the dashboard yet).
+  SESSION_STUB.username = "admin";
+  SESSION_STUB.role = "admin";
+  SESSION_STUB.must_change = true;
+  await H.loadSession();
+  await H.boot();
+  check("must_change shows the forced password-change gate",
+        !doc.getElementById("pw-gate").classList.contains("hidden"),
+        "pw gate hidden while must_change is set");
+  check("the forced gate is not the sign-in gate (the account is signed in)",
+        doc.getElementById("auth-gate").classList.contains("hidden"));
+
+  // The change POSTs the current and new passwords, and returns to the sign-in gate.
+  const pwBefore = POSTED.length;
+  await H.changePassword("correct-password", "a-new-password-1");
+  const pwReq = POSTED.slice(pwBefore).find((r) => r.url.includes("/api/password"));
+  check("the password change POSTs to /api/password", !!pwReq,
+        POSTED.slice(pwBefore).map((r) => r.url).join(","));
+  if (pwReq) {
+    const pb = JSON.parse(pwReq.body || "{}");
+    check("the password POST carries both the current and the new password",
+          pb.current === "correct-password" && pb.new === "a-new-password-1",
+          JSON.stringify({ current: !!pb.current, next: !!pb.new }));
+  }
+  check("after changing the password the tab returns to the sign-in gate",
+        !doc.getElementById("auth-gate").classList.contains("hidden"));
+  SESSION_STUB.must_change = false;
+
+  // 7. SIGNING OUT clears the session and arms the gate again.
+  SESSION_STUB.accounts = true;
+  await H.doLogin("admin", "correct-password");
+  await H.doLogout();
+  check("signing out clears the stored session", H.getSession() === "",
+        `session=${H.getSession()}`);
+  check("signing out shows the sign-in gate again",
+        !doc.getElementById("auth-gate").classList.contains("hidden"));
+  // Back to the pre-accounts state so nothing after this block inherits a session.
+  SESSION_STUB.accounts = false;
+  SESSION_STUB.authenticated = false;
+  SESSION_STUB.username = "";
+  SESSION_STUB.role = "";
+  await H.boot();
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,

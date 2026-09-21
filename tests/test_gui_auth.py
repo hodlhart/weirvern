@@ -486,10 +486,12 @@ def test_the_response_never_says_whether_a_token_is_configured():
     """Distinguishing 'no token' from 'wrong token' helps an attacker, not an operator."""
     src = WEB.read_text()
     i = src.index("def _authorize(")
-    body = src[i:i + 2000]
+    body = src[i:i + 4000]
     # The disabled case explains itself (the operator needs to know); the WRONG case must not
-    # distinguish anything.
-    assert "a valid operator token is required" in body
+    # distinguish anything. The wording gained "admin session" when accounts landed -- a signed-in
+    # admin is now the normal write credential and the token is the break-glass path -- but the
+    # property is unchanged: one message for every kind of miss.
+    assert "a valid admin session or operator token is required" in body
     assert "the token was wrong" not in body.lower()
     assert "did not match" not in body.lower()
 

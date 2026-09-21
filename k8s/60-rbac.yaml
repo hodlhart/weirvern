@@ -93,9 +93,16 @@ rules:
   #
   # `patch` on configmaps is the whole of what a settings change needs. `update` is deliberately
   # NOT granted: a PUT replaces every key, which would wipe values the GUI never showed.
+  #
+  # `create` is here for ONE object: the account store (`weirvern-users`), which the GUI creates
+  # on first startup rather than shipping as a manifest. A placeholder manifest would be
+  # re-applied with empty values on every `kubectl apply -k`, silently wiping live accounts --
+  # the same failure mode the Secret has a note about in kustomization.yaml. The grant is
+  # namespace-scoped like everything else here, so a compromised GUI pod cannot create
+  # ConfigMaps anywhere else.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "patch", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -150,6 +150,54 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .review-act:hover { color: var(--fg); border-color: var(--accent); }
 
 .hidden { display: none; }
+
+/* ── the sign-in gate ─────────────────────────────────────────────────────────
+ * A full-viewport cover, above everything (z-index 100). It is shown and hidden by app.js
+ * from the SERVER's session answer -- the markup starts hidden so a deployment with no
+ * accounts never flashes a login form.
+ */
+.gate {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); padding: 20px; overflow: auto;
+}
+.gate-card {
+  width: 100%; max-width: 360px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.gate-card h2 { margin: 0; font-size: 20px; }
+.gate-card form { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
+.gate-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.gate-field input {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 10px; font: inherit;
+}
+.gate-field input:focus { outline: none; border-color: var(--accent); }
+.gate-card button.primary { padding: 9px 12px; }
+.gate-error { color: var(--danger); font-size: 13px; margin: 0; min-height: 1em; }
+.gate-foot { font-size: 11px; margin: 4px 0 0; }
+
+/* ── the user list ─────────────────────────────────────────────────────────── */
+#st-users { width: 100%; border-collapse: collapse; margin: 8px 0; }
+#st-users th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--border); }
+#st-users td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.user-role {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 6px; font: inherit;
+}
+.user-act {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+}
+.user-act:hover { border-color: var(--accent); }
+.user-act.danger:hover { border-color: var(--danger); color: var(--danger); }
+#st-user-add { flex-wrap: wrap; }
+#st-user-add input, #st-user-add select {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px; font: inherit;
+}
 .stats { display: flex; gap: 28px; flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; gap: 2px; }
 .stat .v { font-size: 22px; font-weight: 600; font-family: var(--mono); }

@@ -392,7 +392,14 @@ def test_no_orphan_placeholder_elements_remain():
                   #   st-auth-card / st-stage-card: wrappers whose CONTENTS are populated
                   #     (#st-auth-note, #st-stage-list/#st-stage-note); the cards themselves
                   #     are only shown or hidden
-                  "st-auth-card", "st-stage-card"}
+                  "st-auth-card", "st-stage-card",
+                  #   st-account-card / st-users-card / st-user-add: wrappers the account
+                  #     code shows or hides, and whose contents (#st-account-note, the users
+                  #     table's tbody, #st-user-result) carry the data
+                  "st-account-card", "st-users-card", "st-user-add",
+                  #   gate-submit / pw-submit: form submit buttons, handled by their forms'
+                  #     submit events rather than by a getElementById binding
+                  "gate-submit", "pw-submit"}
 
     orphans = {i for i in ids
                if i not in referenced and i not in scripts and i not in structural}

@@ -122,14 +122,22 @@ def test_a_boolean_setting_reads_as_enabled_or_disabled():
 # ── 3. read-only, and said so ──────────────────────────────────────────────────────────────
 
 
-def test_every_write_route_is_token_gated():
-    """The invariant changed shape, and this test changed with it.
+def test_every_write_route_consults_A_GATE():
+    """The invariant changed shape twice, and this test changed with it.
 
-    It used to assert there was NO write route at all, which was the right rule while the GUI had
-    no authentication. An operator has since asked to manage settings from the GUI, so the rule is
-    now: every write route consults the auth gate. The old assertion would have blocked a
-    requested feature; deleting it would have left the port open. It is REPLACED, and the property
-    it protected -- no unauthenticated write -- is what is asserted.
+    It used to assert there was NO write route at all -- right while the GUI had no
+    authentication. Then: every write route consults the auth gate. Now accounts exist, so
+    there are two legitimate shapes and every route must have one of them:
+
+      * an admin-gated write (`self._authorize()`), or
+      * a session-gated account route (`/api/logout`, `/api/password` -- every account may
+        sign out and change its own password), or
+      * the sign-in door itself (`/api/login`), which cannot require a session because it is
+        how a session is obtained; it carries its own throttle instead.
+
+    An `_authorize()`-less route that is none of those is the defect: an unauthenticated
+    configuration change. The allow-list is EXPLICIT so adding a new write route without a
+    gate fails this test rather than passing quietly.
     """
     src = (WEB.parent / "web.py").read_text()
 
@@ -140,7 +148,9 @@ def test_every_write_route_is_token_gated():
     for unsafe in ("def do_PUT", "def do_DELETE"):
         assert unsafe not in src, f"{unsafe} would be an unaudited write path"
 
-    # EVERY POST route must pass through _authorize before doing anything.
+    # Every POST route must be gated one way or another.
+    SESSION_GATED = {"_logout", "_password"}
+    DOOR = {"_login"}
     route = src[src.index("        def _route_post(self"):]
     route = route[:route.index("\n        def ", 10)]
     handlers = [ln.split("return self.")[1].strip().rstrip("()") for ln in route.splitlines()
@@ -149,6 +159,17 @@ def test_every_write_route_is_token_gated():
     for name in handlers:
         body = src[src.index(f"        def {name}(self"):]
         body = body[:body.index("\n        def ", 10)]
+        if name in DOOR:
+            assert "throttle" in body or "Throttle" in body, (
+                "the sign-in route carries no throttle, so passwords can be guessed at wire "
+                "speed"
+            )
+            continue
+        if name in SESSION_GATED:
+            assert "_require_session()" in body, (
+                f"the account route {name} does not require a session"
+            )
+            continue
         assert "self._authorize()" in body, (
             f"the write route {name} does not consult the auth gate, so it accepts an "
             f"unauthenticated configuration change"

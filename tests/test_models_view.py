@@ -328,7 +328,11 @@ def test_the_models_route_does_not_require_the_health_probe_path_to_change():
     """The liveness probe must stay independent of ClickHouse. A regression here would
     restart the GUI whenever the database is slow, hiding the real problem."""
     web_py = (Path(__file__).resolve().parents[1] / "weirvern" / "admin" / "web.py").read_text()
-    healthz = web_py[web_py.index('"/api/healthz"'):]
+    # ANCHORED ON THE ROUTE DISPATCH LINE, not the bare path string: "/api/healthz" now also
+    # appears in the READ_EXEMPT tuple near the top of the file, so `index('"/api/healthz"')`
+    # sliced from there and the assertion read unrelated prose (the GuiContext docstring).
+    # The dispatch line is unique to the healthz branch of _route.
+    healthz = web_py[web_py.index('if path == "/api/healthz":'):]
     healthz = healthz[:healthz.index("_error(404")]
     # Assert on the CODE, not the surrounding prose: the comment legitimately names
     # ClickHouse to explain why it is not used. Strip comments, then look for a query.
