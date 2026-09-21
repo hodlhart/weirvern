@@ -149,7 +149,12 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 }
 .review-act:hover { color: var(--fg); border-color: var(--accent); }
 
-.hidden { display: none; }
+/* `.hidden` MUST WIN UNCONDITIONALLY. It is applied alongside component classes that set
+   their own `display` (.gate sets flex), and with equal specificity the cascade decides by
+   SOURCE ORDER -- .gate came after .hidden here, so the "hidden" forced-password gate stayed
+   painted on top of the sign-in gate and neither form was reachable. `!important` is the
+   point, not a smell: hidden means hidden, whatever else the element carries. */
+.hidden { display: none !important; }
 
 /* ── the sign-in gate ─────────────────────────────────────────────────────────
  * A full-viewport cover, above everything (z-index 100). It is shown and hidden by app.js

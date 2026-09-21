@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — the gates actually hide: a CSS cascade collision that covered the sign-in form
+
+**Symptom, reported from the box:** "it says log in first. i cant change the password."
+The forced-password gate was painted over the sign-in gate; the sign-in form could not be
+reached at all, and submitting the password form without a session correctly answered
+"sign in first".
+
+**Root cause, one line of CSS.** `.hidden { display: none }` and `.gate { display: flex }`
+have equal specificity, so the cascade decides by source order — and `.gate` came LATER in
+`style.css`. Both gates carry `.gate` and start with `.hidden`; the "hidden" class was on
+the element the whole time and lost to the later rule. The forced-change gate (later in the
+DOM, same z-index) sat on top of the sign-in gate, and the dashboard was unreachable for
+every caller, signed in or not. The fix is `.hidden { display: none !important; }`: hidden
+means hidden, whatever else the element carries.
+
+**Why every existing guard was green through this.** All of them asserted class NAMES —
+`classList.contains("hidden")` was true the entire time. What an operator sees is decided
+by the COMPUTED style, and nothing computed it. Class-name checks cannot see a cascade
+collision by construction.
+
+**What now guards it, each proven to fail on the old CSS (`flex/flex`) and pass on the fix:**
+- Four DOM-harness checks read `getComputedStyle` at every gate state: the harness now
+  injects the real `style.css` so it measures the shipping cascade, not just the markup.
+- A Python test scans the stylesheet for every class that shares an element with `hidden`
+  and requires `hidden` to win — via `!important` or source order (guard proof: reverting
+  the fix turns it red with the exact colliding rule).
+
+**Two more defects the same report surfaced, fixed in the same release:**
+
+- **The password form dead-ended on an expired session.** With the cascade fixed, a change
+  submitted after the session had ended (revoked by another tab, expired, GUI restarted)
+  still answered only "sign in first" while leaving the operator on a form that could not
+  work. The client now clears the dead session and returns to the sign-in gate with a note
+  saying what happened and what to do. The harness pins the path (`stale-session-value` →
+  refused → session cleared → sign-in gate painted with the pointer).
+- **The GUI logged nothing at INFO.** Python's last-resort handler prints WARNING and above,
+  so a deployment's log carried the bootstrap password and rejected sign-ins but not ONE
+  successful sign-in, password change, role change or account creation — which is exactly
+  what diagnosing "I can't sign in" needs. `weirvern gui` now configures INFO logging, the
+  same level the worker and ingester already use.
+
+### Fixed
+
+- The sign-in and forced-password gates actually hide when they should, so the sign-in
+  form is reachable and the forced-change flow completes as designed.
+- A password change on an expired session returns to the sign-in gate instead of dead-ending.
+- The GUI service logs its account events at INFO, so the pod log is readable as an audit
+  trail rather than a list of failures.
+
 ## Unreleased — accounts: a default admin at setup, roles, and a sign-in gate
 
 The GUI has one credential until this release (the shared operator token), which is not an

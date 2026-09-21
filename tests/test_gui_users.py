@@ -28,6 +28,7 @@ narrowest way available, and says so.
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -674,6 +675,66 @@ def test_the_js_drives_every_gate_element_the_html_declares():
     app = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
     for eid in ("gate-form", "pw-form", "sign-out", "st-pw-save", "st-user-create"):
         assert f'"{eid}"' in app, f"#{eid} exists in the HTML but nothing in app.js references it"
+
+
+def test_hidden_wins_the_cascade_over_every_display_rule_it_shares_an_element_with():
+    """THE BUG THIS PINS, reported from the box: "it says log in first. i cant change the
+    password."
+
+    `.hidden { display: none }` and `.gate { display: flex }` have equal specificity, so the
+    cascade decided by SOURCE ORDER -- and `.gate` came later in the file. The forced-password
+    gate, which carries BOTH classes, therefore stayed painted on top of the sign-in gate
+    (same z-index, later in the DOM): the sign-in form was unreachable underneath, submitting
+    the password form reached the server with no session, and every route said "sign in first".
+
+    The class was correct the entire time, which is why every class-name assertion passed.
+    This test does what the browser does: for every class that shares an element with `hidden`
+    in the markup, find the rules that set `display` on it, and require `hidden` to still win --
+    either via `!important` or by coming later in the source. A cascade collision is invisible
+    to class-name checks by construction; this is the narrowest check that can see it.
+    """
+    web = ROOT / "weirvern" / "admin" / "web"
+    css = (web / "style.css").read_text()
+    html = (web / "index.html").read_text()
+
+    companions: set[str] = set()
+    for m in re.finditer(r'class="([^"]*\bhidden\b[^"]*)"', html):
+        companions.update(c for c in m.group(1).split() if c != "hidden")
+    assert companions, "no element carries `hidden` in index.html; this test has lost its subject"
+
+    m = re.search(r"\.hidden\s*\{([^}]*)\}", css)
+    assert m, "no .hidden rule exists in style.css"
+    hidden_body, hidden_start = m.group(1), m.start()
+    hidden_important = "!important" in hidden_body
+
+    collisions = []
+    for rule in re.finditer(r"([^{}@]+)\{([^}]*)\}", css):
+        sel, body = rule.group(1), rule.group(2)
+        if rule.start() < hidden_start:
+            continue  # earlier in source: .hidden beats it at equal specificity
+        if "display" not in body:
+            continue
+        for cls in companions:
+            if re.search(r"\." + re.escape(cls) + r"(?![\w-])", sel):
+                collisions.append((cls, sel.strip(), body.strip()[:60]))
+    if not hidden_important:
+        assert not collisions, (
+            "a rule later in style.css sets `display` on a class that shares an element with "
+            f"`hidden`, and `.hidden` has no !important to beat it -- the element will stay "
+            f"painted no matter how often the JS adds `hidden`: {collisions}"
+        )
+
+
+def test_every_gate_state_the_harness_asserts_is_computed_not_merely_classed():
+    """The harness must read getComputedStyle for gate visibility. Class-name assertions were
+    green through the entire outage this repo shipped once: `classList.contains("hidden")`
+    was true while the element computed to `flex` and covered the page."""
+    js = (ROOT / "scripts" / "jsdom_render.js").read_text()
+    assert "getComputedStyle" in js, (
+        "the DOM harness no longer computes styles; gate visibility is asserted by class "
+        "name only, which cannot see a cascade collision"
+    )
+    assert "gateDisplay" in js, "the computed-style gate helper is gone from the harness"
 
 
 def test_the_harness_exercises_the_account_flows():
