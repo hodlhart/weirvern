@@ -157,7 +157,7 @@ class Settings:
     zeek_iface: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACE", ""))
     mgmt_iface: str = field(default_factory=lambda: os.environ.get("MGMT_IFACE", ""))
 
-    # HOW the sensor gets its packets: "loch" (passive promisc/SPAN capture) or "weir"
+    # HOW the sensor gets its packets: "loch" (passive promisc/SPAN capture) or "siphon"
     # (in-path ARP intercept). Normalised through the mode module so a mechanism word
     # like "intercept" typed into a config file still resolves, and so an unknown value
     # is preserved for reporting rather than silently defaulting to something else.
@@ -169,9 +169,9 @@ class Settings:
         default_factory=lambda: _env_mode("SENSOR_MODE")
     )
 
-    # Weir mode only: comma-separated addresses (or CIDRs) to intercept, or "*" for
+    # Siphon mode only: comma-separated addresses (or CIDRs) to intercept, or "*" for
     # every host on the capture segment. Empty means nothing is intercepted even if the
-    # mode says weir, so enabling the mode cannot by itself divert traffic — the
+    # mode says siphon, so enabling the mode cannot by itself divert traffic — the
     # targets are a separate, explicit decision.
     intercept_targets: str = field(
         default_factory=lambda: os.environ.get("INTERCEPT_TARGETS", "")

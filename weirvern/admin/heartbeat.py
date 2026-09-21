@@ -2,12 +2,12 @@
 
 WHY: the GUI runs in its own pod and cannot see the sensor's filesystem, so it could only
 ever show the CONFIGURED mode from the ConfigMap -- a statement of intent, not of reality.
-Those differ exactly when it matters: a weir process that died, or was never started, still
-has SENSOR_MODE=weir in the ConfigMap, so a dashboard reading the config would show
+Those differ exactly when it matters: a siphon process that died, or was never started, still
+has SENSOR_MODE=siphon in the ConfigMap, so a dashboard reading the config would show
 "intercepting N hosts" for a sensor that is not running.
 
 This runs as a small loop beside the capture, in its own thread so a slow ClickHouse never
-delays forwarding -- in weir mode Weirvern is a router, and a heartbeat is never worth a
+delays forwarding -- in siphon mode Weirvern is a router, and a heartbeat is never worth a
 packet.
 
 EVERY FAILURE HERE IS NON-FATAL. A sensor that cannot report its status must still capture

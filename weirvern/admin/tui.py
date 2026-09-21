@@ -206,7 +206,7 @@ class WeirvernTUI(App):
                 yield Static(id="mode-status", classes="hint")
                 with Horizontal(id="mode-row"):
                     yield Button("Switch to loch (passive)", id="btn-mode-loch")
-                    yield Button("Switch to weir (in-path)", id="btn-mode-weir", variant="warning")
+                    yield Button("Switch to siphon (in-path)", id="btn-mode-siphon", variant="warning")
                     yield Button("Check", id="btn-mode-check")
                 with Horizontal(id="action-row"):
                     yield Select(
@@ -601,10 +601,10 @@ class WeirvernTUI(App):
 
     # ── mode ───────────────────────────────────────────────────────────────
     #
-    # WHY THIS IS A SEPARATE CONTROL: `loch` and `weir` are not two settings of one dial.
-    # loch observes; weir puts Weirvern in the path, so a crashed sensor becomes a LAN
+    # WHY THIS IS A SEPARATE CONTROL: `loch` and `siphon` are not two settings of one dial.
+    # loch observes; siphon puts Weirvern in the path, so a crashed sensor becomes a LAN
     # outage rather than a monitoring gap. The panel therefore states the impact and the
-    # missing prerequisites BEFORE offering the switch, and `weir` is a warning-variant
+    # missing prerequisites BEFORE offering the switch, and `siphon` is a warning-variant
     # button on purpose.
 
     def _mode_text(self, mode: str, verdict) -> str:
@@ -630,7 +630,7 @@ class WeirvernTUI(App):
         operator's laptop would naturally read.
 
         Unknown is reported as ABSENT. Assuming a capability we could not confirm would
-        defeat the gate: the whole point is to refuse weir when the sensor cannot forward,
+        defeat the gate: the whole point is to refuse siphon when the sensor cannot forward,
         because the alternative is a LAN outage.
         """
         from weirvern.admin.runtime import detect_capabilities
@@ -638,7 +638,7 @@ class WeirvernTUI(App):
         caps = detect_capabilities(self.project_dir)
         if not (caps.kubectl and caps.cluster_available):
             self.notify(
-                "no cluster reachable — cannot confirm the sensor's capabilities, so weir "
+                "no cluster reachable — cannot confirm the sensor's capabilities, so siphon "
                 "is treated as unavailable",
                 severity="warning", timeout=8,
             )
@@ -673,16 +673,16 @@ class WeirvernTUI(App):
     def _b_mode_loch(self) -> None:
         self._set_mode("loch")
 
-    @on(Button.Pressed, "#btn-mode-weir")
-    def _b_mode_weir(self) -> None:
-        self._set_mode("weir")
+    @on(Button.Pressed, "#btn-mode-siphon")
+    def _b_mode_siphon(self) -> None:
+        self._set_mode("siphon")
 
     def _set_mode(self, wanted: str) -> None:
         """Write SENSOR_MODE, but only after the mode's own gate passes.
 
         The gate is the CLI's, imported rather than reimplemented: two copies of a safety
         check drift, and the one that drifts is the one nobody tests. Refusing here matches
-        `weirvern mode weir` refusing -- the TUI must not be a way around it.
+        `weirvern mode siphon` refusing -- the TUI must not be a way around it.
         """
         from weirvern.admin import mode as mode_mod
 

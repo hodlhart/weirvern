@@ -142,28 +142,32 @@ spec:
                   echo "[zeek] mode loch — PASSIVE capture on $IFACE."
                   echo "[zeek] mode loch — Weirvern observes only; it cannot affect traffic."
                   ;;
-                weir)
-                  echo "[zeek] mode weir — IN-PATH intercept on $IFACE."
-                  echo "[zeek] mode weir — traffic is relayed THROUGH this container." >&2
-                  echo "[zeek] mode weir — if it stops forwarding, intercepted hosts lose" >&2
-                  echo "[zeek] mode weir — the network until their ARP entries expire." >&2
-                  # Verify the pieces weir mode depends on, and refuse to pretend:
+                siphon|weir)  # weir = the former name, accepted so a pre-rename config boots
+                  if [ "$MODE" != "siphon" ]; then
+                    echo "[zeek] note: SENSOR_MODE='$MODE' is the former name of 'siphon';" >&2
+                    echo "[zeek] note: update it in the ConfigMap when convenient." >&2
+                  fi
+                  echo "[zeek] mode siphon — IN-PATH intercept on $IFACE."
+                  echo "[zeek] mode siphon — traffic is relayed THROUGH this container." >&2
+                  echo "[zeek] mode siphon — if it stops forwarding, intercepted hosts lose" >&2
+                  echo "[zeek] mode siphon — the network until their ARP entries expire." >&2
+                  # Verify the pieces siphon mode depends on, and refuse to pretend:
                   # intercepting without the ability to forward takes the LAN down,
                   # which is strictly worse than not starting.
                   if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" != "1" ]; then
-                    echo "[zeek] FATAL: mode weir requires net.ipv4.ip_forward=1." >&2
+                    echo "[zeek] FATAL: mode siphon requires net.ipv4.ip_forward=1." >&2
                     echo "[zeek] FATAL: Without it the intercepted traffic is dropped," >&2
                     echo "[zeek] FATAL: which is an outage for the intercepted hosts." >&2
                     exit 1
                   fi
                   if [ "$(cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null || echo 1)" != "0" ]; then
-                    echo "[zeek] FATAL: mode weir requires net.ipv4.conf.all.rp_filter=0." >&2
+                    echo "[zeek] FATAL: mode siphon requires net.ipv4.conf.all.rp_filter=0." >&2
                     echo "[zeek] FATAL: Reverse-path filtering would drop the relayed" >&2
                     echo "[zeek] FATAL: packets because their source is not ours." >&2
                     exit 1
                   fi
                   if [ "$(cat /proc/sys/net/ipv4/conf/all/send_redirects 2>/dev/null || echo 1)" != "0" ]; then
-                    echo "[zeek] FATAL: mode weir requires send_redirects=0." >&2
+                    echo "[zeek] FATAL: mode siphon requires send_redirects=0." >&2
                     echo "[zeek] FATAL: ICMP redirects would tell intercepted hosts to" >&2
                     echo "[zeek] FATAL: send directly, silently undoing the intercept." >&2
                     exit 1
@@ -171,7 +175,7 @@ spec:
                   ;;
                 *)
                   echo "[zeek] FATAL: unknown SENSOR_MODE '$MODE'." >&2
-                  echo "[zeek] FATAL: expected 'loch' (passive) or 'weir' (in-path)." >&2
+                  echo "[zeek] FATAL: expected 'loch' (passive) or 'siphon' (in-path)." >&2
                   exit 1
                   ;;
               esac
@@ -440,7 +444,7 @@ spec:
                   optional: true
             # SENSOR_MODE tells the container HOW it is supposed to be capturing, so it
             # can state the blast radius in its own logs and refuse to start on a
-            # contradiction (e.g. mode=weir without the privileges that mode needs).
+            # contradiction (e.g. mode=siphon without the privileges that mode needs).
             # Optional so a ConfigMap from an earlier release does not block startup.
             - name: SENSOR_MODE
               valueFrom:

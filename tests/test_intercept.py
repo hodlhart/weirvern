@@ -1,6 +1,6 @@
-"""Tests for the in-path intercept dataplane (weir mode).
+"""Tests for the in-path intercept dataplane (siphon mode).
 
-The properties that matter here are safety properties, not features. In weir mode Weirvern
+The properties that matter here are safety properties, not features. In siphon mode Weirvern
 is a ROUTER: every host whose ARP cache we forge loses the network if our mappings are not
 withdrawn. So these tests pin ordering and teardown, not throughput.
 
@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from weirvern.admin import intercept as ic
-from weirvern.admin import weirnet
-from weirvern.admin.weirnet import ForwardingState
+from weirvern.admin import siphonnet
+from weirvern.admin.siphonnet import ForwardingState
 
 # ── fakes ───────────────────────────────────────────────────────────────────────
 
@@ -289,7 +289,7 @@ def test_preflight_reports_every_problem_at_once():
 
 
 def test_preflight_blocks_when_nothing_responded_to_the_sweep():
-    """"Intercepting nothing" is how a weir deployment silently looks broken."""
+    """"Intercepting nothing" is how a siphon deployment silently looks broken."""
     problems = ic.Intercept(_plan(hosts={}), RecordingSender(),
                             forwarding=READY).preflight()
     assert any("no hosts responded" in p for p in problems)
@@ -449,9 +449,9 @@ def test_status_reports_mappings_and_uptime():
 
 
 def test_sysctl_path_maps_dots_to_slashes():
-    assert str(weirnet.sysctl_path("net.ipv4.ip_forward")) == \
+    assert str(siphonnet.sysctl_path("net.ipv4.ip_forward")) == \
         "/proc/sys/net/ipv4/ip_forward"
-    assert str(weirnet.sysctl_path("net.ipv4.conf.all.rp_filter")) == \
+    assert str(siphonnet.sysctl_path("net.ipv4.conf.all.rp_filter")) == \
         "/proc/sys/net/ipv4/conf/all/rp_filter"
 
 
@@ -460,8 +460,8 @@ def test_check_forwarding_does_not_crash_on_a_read_failure(monkeypatch):
 
     Conflating those is how a watchdog either never fires or fires constantly.
     """
-    monkeypatch.setattr(weirnet, "read_sysctl", lambda _name: None)
-    state = weirnet.check_forwarding("eth1")
+    monkeypatch.setattr(siphonnet, "read_sysctl", lambda _name: None)
+    state = siphonnet.check_forwarding("eth1")
     assert not state.ready
     assert state.problems
 
@@ -472,8 +472,8 @@ def test_check_forwarding_accepts_a_correct_configuration(monkeypatch):
         "net.ipv4.conf.all.rp_filter": 0,
         "net.ipv4.conf.eth1.rp_filter": 0,
     }
-    monkeypatch.setattr(weirnet, "read_sysctl", lambda name: values.get(name))
-    state = weirnet.check_forwarding("eth1")
+    monkeypatch.setattr(siphonnet, "read_sysctl", lambda name: values.get(name))
+    state = siphonnet.check_forwarding("eth1")
     assert state.ready, state.problems
 
 
@@ -489,15 +489,15 @@ def test_read_neighbour_mac_ignores_incomplete_entries(tmp_path, monkeypatch):
         "198.51.100.11     0x1         0x0         00:00:00:00:00:00     *        eth1\n"
     )
     body = arp.read_text()          # capture BEFORE patching, or this recurses
-    monkeypatch.setattr(weirnet.Path, "read_text", lambda self: body)
-    assert weirnet.read_neighbour_mac("eth1", "198.51.100.10") == "aa:bb:cc:dd:ee:01"
-    assert weirnet.read_neighbour_mac("eth1", "198.51.100.11") is None
+    monkeypatch.setattr(siphonnet.Path, "read_text", lambda self: body)
+    assert siphonnet.read_neighbour_mac("eth1", "198.51.100.10") == "aa:bb:cc:dd:ee:01"
+    assert siphonnet.read_neighbour_mac("eth1", "198.51.100.11") is None
 
 
 def test_read_mac_returns_none_for_a_missing_interface(monkeypatch):
-    monkeypatch.setattr(weirnet.Path, "read_text",
+    monkeypatch.setattr(siphonnet.Path, "read_text",
                         lambda self: (_ for _ in ()).throw(OSError()))
-    assert weirnet.read_mac("nosuchiface") is None
+    assert siphonnet.read_mac("nosuchiface") is None
 
 
 # ── choosing an address (rather than being told to invent one) ─────────────────
@@ -513,49 +513,49 @@ def test_read_mac_returns_none_for_a_missing_interface(monkeypatch):
 
 def test_free_addresses_prefers_the_top_of_the_range(monkeypatch):
     """DHCP pools hand out from the bottom, so a high address is least likely to collide."""
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
-    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=3)
+    free = siphonnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=3)
     assert free == ["198.51.100.254", "198.51.100.253", "198.51.100.252"], free
 
 
 def test_an_address_that_answered_arp_is_not_offered(monkeypatch):
     """Offering an in-use address would cause a conflict on the operator's network."""
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep",
                         lambda *a, **k: {"198.51.100.254": "de:ad:be:ef:00:01"})
-    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=2)
+    free = siphonnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5", count=2)
     assert "198.51.100.254" not in free, "a taken address was offered as free"
     assert free == ["198.51.100.253", "198.51.100.252"]
 
 
 def test_the_source_address_is_never_offered(monkeypatch):
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {})
-    free = weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.254", count=1)
+    free = siphonnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.254", count=1)
     assert "198.51.100.254" not in free, "offered the address we are already using"
 
 
 def test_no_mac_means_no_offer_rather_than_a_guess(monkeypatch):
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: None)
-    assert weirnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5") == []
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: None)
+    assert siphonnet.find_free_addresses("eth1", "198.51.100.0/24", "198.51.100.5") == []
 
 
 def test_describe_segment_reports_the_blast_radius(monkeypatch):
     """Every host listed is one whose ARP cache would be forged."""
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
     monkeypatch.setattr(ic, "arp_sweep", lambda *a, **k: {
         "198.51.100.10": "0a:0a:0a:0a:0a:0a",
         "198.51.100.11": "0b:0b:0b:0b:0b:0b",
     })
-    used, err = weirnet.describe_segment("eth1", "198.51.100.0/24", "198.51.100.5")
+    used, err = siphonnet.describe_segment("eth1", "198.51.100.0/24", "198.51.100.5")
     assert not err
     assert len(used) == 2
 
 
 def test_describe_segment_refuses_an_enormous_sweep(monkeypatch):
-    monkeypatch.setattr(weirnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
-    used, err = weirnet.describe_segment("eth1", "198.51.100.0/16", "198.51.100.5")
+    monkeypatch.setattr(siphonnet, "read_mac", lambda _i: "aa:bb:cc:dd:ee:ff")
+    used, err = siphonnet.describe_segment("eth1", "198.51.100.0/16", "198.51.100.5")
     assert used == {}
     assert "too large" in err
 
@@ -830,25 +830,25 @@ def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(mon
 
 
 def test_the_policy_rule_is_detected_when_present(monkeypatch):
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    monkeypatch.setattr(weirnet, "_run", lambda *a: (
+    monkeypatch.setattr(siphonnet, "_run", lambda *a: (
         0, "0:\tfrom all lookup local\n1000:\tfrom all iif eth1 lookup 100\n"
            "32766:\tfrom all lookup main"))
-    monkeypatch.setattr(weirnet, "forwarding_table_text",
+    monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
-    assert weirnet.forwarding_path_problems("eth1", "198.51.100.1") == [], (
+    assert siphonnet.forwarding_path_problems("eth1", "198.51.100.1") == [], (
         "a correctly installed policy rule was reported as a problem, so the intercept "
         "would refuse to run against a healthy configuration"
     )
 
 
 def test_a_missing_policy_rule_is_reported(monkeypatch):
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "0:\tfrom all lookup local"))
-    monkeypatch.setattr(weirnet, "forwarding_table_text", lambda: "")
-    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1")
+    monkeypatch.setattr(siphonnet, "_run", lambda *a: (0, "0:\tfrom all lookup local"))
+    monkeypatch.setattr(siphonnet, "forwarding_table_text", lambda: "")
+    problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1")
     assert problems, "a missing policy route was not reported"
     assert any("table 100" in p for p in problems), (
         "the message does not name the table to install, so the operator cannot act on it"
@@ -870,28 +870,28 @@ def test_a_source_less_route_lookup_is_not_treated_as_a_problem(monkeypatch):
     The check now inspects the rule and table directly, so an unhelpful lookup cannot
     produce a false failure.
     """
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    monkeypatch.setattr(weirnet, "_run", lambda *a: (0, "1000:\tfrom all iif eth1 lookup 100"))
-    monkeypatch.setattr(weirnet, "forwarding_table_text",
+    monkeypatch.setattr(siphonnet, "_run", lambda *a: (0, "1000:\tfrom all iif eth1 lookup 100"))
+    monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
     # No sample_src: the case that used to fail.
-    assert weirnet.forwarding_path_problems("eth1", "198.51.100.1") == []
+    assert siphonnet.forwarding_path_problems("eth1", "198.51.100.1") == []
 
 
 def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
     """The corroborating lookup must still catch a genuinely misrouted packet."""
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
     def fake_run(*a, **k):
         if "rule" in a:
             return 0, "1000:\tfrom all iif eth1 lookup 100"
         return 0, "192.0.2.1 from 198.51.100.193 via 203.0.113.1 dev eth0"
 
-    monkeypatch.setattr(weirnet, "_run", fake_run)
-    monkeypatch.setattr(weirnet, "forwarding_table_text",
+    monkeypatch.setattr(siphonnet, "_run", fake_run)
+    monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
-    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+    problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1",
                                                 sample_src="198.51.100.193")
     assert any("dev eth0" in p or "different interface" in p for p in problems), (
         "a packet that genuinely leaves by the wrong interface was not reported"
@@ -926,7 +926,7 @@ def test_start_verifies_the_path_it_installed_using_a_real_host():
 #      address there is no route on that interface, so the kernel CANNOT forward relayed
 #      traffic, and every neighbour lookup on the segment fails. The intercept would have
 #      poisoned real hosts into a black hole -- they would lose the network -- which is the
-#      exact failure weir mode exists to avoid, in the mode whose whole purpose is not to
+#      exact failure siphon mode exists to avoid, in the mode whose whole purpose is not to
 #      cause outages.
 #   2. `build_plan` resolved the gateway MAC from the kernel neighbour table BEFORE the ARP
 #      sweep. The neighbour table only fills for addresses the interface can reach at L3, and
@@ -991,28 +991,28 @@ def test_the_cli_assigns_our_address_and_withdraws_it():
 def test_add_address_uses_the_segments_prefix_length():
     """A mistyped netmask would put the address on the wrong network, where it would either
     not route or would route somewhere unintended."""
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
     calls: list[tuple] = []
-    orig = weirnet._run
-    weirnet._run = lambda *a, **k: (calls.append(a), (0, ""))[1]
+    orig = siphonnet._run
+    siphonnet._run = lambda *a, **k: (calls.append(a), (0, ""))[1]
     try:
-        rc, _ = weirnet.add_address("eth1", "198.51.100.250", "198.51.100.0/24")
+        rc, _ = siphonnet.add_address("eth1", "198.51.100.250", "198.51.100.0/24")
         assert rc == 0
         assert ("ip", "addr", "add", "198.51.100.250/24", "dev", "eth1") in calls, (
             f"the prefix did not come from the segment: {calls}"
         )
         # A /16 must produce /16, not a hardcoded /24.
-        weirnet.add_address("eth1", "198.51.100.9", "198.51.100.0/16")
+        siphonnet.add_address("eth1", "198.51.100.9", "198.51.100.0/16")
         assert ("ip", "addr", "add", "198.51.100.9/16", "dev", "eth1") in calls
     finally:
-        weirnet._run = orig
+        siphonnet._run = orig
 
 
 def test_add_address_rejects_a_bad_segment_instead_of_guessing():
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    rc, out = weirnet.add_address("eth1", "198.51.100.250", "not-a-cidr")
+    rc, out = siphonnet.add_address("eth1", "198.51.100.250", "not-a-cidr")
     assert rc != 0, "a malformed segment must fail rather than silently default a netmask"
     assert "not-a-cidr" in out
 
@@ -1036,11 +1036,11 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
     blockers REFUSE the intercept, so this made `weirvern intercept` unusable on a healthy
     host while telling the operator to fix something that was already right.
     """
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    monkeypatch.setattr(weirnet, "forwarding_rule_text",
+    monkeypatch.setattr(siphonnet, "forwarding_rule_text",
                         lambda _i: "1000:\tfrom all iif eth1 lookup 100")
-    monkeypatch.setattr(weirnet, "forwarding_table_text",
+    monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
 
     def fake_run(*a, **k):
@@ -1049,8 +1049,8 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
             return 0, "1000:\tfrom all iif eth1 lookup 100"
         return 2, "RTNETLINK answers: Invalid argument"
 
-    monkeypatch.setattr(weirnet, "_run", fake_run)
-    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+    monkeypatch.setattr(siphonnet, "_run", fake_run)
+    problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1",
                                                 sample_src="198.51.100.193")
     assert problems == [], (
         f"a routing ERROR was reported as a misroute: {problems}. Preflight blockers REFUSE "
@@ -1060,11 +1060,11 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
 
 def test_a_genuinely_misrouted_packet_is_still_reported(monkeypatch):
     """The fix must not blind the check: a real wrong-interface route is still a blocker."""
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
-    monkeypatch.setattr(weirnet, "forwarding_rule_text",
+    monkeypatch.setattr(siphonnet, "forwarding_rule_text",
                         lambda _i: "1000:\tfrom all iif eth1 lookup 100")
-    monkeypatch.setattr(weirnet, "forwarding_table_text",
+    monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
 
     def fake_run(*a, **k):
@@ -1074,8 +1074,8 @@ def test_a_genuinely_misrouted_packet_is_still_reported(monkeypatch):
             return 0, "192.0.2.1 from 198.51.100.193 via 203.0.113.1 dev eth0"
         return 0, ""
 
-    monkeypatch.setattr(weirnet, "_run", fake_run)
-    problems = weirnet.forwarding_path_problems("eth1", "198.51.100.1",
+    monkeypatch.setattr(siphonnet, "_run", fake_run)
+    problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1",
                                                 sample_src="198.51.100.193")
     assert any("dev eth0" in p for p in problems), (
         "a packet that genuinely leaves by the wrong interface was not reported"
@@ -1086,7 +1086,7 @@ def test_the_route_lookup_is_not_run_through_a_pipe():
     """A pipeline's exit status is the LAST command's, so `| head -1` hides a failure."""
     from pathlib import Path as _P
 
-    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "weirnet.py").read_text()
+    src = (_P(__file__).resolve().parents[1] / "weirvern" / "admin" / "siphonnet.py").read_text()
     body = src[src.index("def forwarding_path_problems"):]
     nxt = body.find("\ndef ", 10)
     body = body[:nxt] if nxt > 0 else body
@@ -1123,7 +1123,7 @@ def test_the_forwarding_monitor_is_primed_with_the_real_counter():
     That set `_forwarding_observed = True` without a single packet having been forwarded.
     Everything downstream depends on that flag meaning "forwarding was seen to work": the
     quiet-network protection treats stillness as uninformative only while it is False. Set by
-    arithmetic, it made the first quiet second look like a stall, so weir failed open on a
+    arithmetic, it made the first quiet second look like a stall, so siphon failed open on a
     healthy network.
     """
     from weirvern.admin import watchdog as wd
@@ -1176,7 +1176,7 @@ def test_a_quiet_network_does_not_trip_the_watchdog():
     assert w._quiet_samples == 5
 
 
-# ── the self-destruct deadline (weir-2's third layer) ───────────────────────────
+# ── the self-destruct deadline (siphon-2's third layer) ───────────────────────────
 #
 # The case this exists for: a `kubectl exec` client that is SIGKILLed leaves the in-pod
 # process ALIVE with nobody able to signal it. No handler runs (none can), so without a

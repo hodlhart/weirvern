@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 
 from weirvern.admin import intercept as ic
-from weirvern.admin import weirnet
+from weirvern.admin import siphonnet
 from weirvern.config import Settings
 
 
@@ -36,7 +36,7 @@ def main() -> int:
         return 1
     print(f"  iface={iface} segment={segment}", flush=True)
 
-    our_mac = weirnet.read_mac(iface) or ""
+    our_mac = siphonnet.read_mac(iface) or ""
     our_ip = getattr(s, "intercept_addr", "") or ""
     borrowed = False
 
@@ -48,7 +48,7 @@ def main() -> int:
         # Borrow a free address, exactly as the intercept does: the capture interface normally has
         # no address of its own, and without a source the segment will not answer.
         try:
-            free = weirnet.find_free_addresses(iface, segment, "")
+            free = siphonnet.find_free_addresses(iface, segment, "")
         except Exception as exc:  # noqa: BLE001
             print(f"  could not look for a free address: {type(exc).__name__}: {exc}", flush=True)
             return 1
@@ -56,7 +56,7 @@ def main() -> int:
         if not our_ip:
             print("  no free address found on the segment", flush=True)
             return 1
-        rc, out = weirnet.add_address(iface, our_ip, segment)
+        rc, out = siphonnet.add_address(iface, our_ip, segment)
         if rc != 0:
             print(f"  could not assign {our_ip}: rc={rc} {out}", flush=True)
             return 1
@@ -70,7 +70,7 @@ def main() -> int:
         return 1
     finally:
         if borrowed:
-            weirnet.remove_address(iface, our_ip, segment)
+            siphonnet.remove_address(iface, our_ip, segment)
             print(f"  withdrew {our_ip}", flush=True)
 
     print(f"  hosts answering ARP: {len(hosts)}", flush=True)

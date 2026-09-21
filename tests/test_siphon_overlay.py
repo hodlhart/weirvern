@@ -1,8 +1,8 @@
-"""The weir overlay must actually widen, and the BASE must not.
+"""The siphon overlay must actually widen, and the BASE must not.
 
 Two failure directions matter, and they are opposites:
 
-  * the overlay stops granting NET_ADMIN or stops setting the sysctls -> weir silently
+  * the overlay stops granting NET_ADMIN or stops setting the sysctls -> siphon silently
     cannot work, and the symptom is a refused write to /proc/sys that reads like a file
     permission problem
   * the base starts granting them -> every passive (loch) deployment acquires the ability
@@ -44,7 +44,7 @@ def _caps(ds: dict) -> list[str]:
     return ds["spec"]["template"]["spec"]["containers"][0]["securityContext"]["capabilities"]["add"]
 
 
-@pytest.mark.parametrize("target", ["k8s/", "overlays/weir/"])
+@pytest.mark.parametrize("target", ["k8s/", "overlays/siphon/"])
 def test_the_overlay_does_not_break_the_base(target):
     """Both must render 21 resources and keep the sensor's real arguments."""
     docs = _render(target)
@@ -78,9 +78,9 @@ def test_the_base_declares_no_sysctls():
 
 
 def test_the_overlay_grants_NET_ADMIN():
-    caps = _caps(_zeek(_render("overlays/weir/")))
+    caps = _caps(_zeek(_render("overlays/siphon/")))
     assert "NET_ADMIN" in caps, (
-        "the overlay does not grant NET_ADMIN, so weir cannot write the forwarding "
+        "the overlay does not grant NET_ADMIN, so siphon cannot write the forwarding "
         "sysctls and cannot work at all"
     )
     assert "NET_RAW" in caps, "the overlay dropped NET_RAW, so capture stops working"
@@ -97,9 +97,9 @@ def test_the_overlay_does_NOT_declare_pod_sysctls():
     An earlier version of the overlay declared them, on the reasoning that `net.*` sysctls
     are namespaced and hostNetwork makes them the node's. The reasoning about the namespace
     was right; the conclusion about where to set them was not. The overlay therefore must
-    NOT contain them, or `kubectl apply` fails and weir cannot be deployed at all.
+    NOT contain them, or `kubectl apply` fails and siphon cannot be deployed at all.
     """
-    spec = _zeek(_render("overlays/weir/"))["spec"]["template"]["spec"]
+    spec = _zeek(_render("overlays/siphon/"))["spec"]["template"]["spec"]
     declared = (spec.get("securityContext") or {}).get("sysctls")
     assert not declared, (
         f"the overlay declares pod sysctls {declared}, which Kubernetes rejects for a "
@@ -114,7 +114,7 @@ def test_the_overlay_documents_where_the_sysctls_go():
     settings and their symptoms -- otherwise the removal looks like the requirement was
     dropped rather than relocated.
     """
-    text = (ROOT / "overlays" / "weir" / "zeek-weir-patch.yaml").read_text()
+    text = (ROOT / "overlays" / "siphon" / "zeek-siphon-patch.yaml").read_text()
     for setting in ("net.ipv4.ip_forward", "rp_filter", "send_redirects"):
         assert setting in text, f"{setting} is no longer mentioned in the overlay"
     assert "may not be specified" in text or "rejects" in text.lower(), (
@@ -125,7 +125,7 @@ def test_the_overlay_documents_where_the_sysctls_go():
 
 def test_neither_manifest_weakened_the_rest_of_the_security_context():
     """Widening two capabilities must not quietly drop the other protections."""
-    for target in ("k8s/", "overlays/weir/"):
+    for target in ("k8s/", "overlays/siphon/"):
         c = _zeek(_render(target))["spec"]["template"]["spec"]["containers"][0]
         sc = c["securityContext"]
         assert sc["allowPrivilegeEscalation"] is False, f"{target}: privilege escalation"

@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased — siphon mode, a dropdown that lied, and a capability probe that refused forever
+
+**The in-path mode is renamed: `weir` -> `siphon`.** The name was asked for and never
+applied — the string "siphon" appeared nowhere in the tree while the mode was called
+`weir` (its former name) in 315 places, including the overlay directory, the dataplane
+module (`weirnet.py` -> `siphonnet.py`), the stress-test script, two test files, and
+every doc. Renamed throughout. The metaphor holds: a wyvern keeps its water in a
+**loch** (passive observer, still water) and draws it through a **siphon** (in-path, the
+flow passes through).
+
+The old spelling survives in exactly two places, both deliberate, both guarded by a
+test that scans every tracked file for regressions:
+
+- `mode.normalise` accepts `weir` on input and stores `siphon`, so a CLI invocation or
+  script written before the rename keeps working;
+- the sensor's startup `case` accepts `weir` and announces `siphon`, **with a note**, so
+  a ConfigMap that has not been updated since the rename cannot crash-loop the sensor.
+  (Without this, every pre-rename deployment's Zeek daemonset would have hit the
+  `unknown SENSOR_MODE` fatal branch.)
+
+**Reported from the box: "I can't change admin to admin. It's stuck on viewer."** Two
+distinct defects stacked:
+
+1. **The dropdown lied.** `el()` dropped the `selected` property (the same silent-drop
+   trap as the earlier `type:` bug), so every role dropdown rendered its FIRST option —
+   "viewer" — while the store held "admin". The server log shows the role was set
+   successfully ten times; the panel re-rendered the wrong value each time, which reads
+   exactly as "stuck". `el()` now applies `selected`, and the DOM harness asserts the
+   SELECTED VALUE rather than the control's existence — it fails on the old code
+   (`selected=viewer`) and passes on the fix.
+2. **A no-op role write signed you out.** `_users_role` revoked the account's sessions
+   on every call, including setting the role an account already had. In the operator's
+   own tab that drops the session mid-action, so the next click 401s — indistinguishable
+   from a refusal. A role change now revokes only when the role actually CHANGES.
+
+**Reported from the box: "I can't apply [in-path] mode."** The GUI's mode gate asked
+`_sensor_caps()`, which was a stub returning `(False, False)` unconditionally — so the
+gate refused the in-path mode forever, on every deployment, overlay or not. It now reads
+the zeek DaemonSet from the cluster API (new `ClusterConfig.get_json`, same
+ServiceAccount/token/CA path the config write uses), and still defaults to ABSENT when
+the read fails: the refusal direction is the safe one, and the tests pin both halves.
+
+**Also fixed while in the area:** the README documented `weirvern mode --set loch`, which
+the CLI has never accepted (it takes a positional: `weirvern mode loch`) — a doc that
+404s for the reader who follows it exactly.
+
+Guards added: `tests/test_mode_naming.py` (whole-word scan for the old spelling, with the
+two acceptance points as the only exemptions, plus end-to-end checks that the acceptance
+actually WORKS), six route-level tests for the capability probe and the no-op/real role
+writes, and five new DOM-harness checks for the dropdown's rendered value. Full suite
+green; harness 217 checks; gate green.
+
 ## Unreleased — the break-glass door moves to the sign-in screen
 
 **The gap this closes.** The operator token is the documented recovery for a lost admin
@@ -202,7 +254,7 @@ failures would have surfaced in CI:
 - `scripts/verify_liveness.sh`: defaulted to an absolute path from the original author's
   machine; it resolves beside itself now, so the liveness proof runs anywhere.
 
-## Unreleased — the audit fixes: the review loop, the near-miss surface, and the weir safety gaps
+## Unreleased — the audit fixes: the review loop, the near-miss surface, and the siphon safety gaps
 
 A fresh audit of the running system, fixed finding by finding. The theme running through all of
 it: the system was good at showing what it found and bad at showing what it decided. The headline
@@ -263,7 +315,7 @@ host must stay quiet. A negative control — the same run with no attacks seeded
 harness can fail, because a guard that cannot fail is decoration. It runs as a gating CI job on
 every push.
 
-### Fixed — the weir safety batch: six gaps between what the code claimed and what it enforced
+### Fixed — the siphon safety batch: six gaps between what the code claimed and what it enforced
 
 - `NEVER_INTERCEPT` was advisory text in a comment. It is enforced now, and the refusal is
   reported rather than silent.
@@ -274,7 +326,7 @@ every push.
   boundary rather than being approximately right.
 - The node-restore command was computed and never shown. `weirvern status` shows it.
 
-### Fixed — the ARP-expiry backstop, measured at last, and a self-destruct deadline (WEIR-2/2b)
+### Fixed — the ARP-expiry backstop, measured at last, and a self-destruct deadline (SIPHON-2/2b)
 
 The watchdog's comments described recovery behaviour nobody had measured. Measured on a real
 segment: a graceful stop restores traffic immediately; after a hard kill an idle host's entry
@@ -288,13 +340,13 @@ and every bounded run carries a self-destruct deadline: default `--seconds` + 12
 `--max-runtime` wins, and an unbounded interactive run has none, because nobody asked. When the
 deadline fires it restores, loudly, and says that nothing requested the stop.
 
-### Fixed — a weir-configured sensor with no live intercept now says so (WEIR-1)
+### Fixed — a siphon-configured sensor with no live intercept now says so (SIPHON-1)
 
-`SENSOR_MODE=weir` is a fact about a ConfigMap. An intercept is a RUNNING process. The two were
+`SENSOR_MODE=siphon` is a fact about a ConfigMap. An intercept is a RUNNING process. The two were
 treated as the same thing, so a sensor whose intercept had ended reported as healthy. `weirvern status`
 now distinguishes three honest states — intercept live / intercept RAN and stopped, node may still
 be in-path / cannot tell — by scanning every `sensor_status` row for intercept evidence rather
-than trusting the ranked best row, because in a weir deployment the worker itself publishes a
+than trusting the ranked best row, because in a siphon deployment the worker itself publishes a
 zero-mapping row that would otherwise masquerade as evidence. The loud state exits 1; verified
 against the box's real rows, including the real intercept from September 19.
 
@@ -365,7 +417,7 @@ Feature set: **33 → 49**.
 
 Four faults in the harness rather than the product, each of which produced a confident wrong answer:
 
-- `read_forwarding` was imported from `weirnet`, which does not have it — so the teardown raised
+- `read_forwarding` was imported from `siphonnet`, which does not have it — so the teardown raised
   `ImportError` **during cleanup**, after the intercept ran and before the policy route was
   removed.
 - `remove_forwarding_path()` takes one argument; the script passed two. `remove_address()` takes
@@ -444,9 +496,9 @@ Recorded because each produced a confident wrong answer about the code:
 - A `str.index("keys AS (")` matched that phrase inside an explanatory comment, producing a
   four-character slice that made every assertion against it fail.
 
-### Added — in-cluster `weir` mode
+### Added — in-cluster `siphon` mode
 
-`kubectl apply -k overlays/weir/` is now the entire procedure:
+`kubectl apply -k overlays/siphon/` is now the entire procedure:
 
 - a **privileged init container** sets the three sysctls, because the API server rejects
   pod-level sysctls when `hostNetwork` is true *and* holding `NET_ADMIN` is insufficient —
@@ -454,7 +506,7 @@ Recorded because each produced a confident wrong answer about the code:
 - the worker gains `NET_RAW` + `NET_ADMIN`, `hostNetwork` (measured: without it the pod sees
   `['lo','eth0']` and cannot reach the capture NIC), and `dnsPolicy: ClusterFirstWithHostNet`
   (the default for a hostNetwork pod cannot resolve cluster Services)
-- **`iproute2` added to the worker image** — `ip` was missing, so `weir` could never have worked
+- **`iproute2` added to the worker image** — `ip` was missing, so `siphon` could never have worked
   in-cluster with every capability granted; it would have failed at the first `ip` call, after
   the preflight had passed
 - `runAsUser: 0` at **both** pod and container level, because Kubernetes drops added
@@ -463,7 +515,7 @@ Recorded because each produced a confident wrong answer about the code:
 
 ## Unreleased — in-path intercept, Zeek in the models, and JA4+ removed
 
-### Added — in-path intercept (`weir` mode)
+### Added — in-path intercept (`siphon` mode)
 
 `weirvern intercept` puts Weirvern **in** the path: it ARP-forges the gateway mapping for
 chosen hosts so their off-link traffic arrives at Weirvern, which relays it in the kernel.

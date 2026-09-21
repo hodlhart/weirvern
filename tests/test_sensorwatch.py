@@ -134,19 +134,19 @@ def test_low_loss_is_not_reported(logs):
 # ── the configured/observed distinction ─────────────────────────────────────────
 
 
-def test_weir_is_reported_as_not_running_by_the_observer(logs):
+def test_siphon_is_reported_as_not_running_by_the_observer(logs):
     """The observer cannot see an intercept, so it must not claim one is active.
 
-    A configured SENSOR_MODE=weir says what was INTENDED and survives the intercept dying.
+    A configured SENSOR_MODE=siphon says what was INTENDED and survives the intercept dying.
     A real intercept publishes its own heartbeat with the authoritative values; this path
     reporting running=True from the config would be the configured-vs-actual error again.
     """
     _write(logs, "conn.log", 1.0)
     monkeypatch_env = pytest.MonkeyPatch()
-    monkeypatch_env.setenv("SENSOR_MODE", "weir")
+    monkeypatch_env.setenv("SENSOR_MODE", "siphon")
     try:
         o = sensorwatch.observe()
-        assert o["mode"] == "weir"
+        assert o["mode"] == "siphon"
         # The log files ARE fresh (Zeek is running), so running reflects capture -- but the
         # fields that only a real intercept can know must stay empty rather than invented.
         assert o["mappings"] == 0

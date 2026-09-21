@@ -1,7 +1,7 @@
 """Observe the sensor's state from the outside, and publish it.
 
 WHY THE WORKER PUBLISHES THIS RATHER THAN THE SENSOR. The obvious design is for the sensor
-to write its own heartbeat, and `weirvern intercept` does exactly that for weir mode. But
+to write its own heartbeat, and `weirvern intercept` does exactly that for siphon mode. But
 the Kubernetes sensor runs Zeek directly from its startup script and the `zeek/zeek` image
 has NO python3 (busybox/ash, perl and Zeek only -- verified on the pod). So there is nothing
 in that container able to write a row, and the same constraint already forced the prune
@@ -25,7 +25,7 @@ WHAT IS REPORTED, and how each is derived rather than assumed:
               cannot observe which mode the sensor is in -- only the sensor itself knows
               that. Saying so is better than implying an observation we did not make.
 
-The heartbeat is `running=False` for weir unless a real intercept has reported itself, so a
+The heartbeat is `running=False` for siphon unless a real intercept has reported itself, so a
 configured-but-not-running intercept cannot masquerade as active.
 """
 from __future__ import annotations
@@ -174,7 +174,7 @@ def observe(mode: str = "", iface: str = "") -> dict:
     """The fields to publish, derived from observation.
 
     `running` means "the sensor is producing data", which is the operator's real question.
-    For weir it is deliberately False here: this process cannot see an intercept's state, and
+    For siphon it is deliberately False here: this process cannot see an intercept's state, and
     a real intercept publishes its own heartbeat with the authoritative values. Claiming
     running=True from the config would be the configured-vs-actual error all over again.
     """
@@ -206,7 +206,7 @@ def observe(mode: str = "", iface: str = "") -> dict:
         failures.append(
             f"Zeek reports {loss:.1f}% capture loss -- the sensor is missing packets. On a "
             f"veth this is expected (the bridge does not flood switched unicast); a SPAN "
-            f"port or weir mode is required for full coverage."
+            f"port or siphon mode is required for full coverage."
         )
 
     return {

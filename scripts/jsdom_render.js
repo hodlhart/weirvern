@@ -196,7 +196,7 @@ async function main() {
     controls: {
       retrain_every_h: { control: "number", min: 1, max: 720, step: 1, unit: "hours" },
       base_threshold: { control: "number", min: 0, max: 1, step: 0.01, unit: "a score fraction" },
-      sensor_mode: { control: "select", options: ["loch", "weir"] },
+      sensor_mode: { control: "select", options: ["loch", "siphon"] },
       intercept_segment: { control: "text" },
       pushover_enabled: { control: "toggle" },
     },
@@ -211,11 +211,11 @@ async function main() {
       ],
       sensor: [
         { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting",
-          help: "loch watches passively; weir puts this host in the traffic path. Default loch." },
+          help: "loch watches passively; siphon puts this host in the traffic path. Default loch." },
         { key: "reverse_dns", label: "reverse DNS", value: "private", secret: false,
           source: "derived", help: "Resolves only private addresses by default." },
         { key: "intercept_segment", label: "intercept segment", value: "(not set)",
-          secret: false, source: "env", help: "The segment the weir intercept operates on." },
+          secret: false, source: "env", help: "The segment the siphon intercept operates on." },
       ],
       runtime: [
         { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
@@ -1162,15 +1162,15 @@ async function main() {
   check("a choice setting renders as a dropdown", !!modeSel);
   const modeOpts = modeSel ? [...modeSel.options].map((o) => o.value) : [];
   check("the dropdown carries the server's option list",
-        modeOpts.includes("loch") && modeOpts.includes("weir"), modeOpts.join(","));
+        modeOpts.includes("loch") && modeOpts.includes("siphon"), modeOpts.join(","));
   const postsBeforeChoice = POSTED.length;
   if (modeSel) {
-    modeSel.value = "weir";
+    modeSel.value = "siphon";
     modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
   }
   check("choosing from the dropdown stages the choice without writing",
         POSTED.length === postsBeforeChoice, `${POSTED.length - postsBeforeChoice} request(s) sent`);
-  check("the staged choice is the chosen value", H.STAGE.changes.sensor_mode === "weir",
+  check("the staged choice is the chosen value", H.STAGE.changes.sensor_mode === "siphon",
         JSON.stringify(H.STAGE.changes));
   if (modeSel) {
     modeSel.value = "loch";   // back to the running value: un-stages it again
@@ -1333,6 +1333,32 @@ async function main() {
         !!userRows[1].querySelector(".user-act.danger"));
   check("a role control is present per account",
         doc.querySelectorAll("#st-users .user-role").length === 2);
+  // THE DROPDOWN MUST SHOW THE STORE'S ROLE, NOT ITS FIRST OPTION. Reported live as "stuck
+  // on viewer": el() dropped the `selected` property, so every dropdown rendered "viewer"
+  // while the store held "admin" -- the change landed server-side every time and the panel
+  // re-rendered the wrong value. Assert the SELECTED value, which is what the operator sees.
+  const firstRole = doc.querySelector("#st-users .user-role");
+  check("the role dropdown SHOWS the account's actual role (not the first option)",
+        firstRole && firstRole.value === "admin",
+        `selected=${firstRole ? firstRole.value : "missing"}`);
+  check("the second account's dropdown shows viewer, not a default",
+        doc.querySelectorAll("#st-users .user-role")[1].value === "viewer",
+        doc.querySelectorAll("#st-users .user-role")[1].value);
+
+  // ...and after a role CHANGE the re-read shows the new value. The stub answers the POST,
+  // then re-serves /api/users: flip the payload's role for the account the panel just changed.
+  USERS_PAYLOAD.users[0].role = "viewer";
+  const roleSelect = doc.querySelector("#st-users .user-role");
+  roleSelect.value = "viewer";
+  roleSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  const rolePost = POSTED.slice().reverse().find((r) => r.url.includes("/api/users/role"));
+  check("a role change POSTs the account and the new role",
+        !!rolePost && JSON.parse(rolePost.body).role === "viewer",
+        rolePost ? rolePost.body : "no POST");
+  check("after the change the dropdown shows the STORE's new value",
+        doc.querySelector("#st-users .user-role").value === "viewer");
+  USERS_PAYLOAD.users[0].role = "admin";  // restore for anything after this block
 
   // Adding a user POSTs the account and the forced-change flag.
   const createBefore = POSTED.length;

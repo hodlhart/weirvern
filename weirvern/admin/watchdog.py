@@ -1,8 +1,8 @@
-"""Fail-open watchdog for weir (in-path intercept) mode.
+"""Fail-open watchdog for siphon (in-path intercept) mode.
 
 WHY THIS IS A PREREQUISITE AND NOT A FEATURE
 --------------------------------------------
-In weir mode Weirvern becomes a router. Hosts are told that Weirvern's MAC is the
+In siphon mode Weirvern becomes a router. Hosts are told that Weirvern's MAC is the
 gateway, so their traffic arrives here and is relayed on. If Weirvern stops relaying
 without telling them otherwise, those hosts have no network until their ARP entries
 expire — a LAN outage caused by the monitoring tool. That is categorically worse than a
@@ -251,7 +251,7 @@ class FailOpenWatchdog:
         self._sender = sender
         self.refresh_s = refresh_s
         self.health_s = health_s
-        # SELF-DESTRUCT DEADLINE (weir-2's third layer). Covers the case where the
+        # SELF-DESTRUCT DEADLINE (siphon-2's third layer). Covers the case where the
         # process is ALIVE but no signal can reach it -- a `kubectl exec` client that was
         # SIGKILLed leaves the in-pod process running with nobody able to sign it. A
         # graceful signal restores; this thread restores at the deadline regardless.
@@ -275,7 +275,7 @@ class FailOpenWatchdog:
         # `_forwarding_observed = True` without a single packet having been forwarded.
         #
         # Consequence, measured on a live intercept: the watchdog believed forwarding was
-        # already proven working, so the first quiet second became a "stall" and weir failed
+        # already proven working, so the first quiet second became a "stall" and siphon failed
         # open on a healthy network. Everything below depends on `_forwarding_observed`
         # meaning something, and it was being set by arithmetic rather than by evidence.
         self._forwarding = ForwardingMonitor(sample=max(0, ForwardingMonitor.read()))
@@ -283,7 +283,7 @@ class FailOpenWatchdog:
         # Whether forwarding has EVER been seen to work since the mappings went in. Until
         # it has, a still counter is uninformative -- an idle segment looks identical to a
         # broken one -- so the health loop must not treat stillness as a stall. See
-        # _health_loop for why treating it as one makes weir flap.
+        # _health_loop for why treating it as one makes siphon flap.
         self._forwarding_observed = False
         # Ticks where nothing was being forwarded yet. Reported rather than counted toward
         # a failure, so an operator can tell "quiet" from "broken".
@@ -368,8 +368,8 @@ class FailOpenWatchdog:
             self._deadline_handle = threading.Timer(self.max_runtime_s + 1.0, self._deadline)
             self._deadline_handle.daemon = True
             self._deadline_handle.start()
-        for target, name in ((self._refresh_loop, "weirvern-weir-refresh"),
-                             (self._health_loop, "weirvern-weir-health")):
+        for target, name in ((self._refresh_loop, "weirvern-siphon-refresh"),
+                             (self._health_loop, "weirvern-siphon-health")):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
@@ -458,7 +458,7 @@ class FailOpenWatchdog:
         WHY A QUIET NETWORK IS NOT A STALL. The counter only advances when traffic is
         actually being forwarded. On an idle segment -- or a test harness, or overnight on
         a home LAN -- it legitimately does not move, and treating that as "we broke
-        forwarding" makes weir flap: poison, restore, poison, restore. Each flap is a brief
+        forwarding" makes siphon flap: poison, restore, poison, restore. Each flap is a brief
         outage, so a benign condition would become a continuous one.
 
         The distinction that matters is whether we have OBSERVED forwarding working. If the
@@ -541,9 +541,9 @@ class FailOpenWatchdog:
 
 
 def preflight_sysctls() -> list[tuple[str, str, str]]:
-    """Read the forwarding sysctls weir mode depends on.
+    """Read the forwarding sysctls siphon mode depends on.
 
-    Returns (name, current_value, required_value) for each. Read-only: weir mode
+    Returns (name, current_value, required_value) for each. Read-only: siphon mode
     requires these to be set by whoever deployed the sensor, so a mismatch is reported
     rather than silently corrected. Silently changing network knobs on a host is
     precisely the behaviour that makes an operator distrust a monitoring tool.

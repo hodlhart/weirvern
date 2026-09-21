@@ -11,8 +11,8 @@ network traffic is being monitored when it is not.
 
 WHY THE CONFIGURED MODE IS NOT AN ACCEPTABLE ANSWER: the GUI runs in its own pod and has no
 access to the sensor's filesystem, so `SENSOR_MODE` in the ConfigMap was all it had. But a
-ConfigMap outlives the process reading it -- a weir sensor that was killed still has
-`SENSOR_MODE=weir` set. A heartbeat is observed; the config is only intended.
+ConfigMap outlives the process reading it -- a siphon sensor that was killed still has
+`SENSOR_MODE=siphon` set. A heartbeat is observed; the config is only intended.
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ NOW = datetime.datetime(2026, 9, 18, 12, 0, 0)
 
 def _row(**over) -> dict:
     row = {
-        "mode": "weir", "iface": "eth1", "segment": "198.51.100.0/24",
+        "mode": "siphon", "iface": "eth1", "segment": "198.51.100.0/24",
         "hosts": 11, "mappings": 22, "running": 1, "uptime_s": 120.0,
         "restores": 0, "refreshes": 24, "failures": [],
         "ts": NOW - datetime.timedelta(seconds=5),
@@ -100,7 +100,7 @@ def test_a_stale_heartbeat_reports_NOT_running():
         "must never be displayed as intercepting"
     )
     assert s["error"], "a stale sensor must say so, not just show a blank field"
-    assert "weir" in s["error"], "the message should still say which mode it stopped in"
+    assert "siphon" in s["error"], "the message should still say which mode it stopped in"
 
 
 def test_a_heartbeat_just_inside_the_window_is_trusted():
@@ -162,14 +162,14 @@ def test_an_unreadable_timestamp_is_not_treated_as_running():
 
 def test_heartbeat_writes_a_row_with_every_field():
     c = FakeClient()
-    ok = status.heartbeat(c, sensor_id="sensor-1", mode="weir", iface="eth1",
+    ok = status.heartbeat(c, sensor_id="sensor-1", mode="siphon", iface="eth1",
                           segment="198.51.100.0/24", hosts=11, mappings=22, running=True,
                           uptime_s=5.0, restores=1, refreshes=3, failures=["stalled"])
     assert ok is True
     table, data, cols = c.inserts[0]
     assert table.endswith("sensor_status")
     values = dict(zip(cols, data[0], strict=True))
-    assert values["mode"] == "weir"
+    assert values["mode"] == "siphon"
     assert values["hosts"] == 11
     assert values["running"] == 1
     assert values["failures"] == ["stalled"]
@@ -195,7 +195,7 @@ class FakeState:
     def __call__(self) -> dict:
         if self.fail:
             raise RuntimeError("state unavailable")
-        return {"mode": "weir", "running": True, "hosts": 3}
+        return {"mode": "siphon", "running": True, "hosts": 3}
 
 
 def test_the_loop_records_a_failed_beat_without_dying():

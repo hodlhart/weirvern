@@ -45,6 +45,14 @@ function el(tag, opts = {}, children = []) {
   // working setting. `=== null` is handled because an unset secret reports null, and
   // String(null) would render the word "null".
   if (opts.value !== undefined) node.value = opts.value === null ? "" : String(opts.value);
+  // `selected` is a PROPERTY of an <option> the way `value` is of an <input>, and el() used
+  // to DROP it (plain option keys that are not handled here are ignored). Every role dropdown
+  // in the users panel therefore rendered its FIRST option -- "viewer" -- while the store held
+  // "admin": the operator changed the role, the server accepted it, and the re-render showed
+  // the wrong value again. That read as "stuck on viewer"; the change had landed each time.
+  // Same trap family as the `type:` note further down: both attributes and properties have to
+  // be applied, and a dropped one fails silently.
+  if (opts.selected !== undefined) node.selected = Boolean(opts.selected);
   if (opts.title) node.title = String(opts.title);
   if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v);
   if (opts.on) for (const [ev, fn] of Object.entries(opts.on)) node.addEventListener(ev, fn);

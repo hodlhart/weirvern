@@ -294,7 +294,7 @@ def test_the_throttle_map_is_bounded():
 
 # ── 7. the routes: every property, driven through the real handler ─────────────────────────
 
-def _ctx(store, sessions=None, throttle=None, token=None, accounts_note=""):
+def _ctx(store, sessions=None, throttle=None, token=None, accounts_note="", config_client=None):
     """A duck-typed GuiContext carrying just what the account routes consult.
 
     The values are bound to locals OUTSIDE the class body: a class body cannot see the
@@ -307,6 +307,7 @@ def _ctx(store, sessions=None, throttle=None, token=None, accounts_note=""):
     # class body binds the name as a class attribute first, so the right-hand side is not
     # the enclosing local -- it does not exist.
     _note = accounts_note
+    _cc = config_client
 
     class _Auth:
         enabled = bool(token)
@@ -318,7 +319,7 @@ def _ctx(store, sessions=None, throttle=None, token=None, accounts_note=""):
     class _Ctx:
         settings = None
         backend = None
-        config_client = None
+        config_client = _cc
         user_store = store
         sessions = _sessions
         throttle = _throttle
@@ -566,6 +567,104 @@ def test_the_user_list_is_admin_only_and_never_carries_a_hash():
     h2 = _Handler(ctx2, headers={"X-Weirvern-Session": token2})
     h2.call("_users_list")
     assert h2.status == 403
+
+
+# -- the role route: who gets signed out, and who must NOT ----------------------------------
+
+
+def test_a_ROLE_CHANGE_revokes_that_accounts_sessions():
+    """An open tab must not keep acting under the old role after the role changed."""
+    store = _store_with(exists=False)
+    users_mod.bootstrap(store)
+    store.create_user("sam", "viewer", "password-123")
+    ctx, admin_token = _authed(store, username="admin", role="admin")
+    sam_token = ctx.sessions.create(users_mod.Identity(username="sam", role="viewer"))
+    h = _Handler(ctx, headers={"X-Weirvern-Session": admin_token},
+                 body='{"username": "sam", "role": "admin"}')
+    out = h.call("_users_role")
+    assert out.get("ok") is True, out
+    assert ctx.sessions.get(sam_token) is None, "the role change left sam's session alive"
+    assert ctx.sessions.get(admin_token) is not None, "an unrelated session was revoked"
+
+
+def test_setting_the_SAME_role_again_revokes_NOTHING():
+    """Reported live as "I can't change admin to admin": a no-op role write used to revoke
+    the account's sessions, which signed the operator out of the very tab they were working
+    in -- the change had "succeeded" and the UI read as broken. A write that changes nothing
+    must revoke nothing."""
+    store = _store_with(exists=False)
+    users_mod.bootstrap(store)
+    ctx, admin_token = _authed(store, username="admin", role="admin")
+    # A second session for the same account, as if it were open in another tab.
+    other = ctx.sessions.create(users_mod.Identity(username="admin", role="admin"))
+    h = _Handler(ctx, headers={"X-Weirvern-Session": admin_token},
+                 body='{"username": "admin", "role": "admin"}')
+    out = h.call("_users_role")
+    assert out.get("ok") is True, out
+    rec = store.find("admin")
+    assert rec is not None and rec.role == "admin"
+    assert ctx.sessions.get(admin_token) is not None, (
+        "a no-op role change revoked the operator's own session"
+    )
+    assert ctx.sessions.get(other) is not None
+
+
+# -- the sensor capability probe: read from the cluster, never assumed -----------------------
+
+
+class _DSCli:
+    """A config-client-shaped fake whose get_json answers the DaemonSet read."""
+
+    def __init__(self, adds, exc=None):
+        self.adds = adds
+        self.exc = exc
+
+    def get_json(self, path):
+        if self.exc:
+            raise self.exc
+        return {"spec": {"template": {"spec": {"containers": [
+            {"name": "zeek", "securityContext": {"capabilities": {"add": self.adds}}},
+        ]}}}}
+
+
+def test_the_caps_probe_reads_the_SENSOR_daemonset_from_the_cluster():
+    """"I can't apply siphon mode" was structural: the probe was a stub answering False/False
+    unconditionally, so the mode gate refused the in-path mode forever -- even on a sensor
+    that held the capabilities. It now asks the cluster for the zeek DaemonSet."""
+    store = _store_with(exists=False)
+    ctx = _ctx(store, config_client=_DSCli(["NET_RAW", "NET_ADMIN"]))
+    assert _Handler(ctx).inst._sensor_caps() == (True, True)
+
+
+def test_the_caps_probe_reports_ABSENT_when_it_cannot_verify():
+    """Unknown must refuse, never permit: a capability defaulting to True is how in-path
+    interception gets enabled on a sensor that cannot forward."""
+    from weirvern.admin import cluster_config as cc
+
+    store = _store_with(exists=False)
+    ctx = _ctx(store, config_client=_DSCli([], exc=cc.ConfigError("no cluster")))
+    assert _Handler(ctx).inst._sensor_caps() == (False, False)
+    # And the real box's state -- NET_RAW only -- reports NET_ADMIN absent.
+    ctx2 = _ctx(store, config_client=_DSCli(["NET_RAW"]))
+    assert _Handler(ctx2).inst._sensor_caps() == (False, True)
+
+
+def test_the_mode_gate_OPENS_when_the_cluster_sensor_has_the_capabilities():
+    """The end-to-end property: with the overlay applied on the cluster, the GUI's gate must
+    pass -- it is the CLI's own validate() that decides, fed a real reading."""
+    store = _store_with(exists=False)
+    ctx = _ctx(store, config_client=_DSCli(["NET_RAW", "NET_ADMIN"]))
+    assert _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "siphon"}) == ""
+    # The FORMER name is accepted and gated the same way.
+    assert _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "weir"}) == ""  # former name
+
+
+def test_the_mode_gate_REFUSES_when_the_sensor_lacks_net_admin():
+    """The box's current state: NET_RAW only. The refusal must name the missing capability."""
+    store = _store_with(exists=False)
+    ctx = _ctx(store, config_client=_DSCli(["NET_RAW"]))
+    err = _Handler(ctx).inst._mode_gate({"SENSOR_MODE": "siphon"})
+    assert err and "CAP_NET_ADMIN" in err
 
 
 # -- the settings payload reports the caller's rights ----------------------------------------

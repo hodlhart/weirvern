@@ -28,7 +28,7 @@ is that the mutation MUST be undone. Userspace forwarding would remove this enti
 a throughput cost -- a legitimate alternative for a future revision, not a bug to be fixed now.
 
 
-WHY THIS EXISTS. `weir` mode changes THREE NODE-WIDE sysctls:
+WHY THIS EXISTS. `siphon` mode changes THREE NODE-WIDE sysctls:
 
     net.ipv4.ip_forward                     -> 1
     net.ipv4.conf.all.rp_filter             -> 0
@@ -63,11 +63,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from weirvern.admin.weirnet import read_sysctl, sysctl_path
+from weirvern.admin.siphonnet import read_sysctl, sysctl_path
 
 logger = logging.getLogger(__name__)
 
-# The sysctls weir mode requires, with the value it needs and the interface-scoped counterpart that
+# The sysctls siphon mode requires, with the value it needs and the interface-scoped counterpart that
 # must move with the `all` value. `net.ipv4.conf.all.rp_filter` is not enough on its own: the
 # EFFECTIVE value for an interface is the maximum of `all` and the per-interface setting, which is
 # why a node can have `all=0` and still filter on the capture interface.
@@ -185,7 +185,7 @@ def probe_writable() -> SysctlCapability:
 
 
 class SysctlGuard:
-    """Record the sysctls weir mode changes, and put them back on exit.
+    """Record the sysctls siphon mode changes, and put them back on exit.
 
     Usage:
 
@@ -271,7 +271,7 @@ class SysctlGuard:
 
         The deployed case: read-only /proc/sys, node-side init container did the setting. The caller
         must then either report the command (interactive) or accept that the node stays configured
-        for weir mode until something restores it (a deployment that is genuinely running weir).
+        for siphon mode until something restores it (a deployment that is genuinely running siphon).
         """
         return bool(self.snapshot.applied) and not self.capability.can_write or (
             not self.snapshot.applied and not self.capability.can_write and bool(self.snapshot.original)

@@ -15,7 +15,7 @@ FROM python:3.11-slim
 
 # iproute2 IS A RUNTIME DEPENDENCY, not a debugging convenience.
 #
-# `weirvern intercept` (weir mode) needs `ip` for 17 operations: reading the interface list,
+# `weirvern intercept` (siphon mode) needs `ip` for 17 operations: reading the interface list,
 # assigning and withdrawing its own capture address, installing the table-100 policy route that
 # keeps relayed traffic off the management interface, and verifying the forwarding path. The
 # base image is python:3.11-slim, which has no iproute2 -- measured in the deployed pod:
@@ -23,7 +23,7 @@ FROM python:3.11-slim
 #     $ ip addr add 198.51.100.250/24 dev eth1
 #     sh: 1: ip: not found
 #
-# So `weir` mode could not have worked in-cluster even with every capability granted. It would
+# So `siphon` mode could not have worked in-cluster even with every capability granted. It would
 # have failed at the first ip call, after the preflight had passed, which is the worst place.
 #
 # Installed at BUILD time per the note below -- never at container boot.

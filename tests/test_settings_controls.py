@@ -185,7 +185,7 @@ def test_the_mode_dropdown_covers_exactly_the_implemented_modes():
     """`dam` was removed as a mode; the dropdown must reflect the code, not history."""
     from weirvern.admin import mode as mode_mod
 
-    known = {mode_mod.MODE_LOCH, mode_mod.MODE_WEIR}
+    known = {mode_mod.MODE_LOCH, mode_mod.MODE_SIPHON}
     assert set(cc.SETTING_CONTROLS["SENSOR_MODE"]["options"]) == known
 
 

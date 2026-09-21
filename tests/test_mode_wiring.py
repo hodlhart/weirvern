@@ -2,7 +2,7 @@
 
 The mode decides whether the sensor is a passive observer or a router. Both are valid;
 the consequences are not comparable. So the startup script states the mode and its
-failure mode on every boot, and REFUSES to start in weir mode when the sysctls that
+failure mode on every boot, and REFUSES to start in siphon mode when the sysctls that
 make the relay work are missing.
 
 Why refusing is correct: intercepting traffic without the ability to forward it drops
@@ -64,10 +64,10 @@ def test_the_script_states_the_mode_and_its_failure_mode(startup_script):
     front of them is passive or in-path."""
     code = _code_only(startup_script)
     assert "mode loch" in code, "loch mode is not announced"
-    assert "mode weir" in code, "weir mode is not announced"
+    assert "mode siphon" in code, "siphon mode is not announced"
     # The consequence must be stated, not just the label.
-    assert re.search(r"weir.*(relayed|OUTAGE|outage|lose)", code, re.I), (
-        "weir mode is announced without saying that traffic flows through it"
+    assert re.search(r"siphon.*(relayed|OUTAGE|outage|lose)", code, re.I), (
+        "siphon mode is announced without saying that traffic flows through it"
     )
 
 
@@ -79,7 +79,7 @@ def test_loch_is_the_default_when_unset(startup_script):
 
 
 def test_an_unknown_mode_is_fatal(startup_script):
-    """Silently treating a typo as loch would hide the mistake; treating it as weir
+    """Silently treating a typo as loch would hide the mistake; treating it as siphon
     would be dangerous. Neither is acceptable, so it must fail."""
     code = _code_only(startup_script)
     assert "unknown SENSOR_MODE" in code
@@ -93,7 +93,7 @@ def test_an_unknown_mode_is_fatal(startup_script):
     ("net/ipv4/conf/all/rp_filter", "0", "the relay would be filtered out"),
     ("net/ipv4/conf/all/send_redirects", "0", "redirects would undo the intercept"),
 ])
-def test_weir_mode_refuses_to_start_without_each_sysctl(startup_script, sysctl, value, why):
+def test_siphon_mode_refuses_to_start_without_each_sysctl(startup_script, sysctl, value, why):
     """Each sysctl was verified necessary in a sandbox, and each has a specific symptom.
     The script must check all three and refuse — with the reason, not just a failure."""
     code = _code_only(startup_script)
@@ -101,21 +101,21 @@ def test_weir_mode_refuses_to_start_without_each_sysctl(startup_script, sysctl, 
     assert f'!= "{value}"' in code, f"{sysctl} is not compared against {value}"
     # The FATAL message must name the consequence, otherwise the operator is left to
     # work out why the sensor refuses to start.
-    m = re.search(rf'FATAL: mode weir requires [^\n]*{value.replace("/", "/")}', code)
+    m = re.search(rf'FATAL: mode siphon requires [^\n]*{value.replace("/", "/")}', code)
     assert m, f"missing the refusal message for {sysctl}"
 
 
-def test_the_sysctl_checks_live_in_the_weir_branch(startup_script):
+def test_the_sysctl_checks_live_in_the_siphon_branch(startup_script):
     """Checking them in loch mode would refuse to start a sensor that is perfectly
     safe, which would be its own bug."""
     code = _code_only(startup_script)
-    weir_start = code.find("weir)")
+    siphon_start = code.find("siphon|weir)")  # second alternative is the former name
     loch_start = code.find("loch)")
     unknown = code.find("*)")
-    assert -1 not in (weir_start, loch_start, unknown)
-    weir_branch = code[weir_start:unknown]
-    assert "/proc/sys/net/ipv4/ip_forward" in weir_branch
-    assert "/proc/sys/net/ipv4/ip_forward" not in code[loch_start:weir_start], (
+    assert -1 not in (siphon_start, loch_start, unknown)
+    siphon_branch = code[siphon_start:unknown]
+    assert "/proc/sys/net/ipv4/ip_forward" in siphon_branch
+    assert "/proc/sys/net/ipv4/ip_forward" not in code[loch_start:siphon_start], (
         "loch mode must not be gated on forwarding sysctls — it does not forward"
     )
 
@@ -151,8 +151,8 @@ def test_the_mode_command_reports_and_gates():
     )
 
 
-def test_weir_mode_cannot_share_the_management_interface():
-    """Weir mode relays on the capture interface. If that is also the management port,
+def test_siphon_mode_cannot_share_the_management_interface():
+    """Siphon mode relays on the capture interface. If that is also the management port,
     the sensor can intercept the cluster API traffic that manages it and cut itself
     off — a self-inflicted outage."""
     import inspect as _inspect

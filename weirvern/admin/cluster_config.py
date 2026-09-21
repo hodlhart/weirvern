@@ -218,7 +218,7 @@ SETTING_CONTROLS: dict[str, dict] = {
     **{k: {"control": "number", "min": lo, "max": hi, "step": step, "unit": what}
        for k, (lo, hi, what, step) in NUMERIC_RANGES.items()},
     "PUSHOVER_ENABLED": {"control": "toggle"},
-    "SENSOR_MODE": {"control": "select", "options": ["loch", "weir"]},
+    "SENSOR_MODE": {"control": "select", "options": ["loch", "siphon"]},
     "WEIRVERN_REVERSE_DNS": {"control": "select", "options": ["private", "all", "off"]},
     "ZEEK_IFACE": {"control": "text"},
     "MGMT_IFACE": {"control": "text"},
@@ -250,8 +250,8 @@ def validate(key: str, value: str) -> str:
 
     if key == "SENSOR_MODE":
         normalised = mode_mod.normalise(raw)
-        if normalised not in ("loch", "weir"):
-            raise ConfigError(f"'{raw}' is not a sensor mode; expected 'loch' or 'weir'")
+        if normalised not in ("loch", "siphon"):
+            raise ConfigError(f"'{raw}' is not a sensor mode; expected 'loch' or 'siphon'")
         return ("in-path interception puts this host in the traffic path. Enabling it without "
                 "forwarding working takes the segment down — the mode gate is checked at apply.")
 
@@ -467,6 +467,37 @@ class ClusterConfig:
         client was constructed for.
         """
         self._request("PATCH", {"data": data})
+
+    def get_json(self, path: str) -> dict:
+        """GET one in-cluster API path with this client's credentials.
+
+        NOT the ConfigMap read: this exists for the reads the deployment performs about
+        ITSELF -- currently the sensor-capability probe, which must see the DaemonSet's
+        real capabilities rather than this process's. Same token, same CA, same host;
+        only the path differs. Raises ConfigError on any failure, so callers that gate on
+        the answer can treat an error as "unknown".
+        """
+        url = f"{self.api_host}{path}"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {self.token()}")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=self._ssl_context()) as resp:
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = exc.read().decode()[:300]
+            raise ConfigError(
+                f"the cluster rejected the read of {path} ({exc.code}): {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ConfigError(f"could not reach the cluster API: {exc.reason}") from exc
+        try:
+            return json.loads(raw) if raw else {}
+        except ValueError:
+            raise ConfigError("the cluster returned something that is not JSON") from None
 
     def create(self, data: dict[str, str]) -> None:
         """Create this ConfigMap. Raises ConfigError when it already exists.

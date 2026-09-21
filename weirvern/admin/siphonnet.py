@@ -1,4 +1,4 @@
-"""In-path intercept (weir mode): the ARP dataplane.
+"""In-path intercept (siphon mode): the ARP dataplane.
 
 WHAT THIS IS, AND WHAT IT IS NOT. Weirvern inserts itself into the path between hosts and
 their gateway by forging ARP mappings, then RELAYS the traffic it intercepts. This is an
@@ -8,10 +8,10 @@ does not flood switched unicast, so a passive sensor sees only broadcast noise. 
 on the test deployment: ~73% of what reached the passive sensor was broadcast, and Zeek
 reported 62-65% capture loss. Traffic addressed to us cannot be "missed" the same way.
 
-WHY A WATCHDOG IS NOT OPTIONAL. In weir mode Weirvern is a ROUTER. If it stops forwarding
+WHY A WATCHDOG IS NOT OPTIONAL. In siphon mode Weirvern is a ROUTER. If it stops forwarding
 -- crash, OOM kill, node reboot -- every host whose ARP cache we poisoned loses the network
 until that entry expires, which is typically minutes. That is the difference between a
-monitoring gap and a LAN outage, and it is why `mode.py` refuses to enable weir without a
+monitoring gap and a LAN outage, and it is why `mode.py` refuses to enable siphon without a
 watchdog. This module always arms the watchdog BEFORE sending the first poison frame, so
 there is no window in which a mapping exists unmanaged.
 
@@ -148,7 +148,7 @@ def resolve_mac(iface: str, ip: str, attempts: int = 3, wait_s: float = 0.4) -> 
 class ArpSender:
     """Writes Ethernet frames to an AF_PACKET socket.
 
-    Raw sockets need CAP_NET_RAW, which `mode.py` already requires for weir. Kept as a
+    Raw sockets need CAP_NET_RAW, which `mode.py` already requires for siphon. Kept as a
     class so the watchdog (which takes a `sender` callable) can be given a fake in tests.
     """
 
@@ -214,7 +214,7 @@ def read_sysctl(name: str) -> int | None:
 
 
 def check_forwarding(iface: str) -> ForwardingState:
-    """Verify the two kernel settings weir mode cannot work without.
+    """Verify the two kernel settings siphon mode cannot work without.
 
     Both failures have a specific symptom, recorded here because a misconfigured intercept
     presents as "the network is slow/broken" rather than as an error:
@@ -526,7 +526,7 @@ def remove_address(iface: str, address: str, segment: str) -> None:
 
 
 SYSCTL_WRITE_HINT = (
-    "weir mode needs, inside the container:\n"
+    "siphon mode needs, inside the container:\n"
     "    sysctl -w net.ipv4.ip_forward=1\n"
     "    sysctl -w net.ipv4.conf.all.rp_filter=0\n"
     "    sysctl -w net.ipv4.conf.<iface>.rp_filter=0\n"

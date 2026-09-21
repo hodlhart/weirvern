@@ -1,4 +1,4 @@
-# The privileged initContainer that sets weir mode's three sysctls.
+# The privileged initContainer that sets siphon mode's three sysctls.
 #
 # WHY AN INIT CONTAINER AT ALL. A pod cannot declare these sysctls for itself: the API server
 # rejects pod-level sysctls whenever hostNetwork is true ("may not be specified when
@@ -13,7 +13,7 @@
 # keeping unprivileged; a compromise there should not come with the ability to rewrite node
 # networking. The privilege is scoped to the step that needs it.
 #
-# WHY init AND NOT A KUBECTL STEP. `kubectl apply -k overlays/weir/` is then the entire
+# WHY init AND NOT A KUBECTL STEP. `kubectl apply -k overlays/siphon/` is then the entire
 # procedure. An initContainer also runs on every zeek container start, including restarts, so
 # a node reboot or a kubelet restart cannot leave the sensor believing it is intercepting with
 # forwarding disabled -- which is the failure that takes a LAN down.
@@ -32,7 +32,7 @@ spec:
   template:
     spec:
       initContainers:
-        - name: weir-sysctls
+        - name: siphon-sysctls
           image: busybox:1.36
           # The sensor image has no shell tools beyond busybox ash and, notably, no `ip`; using
           # busybox here keeps this step independent of the zeek image entirely, so changing the
@@ -47,13 +47,13 @@ spec:
               # is how a broken intercept looks healthy.
               read_sysctl() {
                 if [ ! -r "/proc/sys/$1" ]; then
-                  echo "[weir-init] FATAL: cannot read /proc/sys/$1" >&2
+                  echo "[siphon-init] FATAL: cannot read /proc/sys/$1" >&2
                   exit 1
                 fi
                 tr -d '\n' < "/proc/sys/$1"
               }
 
-              echo "[weir-init] configuring forwarding for in-path intercept"
+              echo "[siphon-init] configuring forwarding for in-path intercept"
 
               # ip_forward: without it the ARP mapping is forged and the traffic is DROPPED.
               echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -85,14 +85,14 @@ spec:
               ipf=$(read_sysctl net/ipv4/ip_forward)
               rpf=$(read_sysctl net/ipv4/conf/all/rp_filter)
               srd=$(read_sysctl net/ipv4/conf/all/send_redirects)
-              echo "[weir-init] ip_forward=$ipf rp_filter=$rpf send_redirects=$srd"
+              echo "[siphon-init] ip_forward=$ipf rp_filter=$rpf send_redirects=$srd"
 
               if [ "$ipf" != "1" ] || [ "$rpf" != "0" ] || [ "$srd" != "0" ]; then
-                echo "[weir-init] FATAL: sysctls did not take." >&2
-                echo "[weir-init] FATAL: refusing to start an intercept that cannot forward." >&2
+                echo "[siphon-init] FATAL: sysctls did not take." >&2
+                echo "[siphon-init] FATAL: refusing to start an intercept that cannot forward." >&2
                 exit 1
               fi
-              echo "[weir-init] forwarding path configured"
+              echo "[siphon-init] forwarding path configured"
           securityContext:
             # Privileged because it edits node-wide networking; the alternative (NET_ADMIN
             # alone) is insufficient -- /proc/sys is mounted read-only without it.

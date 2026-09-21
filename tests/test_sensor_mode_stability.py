@@ -1,12 +1,12 @@
 """The sensor panel must not change answers between two reads of the same data.
 
 THE BUG THIS FILE EXISTS FOR, reported from the running GUI: "when i refresh the gui i am watching
-it switch between loch and weir".
+it switch between loch and siphon".
 
 The cause was not the data. `sensor_status` is keyed `(sensor_id, mode)`, so a sensor that is
 INTERCEPTING has two live rows at once:
 
-    weir    published by the running intercept process -- segment, host count, watchdog counters
+    siphon    published by the running intercept process -- segment, host count, watchdog counters
     loch    published by the worker -- the configured capture mode, which does not stop existing
 
 Both write on the same interval. The reader did `ORDER BY ts DESC LIMIT 1`, so it returned
@@ -79,16 +79,16 @@ def test_the_mode_does_not_change_between_two_reads_of_the_same_data():
     The two rows are ordered differently between the calls below, which is exactly the race that
     produced the flicker: whichever the database returned first was used.
     """
-    weir = _row("weir", 4, segment="198.51.100.0/24", hosts=1, restores=2, refreshes=144)
+    siphon = _row("siphon", 4, segment="198.51.100.0/24", hosts=1, restores=2, refreshes=144)
     loch = _row("loch", 1)  # written MORE RECENTLY -- which is what made it win before
 
-    first = status_mod.sensor_status(_Client([weir, loch]), now=NOW)
-    second = status_mod.sensor_status(_Client([loch, weir]), now=NOW)
+    first = status_mod.sensor_status(_Client([siphon, loch]), now=NOW)
+    second = status_mod.sensor_status(_Client([loch, siphon]), now=NOW)
 
     assert first["mode"] == second["mode"], (
         "the mode changed between two reads of identical data, so the panel flickers"
     )
-    assert first["mode"] == "weir", (
+    assert first["mode"] == "siphon", (
         "an intercepting row must win over a passive one: it describes the same sensor in a "
         "strictly more informative state"
     )
@@ -98,7 +98,7 @@ def test_the_mode_does_not_change_between_two_reads_of_the_same_data():
 
 
 def test_a_passive_only_sensor_still_reports_loch():
-    """The fix must not make everything 'weir'. With one row, that row is the answer."""
+    """The fix must not make everything 'siphon'. With one row, that row is the answer."""
     out = status_mod.sensor_status(_Client([_row("loch", 3)]), now=NOW)
     assert out["mode"] == "loch"
     assert out["running"] is True
@@ -107,21 +107,21 @@ def test_a_passive_only_sensor_still_reports_loch():
 def test_a_stale_intercept_row_does_not_beat_a_live_passive_one():
     """Ranking by mode must not resurrect a dead intercept.
 
-    A `weir` row that stopped beating is a process that is gone. Preferring it because of its mode
+    A `siphon` row that stopped beating is a process that is gone. Preferring it because of its mode
     would report an intercept that is not running -- the configured-vs-actual error this whole
     panel exists to avoid, reintroduced through the back door.
     """
-    dead_weir = _row("weir", status_mod.HEARTBEAT_STALE_S + 60, hosts=1)
+    dead_siphon = _row("siphon", status_mod.HEARTBEAT_STALE_S + 60, hosts=1)
     live_loch = _row("loch", 2)
-    out = status_mod.sensor_status(_Client([dead_weir, live_loch]), now=NOW)
+    out = status_mod.sensor_status(_Client([dead_siphon, live_loch]), now=NOW)
     assert out["mode"] == "loch", "a stale intercept row was preferred over a live passive one"
     assert out["running"] is True
 
 
 def test_both_rows_fresh_reports_the_other_one_rather_than_hiding_it():
     """A sensor doing both things is real; the panel must say so, not show half of it."""
-    out = status_mod.sensor_status(_Client([_row("weir", 4, hosts=1), _row("loch", 1)]), now=NOW)
-    assert out["mode"] == "weir"
+    out = status_mod.sensor_status(_Client([_row("siphon", 4, hosts=1), _row("loch", 1)]), now=NOW)
+    assert out["mode"] == "siphon"
     others = out["others"]
     assert len(others) == 1, f"the passive row was dropped from the report: {out}"
     assert others[0]["mode"] == "loch"
@@ -131,10 +131,10 @@ def test_both_rows_fresh_reports_the_other_one_rather_than_hiding_it():
 def test_a_stale_other_row_is_not_reported():
     """`others` is a statement about what IS running now, so a dead row is not listed."""
     out = status_mod.sensor_status(
-        _Client([_row("weir", 4, hosts=1), _row("loch", status_mod.HEARTBEAT_STALE_S + 30)]),
+        _Client([_row("siphon", 4, hosts=1), _row("loch", status_mod.HEARTBEAT_STALE_S + 30)]),
         now=NOW,
     )
-    assert out["mode"] == "weir"
+    assert out["mode"] == "siphon"
     assert out["others"] == [], "a stale row was listed as also-running"
 
 
@@ -145,11 +145,11 @@ def test_other_sensors_rows_are_not_attributed_to_this_one():
     would appear as a second mode of this sensor.
     """
     rows = [
-        _row("weir", 4, hosts=1),
+        _row("siphon", 4, hosts=1),
         _row("loch", 2, sensor_id="other-pod"),
     ]
     out = status_mod.sensor_status(_Client(rows), now=NOW)
-    assert out["mode"] == "weir"
+    assert out["mode"] == "siphon"
     assert out["others"] == [], "another sensor's row was attributed to this one"
 
 
@@ -161,7 +161,7 @@ def test_the_reader_does_not_use_limit_one():
     `LIMIT 1` over a table keyed by (sensor_id, mode) cannot be correct when a sensor legitimately
     has more than one row. It is the kind of thing a later 'optimisation' would reintroduce.
     """
-    client = _Client([_row("weir", 1)])
+    client = _Client([_row("siphon", 1)])
     status_mod.sensor_status(client, now=NOW)
     sql = " ".join(client.query_text.split())
     assert "LIMIT 1" not in sql.upper(), (
@@ -184,11 +184,11 @@ def test_the_empty_shape_includes_every_key():
 def test_a_stopped_intercept_is_reported_even_though_the_passive_row_wins():
     """The reader must not let a live `loch` row imply the node is untouched.
 
-    MEASURED ON THE LIVE BOX. An intercept publishes `weir` under one sensor_id while the worker
+    MEASURED ON THE LIVE BOX. An intercept publishes `siphon` under one sensor_id while the worker
     publishes the configured `loch` under the SAME sensor_id. Rows observed:
 
         Weirvern                      loch  hosts=0   ts 00:00:15
-        Weirvern                      weir  hosts=10  ts 23:59:55
+        Weirvern                      siphon  hosts=10  ts 23:59:55
 
     Once the intercept ends, its row goes stale and ranking correctly demotes it -- a stale row must
     never beat a live one. But the panel then says "Weirvern observes only and cannot affect traffic"
@@ -221,31 +221,31 @@ def test_a_stopped_intercept_is_reported_even_though_the_passive_row_wins():
     def row(mode, hosts, age_s):
         return {
             "sensor_id": "Weirvern", "mode": mode, "iface": "eth1", "segment": "198.51.100.0/24",
-            "hosts": hosts, "mappings": 10 if mode == "weir" else 0,
+            "hosts": hosts, "mappings": 10 if mode == "siphon" else 0,
             "running": 1, "uptime_s": 300.0, "restores": 20, "refreshes": 1200,
             "failures": [], "ts": now - datetime.timedelta(seconds=age_s),
         }
 
-    # The measured case: live loch, stale weir.
+    # The measured case: live loch, stale siphon.
     live_loch = row("loch", 0, 2)
-    stale_weir = row("weir", 10, 600)
-    got = status_mod.sensor_status(_FakeClient([live_loch, stale_weir]), now=now)
+    stale_siphon = row("siphon", 10, 600)
+    got = status_mod.sensor_status(_FakeClient([live_loch, stale_siphon]), now=now)
 
     assert got["mode"] == "loch", "the live row must win over the stale one"
     assert got["intercept_stopped"] is True, (
-        "a stale `weir` row means an intercept ran and stopped; the reader must say so rather than "
+        "a stale `siphon` row means an intercept ran and stopped; the reader must say so rather than "
         "presenting the passive row as if nothing had happened"
     )
 
-    # And the converse: with NO weir row ever seen, there is nothing to warn about. A banner that
+    # And the converse: with NO siphon row ever seen, there is nothing to warn about. A banner that
     # fires on a sensor that has never intercepted is a banner that gets ignored.
     got_clean = status_mod.sensor_status(_FakeClient([live_loch]), now=now)
     assert got_clean["intercept_stopped"] is False
 
     # A LIVE intercept is not a stopped one -- the field must not fire while it is running.
-    fresh_weir = row("weir", 10, 3)
-    got_live = status_mod.sensor_status(_FakeClient([live_loch, fresh_weir]), now=now)
-    assert got_live["mode"] == "weir"
+    fresh_siphon = row("siphon", 10, 3)
+    got_live = status_mod.sensor_status(_FakeClient([live_loch, fresh_siphon]), now=now)
+    assert got_live["mode"] == "siphon"
     assert got_live["intercept_stopped"] is False
 
     # The key is ALWAYS present, so a consumer never distinguishes a missing key from a false value.

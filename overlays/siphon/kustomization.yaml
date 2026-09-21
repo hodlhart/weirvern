@@ -1,13 +1,13 @@
-# weir-mode overlay: what in-path intercept needs, and nothing more.
+# siphon-mode overlay: what in-path intercept needs, and nothing more.
 #
 # WHY A SEPARATE OVERLAY. The default deployment is `loch` (passive) and its securityContext
 # is deliberately tight: all capabilities dropped, NET_RAW re-added because libpcap cannot open
 # a raw socket without it, no privilege escalation, seccomp RuntimeDefault, no service-account
-# token. `weir` needs strictly more. More privilege is not something to add to the default
+# token. `siphon` needs strictly more. More privilege is not something to add to the default
 # because a mode might want it, so it is opt-in:
 #
 #     kubectl apply -k k8s/               # loch: NET_RAW only
-#     kubectl apply -k overlays/weir/     # weir: NET_RAW + NET_ADMIN + sysctls
+#     kubectl apply -k overlays/siphon/     # siphon: NET_RAW + NET_ADMIN + sysctls
 #
 # The overlay lives OUTSIDE k8s/ deliberately: kustomize refuses a kustomization that
 # references a directory containing itself ("cycle detected"), and an overlay nested under its
@@ -15,7 +15,7 @@
 #
 # ── THE SYSCtlS, WHICH ARE THE WHOLE DIFFICULTY ────────────────────────────────────────────
 #
-# `weir` needs three sysctls. Each has its own failure symptom, and all three are wrong by
+# `siphon` needs three sysctls. Each has its own failure symptom, and all three are wrong by
 # default on this node:
 #
 #   net.ipv4.ip_forward=1            Without it we forge the ARP mapping and then DROP the
@@ -67,12 +67,12 @@ resources:
   - ../../k8s
 
 patches:
-  - path: zeek-weir-patch.yaml
+  - path: zeek-siphon-patch.yaml
     target:
       kind: DaemonSet
       name: zeek
 
-  - path: zeek-weir-sysctl-init.yaml
+  - path: zeek-siphon-sysctl-init.yaml
     target:
       kind: DaemonSet
       name: zeek
@@ -80,15 +80,15 @@ patches:
   # The WORKER runs the intercept -- `weirvern intercept` is a control-plane command, so it
   # executes in the worker pod, and the sensor's NET_ADMIN does nothing for it. See the patch
   # for why NET_RAW and NET_ADMIN are both needed and neither implies the other.
-  - path: worker-weir-caps.yaml
+  - path: worker-siphon-caps.yaml
     target:
       kind: Deployment
       name: weirvern-worker
 
 # The sysctls are set by the initContainer rather than by hand so that the overlay is
-# self-contained: `kubectl apply -k overlays/weir/` is the entire procedure, and there is no
+# self-contained: `kubectl apply -k overlays/siphon/` is the entire procedure, and there is no
 # second step to forget. The initContainer runs before every zeek container start (including
-# restarts), so a node reboot or a kubelet restart cannot leave the sensor in weir mode with
+# restarts), so a node reboot or a kubelet restart cannot leave the sensor in siphon mode with
 # forwarding off.
 #
 # WHY THE INIT CONTAINER IS PRIVILEGED AND THE ZEEK CONTAINER IS NOT: the privilege is needed

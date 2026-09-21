@@ -50,8 +50,8 @@ import sys
 import time
 from pathlib import Path
 
-PID_FILE = Path("/tmp/weir_intercept.pid")
-LOG_FILE = Path("/tmp/weir_intercept_detached.log")
+PID_FILE = Path("/tmp/siphon_intercept.pid")
+LOG_FILE = Path("/tmp/siphon_intercept_detached.log")
 
 
 def process_state(pid: int) -> str:

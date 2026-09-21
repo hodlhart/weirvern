@@ -1,4 +1,4 @@
-"""In-path intercept orchestration (weir mode).
+"""In-path intercept orchestration (siphon mode).
 
 SCOPE: a whole segment (the operator's choice). That means Weirvern becomes the path for
 every host on the chosen network, and a container restart is a network outage for all of
@@ -43,9 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from weirvern.admin.sysctl_guard import SysctlGuard
-from weirvern.admin.watchdog import FailOpenWatchdog, Interception
-from weirvern.admin.weirnet import (
+from weirvern.admin.siphonnet import (
     DEFAULT_REFRESH_S,
     ArpSender,
     ForwardingState,
@@ -56,6 +54,8 @@ from weirvern.admin.weirnet import (
     remove_forwarding_path,
     resolve_mac,
 )
+from weirvern.admin.sysctl_guard import SysctlGuard
+from weirvern.admin.watchdog import FailOpenWatchdog, Interception
 
 
 class InterceptError(RuntimeError):
@@ -92,7 +92,7 @@ def parse_cidr(value: str) -> list[str]:
     net = ipaddress.ip_network(value, strict=False)
     if net.version != 4:
         raise ValueError(
-            f"{value} is IPv6; weir mode is IPv4-only (ARP, the forwarding sysctls and "
+            f"{value} is IPv6; siphon mode is IPv4-only (ARP, the forwarding sysctls and "
             f"the relay are all v4), so a v6 segment cannot be intercepted. Use loch "
             f"mode, which observes without being in the path."
         )
@@ -499,7 +499,7 @@ class Intercept:
         self.refresh_s = refresh_s
         self.forwarding = forwarding
         self.watchdog: FailOpenWatchdog | None = None
-        # Propagated to the watchdog's self-destruct deadline (weir-2): the outermost
+        # Propagated to the watchdog's self-destruct deadline (siphon-2): the outermost
         # bound on how long forged mappings can outlive their operator.
         self.max_runtime_s = max_runtime_s
         self._started = False
@@ -539,7 +539,7 @@ class Intercept:
 
         if not self.plan.hosts:
             # Not fatal, but almost certainly not what the operator wanted, and silently
-            # "intercepting nothing" is how a weir deployment looks broken.
+            # "intercepting nothing" is how a siphon deployment looks broken.
             problems.append(
                 f"no hosts responded to an ARP sweep of {self.plan.segment}. Nothing would "
                 f"be intercepted. Check the segment and that {self.plan.iface} has L2 "
@@ -594,7 +594,7 @@ class Intercept:
         self._started = True
         self.started_at = time.time()
         logger.warning(
-            "weir: intercepting %d host(s) on %s via %s. Weirvern is now in the path; "
+            "siphon: intercepting %d host(s) on %s via %s. Weirvern is now in the path; "
             "if this process stops, the watchdog restores the mappings.",
             self.plan.host_count, self.plan.segment, self.plan.iface,
         )
@@ -702,7 +702,7 @@ class Intercept:
                 time.sleep(0.5)
                 if deadline is not None and time.time() >= deadline:
                     return
-                # The self-destruct deadline (weir-2) restores the mappings from its own
+                # The self-destruct deadline (siphon-2) restores the mappings from its own
                 # timer thread; when that fires, this loop must ALSO return so the caller
                 # unwinds -- the case it exists for is precisely one where no signal will
                 # ever arrive to break this loop.

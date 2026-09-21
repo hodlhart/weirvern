@@ -1,7 +1,7 @@
-# The worker's capabilities for weir mode, and why they are separate from the sensor's.
+# The worker's capabilities for siphon mode, and why they are separate from the sensor's.
 #
 # THE WORKER IS WHAT RUNS THE INTERCEPT. `weirvern intercept` is a CLI/control-plane command,
-# so it executes in the worker pod, not in the zeek pod. The sensor only *captures* in weir
+# so it executes in the worker pod, not in the zeek pod. The sensor only *captures* in siphon
 # mode; the worker forges the ARP announcements, installs the policy route, and drives the
 # watchdog. So the capabilities have to be here, and the sensor's NET_ADMIN alone does not
 # help it.
@@ -24,7 +24,7 @@
 # the segment. The zeek pod keeps NET_RAW for capture and gains NET_ADMIN only for the
 # sysctls; the worker gets both because it performs the intercept.
 #
-# These are granted ONLY in the weir overlay. The default `loch` deployment leaves the worker
+# These are granted ONLY in the siphon overlay. The default `loch` deployment leaves the worker
 # with no capabilities at all, because passive monitoring does not need them -- verified: the
 # base worker manifest drops ALL and adds nothing.
 #
@@ -44,7 +44,7 @@
 # This is the same constraint already documented in k8s/32-zeek.yaml for the sensor, and it is
 # why the zeek container is root there despite being a network-facing parser.
 #
-# The trade is deliberate and scoped: weir mode is the mode that reroutes a live segment, it is
+# The trade is deliberate and scoped: siphon mode is the mode that reroutes a live segment, it is
 # opt-in, and it is documented as requiring more privilege than loch. The default deployment is
 # unaffected.
 # ── WHY THE WORKER NEEDS hostNetwork, WHICH IS A REAL PRIVILEGE WIDENING ──────────────────
@@ -69,7 +69,7 @@
 #     NOT resolve `clickhouse.weirvern.svc.cluster.local`. That is a real failure mode and the
 #     one line that prevents it.
 #
-# This is granted ONLY in the weir overlay. The default `loch` deployment keeps the worker in
+# This is granted ONLY in the siphon overlay. The default `loch` deployment keeps the worker in
 # its own network namespace, where a compromise cannot see the host's interfaces at all.
 apiVersion: apps/v1
 kind: Deployment

@@ -1,9 +1,9 @@
 """Sensor modes, and the watchdog that makes in-path intercept defensible.
 
-The mode names are Weirvern's own: a weir is a barrier water flows THROUGH, so the
-in-path mode is `weir` and the still-water observer is `loch`.
+The mode names are Weirvern's own: a siphon is a conduit the flow is drawn through, so
+the in-path mode is `siphon` and the still-water observer is `loch`.
 
-The tests that matter most here are about SAFETY, not features: weir mode must refuse
+The tests that matter most here are about SAFETY, not features: siphon mode must refuse
 to enable without the pieces that make it fail open, and the watchdog must actually
 restore the ARP caches it poisoned. A monitoring tool that takes the LAN down when it
 stops is worse than no monitoring tool, so these are asserted rather than assumed.
@@ -23,16 +23,16 @@ from weirvern.admin import watchdog as wd
 def test_the_two_modes_are_named_after_the_product():
     """Weirvern's own vocabulary, not generic networking terms.
 
-    The names encode the difference that matters: `weir` is in-path (traffic passes
+    The names encode the difference that matters: `siphon` is in-path (traffic passes
     through, and the failure mode is an outage), `loch` is passive (still water, you
     watch without impeding).
     """
     assert mode_mod.MODE_LOCH == "loch"
-    assert mode_mod.MODE_WEIR == "weir"
+    assert mode_mod.MODE_SIPHON == "siphon"
 
 
 def test_an_undefined_mode_is_rejected():
-    """Only `loch` and `weir` are modes. An unrecognised value must be reported rather
+    """Only `loch` and `siphon` are modes. An unrecognised value must be reported rather
     than silently coerced into one of them, because coercing it would pick a behaviour
     the operator did not ask for."""
     assert mode_mod.normalise("nonsense") == "nonsense", "unknown values pass through"
@@ -50,23 +50,23 @@ def test_the_default_mode_is_the_safe_one():
 
 @pytest.mark.parametrize("typed,expected", [
     ("loch", "loch"), ("LOCH", "loch"), ("Loch", "loch"),
-    ("weir", "weir"), ("WEIR", "weir"),
+    ("siphon", "siphon"), ("SIPHON", "siphon"),
     # Mechanism words are accepted on input so an operator reaching for the familiar
     # term is not punished, but they store as the product's name.
     ("promisc", "loch"), ("passive", "loch"), ("span", "loch"), ("mirror", "loch"),
     ("tap", "loch"),
-    ("intercept", "weir"), ("arp", "weir"), ("spoof", "weir"), ("inline", "weir"),
+    ("intercept", "siphon"), ("arp", "siphon"), ("spoof", "siphon"), ("inline", "siphon"),
 ])
 def test_mode_input_is_tolerant_but_storage_uses_product_names(typed, expected):
     assert mode_mod.normalise(typed) == expected
 
 
 def test_each_mode_states_its_failure_mode():
-    """The operator cannot infer the blast radius from the word 'weir'. It is stated."""
+    """The operator cannot infer the blast radius from the word 'siphon'. It is stated."""
     assert "monitoring gap" in mode_mod.IMPACT[mode_mod.MODE_LOCH]
-    assert "outage" in mode_mod.IMPACT[mode_mod.MODE_WEIR].lower()
+    assert "outage" in mode_mod.IMPACT[mode_mod.MODE_SIPHON].lower()
     assert "loch — " in mode_mod.describe("loch")
-    assert "weir — " in mode_mod.describe("weir")
+    assert "siphon — " in mode_mod.describe("siphon")
 
 
 # --- gating --------------------------------------------------------------------
@@ -76,9 +76,9 @@ def test_loch_mode_has_no_blockers():
     assert v.ok and not v.blockers
 
 
-def test_weir_mode_is_blocked_without_all_three_prerequisites():
-    """The asymmetry is deliberate: loch failing is a gap, weir failing is an outage."""
-    v = mode_mod.validate(mode_mod.MODE_WEIR)
+def test_siphon_mode_is_blocked_without_all_three_prerequisites():
+    """The asymmetry is deliberate: loch failing is a gap, siphon failing is an outage."""
+    v = mode_mod.validate(mode_mod.MODE_SIPHON)
     assert not v.ok
     joined = " ".join(v.blockers)
     assert "CAP_NET_RAW" in joined
@@ -86,8 +86,8 @@ def test_weir_mode_is_blocked_without_all_three_prerequisites():
     assert "watchdog" in joined
 
 
-def test_weir_mode_enables_when_everything_is_present():
-    v = mode_mod.validate(mode_mod.MODE_WEIR, has_net_admin=True, has_net_raw=True,
+def test_siphon_mode_enables_when_everything_is_present():
+    v = mode_mod.validate(mode_mod.MODE_SIPHON, has_net_admin=True, has_net_raw=True,
                           watchdog_available=True)
     assert v.ok, v.blockers
     assert not v.blockers
@@ -98,10 +98,10 @@ def test_weir_mode_enables_when_everything_is_present():
     assert "authorised" in joined
 
 
-def test_weir_mode_requires_net_admin_specifically():
-    """The passive sensor deliberately lacks NET_ADMIN. Enabling weir widens the
+def test_siphon_mode_requires_net_admin_specifically():
+    """The passive sensor deliberately lacks NET_ADMIN. Enabling siphon widens the
     container's privileges, which must be stated rather than done silently."""
-    v = mode_mod.validate(mode_mod.MODE_WEIR, has_net_raw=True, watchdog_available=True)
+    v = mode_mod.validate(mode_mod.MODE_SIPHON, has_net_raw=True, watchdog_available=True)
     assert not v.ok
     assert any("CAP_NET_ADMIN" in b for b in v.blockers)
     assert any("privileges" in b for b in v.blockers)
@@ -371,7 +371,7 @@ def test_a_forwarding_stall_triggers_fail_open():
     #
     # That is the whole subtlety: a counter that has NEVER advanced is uninformative,
     # because an idle segment looks exactly like a broken one. Treating that as a stall
-    # makes weir flap -- poison, restore, poison -- turning a quiet network into a
+    # makes siphon flap -- poison, restore, poison -- turning a quiet network into a
     # continuous outage. So the sequence modelled here is the real one: traffic flows,
     # then it stops.
     seq = {"n": 0}
@@ -473,7 +473,7 @@ def test_a_never_advancing_counter_does_not_fail_open():
 
     The counter only moves when traffic is forwarded, so on a quiet network -- a home LAN
     overnight, or any test harness -- it never advances. Failing open on that would make
-    weir flap continuously: each restore withdraws the mappings and the next refresh
+    siphon flap continuously: each restore withdraws the mappings and the next refresh
     reinstates them, inventing a repeating outage out of silence.
 
     Staying armed-but-silent is safe because the ARP cache expiry backstop still covers a

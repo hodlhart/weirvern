@@ -276,7 +276,7 @@ def overview_payload(services: list, report, anomalies: list[dict],
         "data_error": data_error,
         "health": health_payload(report) if report is not None else None,
         # What the SENSOR says it is doing, which is not the same as its configured
-        # mode: a weir process that died still has SENSOR_MODE=weir in the ConfigMap.
+        # mode: a siphon process that died still has SENSOR_MODE=siphon in the ConfigMap.
         # The query reports a stale heartbeat as not-running, so this cannot show
         # "intercepting" for a sensor that has stopped.
         "sensor": sensor or {},

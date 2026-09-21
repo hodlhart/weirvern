@@ -1,5 +1,5 @@
 #!/bin/sh
-# How do established MITM/ARP-spoof tools handle the sysctls weir mode needs?
+# How do established MITM/ARP-spoof tools handle the sysctls siphon mode needs?
 #
 # WHY THIS FILE EXISTS: I built a save/restore guard before checking whether the tools that have done
 # this for twenty years already solved it. That is backwards -- these tools have hit every footgun in
@@ -76,7 +76,7 @@ echo "    3. on exit, WRITE BACK the value read in step 1 -- not a constant"
 echo "    4. guard the restore so it runs once"
 echo
 echo "  Weirvern's sysctl_guard does the same, and extends it:"
-echo "    * it records rp_filter and send_redirects too, which weir mode requires"
+echo "    * it records rp_filter and send_redirects too, which siphon mode requires"
 echo "    * it refuses to restore a value it could not READ, because a guessed value is not a restore"
 echo "    * it restores AFTER the policy rules are removed, so nothing is routed through a table"
 echo "      whose packets the reverse-path check would then drop"
