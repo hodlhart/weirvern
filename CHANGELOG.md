@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — the break-glass door moves to the sign-in screen
+
+**The gap this closes.** The operator token is the documented recovery for a lost admin
+password, but its input lived ONLY on the Settings tab — which sits behind the sign-in
+gate it exists to open. An operator whose only remaining credential was the token could
+not reach the control that saves them; the recovery story was circular.
+
+**The fix.** The sign-in gate now carries a "Lost the admin password? Use the operator
+token instead" door: one click opens the token form on the locked-out screen itself. The
+token is verified the same way as everywhere else — the client submits it, re-reads
+`/api/session`, and boots from the SERVER's answer, so a wrong token leaves the gate up
+with a plain refusal and never a local claim of success. After signing in as the
+break-glass admin, the recovery path completes in the UI: Settings → Users → **Reset
+password** on the admin row, then sign in with the temporary password and change it.
+
+**A deploy lesson this release records** (also added to the README's setup notes): the
+bootstrap admin password is printed ONCE, by the pod that created the account. Rolling the
+GUI to a new image tag replaces that pod and the log with it — capture the password before
+deploying a newer tag, or recover via the operator token door. (Encountered live: the
+0.6.8 deploy rolled the pod and retired the only copy of the bootstrap line.)
+
+Guarded by: 7 new DOM-harness checks (door hidden by default, opens on click, wrong token
+refused with the gate up, right token accepted on the server's answer, gate closes) and a
+Python pin that the token form lives INSIDE the sign-in gate and its handler verifies via
+`loadSession` — a future refactor cannot quietly move the door back behind the wall.
+
 ## Unreleased — the gates actually hide: a CSS cascade collision that covered the sign-in form
 
 **Symptom, reported from the box:** "it says log in first. i cant change the password."

@@ -381,6 +381,23 @@ async function main() {
     }
     for (const [match, payload] of ROUTES) {
       if (u.includes(match)) {
+        // /api/session is TOKEN-AWARE, like the real server, and SESSION FIRST: a valid
+        // session reports the account; only when there is none does a presented operator
+        // token report the break-glass admin (`via: "token"`). This is what the break-glass
+        // door on the sign-in gate relies on.
+        if (match === "/api/session") {
+          if (SESSION_STUB.authenticated) {
+            return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                                     json: async () => SESSION_STUB });
+          }
+          const hdrs = (opts && opts.headers) || {};
+          if (hdrs["X-Weirvern-Token"] === "test-token-value") {
+            return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+              json: async () => ({ accounts: true, authenticated: true, username: "",
+                role: "admin", must_change: false, via: "token",
+                note: SESSION_STUB.note || "" }) });
+          }
+        }
         return Promise.resolve({ ok: true, status: 200, statusText: "OK",
                                  json: async () => payload });
       }
@@ -1398,6 +1415,7 @@ async function main() {
   //     dead state and put up the sign-in gate with a note that says what to do.
   SESSION_STUB.accounts = true;
   SESSION_STUB.authenticated = false;
+  H.setToken("");  // the locked-out operator has no credentials at all
   H.setSession("stale-session-value");
   await H.boot();
   H.showGate("pw");  // the operator is looking at the forced-change form
@@ -1411,6 +1429,49 @@ async function main() {
         && /sign in again/i.test(doc.getElementById("gate-note").textContent),
         `auth=${gateDisplay("auth-gate")} note=${doc.getElementById("gate-note").textContent}`);
   SESSION_STUB.authenticated = true;
+
+  // 6c. THE BREAK-GLASS DOOR IS ON THE GATE ITSELF. The operator token recovers a lost admin
+  //     password, but the token input once lived ONLY on the Settings tab -- which is behind
+  //     the very gate it exists to open. A locked-out operator must be able to reach it from
+  //     the sign-in screen: toggle it open, a wrong token is refused with the gate left up,
+  //     and the right token is accepted BY THE SERVER's answer (loadSession), never assumed.
+  SESSION_STUB.accounts = true;
+  SESSION_STUB.authenticated = false;
+  H.setToken("");
+  H.setSession("");
+  await H.boot();
+  check("the locked-out screen is the sign-in gate (computed)",
+        gateDisplay("auth-gate") === "flex" && gateDisplay("pw-gate") === "none");
+  const tokenToggle = doc.getElementById("gate-token-toggle");
+  check("the sign-in gate offers the operator-token door", !!tokenToggle);
+  check("the token form starts hidden (computed)",
+        gateDisplay("gate-token-block") === "none",
+        `block=${gateDisplay("gate-token-block")}`);
+  tokenToggle.click();
+  check("the door opens on click (computed)",
+        gateDisplay("gate-token-block") === "flex" || gateDisplay("gate-token-block") === "block",
+        `block=${gateDisplay("gate-token-block")}`);
+
+  const tokenForm = doc.getElementById("gate-token-form");
+  doc.getElementById("gate-token").value = "not-the-token";
+  tokenForm.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 80));
+  check("a wrong token is refused and the gate stays up",
+        gateDisplay("auth-gate") === "flex"
+        && /not accepted/i.test(doc.getElementById("gate-token-error").textContent),
+        `note=${doc.getElementById("gate-token-error").textContent}`);
+
+  H.setToken("");
+  doc.getElementById("gate-token").value = "test-token-value";
+  tokenForm.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  check("the right token is accepted on the SERVER's answer (via: token)",
+        H.AUTH.authenticated && H.AUTH.via === "token", `via=${H.AUTH.via}`);
+  check("the break-glass door closes the gate it was opened from (computed)",
+        gateDisplay("auth-gate") === "none" && gateDisplay("pw-gate") === "none",
+        `auth=${gateDisplay("auth-gate")}`);
+  H.setToken("");
+  H.setSession("");
 
   // 7. SIGNING OUT clears the session and arms the gate again.
   SESSION_STUB.accounts = true;

@@ -1544,6 +1544,39 @@ document.addEventListener("DOMContentLoaded", () => {
   const signOut = document.getElementById("sign-out");
   if (signOut) signOut.addEventListener("click", () => doLogout().catch(showError));
 
+  // ── the break-glass door on the sign-in gate ────────────────────────────────
+  // The operator token recovers a lost admin password, and its input must be reachable
+  // BEFORE signing in -- the Settings-tab control only helps someone already inside.
+  const gateTokenToggle = document.getElementById("gate-token-toggle");
+  if (gateTokenToggle) gateTokenToggle.addEventListener("click", () => {
+    const block = document.getElementById("gate-token-block");
+    if (block) block.classList.toggle("hidden");
+    const field = document.getElementById("gate-token");
+    if (field && block && !block.classList.contains("hidden")) field.focus();
+  });
+  const gateTokenForm = document.getElementById("gate-token-form");
+  if (gateTokenForm) gateTokenForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = document.getElementById("gate-token-error");
+    if (err) err.textContent = "";
+    const field = document.getElementById("gate-token");
+    setToken(field ? field.value.trim() : "");
+    if (field) field.value = "";
+    // Let the SERVER decide whether the token works: re-read the session and boot from its
+    // answer. A wrong token simply leaves the gate up (the next read refuses), so nothing
+    // here claims success on the browser's behalf.
+    try {
+      await loadSession();
+      if (AUTH.authenticated) {
+        await bootAuthed();
+      } else if (err) {
+        err.textContent = "that token is not accepted by this deployment";
+      }
+    } catch (e) {
+      if (err) err.textContent = String(e.message || e);
+    }
+  });
+
   const pwSave = document.getElementById("st-pw-save");
   if (pwSave) pwSave.addEventListener("click", async () => {
     const out = document.getElementById("st-pw-result");
