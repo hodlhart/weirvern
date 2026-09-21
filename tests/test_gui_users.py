@@ -666,15 +666,42 @@ def test_the_html_has_the_gate_elements_the_js_drives():
     for eid in ("auth-gate", "pw-gate", "gate-user", "gate-pass", "gate-form",
                 "pw-current", "pw-new", "pw-confirm", "pw-form",
                 "sign-out", "user-chip", "st-account-card", "st-users-card",
-                "st-new-user", "st-new-role", "st-new-pass", "st-user-create"):
+                "st-new-user", "st-new-role", "st-new-pass", "st-user-create",
+                # the break-glass door on the gate: reachable without signing in
+                "gate-token-toggle", "gate-token-block", "gate-token", "gate-token-form",
+                "gate-token-submit"):
         assert f'id="{eid}"' in html, f"#{eid} is missing from index.html"
 
 
 def test_the_js_drives_every_gate_element_the_html_declares():
     """The reverse seam: an element with no handler is a control that does nothing."""
     app = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
-    for eid in ("gate-form", "pw-form", "sign-out", "st-pw-save", "st-user-create"):
+    for eid in ("gate-form", "pw-form", "sign-out", "st-pw-save", "st-user-create",
+                "gate-token-form", "gate-token-toggle"):
         assert f'"{eid}"' in app, f"#{eid} exists in the HTML but nothing in app.js references it"
+
+
+def test_the_break_glass_token_door_is_reachable_from_the_SIGN_IN_gate():
+    """THE LOOP THIS CLOSES: the operator token is the documented recovery for a lost admin
+    password, but its input lived only on Settings -- which is behind the gate it exists to
+    open, so a locked-out operator could not reach the control that saves them. The door must
+    live on the sign-in gate itself, and the token submit must trust the SERVER's session
+    answer (loadSession) rather than assuming the token worked.
+    """
+    app = (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text()
+    html = (ROOT / "weirvern" / "admin" / "web" / "index.html").read_text()
+    # It is inside the auth gate, before the closing of that card.
+    gate = html[html.index('id="auth-gate"'):html.index('id="pw-gate"')]
+    assert 'id="gate-token-form"' in gate, (
+        "the operator-token form is not inside the sign-in gate -- a locked-out operator "
+        "cannot reach it"
+    )
+    # And the handler re-reads the session rather than claiming success locally.
+    handler = app[app.index("const gateTokenForm"):]
+    handler = handler[:handler.index("st-pw-save")]
+    assert "loadSession" in handler, (
+        "the token door no longer verifies against the server's session answer"
+    )
 
 
 def test_hidden_wins_the_cascade_over_every_display_rule_it_shares_an_element_with():

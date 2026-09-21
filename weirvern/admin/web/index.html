@@ -33,6 +33,28 @@
     <p class="muted gate-foot">This page is served over plain HTTP with no TLS, so a password
       entered here crosses the network in the clear — use it on a trusted network, and treat
       these credentials as LAN credentials rather than secrets of record.</p>
+    <!--
+      THE BREAK-GLASS DOOR, ON THE GATE ITSELF. The operator token recovers a lost admin
+      password, but its input lived only on the Settings tab -- which is behind this gate, so
+      an operator whose only remaining credential was the token could not reach the control
+      that exists to save them. Here it is on the locked-out screen, one click away.
+    -->
+    <p class="gate-foot">
+      <button id="gate-token-toggle" class="gate-linkish" type="button">Lost the admin
+        password? Use the operator token instead.</button>
+    </p>
+    <div id="gate-token-block" class="hidden">
+      <form id="gate-token-form" autocomplete="off">
+        <label class="gate-field">operator token
+          <input id="gate-token" type="password" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="gate-token-submit" class="primary" type="submit">Use token</button>
+        <p id="gate-token-error" class="gate-error" role="alert"></p>
+      </form>
+      <p class="muted gate-foot">The token is the deployment's break-glass credential (the
+        WEIRVERN_GUI_TOKEN in the weirvern-secrets secret). It grants admin with no account —
+        reset a lost password from Settings → Users, then sign in with it.</p>
+    </div>
   </div>
 </div>
 
