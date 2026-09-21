@@ -275,19 +275,19 @@ def test_revoking_by_USER_kills_every_session_for_that_account():
 def test_the_login_delay_escalates_but_is_bounded():
     t = users_mod.LoginThrottle()
     for _ in range(2):
-        t.record_failure("10.0.0.9")
-    assert t.delay_for("10.0.0.9") == 0.0, "the first couple of typos must not be punished"
+        t.record_failure("198.51.100.9")
+    assert t.delay_for("198.51.100.9") == 0.0, "the first couple of typos must not be punished"
     for _ in range(100):
-        t.record_failure("10.0.0.9")
-    assert 0 < t.delay_for("10.0.0.9") <= users_mod.LoginThrottle._MAX_DELAY_S
-    t.clear("10.0.0.9")
-    assert t.delay_for("10.0.0.9") == 0.0
+        t.record_failure("198.51.100.9")
+    assert 0 < t.delay_for("198.51.100.9") <= users_mod.LoginThrottle._MAX_DELAY_S
+    t.clear("198.51.100.9")
+    assert t.delay_for("198.51.100.9") == 0.0
 
 
 def test_the_throttle_map_is_bounded():
     t = users_mod.LoginThrottle()
     for i in range(users_mod.LoginThrottle._MAX_TRACKED + 100):
-        t.record_failure(f"10.0.0.{i % 256}")
+        t.record_failure(f"198.51.100.{i % 256}")
     assert len(t._failures) <= users_mod.LoginThrottle._MAX_TRACKED + 1  # noqa: SLF001
 
 
@@ -330,7 +330,7 @@ def _ctx(store, sessions=None, throttle=None, token=None, accounts_note=""):
 class _Handler:
     """Drives one route method of the real handler class with a faked transport."""
 
-    def __init__(self, ctx, headers=None, body=None, client="10.0.0.5"):
+    def __init__(self, ctx, headers=None, body=None, client="198.51.100.5"):
         web_mod = importlib.import_module("weirvern.admin.web")
         cls = web_mod._build_handler(ctx)
         self.inst = cls.__new__(cls)
@@ -424,8 +424,8 @@ def test_a_failed_login_records_a_throttle_failure():
     ctx = _ctx(store)
     for _ in range(4):
         _Handler(ctx, body='{"username": "admin", "password": "no"}',
-                 client="10.0.0.7").call("_login")
-    assert ctx.throttle.delay_for("10.0.0.7") > 0
+                 client="198.51.100.7").call("_login")
+    assert ctx.throttle.delay_for("198.51.100.7") > 0
 
 
 # -- the gates -------------------------------------------------------------------------------
