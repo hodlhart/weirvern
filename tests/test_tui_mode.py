@@ -1,7 +1,7 @@
 """The TUI's mode panel.
 
-WHY MODE GETS ITS OWN PANEL: `loch` and `weir` are not two settings of one dial. loch
-observes; weir puts Weirvern in the path, so a crashed sensor becomes a LAN outage rather
+WHY MODE GETS ITS OWN PANEL: `loch` and `siphon` are not two settings of one dial. loch
+observes; siphon puts Weirvern in the path, so a crashed sensor becomes a LAN outage rather
 than a monitoring gap. The panel therefore has to state the impact and the missing
 prerequisites BEFORE offering the switch -- and it must be POPULATED on mount, because a
 panel that is blank until you press something is indistinguishable from a broken one.
@@ -58,16 +58,16 @@ def test_the_panel_names_both_modes_as_switchable(tmp_path):
         app = WeirvernTUI(project_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            return [b.id for b in app.query("#btn-mode-loch, #btn-mode-weir, #btn-mode-check")]
+            return [b.id for b in app.query("#btn-mode-loch, #btn-mode-siphon, #btn-mode-check")]
 
     ids = _run(go())
     assert "btn-mode-loch" in ids
-    assert "btn-mode-weir" in ids
+    assert "btn-mode-siphon" in ids
     assert "btn-mode-check" in ids
 
 
-def test_weir_is_visually_marked_as_the_riskier_choice(tmp_path):
-    """`weir` changes the failure mode from a monitoring gap to an outage.
+def test_siphon_is_visually_marked_as_the_riskier_choice(tmp_path):
+    """`siphon` changes the failure mode from a monitoring gap to an outage.
 
     Marking it differently is not decoration: an operator scanning the panel should not
     be able to mistake the two for equivalent options.
@@ -76,7 +76,7 @@ def test_weir_is_visually_marked_as_the_riskier_choice(tmp_path):
         app = WeirvernTUI(project_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#btn-mode-weir")
+            btn = app.query_one("#btn-mode-siphon")
             return btn.variant
 
     assert _run(go()) == "warning"
@@ -85,7 +85,7 @@ def test_weir_is_visually_marked_as_the_riskier_choice(tmp_path):
 def test_the_mode_gate_is_imported_not_reimplemented():
     """Two copies of a safety check drift, and the one that drifts is untested.
 
-    The TUI must refuse weir for exactly the reasons the CLI does, so it imports the same
+    The TUI must refuse siphon for exactly the reasons the CLI does, so it imports the same
     validator rather than duplicating the rules.
     """
     src = (ROOT / "weirvern" / "admin" / "tui.py").read_text()
@@ -99,27 +99,27 @@ def test_the_mode_gate_is_imported_not_reimplemented():
     )
 
 
-def test_switching_weir_is_refused_when_the_sensor_lacks_NET_ADMIN(tmp_path, monkeypatch):
+def test_switching_siphon_is_refused_when_the_sensor_lacks_NET_ADMIN(tmp_path, monkeypatch):
     """The end-to-end refusal: the TUI must not be a way around the gate."""
     async def go():
         app = WeirvernTUI(project_dir=tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
             # Simulate a cluster whose sensor holds NET_RAW only -- the real state of the
-            # test box, and the reason weir cannot be enabled there.
+            # test box, and the reason siphon cannot be enabled there.
             monkeypatch.setattr(app, "_sensor_caps", lambda: (False, True))
-            app._set_mode("weir")
+            app._set_mode("siphon")
             await pilot.pause()
             return _render(app), app.query_one("#mode-status", Static)
 
     txt, _ = _run(go())
     assert "Cannot enable here" in txt or "cannot enable" in txt.lower(), (
-        f"the TUI allowed a weir switch without NET_ADMIN; panel said: {txt!r}"
+        f"the TUI allowed a siphon switch without NET_ADMIN; panel said: {txt!r}"
     )
     # And the config must NOT have been written.
     env = tmp_path / ".env"
     if env.exists():
-        assert "SENSOR_MODE=weir" not in env.read_text(), (
+        assert "SENSOR_MODE=siphon" not in env.read_text(), (
             "the mode was written despite failing the gate"
         )
 

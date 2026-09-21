@@ -70,17 +70,17 @@ data:
 
   # ── Sensor mode ────────────────────────────────────────────────────────────
   # HOW the sensor gets its packets. Named for the creature: a wyvern keeps its
-  # water in a LOCH and controls it at a WEIR.
+  # water in a LOCH and draws it through a SIPHON.
   #   loch  passive — still water. A promiscuous NIC fed by a SPAN/mirror port or
   #         TAP. Weirvern observes only; a dead sensor is a visibility gap.
-  #   weir  in-path — a barrier the water flows through. ARP-spoof and relay
+  #   siphon  in-path — a conduit the water is drawn through. ARP-spoof and relay
   #         selected hosts through Weirvern. No switch change needed, but Weirvern
   #         becomes a router and a dead sensor is an OUTAGE for those hosts.
   #         Requires CAP_NET_ADMIN, three sysctls on the node, and the fail-open
   #         watchdog.
-  # Inspect a mode's requirements before enabling it:  weirvern mode weir
+  # Inspect a mode's requirements before enabling it:  weirvern mode siphon
   SENSOR_MODE: "loch"
-  # weir mode only: who to intercept (comma-separated addresses/CIDRs, or "*").
+  # siphon mode only: who to intercept (comma-separated addresses/CIDRs, or "*").
   # EMPTY MEANS NOTHING IS INTERCEPTED — enabling the mode diverts no traffic by
   # itself. Never list the management gateway, this sensor, the API server, or DNS.
   INTERCEPT_TARGETS: ""
@@ -115,9 +115,9 @@ data:
   # capture -- so use WEIRVERN_EXCLUDE_CIDRS for IPv6.
   WEIRVERN_CAPTURE_EXCLUDE_CIDRS: ""
 
-  # ── In-path intercept (weir mode only) ─────────────────────────────────────
+  # ── In-path intercept (siphon mode only) ─────────────────────────────────────
   #
-  # THE REST OF THE INTERCEPT PLAN, so that enabling weir mode does not require
+  # THE REST OF THE INTERCEPT PLAN, so that enabling siphon mode does not require
   # hand-passing four flags to a command inside a pod every time.
   #
   # These were read by the CLI (`weirvern intercept` falls back to INTERCEPT_SEGMENT,
@@ -127,7 +127,7 @@ data:
   # "missing: segment, our address, gateway".
   #
   # ALL THREE ARE EMPTY BY DEFAULT, which is the safe state: an empty segment means
-  # preflight cannot pass, so weir mode refuses to start rather than guessing a range.
+  # preflight cannot pass, so siphon mode refuses to start rather than guessing a range.
   # Guessing here would mean poisoning hosts the operator never chose.
   #
   #   INTERCEPT_SEGMENT   the CIDR whose traffic to relay, e.g. 198.51.100.0/24. This IS

@@ -341,23 +341,28 @@ def test_the_mode_change_reuses_mode_validate_rather_than_reimplementing_it():
 
 
 def test_the_mode_gate_blocks_when_prerequisites_are_missing():
-    """Driven directly: with no NET_ADMIN the gate must refuse `weir`."""
+    """Driven directly: with no NET_ADMIN the gate must refuse `siphon`."""
     from weirvern.admin import mode as mode_mod
 
-    v = mode_mod.validate(mode_mod.MODE_WEIR, has_net_admin=False, has_net_raw=False,
+    v = mode_mod.validate(mode_mod.MODE_SIPHON, has_net_admin=False, has_net_raw=False,
                           watchdog_available=True)
-    assert v.ok is False, "weir mode validated as ok without NET_ADMIN"
+    assert v.ok is False, "siphon mode validated as ok without NET_ADMIN"
     assert v.blockers, "the verdict carries no reason"
 
 
-def test_the_gui_does_not_assume_sensor_capabilities_it_cannot_verify():
-    """Answering from THIS process's namespace would describe the wrong container. Absent a
-    positive answer the gate must report False, which refuses rather than permits."""
+def test_the_gui_reads_sensor_capabilities_from_the_CLUSTER_and_defaults_to_ABSENT():
+    """Reading THIS process's capabilities would describe the wrong container, so the probe
+    asks the cluster's own DaemonSet. And a probe that cannot answer must report ABSENT:
+    the default is what keeps in-path interception from being enabled on a sensor that
+    cannot forward."""
     src = WEB.read_text()
     i = src.index("def _sensor_caps(")
-    body = src[i:i + 1200]
+    body = src[i:src.index("\n        def ", i + 10)]
+    assert "get_json" in body and "daemonsets/zeek" in body, (
+        "the capability probe does not read the sensor's DaemonSet from the cluster"
+    )
     assert "return False, False" in body, (
-        "unverifiable capabilities are not defaulted to False, so weir mode could be enabled "
+        "unverifiable capabilities are not defaulted to False, so siphon mode could be enabled "
         "without the ability to forward"
     )
 

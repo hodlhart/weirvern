@@ -318,7 +318,7 @@ def _build_handler(ctx: GuiContext):
                     talkers = status_mod.top_talkers(client, limit=10)
                     # What the sensor reports about itself. Separate from the health
                     # checks above, which answer "is data flowing", not "what is the
-                    # sensor doing" -- and for weir that distinction is the whole point:
+                    # sensor doing" -- and for siphon that distinction is the whole point:
                     # a dead intercept still has its mode in the ConfigMap.
                     sensor = status_mod.sensor_status(client)
             except Exception as exc:  # noqa: BLE001
@@ -967,16 +967,26 @@ def _build_handler(ctx: GuiContext):
             if store is None:
                 return self._error(503, "the account store is not available on this GUI")
             try:
+                # The ROLE STRING, captured before the write: `find()` returns the store's
+                # live record, and set_role mutates it in place -- comparing the record's
+                # role AFTER the call would always say "unchanged". (Caught by the test for
+                # exactly this: the comparison must be between strings.)
+                existing = store.find(username)
+                before_role = existing.role if existing is not None else None
                 store.set_role(username, role)
             except users_mod.UserError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
                 return self._error(502, f"could not change the role: {exc}")
-            # An open tab keeps acting under the old role until its session is dropped, so a
-            # role change revokes the account's sessions immediately.
-            sessions = getattr(ctx, "sessions", None)
-            if sessions is not None:
-                sessions.revoke_user(username)
+            # An open tab keeps acting under the old role until its session is dropped, so a role
+            # CHANGE revokes the account's sessions immediately. A NO-OP -- setting the role the
+            # account already has -- changed nothing and must revoke nothing: it used to sign the
+            # operator out of the very tab they were working in, which reads as the change having
+            # failed (reported live: "I can't change admin to admin").
+            if before_role is not None and before_role != role:
+                sessions = getattr(ctx, "sessions", None)
+                if sessions is not None:
+                    sessions.revoke_user(username)
             logger.info("role for %s set to %s", username, role)
             self._json({"ok": True, "username": username, "role": role})
 
@@ -1196,7 +1206,7 @@ def _build_handler(ctx: GuiContext):
         def _mode_gate(self, changes: dict) -> str:
             """Reject a mode change that the mode's own prerequisites forbid. "" when fine.
 
-            The gate is `mode.validate`, which is what `weirvern mode weir` uses. A GUI session must
+            The gate is `mode.validate`, which is what `weirvern mode siphon` uses. A GUI session must
             not be a way around it: enabling in-path interception without forwarding working takes
             the segment down, and the check that prevents that has to be the same check.
             """
@@ -1218,19 +1228,33 @@ def _build_handler(ctx: GuiContext):
             return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
 
         def _sensor_caps(self) -> tuple[bool, bool]:
-            """Whether the SENSOR can do NET_ADMIN/NET_RAW, read from the cluster.
+            """(net_admin, net_raw) for the SENSOR, read from the cluster's own DaemonSet.
 
-            Deliberately the cluster's capabilities rather than this process's: the GUI runs on the
-            operator's network namespace and would answer about the wrong container, which is the
-            configured-vs-actual error.
+            WHY THE CLUSTER AND NOT THIS PROCESS: the GUI runs in its own pod, and its
+            effective capabilities describe the wrong container. The sensor is the thing
+            that must forward, so its DaemonSet is authoritative -- an overlay applied or
+            reverted on the cluster is visible here whatever any checkout says.
+
+            A capability that cannot be verified is reported ABSENT, never assumed: the
+            gate exists so the in-path mode cannot be enabled without the ability to
+            forward. (This began as a stub that answered "no" unconditionally, which made
+            the mode impossible to enable from the GUI even where the sensor held the
+            capabilities -- reported live as "I can't apply siphon mode".)
             """
+            from weirvern.admin import cluster_config as cc
+
+            client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
             try:
-                if ctx.backend is not None:
-                    for svc in ctx.backend.ps() or []:
-                        _ = svc
-                    # The capability check proper needs the sensor pod spec; absent a positive
-                    # answer, report "unknown" as False rather than assuming a capability that
-                    # would take the segment down.
+                ds = client.get_json(
+                    f"/apis/apps/v1/namespaces/{cc.NAMESPACE}/daemonsets/zeek")
+                containers = (
+                    ((ds.get("spec") or {}).get("template") or {}).get("spec") or {}
+                ).get("containers") or []
+                for container in containers:
+                    if container.get("name") == "zeek":
+                        adds = ((container.get("securityContext") or {})
+                                .get("capabilities") or {}).get("add") or []
+                        return ("NET_ADMIN" in adds), ("NET_RAW" in adds)
             except Exception:  # noqa: BLE001
                 pass
             return False, False

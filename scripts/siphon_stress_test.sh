@@ -1,7 +1,7 @@
 #!/bin/sh
-# ONE-HOUR weir-mode stress test, exercising the whole project workflow end to end.
+# ONE-HOUR siphon-mode stress test, exercising the whole project workflow end to end.
 #
-# WHAT THIS IS FOR. Every piece of weir mode has been verified in isolation: the poison frame
+# WHAT THIS IS FOR. Every piece of siphon mode has been verified in isolation: the poison frame
 # on a real host, the forwarding policy route, the watchdog arithmetic, the in-cluster
 # capabilities. Nothing has run all of it CONTINUOUSLY for an hour, and continuous operation is
 # where the interesting failures are:
@@ -45,7 +45,7 @@ GW="${INTERCEPT_GATEWAY:?set INTERCEPT_GATEWAY}"
 OUR_IP="${INTERCEPT_ADDR:?set INTERCEPT_ADDR}"
 IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
 NS=weirvern
-OUT=/tmp/weir_stress_$(date +%Y%m%d_%H%M%S).log
+OUT=/tmp/siphon_stress_$(date +%Y%m%d_%H%M%S).log
 
 resolve_pod() {
   kubectl -n $NS get pod -l app.kubernetes.io/name=weirvern-worker \
@@ -57,7 +57,7 @@ resolve_pod() {
 # harness, and one shows a failure that has since been fixed -- indistinguishable from a current
 # log when read side by side. This makes "which version produced this log" answerable from the log.
 SELF_DIGEST=$(sha256sum "$0" 2>/dev/null | cut -c1-12)
-echo "=== weir stress test: ${DURATION_MIN} minutes on $SEGMENT (scope: ALL swept hosts) ===" | tee "$OUT"
+echo "=== siphon stress test: ${DURATION_MIN} minutes on $SEGMENT (scope: ALL swept hosts) ===" | tee "$OUT"
 echo "  harness    : $(basename "$0") sha256:${SELF_DIGEST:-unknown}" | tee -a "$OUT"
 echo "  started    : $(date -Is)" | tee -a "$OUT"
 echo "  log: $OUT"
@@ -90,7 +90,7 @@ cleanup() {
   fi
   kubectl -n $NS exec "$W" -c worker -- python -c "
 from weirvern.config import Settings
-from weirvern.admin.weirnet import remove_forwarding_path, remove_address, check_forwarding
+from weirvern.admin.siphonnet import remove_forwarding_path, remove_address, check_forwarding
 import logging; logging.disable(logging.CRITICAL)
 try:
     remove_forwarding_path('$IFACE')
@@ -376,7 +376,7 @@ done
 # ── the watchdog's own account of the hour ─────────────────────────────────────
 echo "" | tee -a "$OUT"
 echo "=== what the watchdog reported over the hour ===" | tee -a "$OUT"
-tail -25 /tmp/weir_intercept.out | sed 's/^/    /' | tee -a "$OUT"
+tail -25 /tmp/siphon_intercept.out | sed 's/^/    /' | tee -a "$OUT"
 echo
 
 # ── does traffic that reached us become project data? ──────────────────────────
@@ -415,7 +415,7 @@ for _ in $(seq 1 $((DURATION_MIN * 2 + 10))); do
   [ "$S" = "0" ] && break
   sleep 30
 done
-tail -8 /tmp/weir_intercept.out | sed 's/^/    /' | tee -a "$OUT"
+tail -8 /tmp/siphon_intercept.out | sed 's/^/    /' | tee -a "$OUT"
 echo
 
 echo "=== POST-TEST segment health (the part that matters) ===" | tee -a "$OUT"

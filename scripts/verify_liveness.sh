@@ -8,7 +8,7 @@
 # the SHIPPING logic rather than a paraphrase of it.
 set -u
 
-SRC="${1:-$(dirname "$0")/weir_stress_test.sh}"
+SRC="${1:-$(dirname "$0")/siphon_stress_test.sh}"
 BLOCK=$(mktemp)
 [ -f "$SRC" ] || { echo "  FAIL: $SRC does not exist"; exit 1; }
 sed -n '/# Is the intercept still alive? THREE STATES/,/^  esac/p' "$SRC" > "$BLOCK"
@@ -65,7 +65,7 @@ STUB=$(mktemp -d)
 cat > "$STUB/kubectl" <<'EOF'
 #!/bin/sh
 cat <<'OUT'
-HEARTBEAT=999.0s ago mode=weir
+HEARTBEAT=999.0s ago mode=siphon
 OUT
 EOF
 chmod +x "$STUB/kubectl"

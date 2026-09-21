@@ -596,14 +596,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         # a workstation without the operator setting one up by hand.
         with admin_client(settings) as client:
             report = status_mod.collect_health(client, settings)
-            # WEIR-1 LOUD CHECK: a weir-CONFIGURED sensor with no live intercept is the
+            # SIPHON-1 LOUD CHECK: a siphon-CONFIGURED sensor with no live intercept is the
             # state where every config-derived surface says "in-path" while nothing is
             # redirected. Read the CONFIGURED mode from the cluster (where the sensor
             # actually gets it), falling back to this environment.
             configured_mode = (
                 _cluster_config().get("SENSOR_MODE") or settings.sensor_mode or ""
             )
-            liveness = status_mod.weir_liveness(configured_mode, client)
+            liveness = status_mod.siphon_liveness(configured_mode, client)
     except Exception as exc:  # noqa: BLE001
         _bad(f"cannot reach ClickHouse: {_condense(str(exc), 160)}")
         print(_c("dim", "    Tried to tunnel to svc/clickhouse automatically. "
@@ -622,10 +622,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     if liveness.get("applicable"):
         print()
         if liveness.get("live"):
-            _ok(f"weir intercept LIVE — {liveness['hosts']} host(s), "
+            _ok(f"siphon intercept LIVE — {liveness['hosts']} host(s), "
                 f"{liveness['mappings']} mapping(s), heartbeat {liveness['age_s']}s old")
         else:
-            _bad("SENSOR_MODE=weir is configured but no intercept is live:")
+            _bad("SENSOR_MODE=siphon is configured but no intercept is live:")
             for line in _wrap(str(liveness.get("error") or ""), 74):
                 print(f"    {line}")
             return EXIT_FAIL
@@ -654,11 +654,11 @@ CONFIG_HELP = {
     "RETRAIN_EVERY_H": "full retrain cadence, hours",
     "ZEEK_IFACE": "interface the Zeek sensor sniffs (the capture port)",
     "MGMT_IFACE": "management port (default route, SSH, API) — not sniffed",
-    "SENSOR_MODE": "loch = passive capture, weir = in-path intercept",
+    "SENSOR_MODE": "loch = passive capture, siphon = in-path intercept",
     "ZEEK_MAX_MB": "cap on rotated Zeek logs (MB); see `weirvern disk`",
     "NETFLOW_MAX_MB": "cap on the raw flow sink (MB)",
     "ML_MAX_MB": "cap on ClickHouse table data (MB)",
-    "INTERCEPT_TARGETS": "weir mode: who to intercept (empty = nobody)",
+    "INTERCEPT_TARGETS": "siphon mode: who to intercept (empty = nobody)",
     "CLICKHOUSE_HOST": "ClickHouse hostname",
     "CLICKHOUSE_PORT": "ClickHouse HTTP port",
     "CLICKHOUSE_DB": "ClickHouse database name",
@@ -1029,8 +1029,8 @@ def cmd_mode(args: argparse.Namespace) -> int:
     would mean discovering the blast radius after a deployment, so the mode gets a
     first-class command that states the requirements and the consequence.
 
-    With no argument it reports the current mode. `weirvern mode weir` checks whether
-    weir mode CAN be enabled here before writing anything, and refuses when it cannot.
+    With no argument it reports the current mode. `weirvern mode siphon` checks whether
+    siphon mode CAN be enabled here before writing anything, and refuses when it cannot.
     """
     from weirvern.admin import mode as mode_mod
 
@@ -1052,7 +1052,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
         else:
             _ok(v.summary())
         print()
-        print(_c("dim", "  switch with: weirvern mode loch   |   weirvern mode weir"))
+        print(_c("dim", "  switch with: weirvern mode loch   |   weirvern mode siphon"))
         return EXIT_OK
 
     wanted = mode_mod.normalise(args.mode)
@@ -1070,10 +1070,10 @@ def cmd_mode(args: argparse.Namespace) -> int:
     # defeat the point of gating.
     has_net_admin = has_net_raw = False
     watchdog_ok = True          # ships with Weirvern; absence would be a code fault
-    if wanted == mode_mod.MODE_WEIR:
+    if wanted == mode_mod.MODE_SIPHON:
         caps = detect_capabilities(project_dir())
         if caps.kubectl and caps.cluster_available:
-            # NET_ADMIN on the zeek container is what weir mode needs; read it back
+            # NET_ADMIN on the zeek container is what siphon mode needs; read it back
             # from the manifest render rather than trusting the checked-in file.
             r = _run(["kubectl", "-n", NAMESPACE, "get", "ds", "zeek", "-o",
                       "jsonpath={.spec.template.spec.containers[0].securityContext.capabilities.add}"],
@@ -1089,7 +1089,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
                    "needed to configure forwarding; the passive sensor does NOT have it")
         _ok_or_bad("fail-open watchdog", watchdog_ok, "withdraws the poisoned ARP entries")
         print()
-        print(_c("bold", "Node sysctls weir mode depends on"))
+        print(_c("bold", "Node sysctls siphon mode depends on"))
         from weirvern.admin.watchdog import preflight_sysctls
         for name, cur, want in preflight_sysctls():
             if args.local and cur != "?":
@@ -1102,23 +1102,23 @@ def cmd_mode(args: argparse.Namespace) -> int:
     v = mode_mod.validate(wanted, has_net_admin=has_net_admin,
                           has_net_raw=has_net_raw, watchdog_available=watchdog_ok)
 
-    # In weir mode the CAPTURE interface is the one that gets spoofed and relayed, so
+    # In siphon mode the CAPTURE interface is the one that gets spoofed and relayed, so
     # it must not be the management port: intercepting your own management path would
     # cut the sensor off from the cluster that manages it. loch mode does not care,
     # which is exactly why this check lives here rather than in validate().
-    if wanted == mode_mod.MODE_WEIR and capture_iface and mgmt_iface:
+    if wanted == mode_mod.MODE_SIPHON and capture_iface and mgmt_iface:
         if capture_iface == mgmt_iface:
             v.ok = False
             v.blockers.append(
-                f"ZEEK_IFACE and MGMT_IFACE are both '{capture_iface}'. Weir mode "
+                f"ZEEK_IFACE and MGMT_IFACE are both '{capture_iface}'. Siphon mode "
                 f"relays traffic on the capture interface, so using the management "
                 f"port would intercept the sensor's own cluster API traffic and can "
                 f"cut it off from the deployment that manages it"
             )
-    elif wanted == mode_mod.MODE_WEIR and capture_iface and not mgmt_iface:
+    elif wanted == mode_mod.MODE_SIPHON and capture_iface and not mgmt_iface:
         v.warnings.append(
             "MGMT_IFACE is not set, so Weirvern cannot verify the capture interface is "
-            "separate from the management path. Set it before enabling weir mode."
+            "separate from the management path. Set it before enabling siphon mode."
         )
 
     if not v.ok and not args.force:
@@ -1127,7 +1127,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
             print(f"    {b}")
         print()
         print(_c("dim", "  --force writes it anyway. Do not use it to skip the watchdog: "
-                        "in weir mode a sensor that stops relaying takes the LAN down."))
+                        "in siphon mode a sensor that stops relaying takes the LAN down."))
         return EXIT_NOTREADY
 
     for w in v.warnings:
@@ -1143,7 +1143,7 @@ def cmd_mode(args: argparse.Namespace) -> int:
         _bad(f"could not update {env_path()}: {exc}")
         return EXIT_FAIL
 
-    if wanted == mode_mod.MODE_WEIR:
+    if wanted == mode_mod.MODE_SIPHON:
         print()
         _warn("the CLUSTER mode lives in k8s/20-configmap-env.yaml — set it there too:")
         print(f'    SENSOR_MODE: "{mode_mod.env_value(wanted)}"')
@@ -1322,10 +1322,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser(
         "mode",
-        help="inspect or set the sensor mode (loch = passive, weir = in-path intercept)",
+        help="inspect or set the sensor mode (loch = passive, siphon = in-path intercept)",
     )
     s.add_argument("mode", nargs="?", default="",
-                   help="'loch' or 'weir'; omit to report the current mode")
+                   help="'loch' or 'siphon'; omit to report the current mode")
     s.add_argument("--force", action="store_true",
                    help="write the mode even if prerequisites are missing (not advised)")
     s.add_argument("--local", action="store_true",
@@ -1362,7 +1362,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="never delete files newer than this many seconds (default 3600)")
     s.set_defaults(func=cmd_prune)
 
-    s = sub.add_parser("intercept", help="run in-path intercept (weir mode)")
+    s = sub.add_parser("intercept", help="run in-path intercept (siphon mode)")
     s.add_argument("--iface", help="capture NIC with L2 reachability to the segment")
     s.add_argument("--segment", help="CIDR to intercept, e.g. 198.51.100.0/24")
     s.add_argument("--our-ip", dest="our_ip", help="this sensor's address on that segment")
@@ -1511,9 +1511,9 @@ def _resolve_host_scope(args: argparse.Namespace) -> tuple[set[str], str | None]
 
 
 def cmd_intercept(args: argparse.Namespace) -> int:
-    """Run in-path intercept (weir mode): ARP-forge the path, relay in the kernel.
+    """Run in-path intercept (siphon mode): ARP-forge the path, relay in the kernel.
 
-    WHY THIS IS GATED AND LOVES --dry-run: in weir mode Weirvern is a ROUTER. Every host
+    WHY THIS IS GATED AND LOVES --dry-run: in siphon mode Weirvern is a ROUTER. Every host
     whose ARP cache is forged loses the network if this process stops without restoring,
     which is why the watchdog is armed before the first poison frame. A whole-segment
     intercept can take an entire VLAN off the air, so the plan is inspectable first.
@@ -1523,7 +1523,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     """
     from weirvern.admin import intercept as ic_mod
     from weirvern.admin import mode as mode_mod
-    from weirvern.admin import weirnet
+    from weirvern.admin import siphonnet
 
     env = config_io.EnvFile.load(env_path()) if env_path().exists() else None
 
@@ -1560,13 +1560,13 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     # warnings) -- verified against mode.py rather than assumed. The watchdog ships with
     # Weirvern, so its availability is a code fact, not a probe.
     verdict = mode_mod.validate(
-        mode_mod.MODE_WEIR,
+        mode_mod.MODE_SIPHON,
         has_net_admin=_has_cap("net_admin"),
         has_net_raw=_has_cap("net_raw"),
         watchdog_available=True,
     )
     if not verdict.ok:
-        _bad(f"weir mode is not permitted on this host: {verdict.summary()}")
+        _bad(f"siphon mode is not permitted on this host: {verdict.summary()}")
         for reason in verdict.blockers:
             print(f"    - {reason}")
         for warn in verdict.warnings:
@@ -1581,7 +1581,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     # withdrawn mid-intercept, and that is the one failure the watchdog cannot distinguish
     # from idleness (the forwarding counter simply stops advancing), so poisoned hosts
     # would keep believing we are the gateway while we can no longer forward for them.
-    used, err = weirnet.describe_segment(iface, segment, our_ip or gateway)
+    used, err = siphonnet.describe_segment(iface, segment, our_ip or gateway)
     if err:
         _warn(f"could not survey {segment}: {err}")
     else:
@@ -1600,7 +1600,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
                 print(f"      ... and {len(used) - 20} more")
         print()
         if not args.our_ip:
-            free = weirnet.find_free_addresses(iface, segment, our_ip or gateway,
+            free = siphonnet.find_free_addresses(iface, segment, our_ip or gateway,
                                                exclude=set(used) | {gateway})
             if free:
                 print(_c("bold", "  free addresses you could use for --our-ip:"))
@@ -1617,7 +1617,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         print(refusal)
         return EXIT_FAIL
 
-    # REQUIRE --seconds WHEN STDIN IS NOT A TERMINAL (weir-2). A non-interactive run -- the
+    # REQUIRE --seconds WHEN STDIN IS NOT A TERMINAL (siphon-2). A non-interactive run -- the
     # documented in-cluster pattern is `kubectl exec` without a TTY, and a scripted run is
     # the same shape -- has no Ctrl-C path a human can press, and if the client is killed
     # no signal may reach this process at all. The protections that survive that case are
@@ -1637,7 +1637,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     if plan is None:
         return EXIT_FAIL
 
-    # THE SELF-DESTRUCT DEADLINE (weir-2, part 3). --seconds bounds the WAIT loop; this
+    # THE SELF-DESTRUCT DEADLINE (siphon-2, part 3). --seconds bounds the WAIT loop; this
     # bounds the mappings' lifetime when no signal can reach the process at all (a
     # SIGKILLed kubectl-exec client leaves the in-pod process alive and unreachable, and
     # no handler runs). Default: --seconds + 120s grace, so the normal path always wins
@@ -1661,7 +1661,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
             for p_ in problems:
                 print(f"  {_c('bad', 'BLOCKED')} {p_}")
             print()
-            print(weirnet.SYSCTL_WRITE_HINT)
+            print(siphonnet.SYSCTL_WRITE_HINT)
             return EXIT_NOTREADY
         print("  all checks passed")
         print()
@@ -1677,7 +1677,7 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         for p_ in problems:
             print(f"    - {p_}")
         print()
-        print(weirnet.SYSCTL_WRITE_HINT)
+        print(siphonnet.SYSCTL_WRITE_HINT)
         return EXIT_NOTREADY
 
     # ASSIGN THE ADDRESS, which is the step this command was missing entirely.
@@ -1687,13 +1687,13 @@ def cmd_intercept(args: argparse.Namespace) -> int:
     # Measured live: the plan refused to build with "cannot resolve the gateway" purely
     # because the interface had no address, while the gateway was answering ARP the whole
     # time. Poisoning without an address would take hosts OFF the network instead of relaying
-    # them -- the exact failure weir mode exists to avoid.
+    # them -- the exact failure siphon mode exists to avoid.
     #
     # Placed HERE, after the mode gate and the survey and immediately before the try, so
     # every return below it is covered by the finally and no path can leak the address.
     addr_added = False
     if not _iface_has_address(iface, our_ip):
-        rc, out = weirnet.add_address(iface, our_ip, segment)
+        rc, out = siphonnet.add_address(iface, our_ip, segment)
         if rc != 0:
             _bad(f"could not assign {our_ip} to {iface}: {out}")
             return EXIT_NOTREADY
@@ -1712,14 +1712,14 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         # capture interface keeps a route and keeps accepting traffic for a segment the
         # operator never asked to be involved in.
         if addr_added:
-            weirnet.remove_address(iface, our_ip, segment)
+            siphonnet.remove_address(iface, our_ip, segment)
             print(f"  withdrew {our_ip} from {iface}")
 
 
 def _effective_max_runtime(args: argparse.Namespace) -> int | None:
     """The self-destruct deadline for this run, or None for no deadline.
 
-    Default policy (weir-2): a bounded run (--seconds) gets --seconds + 120s of grace, so
+    Default policy (siphon-2): a bounded run (--seconds) gets --seconds + 120s of grace, so
     the normal restore path always wins and the deadline exists purely for the case where
     that path never got to run (a SIGKILLed kubectl-exec client leaves the in-pod process
     alive and unsignalable). An unbounded interactive run gets NO default deadline --
@@ -1856,13 +1856,13 @@ def _has_cap(name: str) -> bool:
 def _intercept_state(runner) -> dict:
     """The fields to publish for a running intercept.
 
-    Reports the mode the process is ACTUALLY in -- "weir" here, because this only runs
+    Reports the mode the process is ACTUALLY in -- "siphon" here, because this only runs
     while intercepting -- rather than reading SENSOR_MODE. That distinction is the point
     of the heartbeat: an observed fact beats a configured one.
     """
     st = runner.status()
     return {
-        "mode": "weir",
+        "mode": "siphon",
         "iface": str(st.get("iface") or ""),
         "segment": str(st.get("segment") or ""),
         "hosts": int(st.get("hosts") or 0),

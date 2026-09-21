@@ -3,8 +3,8 @@
 -- WHY THIS TABLE EXISTS: the web GUI runs in its own pod and has NO access to the sensor
 -- pod's filesystem, so it cannot see whether an intercept is actually running. Before
 -- this, it could only report the CONFIGURED mode from the ConfigMap -- which is a claim
--- about intent, not about reality. Those differ exactly when it matters most: a weir
--- process that died, or was never started, still has SENSOR_MODE=weir in the ConfigMap.
+-- about intent, not about reality. Those differ exactly when it matters most: a siphon
+-- process that died, or was never started, still has SENSOR_MODE=siphon in the ConfigMap.
 --
 -- ClickHouse is the right rendezvous because both components already talk to it, it works
 -- across pods and nodes, and it means the TUI and the GUI show the same fact from the same
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS weirvern.sensor_status
     -- field that makes the table worth having: it is observed, not configured.
     mode          LowCardinality(String),
 
-    -- For weir: what is being intercepted. Empty in loch mode, where there is nothing to
+    -- For siphon: what is being intercepted. Empty in loch mode, where there is nothing to
     -- intercept -- an empty value here means "not applicable", not "unknown".
     iface         LowCardinality(String),
     segment       String,

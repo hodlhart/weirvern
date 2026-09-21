@@ -59,15 +59,15 @@ check_case "form 3: a DIFFERENT priority selecting the same table" \
 
 echo
 echo "=== run the SHIPPING function against each remaining form ==="
-echo "  (extracted from weirnet.py so this tests the real code, not a paraphrase)"
+echo "  (extracted from siphonnet.py so this tests the real code, not a paraphrase)"
 python3 - <<'PY' > /tmp/rule_cleanup.py
 import pathlib, re
 import os
 # The source path is a PARAMETER. A hardcoded absolute path works on exactly one machine and fails
 # everywhere else -- the probe then "fails" for a reason that has nothing to do with the rule cleanup.
-cand = os.environ.get("WEIRNET_PY") or "/tmp/weirnet.py"
+cand = os.environ.get("SIPHONNET_PY") or "/tmp/siphonnet.py"
 if not os.path.exists(cand):
-    for alt in ("weirvern/admin/weirnet.py", "../weirvern/admin/weirnet.py"):
+    for alt in ("weirvern/admin/siphonnet.py", "../weirvern/admin/siphonnet.py"):
         if os.path.exists(alt):
             cand = alt
             break

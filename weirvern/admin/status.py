@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
-from weirvern.admin.mode import MODE_WEIR  # noqa: E402
+from weirvern.admin.mode import MODE_SIPHON  # noqa: E402
 
 
 @dataclass
@@ -264,7 +264,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("intercept_targets", "intercept targets"),
         # These three are NOT Settings attributes -- the CLI reads them from the environment
         # directly (`weirvern intercept` falls back to them) and they are ConfigMap keys. They
-        # are still worth showing, because enabling weir mode depends on them. `_SOURCE` records
+        # are still worth showing, because enabling siphon mode depends on them. `_SOURCE` records
         # that they come from the environment rather than from the settings object, so the row
         # does not pretend to be a preference it is not.
         ("intercept_segment", "intercept segment"),
@@ -332,7 +332,7 @@ _SETTINGS_HELP: dict[str, str] = {
     # -- sensor
     "sensor_mode": (
         "'loch' (default) watches traffic passively from a mirrored/SPAN port or TAP -- it "
-        "cannot affect your network. 'weir' puts this host in the traffic path by ARP-forging "
+        "cannot affect your network. 'siphon' puts this host in the traffic path by ARP-forging "
         "the gateway mapping, so it can see traffic a mirror cannot AND must never fail closed. "
         "Changing this restarts the Zeek sensor and briefly interrupts capture."),
     "zeek_iface": (
@@ -353,18 +353,18 @@ _SETTINGS_HELP: dict[str, str] = {
         "Default /data/flows.jsonl. Both processes are pinned to the same node because this is "
         "a file, not a network stream."),
     "intercept_targets": (
-        "Which hosts the weir intercept targets, when SENSOR_MODE is 'weir'. Comma-separated "
+        "Which hosts the siphon intercept targets, when SENSOR_MODE is 'siphon'. Comma-separated "
         "addresses to intercept, or 'all' for the whole segment. Only used when an operator "
         "runs 'weirvern intercept'; this list is the default the command reads."),
     "intercept_segment": (
-        "The network segment (CIDR) the weir intercept operates on. Used as the fallback when "
+        "The network segment (CIDR) the siphon intercept operates on. Used as the fallback when "
         "'weirvern intercept' is run without the --segment flag. Must match the segment you are "
         "authorised to monitor."),
     "intercept_addr": (
         "The address the intercept assumes on the capture interface while it relays traffic "
         "(the 'one-armed router' address). Fallback for 'weirvern intercept --addr'."),
     "intercept_gateway": (
-        "The gateway address whose identity is forged for the targeted hosts during a weir "
+        "The gateway address whose identity is forged for the targeted hosts during a siphon "
         "intercept. Fallback for 'weirvern intercept --gateway'. The watchdog restores these "
         "mappings on every exit path, including crashes."),
     "reverse_dns": (
@@ -1139,8 +1139,8 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     WHY THIS EXISTS, AND WHY IT IS NOT JUST THE CONFIG VALUE: the GUI runs in its own pod
     and cannot see the sensor's filesystem, so the configured `SENSOR_MODE` was the only
     thing available to it -- and that is a statement of INTENT, not of reality. The two
-    differ exactly when it matters: a weir process that died, or was never started, still
-    has SENSOR_MODE=weir in the ConfigMap. Reporting the configured mode as though it were
+    differ exactly when it matters: a siphon process that died, or was never started, still
+    has SENSOR_MODE=siphon in the ConfigMap. Reporting the configured mode as though it were
     the running mode would show "intercepting 2 hosts" for a sensor that is not running.
 
     THE RULE THIS ENFORCES: a stale heartbeat is reported as NOT RUNNING, never as the
@@ -1169,7 +1169,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
         # Other modes reporting from the same sensor, e.g. a passive capture alongside a live
         # intercept. Always a list, never absent, for the reason given below.
         "others": [],
-        # True when a `weir` row exists but has gone stale: an intercept ran and stopped, and
+        # True when a `siphon` row exists but has gone stale: an intercept ran and stopped, and
         # whether the node was restored cannot be determined from here. Present always, so a
         # consumer never has to distinguish a missing key from a false value.
         "intercept_stopped": False,
@@ -1182,13 +1182,13 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     # EVERY row, then choose deterministically in Python. `ORDER BY ts DESC LIMIT 1` was the
     # bug: the table is keyed (sensor_id, mode), so a sensor that is intercepting has TWO live
     # rows -- the worker publishes the configured mode (`loch`) and the intercept publishes its
-    # own (`weir`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
+    # own (`siphon`) -- and both beat on the same interval. Whichever wrote last won, so the GUI
     # alternated between them on every refresh. The data was never wrong; the reader was
     # picking by wall-clock instead of by meaning.
     #
     # The table is tiny (one row per sensor per mode), so reading all of it is cheaper than
     # being clever in SQL and much easier to reason about. The read is shared with
-    # weir_liveness via _sensor_rows so the two answers cannot disagree about one dataset.
+    # siphon_liveness via _sensor_rows so the two answers cannot disagree about one dataset.
     rows, err = _sensor_rows(client)
     if err is not None:
         # A missing table is the normal state before the schema Job runs, and it must not
@@ -1207,7 +1207,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
 
     # WHICH ROW IS THE SENSOR. Two rules, in order:
     #
-    #   1. An INTERCEPTING row (`weir`) wins over a passive one. It describes the same physical
+    #   1. An INTERCEPTING row (`siphon`) wins over a passive one. It describes the same physical
     #      sensor in a strictly more informative state -- it names the segment, the host count and
     #      a live watchdog -- and it exists only while an intercept process is actually running.
     #   2. Otherwise the FRESHEST row wins, but staleness is computed per row and a stale row is
@@ -1223,7 +1223,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
             else float("inf")
         )
         fresh = age <= HEARTBEAT_STALE_S
-        active = str(row.get("mode") or "") == MODE_WEIR
+        active = str(row.get("mode") or "") == MODE_SIPHON
         return (fresh, active, -age)
 
     best = max(rows, key=_rank)
@@ -1231,7 +1231,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
 
     # AN INTERCEPT THAT STOPPED IS NOT THE SAME AS NO INTERCEPT.
     #
-    # Measured on the live box: an intercept publishes `weir` while the worker publishes the
+    # Measured on the live box: an intercept publishes `siphon` while the worker publishes the
     # configured `loch`, both under one sensor_id. When the intercept process ENDS, its row goes
     # stale and `_rank` demotes it -- correctly, a stale row must never beat a live one -- so the
     # reader falls back to the live `loch` row and reports "passive capture, not in the path".
@@ -1246,7 +1246,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     # this reader cannot see the node's ARP caches from inside the GUI pod.
     stopped_intercept = False
     for row in rows:
-        if str(row.get("mode") or "") != MODE_WEIR:
+        if str(row.get("mode") or "") != MODE_SIPHON:
             continue
         if row.get("sensor_id") != best.get("sensor_id"):
             continue
@@ -1333,7 +1333,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
 def _sensor_rows(client) -> tuple[list[dict], str | None]:
     """Every sensor_status row, or an error string. Never raises.
 
-    Split out of sensor_status so weir_liveness can apply its own rule over the same
+    Split out of sensor_status so siphon_liveness can apply its own rule over the same
     rows: sensor_status answers "which mode is this sensor in", while the liveness
     question is "does ANY row carry intercept evidence". Reading them with one query
     keeps the two answers from disagreeing about the same data.
@@ -1352,43 +1352,43 @@ def _sensor_rows(client) -> tuple[list[dict], str | None]:
         return [], "sensor status is unavailable"
 
 
-def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = None) -> dict:
-    """Whether a weir-CONFIGURED sensor has intercept evidence RIGHT NOW.
+def siphon_liveness(configured_mode: str, client, now: datetime.datetime | None = None) -> dict:
+    """Whether a siphon-CONFIGURED sensor has intercept evidence RIGHT NOW.
 
-    SENSOR_MODE=weir is a statement of INTENT -- a fact about a ConfigMap, which outlives
+    SENSOR_MODE=siphon is a statement of INTENT -- a fact about a ConfigMap, which outlives
     every process that read it. An intercept is a RUNNING process that publishes its own
     heartbeat. The two agree exactly when nothing is wrong, and disagree in the worst way
     when something is.
 
-    WHY THIS CHECK EXISTS (weir-1): an in-cluster deployment with SENSOR_MODE=weir sets
-    the sysctls, prints "mode weir -- IN-PATH intercept" in the Zeek container, and
+    WHY THIS CHECK EXISTS (siphon-1): an in-cluster deployment with SENSOR_MODE=siphon sets
+    the sysctls, prints "mode siphon -- IN-PATH intercept" in the Zeek container, and
     redirects ZERO hosts, because the intercept is operator-triggered and nothing in the
     cluster runs it. Every surface that only reads the config reports a healthy in-path
     sensor. The defect class is the one the changelog keeps naming: a failure that renders
     identically to a successful measurement of zero.
 
     WHAT COUNTS AS EVIDENCE, and why the naive answers are wrong:
-      * mode=='weir' alone is not enough -- in a weir deployment the WORKER's own row
-        also carries mode='weir' (observe() publishes the configured value) with zero
+      * mode=='siphon' alone is not enough -- in a siphon deployment the WORKER's own row
+        also carries mode='siphon' (observe() publishes the configured value) with zero
         mappings, so a config-read would pass while nothing intercepts. VERIFIED against
-        the live box's sensor_status: `Weirvern weir 10 20 0` (the intercept's own row,
+        the live box's sensor_status: `Weirvern siphon 10 20 0` (the intercept's own row,
         since gone stale) and worker rows like `... loch 0 0 1`.
       * `running` alone is not enough -- the worker's `running` means "Zeek logs are
         fresh", which is true on a healthy passive sensor too.
       * A fresh row is required -- a stale intercept row is a PAST intercept, reported
         separately as `stopped` (an intercept ran; whether it restored is unknowable
         from here).
-      * So: intercept evidence is a FRESH row with mode 'weir' AND mappings > 0.
+      * So: intercept evidence is a FRESH row with mode 'siphon' AND mappings > 0.
         `mappings` is written only by an intercept (the worker always writes 0) and an
         intercept only starts after forging at least one mapping -- which is exactly the
-        question being asked. A worker row with mode 'weir', mappings 0, running 1 is
+        question being asked. A worker row with mode 'siphon', mappings 0, running 1 is
         NOT evidence and must not pass this check.
 
-    Returns a dict; never raises. `error` is the loud explanation when a weir-configured
+    Returns a dict; never raises. `error` is the loud explanation when a siphon-configured
     sensor has no live intercept, and None otherwise.
     """
     out: dict = {
-        "applicable": str(configured_mode or "") == MODE_WEIR,
+        "applicable": str(configured_mode or "") == MODE_SIPHON,
         "configured_mode": str(configured_mode or ""),
         "live": False,
         "stopped": False,
@@ -1408,13 +1408,13 @@ def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = 
         # "Cannot tell" is its own answer -- it must not be reported as "no intercept"
         # (a claim we cannot support) nor as live (a claim in the unsafe direction).
         out["error"] = (
-            "SENSOR_MODE=weir is configured but whether an intercept is running cannot "
+            "SENSOR_MODE=siphon is configured but whether an intercept is running cannot "
             f"be determined: {err}."
         )
         return out
     if not rows:
         out["error"] = (
-            "SENSOR_MODE=weir is configured but no sensor has ever reported a heartbeat, "
+            "SENSOR_MODE=siphon is configured but no sensor has ever reported a heartbeat, "
             "so no intercept can be confirmed. The sensor writes one every few seconds "
             "while it runs, so this means it has not started or cannot reach ClickHouse."
         )
@@ -1432,7 +1432,7 @@ def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = 
     stopped = False
     fresh_evidence: dict | None = None
     for row in rows:
-        if str(row.get("mode") or "") != MODE_WEIR:
+        if str(row.get("mode") or "") != MODE_SIPHON:
             continue
         age = _age_s(row)
         fresh = age is not None and age <= HEARTBEAT_STALE_S
@@ -1455,7 +1455,7 @@ def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = 
     # --- applicable, verified, and NOT live. This is the loud case. ---
     if stopped:
         out["error"] = (
-            "SENSOR_MODE=weir is configured and an intercept RAN on this sensor but is no "
+            "SENSOR_MODE=siphon is configured and an intercept RAN on this sensor but is no "
             "longer running. Whether its forged ARP entries were restored cannot be "
             "determined from here: if the process was killed uncatchably (kill -9, or a "
             "SIGKILLed kubectl-exec client that outran the self-destruct deadline), hosts "
@@ -1465,13 +1465,13 @@ def weir_liveness(configured_mode: str, client, now: datetime.datetime | None = 
         )
     else:
         out["error"] = (
-            "SENSOR_MODE=weir is configured but NO intercept is running and none has "
-            "ever reported. This is the EXPECTED state of an in-cluster weir deployment: "
+            "SENSOR_MODE=siphon is configured but NO intercept is running and none has "
+            "ever reported. This is the EXPECTED state of an in-cluster siphon deployment: "
             "the intercept is operator-triggered (`weirvern intercept --iface ... "
             "--segment ...`) and nothing in the cluster runs it, so no host traffic is "
             "being redirected. If you intended interception, run the command above; if "
             "this sensor should be passive, set SENSOR_MODE=loch (it also drops the "
-            "extra privileges weir mode requires)."
+            "extra privileges siphon mode requires)."
         )
     return out
 

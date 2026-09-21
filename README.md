@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 behavioural baselines, flags the deviations that match real attack shapes, and shows a
 human *why*, with the measurements that fired.
 
-Current release: **0.6.9** · Runs on any conformant Kubernetes · No payload inspection ·
+Current release: **0.7.0** · Runs on any conformant Kubernetes · No payload inspection ·
 Alerts via [Pushover](https://pushover.net), or log-only.
 
 **What you get**
@@ -132,10 +132,10 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.6.9` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.6.9` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.6.9` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.6.9` | Applies the ClickHouse schema |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.7.0` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.7.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.7.0` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.7.0` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -150,7 +150,7 @@ Three details of this table are Kubernetes design statements, not incidentals:
   installed at build time — and the FoxIO-licensed half of it is **deleted during the
   build**. See [TLS fingerprinting and licensing](#tls-fingerprinting-and-licensing).
 
-### Sensor modes: `loch` and `weir`
+### Sensor modes: `loch` and `siphon`
 
 `SENSOR_MODE` decides how Weirvern gets packets, and the two modes differ in whether
 Weirvern can affect the network at all. That difference is the whole point of naming them.
@@ -158,31 +158,32 @@ Weirvern can affect the network at all. That difference is the whole point of na
 | Mode | What it does | Can it affect traffic? |
 |---|---|---|
 | **`loch`** (default) | Passive capture. Zeek listens on a promiscuous NIC fed by a switch SPAN/mirror port or a passive TAP, and observes. | **No.** Still water. |
-| **`weir`** | In-path intercept. ARP-forges the gateway mapping so chosen hosts send their off-link traffic to Weirvern, which relays it in the kernel. | **Yes** — Weirvern becomes a router, so it must fail open. |
+| **`siphon`** | In-path intercept. ARP-forges the gateway mapping so chosen hosts send their off-link traffic to Weirvern, which relays it in the kernel. | **Yes** — Weirvern becomes a router, so it must fail open. |
 
 ```bash
 weirvern mode                      # what mode is configured, and can it run here
-weirvern mode --set loch           # passive (what most deployments want)
-weirvern intercept --dry-run       # inspect a weir plan without touching the network
+weirvern mode loch                 # passive (what most deployments want)
+weirvern mode siphon               # in-path intercept (gated on the sensor's capabilities)
+weirvern intercept --dry-run       # inspect a siphon plan without touching the network
 ```
 
-**`weir` is opt-in and gated** because failing in it means an outage, not a blind spot.
+**`siphon` is opt-in and gated** because failing in it means an outage, not a blind spot.
 It requires `CAP_NET_ADMIN` (the passive sensor deliberately does not have it), and
 `weirvern intercept` runs a preflight that refuses to start rather than poison a segment
 it cannot relay for. `--dry-run` reports the blast radius — every host whose ARP cache
 would be forged — and offers addresses that answered no ARP.
 
 **The intercept is operator-triggered and `weirvern status` says so.** Setting
-`SENSOR_MODE=weir` configures the *intent*; nothing in the cluster starts an intercept.
-`weirvern status` therefore FAILS, with an explanation, when the mode is `weir` but no
+`SENSOR_MODE=siphon` configures the *intent*; nothing in the cluster starts an intercept.
+`weirvern status` therefore FAILS, with an explanation, when the mode is `siphon` but no
 intercept has a live heartbeat — because a config that reads "in-path" while redirecting
 nothing is exactly the failure mode this project refuses to ship.
 
-**`weir` is an L2/L3 redirect, not a TLS intercept.** Nothing is decrypted, no certificate
+**`siphon` is an L2/L3 redirect, not a TLS intercept.** Nothing is decrypted, no certificate
 is substituted, and no payload is inspected. It is also not a man-in-the-middle in the
 cryptographic sense: TLS sessions continue to authenticate end to end.
 
-Safety in `weir` mode comes from the **fail-open watchdog**, which is required rather than
+Safety in `siphon` mode comes from the **fail-open watchdog**, which is required rather than
 optional. It restores every forged mapping if the process is stopped, killed, or crashes,
 and it fails open when forwarding stalls. Three properties are worth knowing before trusting it:
 
@@ -190,7 +191,7 @@ and it fails open when forwarding stalls. Three properties are worth knowing bef
   refreshes them, so a single poisoning does not hold.
 - **A quiet network does not trip it.** The watchdog only treats a still forwarding counter
   as a stall once it has actually *observed* forwarding working — an idle segment looks
-  identical to a broken one, and conflating them makes `weir` flap.
+  identical to a broken one, and conflating them makes `siphon` flap.
 - **There is a self-destruct deadline.** `--seconds` bounds the run; `--max-runtime`
   (default: `--seconds + 120s`) restores from inside the process even when no signal can
   ever reach it — the killed-`kubectl exec`-client case. The last resort is the kernel's
@@ -348,8 +349,8 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.6.9 .
-podman push registry.example.com/weirvern-worker:0.6.9
+podman build -t registry.example.com/weirvern-worker:0.7.0 .
+podman push registry.example.com/weirvern-worker:0.7.0
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
 # prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
@@ -367,7 +368,7 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.9
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.7.0
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 cd ..
 ```
@@ -542,11 +543,11 @@ harness can fail. See [Detection and alerting](#detection-and-alerting).
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.6.9 .
-podman push registry.example.com/weirvern-worker:0.6.9
+podman build -t registry.example.com/weirvern-worker:0.7.0 .
+podman push registry.example.com/weirvern-worker:0.7.0
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.6.9 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.7.0 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -586,7 +587,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.6.9
+podman rmi registry.example.com/weirvern-worker:0.7.0
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and
@@ -612,7 +613,7 @@ delete the application there.
 | `weirvern config list / get / set / validate` | Inspect and edit `.env` for local runs |
 | `weirvern tune` | Guided threshold tuning, with a preview against real data |
 | `weirvern mode` | Show the configured sensor mode and whether it can run here |
-| `weirvern intercept` | In-path ARP intercept (`weir` mode); always `--dry-run` first |
+| `weirvern intercept` | In-path ARP intercept (`siphon` mode); always `--dry-run` first |
 | `weirvern interfaces` | Probe a node's NICs ("which one is the capture port?") |
 | `weirvern tui` | The control panel |
 | `weirvern version` | Version, current context, manifest presence |
@@ -690,7 +691,7 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `MGMT_IFACE` | `eth0` | **Management port** — default route, SSH, cluster API. Not sniffed. Used to detect when `ZEEK_IFACE` points at the wrong NIC |
 | `ZEEK_LOG_DIR` | `/zeek/logs` | Where the worker reads Zeek logs |
 | `TAIL_FILE` | `/data/flows.jsonl` | goflow2 JSONL sink |
-| `SENSOR_MODE` | `loch` | `loch` = passive; `weir` = in-path intercept (see [Sensor modes](#sensor-modes-loch-and-weir)) |
+| `SENSOR_MODE` | `loch` | `loch` = passive; `siphon` = in-path intercept (see [Sensor modes](#sensor-modes-loch-and-siphon)) |
 | `DETECT_INTERVAL_S` | 300 | Detection sweep cadence (s) |
 | `RETRAIN_EVERY_H` | 6 | Full retrain cadence (h) |
 | `RETRAIN_WINDOW_H` | 72 | Training data window (h, 3 days) |

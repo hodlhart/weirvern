@@ -331,7 +331,7 @@ def test_env_path_works_without_a_project_checkout():
 
         ✗ unexpected error: could not locate the Weirvern project directory.
 
-    Which meant in-cluster weir mode could not run at all, for a reason unrelated to weir mode.
+    Which meant in-cluster siphon mode could not run at all, for a reason unrelated to siphon mode.
     A command needs configuration, not a checkout; in-cluster the configuration arrives through
     the environment and the ConfigMap.
 

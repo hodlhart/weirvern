@@ -1,4 +1,4 @@
-# The weir-mode widening, as a strategic-merge patch against the base DaemonSet.
+# The siphon-mode widening, as a strategic-merge patch against the base DaemonSet.
 #
 # WHY THIS IS A PATCH AND NOT A COPY: the base keeps owning the probe, the args, the
 # volumes and the env; this file changes ONLY what interception requires. A duplicated

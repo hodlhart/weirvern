@@ -1,9 +1,9 @@
 # Logo assets
 
 `logo.png` is the project mark: `WEIRVERN` beneath a dragon rendered as circuit
-traces, whose body doubles as a weir with water passing through it. The name
-decomposes into three legitimate reads — **weir** (a barrier that measures flow),
-**wyvern** (the dragon), and "on the wire" (the circuit work) — and the image
+traces, whose body doubles as a siphon with water passing through it. The name
+decomposes into three legitimate reads — **siphon** (a conduit the flow is drawn
+through), **wyvern** (the dragon), and "on the wire" (the circuit work) — and the image
 carries all three.
 
 ## Files

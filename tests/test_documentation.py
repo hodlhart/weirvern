@@ -11,7 +11,7 @@ visible without looking for it specifically:
   * the build instructions described ONE image when there are two, and the second has a
     different build context (`zeek/`, not the repo root)
   * the workload table omitted the GUI, the prune CronJob and the schema Job entirely
-  * nothing documented the sensor modes, so `loch` and `weir` were discoverable only by
+  * nothing documented the sensor modes, so `loch` and `siphon` were discoverable only by
     reading `mode.py`
   * `redef FINGERPRINT::JA4*_enabled = F` was still in the README's own description of the
     licensing after the options were deleted -- instructions that would crash the sensor
@@ -158,20 +158,20 @@ def test_the_readme_states_that_image_and_policy_ship_together():
 # ── the features that exist must be findable ────────────────────────────────────
 
 def test_the_sensor_modes_are_documented():
-    """`loch` and `weir` were discoverable only by reading mode.py. The difference between
+    """`loch` and `siphon` were discoverable only by reading mode.py. The difference between
     them is whether Weirvern can take the network down, so it is not a detail."""
-    assert "`loch`" in README and "`weir`" in README
+    assert "`loch`" in README and "`siphon`" in README
     section = README[README.index("Sensor modes"):]
     section = section[:section.index("### ")]
     assert "SENSOR_MODE" in section
     assert "watchdog" in section.lower(), (
-        "the weir section does not mention the watchdog, which is what makes in-path "
+        "the siphon section does not mention the watchdog, which is what makes in-path "
         "interception defensible"
     )
     assert "CAP_NET_ADMIN" in section, "the privilege requirement is not stated"
 
 
-def test_the_readme_says_weir_does_not_decrypt():
+def test_the_readme_says_siphon_does_not_decrypt():
     """The single most likely misconception about in-path interception. Someone deciding
     whether this is acceptable on their network needs it stated, not inferred."""
     section = README[README.index("Sensor modes"):]
@@ -232,8 +232,8 @@ def test_the_readme_does_not_advertise_a_feature_that_was_removed():
     all. A doc mentioning it would resurrect a name that no longer exists in `mode.py`."""
     from weirvern.admin import mode as mode_mod
 
-    known = {mode_mod.MODE_LOCH, mode_mod.MODE_WEIR}
-    mentioned = set(re.findall(r"`(loch|weir|dam|pool|reservoir|cistern)`", README))
+    known = {mode_mod.MODE_LOCH, mode_mod.MODE_SIPHON}
+    mentioned = set(re.findall(r"`(loch|siphon|dam|pool|reservoir|cistern)`", README))
     stale = {m for m in mentioned if m in ("dam",)}
     assert not stale, f"the README mentions removed mode names: {stale}"
     # And the modes it does describe must be the ones the code knows.
@@ -317,7 +317,7 @@ def test_the_image_tag_is_declared_once_and_applies_everywhere():
 
     WHY THIS IS TESTED. `kubectl set image deploy/... worker=weirvern-worker:0.4.3` appears to work,
     and then the next `kubectl apply -k` silently reverts the deployment to whatever this transformer
-    pins. Measured on the deployed box: after rolling forward, re-applying the weir overlay put the
+    pins. Measured on the deployed box: after rolling forward, re-applying the siphon overlay put the
     worker back on an older tag, so the pod lost `intercept --all` and refused to run. The only
     symptom was "unrecognized arguments: --all" from inside the container -- a version mismatch
     presenting as a code bug.
