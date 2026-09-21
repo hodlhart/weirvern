@@ -101,36 +101,48 @@ def to_row_key(configmap_key: str) -> str:
     return k.lower()
 
 
-# Which workload must restart for a key to take effect. A ConfigMap env var is read at process
+# Which workloads must restart for a key to take effect. A ConfigMap env var is read at process
 # start, so a change is inert until the reader restarts -- and WHICH reader matters: restarting
 # the worker for a Zeek interface change does nothing, and the operator would be told it applied.
 #
+# A KEY CAN NEED MORE THAN ONE RESTART, so each entry is a TUPLE of targets. The siphon keys
+# are the reason: SENSOR_MODE must reach the capture DaemonSet (which states the mode and, in
+# the siphon overlay, runs the sysctl init container) AND the worker (which supervises the
+# intercept -- see admin/siphon_supervisor.py). Restarting only one of the two was the WEIR-1
+# shape: the config said "siphon" while nothing in the cluster ran an intercept.
+#
 # "zeek" is the capture DaemonSet, which is the one that touches the wire. Restarting it has a
 # brief capture gap, which is why the UI states it before applying.
-_RESTART_FOR: dict[str, tuple[str, str]] = {
-    "SENSOR_MODE": ("ds/zeek", "restarts the capture sensor (brief capture gap while it comes up)"),
-    "ZEEK_IFACE": ("ds/zeek", "restarts the capture sensor (brief capture gap)"),
-    "MGMT_IFACE": ("ds/zeek", "restarts the capture sensor (brief capture gap)"),
-    "INTERCEPT_TARGETS": ("ds/zeek", "restarts the capture sensor"),
-    "INTERCEPT_SEGMENT": ("ds/zeek", "restarts the capture sensor"),
-    "INTERCEPT_ADDR": ("ds/zeek", "restarts the capture sensor"),
-    "INTERCEPT_GATEWAY": ("ds/zeek", "restarts the capture sensor"),
-    "BASE_THRESHOLD": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "MIN_AGREEMENT": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "STRONG_SIGNAL": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "DETECT_INTERVAL_S": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "RETRAIN_EVERY_H": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "RETRAIN_WINDOW_H": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "PUSHOVER_ENABLED": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "PUSHOVER_COOLDOWN_S": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "PUSHOVER_MAX_PER_HOUR": ("deploy/weirvern-worker", "restarts the detection worker"),
-    "WEIRVERN_REVERSE_DNS": ("deploy/weirvern-worker", "restarts the detection worker"),
+_RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
+    "SENSOR_MODE": (("ds/zeek", "deploy/weirvern-worker"),
+                    "restarts the capture sensor (brief capture gap) and the worker, which "
+                    "starts or stops the supervised intercept"),
+    "ZEEK_IFACE": (("ds/zeek", "deploy/weirvern-worker"),
+                   "restarts the capture sensor (brief capture gap) and the worker, whose "
+                   "intercept relays on this interface"),
+    "MGMT_IFACE": (("ds/zeek",), "restarts the capture sensor (brief capture gap)"),
+    # The intercept plan is read by the WORKER's supervisor, not by the sensor: the sensor only
+    # captures. Restarting ds/zeek for these (an earlier mapping) applied nothing.
+    "INTERCEPT_TARGETS": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "INTERCEPT_SEGMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "INTERCEPT_ADDR": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "INTERCEPT_GATEWAY": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "BASE_THRESHOLD": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "MIN_AGREEMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "STRONG_SIGNAL": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "DETECT_INTERVAL_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "RETRAIN_EVERY_H": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "RETRAIN_WINDOW_H": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "PUSHOVER_ENABLED": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "PUSHOVER_COOLDOWN_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "PUSHOVER_MAX_PER_HOUR": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "WEIRVERN_REVERSE_DNS": (("deploy/weirvern-worker",), "restarts the detection worker"),
     # The worker installs the ingest filter at startup; Zeek reads the capture list at
     # startup too, so BOTH restart for a change to either to take effect.
-    "WEIRVERN_EXCLUDE_CIDRS": ("deploy/weirvern-worker",
+    "WEIRVERN_EXCLUDE_CIDRS": (("deploy/weirvern-worker",),
                                "restarts the detection worker"),
-    "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": ("ds/zeek",
-                                      "restarts the capture sensor (brief capture gap)"),
+    "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": (("ds/zeek",),
+                                       "restarts the capture sensor (brief capture gap)"),
 }
 
 
@@ -160,7 +172,7 @@ class Proposal:
     key: str
     current: str
     proposed: str
-    restarts: str = ""
+    restarts: tuple[str, ...] = ()
     blast: str = ""
     warning: str = ""
 
@@ -180,8 +192,9 @@ class Plan:
     def restart_targets(self) -> list[str]:
         out: list[str] = []
         for p in self.proposals:
-            if p.restarts and p.restarts not in out:
-                out.append(p.restarts)
+            for target in p.restarts:
+                if target and target not in out:
+                    out.append(target)
         return out
 
 
@@ -360,12 +373,13 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
         key = to_configmap_key(key)
         warning = validate(key, value)
         was = current.get(key, "")
-        target, blast = _RESTART_FOR.get(key, ("", ""))
+        targets: tuple[str, ...]
+        targets, blast = _RESTART_FOR.get(key, ((), ""))
         out.proposals.append(Proposal(
             key=key,
             current=was,
             proposed=(value or "").strip(),
-            restarts=target,
+            restarts=tuple(targets),
             blast=blast,
             warning=warning,
         ))

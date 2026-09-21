@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 behavioural baselines, flags the deviations that match real attack shapes, and shows a
 human *why*, with the measurements that fired.
 
-Current release: **0.7.0** · Runs on any conformant Kubernetes · No payload inspection ·
+Current release: **0.8.0** · Runs on any conformant Kubernetes · No payload inspection ·
 Alerts via [Pushover](https://pushover.net), or log-only.
 
 **What you get**
@@ -132,10 +132,10 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.7.0` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.7.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.7.0` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.7.0` | Applies the ClickHouse schema |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.8.0` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.8.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.8.0` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.8.0` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -173,9 +173,11 @@ It requires `CAP_NET_ADMIN` (the passive sensor deliberately does not have it), 
 it cannot relay for. `--dry-run` reports the blast radius — every host whose ARP cache
 would be forged — and offers addresses that answered no ARP.
 
-**The intercept is operator-triggered and `weirvern status` says so.** Setting
-`SENSOR_MODE=siphon` configures the *intent*; nothing in the cluster starts an intercept.
-`weirvern status` therefore FAILS, with an explanation, when the mode is `siphon` but no
+**The intercept is supervised by default and `weirvern status` still says so.**
+Setting `SENSOR_MODE=siphon` with a complete intercept plan (segment, address, gateway,
+and at least one target) makes the worker start and supervise an intercept: it appears on
+the sensor panel within seconds, and every forged mapping has a fail-open watchdog
+behind it. `weirvern status` FAILS, with an explanation, when the mode is `siphon` but no
 intercept has a live heartbeat — because a config that reads "in-path" while redirecting
 nothing is exactly the failure mode this project refuses to ship.
 
@@ -325,6 +327,27 @@ to that cable.
 
 ## Deployment
 
+### 0. One-command install (single-node Ubuntu)
+
+The fastest path from a bare Ubuntu box to a running deployment. It installs the three
+tools (docker as *image builder only*, k3s as the runtime, kustomize), gets the
+repository, prepares the node, builds and imports both images into k3s, applies the
+manifests (creating the Secret once, never rotating it), waits for real readiness, and
+prints the sign-in URL and the one-time admin password:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh | sudo bash
+# with in-path capability pre-provisioned (the mode is still switched in Settings):
+curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh | sudo bash -s -- --siphon
+```
+
+Run it from a checkout (`sudo ./install.sh [--siphon] [--zeek-iface X --mgmt-iface Y]`)
+and it uses that checkout instead of cloning. It is idempotent: every step checks
+first, credentials and trained models are never overwritten, and re-running is how you
+roll an update after `git pull`. The sections below are the same sequence by hand —
+they are the reference for what the installer does, and for multi-node or
+non-Ubuntu clusters where the script's assumptions do not hold.
+
 ### 1. Label the sensor node
 
 This is the step that a first deployment most often skips, and the symptom of
@@ -349,8 +372,8 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.7.0 .
-podman push registry.example.com/weirvern-worker:0.7.0
+podman build -t registry.example.com/weirvern-worker:0.8.0 .
+podman push registry.example.com/weirvern-worker:0.8.0
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
 # prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
@@ -368,7 +391,7 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.7.0
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.8.0
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 cd ..
 ```
@@ -543,11 +566,11 @@ harness can fail. See [Detection and alerting](#detection-and-alerting).
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.7.0 .
-podman push registry.example.com/weirvern-worker:0.7.0
+podman build -t registry.example.com/weirvern-worker:0.8.0 .
+podman push registry.example.com/weirvern-worker:0.8.0
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.7.0 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.8.0 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -587,7 +610,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.7.0
+podman rmi registry.example.com/weirvern-worker:0.8.0
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and

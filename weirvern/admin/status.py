@@ -334,7 +334,9 @@ _SETTINGS_HELP: dict[str, str] = {
         "'loch' (default) watches traffic passively from a mirrored/SPAN port or TAP -- it "
         "cannot affect your network. 'siphon' puts this host in the traffic path by ARP-forging "
         "the gateway mapping, so it can see traffic a mirror cannot AND must never fail closed. "
-        "Changing this restarts the Zeek sensor and briefly interrupts capture."),
+        "Switching to siphon requires the siphon overlay to be applied first (it grants the "
+        "sensor and the worker their capabilities; the mode gate checks it) and it starts the "
+        "supervised intercept. Changing this restarts the capture sensor and the worker."),
     "zeek_iface": (
         "The network interface the sensor CAPTURES from -- the dedicated NIC connected to a "
         "switch mirror/SPAN port or a passive TAP. It must not be the same interface as the "
@@ -353,20 +355,26 @@ _SETTINGS_HELP: dict[str, str] = {
         "Default /data/flows.jsonl. Both processes are pinned to the same node because this is "
         "a file, not a network stream."),
     "intercept_targets": (
-        "Which hosts the siphon intercept targets, when SENSOR_MODE is 'siphon'. Comma-separated "
-        "addresses to intercept, or 'all' for the whole segment. Only used when an operator "
-        "runs 'weirvern intercept'; this list is the default the command reads."),
+        "Which hosts the siphon intercept targets, when SENSOR_MODE is 'siphon'. "
+        "Comma-separated addresses or CIDRs (CIDRs expand to their hosts), or '*' "
+        "for every host on the segment. EMPTY MEANS "
+        "NOTHING IS INTERCEPTED: switching the mode does not divert any traffic by "
+        "itself. The worker supervises the intercept, so this list (with segment, "
+        "address and gateway below) is what it uses."),
     "intercept_segment": (
-        "The network segment (CIDR) the siphon intercept operates on. Used as the fallback when "
-        "'weirvern intercept' is run without the --segment flag. Must match the segment you are "
-        "authorised to monitor."),
+        "The network segment (CIDR) the siphon intercept operates on, e.g. "
+        "198.51.100.0/24. This IS the blast radius: every host in it would have its ARP "
+        "cache forged, so name it explicitly. Must match a segment you are authorised "
+        "to monitor."),
     "intercept_addr": (
-        "The address the intercept assumes on the capture interface while it relays traffic "
-        "(the 'one-armed router' address). Fallback for 'weirvern intercept --addr'."),
+        "The address the intercept assumes on the capture interface while it relays "
+        "traffic (the 'one-armed router' address). It must be an address nothing else "
+        "uses; the CLI can suggest free ones (`weirvern intercept --dry-run`). Siphon "
+        "refuses to start without it."),
     "intercept_gateway": (
-        "The gateway address whose identity is forged for the targeted hosts during a siphon "
-        "intercept. Fallback for 'weirvern intercept --gateway'. The watchdog restores these "
-        "mappings on every exit path, including crashes."),
+        "The gateway address whose identity is forged for the targeted hosts during a "
+        "siphon intercept. The watchdog restores these mappings on every exit path, "
+        "including crashes. Never name the sensor's own management gateway address."),
     "reverse_dns": (
         "'private' (default) resolves only private addresses, so lookups stay on your network. "
         "'all' also resolves public addresses, which sends every external destination in your "
@@ -1360,19 +1368,22 @@ def siphon_liveness(configured_mode: str, client, now: datetime.datetime | None 
     heartbeat. The two agree exactly when nothing is wrong, and disagree in the worst way
     when something is.
 
-    WHY THIS CHECK EXISTS (siphon-1): an in-cluster deployment with SENSOR_MODE=siphon sets
-    the sysctls, prints "mode siphon -- IN-PATH intercept" in the Zeek container, and
-    redirects ZERO hosts, because the intercept is operator-triggered and nothing in the
-    cluster runs it. Every surface that only reads the config reports a healthy in-path
+    WHY THIS CHECK EXISTS (siphon-1): an in-cluster deployment with SENSOR_MODE=siphon could
+    set the sysctls, print "mode siphon -- IN-PATH intercept" in the Zeek container, and
+    redirect ZERO hosts, because the intercept was operator-triggered and nothing in the
+    cluster ran it. Every surface that only reads the config reported a healthy in-path
     sensor. The defect class is the one the changelog keeps naming: a failure that renders
     identically to a successful measurement of zero.
 
+    WHAT CHANGED IN 0.8.0: the WORKER now supervises the intercept when this mode is
+    configured (admin/siphon_supervisor), so "configured but nothing running" is no longer
+    the expected steady state -- it is a fault to investigate (an incomplete plan, an empty
+    target list, missing privileges, or a crashing child). This check stays the loud one.
+
     WHAT COUNTS AS EVIDENCE, and why the naive answers are wrong:
-      * mode=='siphon' alone is not enough -- in a siphon deployment the WORKER's own row
-        also carries mode='siphon' (observe() publishes the configured value) with zero
-        mappings, so a config-read would pass while nothing intercepts. VERIFIED against
-        the live box's sensor_status: `Weirvern siphon 10 20 0` (the intercept's own row,
-        since gone stale) and worker rows like `... loch 0 0 1`.
+      * mode=='siphon' alone is not enough -- the WORKER's own row also carries the
+        configured mode, with zero mappings, so a config-read would pass while nothing
+        intercepts.
       * `running` alone is not enough -- the worker's `running` means "Zeek logs are
         fresh", which is true on a healthy passive sensor too.
       * A fresh row is required -- a stale intercept row is a PAST intercept, reported
@@ -1415,8 +1426,9 @@ def siphon_liveness(configured_mode: str, client, now: datetime.datetime | None 
     if not rows:
         out["error"] = (
             "SENSOR_MODE=siphon is configured but no sensor has ever reported a heartbeat, "
-            "so no intercept can be confirmed. The sensor writes one every few seconds "
-            "while it runs, so this means it has not started or cannot reach ClickHouse."
+            "so no intercept can be confirmed. The worker writes one every few seconds "
+            "while it runs, so this means it has not started or cannot reach ClickHouse. "
+            "Check: kubectl -n weirvern get pods"
         )
         return out
 
@@ -1465,13 +1477,18 @@ def siphon_liveness(configured_mode: str, client, now: datetime.datetime | None 
         )
     else:
         out["error"] = (
-            "SENSOR_MODE=siphon is configured but NO intercept is running and none has "
-            "ever reported. This is the EXPECTED state of an in-cluster siphon deployment: "
-            "the intercept is operator-triggered (`weirvern intercept --iface ... "
-            "--segment ...`) and nothing in the cluster runs it, so no host traffic is "
-            "being redirected. If you intended interception, run the command above; if "
-            "this sensor should be passive, set SENSOR_MODE=loch (it also drops the "
-            "extra privileges siphon mode requires)."
+            "SENSOR_MODE=siphon is configured but NO intercept is running right now and "
+            "the newest heartbeat reports zero mappings. Since 0.8.0 the WORKER supervises "
+            "the intercept, so this is a fault, not the expected state -- the supervisor "
+            "refused to run it (an incomplete plan, an empty target list, or missing "
+            "privileges; its reason is on the sensor panel and in the worker log), or it "
+            "is still waiting for the sensor's capabilities. Check: kubectl -n weirvern "
+            "logs deploy/weirvern-worker | grep siphon. If you intended interception, "
+            "also make sure INTERCEPT_TARGETS names hosts; if this sensor should be "
+            "passive, set SENSOR_MODE=loch (it also drops the extra privileges siphon "
+            "mode requires). The intercept can still be run by hand, operator-triggered "
+            "with `weirvern intercept --iface ... --segment ...`, which is what the "
+            "supervisor runs for you."
         )
     return out
 
