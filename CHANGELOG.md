@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased — 0.8.1: Sonar, and the names come back
+
+**Settings gains Sonar: one button that surveys the segment the capture interface is ON and
+stages the siphon plan for review.** Asked for after the first live test ("auto discover the
+segment of the listening nic and offer recommended settings... call this button like sonar").
+The survey reads the interface's own address and netmask (the segment is a fact the kernel
+holds, not a guess), sends ONE ARP sweep — the same frames every host on a LAN sends — for
+live hosts and free addresses, resolves the gateway and its MAC, and returns recommendations
+in the exact Settings row vocabulary: mode, segment, address, gateway, targets. Everything
+lands in the existing PENDING CHANGES list: editable, discardable, inert until Apply.
+
+- **The survey runs as a one-shot Job in the SENSOR's shape** (hostNetwork, pinned to the
+  sensor node, NET_RAW only — NET_ADMIN is deliberately absent: the probe assigns nothing and
+  must not be able to reroute). A survey inside the GUI process would have measured the GUI
+  pod's own namespace and recommended interfaces the sensor node does not have.
+- **Result transport is one `SONAR_RESULT {json}` log line**, read back by the GUI with the
+  jobs/pod-log RBAC the operator Role already grants. No volume, no sidecar, no callback path.
+- **The Job's image is the RUNNING deployment's tagged image** — a tagless name resolves to
+  `:latest`, which k3s containerd never imported, and the failure would look like a cluster
+  problem.
+- **Recommendations stage through `stageChange()`** and are compared against each row's
+  running value: a recommendation equal to the current value stages nothing. There is no
+  direct-apply path for recommendations, deliberately — the review step is the feature.
+
+**Reverse-DNS names: the setting now actually reaches the process that does the lookups.**
+Measured live after `WEIRVERN_REVERSE_DNS='all'` was set: the ConfigMap held `all` and the
+GUI pod still resolved `private`, so the setting was inert exactly where the tabs need it.
+
+- `WEIRVERN_REVERSE_DNS` restarts `deploy/weirvern-gui` — the GUI process resolves the names
+  (`web_api._hostname`); the worker never reads the key, so the old worker-only restart
+  mapped to a workload the change never touched.
+- `k8s/34-gui.yaml` no longer pins `WEIRVERN_REVERSE_DNS: "private"` in its own `env:` — a
+  pod's env entry SHADOWS envFrom, so the ConfigMap value could never reach the GUI. The
+  default now lives only in the ConfigMap, which is the one place a Settings write updates.
+
+**The apply receipt told the truth about a write it had just proved.** `/api/settings/apply`
+built its `applied` echo from ROW keys (`reverse_dns`) against ConfigMap-keyed data
+(`WEIRVERN_REVERSE_DNS`), so every key rendered `saved: x=(empty)` — after a write that
+landed, verified by the same request's read-back. Fixed at the boundary with
+`to_configmap_key`.
+
+**The costly-change confirmation was being skipped, for the same class of reason.** The plan
+route returned proposals keyed by ConfigMap name while the client matches warnings against
+the staged ROW keys — so the confirmation dialog never matched, silently, for exactly the
+changes that need it (the in-path mode among them). Both routes now echo the caller's key
+vocabulary.
+
+**Names in the tabs that were missing them — the payload builders, not the resolver.** The
+Assets table declared `"name": ""` per host and nothing ever filled it; the Netflow fan-out
+rows carried no name; the Zeek drill-down showed bare IPs. Each now resolves through the
+shared `revdns` helper (same policy everywhere: private by default, public only when set to
+`all`, never instead of the address).
+
+- Tests: `tests/test_sonar.py` (16 — the arithmetic on injected readers, the Job shape field
+  by field, the result transport, the runner's create→poll→read→delete cycle), the DOM
+  harness grew to 226 checks (button presence, its `?` help, staging-not-applying, the
+  no-op-recommendation dedupe), and the sanitizer learned the netmask forms.
+
 ## Unreleased — 0.8.0: the intercept runs itself, and a one-command install
 
 **WEIR-1 closed: siphon mode now actually intercepts in-cluster.** The remaining gap from
