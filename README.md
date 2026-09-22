@@ -348,6 +348,13 @@ roll an update after `git pull`. The sections below are the same sequence by han
 they are the reference for what the installer does, and for multi-node or
 non-Ubuntu clusters where the script's assumptions do not hold.
 
+One requirement worth naming up front: the box needs an x86-64-v3 CPU (Haswell-era or
+newer) — the pinned ClickHouse image is an AVX2 build, and on a VM whose CPU model
+masks AVX2 (Proxmox's default `kvm64`) it crash-loops with "Illegal instruction" while
+the rest of the deployment waits on it. On Proxmox, set the VM's processor type to
+`host` before installing (a stop/start applies it — a reboot inside the guest does
+not); the installer checks for AVX2 up front and refuses with that remedy named.
+
 ### 1. Label the sensor node
 
 This is the step that a first deployment most often skips, and the symptom of

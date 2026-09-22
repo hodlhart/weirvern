@@ -71,10 +71,14 @@ def _ready():
 # ── config_from_env ─────────────────────────────────────────────────────────────
 
 
+# The FORMER mode spelling: a ConfigMap written before the 0.7.0 rename may carry it.
+FORMER_MODE = "weir"
+
+
 def test_config_normalises_the_former_mode_name():
-    """'weir' was the name before 0.7.0; the supervisor must accept it like every
-    other surface does (mode.normalise), or a pre-rename ConfigMap loses siphon."""
-    cfg = sup.config_from_env({"SENSOR_MODE": "weir", "ZEEK_IFACE": "eth1"})
+    """The supervisor must accept the FORMER spelling like every other surface does
+    (mode.normalise), or a pre-rename ConfigMap silently loses its in-path mode."""
+    cfg = sup.config_from_env({"SENSOR_MODE": FORMER_MODE, "ZEEK_IFACE": "eth1"})
     assert cfg.mode == "siphon"
     assert cfg.enabled is True
 
@@ -113,8 +117,8 @@ def test_a_cidr_target_expands_to_the_host_addresses_it_names():
 def test_an_oversized_or_ipv6_cidr_is_refused_not_truncated():
     """Refused, with the reason reachable: silently intercepting a subset of what was
     asked would look like success while testing less than the operator thinks."""
-    big = _cfg(targets="10.0.0.0/8")
-    assert big.target_problems() and "10.0.0.0/8" in big.target_problems()[0]
+    big = _cfg(targets="198.51.100.0/8")
+    assert big.target_problems() and "198.51.100.0/8" in big.target_problems()[0]
     six = _cfg(targets="2001:db8::/64")
     assert six.target_problems() and "IPv6" in six.target_problems()[0]
     assert _cfg(targets="198.51.100.4/30").target_problems() == []
@@ -122,14 +126,14 @@ def test_an_oversized_or_ipv6_cidr_is_refused_not_truncated():
 
 def test_an_unworkable_target_list_spawns_nothing_and_says_why():
     spawned = []
-    s = sup.SiphonSupervisor(_cfg(targets="10.0.0.0/8"),
+    s = sup.SiphonSupervisor(_cfg(targets="198.51.100.0/8"),
                              spawn=lambda a: spawned.append(a) or FakeChild(a),
                              readiness=_ready)
     s.start()
     note = sup.notes()
     s.stop()
     assert spawned == []
-    assert note and "INTERCEPT_TARGETS" in note[0] and "10.0.0.0/8" in note[0]
+    assert note and "INTERCEPT_TARGETS" in note[0] and "198.51.100.0/8" in note[0]
 
 
 def test_missing_names_what_an_operator_must_set():

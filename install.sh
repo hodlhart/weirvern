@@ -85,10 +85,23 @@ done
 log "Preflight"
 [ "$(id -u)" = "0" ] || die "run as root (sudo ./install.sh): the installer wires up k3s, docker and node sysctls"
 [ "$(uname -s)" = "Linux" ] || die "this installer targets Linux"
-case "$(uname -m)" in
+ARCH="$(uname -m)"
+case "$ARCH" in
     x86_64|aarch64) : ;;
-    *) die "unsupported architecture $(uname -m); the images are built for amd64/arm64" ;;
+    *) die "unsupported architecture $ARCH; the images are built for amd64/arm64" ;;
 esac
+# ClickHouse ships as an x86-64-v3 (AVX2) build since 26.6, and the manifest pins 26.8.
+# A VM whose CPU model MASKS AVX2 -- Proxmox's default 'kvm64' is the common one --
+# crash-loops it with "Illegal instruction (core dumped)" while every other pod waits
+# on it: a deployment that looks broken for a reason nothing in the cluster states.
+# Refuse HERE, where the remedy can be named. (Found by the blank-box dogfood on a
+# Proxmox VM; an LXC never shows it because containers see the host CPU directly.)
+if [ "$ARCH" = "x86_64" ] && ! grep -qw avx2 /proc/cpuinfo; then
+    die "this CPU lacks AVX2 (x86-64-v3), which the pinned ClickHouse image requires.
+      VM: set the CPU type to 'host' (Proxmox: VM -> Hardware -> Processors -> Type)
+      and STOP/START the VM -- a guest reboot does not apply a CPU model change.
+      Bare metal: x86-64-v3 means Haswell-era (2013) or newer."
+fi
 command -v systemctl >/dev/null || die "systemd is required (k3s and docker run as services)"
 ok "$( (. /etc/os-release && echo "$PRETTY_NAME") || true) on $(uname -m)"
 
@@ -192,6 +205,29 @@ ok "images this deployment expects: weirvern-worker:$WORKER_TAG, weirvern-zeek:$
 
 # ── node preparation ──────────────────────────────────────────────────────────────
 log "Node preparation"
+# The worker image bakes uid/gid 10001 (`useradd --system --uid 10001`), and the
+# hostPaths it reads and Zeek writes into must be group-writable by that gid. Two
+# traps, both caught by dogfooding on a blank box (the old dev box had both from a
+# previous image build -- exactly why a blank-slate run was worth doing):
+#   (a) on a fresh machine neither the user NOR the group exists yet, so
+#       `install -g 10001` dies with "invalid group";
+#   (b) DO NOT NAME IT "weirvern". Ubuntu gives every human account a private group
+#       of the same name, so a host whose admin login is "weirvern" already owns
+#       that name (at gid 1000) -- `groupadd weirvern` then collides and kills the
+#       run. The contract is the NUMERIC gid (all the containers ever see); the
+#       name is cosmetic, so pick one nothing else uses.
+if ! getent group 10001 >/dev/null 2>&1; then
+    groupadd -g 10001 weirvern-app 2>/dev/null \
+        || groupadd -g 10001 weirvern-host 2>/dev/null \
+        || die "gid 10001 is free but no candidate group name was; create a group at gid 10001 and re-run"
+fi
+if ! getent passwd 10001 >/dev/null 2>&1; then
+    # Cosmetic on the host (no host process runs as it; containers use the numeric
+    # gid), so a failure here is a warning, never a dead run.
+    useradd -u 10001 -g 10001 -M -s /usr/sbin/nologin weirvern-app 2>/dev/null \
+        || useradd -u 10001 -g 10001 -M -s /usr/sbin/nologin weirvern-host 2>/dev/null \
+        || warn "no host user at uid 10001 (harmless: nothing on the host runs as it)"
+fi
 # hostPath volumes are NOT chowned by kubelet, so the directories the sensors write
 # into must exist with the right group before the pods start; otherwise Zeek crashes
 # on an unwritable log dir and the symptom is "the sensor is not capturing".
