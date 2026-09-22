@@ -881,7 +881,18 @@ def host_identity_view(client) -> dict:
             "hostnames_seen": _parse_json(hostnames) or [],
             "ja4_seen": _parse_json(ja4_seen) or [],
             "updated_at": _iso(updated),
-            "age_s": (datetime.datetime.now() - updated).total_seconds() if updated else None,
+            # VIA `_aware`, because ClickHouse returns timezone-AWARE datetimes and
+            # `datetime.now()` is naive -- subtracting them raises TypeError inside the handler,
+            # where the route's except converts it into `available: False`. The panel would have
+            # reported "cannot read host identity" indefinitely while the data was perfectly
+            # readable, and the cause would look like a database problem.
+            #
+            # `_aware` is used rather than a local fix because it already encodes the harder
+            # lesson: the label must be LOCAL, not UTC. Relabelling local time as UTC produced
+            # NEGATIVE ages, and `stale = age > threshold` means a negative age is never stale --
+            # so a sensor dead for five minutes reported running. One helper, already tested.
+            "age_s": ((_aware(datetime.datetime.now()) - _aware(updated)).total_seconds()
+                      if updated else None),
         })
 
     try:

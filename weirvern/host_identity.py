@@ -249,6 +249,25 @@ def record_observation(client: Client, ts: datetime, src_addr: str, mac: str,
     )
 
 
+def _as_local(dt: datetime) -> datetime:
+    """Make a ClickHouse datetime comparable to `datetime.now()` without inventing an offset.
+
+    ClickHouse returns timezone-AWARE values; `datetime.now()` is naive. Mixing them raises
+    TypeError, and because this happens inside a request handler it surfaces as "cannot read"
+    rather than as a computation error -- so the panel reports a database problem while the
+    database is perfectly readable.
+
+    The label must be LOCAL, which is what a naive `now()` means. `.replace(tzinfo=UTC)` is the
+    tempting shortcut and it is wrong: it relabels local time as UTC, which shifts every age by
+    the host's offset and can make it NEGATIVE. In the sibling module that made a sensor dead for
+    five minutes report as running, because `stale = age > threshold` is never true of a negative
+    number. `.astimezone()` attaches the system zone, which is what the naive value genuinely
+    means; aware values pass through untouched.
+    """
+    if dt is None:
+        return dt
+    return dt if dt.tzinfo is not None else dt.astimezone()
+
 def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[str, Any]]:
     """Current verdicts for specific hosts, keyed by address. For enriching other views.
 
@@ -277,7 +296,14 @@ def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[
             "signals": _load(signals), "disagreement": _load(disagreement),
             "ja4_structure": _load(ja4_raw),
             "updated_at": updated,
-            "age_s": (datetime.now() - updated).total_seconds() if updated else None,
+            # SAME TRAP AS admin/status.py DOCUMENTS, and it bit here too. ClickHouse returns
+            # timezone-AWARE datetimes while `datetime.now()` is naive, so subtracting them raises
+            # TypeError -- and it raises INSIDE the caller, where a route's except turns it into
+            # "cannot read host identity" while the data is fine. `_as_local` applies the rule:
+            # label a naive value with the SYSTEM's local zone (what it actually means), never
+            # with UTC, because relabelling local as UTC yields NEGATIVE ages.
+            "age_s": ((datetime.now().astimezone() - _as_local(updated)).total_seconds()
+                      if updated else None),
         }
     return out
 

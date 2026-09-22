@@ -20,6 +20,7 @@ silently:
 """
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -427,3 +428,67 @@ def test_an_unattributable_dhcp_record_is_dropped_rather_than_invented():
         {"ts": None, "client_addr": "0.0.0.0", "assigned_addr": "", "requested_addr": ""},
     )
     assert obs == []
+
+
+# ── the naive/aware trap, found only by running against the real database ───────────────
+
+def test_a_timezone_aware_timestamp_does_not_raise():
+    """LIVE-ONLY DEFECT. ClickHouse returns timezone-AWARE datetimes; `datetime.now()` is naive,
+    and subtracting them raises TypeError.
+
+    The failure was invisible in two ways at once. Every test here used naive datetimes, so they
+    never touched it -- and the raise happens INSIDE the request handler, where the route's
+    `except` turns it into `available: False`. So `/api/identity` would have reported "cannot read
+    host identity" indefinitely while the data was perfectly readable, and the cause would have
+    looked like a database problem.
+
+    Both directions are asserted, because the fix must not break the naive case either.
+    """
+    from datetime import datetime, timedelta
+
+    from weirvern.host_identity import _as_local
+
+    # Aware, as ClickHouse returns it.
+    aware = datetime.now(UTC) - timedelta(seconds=30)
+    age = (datetime.now().astimezone() - _as_local(aware)).total_seconds()
+    assert 25 <= age <= 35, f"aware age came out {age}s, expected ~30"
+
+    # Naive, as a test or a local caller may supply.
+    naive = datetime.now() - timedelta(seconds=30)
+    age2 = (datetime.now().astimezone() - _as_local(naive)).total_seconds()
+    assert 25 <= age2 <= 35, f"naive age came out {age2}s, expected ~30"
+
+    # AND THE NEGATIVE CASE THAT MATTERS: an age must never come out negative, because
+    # `stale = age > threshold` is never true of a negative number -- which is how a dead sensor
+    # once reported as running. A future timestamp is the adversarial input.
+    future = datetime.now(UTC) + timedelta(seconds=60)
+    age3 = (datetime.now().astimezone() - _as_local(future)).total_seconds()
+    assert age3 < 0, "a future stamp should read as negative, so callers can clamp it"
+
+
+def test_the_identity_view_survives_an_aware_timestamp_from_the_client():
+    """The view function must not raise on what the real database returns.
+
+    A stub client returning an AWARE `updated_at` is what the live box does; every earlier test
+    used naive values and therefore proved nothing about production.
+    """
+    from datetime import datetime
+
+    from weirvern.admin.status import host_identity_view
+
+    class AwareClient:
+        def query(self, *_a, **_kw):
+            class R:
+                result_rows = [(
+                    "192.0.2.10", "00:00:5e:00:53:01", "linux", "Linux", "medium",
+                    1.0, 1, "[]", "[]", "{}", "[]", "[]", "[]",
+                    datetime.now(UTC),   # <- AWARE, as ClickHouse returns
+                )]
+            return R()
+
+    out = host_identity_view(AwareClient())
+    assert out["available"] is True, (
+        "an aware timestamp made the view report unavailable: " + str(out.get("reason"))
+    )
+    assert out["hosts"], "no host was returned"
+    assert out["hosts"][0]["age_s"] is not None
