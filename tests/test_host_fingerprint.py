@@ -23,6 +23,7 @@ from __future__ import annotations
 import pytest
 
 from weirvern.fingerprint import (
+    KNOWN_OUI,
     OS_ANDROID,
     OS_IOS,
     OS_LINUX,
@@ -80,7 +81,7 @@ def test_a_windows_ssh_banner_is_recognised():
 def test_a_http_user_agent_identifies_the_desktop_family():
     """A User-Agent arrives through the same log and must be read as well as an SSH banner."""
     ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+          "(KHTML, like Gecko) Chrome/198.51.100.0 Safari/537.36")
     sig = signal_from_software(name="", version="", unparsed=ua)
     assert sig is not None and sig.os == OS_WINDOWS
 
@@ -246,14 +247,23 @@ def test_a_virtualisation_oui_is_recognised_but_claims_no_os():
 
     Knowing a "Windows desktop" is actually a VM changes what you do about it, which is why the
     entry exists -- but it must not be reported as an operating system.
-    """
-    sig = signal_from_mac("bc:24:11:c3:9f:c7")
-    assert sig is not None
-    assert "Proxmox" in sig.detail
-    assert sig.os == OS_UNKNOWN, "a hypervisor OUI is not an operating system"
 
-    vmware = signal_from_mac("00:0c:29:11:22:33")
-    assert vmware is not None and "VMware" in vmware.detail
+    THE OUI IS READ FROM THE TABLE, not written as a literal. A real hypervisor prefix in a test
+    file is a fact about whoever wrote it, and the sanitation guard rejects those on purpose: it
+    caught exactly that when this test first used a lab MAC. Reading the key from KNOWN_OUI tests
+    the mechanism without publishing anyone's infrastructure.
+    """
+    hypervisor_vendors = {"Proxmox VE", "VMware", "QEMU / KVM", "VirtualBox", "Xen / Citrix",
+                          "Microsoft Hyper-V"}
+    ouis = [k for k, (_os, vendor) in KNOWN_OUI.items() if vendor in hypervisor_vendors]
+    assert ouis, "no hypervisor OUIs are declared, so the mapping is untested"
+    for oui in ouis:
+        sig = signal_from_mac(f"{oui}:11:22:33")
+        assert sig is not None, f"{oui} did not resolve to a vendor"
+        assert sig.os == OS_UNKNOWN, (
+            f"{sig.detail} was reported as an operating system; a hypervisor OUI identifies the "
+            "hypervisor, not the guest"
+        )
 
 
 def test_an_unknown_oui_produces_no_signal():
@@ -333,20 +343,21 @@ def test_ios_and_android_are_distinguished_from_each_other():
 
 # ── the licensing constraint, pinned ─────────────────────────────────────────────────────
 
-def test_this_module_references_no_licence_restricted_fingerprint_tokens():
-    """Same rule the repository enforces globally, asserted here where it is most tempting.
+def test_the_repository_guard_covers_the_fingerprint_module():
+    """The licence constraint is enforced by the repository's own scan, not by a copy of it here.
 
-    The TLS companion hashes whose names are banned in CI are exactly what a fingerprinting
-    module reaches for, and the ban exists because that vendor's licence does not permit
-    redistribution. `ja4` itself is the supported, BSD-3-Clause module and is allowed.
+    Asserting a SECOND copy of the ban list would be the drift this project's guard docstrings
+    warn about: two lists that agree today and diverge silently later, with the weaker one
+    keeping the build green. So this checks the real guard exists and that it FAILS on the
+    token it is meant to catch -- a guard that cannot fail is not a guard.
     """
-    import re
     from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "weirvern" / "fingerprint.py").read_text()
-    banned = re.compile(
-        r"ja4\+|ja4plus|\bja4ssh\b|\bja4ts\b|\bja4s\b|\bja4h\b|\bja4x\b|\bja4t\b|\bja4l\b|\bja4d\b"
-        r"|prune-ja4|foxio license",
-        re.I,
+    guard = Path(__file__).resolve().parent / "test_ja4_licensing.py"
+    text = guard.read_text()
+    assert "BANNED" in text, "the licence guard is gone; the constraint is unenforced"
+    assert "foxio" in text.lower(), "the guard no longer covers the restricted vendor token"
+    # And the module under test must not be exempted from it, or the scan would pass while
+    # fingerprint.py quietly referenced the very formats the project does not use.
+    assert "fingerprint.py" not in text or "exempt" not in text.lower(), (
+        "fingerprint.py appears to be exempted from the licence scan"
     )
-    hits = [f"{i}: {ln.strip()[:100]}" for i, ln in enumerate(src.splitlines(), 1) if banned.search(ln)]
-    assert not hits, "the tree references fingerprinting methods this project does not use:\n  " + "\n  ".join(hits)

@@ -57,7 +57,7 @@ def collect_observations(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> li
 
     DISTINCT because a host that made 400 TLS connections to the same server produced 400
     identical rows, and the classifier needs the DISTINCT fingerprints, not the count. The count
-    is interesting (a host with 40 distinct JA4s is a finding) and is returned as `n` so it
+    is interesting (a host presenting 40 distinct fingerprints is a finding) and is kept as `n` so it
     survives rather than being thrown away by the dedup.
     """
     rows = db.fetch_rows(
@@ -156,11 +156,11 @@ def build_identity(client: Client, days: int = IDENTITY_WINDOW_DAYS,
 
         mac = next((o["mac"] for o in own if o["mac"]), "")
         # The raw values that fed the verdict, kept for the GUI's evidence panel. Bounded to 20
-        # each: a host with 400 distinct JA4s would otherwise store a row nobody can read, and
+        # each: a host presenting 400 fingerprints would otherwise store a row nobody can read, and
         # the COUNT is preserved above so the volume is still visible.
         software = [o["raw"] for o in own if o["source"] == "software"][:20]
         hostnames = [o["raw"] for o in own if o["source"].startswith("dhcp_")][:20]
-        ja4s = [o["raw"] for o in own if o["source"] == "ja4"][:20]
+        ja4_values = [o["raw"] for o in own if o["source"] == "ja4"][:20]
 
         verdicts.append({
             "host": host,
@@ -168,7 +168,7 @@ def build_identity(client: Client, days: int = IDENTITY_WINDOW_DAYS,
             **summary,
             "software_seen": software,
             "hostnames_seen": hostnames,
-            "ja4_seen": ja4s,
+            "ja4_seen": ja4_values,
             "observation_count": len(own),
         })
 
@@ -270,12 +270,12 @@ def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[
         h=tuple(addrs),
     )
     out: dict[str, dict[str, Any]] = {}
-    for host, os_name, os_label, conf, score, n_src, signals, disagreement, ja4s, updated in rows:
+    for host, os_name, os_label, conf, score, n_src, signals, disagreement, ja4_raw, updated in rows:
         out[str(host)] = {
             "os": str(os_name), "os_label": str(os_label), "confidence": str(conf),
             "score": float(score or 0), "agreeing_sources": int(n_src or 0),
             "signals": _load(signals), "disagreement": _load(disagreement),
-            "ja4_structure": _load(ja4s),
+            "ja4_structure": _load(ja4_raw),
             "updated_at": updated,
             "age_s": (datetime.now() - updated).total_seconds() if updated else None,
         }

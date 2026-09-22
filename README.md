@@ -70,6 +70,15 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 - Review dispositions (`ack` / `resolved` / `false_positive`) per anomaly, with an
   unreviewed-only filter — the workflow does not end at "here is an anomaly".
 
+**Identify.** Every host's operating-system family, derived **passively** from traffic the sensor
+already saw — nothing is probed and nothing is sent, which is the difference between this and an
+authenticated scanner that needs credentials and cooperation. Sources are application banners
+(`software.log`, which names its own platform), DHCP leases, NIC vendors and TLS ClientHello
+fingerprints. Confidence counts how many **independent** sources agree, so a hostname convention
+alone reads as `low`; a host whose sources **contradict** is flagged rather than smoothed over.
+Coverage is stated as a fraction of hosts seen, so a small numerator cannot mislead. See
+[Passive host identification](#passive-host-identification).
+
 **Operate.**
 
 - `weirvern` CLI: install checks, apply, wait, status, logs, lifecycle, tuning.
@@ -225,6 +234,43 @@ Two consequences for operators:
 - **Nothing to configure.** There is no option list to get right — the module contains
   only JA4, so there is no disable list and no load ordering to maintain.
 
+### Passive host identification
+
+An address tells you nothing about what a machine *is*. This answers that from evidence the
+sensor already collected, without touching the network.
+
+**Nothing is probed.** An authenticated scanner asks a host what it runs; that needs credentials
+and a cooperating host, and it is loud. Everything here is derived from traffic that was already
+on the wire, so a device that never answers anything is still identifiable if it ever spoke.
+
+| Source | Strength | What it actually says |
+|---|---|---|
+| `software.log` | **strong** | The application banner names its own platform: `OpenSSH_10.2p1 Ubuntu-2ubuntu3.6` is Ubuntu, said by the build rather than inferred |
+| `dhcp.log` | medium | A lease's hostname, FQDN and MAC. Valuable out of proportion to its size because it arrives **before** application traffic — a host that just booted is identifiable, which is when an unknown device is least observable |
+| `ssl.log` (JA4) | structural | Transport, TLS version, cipher and extension counts, ALPN — **not** an operating system (see below) |
+| MAC OUI | weak | The NIC vendor, which on a VM is the hypervisor. Identifies *what kind of device*, not what runs on it |
+
+**Confidence counts independent sources, not signals.** Three hostname conventions matching is one
+hint repeated and stays `low`; a lease and a banner agreeing reaches `high`. A single strong source
+(a build banner) can reach `medium` on its own. The rule exists because fingerprinting fails in one
+characteristic way that is worse than not having it: **a confident wrong answer nobody rechecks.**
+
+**A host whose sources disagree is a finding, not noise.** A renamed machine, a dual-boot host and
+a spoofed hostname all read as "Windows and Linux at once", and the panel shows both claims with
+their evidence rather than averaging them into a tidy answer.
+
+**A JA4 deliberately yields no OS.** It identifies a TLS *stack*, and the same fingerprint is shared
+by a Windows host and a Mac running the same browser. Naming an operating system from it needs a
+labelled hash database, and none is shipped here — for the licence reason the repository's own CI
+enforces, and because a downloaded table cannot be verified from inside this repository. The
+structural facts are reported; the OS claim waits for evidence that supports it.
+
+**Two tables, because fingerprints change.** `host_fingerprints` holds raw observations with no
+interpretation; `host_identity` holds the current verdict. Keeping the raw string is what lets a
+better reference table **re-score history** rather than only affecting new traffic — and lets an
+operator's confirmation become evidence, which outranks every inference. A verdict stored without
+its evidence could never be corrected.
+
 ### Why both sensors?
 
 They are not redundant — each is blind to a different class of attack:
@@ -334,7 +380,38 @@ curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh |
 ```
 
 Run it from a checkout (`sudo ./install.sh [--siphon] [--zeek-iface X --mgmt-iface Y]`)
-and it uses that checkout instead of cloning. It is idempotent: every step checks
+and it uses that checkout instead of cloning.
+
+**It detects your interfaces and asks you to confirm them.** Getting this wrong is silent — a
+sensor pointed at the management port produces a capture full of this host's own traffic and
+broadcast. It looks completely healthy: rows arrive, charts draw, and it contains none of the
+network under test. So the installer lists every candidate with the facts that decide the question
+and waits for an answer:
+
+```
+    Detected 2 interface(s):
+
+      IFACE      ADDRESS            DEFAULT PROMISC  MAC                WHY
+      ens18      192.0.2.34/24      yes     no       00:00:5e:00:53:01  carries the default route -> management
+      ens19      (none)             no      no       00:00:5e:00:53:02  no address -> looks like a capture port
+
+    Management interface (default route, SSH, cluster API) [ens18]:
+    Capture interface (mirror/SPAN, or the segment to sniff)   [ens19]:
+    mgmt=ens18  capture=ens19 -- correct? [Y/n]:
+```
+
+Virtual interfaces are excluded, and **tunnels deliberately so**: a `tailscale0`, `wg0` or `tun0`
+is a valid UP interface *with* an address, so a naive "any interface that is not the default route"
+picks it — and its capture is encrypted packets between this host and its peers, which is neither
+the local segment nor anything useful. A capture port must be an Ethernet-like device.
+
+A typo is rejected with the list of real names, because the error it would otherwise produce
+arrives later from a different component looking like a Zeek bug. An addressed capture port is
+flagged (a mirror feed should be passive, so it is offered for removal), and promiscuous mode is
+set. Pass `--yes` for automation, `--list-interfaces` to see the detection and exit without
+changing anything, or `--zeek-iface`/`--mgmt-iface` to state the answer up front.
+
+It is idempotent: every step checks
 first, credentials and trained models are never overwritten, and re-running is how you
 roll an update after `git pull`. The sections below are the same sequence by hand —
 they are the reference for what the installer does, and for multi-node or

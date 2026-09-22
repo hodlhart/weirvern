@@ -46,6 +46,8 @@ SIPHON=0
 NO_BUILD=0
 ZEEK_IFACE_FLAG=""
 MGMT_IFACE_FLAG=""
+ASSUME_YES=0
+LIST_IFACES=0
 
 usage() {
     sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
@@ -54,9 +56,10 @@ usage() {
 Options:
   --siphon              also apply overlays/siphon/ (grants the capabilities the
                         in-path mode needs; the mode is still switched in Settings)
-  --zeek-iface IFACE    the capture interface (default: auto-detect -- the UP
-                        interface that is NOT carrying the default route)
-  --mgmt-iface IFACE    the management interface (default: the default-route one)
+  --zeek-iface IFACE    the capture interface (default: auto-detect, then CONFIRM)
+  --mgmt-iface IFACE    the management interface (default: auto-detect, then CONFIRM)
+  --yes, -y             accept the detected interfaces without prompting
+  --list-interfaces     show what was detected and exit; changes nothing
   --no-build            skip building images (re-import images you already built)
   --dir PATH            install location for the checkout (default /opt/weirvern)
   -h, --help            this help
@@ -72,6 +75,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --siphon)        SIPHON=1 ;;
         --no-build)      NO_BUILD=1 ;;
+        -y|--yes)        ASSUME_YES=1 ;;
+        --list-interfaces) LIST_IFACES=1 ;;
         --zeek-iface)    ZEEK_IFACE_FLAG="${2:?--zeek-iface needs an interface name}"; shift ;;
         --mgmt-iface)    MGMT_IFACE_FLAG="${2:?--mgmt-iface needs an interface name}"; shift ;;
         --dir)           INSTALL_DIR="${2:?--dir needs a path}"; shift ;;
@@ -235,47 +240,197 @@ install -d -m 2775 -g 10001 /var/lib/weirvern/flows /var/lib/weirvern/zeek
 ok "host directories ready (/var/lib/weirvern/{flows,zeek}, group 10001)"
 
 # ── interfaces ────────────────────────────────────────────────────────────────────
-# TWO INTERFACES, TWO JOBS, and the installer picks sensible defaults because the
-# failure of getting this wrong is silent: a sensor on the management port captures
-# broadcast noise and looks healthy. The default-route interface is the management
-# port by definition; the capture port is the other UP interface.
+#
+# TWO INTERFACES, TWO JOBS, AND GETTING IT WRONG IS SILENT.
+#
+# A sensor pointed at the management port produces a capture full of this host's own
+# traffic and broadcast. It looks completely healthy -- rows arrive, charts draw -- and it
+# contains none of the network under test. There is no error, because nothing is broken;
+# the wrong interface is simply being watched.
+#
+# The previous version of this block AUTO-PICKED both interfaces and printed the result.
+# That is the wrong shape for the decision, for a reason this deployment demonstrated: the
+# installer chose, the operator did not read the line, and a `kubectl apply -k` later
+# re-synced the ConfigMap from the tree -- so an interface that had been corrected live was
+# reverted, the sensor crashlooped, and the failure looked like a Zeek bug rather than a
+# misconfiguration. A default that is never confirmed is a default that gets reverted to.
+#
+# So: detect everything, SHOW THE EVIDENCE, and make the operator choose. The default is
+# still offered (press Enter) because a one-NIC box is legitimate -- but the choice is now
+# made knowingly, and the reasoning is on screen when it is made.
 log "Sensor interfaces"
-DEFROUTE_IFACE=$(ip route show default | awk '/default/ {print $5; exit}')
-[ -n "$DEFROUTE_IFACE" ] || die "could not determine the default-route interface"
 
-if [ -n "$MGMT_IFACE_FLAG" ]; then
-    MGMT_IFACE="$MGMT_IFACE_FLAG"
-else
-    MGMT_IFACE="$DEFROUTE_IFACE"
-fi
+DEFROUTE_IFACE=$(ip route show default | awk '/default/ {print $5; exit}' || true)
 
-if [ -n "$ZEEK_IFACE_FLAG" ]; then
-    ZEEK_IFACE="$ZEEK_IFACE_FLAG"
-else
-    # Any other UP, non-virtual interface. `ip -brief link` lists every link; filter
-    # to physical-ish names (en*/eth*) that are UP, excluding lo, docker, flannel and
-    # the management port itself.
-    ZEEK_IFACE=""
-    for cand in $(ip -brief link | awk '$2=="UP" {print $1}'); do
-        case "$cand" in
-            lo|docker*|flannel*|cni*|veth*|br-*) continue ;;
+# Every candidate, with the facts that decide the question. Filtered to interfaces that could
+# plausibly carry traffic: no loopback, and nothing that is obviously Kubernetes plumbing.
+candidate_ifaces() {
+    ip -brief link 2>/dev/null | while read -r name state rest; do
+        # VIRTUAL AND TUNNEL INTERFACES ARE NOT SEGMENTS.
+        #
+        # `docker*`, `flannel*`, `cni*`, `veth*` and `br-*` are Kubernetes plumbing: a veth is
+        # one end of a container pair, and capturing it shows container chatter.
+        #
+        # TUNNELS ARE THE SHARPER TRAP. A `tailscale0`, `wg0`, `tun0` or `zt*` is a valid UP
+        # interface WITH an address, so a naive "any UP interface that is not the default route"
+        # picks it -- and its capture contains encrypted packets between this host and its peers,
+        # which is neither the local segment nor anything an analyst wants. This was not
+        # hypothetical: the first run of this detection offered `tailscale0` as the capture port.
+        case "$name" in
+            lo|docker*|flannel*|cni*|veth*|br-*|virbr*) continue ;;
+            tailscale*|wg*|tun*|tap*|zt*|nebula*|utun*) continue ;;
         esac
-        if [ "$cand" != "$MGMT_IFACE" ]; then
-            ZEEK_IFACE="$cand"
-            break
-        fi
+        # A capture port must be an ETHERNET-like device: it needs to be able to sit in
+        # promiscuous mode and receive frames it was not addressed.
+        [ -e "/sys/class/net/$name/type" ] || continue
+        [ "$(cat /sys/class/net/$name/type 2>/dev/null)" = "1" ] || continue
+        # Only UP interfaces are candidates: a down NIC is usually a spare slot.
+        [ "$state" = "UP" ] || [ "$state" = "UNKNOWN" ] || continue
+        echo "$name"
     done
+}
+
+iface_addr() { ip -4 -brief addr show "$1" 2>/dev/null | awk '{print $3}' | head -1; }
+iface_mac()  { cat "/sys/class/net/$1/address" 2>/dev/null; }
+iface_speed(){ cat "/sys/class/net/$1/speed" 2>/dev/null || echo ""; }
+iface_promisc() {
+    ip -brief link show "$1" 2>/dev/null | grep -q PROMISC && echo "yes" || echo "no"
+}
+iface_is_default_route() { [ "$1" = "$DEFROUTE_IFACE" ] && echo "yes" || echo "no"; }
+
+IFACES=()
+while IFS= read -r line; do
+    [ -n "$line" ] && IFACES+=("$line")
+done < <(candidate_ifaces)
+
+[ "${#IFACES[@]}" -gt 0 ] || die "no usable network interface found"
+
+printf '\n    Detected %d interface(s):\n\n' "${#IFACES[@]}"
+printf '      %-10s %-18s %-6s %-8s %-6s %s\n' IFACE ADDRESS DEFAULT PROMISC MAC WHY
+for i in "${IFACES[@]}"; do
+    addr=$(iface_addr "$i"); [ -n "$addr" ] || addr="(none)"
+    why=""
+    if [ "$(iface_is_default_route "$i")" = "yes" ]; then
+        why="carries the default route -> management"
+    elif [ -z "$addr" ] || [ "$addr" = "(none)" ]; then
+        why="no address -> looks like a capture port"
+    else
+        why="has an address, not the default route"
+    fi
+    printf '      %-10s %-18s %-6s %-8s %-6s %s\n' \
+        "$i" "$addr" "$(iface_is_default_route "$i")" "$(iface_promisc "$i")" \
+        "$(iface_mac "$i")" "$why"
+done
+printf '\n'
+
+# The recommendation, stated as a recommendation. The default-route interface is the
+# management port by definition; the capture port is a different, UP interface -- ideally one
+# with NO ADDRESS, because an addressed interface is a normal network participant and a mirror
+# feed needs to be passive.
+DETECTED_MGMT="$DEFROUTE_IFACE"
+DETECTED_CAPTURE=""
+for i in "${IFACES[@]}"; do
+    [ "$i" = "$DETECTED_MGMT" ] && continue
+    DETECTED_CAPTURE="$i"
+    break
+done
+
+if [ "$LIST_IFACES" = "1" ]; then
+    printf '    --list-interfaces: nothing was changed.\n'
+    printf '      would use  mgmt=%s  capture=%s\n\n' "${DETECTED_MGMT:-?}" "${DETECTED_CAPTURE:-?}"
+    exit 0
 fi
 
-if [ -z "$ZEEK_IFACE" ] || [ "$ZEEK_IFACE" = "$MGMT_IFACE" ]; then
-    warn "only one usable interface found; setting the capture interface to '$MGMT_IFACE'"
-    warn "this works for a first look but the capture will be thin: a management port"
-    warn "sees this host's own traffic plus broadcast, not the network. Add a second NIC"
-    warn "(or a switch SPAN/mirror) and re-run with --zeek-iface when you have one."
-    ZEEK_IFACE="$MGMT_IFACE"
-else
-    ok "management: $MGMT_IFACE   capture: $ZEEK_IFACE"
+# Explicit flags win, and are never overridden by the prompt: an operator who passed
+# --zeek-iface has already made the decision.
+MGMT_IFACE="${MGMT_IFACE_FLAG:-$DETECTED_MGMT}"
+ZEEK_IFACE="${ZEEK_IFACE_FLAG:-$DETECTED_CAPTURE}"
+
+confirm_ifaces() {
+    # No TTY (a pipe, CI, a provisioning script) means no prompt is possible. Fall back to the
+    # detected defaults and SAY SO, rather than blocking forever on a read that can never be
+    # answered -- a prompt nobody can answer is a hang, and a hang gets Ctrl-C'd, which leaves
+    # the ConfigMap half written.
+    if [ ! -t 0 ]; then
+        warn "stdin is not a terminal; accepting the detected interfaces."
+        warn "Pass --zeek-iface/--mgmt-iface to choose explicitly, or run interactively."
+        return 0
+    fi
+    if [ "$ASSUME_YES" = "1" ]; then
+        ok "--yes: accepting mgmt=$MGMT_IFACE capture=$ZEEK_IFACE without prompting"
+        return 0
+    fi
+
+    while : ; do
+        printf '    Management interface (default route, SSH, cluster API) [%s]: ' "$MGMT_IFACE"
+        read -r answer || answer=""
+        [ -n "$answer" ] && MGMT_IFACE="$answer"
+
+        printf '    Capture interface (mirror/SPAN, or the segment to sniff)   [%s]: ' "$ZEEK_IFACE"
+        read -r answer || answer=""
+        [ -n "$answer" ] && ZEEK_IFACE="$answer"
+
+        # VALIDATE, because a typo here produces a sensor that cannot start -- and the error it
+        # then gives ("device does not exist") arrives three steps later, from a different
+        # component, looking like a Zeek problem.
+        bad=""
+        for want in "$MGMT_IFACE" "$ZEEK_IFACE"; do
+            [ -e "/sys/class/net/$want" ] || bad="$bad $want"
+        done
+        if [ -n "$bad" ]; then
+            warn "no such interface:$bad -- these exist: ${IFACES[*]}"
+            continue
+        fi
+        if [ "$MGMT_IFACE" = "$ZEEK_IFACE" ]; then
+            warn "the same interface for both roles captures this host's own traffic and"
+            warn "broadcast rather than the network. That is allowed for a first look, but"
+            warn "the capture will be thin. Add a second NIC or a switch SPAN port."
+            printf '    Use %s for both anyway? [y/N]: ' "$MGMT_IFACE"
+            read -r answer || answer=""
+            case "$answer" in [yY]*) : ;; *) continue ;; esac
+        fi
+        printf '\n    mgmt=%s  capture=%s -- correct? [Y/n]: ' "$MGMT_IFACE" "$ZEEK_IFACE"
+        read -r answer || answer=""
+        case "$answer" in [nN]*) continue ;; *) break ;; esac
+    done
+}
+
+confirm_ifaces
+
+# An addressed capture interface is a normal participant rather than a passive listener: it
+# answers ARP, takes part in the segment, and its own traffic appears in the capture. A mirror
+# feed needs none of that. Offer to remove it -- OFFER, not do, because siphon mode legitimately
+# needs an address on its in-path interface.
+CAPTURE_ADDR=$(iface_addr "$ZEEK_IFACE")
+if [ -n "$CAPTURE_ADDR" ] && [ "$SIPHON" != "1" ]; then
+    warn "capture interface $ZEEK_IFACE has address $CAPTURE_ADDR"
+    warn "a passive capture port usually has none; an addressed port also answers ARP and its"
+    warn "own traffic lands in the capture. (siphon mode needs an address, which is why this"
+    warn "is only offered for loch.)"
+    if [ -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
+        printf '    Remove %s from %s? [y/N]: ' "$CAPTURE_ADDR" "$ZEEK_IFACE"
+        read -r answer || answer=""
+        case "$answer" in
+            [yY]*) ip addr del "$CAPTURE_ADDR" dev "$ZEEK_IFACE" 2>/dev/null \
+                       && ok "removed $CAPTURE_ADDR from $ZEEK_IFACE" \
+                       || warn "could not remove the address; leaving it" ;;
+            *)     warn "keeping the address on $ZEEK_IFACE" ;;
+        esac
+    fi
 fi
+
+# Promiscuous mode, which a SPAN/mirror feed needs: without it the kernel discards frames not
+# addressed to this port before any socket sees them, so the capture holds broadcast and
+# little else. Not persisted by this script across a reboot -- see the README.
+if [ "$(iface_promisc "$ZEEK_IFACE")" != "yes" ]; then
+    if ip link set "$ZEEK_IFACE" promisc on 2>/dev/null; then
+        ok "enabled promiscuous mode on $ZEEK_IFACE"
+    else
+        warn "could not set promiscuous mode on $ZEEK_IFACE; a SPAN feed may look thin"
+    fi
+fi
+
+ok "management: $MGMT_IFACE   capture: $ZEEK_IFACE"
 
 # Write the interfaces into the ConfigMap source in the TREE, not just the live
 # object: `kubectl apply -k` re-syncs the ConfigMap from the tree on every apply, so
