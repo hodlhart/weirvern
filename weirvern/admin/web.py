@@ -763,6 +763,12 @@ def _build_handler(ctx: GuiContext):
                 return self._settings_plan()
             if path == "/api/settings/apply":
                 return self._settings_apply()
+            # SONAR. A survey of the capture interface's segment, launched as a one-shot
+            # Job. A POST rather than a GET because it CREATES a cluster object and spends
+            # seconds of the sensor node's time -- a read that must not be repeated by a
+            # prefetcher or a refresh. Admin-gated like every other write.
+            if path == "/api/settings/sonar":
+                return self._settings_sonar()
             # SOC-1: the alert review write. A write like the settings routes, so it goes
             # through the same operator-token gate -- an unauthenticated port must not let
             # anyone on the LAN mark alerts as handled.
@@ -1119,11 +1125,21 @@ def _build_handler(ctx: GuiContext):
             except cc.ConfigError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
 
+            # PROPOSALS ECHO THE CALLER'S KEY VOCABULARY. The GUI stages ROW keys
+            # (`sensor_mode`); `cc.plan` speaks CONFIGMAP keys (`SENSOR_MODE`) because the
+            # validator does. Returning the ConfigMap key here meant the client's warning
+            # lookup (`stagedKeys.has(p.key)`) never matched -- so the costly-change
+            # confirmation dialog was SKIPPED for exactly the changes that need it (the
+            # in-path mode among them), and the staging list showed no warnings. The fix is
+            # at the boundary: translate back, so both sides speak the key the caller used.
+            caller_key = {cc.to_configmap_key(k): k for k in changes}
+
             self._json({
                 "ok": True,
                 "proposals": [
-                    {"key": x.key, "current": x.current, "proposed": x.proposed,
-                     "restarts": x.restarts, "blast": x.blast, "warning": x.warning}
+                    {"key": caller_key.get(x.key, x.key), "current": x.current,
+                     "proposed": x.proposed, "restarts": x.restarts, "blast": x.blast,
+                     "warning": x.warning}
                     for x in p.proposals
                 ],
                 "restart_targets": p.restart_targets,
@@ -1194,7 +1210,13 @@ def _build_handler(ctx: GuiContext):
 
             self._json({
                 "ok": True,
-                "applied": {k: landed.get(k, "") for k in changes},
+                # TRANSLATED AT THE BOUNDARY, same reason as the plan route: `changes` is
+                # ROW-keyed (what the GUI staged) and `landed` is the ConfigMap's own data
+                # (CONFIGMAP keys). `landed.get(k)` with the row key returned "" for every
+                # key, so the confirmation read `saved: reverse_dns=(empty)` AFTER A WRITE
+                # THAT ACTUALLY LANDED -- the report contradicted the read-back that had
+                # just proved it. The write was right; the receipt lied.
+                "applied": {k: landed.get(cc.to_configmap_key(k), "") for k in changes},
                 "restarted": restarted,
                 # A saved-but-not-restarted change is INERT, so it is reported as a failure of
                 # applying rather than quietly folded into success.
@@ -1202,6 +1224,71 @@ def _build_handler(ctx: GuiContext):
                 "note": ("restarted " + ", ".join(restarted)) if restarted
                         else "no workload needed a restart",
             })
+
+        def _settings_sonar(self) -> None:
+            """Survey the capture interface's segment and return recommendations.
+
+            THE SURVEY RUNS AS A ONE-SHOT JOB, NOT IN THIS PROCESS. This pod has its own
+            network namespace and no capabilities, so a survey run here would measure the
+            wrong machine and recommend settings for interfaces the sensor node does not
+            have. The job runs with the sensor's shape (hostNetwork, pinned to the sensor
+            node, NET_RAW for the ARP socket) -- see admin/sonar.py.
+
+            It changes NOTHING: no setting is written (the UI stages the recommendations as
+            pending changes), no address is assigned, and the only frames it sends are ARP
+            requests. Admin-gated because it creates a cluster object and spends the sensor
+            node's time, not because it writes configuration.
+
+            Body: `{"interface": "eth1"}` (optional; defaults to the running capture
+            interface), `{"mgmt_interface": "eth0"}` (optional; for the two-port warning).
+            """
+            if not self._authorize():
+                return
+            from weirvern.admin import cluster_config as cc
+            from weirvern.admin import sonar as sonar_mod
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            iface = str(body.get("interface") or "").strip()
+            mgmt = str(body.get("mgmt_interface") or "").strip()
+            if not iface:
+                # The interface the intercept would ACTUALLY run on: CAPTURE_IFACE wins when
+                # set (the supervisor's rule), else the configured capture interface. Read
+                # from the environment rather than the request so the default cannot drift
+                # from what the worker's supervisor uses.
+                iface = (os.environ.get("CAPTURE_IFACE")
+                         or os.environ.get("ZEEK_IFACE") or "").strip()
+            if not mgmt:
+                mgmt = (os.environ.get("MGMT_IFACE") or "").strip()
+            if not iface:
+                return self._json({
+                    "ok": False,
+                    "error": "no capture interface is configured, so there is nothing to "
+                             "survey. Set the capture interface (ZEEK_IFACE) in Settings "
+                             "first, or name one in this request.",
+                }, 400)
+
+            if ctx.config_client is not None:
+                client = ctx.config_client
+            else:
+                try:
+                    client = cc.ClusterConfig()
+                except cc.ConfigError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 503)
+
+            try:
+                result = sonar_mod.run_survey_job(client, iface, mgmt)
+            except sonar_mod.SonarError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 502)
+
+            # A refusal INSIDE the job (it ran, and said no) is passed through with its reason,
+            # distinct from a job that could not run at all.
+            if isinstance(result, dict) and result.get("ok") is False:
+                return self._json(result, 422)
+            self._json(result)
 
         def _mode_gate(self, changes: dict) -> str:
             """Reject a mode change that the mode's own prerequisites forbid. "" when fine.

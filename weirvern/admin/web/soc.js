@@ -180,7 +180,7 @@ async function loadNetflow() {
   renderBars("nf-talkers", { available: true, points: (d.talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
              { label: (r) => r.src_addr, value: (r) => r.bytes, format: fmtBytes,
                onClick: (r) => openHost(r.src_addr),
-               title: (r) => `${r.src_addr} — ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to drill down.`,
+               title: (r) => `${r.hostname ? r.hostname + " · " : ""}${r.src_addr} — ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to drill down.`,
                emptyText: "No talkers in this window." });
 
   renderBars("nf-proto", d.protocols,
@@ -201,7 +201,7 @@ async function loadNetflow() {
              { label: (r) => r.src_addr, value: (r) => r.destinations,
                format: (v) => `${v} dst`,
                onClick: (r) => openHost(r.src_addr),
-               title: (r) => `${r.src_addr} talked to ${r.destinations} distinct destinations`,
+               title: (r) => `${r.hostname ? r.hostname + " · " : ""}${r.src_addr} talked to ${r.destinations} distinct destinations`,
                emptyText: "No fan-out recorded in this window." });
 }
 

@@ -133,9 +133,17 @@ SYNTHETIC_IPV4 = re.compile(
 
 # RFC 5737 documentation ranges. Not real, and recognised as such by every reader and tool.
 DOC_IPV4 = re.compile(r"^(?:198\.51\.100\.|203\.0\.113\.|192\.0\.2\.)")
-# Structural addresses: binding, broadcast, loopback, multicast.
+# Structural addresses: binding, broadcast, loopback, multicast, and NETMASKS.
+#
+# A NETMASK IS A PROTOCOL CONSTANT, not a fact about anyone's network -- the same category
+# as the limited broadcast address above. `255.255.255.0` describes the SHAPE of a network
+# (it is a /24) and can never be assigned to a host, so it cannot leak anything about a real
+# deployment. The forms are listed explicitly rather than as a `255.255.` prefix so the rule
+# stays as narrow as the others; extend the list when the gate reports another mask form
+# (255.255.255.254 etc.).
 STRUCTURAL_IPV4 = re.compile(
     r"^(?:0\.0\.0\.0|255\.255\.255\.255|127\.|224\.|239\.|"
+    r"255\.255\.255\.0|255\.255\.254\.0|255\.255\.255\.254|255\.255\.0\.0|255\.0\.0\.0|"
     # LINK-LOCAL. Assigned by the kernel itself when DHCP fails, so it is a statement about the
     # PROTOCOL rather than about anyone's network -- the same category as loopback and multicast.
     # The product must name it to exclude meaningless flow, and a guard that flags it is a guard

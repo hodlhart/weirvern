@@ -497,9 +497,20 @@ def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int =
     except Exception as exc:  # noqa: BLE001
         _logging.getLogger(__name__).warning("zeek_log_hosts failed for %s: %s", table, exc)
         return _unavailable(f"{label} query failed: {type(exc).__name__}", log=label, points=[])
+    # NAMES, so this drill-down reads the same way every other host list does. Resolved
+    # through revdns (same policy as everywhere: private by default, public only when
+    # WEIRVERN_REVERSE_DNS says 'all'), never instead of the address. A failed lookup is
+    # "" and the row shows the address alone.
+    try:
+        from weirvern.admin import revdns as _revdns
+
+        names = {str(r[0]): (_revdns.lookup(str(r[0])) or "") for r in rows}
+    except Exception:  # noqa: BLE001 - a name is never worth failing the drill-down
+        names = {}
     return {
         "available": True, "reason": "", "log": label, "table": table, "hours": hours,
-        "points": [{"addr": str(r[0]), "n": int(r[1] or 0)} for r in rows],
+        "points": [{"addr": str(r[0]), "n": int(r[1] or 0), "name": names.get(str(r[0]), "")}
+                   for r in rows],
     }
 
 

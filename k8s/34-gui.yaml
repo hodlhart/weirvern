@@ -87,18 +87,19 @@ spec:
           # dashboard; inside a pod, binding to loopback would make the Service
           # unreachable and the NodePort silently useless.
           command: ["python", "-m", "weirvern.admin.cli", "gui"]
+          # WEIRVERN_REVERSE_DNS IS DELIBERATELY NOT PINNED HERE. It used to be set to
+          # "private" in this env: list, and a pod's own `env:` entry SHADOWS envFrom -- so
+          # the ConfigMap value could never reach the GUI, and changing the setting from the
+          # Settings tab (which writes the ConfigMap) was inert while every surface reported
+          # it saved. Live-measured: ConfigMap 'all', GUI pod still 'private'. The default
+          # lives in k8s/20-configmap-env.yaml now, which is the one place a settings write
+          # updates; weirvern/admin/revdns.py keeps 'private' as its code default for a
+          # process with no environment at all.
           env:
             - name: GUI_HOST
               value: "0.0.0.0"
             - name: GUI_PORT
               value: "8088"
-            # Reverse DNS. Default is "private", which resolves only RFC1918/
-            # link-local/CGNAT addresses so the lookups stay on the local network.
-            # "all" would send every destination IP in your flow data to a
-            # resolver, which is derived traffic intelligence -- that is an
-            # operator's decision, not a default. See weirvern/admin/revdns.py.
-            - name: WEIRVERN_REVERSE_DNS
-              value: "private"
           envFrom:
             - configMapRef:
                 name: weirvern-env

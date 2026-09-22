@@ -97,6 +97,7 @@ async function main() {
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
+                     runSonar, stageSonarRecommendations, renderSonarNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
@@ -216,6 +217,10 @@ async function main() {
           source: "derived", help: "Resolves only private addresses by default." },
         { key: "intercept_segment", label: "intercept segment", value: "(not set)",
           secret: false, source: "env", help: "The segment the siphon intercept operates on." },
+        // Deliberately ALREADY EQUAL to what the Sonar stub recommends: this row is how the
+        // harness proves the staging dedupe (an unchanged recommendation stages nothing).
+        { key: "intercept_gateway", label: "intercept gateway", value: "198.51.100.1",
+          secret: false, source: "env", help: "The gateway whose identity is forged." },
       ],
       runtime: [
         { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
@@ -272,6 +277,29 @@ async function main() {
   const APPLY_REPLY = {
     ok: true, applied: { base_threshold: "0.5" }, restarted: ["deploy/weirvern-worker"],
     restart_errors: [], note: "restarted deploy/weirvern-worker",
+  };
+  // SONAR: shaped like the real survey result. Deliberately carries NOTES and a
+  // recommended set that overlaps the settings rows (so the staging dedupe is exercised:
+  // sensor_mode is already "loch" in the stub rows, so it must STAGE; a recommended
+  // value equal to the running one must stage nothing).
+  const SONAR_REPLY = {
+    ok: true, interface: "eth1", mgmt_interface: "eth0",
+    our_mac: "00:00:5e:00:53:aa", address: "198.51.100.10/24", segment: "198.51.100.0/24",
+    gateway: "198.51.100.1", gateway_mac: "00:00:5e:00:53:01",
+    gateway_source: "default route on the interface",
+    hosts: [
+      { ip: "198.51.100.1", mac: "00:00:5e:00:53:01" },
+      { ip: "198.51.100.20", mac: "00:00:5e:00:53:20" },
+    ],
+    hosts_answered: 2, swept: 253, free_addresses: ["198.51.100.250", "198.51.100.249"],
+    recommended: {
+      sensor_mode: "siphon",
+      intercept_segment: "198.51.100.0/24",
+      intercept_addr: "198.51.100.250",
+      intercept_gateway: "198.51.100.1",
+      intercept_targets: "*",
+    },
+    notes: ["'*' means every host on the segment. For a first test, edit 'intercept targets'."],
   };
 
   // ── the anomalies/review stub (SOC-1) ────────────────────────────────────────────────────
@@ -374,6 +402,7 @@ async function main() {
                   : u.includes("/api/settings/apply")
                     ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                         restart_errors: [], note: "restarted deploy/weirvern-worker" }
+                  : u.includes("/api/settings/sonar") ? SONAR_REPLY
                   : u.includes("/api/review")
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
                   : { ok: false, error: "no write route at " + u };
@@ -1011,6 +1040,43 @@ async function main() {
   H.discardStage();
   check("discard clears the staged set", Object.keys(H.STAGE.changes).length === 0);
 
+  // ── SONAR: the survey button ──────────────────────────────────────────────────────────────
+  // The button must exist with its help, a click must hit the sonar route, and the
+  // recommendations must land as STAGED changes (the pending-changes review step) rather
+  // than being applied straight away.
+  check("the Sonar button exists in the sensor section",
+        !!doc.getElementById("st-sonar"));
+  check("the Sonar button carries its own ? explanation",
+        !!doc.getElementById("st-sonar-help") &&
+        /ARP/.test(doc.getElementById("st-sonar-help-text").textContent),
+        (doc.getElementById("st-sonar-help-text") || {}).textContent);
+  check("the Sonar explanation starts hidden",
+        doc.getElementById("st-sonar-help-text").classList.contains("hidden"));
+  const sonarBefore = POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length;
+  await H.runSonar();
+  check("Sonar POSTs to the sonar route",
+        POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length === sonarBefore + 1,
+        POSTED.map((r) => r.url).join(","));
+  check("Sonar stages its recommendations as pending changes (not applied)",
+        H.STAGE.changes && H.STAGE.changes.sensor_mode === "siphon"
+        && H.STAGE.changes.intercept_segment === "198.51.100.0/24"
+        && H.STAGE.changes.intercept_addr === "198.51.100.250",
+        JSON.stringify(H.STAGE.changes));
+  check("Sonar stages nothing for a recommendation equal to the running value",
+        !("intercept_gateway" in H.STAGE.changes),
+        "intercept_gateway is already 198.51.100.1 in the stub; a no-op recommendation must "
+        + "not appear as a pending change: " + JSON.stringify(H.STAGE.changes));
+  check("Sonar reports what it measured",
+        /198\.51\.100\.0\/24/.test(doc.getElementById("st-sonar-note").textContent)
+        && /gateway/i.test(doc.getElementById("st-sonar-note").textContent),
+        doc.getElementById("st-sonar-note").textContent.slice(0, 200));
+  check("the staged list shows the Sonar-sourced keys",
+        doc.getElementById("st-stage-list").textContent.includes("intercept_segment"),
+        doc.getElementById("st-stage-list").textContent.slice(0, 200));
+  H.discardStage();
+  check("discarding Sonar's recommendations clears them like any other staged change",
+        Object.keys(H.STAGE.changes).length === 0);
+
   // A REFUSED WRITE MUST SAY SO, and must not look like a success.
   // A deliberate 401 for one check: the write must be refused and the staged changes must
   // SURVIVE. As an override, so it cannot strand the payloads registered with the dispatcher.
@@ -1147,7 +1213,11 @@ async function main() {
   // explanation on every setting. These checks drive the SHIPPING renderer against the stub
   // payload and assert the OUTCOME, including that choosing still only STAGES (never writes).
 
-  const helpBtns = [...doc.querySelectorAll("#view-settings .setting-help-btn")];
+  // SCOPED TO `.setting` ROWS, and that is the assertion's real meaning: "every setting row
+  // carries a ?". An unscoped count also picked up the SONAR button's ? (a different
+  // affordance, in the same view) and reported 12 for 11 rows -- a false failure that would
+  // have hidden a genuinely missing row help behind noise.
+  const helpBtns = [...doc.querySelectorAll("#view-settings .setting .setting-help-btn")];
   const settingRows = [...doc.querySelectorAll("#view-settings .setting")];
   check("every setting row carries a ? help button", helpBtns.length === settingRows.length,
         `${helpBtns.length} buttons for ${settingRows.length} rows`);

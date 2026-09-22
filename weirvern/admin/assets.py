@@ -213,6 +213,19 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
             reason = f"no host could be read; failed sources: {', '.join(missing)}"
         return _unavailable(reason, hosts=[], unreadable=zeek_unreadable)
 
+    # NAMES FOR EVERY ROW. The dict above declares `"name": ""` per host, and nothing ever
+    # filled it -- the Assets table has a Name column that rendered blank for every row while
+    # the graph view, which does call resolve_names, showed names fine. One resolver, one
+    # policy (revdns), applied to the field that exists for it. A failure to resolve is ""
+    # (the column then shows the address alone), never an error: a name is a display
+    # convenience and must not cost the panel.
+    try:
+        names = resolve_names(client, [h["addr"] for h in hosts.values()])
+    except Exception:  # noqa: BLE001
+        names = {}
+    for addr, entry in hosts.items():
+        entry["name"] = names.get(addr, "")
+
     ordered = sorted(
         hosts.values(),
         key=lambda h: (h["anomalies"], h["bytes"]),

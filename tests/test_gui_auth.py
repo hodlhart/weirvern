@@ -312,7 +312,12 @@ def test_every_editable_key_declares_what_must_restart():
 def test_a_failed_restart_is_reported_as_a_failure_not_as_success():
     src = WEB.read_text()
     i = src.index("def _settings_apply(")
-    body = src[i:i + 4000]
+    # Sliced to the FUNCTION'S END (the next handler def), not a fixed 4000-char window:
+    # the window was an implicit budget that a growing function silently outran, and this
+    # assertion then read a truncated body and failed for a reason unrelated to what it
+    # checks. The boundary anchor is what it always meant.
+    j = src.index("\n        def ", i + 10)
+    body = src[i:j]
     assert "restart_errors" in body, "a failed restart is not surfaced"
     assert '"ok": True' in body and "restart_errors" in body
     # And the note must not claim more than happened.
