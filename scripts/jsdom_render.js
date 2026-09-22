@@ -98,6 +98,7 @@ async function main() {
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      runSonar, stageSonarRecommendations, renderSonarNote,
+                     runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
@@ -403,6 +404,15 @@ async function main() {
                     ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                         restart_errors: [], note: "restarted deploy/weirvern-worker" }
                   : u.includes("/api/settings/sonar") ? SONAR_REPLY
+                  : u.includes("/api/settings/test")
+                    ? { ok: true, seconds: 30, mode_before: "loch", mode_after: "loch",
+                        reverted: true,
+                        observed: { hosts: 3, mappings: 6, age_s: 7.2 },
+                        observed_s: 8.1,
+                        plan: { iface: "eth1", segment: "198.51.100.0/24",
+                                addr: "198.51.100.250", gateway: "198.51.100.1",
+                                targets: "*" },
+                        notes: [], error: "" }
                   : u.includes("/api/review")
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
                   : { ok: false, error: "no write route at " + u };
@@ -1076,6 +1086,32 @@ async function main() {
   H.discardStage();
   check("discarding Sonar's recommendations clears them like any other staged change",
         Object.keys(H.STAGE.changes).length === 0);
+
+  // ── TEST RUN: the siphon probe ────────────────────────────────────────────────────────────
+  // The button must exist next to Apply with its own "?" help, a click must POST to the test
+  // route, and the result must report BOTH the observation and the revert -- "the mode went
+  // back" and "an intercept was seen" are different facts and the note says which happened.
+  check("the Test run button exists next to Apply", !!doc.getElementById("st-test"));
+  check("the Test run button carries its own ? explanation",
+        !!doc.getElementById("st-test-help")
+        && /30 seconds/.test(doc.getElementById("st-test-help-text").textContent),
+        (doc.getElementById("st-test-help-text") || {}).textContent);
+  const testBefore = POSTED.filter((r) => r.url.includes("/api/settings/test")).length;
+  await H.runSiphonTest();
+  check("the test run POSTs to /api/settings/test",
+        POSTED.filter((r) => r.url.includes("/api/settings/test")).length === testBefore + 1,
+        POSTED.map((r) => r.url).join(","));
+  const testReq = POSTED.filter((r) => r.url.includes("/api/settings/test")).pop();
+  check("the test run asks for a 30-second window",
+        JSON.parse((testReq || {}).body || "{}").seconds === 30,
+        (testReq || {}).body);
+  check("the test result states the revert",
+        /set back to loch/i.test(doc.getElementById("st-test-note").textContent),
+        doc.getElementById("st-test-note").textContent.slice(0, 180));
+  check("the test result states what was observed",
+        /observed live/i.test(doc.getElementById("st-test-note").textContent)
+        || /No intercept evidence/.test(doc.getElementById("st-test-note").textContent),
+        doc.getElementById("st-test-note").textContent.slice(0, 180));
 
   // A REFUSED WRITE MUST SAY SO, and must not look like a success.
   // A deliberate 401 for one check: the write must be refused and the staged changes must

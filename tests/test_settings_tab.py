@@ -443,10 +443,57 @@ def test_every_row_declares_where_its_value_came_from():
     payload = status.settings_overview(settings=_Settings(), backend=None)
     for rows in payload["groups"].values():
         for r in rows:
-            assert r["source"] in ("setting", "env", "derived"), (
+            assert r["source"] in ("setting", "env", "derived", "cluster"), (
                 f"{r['key']} has source={r['source']!r}"
             )
     derived = {r["key"] for rows in payload["groups"].values() for r in rows
                if r["source"] == "derived"}
     for k in ("reverse_dns", "namespace", "version"):
         assert k in derived, f"{k} is computed, not read from Settings, so it must say 'derived'"
+
+
+def test_rows_render_the_LIVE_configmap_when_the_caller_has_it():
+    """THE MEASURED BUG. After an operator applied SENSOR_MODE=siphon (and the intercept
+    was demonstrably running), the Settings tab still rendered `loch` -- because rows were
+    built from the GUI pod's env, read once at startup, and a settings change restarts the
+    WORKER, not the GUI. With the live ConfigMap passed in, the cluster's value wins."""
+    live = {"SENSOR_MODE": "siphon", "INTERCEPT_SEGMENT": "198.51.100.0/24",
+            "INTERCEPT_ADDR": "198.51.100.250", "INTERCEPT_GATEWAY": "198.51.100.1",
+            "INTERCEPT_TARGETS": "*"}
+    rows = _flat(status.settings_overview(settings=_Settings(), configmap=live))
+    assert rows["sensor_mode"]["value"] == "siphon", (
+        "the tab is rendering the pod's frozen startup view, not the cluster's live config"
+    )
+    assert rows["sensor_mode"]["source"] == "cluster"
+    # The intercept plan rows were the OTHER half of the same report: they rendered blank
+    # ("(not set)") although the cluster had a complete plan.
+    assert rows["intercept_segment"]["value"] == "198.51.100.0/24"
+    assert rows["intercept_addr"]["value"] == "198.51.100.250"
+    assert rows["intercept_gateway"]["value"] == "198.51.100.1"
+    assert rows["intercept_targets"]["value"] == "*"
+
+
+def test_the_configmap_does_not_override_secrets_or_derived_rows():
+    """A ConfigMap row for a secret does not exist, and `derived` rows (namespace, version,
+    reverse_dns) come from their own sources by definition. Feeding a hostile map must not
+    change either -- a secret value can never be smuggled into the payload this way."""
+    hostile = {"PUSHOVER_API_TOKEN": "should-not-appear", "CLICKHOUSE_PASSWORD": "nor-this",
+               "SENSOR_MODE": "siphon"}
+    payload = status.settings_overview(settings=_Settings(), configmap=hostile)
+    text = str(payload)
+    assert "should-not-appear" not in text
+    assert "nor-this" not in text
+    rows = _flat(payload)
+    # The secret rows still report set/not-set by their OWN path, never the map's value.
+    assert rows["pushover_api_token"]["value"] == f"(set, {len(SECRET)} chars)"
+    assert rows["pushover_api_token"]["source"] != "cluster"
+    # Derived rows keep their sources.
+    assert rows["version"]["source"] == "derived"
+
+
+def test_without_a_configmap_the_previous_behavior_is_exact():
+    """Workstation runs and tests pass None; the row sources then are the original three,
+    so nothing about a cluster-less deployment changes."""
+    rows = _flat(status.settings_overview(settings=_Settings()))
+    assert rows["sensor_mode"]["source"] == "setting"
+    assert rows["sensor_mode"]["value"] == "loch"

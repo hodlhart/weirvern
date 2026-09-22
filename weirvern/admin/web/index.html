@@ -723,6 +723,28 @@
       <div class="controls">
         <button id="st-stage-apply" class="primary" disabled>Apply changes</button>
         <button id="st-stage-discard" disabled>Discard</button>
+        <!--
+          TEST RUN: the siphon probe. Runs the REAL intercept for 30 seconds through the
+          worker's own supervision, then reverts the mode to loch. It needs siphon
+          capabilities (the sensor overlay), which the note area states before anything
+          happens. The "?" explains exactly what runs and exactly what it costs, because
+          this is the one button on the page that briefly puts the sensor in the path.
+        -->
+        <button id="st-test" type="button">Test run (30s)</button>
+        <button class="setting-help-btn" id="st-test-help" type="button"
+                aria-label="explain the test run" aria-expanded="false"
+                title="what the test run does">?</button>
+      </div>
+      <div id="st-test-note" class="muted sonar-note"></div>
+      <div id="st-test-help-text" class="setting-help hidden">
+        A test run switches the sensor to siphon mode for 30 seconds, lets the worker
+        run the real intercept (the same ARP-forge-and-relay your traffic would see),
+        then switches back to loch and stops it — the mappings are restored on the
+        worker's normal shutdown path. It is a probe, not a commitment: while it runs,
+        Weirvern is genuinely in the traffic path for the hosts the plan names. It
+        needs the siphon capabilities on the sensor node (the overlay), and a complete
+        plan (segment, address, gateway, targets). The result below says which hosts
+        were intercepted and that the mode was put back.
       </div>
     </div>
 

@@ -493,7 +493,8 @@ def _version_from_backend(backend) -> str:
     return best
 
 
-def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
+def settings_overview(settings=None, namespace: str = "", backend=None,
+                      configmap: dict | None = None) -> dict:
     """The EFFECTIVE configuration, for the Settings tab. Read-only by design.
 
     WHY READ-ONLY. The GUI is served on a LAN port with no authentication. Anything an HTTP
@@ -503,6 +504,17 @@ def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
 
     SECRETS ARE REPORTED AS SET OR NOT SET, never in value. The redaction is by NAME pattern, so
     a new credential added later is caught by the pattern rather than by memory.
+
+    `configmap` IS THE LIVE CLUSTER CONFIGURATION, when the caller has it. THIS PROCESS'S OWN
+    ENVIRONMENT IS NOT THE TRUTH: a deployed GUI pod read its ConfigurationMap once at startup,
+    and a settings change restarts the WORKER (which reads the new mode) -- not the GUI. So
+    after an operator applied `SENSOR_MODE=siphon` and the intercept was demonstrably running,
+    the tab still rendered `loch` from the pod's frozen startup env, and the operator
+    reasonably concluded the apply had failed. Measured on the first live test, 2026-09-22.
+    With the live map passed in, every non-secret row whose ConfigMap key exists is rendered
+    from the CLUSTER's value, so the tab shows what is actually running regardless of when
+    this process started. None keeps the old behaviour for callers without cluster access
+    (workstation runs, tests).
     """
     import os
 
@@ -544,6 +556,19 @@ def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
                 # reading them from the ConfigMap rather than a literal default. The name is
                 # uppercased, which is the convention every key in this project follows.
                 value = os.environ.get(attr.upper())
+            # THE LIVE CLUSTER VALUE WINS OVER THIS PROCESS'S FROZEN VIEW, for every
+            # non-derived row whose ConfigMap key actually exists. The pod's env was read
+            # once at startup and a settings change restarts the WORKER, not the GUI -- so
+            # without this the tab showed `loch` through a demonstrably running intercept
+            # (measured, first live test). Secrets are exempt: their value is never carried
+            # here either way, and a ConfigMap row for one does not exist.
+            if configmap is not None and source != "derived":
+                from weirvern.admin import cluster_config as _cc  # noqa: PLC0415
+
+                cm_value = configmap.get(_cc.to_configmap_key(attr))
+                if cm_value is not None and not _is_secret(attr):
+                    value = cm_value
+                    source = "cluster"
             out.append({
                 "key": attr,
                 "label": label,
@@ -551,8 +576,9 @@ def settings_overview(settings=None, namespace: str = "", backend=None) -> dict:
                 # A secret is flagged so the UI can say WHY it shows no value, instead of leaving
                 # the reader to wonder whether the field is broken.
                 "secret": _is_secret(attr),
-                # setting | env | derived -- so the UI can show that a blank is an env-only key
-                # rather than a broken preference.
+                # setting | env | derived | cluster -- so the UI can show that a blank is an
+                # env-only key rather than a broken preference, and that a value is what the
+                # CLUSTER is running (not what this process read at startup).
                 "source": source,
                 # The plain-language explanation, rendered as the row's "?" help. "" only when a
                 # row was added without one, which a test fails on -- the explanation is part of
