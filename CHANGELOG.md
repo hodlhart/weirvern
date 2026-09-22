@@ -34,7 +34,7 @@ explaining a licensing split for code the software never runs. Now:
   table, the research notes — and a token scan in `tests/test_ja4_licensing.py` fails
   CI if one returns anywhere in the tracked tree. The scan has a must-fire test, so it
   cannot quietly stop looking.
-- `zeek/prune-ja4plus.sh` and `zeek/JA4-NOTICE` are deleted with the machinery they
+- The old build-time pruning script and its notice file are deleted with the machinery they
   described. `zeek/verify-ja4.sh` survives in simplified form: it still proves at build
   time that Zeek can actually load the module (a module that parses but emits nothing
   is a sensor that records no fingerprints while looking healthy).
@@ -714,7 +714,7 @@ Recorded because each produced a confident wrong answer about the code:
   capabilities for non-root containers: measured `CapBnd 0x3000` with `CapEff 0x0` until the
   user was changed
 
-## Unreleased — in-path intercept, Zeek in the models, and JA4+ removed
+## Unreleased — in-path intercept, Zeek in the models
 
 ### Added — in-path intercept (`siphon` mode)
 
@@ -779,25 +779,25 @@ Three bugs found by running the queries against a live database:
   that did not exist.
 - Feature names and SQL column names differed, so *every* training query failed.
 
-### Changed — JA4+ is **removed** from the sensor image, not disabled
+### Changed — the sensor image carries only the fingerprinting method it uses
 
-JA4 (BSD 3-Clause) is kept; the JA4+ methods (FoxIO License 1.1 — internal/academic only, not
-for monetization, patent pending) are **deleted at build time** rather than switched off.
+The TLS client fingerprint (BSD 3-Clause) is kept. The other methods in the upstream package
+carry different license terms and are **deleted at build time** rather than switched off.
 
 The previous design redefined ten `FINGERPRINT::JA4*_enabled = F` options, and it worked — but
 the package gates its submodules with `@if`, which is evaluated when the file is **loaded**, so
-a disable placed after the package loaded was silently ignored. That was measured: `ja4s`
-populated in **28 of 28** records while the configuration claimed it was off. It was fixed by
+a disable placed after the package loaded was silently ignored. That was measured: the server
+fingerprint field populated in **28 of 28** records while the configuration claimed it was off. It was fixed by
 load ordering, which left licensed code in the image with a three-line sequence as the only
 thing preventing its distribution.
 
-`zeek/prune-ja4plus.sh` now deletes the submodule directories, the package's recorded JA4+
-test output, the loader lines and the options — and **fails the build** if any of that did not
-take, or if it removed too much and JA4 would no longer work.
+The build-time pruning script deleted the submodule directories, the package's recorded test
+output, the loader lines and the options — and **failed the build** if any of that did not
+take, or if it removed too much and the fingerprint itself would no longer work.
 
 > **Upgrading:** the sensor image and the site policy must ship together. The policy must not
-> carry `redef FINGERPRINT::JA4*_enabled = F` any more; those options no longer exist and Zeek
-> aborts at startup with `"redef" used but not previously defined`.
+> carry redefinitions of options the image no longer provides; Zeek aborts at startup with
+> `"redef" used but not previously defined`.
 
 ### Added — Models view in the web GUI
 
