@@ -136,7 +136,14 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "PUSHOVER_ENABLED": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "PUSHOVER_COOLDOWN_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "PUSHOVER_MAX_PER_HOUR": (("deploy/weirvern-worker",), "restarts the detection worker"),
-    "WEIRVERN_REVERSE_DNS": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    # REVERSE DNS IS READ BY THE GUI, NOT THE WORKER. `revdns.lookup` runs inside the GUI
+    # process (`web_api._hostname` resolves every displayed address); the worker never imports
+    # it. The earlier mapping restarted the worker -- measured live: after setting 'all' the
+    # ConfigMap held it, the WORKER saw 'all', and the GUI pod still answered 'private',
+    # because nothing restarted the process that does the lookups. The change was inert in
+    # exactly the place the tabs need it.
+    "WEIRVERN_REVERSE_DNS": (("deploy/weirvern-gui",),
+                             "restarts the web UI (it resolves the names the views display)"),
     # The worker installs the ingest filter at startup; Zeek reads the capture list at
     # startup too, so BOTH restart for a change to either to take effect.
     "WEIRVERN_EXCLUDE_CIDRS": (("deploy/weirvern-worker",),
@@ -491,10 +498,24 @@ class ClusterConfig:
         only the path differs. Raises ConfigError on any failure, so callers that gate on
         the answer can treat an error as "unknown".
         """
+        return self.api_json("GET", path)
+
+    def api_json(self, method: str, path: str, body: dict | None = None) -> dict:
+        """One JSON API call against `path`, with this client's credentials.
+
+        THE READ/WRITE TRANSPORT FOR EVERYTHING THAT IS NOT THE SETTINGS CONFIGMAP. The
+        Sonar survey job is created, polled and deleted through this (jobs are RBAC the
+        operator Role already grants); the sensor-capability probe reads through it too.
+        A 404 raises NotFoundError and a 403 raises ConfigError with the permission named,
+        because both are operator-fixable and a bare "HTTP error" is not.
+        """
         url = f"{self.api_host}{path}"
-        req = urllib.request.Request(url, method="GET")
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self.token()}")
         req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout,
                                         context=self._ssl_context()) as resp:
@@ -503,15 +524,39 @@ class ClusterConfig:
             detail = ""
             with contextlib.suppress(Exception):
                 detail = exc.read().decode()[:300]
+            if exc.code == 404:
+                raise NotFoundError(f"{path!r} was not found in {self.namespace}") from exc
+            if exc.code == 403:
+                raise ConfigError(
+                    f"the cluster refused {method} {path} (403). The GUI's ServiceAccount "
+                    f"lacks the permission this operation needs in {self.namespace}."
+                ) from exc
             raise ConfigError(
-                f"the cluster rejected the read of {path} ({exc.code}): {detail}"
-            ) from exc
+                f"the cluster rejected {method} {path} ({exc.code}): {detail}") from exc
         except urllib.error.URLError as exc:
             raise ConfigError(f"could not reach the cluster API: {exc.reason}") from exc
         try:
             return json.loads(raw) if raw else {}
         except ValueError:
             raise ConfigError("the cluster returned something that is not JSON") from None
+
+    def api_text(self, method: str, path: str) -> str:
+        """One API call whose response is plain text (a pod log). Raises ConfigError."""
+        url = f"{self.api_host}{path}"
+        req = urllib.request.Request(url, method=method)
+        req.add_header("Authorization", f"Bearer {self.token()}")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=self._ssl_context()) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = exc.read().decode()[:300]
+            raise ConfigError(
+                f"the cluster rejected {method} {path} ({exc.code}): {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ConfigError(f"could not reach the cluster API: {exc.reason}") from exc
 
     def create(self, data: dict[str, str]) -> None:
         """Create this ConfigMap. Raises ConfigError when it already exists.

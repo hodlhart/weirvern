@@ -425,6 +425,15 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .setting-help { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--muted);
   padding: 6px 0 4px 0; max-width: 720px; }
 
+/* ── SONAR ──────────────────────────────────────────────────────────────────
+ * The survey button sits on its own row under the sensor settings, with the same quiet
+ * "?" the setting rows use. The note area states what was measured; it is prose, so it
+ * reads as a report rather than as data to act on. */
+.sonar-row { margin-top: 10px; }
+.sonar-note { font-size: 12px; line-height: 1.6; margin-top: 6px; max-width: 720px; }
+.sonar-note .sonar-note-item { margin-top: 2px; }
+.sonar-err { color: var(--danger); }
+
 /* ── editable settings and staged changes ──────────────────────────────────
  * An editable row looks different from a read-only one ON PURPOSE: a field that silently accepts
  * nothing is worse than no field, and the operator needs to see at a glance which values this page

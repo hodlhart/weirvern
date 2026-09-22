@@ -384,6 +384,12 @@ async function postJSON(path, body) {
  */
 const STAGE = { changes: {}, plan: null };
 
+/* The last settings payload's rows, keyed by row key. SONAR stages its recommendations
+ * through the SAME dedupe the manual controls use (stageChange needs each key's CURRENT
+ * value to decide "staged or unchanged"), and the rows are the only place that value
+ * lives client-side. Cleared and repopulated on every loadSettings. */
+let SETTINGS_ROWS = {};
+
 /* ── setting controls ─────────────────────────────────────────────────────────
  *
  * EVERY EDITABLE SETTING RENDERS AS ITS NATURAL CONTROL -- a toggle for on/off, a dropdown for a
@@ -630,6 +636,92 @@ async function applyStage() {
 
 window.LAST_APPLY = LAST_APPLY;
 
+
+/* ── SONAR ──────────────────────────────────────────────────────────────────
+ *
+ * Surveys the capture interface's segment and stages the result as PENDING CHANGES --
+ * the same staged list the manual controls fill. Nothing is written here: the survey
+ * itself is read-only on the network (ARP requests only), and its recommendations become
+ * ordinary staged changes that a human reviews and applies.
+ *
+ * WHY THE RECOMMENDATIONS GO THROUGH stageChange: that is the one path that already
+ * knows how to compare against the running value (an unchanged recommendation stages
+ * nothing) and how to feed the pending-changes list, the plan fetch, and Apply. A
+ * parallel "apply these directly" path would be a second write route in the client with
+ * its own bugs -- and the operator asked for the pending-changes review step.
+ */
+const SONAR_STATE = { running: false, result: null, error: "" };
+
+async function runSonar() {
+  const btn = document.getElementById("st-sonar");
+  const note = document.getElementById("st-sonar-note");
+  if (SONAR_STATE.running) return null;
+  SONAR_STATE.running = true;
+  SONAR_STATE.error = "";
+  if (btn) { btn.disabled = true; btn.textContent = "Surveying…"; }
+  if (note) note.textContent = "Surveying the segment: one ARP sweep from the sensor node. "
+    + "Nothing is changed — this can take a few seconds.";
+
+  try {
+    const res = await postJSON("/api/settings/sonar", {});
+    SONAR_STATE.result = res;
+    stageSonarRecommendations(res);
+    renderSonarNote(res);
+    return res;
+  } catch (err) {
+    SONAR_STATE.error = (err && err.message) || String(err);
+    if (note) note.textContent = "Sonar could not survey: " + SONAR_STATE.error;
+    return null;
+  } finally {
+    SONAR_STATE.running = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Sonar"; }
+  }
+}
+
+/** Stage every recommendation through the same dedupe the manual controls use. */
+function stageSonarRecommendations(res) {
+  const rec = (res && res.recommended) || {};
+  for (const [key, value] of Object.entries(rec)) {
+    const row = SETTINGS_ROWS[key];
+    // The current value is the row's running value; when the row is absent no comparison
+    // is possible and the recommendation is staged (it will be validated by the plan).
+    const current = row ? String(row.value) : "";
+    stageChange(key, String(value), current);
+  }
+}
+
+/** What Sonar measured, in the panel. Every number here was measured, not guessed. */
+function renderSonarNote(res) {
+  const note = document.getElementById("st-sonar-note");
+  if (!note) return;
+  note.replaceChildren();
+  if (!res || res.ok === false) {
+    note.appendChild(el("span", { class: "sonar-err",
+      text: "Sonar could not survey: " + ((res && res.error) || SONAR_STATE.error || "no result") }));
+    return;
+  }
+  const lines = [
+    `Interface ${res.interface} is on ${res.segment} (${res.address}).`,
+    `${res.hosts_answered} host(s) answered an ARP sweep of ${res.swept} addresses; `
+      + `${(res.free_addresses || []).length} free address(es) were found.`,
+  ];
+  if (res.gateway) {
+    lines.push(`Gateway ${res.gateway}${res.gateway_mac ? " (" + res.gateway_mac + ")" : ""}`
+      + ` — ${res.gateway_source}.`);
+  }
+  note.appendChild(el("div", { text: lines.join(" ") }));
+  for (const n of (res.notes || [])) {
+    note.appendChild(el("div", { class: "sonar-note-item", text: "• " + n }));
+  }
+  const staged = Object.keys((res.recommended) || {});
+  if (staged.length) {
+    note.appendChild(el("div", { class: "sonar-note-item",
+      text: `Staged ${staged.length} recommendation(s) as pending changes below — review, `
+        + `edit or discard them, then Apply. Nothing has been written yet.` }));
+  }
+}
+
+
 /** The auth card: what the server said about write access, and the break-glass token path. */
 async function refreshAuthNote() {
   const note = document.getElementById("st-auth-note");
@@ -688,6 +780,17 @@ async function loadSettings() {
   if (win) win.textContent = data.version ? `v${data.version}` : "";
   const groups = data.groups || {};
   const titles = data.titles || {};
+  // Remember the rows so SONAR can stage recommendations through the same dedupe the
+  // manual controls use (applySonarResult needs each key's CURRENT value).
+  SETTINGS_ROWS = {};
+  for (const rows of Object.values(groups)) {
+    for (const r of rows || []) SETTINGS_ROWS[r.key] = r;
+  }
+  // SONAR is a write-gated action (it creates a job on the sensor node), so for a viewer
+  // or a signed-out browser it is disabled with the same honesty as the other controls:
+  // present and explainable, not vanished.
+  const sonarBtn = document.getElementById("st-sonar");
+  if (sonarBtn) sonarBtn.disabled = !Boolean(data.writes && data.writes.enabled);
   const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
   if (sum) sum.textContent = `${total} settings in effect`;
 
@@ -1447,6 +1550,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }],
     ["st-stage-apply", () => applyStage().catch(showError)],
     ["st-stage-discard", () => discardStage()],
+    // SONAR: the survey button. Disabled for callers without write access (loadSettings
+    // sets that from the server's answer) -- a viewer sees it with its help text, which
+    // teaches what it does; it is not hidden.
+    ["st-sonar", () => runSonar().catch(showError)],
+    // The Sonar "?" opens its explanation, the same interaction the setting rows use.
+    // Async because the shared wiring loop chains `.then()` on every handler's return.
+    ["st-sonar-help", async () => {
+      const helpEl = document.getElementById("st-sonar-help-text");
+      const btn = document.getElementById("st-sonar-help");
+      if (!helpEl) return;
+      const nowHidden = helpEl.classList.toggle("hidden");
+      if (btn) {
+        btn.setAttribute("aria-expanded", nowHidden ? "false" : "true");
+        btn.classList.toggle("open", !nowHidden);
+      }
+    }],
   ]) {
     const b = document.getElementById(id);
     if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));

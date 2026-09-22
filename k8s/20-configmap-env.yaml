@@ -68,6 +68,20 @@ data:
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
 
+  # ── Reverse DNS (display names in the GUI) ─────────────────────────────────
+  # How the web UI labels addresses. Read by the GUI process at startup (it does the
+  # lookups), so a change restarts deploy/weirvern-gui.
+  #   private  resolve only private/link-local/CGNAT addresses. Lookups stay on your
+  #            network. This is the default.
+  #   all      also resolve PUBLIC addresses: every external destination in your flow
+  #            data is sent to a DNS resolver, which leaks what you talk to. An
+  #            operator's explicit decision, never a default.
+  #   off      no lookups; addresses display without names.
+  # This key lives HERE and not in the GUI's own `env:` list: an env entry shadows
+  # envFrom, so a pin in the deployment made the Settings write inert while the panel
+  # reported it saved (live-measured).
+  WEIRVERN_REVERSE_DNS: "private"
+
   # ── Sensor mode ────────────────────────────────────────────────────────────
   # HOW the sensor gets its packets. Named for the creature: a wyvern keeps its
   # water in a LOCH and draws it through a SIPHON.

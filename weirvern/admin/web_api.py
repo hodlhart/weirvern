@@ -364,11 +364,25 @@ def models_payload(data: dict) -> dict:
 
 def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
                     talkers: list[tuple]) -> dict:
+    """Netflow view payload.
+
+    NAMES RIDE WITH EVERY ROW THAT CARRIES AN ADDRESS. The talkers list has had
+    `hostname` since the view was built; the SPREAD rows did not, so the fan-out chart
+    labelled every bar with a bare IP even though the same address was named two charts
+    over -- an inconsistency an operator reads as "naming is broken". Both now resolve
+    through the shared revdns cache, so the cost is one lookup per distinct address for
+    the whole payload.
+    """
+    spread_out = dict(spread or {})
+    if spread_out.get("points"):
+        spread_out["points"] = [
+            {**p, "hostname": _hostname(p.get("src_addr"))} for p in spread_out["points"]
+        ]
     return {
         "volume": volume,
         "protocols": proto,
         "ports": ports,
-        "spread": spread,
+        "spread": spread_out,
         "talkers": [
             {"src_addr": r[0], "hostname": _hostname(r[0]),
              "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),

@@ -794,8 +794,10 @@ function loadZeekLog(log) {
         title: (r) => `drill into ${r.addr}`,
       });
       table.replaceChildren(...rows.map((r) => {
+        // The NAME when one exists, with the address beside it -- same rule as every other
+        // host list (the IP is the fact; the name is the convenience, never a replacement).
         const tr = el("tr", { class: "clickable" }, [
-          el("td", { class: "link mono", text: r.addr }),
+          el("td", { class: "link mono", text: r.name ? `${r.name} (${r.addr})` : r.addr }),
           el("td", { class: "mono", text: String(r.n) }),
           el("td", {}, [el("span", { class: "muted", text: "drill down →" })]),
         ]);
