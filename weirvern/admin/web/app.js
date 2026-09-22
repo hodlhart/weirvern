@@ -1555,6 +1555,10 @@ function showView(name) {
   // ClickHouse for panels nobody is looking at.
   if (name === "netflow") loadNetflow().then(clearError).catch(showError);
   if (name === "zeek") loadZeek().then(clearError).catch(showError);
+  // Identity also loads on demand: it reads the verdict table plus a coverage aggregation, and
+  // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
+  // at. Same reasoning as the SOC views above.
+  if (name === "identity") loadIdentity().then(clearError).catch(showError);
   if (name === "health") loadHealthDeep().then(clearError).catch(showError);
 }
 
@@ -1604,7 +1608,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // SOC view controls. Each reload is explicit rather than automatic for the reason given
   // in showView: these run aggregate queries and should not fire on a background timer.
   for (const [id, fn] of [
-    ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep],
+    ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep], ["id-reload", loadIdentity],
     ["st-reload", loadSettings],
     // The token controls. `Use token` stores it and re-reads the page so the server's answer about
     // write access is what updates the UI -- the browser never assumes it succeeded.
@@ -1657,7 +1661,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));
   }
   for (const [id, fn] of [
-    ["nf-hours", loadNetflow], ["zk-hours", loadZeek], ["hp-hours", loadHealthDeep],
+    ["nf-hours", loadNetflow], ["zk-hours", loadZeek], ["hp-hours", loadHealthDeep], ["id-hours", loadIdentity],
   ]) {
     const i = document.getElementById(id);
     // onchange rather than a button: picking 24h and then pressing Reload is a two-step
@@ -2222,5 +2226,144 @@ async function loadModels() {
       tr.addEventListener("click", () => { showView("host"); loadHost(pt.src_addr, 24); });
     }
     body.appendChild(tr);
+  }
+}
+
+/* ── Passive host identification ────────────────────────────────────────────────────────── */
+async function loadIdentity() {
+  const hours = document.getElementById("id-hours").value;
+  const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
+
+  // AN EMPTY LIST AND A FAILED QUERY MUST NOT LOOK ALIKE. A read failure names its cause; an
+  // empty list says nothing has been identified yet, which is a legitimate answer.
+  if (!d.available) {
+    showDataError(d.reason || "host identity is unavailable");
+  } else {
+    showDataError(null);
+  }
+
+  const cov = d.coverage || {};
+  const covBox = document.getElementById("id-coverage");
+  covBox.replaceChildren();
+  if (!cov.available) {
+    covBox.appendChild(el("p", { class: "empty",
+      text: `Coverage unknown — ${cov.reason || "the coverage query did not run"}.` }));
+  } else {
+    const pct = cov.coverage_pct == null ? "—" : `${cov.coverage_pct}%`;
+    const items = [
+      ["identified", String(cov.hosts_classified ?? "—")],
+      ["hosts seen", String(cov.hosts_seen ?? "—")],
+      ["coverage", pct],
+      ["high", String(cov.high_confidence ?? "—")],
+      ["medium", String(cov.medium_confidence ?? "—")],
+      ["unknown", String(cov.unknown ?? "—")],
+    ];
+    for (const [k, v] of items) {
+      covBox.appendChild(el("div", { class: "stat" }, [
+        el("div", { class: "v", text: v }), el("div", { class: "k", text: k }),
+      ]));
+    }
+  }
+  document.getElementById("id-coverage-note").textContent = cov.available
+    ? `Of ${cov.hosts_seen} hosts seen in the last ${cov.window_days} days, ${cov.hosts_classified} have an identity. The rest have produced no identifying signal yet.`
+    : "";
+
+  const hosts = d.hosts || [];
+  document.getElementById("id-count").textContent = hosts.length ? `(${hosts.length})` : "";
+  const tbody = document.querySelector("#id-table tbody");
+  tbody.replaceChildren();
+
+  const empty = document.getElementById("id-empty");
+  if (!hosts.length) {
+    empty.textContent = d.available
+      ? "No host has been identified yet. Identity comes from application banners, DHCP leases and TLS fingerprints, so a segment with none of those produces nothing here."
+      : "";
+    return;
+  }
+  empty.textContent = "";
+
+  for (const h of hosts) {
+    const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "";
+    const tr = el("tr", { class: "clickable" }, [
+      el("td", { class: "mono", text: h.hostname ? `${h.hostname} (${h.host})` : h.host }),
+      el("td", { text: h.os_label || h.os || "unknown" }),
+      el("td", {}, [confidenceChip(h.confidence)]),
+      el("td", { text: String(h.agreeing_sources ?? "—") }),
+      el("td", { class: "muted", text: strongest }),
+      el("td", { class: "muted", text: h.age_s != null ? fmtAge(h.age_s) : "—" }),
+    ]);
+    tr.addEventListener("click", () => showIdentityDetail(h));
+    tbody.appendChild(tr);
+  }
+}
+
+/* A confidence chip, so "low" and "high" are distinguishable at a glance rather than by reading
+ * a word in a column of similar-looking words. */
+function confidenceChip(conf) {
+  const c = String(conf || "unknown");
+  const cls = `conf conf-${c}`;
+  return el("span", { class: cls, text: c });
+}
+
+function showIdentityDetail(h) {
+  const card = document.getElementById("id-detail-card");
+  card.classList.remove("hidden");
+  document.getElementById("id-detail-host").textContent = h.hostname
+    ? `${h.hostname} (${h.host})` : h.host;
+
+  const box = document.getElementById("id-detail");
+  box.replaceChildren();
+
+  const facts = [
+    ["identity", h.os_label || h.os || "unknown"],
+    ["confidence", `${h.confidence} (score ${h.score}, ${h.agreeing_sources} source(s))`],
+    ["MAC", h.mac || "—"],
+  ];
+  if (h.ja4_structure) {
+    const j = h.ja4_structure;
+    facts.push(["TLS", `${j.transport || "?"} ${j.tls_version || ""}, ` +
+                        `${j.cipher_count ?? "?"} ciphers, ALPN ${j.alpn || "none"}`]);
+  }
+  const table = el("table");
+  const tb = el("tbody");
+  for (const [k, v] of facts) {
+    tb.appendChild(el("tr", {}, [
+      el("td", { class: "muted", text: k }), el("td", { class: "mono", text: String(v) }),
+    ]));
+  }
+  table.appendChild(tb);
+  box.appendChild(table);
+
+  // The evidence, with its source and weight, so the label can be CHECKED rather than trusted.
+  if (h.signals && h.signals.length) {
+    box.appendChild(el("h3", { text: "Evidence" }));
+    const ul = el("ul");
+    for (const s of h.signals) {
+      ul.appendChild(el("li", {
+        text: `${s.os_label} — ${s.detail} (source: ${s.source}, weight ${s.weight})`,
+      }));
+    }
+    box.appendChild(ul);
+  }
+
+  // Disagreement is shown, not hidden: it is the most interesting thing about such a host.
+  if (h.disagreement && h.disagreement.length) {
+    box.appendChild(el("h3", { text: "Contradicting signals" }));
+    const ul = el("ul");
+    for (const s of h.disagreement) {
+      ul.appendChild(el("li", { text: `${s.os_label} — ${s.detail} (source: ${s.source})` }));
+    }
+    box.appendChild(ul);
+  }
+
+  const raw = [];
+  if (h.software_seen && h.software_seen.length) raw.push(["software", h.software_seen]);
+  if (h.hostnames_seen && h.hostnames_seen.length) raw.push(["hostnames", h.hostnames_seen]);
+  if (h.ja4_seen && h.ja4_seen.length) raw.push(["JA4", h.ja4_seen]);
+  for (const [label, values] of raw) {
+    box.appendChild(el("h3", { text: `Observed ${label}` }));
+    const ul = el("ul");
+    for (const v of values) ul.appendChild(el("li", { class: "mono", text: String(v) }));
+    box.appendChild(ul);
   }
 }

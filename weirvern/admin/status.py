@@ -12,6 +12,7 @@ alarms.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -831,6 +832,80 @@ def _iso(value) -> str | None:
         return value.isoformat()
     except AttributeError:
         return str(value)
+
+
+def host_identity_view(client) -> dict:
+    """Every host's identity verdict, with its evidence and the honest denominator.
+
+    THE COVERAGE FIGURE IS NOT OPTIONAL, and it is why this returns a dict rather than a list.
+    A list of 14 identified hosts says nothing about the 231 that were not identified, and a
+    count on its own is a reassuring number that answers a different question than the one an
+    analyst is asking. So the total seen travels beside the total classified.
+
+    A read failure is reported as `available: False` with a reason, never as an empty list: an
+    empty list is a legitimate answer meaning "no host has been identified yet", and the two must
+    not look alike.
+    """
+    from weirvern.host_identity import IDENTITY_WINDOW_DAYS, coverage  # noqa: PLC0415
+
+    try:
+        rows = client.query(
+            """
+            SELECT host, mac, os, os_label, confidence, score, agreeing_sources,
+                   signals, disagreement, ja4_structure, software_seen,
+                   hostnames_seen, ja4_seen, updated_at
+            FROM weirvern.host_identity FINAL
+            ORDER BY (confidence = 'high') DESC, score DESC
+            LIMIT 500
+            """
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "reason": f"cannot read host identity: {type(exc).__name__}: {str(exc)[:200]}",
+            "hosts": [], "count": 0, "coverage": None,
+        }
+
+    hosts = []
+    for (host, mac, os_name, os_label, conf, score, n_src, signals, disagree,
+         ja4_values, software, hostnames, ja4_seen, updated) in rows:
+        hosts.append({
+            "host": str(host), "mac": str(mac or ""), "os": str(os_name),
+            "os_label": str(os_label), "confidence": str(conf),
+            "score": round(float(score or 0), 3),
+            "agreeing_sources": int(n_src or 0),
+            "signals": _parse_json(signals),
+            "disagreement": _parse_json(disagree),
+            "ja4_structure": _parse_json(ja4_values),
+            "software_seen": _parse_json(software) or [],
+            "hostnames_seen": _parse_json(hostnames) or [],
+            "ja4_seen": _parse_json(ja4_seen) or [],
+            "updated_at": _iso(updated),
+            "age_s": (datetime.datetime.now() - updated).total_seconds() if updated else None,
+        })
+
+    try:
+        cov = coverage(client)
+    except Exception as exc:  # noqa: BLE001
+        # Coverage unknown is NOT coverage zero. The panel must be able to say which.
+        cov = {"available": False, "reason": str(exc)[:200]}
+    return {
+        "available": True,
+        "window_days": IDENTITY_WINDOW_DAYS,
+        "hosts": hosts,
+        "count": len(hosts),
+        "coverage": cov,
+    }
+
+
+def _parse_json(value):
+    """Parse a JSON-text column, returning None rather than raising on one bad row."""
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def recent_anomalies(client, limit: int = 25, min_score: float = 0.5) -> list[tuple]:

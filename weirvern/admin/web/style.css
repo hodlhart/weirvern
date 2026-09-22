@@ -477,3 +477,19 @@ td.link:hover, .link:hover { text-decoration: underline; }
   flex-wrap: wrap; }
 button.primary { border-color: var(--accent); color: var(--accent); }
 button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ── confidence chips (host identity) ──────────────────────────────────────
+ * DELIBERATELY NOT .chip: that class is the clickable host-tracking chip and carries
+ * cursor:pointer plus a hover border. Reusing it here would make a status LABEL look like a
+ * button, which is a small lie the operator pays for by clicking something inert.
+ *
+ * Colour is paired with the word itself, never colour alone: the chip text is the confidence
+ * value, so the label is readable without relying on hue.
+ */
+.conf { display: inline-block; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .02em; border-radius: 4px; padding: 1px 7px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--muted); }
+.conf-high { border-color: var(--accent); color: var(--fg); font-weight: 600; }
+.conf-medium { border-color: var(--border); color: var(--fg); }
+.conf-low { color: var(--muted); }
+.conf-unknown { color: var(--muted); opacity: .8; font-style: italic; }

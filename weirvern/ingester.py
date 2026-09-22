@@ -862,6 +862,53 @@ def map_zeek_ldap_search(rec: dict[str, str]) -> dict[str, Any] | None:
     }
 
 
+def map_zeek_software(rec: dict[str, str]) -> dict[str, Any] | None:
+    """Zeek software.log record -> host_identity observation, not a table row.
+
+    WHY THIS ONE IS DIFFERENT FROM EVERY OTHER MAPPER. The other seventeen map a log to a TABLE
+    the GUI reads. software.log is not a table -- it is the single best OS signal the sensor
+    produces, because the banner NAMES the platform:
+
+        OpenSSH_10.2p1 Ubuntu-2ubuntu3.6      -> Ubuntu, said by the build itself
+        Mozilla/5.0 (Windows NT 10.0; ...)    -> Windows, said by the client
+
+    So it feeds `host_fingerprints`, which is the OBSERVATION store, and classification happens
+    in a separate pass (weirvern/host_identity.py). Recording the raw banner rather than a label
+    is what lets a better reference table re-score history instead of only affecting new traffic.
+
+    Returns the observation as a dict under a distinct shape so the caller can tell it apart from
+    a table row; `None` when there is nothing usable.
+    """
+    host = zeek_value(rec.get("host", ""))
+    if not host:
+        return None
+    # `unparsed_version` is the raw banner and is preferred; name+version is Zeek's parse of it.
+    banner = zeek_value(rec.get("unparsed_version", "")) or ""
+    name = zeek_value(rec.get("name", "")) or ""
+    version = ".".join(
+        part for part in (
+            zeek_value(rec.get("version.major", "")),
+            zeek_value(rec.get("version.minor", "")),
+            zeek_value(rec.get("version.minor2", "")),
+        ) if part and part != "-"
+    )
+    raw = banner or f"{name} {version}".strip()
+    if not raw:
+        return None
+    ts = _safe_float(rec.get("ts"), 0.0)
+    return {
+        "_observation": True,
+        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "src_addr": host,
+        # software.log carries no MAC. The DHCP path supplies it, and the identity pass joins
+        # them by address -- a gap here is expected, not a defect.
+        "mac": "",
+        "source": "software",
+        "raw": raw,
+        "note": zeek_value(rec.get("software_type", "")) or "",
+    }
+
+
 ZEEK_MAPPERS = {
     "conn": ("weirvern.zeek_conn", map_zeek_conn),
     "dns": ("weirvern.zeek_dns", map_zeek_dns),
@@ -890,6 +937,18 @@ ZEEK_MAPPERS = {
     "tunnel": ("weirvern.zeek_tunnel", map_zeek_tunnel),
     "quic": ("weirvern.zeek_quic", map_zeek_quic),
     "ldap_search": ("weirvern.zeek_ldap_search", map_zeek_ldap_search),
+}
+
+# LOGS THAT FEED THE IDENTITY STORE INSTEAD OF A TABLE.
+#
+# software.log has no table, and does not want one: it is the strongest passive OS signal the
+# sensor produces (the banner names its own platform), so it goes to `host_fingerprints` as an
+# OBSERVATION and classification happens in a separate pass. Keeping it in a SECOND registry
+# rather than in ZEEK_MAPPERS is deliberate: the invariant "every mapper in ZEEK_MAPPERS targets
+# a weirvern.zeek_* table" is then still true and still checked, instead of being weakened to
+# admit one exception that a later reader would have to know about.
+ZEEK_OBSERVATION_MAPPERS = {
+    "software": map_zeek_software,
 }
 
 # Insert column order per Zeek table (first key is the row's identity column).
@@ -976,6 +1035,87 @@ class ZeekTailState:
         ).reset_reason(st, path)
 
 
+def _record_observations(client: Inserter, rows: list[dict[str, Any]]) -> int:
+    """Write raw fingerprint observations with no interpretation.
+
+    Deliberately dumb: it stores `raw` verbatim and leaves every judgement to the identity pass.
+    Storing the raw string is what makes the reference tables correctable -- a label written here
+    could never be re-derived, and a wrong label next to a correct raw value is unrecoverable.
+
+    A failure here must NOT stop ingest. Identification is an enrichment; losing flow data
+    because a fingerprint row could not be written would be trading the important thing for the
+    useful one.
+    """
+    from weirvern.host_identity import record_observation
+
+    written = 0
+    for r in rows:
+        try:
+            record_observation(
+                client,
+                ts=r.get("ts") or datetime.now(),
+                src_addr=str(r.get("src_addr") or ""),
+                mac=str(r.get("mac") or ""),
+                source=str(r.get("source") or ""),
+                raw=str(r.get("raw") or ""),
+                note=str(r.get("note") or ""),
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("fingerprint observation dropped (%s): %s", r.get("source"), exc)
+    return written
+
+
+def observations_from_dhcp(rec: dict[str, str], row: dict[str, Any]) -> list[dict[str, Any]]:
+    """A DHCP record yields up to three observations: MAC vendor, hostname, and FQDN.
+
+    DHCP is valuable out of proportion to its size because it arrives BEFORE any application
+    traffic: a host that has just booted is identifiable from its lease, which is exactly when an
+    unknown device on the segment is most interesting and least observable otherwise.
+
+    The MAC is the stable identifier here. A baseline keyed on IP loses its subject the moment a
+    lease turns over -- a re-imaged machine inherits the address and would otherwise look like
+    the same host.
+    """
+    out: list[dict[str, Any]] = []
+    ts = row.get("ts") or datetime.now()
+    # `client_addr` is 0.0.0.0 in a DISCOVER, which is why the MAC carries the identity.
+    addr = str(row.get("client_addr") or "") or ""
+    if addr in {"0.0.0.0", ""}:
+        # Fall back to the requested or assigned address so a DISCOVER is still attributable.
+        addr = str(row.get("assigned_addr") or row.get("requested_addr") or "") or ""
+    mac = zeek_value(rec.get("mac", "")) or ""
+    if not addr:
+        return out
+    if mac:
+        out.append({"ts": ts, "src_addr": addr, "mac": mac, "source": "oui",
+                    "raw": mac, "note": "from dhcp"})
+    for field, source in (("host_name", "dhcp_hostname"), ("client_fqdn", "dhcp_fqdn")):
+        value = zeek_value(rec.get(field, "")) or ""
+        if value:
+            out.append({"ts": ts, "src_addr": addr, "mac": mac, "source": source,
+                        "raw": value, "note": "from dhcp"})
+    return out
+
+
+def observations_from_ssl(rec: dict[str, str], row: dict[str, Any]) -> list[dict[str, Any]]:
+    """A TLS record yields the JA4 fingerprint, when one was computed.
+
+    THE EMPTY CASE IS THE COMMON ONE AND MUST NOT PRODUCE A ROW. Zeek writes `-` for a record it
+    could not fingerprint, and storing that as an observation would put a row in the table that
+    looks like evidence and carries none -- which is how a host ends up reported as "classified"
+    on the strength of a dash.
+    """
+    out: list[dict[str, Any]] = []
+    ja4 = zeek_value(rec.get("ja4", "")) or ""
+    src = str(row.get("src_addr") or "")
+    if not src or not ja4 or ja4 in {"-", "(empty)"}:
+        return out
+    out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+                "source": "ja4", "raw": ja4, "note": "from ssl"})
+    return out
+
+
 def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = None,
                   offset: int | None = None, known_inode: int | None = None,
                   header: tuple[str, list[str]] | None = None
@@ -1016,13 +1156,22 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
         separator, fields = "\t", []  # a new file brings its own header
 
     log_type = os.path.basename(path).split(".")[0]
+    # An observation mapper is not a table row: it is routed to the identity store below, so it
+    # must be recognised here or the log would be read and silently discarded.
     target = ZEEK_MAPPERS.get(log_type)
-    if target is None:
+    if target is None and log_type not in ZEEK_OBSERVATION_MAPPERS:
         if state is not None:
             return 0, start_offset, st.st_ino, (state.separator, state.fields)
         return 0, start_offset, st.st_ino, (separator, fields)
-    table, mapper = target
-    columns = ZEEK_COLUMNS[log_type]
+    # AN OBSERVATION LOG HAS NO TABLE. Its rows are fingerprint observations for the identity
+    # store, so they are collected here and written without a table tuple or a column list --
+    # which is also why `software` is absent from ZEEK_COLUMNS.
+    if log_type in ZEEK_OBSERVATION_MAPPERS:
+        table, mapper, columns = None, ZEEK_OBSERVATION_MAPPERS[log_type], None
+    else:
+        assert target is not None, f"{log_type} is in neither mapper registry"
+        table, mapper = target
+        columns = ZEEK_COLUMNS[log_type]
 
     inserted = 0
     consumed = start_offset
@@ -1079,6 +1228,24 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             # from -- one filter, installed once, consulted by both. Counting happens inside the
             # filter, so a drop is reported rather than inferred from a smaller number.
             if _excluded(row):
+                continue
+            # AN OBSERVATION IS NOT A TABLE ROW. software.log feeds the identity store rather
+            # than a table, because classification is a separate pass over raw evidence (see
+            # weirvern/host_identity.py for why). The mapper marks its rows so this path cannot
+            # mistake one for the other and insert a banner into a column that expects a label.
+            if log_type in ZEEK_OBSERVATION_MAPPERS or row.get("_observation"):
+                _record_observations(client, [row])
+                continue
+            # TWO TABLE-BACKED LOGS ARE ALSO IDENTITY SOURCES, and the extraction happens here
+            # because this is the only point where the RAW Zeek record and the mapped row are
+            # both in hand. Re-deriving the MAC or the FQDN from the table later would mean
+            # querying it back for data we are already holding.
+            if log_type == "dhcp":
+                _record_observations(client, observations_from_dhcp(rec, row))
+            elif log_type == "ssl":
+                _record_observations(client, observations_from_ssl(rec, row))
+            if columns is None:
+                # Already written by the observation path above; nothing is batched here.
                 continue
             batch.append([row.get(c) for c in columns])
             if len(batch) >= BATCH_SIZE:

@@ -105,6 +105,7 @@
   <button class="tab" data-view="network">Network</button>
   <button class="tab" data-view="netflow">Netflow</button>
   <button class="tab" data-view="zeek">Zeek</button>
+  <button class="tab" data-view="identity">Identity</button>
   <button class="tab" data-view="models">Models</button>
   <button class="tab" data-view="settings">Settings</button>
 </nav>
@@ -296,6 +297,61 @@
   </section>
 
   <!-- ── Anomalies ────────────────────────────────────────────────────── -->
+  <!-- ── Identity: what each host IS, from traffic already seen ─────────── -->
+  <section id="view-identity" class="view">
+    <div class="card">
+      <h2>Passive host identification</h2>
+      <div class="controls">
+        <label>window
+          <select id="id-hours">
+            <option value="24" selected>24h</option>
+            <option value="168">7d</option>
+            <option value="336">14d</option>
+          </select>
+        </label>
+        <button id="id-reload">Reload</button>
+      </div>
+      <p class="muted">
+        Every host's operating-system family, derived from traffic the sensor already saw.
+        Nothing is probed and nothing is sent: the evidence is application banners
+        (software.log), DHCP leases, NIC vendors and TLS ClientHello fingerprints.
+        Confidence reflects how many <em>independent</em> sources agree, so a hostname
+        alone is never presented as an answer.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Coverage</h2>
+      <!-- The denominator, not just the numerator. "14 hosts identified" on a 245-host
+           segment is a misleading number, so the fraction is stated. -->
+      <div class="stats" id="id-coverage"></div>
+      <p class="muted" id="id-coverage-note"></p>
+    </div>
+
+    <div class="card">
+      <h2>Hosts <span class="muted" id="id-count"></span></h2>
+      <table id="id-table">
+          <thead>
+            <tr>
+              <th>host</th><th>identity</th><th>confidence</th>
+              <th>sources</th><th>strongest evidence</th><th>last updated</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      <p class="muted" id="id-empty"></p>
+    </div>
+
+    <div class="card hidden" id="id-detail-card">
+      <h2>Evidence for <span class="mono" id="id-detail-host"></span></h2>
+      <div id="id-detail"></div>
+      <p class="muted">
+        A host showing contradicting signals is a finding rather than an error: it can be a
+        renamed machine, a dual-boot host, or a spoofed hostname.
+      </p>
+    </div>
+  </section>
+
   <section id="view-anomalies" class="view">
     <div class="card">
       <h2>All anomalies</h2>

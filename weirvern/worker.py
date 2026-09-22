@@ -697,6 +697,22 @@ def main() -> None:
             for v in verdicts:
                 push_alert(v, settings, alert_state, client)
 
+            # HOST IDENTITY runs on the same cycle as detection, AFTER it.
+            #
+            # Order matters and is deliberate: the identity pass classifies from observations the
+            # INGESTER wrote, so running it after detection means a sweep always sees the latest
+            # fingerprints rather than racing the ingest. It is also cheap -- one aggregation over
+            # `host_fingerprints` for the whole segment, not one query per host -- so it does not
+            # need a slower cadence.
+            #
+            # A failure here MUST NOT stop detection. Identification is enrichment; losing alerts
+            # because a fingerprint pass raised would trade the important thing for the useful one.
+            try:
+                from weirvern.host_identity import build_identity
+                build_identity(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("host identity pass failed (detection continues): %s", exc)
+
             # The sensor heartbeat runs in its OWN thread, not here.
             #
             # Publishing inside this loop would make the heartbeat's interval equal to

@@ -260,6 +260,9 @@ def _build_handler(ctx: GuiContext):
                 return self._graph(query)
             if path == "/api/zeeklog":
                 return self._zeeklog(query)
+            # PASSIVE HOST IDENTIFICATION: what each host IS, from traffic already seen.
+            if path == "/api/identity":
+                return self._host_identity()
             # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
             # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
             # restart the GUI and hide the real problem); this one exists precisely to answer
@@ -540,6 +543,30 @@ def _build_handler(ctx: GuiContext):
                     "available": False, "nodes": [], "edges": [],
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
+                })
+            self._json(payload)
+
+        def _host_identity(self) -> None:
+            """What each host IS, from traffic the sensor already saw. Nothing is sent.
+
+            Named `_host_identity` and NOT `_identity` deliberately: `_identity()` on this class
+            already means "who is the CALLER", and it is what the auth path reads. A same-named
+            method would shadow it and break sign-in -- a collision mypy caught while the tests
+            were still green.
+
+            The shape follows every sibling route: connect, delegate the query to the read layer,
+            and report a failure as `available: False` with a reason rather than as an empty list.
+            An empty list is a legitimate answer -- "no host identified yet" -- and the two states
+            must not look alike on screen.
+            """
+            try:
+                with self._with_client() as client:
+                    payload = status_mod.host_identity_view(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("host identity unavailable: %s", exc)
+                return self._json({
+                    "available": False, "hosts": [], "count": 0, "coverage": None,
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                 })
             self._json(payload)
 

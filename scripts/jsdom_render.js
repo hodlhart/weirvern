@@ -93,7 +93,7 @@ async function main() {
   const bundle = order.map((src) => fs.readFileSync(path.join(WEB, path.basename(src)), "utf8"))
                       .join("\n;\n");
   const epilogue = `
-    window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
+window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
@@ -102,7 +102,8 @@ async function main() {
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
-                   refreshChrome, getSession, setSession, createUser, setRole, changePassword };
+                   refreshChrome, getSession, setSession, createUser, setRole, changePassword,
+                   loadIdentity, showIdentityDetail };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -362,6 +363,64 @@ async function main() {
   };
 
   let fetchOverride = null;
+  // ── host identity ──────────────────────────────────────────────────────────────────────────
+  //
+  // A REALISTIC payload, deliberately including the two cases that must render differently: a
+  // high-confidence host with agreeing sources, and a host whose sources CONTRADICT each other.
+  // A stub of only well-behaved hosts would pass while the disagreement path was broken.
+  const IDENTITY_PAYLOAD = {
+    available: true,
+    window_days: 7,
+    count: 3,
+    coverage: {
+      available: true, hosts_seen: 245, hosts_classified: 3,
+      high_confidence: 1, medium_confidence: 1, unknown: 1,
+      coverage_pct: 1.2, window_days: 7,
+    },
+    hosts: [
+      {
+        host: "203.0.113.10", mac: "00:00:5e:00:53:02", os: "linux",
+        os_label: "Linux", confidence: "high", score: 1.5, agreeing_sources: 2,
+        age_s: 120,
+        signals: [
+          { source: "software", os: "linux", os_label: "Linux",
+            detail: "OpenSSH_10.2p1 Ubuntu-2ubuntu3.6 - banner names Ubuntu", weight: 1.0 },
+          { source: "oui", os: "linux", os_label: "Linux",
+            detail: "NIC vendor Raspberry Pi Trading (OUI dc:a6:32)", weight: 0.35 },
+        ],
+        disagreement: [],
+        ja4_structure: { transport: "TCP", tls_version: "TLS 1.3", sni: "sent",
+                         cipher_count: 15, extension_count: 16, alpn: "h2" },
+        software_seen: ["OpenSSH_10.2p1 Ubuntu-2ubuntu3.6"],
+        hostnames_seen: [],
+        ja4_seen: ["t13d1516h2_8daaf6152771_02713d6af862"],
+      },
+      {
+        host: "203.0.113.20", mac: "", os: "windows", os_label: "Windows",
+        confidence: "medium", score: 1.0, agreeing_sources: 2, age_s: 400,
+        signals: [
+          { source: "software", os: "windows", os_label: "Windows",
+            detail: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) - User-Agent names Windows NT",
+            weight: 1.0 },
+        ],
+        disagreement: [
+          { source: "dhcp_hostname", os_label: "Windows",
+            detail: "hostname 'DESKTOP-7A3B2C' - Windows default computer-name pattern" },
+        ],
+        ja4_structure: null,
+        software_seen: ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)"],
+        hostnames_seen: ["DESKTOP-7A3B2C"],
+        ja4_seen: [],
+      },
+      {
+        host: "203.0.113.30", mac: "", os: "unknown", os_label: "Unknown",
+        confidence: "unknown", score: 0, agreeing_sources: 0, age_s: 900,
+        signals: [], disagreement: [], ja4_structure: null,
+        software_seen: [], hostnames_seen: [], ja4_seen: [],
+      },
+    ],
+  };
+
   const ROUTES = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
@@ -461,6 +520,9 @@ async function main() {
     ["/api/zeek", ZEEK_PAYLOAD],
     ["/api/session", SESSION_STUB],
     ["/api/users", USERS_PAYLOAD],
+    ["/api/identity", IDENTITY_PAYLOAD],
+
+
     // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
     // cannot shadow the others; the dispatcher takes the first hit and /api/anomalies shares
     // no prefix with any of the above.
@@ -1626,6 +1688,105 @@ async function main() {
   SESSION_STUB.username = "";
   SESSION_STUB.role = "";
   await H.boot();
+
+
+
+  // ── host identity: the panel must distinguish its states ───────────────────────────────────
+  //
+  // The defect this guards against is the one that has shipped three times in this project: a
+  // panel that cannot be told apart from a panel with nothing in it. So the checks assert the
+  // DISTINCTIONS -- a contradicted host shows both claims, a failed query names a reason, and a
+  // low-confidence label reads as low.
+
+  await H.showView("identity");
+  // WAIT FOR THE ROWS, do not sleep at them. `showView` fires loadIdentity without awaiting it,
+  // and getJSON needs a microtask turn plus the stub's promise to settle -- so a fixed delay is a
+  // guess that passes on a fast machine and fails on a slow one. Bounded anyway, so a real hang
+  // is a loud failure rather than a silent pass.
+  for (let i = 0; i < 50 && doc.querySelectorAll("#id-table tbody tr").length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  const idRows = doc.querySelectorAll("#id-table tbody tr");
+  check("identity renders a row per host", idRows.length === 3, `${idRows.length} rows`);
+
+  const idText = doc.getElementById("view-identity").textContent;
+  // THE DISAGREEMENT LIVES IN THE DETAIL PANEL, which opens on click -- so the check must click.
+  // Asserting against the table text was checking the wrong surface and would have passed only by
+  // accident if a hostname happened to appear in a row.
+  const contradicted = Array.from(idRows).find((r) => r.textContent.includes("203.0.113.20"));
+  check("a host whose sources disagree is present to inspect", !!contradicted,
+        "the contradicted host is missing from the table");
+  if (contradicted) {
+    contradicted.click();
+    await new Promise((r) => setTimeout(r, 40));
+    const dtext = doc.getElementById("id-detail").textContent;
+    check("a contradicting signal is reported, not averaged away",
+          dtext.includes("Contradicting signals") && dtext.includes("DESKTOP-7A3B2C"),
+          dtext.slice(0, 120));
+    check("the evidence behind the label is shown with its source and weight",
+          dtext.includes("User-Agent names Windows NT") && dtext.includes("weight"),
+          "evidence not rendered");
+  }
+  // Confidence must be readable as a word, not only as a colour.
+  check("confidence is shown as a word, not colour alone",
+        idText.includes("high") && idText.includes("medium"), "confidence words missing");
+  // The denominator, so a small numerator cannot mislead.
+  check("coverage shows the denominator alongside the classified count",
+        idText.includes("245") && idText.includes("1.2%"),
+        "coverage fraction not rendered");
+
+  // A host with NO signals must not be presented as identified.
+  const unknownRow = Array.from(idRows).find((r) => r.textContent.includes("203.0.113.30"));
+  check("a host with no evidence reads as unknown rather than guessed",
+        unknownRow && unknownRow.textContent.includes("unknown"),
+        unknownRow ? unknownRow.textContent.slice(0, 80) : "row missing");
+
+  // The evidence list must expose its reasoning, because a label nobody can check is a label
+  // nobody can correct.
+  const idFirstRow = idRows[0];
+  if (idFirstRow) {
+    idFirstRow.click();
+    await new Promise((r) => setTimeout(r, 40));
+    const detail = doc.getElementById("id-detail").textContent;
+    check("clicking a host shows the evidence behind its label",
+          detail.includes("Ubuntu") && detail.includes("weight"),
+          detail.slice(0, 100));
+    check("the decoded TLS structure is shown as a fact, not as an OS claim",
+          detail.includes("TLS 1.3") && detail.includes("ciphers"),
+          "JA4 structure not rendered");
+  }
+
+
+
+  // ── the failure state: a broken query must SAY SO ──────────────────────────────────────────
+  fetchOverride = ((url) => {
+    if (url.includes("/api/identity")) {
+      return {
+        ok: true, status: 200, statusText: "OK",
+        json: async () => ({ available: false, reason: "cannot reach ClickHouse: boom",
+                             hosts: [], count: 0, coverage: null }),
+      };
+    }
+    return null; // fall through to the real dispatcher
+  });
+  await H.loadIdentity().catch(() => {});
+  await new Promise((r) => setTimeout(r, 40));
+  // The failure banner lives on <main> (that is where showDataError prepends it), NOT inside the
+  // view section -- so the check reads the banner. Asserting against the view text was checking a
+  // surface the message never reaches.
+  const banner = doc.getElementById("data-banner");
+  check("a failed identity query names its cause instead of rendering empty",
+        !!banner && banner.textContent.includes("boom"),
+        banner ? banner.textContent.slice(0, 100) : "no banner was shown");
+  // And the coverage panel must say UNKNOWN rather than render zeros, which would read as
+  // "identified nothing" -- a different and much more alarming claim.
+  const failView = doc.getElementById("view-identity").textContent;
+  check("coverage unknown is distinguishable from coverage zero",
+        failView.includes("Coverage unknown"), "unknown coverage rendered as zero");
+  fetchOverride = null;
+
+
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
   check("no JavaScript errors during any of the above", errors.length === 0,

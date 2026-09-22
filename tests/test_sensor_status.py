@@ -400,6 +400,10 @@ def test_no_orphan_placeholder_elements_remain():
                   #   gate-submit / pw-submit / gate-token-submit: form submit buttons,
                   #     handled by their forms' submit events rather than by a getElementById
                   #     binding
+                  #   view-identity: a view SECTION, whose contents (#id-coverage, #id-table's
+                  #     tbody, #id-count, #id-empty, #id-detail) carry the data. It is
+                  #     referenced by showView's class toggle rather than by getElementById.
+                  "view-identity",
                   "gate-submit", "pw-submit", "gate-token-submit"}
 
     orphans = {i for i in ids
