@@ -15,7 +15,7 @@
 #   3. Prepares the node: host directories, the sensor-node label, the capture and
 #      management interfaces.
 #   4. Builds both images and imports them into k3s's own containerd. THIS IS THE
-#      STEP PEOPLE GET WRONG: a k3s node cannot pull `weirvern-worker:0.8.1` from
+#      STEP PEOPLE GET WRONG: a k3s node cannot pull `weirvern-worker:0.8.2` from
 #      anywhere -- the image is built locally and imported, which is also why docker
 #      is a builder and k3s is the runtime, never the other way round.
 #   5. Applies the manifests, creates the Secret if it does not exist yet (a random
