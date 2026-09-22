@@ -19,7 +19,7 @@ ways Weirvern can watch a network.
 WHY THIS MODULE EXISTS SEPARATELY rather than as a boolean in two places: the choice
 carries a failure mode the operator cannot discover by reading code, and the settings
 that make it safe (see `REQUIRED_SYSCTLS`) are non-obvious and each one has a specific
-symptom if missing. Centralising the definition means the CLI, the TUI and the runtime
+symptom if missing. Centralising the definition means the CLI and the runtime
 all agree on what "siphon" implies and what has to be true before it is allowed.
 """
 from __future__ import annotations

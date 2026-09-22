@@ -1,7 +1,7 @@
 # Least-privilege RBAC.
 #
-# WHY THIS FILE EXISTS: the Weirvern CLI and TUI read cluster state to show
-# service health (`weirvern status`, `weirvern tui`). That needs an identity
+# WHY THIS FILE EXISTS: the Weirvern CLI reads cluster state to show
+# service health (`weirvern status`). That needs an identity
 # with `get`/`list` on a narrow set of resources — not cluster-admin, and not an
 # operator's personal kubeconfig with full rights.
 #
@@ -10,7 +10,7 @@
 #     kubectl -n weirvern create token weirvern-viewer --duration=24h
 #
 # Two roles, deliberately separate:
-#   * viewer  — read-only. This is what the TUI uses by default.
+#   * viewer  — read-only. This is what `weirvern status` uses by default.
 #   * operator — adds the lifecycle verbs (scale, rollout restart). Assign it
 #     only to a human who is allowed to stop the pipeline, not to a monitoring
 #     process.
@@ -56,7 +56,7 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["get", "list"]
-  # Logs: the TUI's log pane reads these. Bounded to this namespace.
+  # Logs: `weirvern logs` reads these. Bounded to this namespace.
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

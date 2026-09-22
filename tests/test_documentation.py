@@ -114,36 +114,34 @@ def test_every_workload_kind_is_described():
 # ── licensing instructions that would crash the sensor ──────────────────────────
 
 def test_the_readme_does_not_instruct_an_operator_to_disable_deleted_options():
-    """THE REGRESSION THAT ACTUALLY BIT: after the FoxIO options were deleted, the ConfigMap
-    still told Zeek to redefine them and the sensor crash-looped with
-
-        "redef" used but not previously defined (FINGERPRINT::JA4S_enabled)
-
-    Documentation repeating that instruction would reproduce it on the next deployment.
+    """THE REGRESSION THAT ACTUALLY BIT: after the unused fingerprinting options were
+    removed, the ConfigMap still told Zeek to redefine them and the sensor crash-looped
+    with "redef used but not previously defined". Documentation repeating that
+    instruction would reproduce it on the next deployment.
     """
     for name in ("JA4S_enabled", "JA4H_enabled", "JA4X_enabled", "JA4SSH_enabled",
                  "JA4T_enabled", "JA4L_enabled", "JA4D_enabled"):
-        # Mentioning the name while explaining the licence split is fine; a `redef` on it is
-        # an instruction to configure something that no longer exists.
         assert f"redef FINGERPRINT::{name}" not in README, (
-            f"the README shows a redef of {name}, which no longer exists in the image and "
-            f"aborts Zeek at startup"
+            f"the README shows a redef of {name}, which no longer exists in the image "
+            f"and aborts Zeek at startup"
         )
 
 
-def test_the_policy_and_the_readme_agree_that_disabling_is_gone():
-    """Both surfaces must say the same thing, because an operator reads one and edits the
-    other."""
-    # Comments are stripped first. The policy DELIBERATELY quotes the removed
-    # `redef FINGERPRINT::JA4*_enabled = F` line while explaining why it is gone, and a
-    # naive substring search reads that explanation as the thing it warns about. Assert on
-    # the executable code, not the prose about the code.
+def test_the_policy_and_the_readme_agree_that_the_module_is_vendored():
+    """Both surfaces must say the same thing, because an operator reads one and edits
+    the other."""
+    # Comments are stripped first: the policy documents the vendoring in prose and a
+    # naive substring search over the whole file would read prose as configuration.
     code = "\n".join(ln.split("#")[0] for ln in ZEEK_POLICY.splitlines())
     assert "redef FINGERPRINT" not in code, (
-        "the site policy still carries a disable list, which the image no longer supports"
+        "the site policy still carries a disable list, which the vendored module does not need"
     )
-    assert "prune-ja4plus.sh" in README, "the README does not point at the removal mechanism"
-    assert "prune-ja4plus.sh" in ZEEK_POLICY, "the policy does not point at it either"
+    assert "zeek/vendor/ja4-zeek-scripts" in README, (
+        "the README does not point at the vendored module"
+    )
+    assert "zeek/vendor/ja4-zeek-scripts" in ZEEK_POLICY, (
+        "the policy does not point at it either"
+    )
 
 
 def test_the_readme_states_that_image_and_policy_ship_together():

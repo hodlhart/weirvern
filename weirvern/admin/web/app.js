@@ -69,7 +69,7 @@ function fmtBytes(n) {
 
 /**
  * A duration in seconds as a compact age. Mirrors status._human_age in the backend so
- * the same figure does not render two different ways in the TUI and the GUI.
+ * the same figure cannot render two different ways between server and browser.
  */
 // Techniques arrive as JSON in one column. Parsed defensively: a malformed value must
 // degrade the technique block, not blank the whole evidence view -- the evidence is what the
@@ -952,12 +952,12 @@ async function loadSettings() {
     note.appendChild(chartEmpty(writesOn
       ? "Write access is enabled: edits are staged and written only on Apply. This page is "
         + "read-only for viewer accounts; without write access, change values with "
-        + "`weirvern config set` or the TUI. Secrets are reported as set or not set, never in value."
+        + "`weirvern config set`. Secrets are reported as set or not set, never in value."
       : viewer
         ? "This account is read-only: it sees every value but cannot change one. "
           + "Admin accounts can stage and apply changes; secrets are reported as set or not "
           + "set, never in value."
-        : "This page is read-only. Change these with `weirvern config set` or the TUI, then "
+        : "This page is read-only. Change these with `weirvern config set`, then "
           + "apply. Secrets are reported as set or not set, never in value."));
   }
   // The Users panel is admin-only; load it here so navigating to Settings does not leave a
@@ -1902,7 +1902,7 @@ function axisLabel(g, x, y, text, anchor = "middle") {
  * visually identical to one retrained a minute ago. Staleness was invisible until this table
  * was added, and it is the question an operator actually has: "are these models still current?"
  *
- * The server computes `stale` so the TUI and the GUI cannot disagree, and the words here state
+ * The server computes `stale` so every consumer cannot disagree, and the words here state
  * the remedy rather than only the verdict.
  */
 function renderStaleness(rows, intervalH) {

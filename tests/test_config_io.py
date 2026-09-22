@@ -3,7 +3,7 @@ comment-preserving round-trips.
 
 The parity tests matter because the SAME `.env.example` template is read by
 three consumers: `weirvern.config.Settings` (the worker), the admin CLI, and
-the TUI. If they disagree about what a value means, the system behaves
+the schema/bootstrap path. If they disagree about what a value means, the system behaves
 differently depending on which component you ask — verified failure:
 DETECT_INTERVAL_S ships with a trailing comment in .env.example and the worker
 raised on int() rather than stripping it.

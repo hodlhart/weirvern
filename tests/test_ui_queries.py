@@ -8,7 +8,7 @@ ClickHouse raised
 
 and the helper catches every exception and returns [] by design — a UI must not
 crash on a query error. The result was a permanently EMPTY Top Talkers panel in
-both the TUI and the web GUI, in every deployment, with the failure logged only at
+the web GUI, in every deployment, with the failure logged only at
 debug level. It looked exactly like a network with no traffic.
 
 Nothing caught it because no test asserted the panel had CONTENT, and an empty

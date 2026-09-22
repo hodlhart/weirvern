@@ -7,8 +7,8 @@
 -- process that died, or was never started, still has SENSOR_MODE=siphon in the ConfigMap.
 --
 -- ClickHouse is the right rendezvous because both components already talk to it, it works
--- across pods and nodes, and it means the TUI and the GUI show the same fact from the same
--- source rather than each inferring it separately.
+-- across pods and nodes, and it means the GUI shows one fact from one
+-- source rather than each component inferring it separately.
 --
 -- WHY A HEARTBEAT AND NOT A FLAG: a boolean "running" column cannot distinguish "the
 -- intercept is up" from "the intercept was up when it last wrote and has since died".

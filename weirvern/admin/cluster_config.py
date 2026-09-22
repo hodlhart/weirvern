@@ -1,8 +1,8 @@
 """Write the cluster's configuration, and read back what actually landed.
 
-WHY THIS EXISTS. Both the TUI's Config tab and `weirvern config set` write the local `.env` file.
+WHY THIS EXISTS. The CLI's config commands write the local `.env` file.
 The cluster reads the `weirvern-env` ConfigMap. Nothing in `k8s/*.yaml` reads `.env` and the
-Containerfile ships none, so BOTH surfaces' writes have been a no-op against a deployed cluster
+Containerfile ships none, so `.env` writes have been a no-op against a deployed cluster
 for as long as they have existed. This module replaces the broken path rather than porting it.
 
 The read side already existed: `cli._cluster_config()`. This is the write side.

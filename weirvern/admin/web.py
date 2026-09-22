@@ -1,4 +1,4 @@
-"""The web GUI: an HTTP server over the same data the TUI shows.
+"""The web GUI: an HTTP server over the status and analytics data.
 
 WHY THE STANDARD LIBRARY, DELIBERATELY:
 
@@ -23,7 +23,7 @@ It now writes two things — the deployment configuration (settings) and account
 under a signed-in admin account or the deployment operator token, and READS require
 a signed-in account (either role) whenever accounts are provisioned. There is
 still no code path from an HTTP request to a LIFECYCLE operation: start, stop and
-apply stay in the CLI and TUI. So the invariant worth stating is narrower and
+apply stay in the CLI. So the invariant worth stating is narrower and
 tested: every mutating route goes through one admin gate, and the only open routes
 are the liveness probe, the session probe the UI needs before it can show a login
 form, and the login door itself.
@@ -723,7 +723,7 @@ def _build_handler(ctx: GuiContext):
             """The only write surface. Every route here is token-gated.
 
             Reads stay on GET and stay open. This exists so an operator can manage settings from
-            the GUI instead of the TUI; it is deliberately narrow (a key allow-list, staged apply,
+            the GUI; it is deliberately narrow (a key allow-list, staged apply,
             stated blast radius) because the port has no TLS and the token is the only control.
             """
             try:

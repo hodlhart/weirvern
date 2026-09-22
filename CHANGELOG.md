@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — 0.9.0: the TUI is gone, and the fingerprinting story is one sentence
+
+**Two surfaces were telling a story the software no longer had.**
+
+**The TUI is removed.** The web console replaced it, and a second interactive surface
+was both a maintenance cost and a source of copy that had to be kept in sync with a
+product it no longer was. `weirvern tui` is gone as a command, `admin/tui.py` is gone
+as a module, and the `textual`/`rich` dependencies (and the `[admin]` extra that
+carried them) are gone from `pyproject.toml`. Everything it did, the CLI and the GUI
+still do — nothing in the deployment read it.
+
+- The scrub went deeper than the file itself: every comment, docstring and message
+  that referenced the TUI as a live surface was rewritten (`CLI and TUI` -> `CLI`,
+  `the TUI uses` -> `weirvern status` uses, the Settings copy that suggested editing
+  values "or the TUI", the RBAC and GUI-manifest comments). The token survives only in
+  `CHANGELOG.md`, where it is a record of what existed, which is what a changelog is.
+- The two tests that exercised TUI-only code (`test_tui_mode.py`, and the three
+  `_condense` tests in `test_admin_runtime.py`) were re-expressed against surviving
+  code rather than deleted: `_condense` lives in `runtime.py` (it always did — the
+  TUI imported it), so its tests now target their real module, and the mode-panel
+  tests are gone with the panel.
+
+**Fingerprinting is now one method, vendored, and nothing else is mentioned.** The
+previous arrangement installed the upstream package at build time and then pruned the
+parts this project does not use — correct, but it left the repository and the docs
+explaining a licensing split for code the software never runs. Now:
+
+- The **JA4 module is vendored at `zeek/vendor/ja4-zeek-scripts/`** (BSD 3-Clause,
+  license text included) and `COPY`ed into the sensor image at build time. No package
+  manager, no network fetch; the image contains exactly what the repository shows.
+- **Every reference to the other methods is gone** — code, comments, docs, the NOTICE
+  table, the research notes — and a token scan in `tests/test_ja4_licensing.py` fails
+  CI if one returns anywhere in the tracked tree. The scan has a must-fire test, so it
+  cannot quietly stop looking.
+- `zeek/prune-ja4plus.sh` and `zeek/JA4-NOTICE` are deleted with the machinery they
+  described. `zeek/verify-ja4.sh` survives in simplified form: it still proves at build
+  time that Zeek can actually load the module (a module that parses but emits nothing
+  is a sensor that records no fingerprints while looking healthy).
+- The site policy's licensing essay (fourteen lines about a package that no longer
+  ships) is three lines about the vendored module. The README's "TLS fingerprinting
+  and licensing" section is now "TLS fingerprinting" — one method, one license, no
+  tables of what is excluded.
+- The **Zeek image tag moves to 0.5.0** (the image contents changed materially). The
+  worker release is **0.9.0**.
+
 ## Unreleased — 0.8.2: the Settings tab tells the truth, and a Test run button
 
 **The Settings tab rendered `loch` through a demonstrably running intercept.** Measured on the

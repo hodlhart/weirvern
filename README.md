@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 behavioural baselines, flags the deviations that match real attack shapes, and shows a
 human *why*, with the measurements that fired.
 
-Current release: **0.8.2** · Runs on any conformant Kubernetes · No payload inspection ·
+Current release: **0.9.0** · Runs on any conformant Kubernetes · No payload inspection ·
 Alerts via [Pushover](https://pushover.net), or log-only.
 
 **What you get**
@@ -22,7 +22,7 @@ Alerts via [Pushover](https://pushover.net), or log-only.
   other is blind to. Every detector trains and scores on both.
 - **A SOC surface that closes the loop.** A web console with accounts — admin and viewer
   roles — and an alert review lifecycle (ack / resolve / false-positive), a near-miss view for
-  threshold tuning, and a complete alert audit — plus a CLI and a TUI for operations.
+  threshold tuning, and a complete alert audit — plus a CLI and the web console for operations.
 - **Fail-open by design.** The default mode is passive capture. In-path interception is
   opt-in, gated, and defended by a watchdog with a measured recovery story.
 
@@ -131,11 +131,11 @@ Alerts via [Pushover](https://pushover.net), or log-only.
 |---|---|---|---|
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
-| `zeek` | **DaemonSet** | `weirvern-zeek:0.4.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.8.2` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.8.2` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.8.2` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.8.2` | Applies the ClickHouse schema |
+| `zeek` | **DaemonSet** | `weirvern-zeek:0.5.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.9.0` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.9.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.9.0` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.9.0` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -146,9 +146,10 @@ Three details of this table are Kubernetes design statements, not incidentals:
   the collector writes a file that the worker tails. See
   [Scaling and limitations](#scaling-and-limitations).
 - **The Zeek image is DERIVED** (`zeek/Containerfile`), not upstream `zeek/zeek:lts`.
-  Zeek 9.x core ships no TLS-fingerprint policy at all, so JA4 comes from a package
-  installed at build time — and the FoxIO-licensed half of it is **deleted during the
-  build**. See [TLS fingerprinting and licensing](#tls-fingerprinting-and-licensing).
+  Zeek 9.x core ships no TLS-fingerprint policy at all, so the JA4 module is
+  **vendored into this repository** (`zeek/vendor/ja4-zeek-scripts/`) and copied into
+  the image at build time — no package manager, no network fetch. See
+  [TLS fingerprinting](#tls-fingerprinting).
 
 ### Sensor modes: `loch` and `siphon`
 
@@ -200,38 +201,29 @@ and it fails open when forwarding stalls. Three properties are worth knowing bef
   own ARP expiry, measured on stock Linux defaults: **~1 minute** for a host actively
   using the network, and **seconds from that host's next packet** for an idle one.
 
-### TLS fingerprinting and licensing
+### TLS fingerprinting
 
-Weirvern ingests **JA4** TLS client fingerprints (`zeek_ssl.ja4`), and **ships no JA4+**.
+Weirvern ingests **JA4** TLS client fingerprints (`zeek_ssl.ja4`) — the modern successor
+to JA3, which Zeek 9.x core no longer ships.
 
-The upstream package is split-licensed and the two halves are not interchangeable:
+JA4 is **BSD 3-Clause** — free for any use, including commercial — and the module
+(`zeek/vendor/ja4-zeek-scripts/`) is vendored into this repository, license text
+included, then copied into the sensor image at build time. No package manager and no
+network fetch are involved: the image contains exactly what the repository shows.
 
-| Component | License | Permitted use |
-|---|---|---|
-| **JA4** (TLS client fingerprint) | **BSD 3-Clause** | any use, including commercial |
-| **JA4+** — JA4S, JA4H, JA4X, JA4SSH, JA4T, JA4TS, JA4L, JA4D | **FoxIO License 1.1** | internal / academic only; **not** for monetization; methods patent pending |
-
-The JA4+ submodules, the package's recorded JA4+ test output, the loader lines referencing
-them, and the options that gated them are **deleted at image build time** by
-`zeek/prune-ja4plus.sh`, which **fails the build** if any of that did not take — and equally
-if JA4's own options were removed, since an over-eager filter would leave a sensor that runs
-and fingerprints nothing.
-
-It is deleted rather than switched off for a specific reason. The package gates its
-submodules with `@if (JA4S_enabled) @load ./ja4s @endif`, and `@if` is evaluated **when the
-file is loaded**, so a disable placed after the package loaded is silently ignored — measured
-on a live sensor, `ja4s` populated in 28 of 28 records while the configuration claimed it was
-off. That was fixable by load ordering, but it left licensed code in the image with only a
-three-line sequence preventing its distribution. There is now nothing to mis-order.
+Vendoring is deliberate on two counts. A build that depends on a fetch can fail for
+reasons that have nothing to do with the code. And a module that lives in this
+repository is reviewed like every other file here — the sensor image cannot gain a
+fingerprinting method nobody chose.
 
 Two consequences for operators:
 
-- **The sensor image and the site policy must be deployed together.** The policy must not
-  contain `redef FINGERPRINT::JA4*_enabled = F` lines any more — those options no longer
-  exist, and Zeek aborts at startup with `"redef" used but not previously defined`.
-- **`anthonykasza/ja4` is not used** despite being pure BSD-3-Clause, because it fails its
-  own unit tests on Zeek 9.0.0 and cannot be installed. A fingerprint that is subtly wrong
-  is worse than none: it silently fails to match threat-intel data.
+- **The sensor image and the site policy ship together.** The policy lives in a
+  ConfigMap generated from `k8s/zeek/weirvern-local.zeek` and `@load`s the vendored
+  module. An image and a policy from different versions of this repository may
+  disagree about what the module provides; deploy them as a pair.
+- **Nothing to configure.** There is no option list to get right — the module contains
+  only JA4, so there is no disable list and no load ordering to maintain.
 
 ### Why both sensors?
 
@@ -264,7 +256,7 @@ depends on it.
 | `kubectl` | 1.24+ | Has kustomize built in, so the `kustomize` binary is optional |
 | Container registry | any | The worker image must be pushed somewhere the nodes can pull from |
 | Storage class | dynamic | Defaults to `local-path` (k0s/k3s). Change one field for others |
-| Python | 3.11+ | Only for the optional CLI/TUI — the deployment itself needs none |
+| Python | 3.11+ | Only for the optional CLI — the deployment itself needs none |
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated), the
@@ -379,34 +371,33 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.8.2 .
-podman push registry.example.com/weirvern-worker:0.8.2
+podman build -t registry.example.com/weirvern-worker:0.9.0 .
+podman push registry.example.com/weirvern-worker:0.9.0
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
-# prune-ja4plus.sh and verify-ja4.sh are COPYd from there.
-podman build -t registry.example.com/weirvern-zeek:0.4.0 -f zeek/Containerfile zeek/
-podman push registry.example.com/weirvern-zeek:0.4.0
+# vendor/ja4-zeek-scripts and verify-ja4.sh are COPYd from there.
+podman build -t registry.example.com/weirvern-zeek:0.5.0 -f zeek/Containerfile zeek/
+podman push registry.example.com/weirvern-zeek:0.5.0
 ```
 
-The Zeek build **fails deliberately** if the JA4+ removal did not complete, or if
-it removed too much and JA4 itself would no longer work. A licensing guarantee that
-depends on someone reading a comment is not a guarantee, and the failure mode —
-shipping licensed code in a distributed image — is invisible at runtime. See
-[TLS fingerprinting and licensing](#tls-fingerprinting-and-licensing).
+The Zeek build **proves itself**: it fails if the vendored JA4 module is not present at
+the path the site policy loads, or if Zeek cannot actually load it — a module that
+parses but emits nothing is a sensor that records no fingerprints while looking
+healthy. See [TLS fingerprinting](#tls-fingerprinting).
 
 Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.8.2
-kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.9.0
+kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.5.0
 cd ..
 ```
 
 > **Deploy the sensor image and the site policy together.** The policy lives in a
-> ConfigMap generated from `k8s/zeek/weirvern-local.zeek`, and it must not carry
-> `redef FINGERPRINT::JA4*_enabled = F` lines — those options no longer exist in the
-> image, and Zeek aborts at startup with `"redef" used but not previously defined`.
+> ConfigMap generated from `k8s/zeek/weirvern-local.zeek` and `@load`s the module the
+> image ships. An image and a policy from different versions of this repository may
+> disagree about what the module provides.
 > If you upgrade the sensor without re-applying, the pod crash-loops.
 
 > If the image is private, create an image-pull secret and reference it in
@@ -473,9 +464,6 @@ weirvern wait
 
 # Workload state, resource use, and database health probes:
 weirvern status
-
-# Full control panel, if you prefer a UI:
-weirvern tui
 ```
 
 Then point your exporter at the sensor node's **NodePort** UDP ports — **32055**
@@ -497,19 +485,19 @@ sflow   destination: <sensor-node-ip>:32063
 Within a couple of minutes `weirvern status` should show
 `ingest_freshness` green, meaning flows are arriving and being aggregated.
 
-### Optional: the CLI and TUI
+### Optional: the CLI
 
-Both are optional conveniences — the deployment is complete without them, and
-everything they do is a `kubectl` invocation you can run yourself.
+It is an optional convenience — the deployment is complete without it, and
+everything it does is a `kubectl` invocation you can run yourself.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[admin]"
+pip install -e .
 weirvern install      # checks kubectl, cluster, manifests; creates .env
 ```
 
 `weirvern` locates the project automatically (nearest ancestor containing
-`k8s/kustomization.yaml`), or honours `$WEIRVERN_HOME`. For the TUI to read
+`k8s/kustomization.yaml`), or honours `$WEIRVERN_HOME`. For the CLI to read
 ClickHouse from your workstation rather than from inside the cluster:
 
 ```bash
@@ -573,11 +561,11 @@ harness can fail. See [Detection and alerting](#detection-and-alerting).
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.8.2 .
-podman push registry.example.com/weirvern-worker:0.8.2
+podman build -t registry.example.com/weirvern-worker:0.9.0 .
+podman push registry.example.com/weirvern-worker:0.9.0
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.8.2 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.9.0 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -617,7 +605,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.8.2
+podman rmi registry.example.com/weirvern-worker:0.9.0
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and
@@ -645,7 +633,6 @@ delete the application there.
 | `weirvern mode` | Show the configured sensor mode and whether it can run here |
 | `weirvern intercept` | In-path ARP intercept (`siphon` mode); always `--dry-run` first |
 | `weirvern interfaces` | Probe a node's NICs ("which one is the capture port?") |
-| `weirvern tui` | The control panel |
 | `weirvern version` | Version, current context, manifest presence |
 | `weirvern down [--volumes]` | Delete the workloads; `--volumes` also destroys the data |
 
@@ -707,7 +694,7 @@ There are two configuration surfaces, and the distinction matters:
 | Surface | Applies to | Where |
 |---|---|---|
 | **Cluster** | What the deployment actually runs | `k8s/20-configmap-env.yaml` (+ the out-of-band `weirvern-secrets` Secret) |
-| **Local** | The CLI, `init-db`, `tune`, and the TUI's config tab | `.env` (created from `.env.example`) |
+| **Local** | The CLI, `init-db`, `tune`, and `weirvern config set` | `.env` (created from `.env.example`) |
 
 Changing `.env` does **not** change the running deployment. After editing the
 ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
@@ -1095,7 +1082,7 @@ all capabilities dropped. See [SECURITY.md](SECURITY.md).
 ### RBAC
 
 `k8s/60-rbac.yaml` defines two roles: a read-only `viewer` for monitoring
-(what the TUI uses) and an `operator` that adds the lifecycle verbs. Neither can
+(what `weirvern status` uses) and an `operator` that adds the lifecycle verbs. Neither can
 read Secrets — an account that displays health cannot exfiltrate the Pushover
 token.
 
@@ -1191,7 +1178,7 @@ high/critical while other hosts stay at low/medium.
 
 ```
 weirvern/            application package
-  admin/              control plane: CLI, TUI, config I/O, k8s runtime backend
+  admin/              control plane: CLI, web GUI, config I/O, k8s runtime backend
   schema/             ClickHouse schema (packaged; applied by the schema Job)
   models/             the four detectors, scoring, calibration
   ensemble.py         fusion, severity, corroboration gate

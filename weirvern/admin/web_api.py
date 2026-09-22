@@ -1,13 +1,13 @@
 """The web GUI's HTTP API.
 
-WHY A SEPARATE MODULE FROM THE TUI: the TUI and the web UI answer the same
-questions, so they share `weirvern/admin/status.py` for every query and differ
-only in how they render. Putting the SQL here would mean two implementations of
+WHY A SEPARATE MODULE FROM THE GUI SERVER: the web UI answers questions about
+detection state, and it shares `weirvern/admin/status.py` for every query rather
+than duplicating SQL. Putting the SQL here would mean two implementations of
 "what is an anomaly", and they would drift — the browser and the terminal would
 eventually disagree about the same deployment.
 
 WHAT THIS IS NOT: it is not a second control plane. Lifecycle actions (start,
-stop, apply) stay in the CLI and TUI, which the operator runs knowingly. This
+stop, apply) stay in the CLI, which the operator runs knowingly. This
 serves READ-ONLY views, which is why it is safe to expose on a LAN port at all:
 there is no code path from an HTTP request to a mutating cluster operation.
 

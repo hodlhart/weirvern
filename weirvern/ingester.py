@@ -308,7 +308,6 @@ def map_zeek_ssl(rec: dict[str, str]) -> dict[str, Any] | None:
         "version": rec.get("version") or "",
         "cipher": rec.get("cipher") or "",
         "server_name": rec.get("server_name") or "",
-        # ja4s is absent on purpose: FoxIO License 1.1, disabled in the site policy.
         "ja4": rec.get("ja4") or "",
         "ja4_orig": rec.get("ja4_o") or rec.get("ja4_orig") or "",
         "validation_status": rec.get("validation_status") or "",

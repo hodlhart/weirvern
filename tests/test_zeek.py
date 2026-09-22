@@ -149,8 +149,7 @@ def test_map_zeek_ssl_extracts_ja4():
     assert row["ja4_orig"].startswith("t13d1516h2")
     assert row["server_name"] == "c2.example.net"
     assert row["established"] == 1
-    # ja4s is FoxIO License 1.1 and is not stored; a ja3 field must not be smuggled in.
-    assert "ja4s" not in row
+    # A ja3 field must not be smuggled in.
     assert "THIS-MUST-BE-IGNORED" not in str(row)
 
 

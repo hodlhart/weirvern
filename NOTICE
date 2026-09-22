@@ -13,7 +13,7 @@ Runtime components
 |---|---|---|---|
 | GoFlow2 (netflow/sflow collector) | v2.2.6 | Apache License 2.0 | https://github.com/netsampler/goflow2 |
 | Zeek (packet/protocol sensor) | lts | BSD-3-Clause | https://github.com/zeek/zeek |
-| foxio/ja4-zeek-scripts (TLS fingerprinting) | v1.0.0 | **Split** — see below | https://github.com/FoxIO-LLC/ja4 |
+| ja4-zeek-scripts, JA4 module only (TLS fingerprinting; vendored) | vendored | BSD 3-Clause | https://github.com/FoxIO-LLC/ja4 |
 | ClickHouse (columnar store) | 26.8.x LTS | Apache License 2.0 | https://github.com/ClickHouse/ClickHouse |
 | python:3.11-slim base image | 3.11 | PSF / Debian licenses | https://www.python.org/ |
 
@@ -37,40 +37,21 @@ External services
 - Your container registry — image distribution. The registry operator's terms
   apply.
 
-JA4 / JA4+ (TLS fingerprinting) -- SPLIT LICENSE, READ THIS
--------------------------------------------------------
+JA4 (TLS fingerprinting) — BSD 3-Clause
+---------------------------------------
 
-The `foxio/ja4-zeek-scripts` package implements the JA4+ suite, which is
-dual-licensed. Weirvern uses ONE member of it:
+Weirvern uses JA4, the TLS client fingerprint, from the `ja4-zeek-scripts`
+project. The module is **vendored** into this repository at
+`zeek/vendor/ja4-zeek-scripts/` and COPYed into the sensor image at build time.
 
-  JA4  (TLS client fingerprint)  BSD 3-Clause. Free for any use, including
-       commercial. Copyright (c) 2026 FoxIO. Redistribution requires retaining
-       this notice.
-       License: https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE-JA4
+JA4 is licensed under BSD 3-Clause; the copyright notice and license text travel
+with the module (`zeek/vendor/ja4-zeek-scripts/LICENSE-JA4`), as the license
+requires. BSD 3-Clause is free for any use, including commercial.
 
-  JA4+ (JA4S, JA4H, JA4X, JA4SSH, JA4T, JA4L, JA4D, ...)  FoxIO License 1.1.
-       Permissive for academic and internal business use, NOT permissive for
-       monetization. Methods are patent pending.
-       License: https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE
-
-Weirvern ships JA4 only, and ships it as SOURCE (the package is installed into
-the sensor image at build time, not vendored into this repository). Shipping only
-JA4 is a deliberate decision: the FoxIO FAQ states that a company using JA4+ "to
-provide value to paying customers, even without exposing JA4+ fingerprints
-directly to those customers, ... would still need an OEM license as they are
-indirectly monetizing JA4+." Since Weirvern is intended to be deployable as a
-product, enabling any JA4+ member would require an OEM license.
-
-The package is installed whole (we cannot install half of it), but every
-FoxIO-licensed submodule is disabled in k8s/zeek/weirvern-local.zeek. That
-disable is ORDER-DEPENDENT: the package gates submodules with
-`@if (JA4S_enabled) @load ./ja4s @endif`, and `@if` is evaluated when the file
-is LOADED, so disabling the options after loading the package is silently
-ignored and the fields still populate. See zeek/JA4-NOTICE and the tests in
-tests/test_ja4_licensing.py, which assert the ORDER rather than mere presence.
-
-If you enable any JA4+ member, you are responsible for holding an appropriate
-FoxIO license.
+Nothing else from the upstream fingerprinting project is present in this
+repository or in the sensor image. If you maintain a fork and add any other
+fingerprinting method, review its license first: the upstream project's other
+methods carry different terms that are not permissive for commercial use.
 
 Data provenance
 ---------------
@@ -82,16 +63,7 @@ Data provenance
 No warranty
 -----------
 
-This project includes no components under the GPL/AGPL. Apart from the
-FoxIO-licensed JA4+ code described above -- which is INSTALLED BUT NOT ENABLED
--- the combination is MIT + Apache-2.0 + BSD-3 + Python-2.0 compatible.
-
-To be precise about that qualifier: the ja4-zeek-scripts package ships
-FoxIO-licensed source inside the sensor image even though its JA4+ modules are
-never loaded, and the FoxIO License is not an OSI-approved open source license.
-It places no conditions on the rest of Weirvern and no restriction on
-redistribution or internal use; the restriction is specifically on monetizing
-JA4+ fingerprints. If that distinction matters for your distribution, enable
-only JA4 (the default here) and note it in your own notices.
+This project includes no components under the GPL/AGPL. The combination is
+MIT + Apache-2.0 + BSD-3 + Python-2.0 compatible.
 
 If you vendor this project, retain this NOTICE and the LICENSE file alongside.

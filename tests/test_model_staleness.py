@@ -8,7 +8,7 @@ indistinguishable on such a chart from one retrained a minute ago.
 The fix has two halves and both need pinning:
 
   * `status._staleness` computes, per detector, when it last trained, how long ago that was, and
-    whether that exceeds the interval -- server-side, so the TUI and the GUI cannot disagree;
+    whether that exceeds the interval -- server-side, so every consumer cannot disagree;
   * the view prints it and states the REMEDY, not only the verdict.
 
 The subtle cases are the ones that made the original bug invisible, so they are the ones tested
