@@ -634,6 +634,75 @@ async function applyStage() {
 }
 
 
+/* ── TEST RUN (the siphon probe) ─────────────────────────────────────────────
+ *
+ * THE MOST CONSEQUENTIAL BUTTON ON THE PAGE. It flips the sensor to siphon mode for 30
+ * seconds (real ARP-forging, real relaying), then the SERVER reverts the mode to loch and
+ * restarts the worker, whose orderly shutdown restores every mapping. The revert lives on
+ * the server (a finally, plus a timer backstop) precisely because this browser tab cannot
+ * be trusted to send a second request -- a closed tab, a lost network, a dead machine.
+ *
+ * It is synchronous from the browser's point of view: the fetch stays open for the whole
+ * window and the button says so. That is deliberate -- a fire-and-forget probe would need
+ * a job and a poller, and this one's entire value is the observed window, which the
+ * response carries.
+ */
+async function runSiphonTest() {
+  const btn = document.getElementById("st-test");
+  const note = document.getElementById("st-test-note");
+  if (SONAR_STATE.testRunning) return null;
+  SONAR_STATE.testRunning = true;
+  if (btn) { btn.disabled = true; btn.textContent = "Testing… (up to 30s)"; }
+  if (note) note.textContent = "Test run in progress: siphon is switching on, the intercept "
+    + "will run for about 30 seconds, then the mode reverts to loch automatically. "
+    + "Do not close this tab.";
+
+  try {
+    const res = await postJSON("/api/settings/test", { seconds: 30 });
+    renderTestNote(res);
+    return res;
+  } catch (err) {
+    if (note) note.textContent = "Test run: " + ((err && err.payload && err.payload.error)
+      || (err && err.message) || String(err));
+    return null;
+  } finally {
+    SONAR_STATE.testRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Test run (30s)"; }
+    // The mode may have changed (there, and back). Re-read so the rows reflect the CLUSTER.
+    try { await loadSettings(); } catch (_e) { /* the note below still stands */ }
+  }
+}
+
+/** What the probe saw, in the server's terms. Never invents a verdict. */
+function renderTestNote(res) {
+  const note = document.getElementById("st-test-note");
+  if (!note) return;
+  note.replaceChildren();
+  if (!res) return;
+  if (res.ok === false) {
+    note.appendChild(el("span", { class: "sonar-err", text: res.error || "the test did not run" }));
+    return;
+  }
+  const bits = [];
+  bits.push(res.reverted
+    ? `Test complete: siphon ran for ${res.seconds}s, then the mode was set back to loch and the intercept stopped.`
+    : `WARNING: the mode could NOT be set back to loch — ${res.error || "check the cluster"}. Set it to loch manually.`);
+  if (res.observed) {
+    bits.push(`The intercept was observed live: ${res.observed.hosts} host(s), `
+      + `${res.observed.mappings} mapping(s)${res.observed_s != null ? `, seen ${Math.round(res.observed_s)}s in` : ""}.`);
+  } else {
+    bits.push("No intercept evidence arrived during the window — see the notes below.");
+  }
+  if (res.mode_before && res.mode_before === "siphon") {
+    bits.push("(The sensor was already in siphon before this test; it is loch now.)");
+  }
+  note.appendChild(el("div", { class: res.reverted ? "" : "sonar-err", text: bits.join(" ") }));
+  for (const n of (res.notes || [])) {
+    note.appendChild(el("div", { class: "sonar-note-item", text: "• " + n }));
+  }
+}
+
+
 window.LAST_APPLY = LAST_APPLY;
 
 
@@ -650,7 +719,7 @@ window.LAST_APPLY = LAST_APPLY;
  * parallel "apply these directly" path would be a second write route in the client with
  * its own bugs -- and the operator asked for the pending-changes review step.
  */
-const SONAR_STATE = { running: false, result: null, error: "" };
+const SONAR_STATE = { running: false, result: null, error: "", testRunning: false };
 
 async function runSonar() {
   const btn = document.getElementById("st-sonar");
@@ -788,9 +857,12 @@ async function loadSettings() {
   }
   // SONAR is a write-gated action (it creates a job on the sensor node), so for a viewer
   // or a signed-out browser it is disabled with the same honesty as the other controls:
-  // present and explainable, not vanished.
+  // present and explainable, not vanished. THE TEST RUN is write-gated for the same reason
+  // and one more: while it runs, the sensor is genuinely in the traffic path.
   const sonarBtn = document.getElementById("st-sonar");
   if (sonarBtn) sonarBtn.disabled = !Boolean(data.writes && data.writes.enabled);
+  const testBtn = document.getElementById("st-test");
+  if (testBtn) testBtn.disabled = !Boolean(data.writes && data.writes.enabled);
   const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
   if (sum) sum.textContent = `${total} settings in effect`;
 
@@ -1559,6 +1631,20 @@ document.addEventListener("DOMContentLoaded", () => {
     ["st-sonar-help", async () => {
       const helpEl = document.getElementById("st-sonar-help-text");
       const btn = document.getElementById("st-sonar-help");
+      if (!helpEl) return;
+      const nowHidden = helpEl.classList.toggle("hidden");
+      if (btn) {
+        btn.setAttribute("aria-expanded", nowHidden ? "false" : "true");
+        btn.classList.toggle("open", !nowHidden);
+      }
+    }],
+    // THE TEST RUN: probe siphon for 30s, then the server reverts to loch. Write-gated
+    // (disabled for viewers the same way the other controls are), because it briefly
+    // puts the sensor in the traffic path.
+    ["st-test", () => runSiphonTest().catch(showError)],
+    ["st-test-help", async () => {
+      const helpEl = document.getElementById("st-test-help-text");
+      const btn = document.getElementById("st-test-help");
       if (!helpEl) return;
       const nowHidden = helpEl.classList.toggle("hidden");
       if (btn) {

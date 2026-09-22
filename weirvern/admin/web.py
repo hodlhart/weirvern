@@ -769,6 +769,14 @@ def _build_handler(ctx: GuiContext):
             # prefetcher or a refresh. Admin-gated like every other write.
             if path == "/api/settings/sonar":
                 return self._settings_sonar()
+            # TEST RUN. Flips the configured mode to siphon for a bounded window (default
+            # 30s), then reverts to loch -- a probe through the REAL supervision path, so
+            # the operator can watch an intercept run without committing to it. This is the
+            # most consequential write on the page (while it runs, the sensor is in the
+            # traffic path), so it is admin-gated like the rest and its revert runs in a
+            # finally (see admin/siphon_probe.py for the full contract).
+            if path == "/api/settings/test":
+                return self._settings_test()
             # SOC-1: the alert review write. A write like the settings routes, so it goes
             # through the same operator-token gate -- an unauthenticated port must not let
             # anyone on the LAN mark alerts as handled.
@@ -1290,6 +1298,77 @@ def _build_handler(ctx: GuiContext):
                 return self._json(result, 422)
             self._json(result)
 
+        def _settings_test(self) -> None:
+            """Run the intercept for a bounded TEST window, then revert the mode to loch.
+
+            THE MOST CONSEQUENTIAL WRITE ON THIS PAGE: while the probe runs, this sensor is
+            genuinely in the traffic path for the hosts the plan names -- the ARP mappings are
+            real and the traffic really relays. What the probe changes is the ENDING: the mode
+            is written back to `loch` in a finally, and the worker's restart stops the
+            supervised intercept through its orderly SIGTERM path (the same restore contract
+            every production run uses). See admin/siphon_probe.py for the full reasoning,
+            including why it drives the ConfigMap instead of spawning its own intercept.
+
+            Body: `{"seconds": 30}` (optional; bounded server-side). Blocking for up to
+            `seconds` -- a few tens of seconds is acceptable for a probe whose result IS the
+            observation window, and the browser shows a running state while it waits.
+
+            The liveness evidence is collected through status.siphon_liveness -- the same
+            check `weirvern status` uses -- so the probe's verdict and the CLI's cannot
+            disagree about what "an intercept was running" means.
+            """
+            if not self._authorize():
+                return
+            from weirvern.admin import cluster_config as cc
+            from weirvern.admin import siphon_probe as probe_mod
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            raw_seconds = body.get("seconds")
+            try:
+                seconds = float(raw_seconds) if raw_seconds is not None else 30.0
+            except (TypeError, ValueError):
+                return self._error(400, "seconds must be a number")
+            if not 5.0 <= seconds <= 600.0:
+                return self._error(400, "seconds must be between 5 and 600")
+
+            if ctx.config_client is not None:
+                client = ctx.config_client
+            else:
+                try:
+                    client = cc.ClusterConfig()
+                except cc.ConfigError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 503)
+
+            def liveness():
+                """Intercept evidence via the same check the CLI uses. None-safe."""
+                try:
+                    with self._with_client() as ch:
+                        configured = ""
+                        try:
+                            configured = str((client.read() or {}).get("SENSOR_MODE") or "")
+                        except Exception:  # noqa: BLE001
+                            configured = ""
+                        return status_mod.siphon_liveness(configured, ch)
+                except Exception as exc:  # noqa: BLE001
+                    return {"live": False, "error": f"could not read intercept evidence: {exc}"}
+
+            try:
+                result = probe_mod.run_probe(client, seconds=seconds, liveness=liveness)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("siphon probe failed", exc_info=True)
+                return self._json({"ok": False, "error": f"the test run failed: {exc}"}, 500)
+            if result.get("ok") is False:
+                return self._json(result, 422)
+            # 200 even when the run produced no evidence: the RUN happened and its outcome
+            # (including "no intercept was observed") IS the answer. Only a failed revert is
+            # a problem to flag loudly.
+            code = 200 if result.get("reverted") else 500
+            self._json(result, code)
+
         def _mode_gate(self, changes: dict) -> str:
             """Reject a mode change that the mode's own prerequisites forbid. "" when fine.
 
@@ -1359,11 +1438,26 @@ def _build_handler(ctx: GuiContext):
             and are never editable from here regardless of token state.
             """
             del query  # no parameters: the configuration is whatever is running
+            # THE LIVE CLUSTER CONFIG IS THE SOURCE, not this pod's startup environment.
+            # A settings change restarts the WORKER, not the GUI, so the pod env freezes at
+            # its start -- and the tab rendered `loch` through a demonstrably live intercept
+            # (measured on the first live test). Reading the ConfigMap per request makes the
+            # tab report what the CLUSTER is running; when the cluster is unreachable the
+            # pod env remains the honest fallback, and rows keep their provenance labels.
+            configmap = None
+            try:
+                from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+                client = ctx.config_client or cc.ClusterConfig()
+                configmap = client.read()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("settings: live ConfigMap unavailable (%s); showing this "
+                             "process's view", exc)
             try:
                 # The backend is passed so the VERSION row can report the running image tag
                 # rather than the package's own literal, which had drifted (0.4.0 vs 0.5.6).
                 payload = status_mod.settings_overview(
-                    settings=ctx.settings, backend=ctx.backend
+                    settings=ctx.settings, backend=ctx.backend, configmap=configmap
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("settings view unavailable: %s", exc)

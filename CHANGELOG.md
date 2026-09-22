@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — 0.8.2: the Settings tab tells the truth, and a Test run button
+
+**The Settings tab rendered `loch` through a demonstrably running intercept.** Measured on the
+first live siphon test: the operator pressed Sonar, applied the plan (mode + segment + address
++ gateway + targets), and the tab came back showing `loch` — so the apply looked like it had
+failed. It had not: the ConfigMap held `siphon`, and the worker was redirecting ten hosts
+through the supervised intercept at that moment. The cause is the display: settings rows were
+built from this process's environment, read once when the GUI pod started, and a mode change
+restarts the WORKER — not the GUI — so the tab kept its frozen startup copy.
+
+- `/api/settings` now reads the `weirvern-env` ConfigMap per request and renders every
+  non-derived row from the CLUSTER's value (`source: "cluster"` reports that provenance).
+  When the cluster is unreachable the pod env remains the honest fallback, and the row
+  provenance says which one you are reading.
+- Secrets never ride this path (a ConfigMap row for one does not exist, and the test feeds a
+  hostile map to prove none can be smuggled through), and derived rows (namespace, version,
+  reverse_dns) keep their own sources.
+- This is the same class as the earlier "restart the workload that READS the key" fix: the
+  data was right and the display was wrong, and the display is what the operator acts on.
+
+**A Test run button next to Apply: siphon for 30 seconds, then back to loch.** Asked for by
+name after the first live test. It runs the REAL intercept through the REAL supervision — not
+a stub: the worker restarts with the mode temporarily set to siphon, spawns the intercept the
+same way a production run does, and the revert's restart stops it through the orderly SIGTERM
+path that restores every forged ARP mapping.
+
+- The revert runs in a `finally` AND under a daemon-timer backstop, because the browser
+  cannot be trusted to send a second request: a closed tab, a lost network, or a dead machine
+  must not leave the sensor in the traffic path.
+- A refusal (incomplete plan, empty targets, an IPv6 target list) writes NOTHING — a test
+  that cannot intercept is not started at all.
+- A failed revert is reported loudly and never folded into success; the result states the
+  observation and the revert as separate facts, because "the mode went back" and "an
+  intercept was seen" are different claims.
+- The button is admin-gated like every other write, and its "?" explains exactly what runs
+  and what it costs before anyone clicks it.
+- Tests: `tests/test_siphon_probe.py` (12 — the sequencing driven with an injectable clock),
+  settings-tab tests pinning live-vs-frozen rendering and the secret fence, harness at 232.
+
 ## Unreleased — 0.8.1: Sonar, and the names come back
 
 **Settings gains Sonar: one button that surveys the segment the capture interface is ON and
