@@ -52,12 +52,18 @@ def _tracked_text_files() -> list[tuple[str, str]]:
 
 
 def test_no_unused_fingerprinting_tokens_anywhere_in_the_tracked_tree():
-    """The software uses JA4 and nothing else. A reference to anything else is false."""
+    """The software uses JA4 and nothing else. A reference to anything else is false.
+
+    THE CHANGELOG IS SCANNED TOO, and it is not exempt: the operator asked for zero
+    references, and a changelog that renames the removed machinery is still a document
+    about this software. The only exemption is this file itself, which must name the
+    tokens in order to scan for them -- the same self-exemption the identifier
+    scrubber's guard carries, narrowed the same way (it is one file, named explicitly,
+    and the must-fire test below proves the scan still works).
+    """
     hits: list[str] = []
     for rel, text in _tracked_text_files():
-        # This file names the tokens in order to ban them, and the CHANGELOG narrates
-        # what was removed -- both are ABOUT the tokens, not uses of them.
-        if rel in {"tests/test_ja4_licensing.py", "CHANGELOG.md"}:
+        if rel == "tests/test_ja4_licensing.py":
             continue
         for i, line in enumerate(text.splitlines(), 1):
             if BANNED.search(line):
