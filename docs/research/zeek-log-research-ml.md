@@ -390,7 +390,7 @@ written against master (9.1.0-dev) rather than 9.0.0:
 - `https://github.com/nccgroup/JA3_outlier` — JA3 rarity scoring notebook
 - `https://github.com/stratosphereips/StratosphereLinuxIPS` — Slips README
 - `https://raw.githubusercontent.com/salesforce/ja3` (via GitHub API metadata)
-- GitHub API searches: `zeek+machine+learning`, `zeek+anomaly+detection`, `network+intrusion+detection+zeek`, `zeek+clickhouse`, `zeek+random+forest`, `zeek+ids+ml`, `suricata+zeek+ml+detection`, `ja4+zeek`, `zeek+ja3`
+- GitHub API searches: `zeek+machine+learning`, `zeek+anomaly+detection`, `network+intrusion+detection+zeek`, `zeek+clickhouse`, `zeek+random+forest`, `zeek+ids+ml`, `suricata+zeek+ml+detection`, `zeek+ja3`
 
 **Datasets**
 - `https://www.unb.ca/cic/datasets/ids-2017.html`, `https://www.unb.ca/cic/datasets/ids-2018.html`

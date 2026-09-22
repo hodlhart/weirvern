@@ -1,4 +1,4 @@
-"""Deployment backends: what the CLI/TUI drives.
+"""Deployment backends: what the CLI drives.
 
 Weirvern runs on Kubernetes. There are two backends behind one interface:
 
@@ -15,7 +15,7 @@ Design rules learned from the legacy project (this is why the interface exists):
   * `kubectl` may be absent, or present but pointing at no cluster, or pointing
     at a cluster without the namespace. All three are distinct states and the
     operator is told which one applies.
-  * Every call has a timeout. A wedged API server must not hang the TUI.
+  * Every call has a timeout. A wedged API server must not hang the CLI.
 
 WHY THE METHOD NAMES LOOK LIKE CONTAINER VERBS, AND WHAT THEY MAP TO:
 
@@ -73,9 +73,8 @@ WORKLOAD_LABELS: dict[str, str] = {
 def _condense(text: str, limit: int = 90) -> str:
     """Shorten a driver/CLI error for a one-line display.
 
-    Kept local to this module rather than imported from the TUI: the runtime
-    backend must not depend on the optional admin UI, and `weirvern status` (CLI
-    only, no Textual installed) needs it too.
+    Local to this module: the runtime backend reports into CLI output, and that
+    consumer needs it without depending on anything heavier.
     """
     if not text:
         return ""
@@ -257,7 +256,7 @@ class K8sBackend:
 
     Uses `kubectl -o json` almost everywhere rather than human tables: the
     table output is column-aligned for a terminal and changes shape between
-    client versions, which would break the TUI on an unrelated upgrade.
+    client versions, which would break the parse on an unrelated upgrade.
     """
 
     def __init__(self, project_dir: str | Path, caps: Capabilities, namespace: str = NAMESPACE):
@@ -432,7 +431,7 @@ class K8sBackend:
 
         `volumes=True` also deletes the PersistentVolumeClaims — i.e. the
         collected flow history and every trained model. That is irreversible, so
-        the caller (CLI/TUI) must require typed confirmation; this method only
+        the caller (the CLI) must require typed confirmation; this method only
         performs it.
         """
         r = self._kubectl("delete", "-k", str(self.dir / "k8s"),
@@ -584,7 +583,7 @@ class K8sBackend:
                     f"Known: {', '.join(WORKLOAD_LABELS)}"), False
 
         def fetch(label: str, n: int) -> tuple[str, bool]:
-            # --no-color=true avoids ANSI escapes that would corrupt the TUI pane.
+            # --no-color=true avoids ANSI escapes that would corrupt piped output.
             r = self._kubectl("logs", "-l", label, "--tail", str(n),
                               "--no-color=true", timeout=LOGS_TIMEOUT)
             if r.ok:

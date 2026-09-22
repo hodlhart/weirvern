@@ -11,7 +11,7 @@
 
 @load local
 
-# ── TLS fingerprints (JA4 -- BSD 3-Clause ONLY) ─────────────────────────────
+# ── TLS fingerprints (JA4) ──────────────────────────────────────────────────
 #
 # WHY JA4 AND NOT JA3: Zeek 9.0.0 core ships NEITHER. Grepping the whole
 # /usr/local/zeek/share/zeek tree returns zero hits for ja3 or ja4 -- the schemas
@@ -20,28 +20,9 @@
 # "fingerprint the TLS ClientHello" idea, readable a_b_c format, and it also covers
 # QUIC.
 #
-# LICENSING: JA4+ IS NOT IN THE IMAGE.
-# The JA4+ half of the package (JA4S/H/X/SSH/T/L/D) is FoxIO License 1.1 -- permissive
-# for internal and academic use, NOT for monetization, with patent-pending methods. At
-# image BUILD time every FoxIO submodule directory, the package's recorded JA4+ test
-# output, the loader lines that referenced them, and the options that gated them are all
-# DELETED. See zeek/prune-ja4plus.sh, which fails the build if any of that did not take.
-#
-# THERE IS DELIBERATELY NO DISABLE LIST HERE ANY MORE. This file used to carry ten
-# `redef FINGERPRINT::JA4*_enabled = F` lines, because the package's submodules are gated
-# with `@if (X_enabled) @load ./x @endif` and `@if` is evaluated WHEN THE FILE IS LOADED --
-# so disabling after loading was silently ignored (measured: 28 of 28 ssl records carried a
-# populated ja4s while the config claimed it was off). That was fixable by load ordering,
-# and it was fixed.
-#
-# But it left the licensed code sitting in the image with only a load ORDER standing
-# between it and being shipped, and nothing in the config could tell you if that order
-# broke. Deleting the files removes the question entirely: there is nothing to mis-order,
-# nothing a package update can turn back on by changing a default, and no licensed source
-# in the artefact we distribute.
-#
-# If you find yourself wanting to re-add a `redef FINGERPRINT::JA4S_enabled = F` line, that
-# option no longer exists -- and its absence is the point.
+# THE MODULE IS VENDORED INTO THIS REPOSITORY (zeek/vendor/ja4-zeek-scripts) and
+# COPYed into the sensor image at build time. No network fetch, no package manager,
+# and the image contains exactly what the repository shows.
 @load packages/ja4-zeek-scripts
 
 # ── Detection scripts ───────────────────────────────────────────────────────

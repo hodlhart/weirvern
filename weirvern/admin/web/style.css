@@ -1,7 +1,7 @@
 /* Weirvern web GUI.
  *
- * Dark by default, matching the TUI's information design: the same fields in the
- * same order, so switching between them does not require re-learning the layout.
+ * Dark by default, laid out for scanning: the same fields in the same order on every
+ * view, so moving between tabs does not require re-learning the layout.
  * Colours are semantic only — severity and pass/fail — never decorative, because
  * on a monitoring surface a colour that carries no meaning is noise.
  */

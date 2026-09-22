@@ -541,7 +541,7 @@ def test_ps_shows_scaled_to_zero_as_stopped(tmp_path, monkeypatch):
 
 
 def test_logs_are_bounded_and_colourless(tmp_path, monkeypatch):
-    """Unbounded logs would flood the TUI; ANSI codes would corrupt the pane."""
+    """Unbounded logs would flood a terminal pane; ANSI codes would corrupt it."""
     b = _backend(tmp_path)
     seen = _capture(monkeypatch, stdout="line")
     b.logs(service="zeek", tail=50)
@@ -618,15 +618,14 @@ def test_workload_labels_cover_every_workload():
 
 
 def test_service_order_matches_workloads():
-    pytest.importorskip("textual", reason="admin extras not installed")
-    from weirvern.admin.tui import SERVICE_ORDER
+    """runtime.WORKLOADS is the single workload list the CLI and manifests agree on."""
+    import weirvern.admin.runtime as rt2
 
-    assert [name for name, _ in rt.WORKLOADS] == SERVICE_ORDER
+    assert {name for name, _ in rt2.WORKLOADS} == set(rt2.WORKLOAD_LABELS)
 
 
 def test_condense_strips_driver_noise():
-    pytest.importorskip("textual", reason="admin extras not installed")
-    from weirvern.admin.tui import _condense
+    from weirvern.admin.runtime import _condense
 
     raw = ("Could not connect to ClickHouse at http://clickhouse:8123: Error "
            "HTTPConnectionPool(host='clickhouse', port=8123): Max retries exceeded "
@@ -638,8 +637,7 @@ def test_condense_strips_driver_noise():
 
 
 def test_condense_passes_short_text_through():
-    pytest.importorskip("textual", reason="admin extras not installed")
-    from weirvern.admin.tui import _condense
+    from weirvern.admin.runtime import _condense
 
     assert _condense("kubectl not found on PATH") == "kubectl not found on PATH"
     assert _condense("") == ""

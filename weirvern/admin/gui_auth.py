@@ -3,8 +3,7 @@
 WHY THIS EXISTS. The GUI has been read-only since it was built, and deliberately: it is served on
 a LAN port with NO authentication, so anything an HTTP request could write would be a way to
 reconfigure a sensor from the network. That was the right default and it is now the thing being
-changed -- carefully -- because an operator asked to manage settings from the GUI rather than the
-TUI.
+changed -- carefully -- because an operator asked to manage settings from the GUI.
 
 WHAT CHANGES AND WHAT DOES NOT. WRITES require admin rights: an admin session or the deployment
 operator token. READS were open until accounts were added; they now require a signed-in account

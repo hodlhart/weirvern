@@ -5,16 +5,19 @@ IP, and shows a hostname only alongside it. The IP is the fact an operator acts 
 -- it is what goes into a firewall rule, a DHCP lookup, or a grep of another log --
 while a PTR record can be stale or map several addresses to one name.
 
-This was a real defect: the TUI's helper shortened the address to its last octet
+This was a real defect: a display helper shortened the address to its last octet
 (`host-a (42)`) to save column width, which silently discarded the source IP on the
-exact screen where an operator decides what to investigate.
+exact screen where an operator decides what to investigate. The CLI-side helper that
+had the bug is gone, and the rule now lives at the payload boundary (web_api always
+sends BOTH addr and hostname) plus the browser's hostCell, whose rendered output the
+DOM harness pins -- so the tests here hold the server half and the harness holds the
+rendering half.
 """
 from __future__ import annotations
 
 import pytest
 
 from weirvern.admin import revdns
-from weirvern.admin.tui import _host_label
 
 
 @pytest.fixture(autouse=True)
@@ -22,52 +25,6 @@ def _clean_cache():
     revdns.clear_cache()
     yield
     revdns.clear_cache()
-
-
-# --- the invariant ------------------------------------------------------------
-def test_tui_label_keeps_the_full_address(monkeypatch):
-    """A resolved name must appear WITH the complete address, not instead of it."""
-    monkeypatch.setattr(revdns, "lookup", lambda addr, use_cache=True: "host-a.example")
-    label = _host_label("203.0.113.42")
-    assert "203.0.113.42" in label, (
-        f"the source IP was dropped from {label!r}; an operator cannot act on a "
-        f"hostname alone"
-    )
-    assert "host-a.example" in label
-
-
-def test_tui_label_does_not_truncate_to_the_last_octet(monkeypatch):
-    """The specific regression: `host-a (42)` is not an address."""
-    monkeypatch.setattr(revdns, "lookup", lambda addr, use_cache=True: "host-a.example")
-    label = _host_label("203.0.113.42")
-    assert "(42)" not in label, f"address truncated: {label!r}"
-    assert label.endswith("(203.0.113.42)")
-
-
-def test_tui_label_falls_back_to_the_bare_address(monkeypatch):
-    """No PTR record, or the resolver declined: show the address, unchanged."""
-    monkeypatch.setattr(revdns, "lookup", lambda addr, use_cache=True: None)
-    assert _host_label("192.0.2.11") == "192.0.2.11"
-
-
-def test_tui_label_handles_a_name_equal_to_the_address(monkeypatch):
-    """Some resolvers return the address itself. That must not become
-    `1.2.3.4 (1.2.3.4)`."""
-    monkeypatch.setattr(revdns, "lookup", lambda addr, use_cache=True: "1.2.3.4")
-    assert _host_label("1.2.3.4") == "1.2.3.4"
-
-
-def test_tui_label_survives_an_empty_address():
-    assert _host_label("") == ""
-
-
-def test_tui_label_survives_a_resolver_exception(monkeypatch):
-    """A misbehaving resolver must not break the table."""
-    def boom(addr, use_cache=True):
-        raise OSError("resolver exploded")
-
-    monkeypatch.setattr(revdns, "lookup", boom)
-    assert _host_label("203.0.113.42") == "203.0.113.42"
 
 
 # --- the web payloads ---------------------------------------------------------

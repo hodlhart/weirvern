@@ -1,8 +1,8 @@
 """Weirvern control CLI — install, configure, run, and monitor the stack.
 
 Design intent: a single entry point an operator can learn in a minute, that
-works with or without the TUI, and that never lies about state. Every command
-either does the thing or explains precisely why it cannot.
+works everywhere, and that never lies about state. Every command either does
+the thing or explains precisely why it cannot.
 
     weirvern install     # create .env from template, detect runtime, first checks
     weirvern init-db     # apply the ClickHouse schema
@@ -11,7 +11,6 @@ either does the thing or explains precisely why it cannot.
     weirvern logs [service]
     weirvern config      # list / get / set / validate .env keys
     weirvern tune        # interactive threshold editing
-    weirvern tui         # full control-panel TUI
 
 Exit codes: 0 ok, 1 failure, 2 usage error, 3 environment not ready.
 """
@@ -48,7 +47,7 @@ from weirvern.admin.runtime import (
 # command `weirvern init-db`, so it died instantly, retried, and the deployment
 # created ZERO TABLES while the README said the schema was applied automatically.
 #
-# Only commands that genuinely need a checkout (install, apply, down, tune, tui)
+# Only commands that genuinely need a checkout (install, apply, down, tune)
 # pay for resolution, and only when they run. `init-db` needs a database, not a
 # checkout.
 _CACHED_PROJECT_DIR: Path | None = None
@@ -232,12 +231,12 @@ def _connect(settings):
 def admin_client(settings):
     """A ClickHouse client for control-plane commands, tunnelling if needed.
 
-    WHY THIS EXISTS: `weirvern status` and the TUI run on the OPERATOR's machine,
+    WHY THIS EXISTS: `weirvern status` runs on the OPERATOR's machine,
     but CLICKHOUSE_HOST defaults to `clickhouse` — a cluster-internal name that
     cannot resolve outside the cluster, and the `clickhouse-external` Service ships
     as ClusterIP with its NodePort commented out. So there was no route from the
-    host at all, and the TUI showed every workload healthy while its Health and
-    Anomalies panels reported a connection error. That reads like a broken
+    host at all, and `weirvern status` showed every workload healthy while its Health
+    and Anomalies panels reported a connection error. That reads like a broken
     deployment rather than an unreachable one.
 
     The tunnel opens only when the configured host actually looks cluster-internal,
@@ -443,7 +442,6 @@ def cmd_install(args: argparse.Namespace) -> int:
     )
     steps.append("deploy:  weirvern apply")
     steps.append("verify:  weirvern status")
-    steps.append("control panel:  weirvern tui")
     for i, text in enumerate(steps, start=1):
         print(f"  {i}. {text}")
 
@@ -832,25 +830,12 @@ def cmd_tune(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# ---------------------------------------------------------------------------
-# tui
-# ---------------------------------------------------------------------------
-def cmd_tui(args: argparse.Namespace) -> int:
-    try:
-        from weirvern.admin.tui import run_tui
-    except ImportError as exc:
-        _bad(f"TUI unavailable: {exc}")
-        print(_c("dim", "  install the optional extra: pip install 'weirvern[admin]'"))
-        return EXIT_FAIL
-    return run_tui(project_dir(), refresh_s=args.refresh)
-
-
 def cmd_gui(args: argparse.Namespace) -> int:
     """Serve the web dashboard.
 
     Accounts and roles: reads require a signed-in account, settings writes require an
     admin (or the break-glass operator token). There is still no lifecycle control --
-    start, stop and apply stay in the CLI and TUI. See weirvern/admin/web.py for the
+    start, stop and apply stay in the CLI. See weirvern/admin/web.py for the
     reasoning.
 
     ON THE PROJECT DIRECTORY: `project_dir()` used to be called unconditionally
@@ -1308,10 +1293,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tune", help="guided threshold tuning")
     s.set_defaults(func=cmd_tune)
 
-    s = sub.add_parser("tui", help="launch the control-panel TUI")
-    s.add_argument("--refresh", type=int, default=5, help="refresh interval, seconds")
-    s.set_defaults(func=cmd_tui)
-
     s = sub.add_parser(
         "disk",
         help="disk usage, per-component log caps, and a recommendation from disk size",
@@ -1741,7 +1722,7 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
     the whole thing in one finally block rather than being repeated on each return path."""
     runner.start()
 
-    # Publish a heartbeat so the GUI and TUI can see this intercept running. Without it
+    # Publish a heartbeat so the GUI can see this intercept running. Without it
     # the only thing a remote reader has is SENSOR_MODE in the ConfigMap, which says what
     # was INTENDED and survives this process dying -- so the dashboard would show
     # "intercepting" for a sensor that had stopped.

@@ -331,19 +331,19 @@ CREATE TABLE IF NOT EXISTS zeek_ssl
     version           LowCardinality(String),
     cipher            String,
     server_name       String,
-    -- JA4: TLS ClientHello fingerprint. BSD-3-Clause (see zeek/JA4-NOTICE).
+    -- JA4: TLS ClientHello fingerprint, emitted by the module vendored at
+    -- zeek/vendor/ja4-zeek-scripts and COPYed into the sensor image at build time.
     --
     -- These replace ja3/ja3s, which were DEAD COLUMNS: Zeek 9.x core ships no ja3
     -- policy at all (verified by grepping the entire installed script tree), so the
     -- fields never appeared in ssl.log and the columns could never populate. JA3 was
     -- removed from core Zeek and now lives only in a third-party package; JA4 is the
-    -- successor and is what the official FoxIO package emits.
+    -- successor and is what the vendored module emits.
     --
     -- ja4 covers the TLS ClientHello, so it identifies the CLIENT software even when
     -- the payload is encrypted -- which is the whole point of fingerprinting TLS.
     ja4               String,
-    -- NOTE: ja4s (server fingerprint) is deliberately NOT stored. It is FoxIO
-    -- License 1.1, not BSD-3-Clause, and is disabled in the site policy.
+    -- ja4_orig is the same fingerprint computed with the client-offered ordering kept.
     ja4_orig          String,
     validation_status LowCardinality(String),
     established       UInt8

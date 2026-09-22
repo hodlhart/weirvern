@@ -136,7 +136,7 @@ def test_the_backend_defines_the_state_words_so_consumers_cannot_drift():
     for state in ("empty-forever", "idle", "active"):
         assert state in src, (
             f"zeek_counts does not emit the {state!r} state. Computing it in the browser instead "
-            f"would let the TUI and the GUI describe the same log differently."
+            f"would let every consumer describe the same log differently."
         )
     # The panel must use the shipped word.
     assert 'p.state' in SOC_JS or "state" in SOC_JS

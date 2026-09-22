@@ -1,14 +1,14 @@
 """Reach the in-cluster ClickHouse from the operator's workstation.
 
-THE PROBLEM THIS SOLVES, found by running the TUI on a real host:
+THE PROBLEM THIS SOLVES, found by running the CLI on a real host:
 
     Could not connect to ClickHouse at http://clickhouse:8123:
     HTTPConnectionPool(host='clickhouse', ...)
 
-`clickhouse` is a cluster-internal DNS name. The control plane (CLI, TUI) runs on
+`clickhouse` is a cluster-internal DNS name. The control plane (CLI) runs on
 an operator's machine, OUTSIDE the cluster, so it can never resolve it — and the
 `clickhouse-external` Service ships as ClusterIP with its NodePort commented out,
-so there is no route from the host either. The result was a TUI that showed every
+so there is no route from the host either. The result was a CLI that showed every
 workload running while its Health and Anomalies panels reported a connection
 error, which reads like a broken deployment rather than an unreachable one.
 
@@ -90,8 +90,8 @@ def clickhouse_tunnel(namespace: str, service: str = DEFAULT_SERVICE,
     cmd = [
         "kubectl", "-n", namespace, "port-forward", service,
         f"{local}:{remote_port}",
-        # Keep kubectl from prompting on a stale/expired credential: in an
-        # interactive TUI a prompt would appear where there is no stdin.
+        # Keep kubectl from prompting on a stale/expired credential: a prompt
+        # must not appear where there is no stdin.
         "--request-timeout=10s",
     ]
     proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell

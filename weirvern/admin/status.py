@@ -1,4 +1,4 @@
-"""Cluster/database status collection for the CLI and TUI.
+"""Cluster/database status collection for the CLI.
 
 Every probe is individually fault-tolerant and reports *why* it failed rather
 than raising: a control plane that crashes when the thing it monitors is down is
@@ -690,7 +690,7 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
     #
     # So each detector now carries when it last trained, how long ago that was in hours, and
     # whether that exceeds the configured interval. `stale` is computed HERE rather than in the
-    # browser so the TUI and the GUI cannot disagree about whether a model is overdue.
+    # browser so every consumer cannot disagree about whether a model is overdue.
     # The interval comes from settings when the caller passes them, so the panel compares
     # against the SAME number the worker schedules on. Falling back to the documented default
     # keeps this callable from a test that has no settings rather than failing on it.
@@ -858,7 +858,7 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
 
     and because this helper catches every exception and returns [] (deliberately,
     so a UI never crashes on a query error), the effect was an ALWAYS-EMPTY Top
-    Talkers panel in both the TUI and the web GUI, with nothing logged at a level
+    Talkers panel in the web GUI, with nothing logged at a level
     anyone would see. It never surfaced earlier because no test asserted the panel
     had content, and an empty table looks like a quiet network.
     """
@@ -885,10 +885,9 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
 def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0) -> list[dict]:
     """Anomalies WITH the explainability columns, as dicts.
 
-    `recent_anomalies` returns five columns as tuples, which is enough for a
-    one-line TUI row. The GUI needs the WHY: which feature deviated, by how much,
-    and per-feature contributions. Those live in columns the TUI never reads, and
-    re-querying them per row would be N+1 queries from the browser.
+    The GUI needs the WHY: which feature deviated, by how much,
+    and per-feature contributions. Re-querying them per row would be N+1 queries
+    from the browser.
 
     Dicts rather than tuples because the web layer serialises them directly and a
     positional tuple would silently misalign if a column is ever added.

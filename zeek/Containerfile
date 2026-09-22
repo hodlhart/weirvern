@@ -1,138 +1,53 @@
 # Weirvern Zeek sensor image.
 #
-# WHY A DERIVED IMAGE: Zeek 9.0.0 core ships NO JA4 (or JA3) policy -- verified by
-# grepping the entire /usr/local/zeek/share/zeek tree on the live pod: zero hits. TLS
-# fingerprints now live in a package, and a package has to be installed at BUILD time.
+# WHY A DERIVED IMAGE: Zeek 9.x core ships NO JA4 policy -- verified by grepping the
+# entire /usr/local/zeek/share/zeek tree on a live pod: zero hits. TLS fingerprints live
+# in a package, and a package has to be present at BUILD time.
 #
-# We install it here rather than running `zkg install` at container start because the
-# deployment must not fetch anything at boot: a sensor that depends on a network fetch to
-# come up will eventually fail to come up.
+# WHY THE MODULE IS VENDORED INTO THIS REPOSITORY (zeek/vendor/ja4-zeek-scripts):
+#
+#   * NO NETWORK FETCH AT BUILD TIME. An earlier build fetched the package with `zkg`; a
+#     build that depends on a fetch can fail for reasons that have nothing to do with the
+#     code, and a sensor must not depend on a fetch to come up.
+#   * THE IMAGE CONTAINS EXACTLY WHAT THE REPOSITORY SHOWS. The vendored tree is reviewed
+#     like every other file here, and there is no package machinery whose contents could
+#     change under the build.
+#   * BSD 3-Clause ONLY. The module's copyright and license text travel with it
+#     (vendor/ja4-zeek-scripts/LICENSE-JA4), as the license requires.
 #
 #     podman build -t registry.example.com/weirvern-zeek:0.4.0 -f zeek/Containerfile zeek/
 #     podman push registry.example.com/weirvern-zeek:0.4.0
 #
 #     cd k8s && kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
 #
-# ── LICENSING: JA4+ IS REMOVED FROM THIS IMAGE, NOT DISABLED ─────────────────────
-#
-# The upstream package is split-licensed, and the two halves are NOT interchangeable:
-#
-#   JA4  (TLS client fingerprint)  BSD-3-Clause        free for any use incl. commercial
-#   JA4+ (JA4S/H/X/SSH/T/L/D)      FoxIO License 1.1   internal/academic only;
-#                                                     NOT for monetization
-#
-# The FoxIO FAQ states that a company which "uses JA4+ to provide value to paying
-# customers, even without exposing JA4+ fingerprints directly to those customers, ...
-# would still need an OEM license as they are indirectly monetizing JA4+", and that the
-# JA4+ methods are patent pending.
-#
-# So Weirvern ships JA4 ONLY -- and the FoxIO submodules are DELETED from the filesystem
-# while the image is built (see the prune step below), rather than being switched off by
-# options at load time.
-#
-# WHY DELETION RATHER THAN DISABLING. Option-based disabling works, but it is one flag
-# away from being wrong, and it has already been wrong here once in a way nothing
-# detected:
-#
-#   the package gates submodules with `@if (JA4S_enabled) @load ./ja4s @endif`, and
-#   `@if` is evaluated WHEN THE FILE IS LOADED, not when the option changes. Disabling
-#   after loading was silently ignored -- measured: 28 of 28 ssl records carried a
-#   populated ja4s while the config claimed it was off.
-#
-# That was fixable by reordering the loads, and it was fixed. But it demonstrates the
-# class of failure: the licensed code sat in the image, and only the correctness of a
-# load order stood between it and shipping. Deleting the files removes the question.
-# Nothing to mis-order, nothing a package update can re-enable by changing a default,
-# and no licensed source in the artefact we distribute.
-#
-# The prune is verified at BUILD time by assertions that FAIL THE BUILD if any FoxIO
-# submodule, any FoxIO option, or any FoxIO-licensed output field survives. A licensing
-# guarantee that depends on a human reading a comment is not a guarantee.
-#
-# We therefore do NOT use the third-party `anthonykasza/ja4` (pure BSD-3-Clause, which
-# would be a cleaner licensing position) because it FAILS ITS OWN UNIT TESTS on Zeek
-# 9.0.0 and cannot be installed: `zkg install` aborts with "test_command failed". A
-# fingerprint that is subtly wrong is worse than none, since it silently fails to match
-# threat-intel data.
+# Do NOT set ZEEKPATH in this image. The upstream zeek/zeek image deliberately leaves it
+# unset; pinning it to share/zeek hides the builtin plugins under lib/zeek/plugins and
+# Zeek dies at startup with "can't find Zeek_JavaScript/__load__.zeek". Verified by
+# comparing the two images directly -- the derived one crash-looped.
 FROM zeek/zeek:lts
 
-# zkg needs a writable config dir and must not try to be interactive. The image already
-# ships zkg, cmake, and the Zeek headers are NOT present, so only scripts-only packages can
-# be installed here -- a C++ plugin would fail to build. That is fine: ja4-zeek-scripts is
-# the scripts-only variant, deliberately.
-#
-# ZKG_HOME only. Do NOT set ZEEKPATH here: the upstream image deliberately leaves it
-# unset, and pinning it to share/zeek breaks discovery of the builtin plugins under
-# lib/zeek/plugins. That failure is loud but obscure --
-#   "fatal error in builtin-plugins/__load__.zeek: can't find Zeek_JavaScript/__load__.zeek"
-# -- and it takes the whole sensor down. Verified by comparing the two images: upstream
-# ZEEKPATH is empty, mine was /usr/local/zeek/share/zeek, and mine crashed at startup.
-# `zkg` finds its own paths without help; nothing here needs ZEEKPATH.
-ENV ZKG_HOME=/usr/local/zeek/var/lib/zkg
+# The module lands at the path the site policy loads: site/packages/ja4-zeek-scripts.
+# The policy (k8s/zeek/weirvern-local.zeek, mounted from a ConfigMap at runtime) does
+# `@load packages/ja4-zeek-scripts`, so this path is the interface between image and
+# policy.
+COPY vendor/ja4-zeek-scripts /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
 
-# Install the package. Two notes:
-#
-#  * `zkg install` writes into /usr/local/zeek/share/zeek/site/packages and appends a load
-#    to site/local.zeek. Our site policy is mounted from a ConfigMap at runtime and is
-#    passed as a bare path on the command line, so it does not inherit that local.zeek --
-#    the policy @loads the package explicitly instead. That keeps the licensing controls
-#    in one reviewable file rather than split between image and ConfigMap.
-#
-#  * There is no --noload flag (verified: zkg rejects it). Loading at install time is
-#    harmless here because the runtime policy is what decides which submodules load, and
-#    the FoxIO ones are deleted in the next step regardless.
-#
-# `set -e` semantics matter: an earlier version chained these with `&&`/`||` and the
-# trailing `||` masked a failure in the INSTALL itself, so the build reported a generic
-# message instead of zkg's actual error. Each step is a separate RUN so a failure names
-# the step that failed.
-# The prune script is copied in BEFORE the step that runs it.
-COPY prune-ja4plus.sh /tmp/prune-ja4plus.sh
-COPY verify-ja4.sh /tmp/verify-ja4.sh
-
-RUN zkg install --force foxio/ja4-zeek-scripts
-
-# Fail the build if the package did not land where the site policy expects it. Without
-# this, a silently-skipped install produces an image that builds fine and whose sensor
-# then aborts at startup with "failed to locate script".
+# Fail the build if the module did not land where the policy expects it. Without this, a
+# bad COPY path produces an image that builds fine and whose sensor then aborts at startup
+# with "failed to locate script".
 RUN test -f /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts/config.zeek \
- || { echo "ERROR: the ja4 package is not present at the expected path"; exit 1; }
+ || { echo "ERROR: the ja4 module is not present at the expected path"; exit 1; }
 
-# ── PRUNE JA4+ : DELETE the FoxIO-licensed submodules ───────────────────────────
+# Prove at BUILD time that the module LOADS as Zeek sees it -- a `zeek -e` load needs no
+# capture interface. A failed load takes the whole sensor down at startup, and a module
+# that loads but emits nothing is a sensor that records no fingerprints while looking
+# healthy; only Zeek itself can tell the two from the file listing.
 #
-# The mechanism lives in prune-ja4plus.sh rather than inline here, so it can be run against
-# a plain directory and asserted in the test suite -- a licensing guard that can only be
-# exercised by a full container build is a guard that will not be exercised.
-#
-# It deletes the seven FoxIO submodule directories, deletes the package's own tests (which
-# carry recorded JA4+ OUTPUT, e.g. tests/Traces/Scripts.ja4-ssh2/ja4ssh.log), rewrites the
-# loader so it cannot reference them, filters the FoxIO options out of config.zeek, and then
-# FAILS THE BUILD if any of that did not take. It also asserts JA4's own options SURVIVED --
-# an over-eager filter would leave a sensor that parses and produces no fingerprint at all,
-# which is silently worse than a loud build failure.
-RUN sh /tmp/prune-ja4plus.sh \
-        /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
-
-# Prove the remaining policy parses and that the connection record is intact. A `zeek -e`
-# parse needs no capture interface.
-RUN zeek -e 'exit(0)' 2>&1 | head -3 ; true
-
-# Prove at BUILD time that the pruned package still LOADS. Without this, the prune could
-# leave a package that parses but produces no fingerprint -- a silently useless sensor, which
-# is the failure this whole image exists to avoid.
-#
-# THIS CHECK IS A SCRIPT, NOT AN INLINE HEREDOC. The first version wrote local.zeek with an
-# inline `cat > file <<'ZEEK'` inside a line-continued RUN, which Dockerfile syntax does not
-# support -- the build failed with "unterminated heredoc". Moving it to the same script that
-# does the pruning keeps the mechanism testable outside a container as well.
-RUN sh /tmp/verify-ja4.sh \
-        /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
-
-# Record WHY we ship this package, what its license split is, and that JA4+ was REMOVED,
-# inside the image, so an operator inspecting a running sensor can see it without reading
-# our repo.
-COPY JA4-NOTICE /usr/local/zeek/JA4-NOTICE
+# THIS CHECK IS A SCRIPT, NOT AN INLINE HEREDOC. Dockerfile syntax does not support a
+# line-continued RUN with `cat <<EOF` (the build fails with "unterminated heredoc"), and a
+# script can also be exercised against a plain directory outside a container.
+COPY verify-ja4.sh /tmp/verify-ja4.sh
+RUN sh /tmp/verify-ja4.sh /usr/local/zeek/share/zeek/site/packages/ja4-zeek-scripts
 
 # The site policy is mounted from a ConfigMap at runtime (see k8s/32-zeek.yaml), not baked
-# in, so it can be changed without rebuilding this image. It does NOT need to disable the
-# FoxIO submodules any more -- they are not in this image.
+# in, so it can be changed without rebuilding this image.

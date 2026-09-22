@@ -3,16 +3,16 @@
 # AUTHENTICATED, AND THAT IS WHAT MAKES THE WRITES ACCEPTABLE. It began read-only by
 # design; it now writes the configuration and accounts under a signed-in admin account
 # (or the deployment operator token, as break-glass recovery). Reads require a signed-in
-# account whenever accounts are provisioned. Start, stop and apply still stay in the CLI
-# and TUI, which an operator runs knowingly -- there is no lifecycle control here.
+# account whenever accounts are provisioned. Start, stop and apply still stay in the CLI,
+# which an operator runs knowingly -- there is no lifecycle control here.
 #
 # WHY A NodePort RATHER THAN AN INGRESS OR A PORT-FORWARD:
 #   * An ingress would need a controller, which a homelab may not have and which
 #     this project has deliberately not required anywhere else.
-#   * A port-forward works for the TUI (it runs as one process and the tunnel dies
-#     with it) but not for a browser: the dashboard must stay reachable while the
+#   * A port-forward works for one-off CLI access (it runs as one process and the tunnel
+#     dies with it) but not for a browser: the dashboard must stay reachable while the
 #     operator clicks around, and a foreground kubectl would have to stay open in
-#     a terminal the whole time. The TUI's automatic tunnel is implemented in
+#     a terminal the whole time. The CLI's automatic tunnel is implemented in
 #     weirvern/admin/tunnel.py for exactly the cases where it does fit.
 #   * So a NodePort is the honest answer for a long-lived browser session, and the
 #     Service is the single place that decides who can reach it.
