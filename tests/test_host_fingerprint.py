@@ -20,6 +20,8 @@ silently:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from weirvern.fingerprint import (
@@ -41,6 +43,10 @@ from weirvern.fingerprint import (
     signal_from_software,
     summarise,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # Real banners, taken from the sensor's own software.log rather than invented. A classifier
 # tested only against strings someone made up is tested against that person's assumptions.
@@ -361,3 +367,63 @@ def test_the_repository_guard_covers_the_fingerprint_module():
     assert "fingerprint.py" not in text or "exempt" not in text.lower(), (
         "fingerprint.py appears to be exempted from the licence scan"
     )
+
+
+# ── two defects found by LIVE verification, not by these tests ──────────────────────────
+
+def test_the_tailer_reads_the_observation_registry_too():
+    """software.log produced ZERO observations on a live deployment while everything looked fine.
+
+    Cause: `tail_zeek_dir` iterated `ZEEK_MAPPERS` alone, so when `software` moved to its own
+    registry it silently stopped being read at all. The strongest identity source -- the one that
+    names the platform outright -- contributed nothing, and no error was raised because a log
+    nobody reads is indistinguishable from a log with nothing in it.
+
+    A registry that nothing iterates is a comment, not a registry.
+    """
+    from weirvern import ingester
+    src = (ROOT / "weirvern" / "ingester.py").read_text()
+    assert "ZEEK_OBSERVATION_MAPPERS" in src
+    # The tailer must consult BOTH.
+    i = src.index("def tail_zeek_dir")
+    j = src.index("def ", i + 10)
+    body = src[i:j]
+    assert "ZEEK_MAPPERS" in body and "ZEEK_OBSERVATION_MAPPERS" in body, (
+        "the tailer iterates one registry, so the observation logs are never read"
+    )
+    assert ingester.ZEEK_OBSERVATION_MAPPERS, "the observation registry is empty"
+
+
+def test_a_dhcp_discover_never_becomes_a_host_called_0000():
+    """A DISCOVER carries client_addr 0.0.0.0, and it was stored as a HOST.
+
+    Live-verified: two DHCP hostnames were attributed to a device called `0.0.0.0` in the
+    identity table. That is worse than a missing row, because it reads as a finding -- an
+    unnamed device on the segment -- when it is an artefact of a protocol field.
+
+    The MAC is the stable identifier for exactly this case, which is why the schema carries it.
+    """
+    from weirvern.ingester import observations_from_dhcp
+
+    # A DISCOVER: 0.0.0.0 client, no assigned address, but a MAC.
+    obs = observations_from_dhcp(
+        {"mac": "00:00:5e:00:53:01", "host_name": "somehost"},
+        {"ts": None, "client_addr": "0.0.0.0", "assigned_addr": "", "requested_addr": ""},
+    )
+    assert obs, "a DISCOVER with a MAC should still be attributable"
+    for o in obs:
+        assert o["src_addr"] != "0.0.0.0", (
+            "0.0.0.0 was stored as a host; a DISCOVER must key on its MAC"
+        )
+        assert o["src_addr"] == "00:00:5e:00:53:01"
+
+
+def test_an_unattributable_dhcp_record_is_dropped_rather_than_invented():
+    """No address AND no MAC means nothing identifies the record. Dropping it is correct;
+    inventing a key would put an unattributable row in the table."""
+    from weirvern.ingester import observations_from_dhcp
+    obs = observations_from_dhcp(
+        {"mac": "", "host_name": "ghost"},
+        {"ts": None, "client_addr": "0.0.0.0", "assigned_addr": "", "requested_addr": ""},
+    )
+    assert obs == []

@@ -1085,8 +1085,23 @@ def observations_from_dhcp(rec: dict[str, str], row: dict[str, Any]) -> list[dic
         # Fall back to the requested or assigned address so a DISCOVER is still attributable.
         addr = str(row.get("assigned_addr") or row.get("requested_addr") or "") or ""
     mac = zeek_value(rec.get("mac", "")) or ""
-    if not addr:
-        return out
+
+    # 0.0.0.0 IS NOT A HOST, AND MUST NOT BECOME ONE.
+    #
+    # A DISCOVER (and a REQUEST before ACK) carries client_addr 0.0.0.0, and sometimes no
+    # requested address either. Storing that literally created a device called `0.0.0.0` in the
+    # identity table -- an artefact presented as a host, which is worse than a missing row
+    # because it looks like a finding. Live-verified: two DHCP hostnames were attributed to it.
+    #
+    # The MAC is the stable identifier here anyway -- the schema says so -- so when there is no
+    # usable address, key the observation on the MAC. That is exactly the case a lease-based
+    # baseline has to handle, and it is the reason the column exists.
+    if addr in {"0.0.0.0", ""}:
+        if not mac:
+            # Nothing identifies this: no address, no MAC. Dropping it is correct; inventing a
+            # key would put an unattributable row in the table.
+            return out
+        addr = mac
     if mac:
         out.append({"ts": ts, "src_addr": addr, "mac": mac, "source": "oui",
                     "raw": mac, "note": "from dhcp"})
@@ -1290,7 +1305,11 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
     """
     state = state if state is not None else {}
     total = 0
-    for log_type in ZEEK_MAPPERS:
+    # BOTH REGISTRIES. The tailer previously iterated ZEEK_MAPPERS alone, so when `software`
+    # moved to the observation registry it silently stopped being read at all -- the strongest
+    # identity source produced zero observations on a live deployment while everything looked
+    # healthy. A registry nothing iterates is not a registry; it is a comment.
+    for log_type in list(ZEEK_MAPPERS) + list(ZEEK_OBSERVATION_MAPPERS):
         for name in _zeek_log_names(log_dir, log_type):
             path = os.path.join(log_dir, name)
             st = state.get(name) or ZeekTailState()
