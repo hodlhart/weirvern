@@ -49,6 +49,16 @@ the one-time admin password from the GUI log. `--siphon` also applies the overla
 in-path mode's capabilities exist BEFORE anyone flips the switch in Settings. Idempotent
 throughout: re-running converges, and it never overwrites credentials or models.
 
+**It was then dogfooded on a genuinely blank Ubuntu VM, and the run paid for itself:**
+node prep died on `install -g 10001` because no fresh machine has the worker's gid (and
+the group cannot be NAMED `weirvern` — Ubuntu's per-user private groups mean a host
+whose admin login is `weirvern` already owns that name at gid 1000), and the pinned
+ClickHouse image turned out to be an x86-64-v3 (AVX2) build that crash-loops on a VM
+whose CPU model masks AVX2 (Proxmox's default `kvm64`) with nothing in-cluster saying
+why. The script now creates its own group (the numeric gid is the contract every
+container sees; the name is cosmetic) and refuses up front on an AVX2-less CPU, naming
+the remedy.
+
 ## Unreleased — siphon mode, a dropdown that lied, and a capability probe that refused forever
 
 **The in-path mode is renamed: `weir` -> `siphon`.** The name was asked for and never
