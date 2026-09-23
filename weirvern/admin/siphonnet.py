@@ -503,6 +503,20 @@ def ensure_forwarding_path(iface: str, gateway: str,
                    "table", str(POLICY_TABLE))
     if rc != 0:
         problems.append(f"could not add the policy route: {out}")
+        # ── THE RULE MUST NOT GO IN WITHOUT THE ROUTE (audit F032, CONFIRMED BY RUNNING IT) ──
+        #
+        # This function used to append the problem and then install the policy rule anyway.
+        # Measured by failing only the route add: the route was absent from table 100 and
+        # `1000: iif eth1 lookup 100` was installed regardless -- which is precisely the
+        # black-hole this module's own docstrings describe, because a rule selecting an empty
+        # table DROPS the traffic it matches. The caller then refused to poison and raised, and
+        # nothing removed the rule it had just added, so a REFUSED intercept left the segment's
+        # ingress policy broken.
+        #
+        # The rule is the dangerous half: an absent route alone changes nothing, while a rule
+        # pointing at an empty table drops traffic. So the failure short-circuits here and the
+        # caller's cleanup removes anything already installed.
+        return problems
 
     _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
     rc, out = _run("ip", "rule", "add", "iif", iface, "lookup", str(POLICY_TABLE),
@@ -514,37 +528,77 @@ def ensure_forwarding_path(iface: str, gateway: str,
     return problems
 
 
-def remove_forwarding_path(iface: str) -> None:
+def remove_forwarding_path(iface: str) -> list[str]:
     """Withdraw the policy route and EVERY rule that references the policy table. Never raises.
 
-    Called on teardown because a leftover rule sends matching traffic to table 100 -- which, once
-    the address is removed, is a table with no routes, so the rule DROPS that traffic. Measured on a
-    real host: `1000: from all iif eth1 lookup 100` was still installed with an EMPTY table 100
-    after an intercept had been stopped and reported as restored.
+    RETURNS THE FAILURES, and that return is the point (audit F031, CONFIRMED BY RUNNING IT).
 
-    WHY IT NO LONGER DELETES ONE EXACT FORM. Deleting only what `ensure_forwarding_path` creates
-    misses every other shape that selects the table:
+    This used to return nothing while running five `ip` commands whose return codes it discarded.
+    Measured by making every command fail with "Operation not permitted" -- what a node without
+    CAP_NET_ADMIN produces -- the function returned None and the caller could not tell that
+    NOTHING had been removed. A teardown that reports success over a leftover rule is the worst
+    shape of this bug, because the docstring below describes exactly what the leftover does:
 
-        iif <iface> lookup 100        what this file creates
-        from <segment> lookup 100     what an earlier version created
-        <anything> lookup 100         a rule set by hand, or by a version that changed
+        a leftover rule sends matching traffic to table 100 -- which, once the address is removed,
+        is a table with no routes, so the rule DROPS that traffic.
 
-    So every rule mentioning the table is removed, by priority AND by parsing `ip rule show`. The
-    table number is ours and nothing else uses it, which makes the match unambiguous; and removing a
-    rule we did not add is safe, because a rule pointing at our private table cannot be doing
-    anything we would want to keep.
+    So the failure mode is not "a cosmetic rule remained". It is that traffic the operator never
+    asked us to touch gets black-holed, silently, after a clean-looking stop. The caller
+    (`intercept.stop`) now reports what could not be withdrawn.
+
+    WHY A LIST OF STRINGS RATHER THAN RAISING: teardown must complete every step regardless. If the
+    rule deletion fails, the route flush and the sysctl restore still have to run, and one of them
+    failing must not skip the others. Collecting failures lets each step be attempted AND reported.
+
+    A COMMAND THAT FAILS BECAUSE THERE WAS NOTHING TO DELETE IS NOT A FAILURE, and is filtered out.
+    `ip rule del` returns an error when no such rule exists, which is the normal case for a second
+    stop -- reporting that would make every clean teardown look broken, and a warning that is
+    usually wrong is a warning an operator stops reading.
     """
+    failures: list[str] = []
+
+    def _attempt(*args: str) -> None:
+        rc, out = _run(*args)
+        if rc == 0:
+            return
+        # "No such file or directory" / "No such process" style refusals mean the thing was
+        # already gone, which is the desired end state rather than a failure to reach it.
+        if _is_absence(out):
+            return
+        failures.append(f"{' '.join(args)}: {out or f'exit {rc}'}")
+
     # By priority: covers the rule this file adds, whatever its selector.
-    _run("ip", "rule", "del", "priority", str(POLICY_PRIORITY))
+    _attempt("ip", "rule", "del", "priority", str(POLICY_PRIORITY))
 
     # By parsing: covers ANY priority selecting the table, including forms we did not anticipate.
     for priority in _policy_rule_priorities():
-        _run("ip", "rule", "del", "priority", str(priority))
+        _attempt("ip", "rule", "del", "priority", str(priority))
 
     # Last resort for the exact form, in case the rule has no readable priority.
-    _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
+    _attempt("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
 
-    _run("ip", "route", "flush", "table", str(POLICY_TABLE))
+    _attempt("ip", "route", "flush", "table", str(POLICY_TABLE))
+    return failures
+
+
+def _is_absence(output: str) -> bool:
+    """True when an `ip` command failed because the thing was already absent.
+
+    Kept as its own function with its own name because the distinction it draws is the difference
+    between "teardown is broken" and "teardown ran twice", and those must not be reported the same
+    way: the first needs action, the second is normal.
+    """
+    lowered = output.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "no such file or directory",
+            "no such process",
+            "cannot find device",
+            "not found",
+            "does not exist",
+        )
+    )
 
 
 def _policy_rule_priorities() -> list[int]:

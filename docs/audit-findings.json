@@ -274,8 +274,8 @@
       "severity": "HIGH",
       "area": "Siphon",
       "title": "Teardown of the policy rule is fire-and-forget: a failed removal is indistinguishable from success, and \"restored\" is asserted from the exit code alone",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED BY RUNNING IT, then fixed. `remove_forwarding_path` ran five `ip` commands and discarded every return code, returning nothing, so a teardown that removed NOTHING was indistinguishable from one that removed everything. Measured by making all commands fail with 'RTNETLINK answers: Operation not permitted' (what a node without CAP_NET_ADMIN produces): return value None, 4 commands attempted, caller blind. The consequence is not cosmetic -- a leftover rule sends matching traffic to policy table 100, which with the address withdrawn has NO ROUTES, so the rule DROPS that traffic; the operator sees a clean stop and a segment that quietly lost connectivity. FIXED: the function returns the failures and intercept.stop() logs them with the recovery commands. A failure caused by ABSENCE (no such file/process/device) is filtered out, because `ip rule del` fails when the rule is already gone and that is the normal case for a repeated stop -- a warning that is usually wrong is one an operator stops reading. All steps are still attempted (a failing rule deletion must not skip the route flush). NOTE: the report body is not recoverable (tmp/kr2.md was cleaned); this verdict verifies the title's claim directly by running the code.",
       "report": "kr2",
       "id": "F031"
     },
@@ -283,8 +283,8 @@
       "severity": "HIGH",
       "area": "Siphon",
       "title": "A partial setup failure leaves the policy rule installed over an empty table \u2014 the documented black-hole \u2014 and `__exit__` provably does not run",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED BY RUNNING IT, then fixed. `ensure_forwarding_path` appended a problem when the route add failed and then INSTALLED THE POLICY RULE ANYWAY. Measured by failing only the route add (gateway MAC resolving, so the earlier guard did not fire): 'could not add the policy route: RTNETLINK answers: Network is unreachable' AND the rule WAS installed. That is the same black-hole the module's own docstrings describe, created by the FAILURE path: a rule selecting an empty table drops the traffic it matches. The caller then raised InterceptError without removing what had just been installed, and the sysctls from step 0 were left relaxed -- so a REFUSED intercept left the node's ingress policy broken. FIXED IN TWO PLACES: (1) the route failure now short-circuits before the rule is installed, because an absent route alone changes nothing while a rule pointing at an empty table drops traffic; (2) intercept.start()'s refusal path now withdraws the path and restores the sysctls BEFORE raising, and names any cleanup that itself failed in the error message. The refusal still raises -- an intercept that silently did not arm is worse than one that errors. NOTE: the report body is not recoverable (tmp/kr2.md was cleaned); this verdict verifies the title's claim directly by running the code.",
       "report": "kr2",
       "id": "F032"
     },

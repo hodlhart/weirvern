@@ -45,6 +45,7 @@ from typing import Any
 
 from weirvern.admin.siphonnet import (
     DEFAULT_REFRESH_S,
+    POLICY_TABLE,
     ArpSender,
     ForwardingState,
     check_forwarding,
@@ -573,9 +574,30 @@ class Intercept:
         path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip,
                                                gateway_mac=self.plan.gateway_mac)
         if path_problems:
+            # ── A REFUSED START MUST LEAVE NOTHING BEHIND (audit F032, CONFIRMED BY RUNNING IT) ──
+            #
+            # This used to raise immediately. `ensure_forwarding_path` could have installed part
+            # of the path before failing -- measured: the route add failed and the policy rule was
+            # installed anyway -- and the sysctls were already written by step 0. So a REFUSED
+            # intercept left the node with rp_filter relaxed and a rule selecting an empty table,
+            # which drops the traffic it matches. The operator saw an error and a segment that had
+            # quietly lost its ingress policy.
+            #
+            # The failure is still reported as an error (the caller must know the intercept did
+            # not arm), but the cleanup happens FIRST so the raised exception describes a node that
+            # is actually back to its previous state.
+            withdrawn = remove_forwarding_path(self.plan.iface)
+            unrestored = self._sysctls.restore()
+            detail = ""
+            if withdrawn or unrestored:
+                detail = (
+                    f" Cleanup was also incomplete: could not withdraw {withdrawn}; could not "
+                    f"restore {unrestored}."
+                    if (withdrawn or unrestored) else ""
+                )
             raise InterceptError(
                 "refusing to poison: the forwarding path is not correct, so relayed "
-                "traffic would not reach the gateway. " + " ".join(path_problems)
+                "traffic would not reach the gateway. " + " ".join(path_problems) + detail
             )
 
         # 2. watchdog NEXT, so no mapping ever exists without something responsible for
@@ -600,13 +622,36 @@ class Intercept:
         )
 
     def stop(self) -> None:
-        """Withdraw every mapping and the forwarding path. Idempotent."""
+        """Withdraw every mapping and the forwarding path. Idempotent.
+
+        ── THE TEARDOWN REPORTS WHAT IT COULD NOT DO (audit F031, CONFIRMED BY RUNNING IT) ──────
+
+        `remove_forwarding_path` used to discard every `ip` command's return code, so a teardown
+        that removed NOTHING was indistinguishable from one that removed everything. Measured by
+        failing all five commands: the function returned None and this method carried on as if the
+        node were clean.
+
+        That is the worst shape of this bug, because a leftover rule sends matching traffic to
+        table 100 -- which, with the address withdrawn, has no routes, so the rule DROPS it. The
+        operator would see a clean stop and a segment that quietly lost connectivity.
+
+        Reported rather than raised, for the same reason `restore()` reports instead of raising: the
+        remaining teardown steps still have to run. A sysctl that cannot be restored is a separate
+        and worse problem than a rule that cannot be deleted, and one must not skip the other.
+        """
         if self.watchdog is not None:
             self.watchdog.stop()
         # The policy rule must go too: left behind, it sends ALL traffic arriving on this
         # interface to a table that has no routes once the address is removed, which would
         # break traffic the operator never asked us to touch.
-        remove_forwarding_path(self.plan.iface)
+        failures = remove_forwarding_path(self.plan.iface)
+        if failures:
+            logger.warning(
+                "could NOT withdraw %d forwarding rule(s) or route(s) on %s: %s. A rule left "
+                "behind sends matching traffic to policy table %s, which now has no routes, so "
+                "that traffic is being DROPPED. Check with: ip rule show; ip route show table %s",
+                len(failures), self.plan.iface, "; ".join(failures), POLICY_TABLE, POLICY_TABLE,
+            )
         close = getattr(self._sender, "close", None)
         if callable(close):
             close()
