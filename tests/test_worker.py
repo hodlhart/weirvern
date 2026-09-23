@@ -5,6 +5,7 @@ baseline fake subclasses the real AdaptiveBaselineDetector so the worker's
 isinstance-based lookup (which deliberately avoids positional indexing) is
 exercised faithfully.
 """
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -328,3 +329,92 @@ def test_default_agreement_gate_reproduces_the_original_hardcoded_pair():
         == mc.min_agreement_floor
 
 
+
+
+# ── AN EMPTY SIDE-TABLE MUST SAY SO ──────────────────────────────────────────────────────────
+#
+# CONFIRMED DEFECT (audit F005), found by counting the guards rather than reading them: `if not
+# zeek_idx` exists in detection_sweep and WARNS, while `if not div_idx` / `if not tmp_idx` did not
+# exist at all. An unjoined side-table then reaches `extract_features`, where `if diversity:` /
+# `if temporal:` fall through to values that LOOK like measurements:
+#
+#     log_unique_dst_ports = log1p(0)   port_entropy = 0.0
+#     connection_density   = 1.0        activity_regularity = 1.0      burstiness = 1.0
+#
+# So every score in the sweep is computed from imputed numbers and NOTHING SAID SO. The asymmetry
+# was the trap: one sibling warned, which made the code look careful.
+#
+# These drive the REAL `detection_sweep` with a stubbed table reader, so they fail if the warnings
+# are removed. Detection still proceeds -- returning early would turn a degraded sweep into no
+# sweep, which is worse -- so each test asserts BOTH the warning and that the verdicts still come
+# back.
+
+def test_an_empty_diversity_side_table_WARNS(monkeypatch, caplog):
+    """CONFIRMED DEFECT (audit F005): the diversity side-table had NO empty-guard, while the Zeek
+    one in the same function WARNS. An unjoined side-table reaches `extract_features`, where
+    `if diversity:` falls through to log1p(0)/0.0/1.0 -- values that LOOK like measurements -- so
+    every score in the sweep is computed from imputed numbers and nothing said so.
+
+    The asymmetry was the trap: one sibling warned, which made the code look careful.
+
+    `_install_db_stubs` returns empty diversity and temporal rows, so this is the default state of
+    every other test in this file -- which is exactly why the missing warning mattered."""
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.WARNING):
+        detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)], Settings(), ModelConfig())
+    text = caplog.text.lower()
+    assert "diversity" in text and "imputed" in text, (
+        "an empty diversity side-table degrades every score in the sweep and must say so"
+    )
+
+
+def test_an_empty_temporal_side_table_WARNS(monkeypatch, caplog):
+    """The temporal pair is worse than the diversity one: `activity_regularity` and `burstiness`
+    both default to 1.0, which read as PERFECTLY REGULAR traffic rather than as a missing
+    measurement."""
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.WARNING):
+        detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)], Settings(), ModelConfig())
+    text = caplog.text.lower()
+    assert "temporal" in text and "imputed" in text
+
+
+def test_the_warning_does_not_replace_the_sweep(monkeypatch, caplog):
+    """Detection must still PROCEED. Returning early on an empty side-table would turn a degraded
+    sweep into NO sweep, and an alert missing a feature still beats no alert -- so the fix is to
+    state the degradation, not to refuse."""
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, inserted = _capturing_client()
+    with caplog.at_level(logging.WARNING):
+        verdicts = detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)],
+                                   Settings(), ModelConfig())
+    assert verdicts, "the sweep must still produce verdicts from imputed features"
+    assert inserted, "and must still persist them"
+
+
+def test_a_POPULATED_side_table_does_not_warn(monkeypatch, caplog):
+    """The warning must be about the FAULT, not about the code path. One that fires every sweep is
+    one nobody reads, which is the state this fix exists to avoid."""
+    import weirvern.db as db
+
+    def fake_named(client, query, **params):  # noqa: ANN001
+        if "flows_aggregated_diversity" in query:
+            return ["window_start", "src_addr", "unique_dst_ports"], [
+                (AGG_ROWS[0][0], AGG_ROWS[0][1], 12)]
+        if "flows_aggregated_temporal" in query:
+            return ["window_start", "src_addr", "activity_regularity"], [
+                (AGG_ROWS[0][0], AGG_ROWS[0][1], 0.9)]
+        if "netflow_anomalies" in query:
+            return []
+        return AGG_COLS, AGG_ROWS
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", lambda c, q, **p: [])
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.WARNING):
+        detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)], Settings(), ModelConfig())
+    text = caplog.text.lower()
+    assert "diversity metrics are empty" not in text, "a populated side-table must not warn"
+    assert "temporal metrics are empty" not in text

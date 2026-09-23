@@ -441,6 +441,41 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     div_idx = index(div_cols, div_rows)
     tmp_idx = index(tmp_cols, tmp_rows)
 
+    # ── THE OTHER TWO SIDE-TABLES NEED THE SAME VOICE THE ZEEK ONE HAS ────────────────────────
+    #
+    # CONFIRMED DEFECT (audit F005), measured by counting the guards: `if not zeek_idx` exists and
+    # WARNS, while `if not div_idx` / `if not tmp_idx` did not exist at all. An unjoined side-table
+    # then flows into `extract_features`, where `if diversity:` / `if temporal:` fall through to
+    # values that LOOK like measurements:
+    #
+    #     port_entropy          = 0.0    "no ports seen" reads as a quiet host
+    #     connection_density    = 1.0    reads as one connection per flow
+    #     activity_regularity   = 1.0    reads as perfectly regular traffic
+    #     burstiness            = 1.0    reads as no bursting
+    #
+    # None of those were measured, and NOTHING SAID SO -- so every score in the sweep is silently
+    # degraded and an operator has no signal that the degradation happened. The Zeek warning
+    # directly above is the shape this should have had all along, and its absence here is the
+    # asymmetry that made the defect hard to see: one sibling warned, so the code looked careful.
+    #
+    # A warning rather than a refusal: detection continuing on partial features is deliberate (an
+    # alert missing a feature still beats no alert), and the point is only that the degradation is
+    # STATED. The two cases are logged separately because they have different causes -- an empty
+    # diversity table means the aggregation produced nothing for these windows, which is a
+    # different fault from a broken Zeek summary.
+    if not div_idx:
+        logger.warning(
+            "Diversity metrics are empty for this sweep, so log_unique_dst_ports, port_entropy, "
+            "bytes_stddev_norm and connection_density are all IMPUTED (not measured). Every score "
+            "in this sweep is degraded; check the Phase-2 diversity aggregation."
+        )
+    if not tmp_idx:
+        logger.warning(
+            "Temporal metrics are empty for this sweep, so activity_regularity and burstiness are "
+            "both IMPUTED as 1.0 (not measured). Every score in this sweep is degraded; check the "
+            "Phase-2 temporal aggregation."
+        )
+
     # SOC-2: near misses are collected during detection and stored in the same sweep.
     # Owned here so the ensemble stays a pure function of its inputs.
     near_misses: list[dict] = []
