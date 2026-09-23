@@ -59,6 +59,7 @@ run "schema audit" "$PY" scripts/audit_schema.py
 run "README claims vs the code" "$PY" scripts/audit_readme.py
 run "version agreement (code, kustomize, README)" sh scripts/verify_versions.sh
 run "shell syntax" sh -n scripts/siphon_stress_test.sh
+run "installer interface logic (simulated machines)" sh scripts/verify_installer.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
 run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 

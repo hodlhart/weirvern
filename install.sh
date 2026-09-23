@@ -401,9 +401,6 @@ confirm_ifaces() {
             continue
         fi
         if [ "$MGMT_IFACE" = "$ZEEK_IFACE" ]; then
-            warn "the same interface for both roles captures this host's own traffic and"
-            warn "broadcast rather than the network. That is allowed for a first look, but"
-            warn "the capture will be thin. Add a second NIC or a switch SPAN port."
             printf '    Use %s for both anyway? [y/N]: ' "$MGMT_IFACE"
             read -r answer || answer=""
             case "$answer" in [yY]*) : ;; *) continue ;; esac
@@ -428,6 +425,18 @@ if [ -n "$ZEEK_IFACE_FLAG" ] || [ -n "$MGMT_IFACE_FLAG" ]; then
 fi
 
 confirm_ifaces
+
+# THE SAME-INTERFACE WARNING IS INFORMATION, NOT A PROMPT, so it is emitted in every path.
+# It used to sit inside the prompt loop, which meant `--yes` and any non-TTY run -- a provisioning
+# script is the obvious one -- accepted a one-NIC pairing and said NOTHING about the capture being
+# thin. That is the same class of defect as the empty-name bug: the dangerous case was also the
+# quiet one. Found by driving the script with a simulated one-NIC machine and --yes.
+if [ "$MGMT_IFACE" = "$ZEEK_IFACE" ]; then
+    warn "the same interface ($MGMT_IFACE) is used for both roles:"
+    warn "  the capture will hold this host's own traffic and broadcast rather than the network."
+    warn "  That is allowed for a first look, but it is not a SPAN feed."
+    warn "  Add a second NIC or a switch SPAN port when you can."
+fi
 
 # An addressed capture interface is a normal participant rather than a passive listener: it
 # answers ARP, takes part in the segment, and its own traffic appears in the capture. A mirror
