@@ -44,6 +44,7 @@ can get to it.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from weirvern import fleet_store
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import gui_auth, web_api
 from weirvern.admin import soc as soc_mod
@@ -91,6 +93,11 @@ STATIC_FILES = {
     # being blocked, and is the gate actually holding" is a distinct concern from what the dashboard
     # shows -- a reader looking for the blocking logic should find it in one place.
     "/sluice.js": ("sluice.js", "application/javascript; charset=utf-8"),
+    # The Weirlings fleet tab. Its own file for the same reason as the others, and because
+    # "which sensors are expected, and which of them are silent" is a distinct concern from both
+    # the dashboard and the gate -- and because the state model it renders (five states that must
+    # never be collapsed) is code a reader should be able to find in one place.
+    "/weirlings.js": ("weirlings.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -303,6 +310,14 @@ def _build_handler(ctx: GuiContext):
                 return self._sluice()
             if path == "/api/sluice/state":
                 return self._sluice_state()
+            # ── WEIRLINGS (the fleet) ───────────────────────────────────────────────────────
+            # GET reads the fleet. Reads stay open like every other tab: an operator checking
+            # whether a sensor is reporting should not need a password. The writes are POST
+            # below and pass the operator gate, so a viewer cannot register or retire a sensor.
+            if path == "/api/weirlings":
+                return self._weirlings(query)
+            if path == "/api/weirlings/detail":
+                return self._weirlings_detail(query)
             # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
             # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
             # restart the GUI and hide the real problem); this one exists precisely to answer
@@ -695,6 +710,82 @@ def _build_handler(ctx: GuiContext):
                                    "reason": f"cannot read the gate: {type(exc).__name__}"})
             self._json(state)
 
+        def _weirlings(self, query: dict) -> None:
+            """The fleet: registrations compared against heartbeats.
+
+            ONE PAYLOAD CARRIES BOTH THE ROWS AND THE AVAILABILITY, because the two facts this
+            view must never merge -- "you have no sensors" and "the registry could not be read"
+            -- are indistinguishable by the time a renderer sees a bare list.
+            """
+            include_problems = (_query_bool(query, "problems") is True)
+            include_revoked = (_query_bool(query, "revoked") is True)
+            try:
+                with self._with_client() as client:
+                    payload = fleet_store.build_fleet(client, problems_only=include_problems)
+            except Exception as exc:  # noqa: BLE001
+                # A connection failure is the same fact as an unreadable registry from the
+                # operator's side, so it takes the same shape rather than a 5xx that would
+                # blank the whole tab.
+                logger.warning("weirlings unavailable: %s", exc)
+                self._json({
+                    "available": False,
+                    "reason": f"the fleet could not be read: {str(exc)[:200]}",
+                    "sensors": [], "summary": None,
+                    "heartbeats_available": False, "heartbeat_reason": None,
+                })
+                return
+
+            if include_revoked:
+                # Revoked rows are shown on request, for the audit question ("was this ever
+                # covered?"). Fetched separately and appended, so the normal view cannot
+                # accidentally include them.
+                try:
+                    with self._with_client() as client:
+                        revoked = [r for r in fleet_store.read_registrations(
+                            client, include_revoked=True) if not r.live]
+                    payload["revoked"] = [
+                        {"sensor_id": r.sensor_id, "segment": r.segment,
+                         "address": r.address, "expected_mode": r.expected_mode,
+                         "note": r.note,
+                         "revoked_at": (r.revoked_at.isoformat()
+                                        if isinstance(r.revoked_at, datetime.datetime) else None)}
+                        for r in revoked
+                    ]
+                except fleet_store.FleetStoreError as exc:
+                    payload["revoked"] = []
+                    payload["revoked_reason"] = str(exc)
+            self._json(payload)
+
+        def _weirlings_detail(self, query: dict) -> None:
+            """One sensor, for the drill-down.
+
+            Reads through the same payload builder as the list, so the detail panel and the
+            row it was opened from can never disagree about one sensor.
+            """
+            sensor_id = str((query.get("sensor") or [""])[0]).strip()
+            if not sensor_id:
+                return self._error(400, "a sensor id is required: /api/weirlings/detail?sensor=NAME")
+            try:
+                with self._with_client() as client:
+                    row = fleet_store.classify_one(client, sensor_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("weirlings detail unavailable: %s", exc)
+                return self._json({
+                    "available": False,
+                    "reason": f"the sensor could not be read: {str(exc)[:200]}",
+                    "sensor": None,
+                })
+            if row is None:
+                # Deliberately a 200 with `available: true` and a null sensor: "there is no
+                # such sensor" is an ANSWER, not a failure, and rendering it as an error would
+                # send the operator looking for an outage.
+                return self._json({
+                    "available": True, "reason": None, "sensor": None,
+                    "note": (f"no sensor named {sensor_id!r} is registered or reporting. It may "
+                             f"have been revoked, or the spelling may differ."),
+                })
+            self._json({"available": True, "reason": None, "sensor": row})
+
         def _sluice_block(self) -> None:
             """Create a blocking rule.
 
@@ -897,6 +988,93 @@ def _build_handler(ctx: GuiContext):
             role = self._token_role()
             return (role, "token" if role else "")
 
+        # -- weirlings writes -----------------------------------------------
+
+        def _weirlings_register(self) -> None:
+            """Register (or re-register) a sensor.
+
+            The refusal is RETURNED, not raised as a 5xx: a rejected registration is a normal
+            outcome of a form an operator is filling in, and an error page would read as the
+            feature being broken rather than the input being wrong.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            try:
+                with self._with_client() as client:
+                    reg = fleet_store.register(
+                        client,
+                        str(body.get("sensor_id") or ""),
+                        address=str(body.get("address") or ""),
+                        segment=str(body.get("segment") or ""),
+                        expected_mode=str(body.get("expected_mode") or "loch"),
+                        note=str(body.get("note") or ""),
+                    )
+            except fleet_store.FleetError as exc:
+                # The message names the fix, so it is passed through verbatim rather than
+                # wrapped in a generic "invalid input".
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            except fleet_store.FleetStoreError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=503)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("weirling registration failed: %s", exc)
+                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
+                                  code=500)
+            self._json({"ok": True, "sensor_id": reg.sensor_id})
+
+        def _weirlings_enable(self) -> None:
+            """Switch a registered sensor on or off WITHOUT revoking it."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            # Strict booleans: `bool("false")` is True, so a client sending the string "false"
+            # would silently ENABLE a sensor. Refused rather than coerced.
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                return self._json(
+                    {"ok": False, "error": "`enabled` must be true or false"}, code=400)
+            try:
+                with self._with_client() as client:
+                    reg = fleet_store.set_enabled(client, str(body.get("sensor_id") or ""), enabled)
+            except fleet_store.FleetError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            except fleet_store.FleetStoreError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=503)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("weirling enable failed: %s", exc)
+                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
+                                  code=500)
+            self._json({"ok": True, "sensor_id": reg.sensor_id, "enabled": reg.enabled})
+
+        def _weirlings_revoke(self) -> None:
+            """Retire a registration. The row is kept; nothing is deleted."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            try:
+                with self._with_client() as client:
+                    reg = fleet_store.revoke_registration(
+                        client, str(body.get("sensor_id") or ""))
+            except fleet_store.FleetError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            except fleet_store.FleetStoreError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=503)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("weirling revoke failed: %s", exc)
+                return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
+                                  code=500)
+            self._json({"ok": True, "sensor_id": reg.sensor_id})
+
+
         def _require_read(self) -> bool:
             """Whether this request may READ. Sends the refusal itself.
 
@@ -1070,6 +1248,16 @@ def _build_handler(ctx: GuiContext):
                 return self._sluice_block()
             if path == "/api/sluice/revoke":
                 return self._sluice_revoke()
+            # ── WEIRLINGS writes ─────────────────────────────────────────────────────────
+            # Admin-gated like every other mutation. Registering a sensor decides what this hub
+            # will EXPECT and therefore what it raises as missing, so it is a write even though
+            # it touches no remote box.
+            if path == "/api/weirlings/register":
+                return self._weirlings_register()
+            if path == "/api/weirlings/enable":
+                return self._weirlings_enable()
+            if path == "/api/weirlings/revoke":
+                return self._weirlings_revoke()
             self._error(404, f"no write route at {path}")
 
         # -- accounts -------------------------------------------------------

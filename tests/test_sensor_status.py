@@ -410,6 +410,11 @@ def test_no_orphan_placeholder_elements_remain():
                   #     explicitly rather than implied by the pattern, so a future section that
                   #     really is an orphan cannot hide behind its neighbours.
                   "view-sluice",
+                  #   view-weirlings: the same shape again -- a view SECTION toggled by class,
+                  #     whose contents carry the data (#wl-summary, #wl-summary-note, the fleet
+                  #     table's tbody, #wl-count, #wl-empty, #wl-detail-card and its body). The
+                  #     section itself is never written to by id, which is correct.
+                  "view-weirlings",
                   "gate-submit", "pw-submit", "gate-token-submit"}
 
     orphans = {i for i in ids

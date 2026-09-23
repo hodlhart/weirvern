@@ -346,8 +346,8 @@
       "severity": "HIGH",
       "area": "Test suite",
       "title": "The kustomize- and tcpdump-gated guards skip, and the gate still reports PASS",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED and misdiagnosed in a useful way. The finding said the kustomize- and tcpdump-gated guards SKIP while the gate reports PASS -- but there are NO kustomize- or tcpdump-gated guards at all: grep across scripts/ for 'command -v kustomize|command -v tcpdump' returns nothing, and no gate check invokes either. What IS real is the inverse of the finding: gate.sh line 136 ends with 'Install the missing tools (node, kustomize, tcpdump) for a complete verdict', so the operator is told two tools are needed for a complete run that no check in the gate can use. The skip COUNTING machinery is correct (F038 refuted: SKIP is counted and the summary distinguishes PASSED from PASSED-WITH-SKIPS), so this is a stale line from an earlier gate revision rather than a silent skip. Fix: drop kustomize and tcpdump from that message, since node is the only tool any check actually probes for.",
       "report": "k12_testing",
       "id": "F039"
     },

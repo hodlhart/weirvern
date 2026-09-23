@@ -1563,6 +1563,10 @@ function showView(name) {
   // gate's state row, and firing that in the background every 15s would query ClickHouse for a
   // panel nobody is looking at.
   if (name === "sluice") loadSluice().then(clearError).catch(showError);
+  // WEIRLINGS. Loaded on tab selection like the other expensive views, and it is the one view
+  // whose EMPTY state is a real answer ("nothing is registered"), so it must be loaded on
+  // selection rather than left to a refresh timer.
+  if (name === "weirlings") loadWeirlings().then(clearError).catch(showError);
   if (name === "health") loadHealthDeep().then(clearError).catch(showError);
 }
 

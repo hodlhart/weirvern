@@ -78,7 +78,8 @@ async function main() {
   const order = [];
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
-        JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js"]),
+        JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
+                                                 "/weirlings.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -105,15 +106,40 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
+                   loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
+                   wlStateChip, wlLoss, saveWeirling, clearWeirlingForm,
+                   setWeirlingEnabled, revokeWeirling,
                    document,
-                   // A SETTER, not a value. fetchOverride is a LET inside this eval scope, so
-                   // exposing its current VALUE would hand the outer checks a snapshot that no
-                   // later assignment updates -- every failure-path check would then run against a
-                   // null override and quietly test nothing, which is how a failure-path test
-                   // passes while proving nothing at all.
-                   setFetchOverride: (fn) => { fetchOverride = fn; } };
+                   document };
+
   `;
   try {
+    // THE OVERRIDE MECHANISM. There is NO setFetchOverride on `__H`, and there must not be.
+    //
+    // `__H` is built INSIDE the evaluated bundle and `fetchOverride` is a `let` in the enclosing
+    // function scope. A setter defined in the bundle closes over GLOBAL scope because
+    // `window.eval` runs it there, so `H.setFetchOverride(fn)` mutates a binding the dispatcher
+    // never reads: the check that used it ran against whatever override was last active and passed
+    // while proving nothing. Measured, and mutation-tested both ways.
+    //
+    // `fetchOverride = fn`, assigned DIRECTLY from this scope, is the only supported form. Three
+    // checks here used the setter, including a pre-existing sluice failure-path check that had been
+    // passing on a stale panel rather than on the path it is named for.
+    //
+    // (This replaced a note that said the opposite. It was wrong: kept as a marker so the same
+    // mistake is not re-introduced.)
+    //
+    // `window.__H` is an object literal built inside the evaluated bundle, and `fetchOverride` is
+    // a `let` in the enclosing function scope. So `H.fetchOverride = fn` creates a NEW property
+    // that the dispatcher never reads: the check that set one then runs against whatever override
+    // was last active, and passes while proving nothing. Measured -- the assignment silently did
+    // nothing, and three checks in this file were written that way, including a pre-existing
+    // sluice failure-path check that had been passing on a stale panel rather than on the path it
+    // is named for.
+    //
+    // `fetchOverride = fn`, assigned DIRECTLY from this scope, is the only form that works. A
+    // setter exposed on `__H` cannot: the bundle runs through `window.eval`, so anything it
+    // defines closes over global scope. That is WHY there is no setter.
     window.eval(bundle + epilogue);
   } catch (e) {
     failures.push(`  FAIL  the bundle threw at load: ${e.message}`);
@@ -567,6 +593,98 @@ const IDENTITY_PAYLOAD = {
                              json: async () => ({ available: true, reason: "", points: [] }) });
   };
 
+
+// ── WEIRLINGS: the fleet ──────────────────────────────────────────────────────────────────────
+//
+// SHAPED LIKE THE REAL SERVER'S PAYLOAD, with every key `fleet_store._health_to_json` emits.
+// A fixture invented beside the renderer would encode the renderer's own assumptions and could
+// not detect that the two sides disagree about a field name -- and a missing key kills the whole
+// panel at the first formatter call rather than degrading one row.
+//
+// THE ROWS ARE CHOSEN TO MAKE EVERY DISTINCTION THIS VIEW EXISTS FOR VISIBLE:
+//   * an ALIVE sensor with a measured loss,
+//   * a STALE one that ran and stopped (the finding must say so, not just "no heartbeat"),
+//   * a NEVER-SEEN one -- registered and silent, which is a different fact from stale,
+//   * an UNREGISTERED one feeding the hub that nobody declared,
+//   * a DISABLED one, whose silence is EXPECTED and must not be raised,
+//   * a sensor with capture loss as NULL, which must render as a dash and not 0.0%,
+//   * a sensor whose DECLARED segment disagrees with the one it REPORTS.
+const WEIRLINGS_PAYLOAD = {
+  available: true,
+  reason: null,
+  heartbeats_available: true,
+  heartbeat_reason: null,
+  summary: { total: 6, registered: 5, problems: 4, alive: 1, stale: 1, never_seen: 1,
+             unregistered: 1, disabled: 1 },
+  sensors: [
+    {
+      sensor_id: "edge-alive", state: "alive", is_problem: false,
+      address: "198.51.100.7", segment: "third floor", reported_segment: "third floor",
+      expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
+      age_s: 4.0, last_seen: "2026-09-23T12:00:00+00:00",
+      capture_loss_pct: 0.0, packets_recv: 900000, packets_dropped: 0, hosts: 12,
+      note: "ops owns this one", stale_after_s: 45,
+      findings: ["reporting normally, last heard 4s ago."],
+    },
+    {
+      sensor_id: "edge-stopped", state: "stale", is_problem: true,
+      address: "", segment: "second floor", reported_segment: "",
+      expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
+      age_s: 900.0, last_seen: "2026-09-23T11:45:00+00:00",
+      capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
+      note: "", stale_after_s: 45,
+      findings: ["last reported 900s ago, past the 45s freshness window, so it has stopped. It ran "
+        + "and then stopped, which is different from never starting: look for why it died rather "
+        + "than why it never came up.",
+        "no capture-loss measurement, so packet loss is unknown rather than zero."],
+    },
+    {
+      sensor_id: "edge-promised", state: "never_seen", is_problem: true,
+      address: "198.51.100.9", segment: "fourth floor IDF", reported_segment: "",
+      expected_mode: "siphon", reported_mode: "", enabled: true, registered: true,
+      age_s: null, last_seen: null,
+      capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
+      note: "waiting on the switch port", stale_after_s: 45,
+      findings: ["registered but has never reported. Check that it can reach this hub.",
+        "this sensor was registered as IN-PATH (siphon), so the segment it covers may be waiting "
+        + "on an intercept that has never run."],
+    },
+    {
+      sensor_id: "ghost-box", state: "unregistered", is_problem: true,
+      address: "198.51.100.44", segment: "", reported_segment: "",
+      expected_mode: "", reported_mode: "loch", enabled: false, registered: false,
+      age_s: 2.0, last_seen: "2026-09-23T12:00:00+00:00",
+      capture_loss_pct: 3.5, packets_recv: 1000, packets_dropped: 35, hosts: 3,
+      note: "", stale_after_s: 45,
+      findings: ["this sensor is feeding the hub but is not registered, so nobody declared it."],
+    },
+    {
+      sensor_id: "edge-off", state: "disabled", is_problem: false,
+      address: "", segment: "spare", reported_segment: "",
+      expected_mode: "loch", reported_mode: "", enabled: false, registered: true,
+      age_s: 90000.0, last_seen: "2026-09-22T11:00:00+00:00",
+      capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
+      note: "pulled for maintenance", stale_after_s: 45,
+      findings: ["this sensor is registered but switched off, so it is not expected to report."],
+    },
+    {
+      sensor_id: "edge-moved", state: "alive", is_problem: false,
+      address: "198.51.100.60", segment: "fifth floor", reported_segment: "sixth floor",
+      expected_mode: "loch", reported_mode: "siphon", enabled: true, registered: true,
+      age_s: 9.0, last_seen: "2026-09-23T12:00:00+00:00",
+      capture_loss_pct: 62.5, packets_recv: 400, packets_dropped: 250, hosts: 5,
+      note: "", stale_after_s: 45,
+      findings: ["reporting normally, last heard 9s ago.",
+        "registered for segment 'fifth floor' but reporting 'sixth floor'.",
+        "capture loss is 62.5%: this sensor is blind to most of what is on the wire."],
+    },
+  ],
+};
+
+const WEIRLINGS_DETAIL_PAYLOAD = {
+  available: true, reason: null, sensor: WEIRLINGS_PAYLOAD.sensors[1],
+};
+
   // The routes, each registered with the payload it serves. One list, so a payload cannot be
   // declared and then forgotten.
   ROUTES.push(
@@ -578,6 +696,14 @@ const IDENTITY_PAYLOAD = {
     ["/api/users", USERS_PAYLOAD],
     ["/api/identity", IDENTITY_PAYLOAD],
     ["/api/sluice", SLUICE_PAYLOAD],
+
+    // WEIRLINGS. The DETAIL route is registered BEFORE the list route on purpose: the
+    // dispatcher takes the FIRST prefix match, and /api/weirlings/detail begins with
+    // /api/weirlings -- registered the other way round, every drill-down would be served the
+    // whole fleet and the detail panel would render the wrong sensor's data under the right
+    // sensor's name, which is worse than rendering nothing.
+    ["/api/weirlings/detail", WEIRLINGS_DETAIL_PAYLOAD],
+    ["/api/weirlings", WEIRLINGS_PAYLOAD],
 
 
     // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
@@ -1901,7 +2027,7 @@ check("a rule with no reason says so rather than showing blank",
 // calling it twice in a row reloads NOTHING and this check would pass or fail on a stale panel
 // rather than on the failure path it is named for. Switching to another view first is what makes
 // the second call actually run the loader.
-H.fetchOverride = (u) => (String(u).includes("/api/sluice")
+fetchOverride = (u) => (String(u).includes("/api/sluice")
   ? Promise.reject(new Error("sluice unavailable"))
   : null);
 H.showView("overview");
@@ -1910,9 +2036,9 @@ await H.showView("sluice");
 // A TRANSPORT FAILURE, not a route answering with available:false -- different code paths. This
 // drives the loader DIRECTLY with the failure in place, because showView attaches its own catch and
 // the point here is what the LOADER does when the request never produces a response.
-H.setFetchOverride((url) => (String(url).includes("/api/sluice")
+fetchOverride = (url) => (String(url).includes("/api/sluice")
   ? Promise.reject(new Error("sluice query failed"))
-  : null));
+  : null);
 await H.loadSluice().catch(() => {});
 await new Promise((r) => setTimeout(r, 60));
 // THE LOADER'S CONTRACT, tested directly. The harness's stub dispatcher does not hand a rejected
@@ -1933,6 +2059,124 @@ check("a FAILED gate query cannot return quietly",
       loadBodyTrimmed.includes("catch"),
       "loadSluice has no catch around its request, so a transport failure would leave the panel "
       + "looking like an empty gate");
+
+// ── WEIRLINGS: every state must LOOK like what it is ──────────────────────────────────────────
+//
+// The tab exists to keep five states apart, because each needs a different action from the
+// operator. The failure mode this guards is the project's most-named one: a view that renders
+// something plausible while collapsing two facts that require opposite responses. So these
+// checks assert the DISTINCTIONS, not merely that rows appeared.
+await H.showView("weirlings");
+const wlText = () => (H.document.getElementById("view-weirlings") || {}).textContent || "";
+// POLL rather than sleep: showView fires loadWeirlings without awaiting it, and a fixed delay is
+// a guess about stub latency that gets more fragile as the payload grows.
+for (let i = 0; i < 40 && !wlText().includes("edge-alive"); i++) {
+  await new Promise((r) => setTimeout(r, 20));
+}
+
+check("the Weirlings tab exists and renders the fleet",
+      wlText().includes("edge-alive") && wlText().includes("edge-stopped"));
+
+check("a NEVER-SEEN sensor is distinguishable from a STALE one",
+      wlText().includes("never seen") && wlText().includes("stale"),
+      "both render as 'no fresh heartbeat'; collapsing them sends an operator to the logs of a "
+      + "sensor that never wrote any");
+
+check("a never-seen IN-PATH sensor says the segment may be waiting",
+      wlText().includes("IN-PATH") || wlText().includes("in-path"),
+      "an in-path sensor that never came up is more urgent than a passive one and must say why");
+
+check("an UNDECLARED sensor is reported as unregistered",
+      wlText().includes("unregistered"),
+      "a sensor feeding the hub that nobody declared is security-relevant, the same class as an "
+      + "unexpected NetFlow exporter");
+
+check("a DISABLED sensor is shown as disabled, not as a fault",
+      wlText().includes("disabled"),
+      "switched-off sensors are not problems; raising them trains the reader to ignore the column");
+
+// ── measured-zero vs not-measured, at the DOM ────────────────────────────────────────────────
+// The em dash is what an unmeasured value renders as. Asserting the DASH and not merely
+// "something rendered": 0.0% for a sensor that measured nothing would read as a perfect sensor.
+{
+  const rows = [...H.document.querySelectorAll("#wl-table tbody tr")];
+  const rowFor = (id) => rows.find((tr) => (tr.textContent || "").includes(id));
+  const stopped = rowFor("edge-stopped");
+  const alive = rowFor("edge-alive");
+  check("an UNMEASURED capture loss renders as a dash, not as 0.0%",
+        stopped && /\u2014|—/.test(stopped.textContent || ""),
+        "an unmeasured value rendered as 0.0% reports a sensor that has measured nothing as a "
+        + "perfect one");
+  check("a MEASURED zero loss renders as a real figure",
+        alive && (alive.textContent || "").includes("0.0%"),
+        "0.0% is 'we looked, nothing was lost' and must stay a measurement");
+}
+
+check("a segment the sensor CONTRADICTS is surfaced, not silently overwritten",
+      wlText().includes("sixth floor"),
+      "the declared segment and the observed one are different facts; letting the declaration "
+      + "win makes a sensor covering the wrong segment look correctly placed");
+
+check("high capture loss is called out in the fleet",
+      wlText().includes("62.5"),
+      "capture loss is the only field showing a sensor is blind to most of what is on the wire");
+
+// ── the drill-down ───────────────────────────────────────────────────────────────────────────
+{
+  const btn = [...H.document.querySelectorAll("#wl-table button")]
+    .find((b) => (b.textContent || "") === "edge-stopped");
+  check("a fleet row opens that sensor's drill-down", !!btn);
+  if (btn) {
+    btn.click();
+    for (let i = 0; i < 40 && !(H.document.getElementById("wl-detail-body").textContent || "")
+         .includes("why it died"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const body = H.document.getElementById("wl-detail-body").textContent || "";
+    check("the drill-down shows the REASON, not just the state word",
+          body.includes("why it died"),
+          "a state word alone cannot tell the operator whether the box is off or its capture died");
+    check("the drill-down separates DECLARED from REPORTED",
+          body.includes("declared") && body.includes("reported"),
+          "one is a claim somebody made and the other is a fact the sensor produced");
+    H.document.getElementById("wl-detail-close").click();
+  }
+}
+
+// ── an outage must never render as an empty fleet ────────────────────────────────────────────
+// THE MOST IMPORTANT CHECK HERE. "the registry could not be read" and "you have no sensors" are
+// opposite facts -- an outage and a fresh install -- and both render as a calm empty table.
+{
+  // THE SETTER, which is the ONLY mechanism that reaches the dispatcher. A plain
+  // `H.fetchOverride = fn` creates a property nothing reads, so a check written that way runs
+  // against whatever override was last active and can pass while proving nothing -- which is what
+  // three checks in this file were doing, including the pre-existing sluice failure-path check.
+  fetchOverride = (u) => (String(u).includes("/api/weirlings")
+    ? Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                        json: async () => ({ available: false,
+                                             reason: "the weirling registry could not be read",
+                                             sensors: [], summary: null,
+                                             heartbeats_available: false,
+                                             heartbeat_reason: null }) })
+    : null);
+  // LEAVE AND COME BACK. `showView` returns early when the target view is already active, so
+  // calling it again would reload NOTHING and the check would pass or fail against a stale panel
+  // rather than against the failure path it is named for.
+  H.showView("overview");
+  await new Promise((r) => setTimeout(r, 20));
+  await H.showView("weirlings");
+  await H.loadWeirlings().catch(() => {});
+  await new Promise((r) => setTimeout(r, 80));
+  const txt = wlText();
+  check("an unreadable registry says so instead of showing an empty fleet",
+        txt.includes("registry could not be read") || txt.includes("Fleet unknown"),
+        "a blank table during a registry outage reads as good news");
+  const banner = H.document.getElementById("data-banner");
+  check("an unreadable registry raises the data banner",
+        !!banner && (banner.textContent || "").includes("registry"),
+        "the panel-level reason explains the blank table; the banner explains the whole view");
+  fetchOverride = null;
+}
 
 check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

@@ -107,6 +107,7 @@
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="identity">Identity</button>
   <button class="tab" data-view="sluice">Sluice Gate</button>
+  <button class="tab" data-view="weirlings">Weirlings</button>
   <button class="tab" data-view="models">Models</button>
   <button class="tab" data-view="settings">Settings</button>
 </nav>
@@ -752,6 +753,97 @@
     </div>
   </section>
 
+  <section id="view-weirlings" class="view">
+    <div class="card">
+      <h2>Weirlings</h2>
+      <p class="muted">
+        The fleet: every sensor this hub expects to hear from, compared against what it has
+        actually heard. A weirling is any additional sensor elsewhere in the network feeding this
+        hub &mdash; a Zeek sensor on another segment, or a box exporting flows to the collector.
+        This view exists to tell <strong>you registered one and it never said anything</strong>
+        apart from <strong>you have no sensors</strong>, which are opposite facts that look
+        identical everywhere else.
+      </p>
+      <!-- THE FLEET'S OWN STATE, FIRST. An operator's first question is "is anything broken", and
+           the answer is not the sensor count. -->
+      <div id="wl-summary" class="stat-row"></div>
+      <p id="wl-summary-note" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Register a sensor <span id="wl-form-mode" class="muted"></span></h2>
+      <p class="muted">
+        Registering records the <strong>expectation</strong>, so a sensor that never comes up can
+        be reported as missing rather than being invisible. It does not configure the remote box:
+        nothing here can reach it, and a sensor begins reporting when its own exporter or Zeek
+        instance points at this hub.
+      </p>
+      <div class="grid2">
+        <label>sensor id (required)
+          <input id="wl-id" type="text" placeholder="floor3-idf">
+        </label>
+        <label>segment (optional)
+          <input id="wl-segment" type="text" placeholder="third floor IDF, in the operator's words">
+        </label>
+        <label>address (optional, often unknown yet)
+          <input id="wl-address" type="text" placeholder="198.51.100.7 &mdash; leave empty if not known">
+        </label>
+        <label>expected mode
+          <select id="wl-mode">
+            <option value="loch" selected>loch &mdash; passive (SPAN port or tap)</option>
+            <option value="siphon">siphon &mdash; in the traffic path</option>
+          </select>
+        </label>
+      </div>
+      <label>note (optional)
+        <input id="wl-note" type="text" placeholder="who to ask about this box">
+      </label>
+      <div class="controls">
+        <button id="wl-save" class="primary">Register</button>
+        <button id="wl-cancel" class="hidden">Cancel edit</button>
+        <span id="wl-save-note" class="muted"></span>
+      </div>
+      <p class="muted">
+        An address is refused rather than guessed: registering a network instead of one box would
+        put a sensor at an address it does not have. Empty means <em>not known yet</em>, and the
+        first heartbeat fills it in for display.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Fleet <span id="wl-count" class="muted"></span></h2>
+      <div class="controls">
+        <button id="wl-reload">Reload</button>
+        <label class="muted"><input id="wl-problems-only" type="checkbox"> problems only</label>
+        <label class="muted"><input id="wl-revoked" type="checkbox"> include revoked</label>
+      </div>
+      <table id="wl-table">
+        <thead>
+          <tr>
+            <th>sensor</th><th>state</th><th>address</th><th>segment</th>
+            <th>last heard</th><th>loss</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="wl-empty" class="empty"></p>
+    </div>
+
+    <!-- DRILL-DOWN. The finding text is the whole point of this panel: a state word alone does
+         not say whether "stale" means the box is powered off or its capture died. -->
+    <div class="card hidden" id="wl-detail-card">
+      <h2>Sensor <span id="wl-detail-id" class="muted"></span></h2>
+      <div id="wl-detail-body"></div>
+      <div class="controls">
+        <button id="wl-detail-enable" class="hidden"></button>
+        <button id="wl-detail-disable" class="hidden"></button>
+        <button id="wl-detail-revoke" class="hidden"></button>
+        <button id="wl-detail-close">Close</button>
+        <span id="wl-detail-note" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
   <section id="view-settings" class="view">
     <div class="card">
       <h2>Settings <span class="muted" id="st-window"></span></h2>
@@ -921,6 +1013,7 @@
 <script src="/soc.js"></script>
 <script src="/assets.js"></script>
 <script src="/sluice.js"></script>
+<script src="/weirlings.js"></script>
 </body>
 </html>
 

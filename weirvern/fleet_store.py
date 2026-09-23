@@ -220,7 +220,8 @@ def read_heartbeats(client: Client) -> tuple[list[dict], str | None]:
         return [], "sensor heartbeats are unavailable, so this shows registrations only"
 
 
-def build_fleet(client: Client, *, now: datetime | None = None) -> dict:
+def build_fleet(client: Client, *, now: datetime | None = None,
+                problems_only: bool = False) -> dict:
     """The fleet view's payload: availability, the rows, and the counts.
 
     THE ENVELOPE IS RETURNED, NOT A BARE LIST. `available: false` with a `reason` is how the
@@ -249,11 +250,21 @@ def build_fleet(client: Client, *, now: datetime | None = None) -> dict:
         }
 
     health = fleet(regs, heartbeats, now=now)
+    # THE FILTER IS APPLIED TO THE OBJECTS, NOT TO THE SERIALISED ROWS. Filtering on a payload key
+    # would read a DERIVED field as though it were a database column -- the schema auditor flagged
+    # exactly that, and it was right to: `is_problem` is computed here, not stored anywhere.
+    summary = summarise(health)
+    if problems_only:
+        health = [h for h in health if h.is_problem]
     return {
         "available": True,
         "reason": None,
         "sensors": [_health_to_json(h) for h in health],
-        "summary": summarise(health),
+        # The SUMMARY IS OF THE WHOLE FLEET, even when the rows are filtered: "showing problems
+        # only" with every count reduced to the filtered subset would report a fleet of four
+        # problems and no healthy sensors, which is a different and false statement.
+        "summary": summary,
+        "filtered": problems_only,
         "heartbeats_available": hb_error is None,
         "heartbeat_reason": hb_error,
     }
