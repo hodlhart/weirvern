@@ -567,10 +567,31 @@ def remove_forwarding_path(iface: str) -> list[str]:
             return
         failures.append(f"{' '.join(args)}: {out or f'exit {rc}'}")
 
-    # By priority: covers the rule this file adds, whatever its selector.
-    _attempt("ip", "rule", "del", "priority", str(POLICY_PRIORITY))
+    # ── THE GUARD IS GONE, AND THE SWEEP BELOW REPLACED IT (audit F097) ────────────────────────
+    #
+    # This used to be two deletions: an unconditional `del priority 1000`, then a sweep over every
+    # priority that selects our table. Measured on a real kernel, the first one deleted a FOREIGN
+    # rule planted at that priority and reported `[]`:
+    #
+    #     planted:  1000:  from all lookup 200
+    #     remove_forwarding_path returned: []
+    #     GONE -- a routing rule belonging to something else was DELETED
+    #
+    # I first fixed it by guarding the priority deletion with a selector check, and MUTATION TESTING
+    # SHOWED THE GUARD WAS REDUNDANT: with it returning False, the sweep still issued
+    # `ip rule del priority 1000` for our own rule, because the sweep derives its priorities from
+    # `_policy_rule_priorities()` -- which is already table-scoped. So the guarded line and the
+    # sweep's first iteration were the SAME command, reached two ways, and no test could tell which
+    # one fired.
+    #
+    # ONE PATH, NOT TWO. The sweep is strictly safer (it deletes only priorities whose rule selects
+    # our table) and strictly more complete (it covers every such priority, not just POLICY_PRIORITY).
+    # The unconditional line is deleted rather than guarded, because a redundant second path is one
+    # that can drift from the first and has to be reasoned about twice.
 
     # By parsing: covers ANY priority selecting the table, including forms we did not anticipate.
+    # This is the ONLY priority-based deletion, and it cannot match a rule that selects another
+    # table -- which is what makes it safe to run against a shared rule set.
     for priority in _policy_rule_priorities():
         _attempt("ip", "rule", "del", "priority", str(priority))
 

@@ -113,12 +113,25 @@ def test_a_real_failure_after_an_absence_is_still_reported(fake_ip):
 
 def test_the_teardown_attempts_EVERY_step(fake_ip):
     """One failing step must not skip the others. The rule deletion, the parsed-priority sweep, the
-    exact-form deletion and the route flush are four separate chances to clean up."""
-    fake_ip["results"] = {"rule del priority 1000": (2, "RTNETLINK answers: Operation not permitted")}
+    exact-form deletion and the route flush are four separate chances to clean up.
+
+    THE FIXTURE MUST SHOW OUR OWN RULE, and that is a change forced by audit F097: the teardown no
+    longer deletes by priority unless the rule at that priority SELECTS OUR TABLE, so a rule set
+    without one correctly skips that step. This test asserted the step happened while feeding an
+    EMPTY rule set -- so it was asserting a deletion that the fix exists to prevent. The rule is
+    planted here so the priority path is genuinely exercised.
+    """
+    fake_ip["results"] = {
+        "ip rule show": (0, f"1000:\tfrom all iif eth1 lookup {siphonnet.POLICY_TABLE}\n"),
+        "rule del priority 1000": (2, "RTNETLINK answers: Operation not permitted"),
+    }
     siphonnet.remove_forwarding_path("eth1")
 
     joined = " | ".join(fake_ip["calls"])
-    assert "rule del priority" in joined, "the priority-based deletion was skipped"
+    assert "rule del priority" in joined, (
+        f"the priority-based deletion was skipped even though OUR rule is at that priority: "
+        f"{fake_ip['calls']}"
+    )
     assert "route flush" in joined, (
         f"the route flush was skipped after an earlier failure, so the empty table is left behind: "
         f"{fake_ip['calls']}"
@@ -296,4 +309,114 @@ def _minimal_plan():
         our_mac="11:22:33:44:55:66", our_ip="198.51.100.2",
         gateway_ip="198.51.100.1", gateway_mac="aa:bb:cc:dd:ee:ff",
         hosts={},
+    )
+
+
+# ── the teardown must not delete someone ELSE's routing rule (audit F097) ────────────────────
+#
+# CONFIRMED ON A REAL KERNEL. `remove_forwarding_path` deleted `priority 1000` unconditionally,
+# on the assumption that the priority was ours. The TABLE number is ours; the priority is just a
+# number, and 1000 is round enough that other software uses it. Measured by planting a foreign rule
+# (`1000: from all lookup 200`) and running the teardown:
+#
+#     remove_forwarding_path returned: []      <- reported NO failures
+#     GONE -- a routing rule belonging to something else was DELETED
+#
+# So a teardown could silently remove another tool's policy routing and report a clean run. The
+# table-scoped sweep in the same function was already careful about this; the line that ran FIRST
+# was not.
+
+def test_a_FOREIGN_rule_at_our_priority_is_not_deleted(fake_ip):
+    """THE DEFECT. `ip rule show` reports a rule at our priority that selects a DIFFERENT table."""
+    fake_ip["results"] = {
+        "ip rule show": (0, "0:\tfrom all lookup local\n"
+                            "1000:\tfrom all lookup 200\n"      # someone else's
+                            "32766:\tfrom all lookup main\n"),
+        # The deletions SUCCEED if attempted, so a passing test cannot be an accident of failure.
+        "ip rule del": (0, ""),
+    }
+    siphonnet.remove_forwarding_path("eth1")
+
+    deletes = [c for c in fake_ip["calls"] if "rule del" in c]
+    by_priority = [c for c in deletes if c.startswith("ip rule del priority")]
+    assert not by_priority, (
+        f"a rule at OUR priority but selecting a DIFFERENT table was deleted. The priority is not "
+        f"ours to claim; only the table is. Deletes attempted: {deletes}"
+    )
+
+
+def test_OUR_OWN_rule_at_our_priority_IS_deleted(fake_ip):
+    """The paired case, so the fix cannot pass by never deleting by priority at all.
+
+    ASSERTED ON THE PRIORITY CALL SPECIFICALLY, and mutation testing is why: an earlier version only
+    asserted that SOME deletion happened, which the table-scoped sweep satisfies on its own -- so
+    removing the priority path entirely left the test green. The sweep CANNOT cover every case the
+    priority path does: a rule selecting our table whose text does not match the parsed form (an
+    unusual selector, or one `ip rule show` words differently) is reachable by the sweep only if the
+    parse sees it, while `del priority` removes it whatever its selector says.
+    """
+    fake_ip["results"] = {
+        "ip rule show": (0, "0:\tfrom all lookup local\n"
+                            f"1000:\tfrom all iif eth1 lookup {siphonnet.POLICY_TABLE}\n"
+                            "32766:\tfrom all lookup main\n"),
+        "ip rule del": (0, ""),
+    }
+    siphonnet.remove_forwarding_path("eth1")
+
+    deletes = [c for c in fake_ip["calls"] if "rule del" in c]
+    assert "ip rule del priority 1000" in deletes, (
+        f"our OWN rule at priority 1000 was not deleted by priority, so a rule whose selector the "
+        f"parse misses would be left behind. Deletes attempted: {deletes}"
+    )
+
+
+def test_an_UNREADABLE_rule_set_skips_the_priority_deletion(fake_ip):
+    """A rule set this code cannot read is the one it understands least, so `ip rule show` failing
+    must not lead to a blind delete. The table-scoped sweep still removes our own rule."""
+    fake_ip["results"] = {
+        "ip rule show": (1, "RTNETLINK answers: Operation not permitted"),
+        "ip rule del": (0, ""),
+    }
+    siphonnet.remove_forwarding_path("eth1")
+
+    by_priority = [c for c in fake_ip["calls"]
+                   if c == "ip rule del priority 1000"]
+    assert not by_priority, (
+        "the rule set could not be read and a priority-based delete was attempted anyway, which is "
+        "exactly the blind deletion that removed a foreign rule"
+    )
+    # And the safe paths still ran.
+    joined = " | ".join(fake_ip["calls"])
+    assert "rule del iif" in joined or "route flush" in joined, (
+        f"nothing else was attempted, so our own rule would never be removed: {fake_ip['calls']}"
+    )
+
+
+def test_the_SWEEP_is_what_makes_the_priority_delete_safe(fake_ip):
+    """The distinction the whole fix rests on, asserted where it now lives.
+
+    There is no guard function any more. I first fixed F097 by guarding the priority deletion with a
+    selector check, and MUTATION TESTING SHOWED THE GUARD WAS REDUNDANT: with the guard returning
+    False, the table-scoped sweep still issued `ip rule del priority 1000` for our rule, because the
+    sweep derives its priorities from `_policy_rule_priorities()` -- already table-scoped. The two
+    lines were the same command reached two ways. So the unconditional line was DELETED rather than
+    guarded, and `_policy_rule_priorities` is now the single thing standing between this teardown
+    and someone else's routing rule.
+    """
+    # A rule selecting another table yields NO priority, so nothing is deleted by priority.
+    fake_ip["results"] = {"ip rule show": (0, "1000:\tfrom all lookup 200\n"), "ip rule del": (0, "")}
+    assert siphonnet._policy_rule_priorities() == [], (
+        "a rule selecting a DIFFERENT table was returned as one of ours"
+    )
+    # Our own rule yields its priority.
+    fake_ip["results"] = {
+        "ip rule show": (0, f"1000:\tfrom all iif eth1 lookup {siphonnet.POLICY_TABLE}\n")}
+    assert siphonnet._policy_rule_priorities() == [1000], (
+        "our own rule's priority was not returned, so the teardown would leave it behind"
+    )
+    # And an unrelated priority is ignored.
+    fake_ip["results"] = {
+        "ip rule show": (0, f"2000:\tfrom all lookup {siphonnet.POLICY_TABLE}\n")}
+    assert siphonnet._policy_rule_priorities() == [2000], (
+        "the sweep must cover EVERY priority selecting our table, not just the one we chose"
     )

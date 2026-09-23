@@ -868,8 +868,8 @@
       "severity": "MEDIUM",
       "area": "Siphon",
       "title": "`ip rule del priority 1000` can delete a foreign routing rule, silently",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED ON A REAL KERNEL, then fixed -- and the fix took two attempts, the second corrected by mutation testing. `remove_forwarding_path` deleted `priority 1000` UNCONDITIONALLY, assuming the priority was ours. The TABLE number (100) is ours; the priority is just a number and 1000 is round enough that other software uses it. MEASURED: planted a foreign rule `1000: from all lookup 200`, ran the teardown, and the rule was DELETED while the function returned [] -- reporting no failures. Silent damage to another tool's policy routing, from a function whose job is to clean up after itself. The table-scoped sweep in the same function was already careful about this; the unconditional line ran FIRST. FIRST FIX (guarded the deletion with a selector check) WAS REDUNDANT, which mutation testing caught: with the guard returning False, the sweep still issued `ip rule del priority 1000` for our rule, because the sweep derives priorities from `_policy_rule_priorities()` which is already table-scoped. The two lines were the SAME command reached two ways, so no test could distinguish them and removing the priority path entirely left the suite green. FINAL FIX: the unconditional line is DELETED, not guarded, leaving the table-scoped sweep as the single priority-based deletion -- strictly safer (it can only match a rule selecting OUR table) and strictly more complete (every such priority, not just POLICY_PRIORITY). The guard helper was removed with it, since dead code is one more thing to reason about. VERIFIED ON THE REAL KERNEL with both rules planted at once: priority 1000 (foreign, table 200) SURVIVED, and priority 1001 (ours, table 100 -- a priority the OLD code would never have touched) was REMOVED. 15 tests in the module, 3 mutations caught including reinstating the unconditional delete, dropping the table filter, and sweeping only our fixed priority.",
       "report": "kr2",
       "id": "F097"
     },
