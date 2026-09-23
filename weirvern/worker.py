@@ -563,6 +563,160 @@ def _save_detect_cursor(settings, covered_through: datetime) -> None:
         )
 
 
+def _true_cardinalities(client: Client, since: str) -> dict[tuple, dict]:
+    """Exact distinct counts per (window_start, src_addr), read from the RAW flow table.
+
+    ── WHY THIS EXISTS RATHER THAN SUMMING THE PARTIALS (audit F-T1046) ────────────────────────
+
+    The aggregate tables hold one row per INSERT BLOCK, each with `uniq(dst_addr)` / `uniq(dst_port)`
+    computed over that block alone. Summing those partial counts is an UPPER BOUND: a destination
+    contacted in three blocks is counted three times.
+
+    An upper bound is the wrong direction for these numbers, because they GATE detection. T1046 fires
+    on `unique_dst_ports >= DISCOVERY_MIN_PORTS` and T1018 on `unique_dst_ips >= 20`; an inflated
+    count manufactures port-scan alerts on hosts that merely contacted the same few destinations
+    repeatedly. Trading a detection gap for false positives is not a fix.
+
+    The raw table still holds every flow, so the true distinct counts are one query away. That read
+    covers only the windows this sweep examines (one aggregation interval plus a bucket, not the
+    whole retention), and it is the only source that is actually correct.
+
+    FAILURE IS SURFACED, NOT SILENT. If the raw read fails, the caller falls back to the summed upper
+    bound and LOGS it. An approximation that a threshold reads must never be invisible, because a
+    silently approximate count is exactly how this defect went unnoticed.
+    """
+    out: dict[tuple, dict] = {}
+    try:
+        cols, rows = db.fetch_rows_named(
+            client,
+            # THE SAME EXPRESSIONS THE MATERIALIZED VIEW USES, evaluated over the WHOLE window
+            # instead of one insert block. `entropy(dst_port)`, `stddevPop` and the quantiles are
+            # per-block measurements in the aggregate tables and CANNOT be recovered from those
+            # blocks: an entropy computed over 2 ports is bounded by 1.0 no matter how many blocks
+            # are added, while T1046 requires 3.0. MEASURED on the live cluster: the fragmented
+            # windows hold per-block entropy of 0 to 0.54 and T1046's threshold is 3.0, so the
+            # collapse alone left that rule blind -- the value has to be recomputed, not folded.
+            #
+            # `WHERE dst_port > 0` and the active-minutes expression are copied from the view, so
+            # the raw path and the aggregate path describe the same population.
+            "SELECT toStartOfFiveMinute(time_flow_start) AS window_start, src_addr, "
+            "       uniqExact(dst_addr) AS n_dst_ips, uniqExact(dst_port) AS n_dst_ports, "
+            "       uniqExact((dst_addr, dst_port)) AS n_connections, "
+            "       entropy(dst_port) AS port_entropy, "
+            "       stddevPop(bytes) AS bytes_stddev, "
+            "       stddevPop(packets) AS packets_stddev, "
+            "       count(DISTINCT toStartOfMinute(time_flow_start)) AS active_minutes "
+            "FROM weirvern.flows WHERE time_flow_start >= %(since)s AND dst_port > 0 "
+            "GROUP BY window_start, src_addr",
+            since=since,
+        )
+        for r in rows:
+            rec = dict(zip(cols, r, strict=False))
+            out[(rec["window_start"], rec["src_addr"])] = {
+                "unique_dst_ips": rec["n_dst_ips"],
+                "unique_dst_ports": rec["n_dst_ports"],
+                "unique_dst_addrs": rec["n_dst_ips"],
+                "unique_connections": rec["n_connections"],
+                # Recomputed over the whole window -- see the query's comment for why folding is
+                # impossible. These are the values the RULES read, so they must be per-window.
+                "port_entropy": rec["port_entropy"],
+                "bytes_stddev": rec["bytes_stddev"],
+                "packets_stddev": rec["packets_stddev"],
+                "active_minutes": rec["active_minutes"],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not read exact distinct counts from the raw flow table (%s). Falling back to "
+            "SUMMING the partial aggregate rows, which is an UPPER BOUND: a destination seen in "
+            "several insert blocks is counted once per block, so discovery thresholds "
+            "(unique_dst_ports, unique_dst_ips) may OVERSTATE and raise scan alerts that are not "
+            "there. This sweep's cardinalities are approximate.", exc,
+        )
+    return out
+
+
+def _collapse_partial_aggregates(flows: list[dict], div_idx: dict, client: Client) -> list[dict]:
+    """Fold per-insert-block partial aggregate rows into ONE row per (window_start, src_addr).
+
+    See the call site for the measured fragmentation (93.8% of host-windows, up to 46 rows each) and
+    for why each field is folded the way it is. This function performs the fold; the reasoning and
+    the numbers live at the call site.
+
+    ROW ORDER STOPS MATTERING HERE, which is the point. Before this, whichever partial row happened
+    to arrive last silently decided every threshold -- so the same scan could be detected or missed
+    depending on the order ClickHouse returned rows in.
+    """
+    if not flows:
+        return []
+
+    keys = {(f["window_start"], f["src_addr"]) for f in flows}
+    if len(keys) == len(flows):
+        # Nothing fragmented in this window. Returned UNCHANGED rather than rebuilt, so the common
+        # case allocates nothing and every value is bit-identical to before this fix.
+        return flows
+
+    first = min(f["window_start"] for f in flows)
+    since = first.strftime("%Y-%m-%d %H:%M:%S") if hasattr(first, "strftime") else str(first)
+    exact = _true_cardinalities(client, since)
+
+    # Additive: the window's total IS the sum of its blocks.
+    ADDITIVE = ("flow_count", "total_bytes", "total_packets")
+    # Cardinality: replaced by the exact raw-table read where available. The SUM is the documented
+    # upper-bound fallback -- `_true_cardinalities` logs when that fallback is what happened.
+    CARDINALITY = ("unique_dst_ips", "unique_dst_ports", "unique_dst_addrs", "unique_connections")
+    # Estimates that arithmetic on partials cannot recover: an average of averages weights every
+    # block equally regardless of size. The LARGEST block's value is the best available estimate,
+    # because the largest block is the closest thing to the window as a whole.
+    LARGEST_BLOCK = ("avg_bytes", "avg_packets")
+    # NOT RECOVERABLE FROM PARTIALS AT ALL, and the largest block is not a substitute either:
+    # entropy over 2 ports cannot exceed 1.0 however many blocks are added, while T1046 requires
+    # 3.0. Recomputed from the raw flows by `_true_cardinalities`, which runs the materialized
+    # view's own expressions over the whole window.
+    NON_FOLDABLE = ("port_entropy", "bytes_stddev", "packets_stddev", "active_minutes")
+
+    merged: dict[tuple, dict] = {}
+    for f in flows:
+        key = (f["window_start"], f["src_addr"])
+        cur = merged.get(key)
+        if cur is None:
+            merged[key] = dict(f)
+            merged[key]["_largest_block_flows"] = f.get("flow_count") or 0
+            continue
+        for col in ADDITIVE:
+            if col in f:
+                cur[col] = (cur.get(col) or 0) + (f.get(col) or 0)
+        for col in CARDINALITY:
+            if col in f:
+                cur[col] = (cur.get(col) or 0) + (f.get(col) or 0)  # upper bound; replaced below
+        if (f.get("flow_count") or 0) > (cur.get("_largest_block_flows") or 0):
+            cur["_largest_block_flows"] = f.get("flow_count") or 0
+            for col in LARGEST_BLOCK:
+                if col in f:
+                    cur[col] = f[col]
+
+    for key, cur in merged.items():
+        cur.pop("_largest_block_flows", None)
+        # The DIVERSITY side-table is fragmented the same way and supplies the port counts T1046
+        # reads. Folded here so a rule reading `unique_dst_ports` sees the window's number.
+        div = div_idx.get(key) or {}
+        if div:
+            for col in CARDINALITY:
+                if col in div:
+                    cur[col] = (cur.get(col) or 0) + (div.get(col) or 0)
+            for col in LARGEST_BLOCK:
+                if col in div and col not in cur:
+                    cur[col] = div[col]
+        exact_key = exact.get(key)
+        if exact_key:
+            # Cardinality AND the non-foldable estimates. Both come from the same raw read, because
+            # both are per-window facts that the per-block aggregate rows cannot express.
+            for col in CARDINALITY + NON_FOLDABLE:
+                if col in exact_key:
+                    cur[col] = exact_key[col]
+
+    return list(merged.values())
+
+
 def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> list[dict]:
     """One detection pass over the last DETECT_INTERVAL_S of aggregates.
 
@@ -728,6 +882,36 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     near_misses: list[dict] = []
 
     flows: list[dict] = [dict(zip(agg_cols, r, strict=True)) for r in agg_rows]
+    # ── THE AGGREGATE TABLES HOLD PARTIAL ROWS, AND EVERY RULE READ ONE OF THEM (audit F-T1046) ─
+    #
+    # A ClickHouse materialized view fires PER INSERT BLOCK: each insert into `weirvern.flows`
+    # produces its OWN aggregate row for the same (window_start, src_addr). The target table is
+    # `MergeTree()`, not ReplacingMergeTree, so those partial rows are NEVER merged -- all of them
+    # are present, each holding the counts for the block that produced it.
+    #
+    # MEASURED ON THE LIVE CLUSTER over 24 hours:
+    #
+    #     flows_aggregated:           592 host-windows, 555 fragmented = 93.8%, worst case 46 rows
+    #     flows_aggregated_diversity: 589 host-windows, 552 fragmented = 93.7%, worst case 46 rows
+    #
+    #     one worst-case host-window, the 46 partial rows' unique_dst_ports:
+    #         [1,1,1,2,1,1,1,1,1,1,2,2,2,2, ... 2]     <- 46 values
+    #         what the sweep saw (max)     = 2 ports
+    #         what the window holds (sum)  = 81
+    #
+    # WHY THIS SILENTLY DESTROYED DISCOVERY DETECTION. Two things went wrong together and either
+    # alone would have been enough:
+    #
+    #   * `flows` was one dict PER PARTIAL ROW, so one host-window produced up to 46 scorer inputs,
+    #     each scored as if it were the whole window.
+    #   * `flow_by_key` below maps (window_start, src_addr) -> ONE row, and a plain dict assignment
+    #     means the LAST partial wins. For a scan the last block is typically the smallest, so
+    #     T1046's `ports >= DISCOVERY_MIN_PORTS` was evaluated against the LEAST informative row of
+    #     the window. A 500-port scan spread over 46 insert blocks read as 1-2 ports.
+    #
+    # Every discovery threshold counts something per window, and every count was a per-BLOCK count:
+    # that is why the finding reads "partial per-block aggregates blinding T1046/T1018".
+    flows = _collapse_partial_aggregates(flows, div_idx, client)
     for f in flows:
         key = (f["window_start"], f["src_addr"])
         # ── THE THREE SIDE-TABLES ARE MERGED IN, NOT NESTED, AND THAT IS LOAD-BEARING ────────

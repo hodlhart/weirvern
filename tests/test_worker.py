@@ -15,6 +15,7 @@ from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.worker import (
     AGG_BUCKET_S,
+    _collapse_partial_aggregates,
     _covered_through,
     _load_detect_cursor,
     _save_detect_cursor,
@@ -905,3 +906,391 @@ def test_the_cursor_ROUND_TRIPS_through_the_file(monkeypatch, tmp_path):
 
     # And a SECOND Settings over the same directory sees it too, which is the restart case.
     assert _load_detect_cursor(Settings(model_dir=str(tmp_path))) == when
+
+
+# ── PARTIAL PER-BLOCK AGGREGATES BLINDED T1046 / T1018 (F-T1046) ─────────────────────────────
+#
+# A ClickHouse materialized view fires PER INSERT BLOCK, so every insert into `weirvern.flows`
+# writes its own aggregate row for the same (window_start, src_addr). The target table is
+# `MergeTree()`, not ReplacingMergeTree, so those partial rows are NEVER merged.
+#
+# MEASURED ON THE LIVE CLUSTER over 24 hours:
+#
+#     flows_aggregated:           592 host-windows, 555 fragmented = 93.8%, worst case 46 rows
+#     flows_aggregated_diversity: 589 host-windows, 552 fragmented = 93.7%, worst case 46 rows
+#
+#     one worst-case host-window's 46 partial rows' unique_dst_ports:
+#         [1,1,1,2,1,1,1,1,1,1,2,2,2,...]     <- 46 values
+#         the sweep saw (max)     = 2 ports
+#         the window holds (sum)  = 81
+#
+# So `flows` was one dict PER PARTIAL ROW (up to 46 scorer inputs for one host-window), and
+# `flow_by_key`'s plain dict assignment meant the LAST partial won -- typically the smallest, so
+# T1046's port threshold was evaluated against the least informative row of the window.
+
+
+def _agg_row(flows, dsts, ports, byts, window=None, src="198.51.100.7"):
+    """One PARTIAL aggregate row, shaped like `flows_aggregated`."""
+    return {
+        "window_start": window or datetime(2026, 9, 23, 9, 0),
+        "window_end": (window or datetime(2026, 9, 23, 9, 0)) + timedelta(minutes=5),
+        "src_addr": src,
+        "flow_count": flows,
+        "total_bytes": byts,
+        "total_packets": flows * 2,
+        "avg_bytes": byts / max(flows, 1),
+        "avg_packets": 2.0,
+        "unique_dst_ips": dsts,
+    }
+
+
+def _raw_card_stub(monkeypatch, mapping):
+    """The raw-flow read returns TRUE distinct counts, keyed (window_start, src_addr)."""
+    import weirvern.db as db
+
+    def fake_named(client, query, **params):
+        if "uniqExact" in query:
+            return (
+                ["window_start", "src_addr", "n_dst_ips", "n_dst_ports", "n_connections",
+                 "port_entropy", "bytes_stddev", "packets_stddev", "active_minutes"],
+                [[k[0], k[1], v[0], v[1], v[2], v[3] if len(v) > 3 else 0.0,
+                  0.0, 0.0, 1] for k, v in mapping.items()],
+            )
+        return [], []
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+
+
+def test_partial_rows_COLLAPSE_to_one_row_per_host_window():
+    """THE DEFECT: up to 46 scorer inputs for one host-window, each scored as the whole window."""
+
+    # Five blocks, each seeing one destination -- the live shape.
+    partials = [_agg_row(1, 1, 1, 100) for _ in range(5)]
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(partials, {}, _C())
+    assert len(out) == 1, (
+        f"{len(partials)} partial rows for ONE host-window produced {len(out)} rows. Every scorer "
+        f"input and every threshold read is then a per-BLOCK number, not the window's"
+    )
+    assert out[0]["flow_count"] == 5, "the additive total was not folded"
+    assert out[0]["total_bytes"] == 500, "bytes were not folded"
+    assert "_largest_block_flows" not in out[0], "the internal scratch key leaked onto the row"
+
+
+def test_the_cardinality_comes_from_the_RAW_flows_not_the_sum(monkeypatch):
+    """SUMMING PARTIALS IS AN UPPER BOUND, and these numbers GATE detection.
+
+    Two blocks that each saw the SAME single destination have a true distinct count of 1; summing
+    says 2. Inflating a count that gates a scan rule manufactures port-scan alerts on hosts that
+    merely contacted the same few destinations repeatedly -- trading a detection gap for false
+    positives is not a fix.
+    """
+    W = datetime(2026, 9, 23, 9, 0)
+    # Both partial rows saw one destination, and both saw one port. The TRUE values are 1 and 1.
+    partials = [_agg_row(1, 1, 1, 100, window=W), _agg_row(1, 1, 1, 100, window=W)]
+    _raw_card_stub(monkeypatch, {(W, "198.51.100.7"): (1, 1, 1)})
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(partials, {}, _C())
+    assert len(out) == 1
+    assert out[0]["unique_dst_ips"] == 1, (
+        f"unique_dst_ips came back {out[0]['unique_dst_ips']} for a window whose true distinct "
+        f"destination count is 1 -- the summed upper bound was used where an exact value existed"
+    )
+    assert out[0]["unique_dst_ports"] == 1, "ports were not taken from the raw read"
+
+
+def test_a_scan_spread_across_blocks_is_no_longer_UNDERCOUNTED(monkeypatch):
+    """THE POINT OF THE FIX, stated as the detection question.
+
+    A 500-port scan arriving in 46 insert blocks read as 1-2 ports, which is below every discovery
+    threshold. The window's real count is what the rule must see.
+    """
+    W = datetime(2026, 9, 23, 9, 0)
+    partials = [_agg_row(1, 1, 1, 40, window=W) for _ in range(46)]  # the live worst case
+    # 500 distinct ports over the whole window, with the entropy that MANY distinct ports imply.
+    # The per-block value could never exceed log2(2) = 1.0 with the fixture's 2-port blocks, and
+    # T1046 requires 3.0 -- so this is the value the recomputation exists to produce.
+    _raw_card_stub(monkeypatch, {(W, "198.51.100.7"): (500, 500, 500, 7.9)})
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(partials, {}, _C())
+    merged = out[0]
+
+    # What the OLD code handed the rule: one partial row's single port.
+    old_view = max(p["unique_dst_ports"] if "unique_dst_ports" in p else p["unique_dst_ips"]
+                   for p in partials)
+    assert old_view == 1, "the fixture no longer models the defect"
+    assert merged["unique_dst_ports"] == 500, (
+        f"the rule sees {merged['unique_dst_ports']} ports; the window holds 500"
+    )
+    # And the threshold that was blind now fires.
+    from weirvern.attack import DISCOVERY_MIN_PORTS
+    assert old_view < DISCOVERY_MIN_PORTS, "a single partial row already cleared the threshold"
+    assert merged["unique_dst_ports"] >= DISCOVERY_MIN_PORTS, (
+        "the collapsed row STILL does not clear T1046's port threshold"
+    )
+
+
+def test_the_fallback_to_SUMMING_is_reported(monkeypatch, caplog):
+    """An approximation a threshold reads must never be invisible -- that is how this hid."""
+    import logging
+
+    import weirvern.db as db
+
+    def failing(client, query, **params):
+        raise RuntimeError("raw flow table unavailable")
+
+    monkeypatch.setattr(db, "fetch_rows_named", failing)
+    partials = [_agg_row(1, 1, 1, 100) for _ in range(2)]
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        out = _collapse_partial_aggregates(partials, {}, _C())
+
+    assert len(out) == 1, "the collapse did not happen at all when the raw read failed"
+    assert any("UPPER BOUND" in r.getMessage() for r in caplog.records), (
+        "the summed upper bound was used with no warning, so an approximate count would gate "
+        "detection silently"
+    )
+
+
+def test_a_NON_fragmented_window_is_returned_UNCHANGED(monkeypatch):
+    """The common case must not be rebuilt or re-derived: no extra work, bit-identical values."""
+    import weirvern.db as db
+
+    def must_not_be_called(client, query, **params):
+        raise AssertionError("the raw-flow read ran for a window with no fragmentation")
+
+    monkeypatch.setattr(db, "fetch_rows_named", must_not_be_called)
+    single = [_agg_row(3, 9, 9, 300)]
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(single, {}, _C())
+    assert out is single, "an unfragmented window was rebuilt, and the raw read was attempted"
+
+
+def test_partial_rows_from_SEVERAL_hosts_collapse_independently(monkeypatch):
+    """The fold is per host-window. A bug that merged across hosts would put one host's traffic on
+    another's row, which is worse than the defect being fixed."""
+    W = datetime(2026, 9, 23, 9, 0)
+    partials = [
+        _agg_row(1, 1, 1, 100, window=W, src="198.51.100.7"),
+        _agg_row(1, 1, 1, 100, window=W, src="198.51.100.7"),
+        _agg_row(2, 2, 2, 200, window=W, src="203.0.113.9"),
+        _agg_row(3, 3, 3, 300, window=W, src="203.0.113.9"),
+    ]
+    _raw_card_stub(monkeypatch, {
+        (W, "198.51.100.7"): (2, 2, 2),
+        (W, "203.0.113.9"): (5, 5, 5),
+    })
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(partials, {}, _C())
+    by_host = {r["src_addr"]: r for r in out}
+    assert len(out) == 2, f"expected one row per host, got {len(out)}"
+    assert by_host["198.51.100.7"]["flow_count"] == 2
+    assert by_host["203.0.113.9"]["flow_count"] == 5
+    assert by_host["198.51.100.7"]["unique_dst_ips"] == 2
+    assert by_host["203.0.113.9"]["unique_dst_ips"] == 5
+
+
+def test_the_SWEEP_itself_collapses_partials_not_just_the_helper(monkeypatch):
+    """THE WIRING, and mutation testing showed this was untested.
+
+    Every test above calls `_collapse_partial_aggregates` DIRECTLY, so a mutation that deleted the
+    call from `detection_sweep` was MISSED -- the helper still worked perfectly and nothing invoked
+    it. That is the same decoration trap this project keeps hitting: testing a function is not
+    testing that the product uses it.
+
+    This drives the REAL sweep with a fragmented fixture and asserts on what the SCORER received.
+    """
+    import weirvern.db as db
+    import weirvern.worker as worker_mod
+
+    W = datetime(2026, 9, 23, 9, 0)
+    # Two partial rows for ONE host-window. Additive totals must arrive as 2 flows, 200 bytes.
+    agg = [
+        ["ts", W, W + timedelta(minutes=5), "198.51.100.7", 10, 10, 10, 10, 10, 1, 1, 100, 2, 100.0, 2.0],
+        ["ts", W, W + timedelta(minutes=5), "198.51.100.7", 10, 10, 10, 10, 10, 1, 1, 100, 2, 100.0, 2.0],
+    ]
+    columns = ["kind", "window_start", "window_end", "src_addr", "c1", "c2", "c3", "c4", "c5",
+               "unique_dst_ips", "flow_count", "total_bytes", "total_packets", "avg_bytes",
+               "avg_packets"]
+
+    seen_by_scorer: list = []
+
+    def fake_named(client, query, **params):
+        if "flows_aggregated_diversity" in query:
+            return ([], [])
+        if "flows_aggregated_temporal" in query:
+            return ([], [])
+        if "uniqExact" in query:  # the raw-flow cardinality read
+            return (["window_start", "src_addr", "n_dst_ips", "n_dst_ports", "n_connections",
+                     "port_entropy", "bytes_stddev", "packets_stddev", "active_minutes"],
+                    [[W, "198.51.100.7", 1, 1, 1, 0.0, 0.0, 0.0, 1]])
+        if "weirvern.flows" in query and "window_start >=" in query:
+            return columns, agg
+        return ([], [])
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", lambda c, q, **p: [])
+
+    real_detect = worker_mod.ensemble.detect_flows
+
+    def capture(flows, *a, **kw):
+        seen_by_scorer.append(len(flows))
+        return real_detect(flows, *a, **kw)
+
+    monkeypatch.setattr(worker_mod.ensemble, "detect_flows", capture)
+
+    fake_ch, _inserted = _capturing_client()
+    worker_mod.detection_sweep(fake_ch, [StubDetector(0.9)], Settings(), ModelConfig())
+
+    assert seen_by_scorer, "the sweep never reached the scorer, so this test proves nothing"
+    assert seen_by_scorer[0] == 1, (
+        f"the scorer received {seen_by_scorer[0]} rows for ONE host-window. The collapse exists but "
+        f"`detection_sweep` does not call it, so every threshold still reads a per-BLOCK number"
+    )
+
+
+def test_ENTROPY_is_RECOMPUTED_because_the_partials_cannot_express_it(monkeypatch):
+    """THE HALF A COLLAPSE ALONE CANNOT FIX, and it took a live measurement to see.
+
+    `port_entropy` is a per-BLOCK measurement. Entropy over 2 distinct ports is bounded by
+    log2(2) = 1.0, no matter how many blocks are added -- you cannot fold your way to a larger
+    number. MEASURED on the live cluster: the fragmented windows hold per-block entropy of 0 to
+    0.54, and T1046 requires 3.0, so collapsing alone left that rule blind.
+
+    The value has to be RECOMPUTED over the whole window, with the materialized view's own
+    expression. This asserts that the recomputed value reaches the row, not merely that the
+    collapse ran.
+    """
+    W = datetime(2026, 9, 23, 9, 0)
+    # Each block saw 2 ports, so each block's entropy is at most 1.0. The window's true entropy is
+    # 7.9 -- the value a real scan produces.
+    partials = [_agg_row(1, 2, 2, 100, window=W) for _ in range(10)]
+    for p in partials:
+        p["port_entropy"] = 0.54  # the live per-block maximum
+    _raw_card_stub(monkeypatch, {(W, "198.51.100.7"): (400, 400, 400, 7.9)})
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    out = _collapse_partial_aggregates(partials, {}, _C())
+    merged = out[0]
+
+    from weirvern.attack import DISCOVERY_MIN_ENTROPY
+    assert partials[0]["port_entropy"] < DISCOVERY_MIN_ENTROPY, "the fixture no longer models it"
+    assert merged["port_entropy"] == 7.9, (
+        f"port_entropy came back {merged['port_entropy']}; the per-block value cannot exceed 1.0 "
+        f"with 2 ports, and T1046 needs {DISCOVERY_MIN_ENTROPY}"
+    )
+    assert merged["port_entropy"] >= DISCOVERY_MIN_ENTROPY, "T1046's entropy gate is still blind"
+
+
+def test_T1046_FIRES_on_a_scan_spread_across_many_blocks(monkeypatch):
+    """THE DETECTION QUESTION, end to end through the product's own mapper.
+
+    Before: the rule read one partial row (2 ports, entropy 0.54) and matched nothing.
+    After: it sees the window (400 ports, entropy 7.9) and fires.
+    """
+    from weirvern.attack import DISCOVERY_MIN_PORTS, map_techniques
+
+    W = datetime(2026, 9, 23, 9, 0)
+    partials = [_agg_row(1, 2, 2, 100, window=W) for _ in range(10)]
+    for p in partials:
+        p["port_entropy"] = 0.54
+    _raw_card_stub(monkeypatch, {(W, "198.51.100.7"): (400, 400, 400, 7.9)})
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    # What the OLD code handed the rule: the last partial row alone.
+    old_matches = map_techniques(dict(partials[-1]))
+    assert not old_matches, (
+        f"a single partial row already mapped {[m.technique.id for m in old_matches]}, so this "
+        f"fixture does not model the blindness"
+    )
+
+    merged = _collapse_partial_aggregates(partials, {}, _C())[0]
+    new_matches = map_techniques(dict(merged))
+    ids = [m.technique.id for m in new_matches]
+
+    assert "T1046" in ids, (
+        f"a 400-port scan over 10 insert blocks mapped {ids or 'NOTHING'}. The window's ports "
+        f"({merged['unique_dst_ports']} >= {DISCOVERY_MIN_PORTS}) and its entropy "
+        f"({merged['port_entropy']}) both clear T1046's gates."
+    )
+
+
+def test_the_raw_read_issues_the_VIEWS_OWN_expressions(monkeypatch):
+    """THE QUERY ITSELF, which the value-level tests cannot see.
+
+    Two mutations were MISSED before this test existed: deleting `entropy(dst_port)` from the
+    SELECT, and dropping the `dst_port > 0` filter. Both change the SQL the product issues, and
+    every other test replaces `db.fetch_rows_named` wholesale -- so the query text was never
+    examined and the mutations were invisible.
+
+    WHAT EACH MUTATION WOULD COST, so the assertions are not arbitrary:
+      * without `entropy(dst_port)` the read returns a constant, T1046's entropy gate never passes,
+        and the rule stays blind exactly as before this fix
+      * without `dst_port > 0` the read counts port 0, which the materialized view EXCLUDES, so the
+        recomputed numbers would describe a different population than the table they replace
+    """
+    import weirvern.db as db
+
+    seen: list[str] = []
+
+    def capture(client, query, **params):
+        seen.append(query)
+        return ([], [])
+
+    monkeypatch.setattr(db, "fetch_rows_named", capture)
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    # Two partials so the collapse path runs and the raw read is attempted.
+    W = datetime(2026, 9, 23, 9, 0)
+    _collapse_partial_aggregates([_agg_row(1, 1, 1, 100, window=W) for _ in range(2)], {}, _C())
+
+    assert seen, "the raw-flow read was never issued, so nothing was recomputed"
+    q = seen[0]
+
+    assert "entropy(dst_port)" in q, (
+        "the raw read does not compute entropy, so port_entropy cannot be recovered and T1046's "
+        "entropy gate stays blind"
+    )
+    assert "stddevPop" in q, (
+        "the raw read does not compute stddev, so bytes_stddev/packets_stddev stay per-block"
+    )
+    assert "dst_port > 0" in q, (
+        "the raw read counts port 0, which the materialized view EXCLUDES -- the recomputed numbers "
+        "would describe a different population than the table they replace"
+    )
+    # And the cardinalities must be exact, not approximate counts.
+    assert "uniqExact(dst_addr)" in q, "dst addresses are not counted exactly"
+    assert "uniqExact(dst_port)" in q, "ports are not counted exactly"
