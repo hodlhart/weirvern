@@ -61,7 +61,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -801,6 +801,7 @@ def enforcement_pass(
     policy: str = "off",
     max_block_s: int = 3600,
     detections: list[dict] | None = None,
+    sensor_mode: str = "",
 ) -> GateState:
     """One cycle: load rules, let detections add more, arm, and RECORD what happened.
 
@@ -814,6 +815,16 @@ def enforcement_pass(
     alone -- NOT to arm an empty ruleset, which would open the gate because the database blipped.
     Failing open on a LOST CONNECTION is right; failing open on a FAILED QUERY would mean an
     attacker who can slow the database can unblock themselves.
+
+    WHY THE SENSOR MODE IS CONSULTED AT ALL. In `loch` (passive) mode this host is a listener: it is
+    not between the segment and its gateway, so a FORWARD drop on it discards traffic that was never
+    going to reach the kernel's forward path -- nothing on the segment is affected. The gate would
+    still compile, still install, and still count its own drops, so it would read ARMED while
+    changing nothing about the network an operator was trying to stop. That is this project's
+    most-repeated failure: a green reading over work that did not happen. Rather than refuse to arm
+    (which would make the feature silently unavailable and send the operator hunting), the gate arms
+    AND reports DEGRADED with the reason, so the panel says plainly that this deployment cannot
+    enforce until siphon is on.
     """
     rules: list[Rule] = []
     try:
@@ -848,6 +859,26 @@ def enforcement_pass(
                 logger.warning("sluice: could not record a derived rule: %s", exc)
 
     state = supervisor.arm(rules)
+
+    # ── CAN THIS DEPLOYMENT ENFORCE AT ALL? ───────────────────────────────────────────────────
+    #
+    # The rules installed correctly and the kernel will count drops, but in passive mode this host
+    # is not in the path, so those drops are of traffic that was never going to traverse it. Report
+    # DEGRADED with the reason: an operator reading ARMED would believe a host had been cut off.
+    # Placed AFTER arm() on purpose -- the rules stay installed, so switching to siphon later starts
+    # enforcing immediately rather than requiring a re-arm.
+    if sensor_mode and sensor_mode != "siphon":
+        state = replace(
+            state,
+            state=GATE_STATE_DEGRADED,
+            detail=(
+                f"the rules are installed, but this sensor is in {sensor_mode} (passive) mode and "
+                "is not in the traffic path, so nothing on the segment is actually blocked. "
+                "Enforcement needs siphon mode on a segment this host sits in front of. "
+                + (state.detail or "")
+            ),
+        )
+
     try:
         store.write_gate_state(client, sensor, state)
     except Exception as exc:  # noqa: BLE001

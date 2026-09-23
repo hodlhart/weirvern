@@ -680,3 +680,77 @@ def test_a_failed_gate_query_reports_rather_than_rendering_empty():
         f"loader output: {out[:300]!r}"
     )
     assert harness.exists(), "the DOM harness has gone missing"
+
+
+# ── a passive sensor must not claim to be blocking ─────────────────────────────────────────────
+#
+# THE FAILURE THIS PINS. In `loch` mode this host is a listener, not a hop: a FORWARD drop on it
+# discards traffic that was never going to traverse it, so NOTHING on the segment is affected. The
+# rules compile, install, and count their own drops, so without this check the panel reads ARMED
+# while the operator's block does nothing -- a green reading over work that did not happen, which
+# is the failure this project keeps finding. The assertion is on the STATE because that is what the
+# GUI shows; a test on the detail string alone would pass on an ARMED gate, which is the bug.
+class _OneRuleStore:
+    """The minimum a pass needs: one live rule, a no-op state write."""
+
+    def __init__(self) -> None:
+        self.written: list[object] = []
+
+    def load_live_rules(self, client: object) -> list[Rule]:
+        return [live("r1")]
+
+    def derived_rules_for_detections(self, *a: object, **k: object) -> list[dict]:
+        return []
+
+    def create_rule(self, client: object, **spec: object) -> Rule:
+        raise AssertionError("no detections were supplied, so nothing should be created")
+
+    def write_gate_state(self, client: object, sensor: str, state: object) -> None:
+        self.written.append(state)
+
+
+def _supervisor() -> SluiceSupervisor:
+    return SluiceSupervisor(iface="eth1", mgmt_iface="eth0", backend=FakeBackend())
+
+
+def test_passive_mode_reports_degraded_not_armed():
+    from weirvern.sluice import enforcement_pass
+
+    store = _OneRuleStore()
+    state = enforcement_pass(
+        store, _supervisor(), client=object(), sensor="s1", sensor_mode="loch",
+    )
+    assert state.state == GATE_STATE_DEGRADED, (
+        f"a passive sensor reported {state.state!r}; it cannot be blocking anything on the segment"
+    )
+    assert "loch" in state.detail and "not in the traffic path" in state.detail
+
+
+def test_siphon_mode_is_not_downgraded_for_being_out_of_path():
+    """The converse, so the check cannot pass by reporting DEGRADED unconditionally."""
+    from weirvern.sluice import enforcement_pass
+
+    store = _OneRuleStore()
+    state = enforcement_pass(
+        store, _supervisor(), client=object(), sensor="s1", sensor_mode="siphon",
+    )
+    assert "not in the traffic path" not in (state.detail or "")
+
+
+def test_an_unspecified_mode_does_not_downgrade():
+    """A caller that omits the mode keeps the old behaviour: unknown is not the same as passive."""
+    from weirvern.sluice import enforcement_pass
+
+    store = _OneRuleStore()
+    state = enforcement_pass(store, _supervisor(), client=object(), sensor="s1")
+    assert "not in the traffic path" not in (state.detail or "")
+
+
+def test_the_downgrade_still_records_the_state_row():
+    """DEGRADED must still be persisted, or the GUI would keep showing the previous state."""
+    from weirvern.sluice import enforcement_pass
+
+    store = _OneRuleStore()
+    enforcement_pass(store, _supervisor(), client=object(), sensor="s1", sensor_mode="loch")
+    assert len(store.written) == 1
+    assert getattr(store.written[0], "state", None) == GATE_STATE_DEGRADED

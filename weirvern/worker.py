@@ -105,6 +105,8 @@ def _sluice_maybe(settings, client) -> None:
         sluice_store, sup, client=client, sensor=_sensor_name(settings),
         policy=settings.sluice_criticality, max_block_s=settings.sluice_max_block_s,
         detections=detections,
+        # So the pass can say plainly that a passive sensor installs rules without enforcing them.
+        sensor_mode=settings.sensor_mode,
     )
     _SLUICE["armed"] = state.holding
     logger.info("sluice gate: %s -- %s", state.state, state.detail)
