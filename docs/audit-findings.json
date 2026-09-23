@@ -131,7 +131,7 @@
       "area": "Kubernetes",
       "title": "The worker liveness probe is green over a dead detection loop",
       "verdict": "CONFIRMED",
-      "note": "CONFIRMED, and now corroborated from the OUTSIDE by the F022 investigation. The liveness probe imports `weirvern.config` only (k8s/33-worker.yaml), so it proves the interpreter and the package on disk work -- nothing about the loop -- and the loop catches broadly with `except Exception: logger.error(...); time.sleep(30)`, so a failing detection path keeps looping and keeps the probe green. MEASURED on the live box while detection was analysing zero rows: the probe and every /api/health check read ok. The comment above the probe is still correct for what it chose (importing the ML stack cost ~0.9s and was restarting a healthy worker); the gap is that nothing else probes the loop.",
+      "note": "CONFIRMED, fixed, and verified firing. The worker's liveness probe imports only `weirvern.config`, so it proves the interpreter works and cannot see a dead detection loop; the main loop catches every exception and sleeps 30s, so a permanently-failing path restarts nothing. Fixed by a new `detect_loop` health probe reading TWO independent per-cycle signals (baseline_history.computed_at, near_misses.replaced_at), either fresh being proof the loop ran. PROVEN TO FIRE against the live cluster: worker scaled to 0 -> overall ok False, ingest_freshness still ok ('newest flow 5m29s ago', data arriving) while detect_loop reported 'last cycle 9m54s ago ... so the loop has stopped'. That is the previously-invisible state: traffic flowing, detection dead.",
       "report": "k9_k8s",
       "id": "F015"
     },
@@ -157,8 +157,8 @@
       "severity": "HIGH",
       "area": "Kubernetes",
       "title": "Worker restart loses the tail position: flow history is re-read or gapped",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED BY RUNNING IT, then fixed. `tail_forever` built its `TailState()` in memory and never persisted it, so the cursor died with the process. Measured with a 6-row JSONL: two passes in ONE process inserted 6 then 0 (correct, the documented fix), and a RESTART with the file unchanged inserted 6 again. The docstring claims this failure mode solved ('re-reading the whole file from offset 0 every pass inserted every row ~12x per minute into flows, corrupting aggregates and baselines') -- the in-process case was fixed and the restart case left open, which is the same corruption at every pod restart, node reboot and image update. FIXED: the cursor is checkpointed beside the file (atomic replace) and reloaded on start, revalidated with the existing content-based `_offset_is_on_boundary` check so a cursor from before a ROTATION is discarded rather than trusted (honouring it would silently skip everything written since -- losing data is worse than duplicating it, because nothing looks wrong afterwards). Added a `stop` flag so the loop can be shut down and tested. 9 tests, 7 mutations caught. NOTE ON THE TESTS: my first version passed with the fix reverted AND with the checkpoint write deleted entirely, because it exercised load/save in isolation and never called `tail_forever` -- the defect was in tail_forever's wiring. Rewritten to run the real loop on a thread.",
       "report": "k9_k8s",
       "id": "F018"
     },

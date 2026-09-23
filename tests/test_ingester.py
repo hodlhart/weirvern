@@ -14,12 +14,21 @@ recreate changes the inode. That is a filesystem allocator detail, not the
 behaviour under test, and it made the suite pass on ext4 while failing on
 GitHub's overlayfs (inode reused). Never assert inode differences here.
 """
+import contextlib
 import json
 import os
 import tempfile
+import threading
 import time
 
-from weirvern.ingester import TailState, _offset_is_on_boundary, tail_and_insert
+from weirvern.ingester import (
+    TailState,
+    _offset_is_on_boundary,
+    load_tail_state,
+    save_tail_state,
+    tail_and_insert,
+    tail_forever,
+)
 
 
 class FakeCH:
@@ -608,3 +617,252 @@ def test_a_REAL_value_still_reaches_the_table(tmp_path):
     assert client.rows, "the tailer inserted nothing, so this test proves nothing"
     assert client.rows[0].get("answers") == "198.51.100.20"
     assert client.rows[0].get("query") == "example.test"
+
+
+# ── THE TAIL CURSOR MUST SURVIVE A RESTART (audit F018) ──────────────────────────────────────
+#
+# CONFIRMED BY RUNNING IT, not by reading. `tail_forever` built its `TailState()` in memory and
+# never wrote it anywhere, so the cursor died with the process. Measured with a 6-row JSONL: two
+# passes in ONE process inserted 6 then 0 (correct), and a restart with the file unchanged
+# inserted 6 AGAIN.
+#
+# The docstring at the top of `tail_forever` documents that failure mode as SOLVED -- "re-reading
+# the whole file from offset 0 every pass inserted every row ~12x per minute into `flows`,
+# corrupting aggregates and baselines". The in-process case was fixed; the restart case was left
+# open, which is the same corruption with a longer period.
+
+def _flow_row(i: int) -> str:
+    return json.dumps({
+        "type": "FLOW", "time": 1700000000 + i, "src_addr": f"10.0.0.{i}", "dst_addr": "198.51.100.1",
+        "src_port": 1000 + i, "dst_port": 80, "proto": "TCP", "bytes": 100, "packets": 1,
+    })
+
+
+class _CountingClient:
+    """Counts inserts. The product only needs `insert` and `query` to exist."""
+
+    def __init__(self):
+        self.inserts = 0
+
+    def insert(self, *a, **kw):
+        self.inserts += 1
+
+    def query(self, *a, **kw):
+        class _R:
+            result_rows: list = []
+
+        return _R()
+
+
+def _jsonl(tmp_path, name="flows.jsonl", rows=6):
+    p = tmp_path / name
+    p.write_text("\n".join(_flow_row(i) for i in range(rows)) + "\n")
+    return p
+
+
+def test_a_RESTART_does_not_re_ingest_the_whole_file(tmp_path):
+    """THE DEFECT. Two separate processes over one unchanged file: the second must insert 0."""
+    f = _jsonl(tmp_path)
+
+    # Run 1: a first start, which now checkpoints as it goes.
+    c1 = _CountingClient()
+    st1 = load_tail_state(str(f))
+    tail_and_insert(c1, str(f), state=st1, allow="")
+    save_tail_state(str(f), st1)
+    assert c1.inserts > 0, "run 1 ingested nothing, so this test would prove nothing"
+
+    # Run 2: A RESTART. Fresh process, state loaded from disk, same file.
+    c2 = _CountingClient()
+    st2 = load_tail_state(str(f))
+    tail_and_insert(c2, str(f), state=st2, allow="")
+    assert c2.inserts == 0, (
+        f"a restart re-ingested {c2.inserts} row(s) from an unchanged file. Every pod restart, "
+        f"node reboot and image update duplicates flow data into the aggregates and baselines"
+    )
+
+
+def test_a_restart_still_picks_up_NEW_data(tmp_path):
+    """The other half: a cursor that skips real data is worse than one that duplicates it.
+    An offset past the end of what has been read must not cause the tail to miss appends."""
+    f = _jsonl(tmp_path)
+
+    c1 = _CountingClient()
+    st1 = load_tail_state(str(f))
+    tail_and_insert(c1, str(f), state=st1, allow="")
+    save_tail_state(str(f), st1)
+
+    with f.open("a") as fh:
+        fh.write(_flow_row(99) + "\n")
+
+    c2 = _CountingClient()
+    st2 = load_tail_state(str(f))
+    tail_and_insert(c2, str(f), state=st2, allow="")
+    assert c2.inserts == 1, (
+        f"a restart after an append inserted {c2.inserts} row(s); exactly the 1 new row must be "
+        f"read. 7 means the cursor was ignored; 0 means the cursor skipped real data"
+    )
+
+
+def test_a_cursor_is_DISCARDED_when_the_file_was_replaced(tmp_path):
+    """THE ROTATION TRAP, and the reason a checkpoint is not simply trusted. An offset only means
+    something for the file instance it came from; honouring a stale cursor against a REPLACED file
+    silently skips everything written since -- losing data rather than duplicating it, which is
+    the worse of the two failures because nothing looks wrong afterwards."""
+    f = tmp_path / "flows.jsonl"
+    f.write_text("\n".join(_flow_row(i) for i in range(3)) + "\n")
+    save_tail_state(str(f), TailState(offset=50, inode=1))
+
+    # Replace it with different content whose byte 49 is NOT a line boundary.
+    f.write_text("X" * 200 + "\n" + "\n".join(_flow_row(i) for i in range(6)) + "\n")
+
+    st = load_tail_state(str(f))
+    assert st.offset == 0, (
+        f"a cursor of {st.offset} was honoured against a replaced file. Everything written since "
+        f"the rotation would be skipped, and the tail would look healthy while doing it"
+    )
+
+
+def test_a_corrupt_cursor_file_is_ignored_not_fatal(tmp_path):
+    """A truncated or hand-edited checkpoint must cost a re-read, never a crash: the cursor is an
+    optimisation, and ingestion must not depend on it being readable."""
+    f = _jsonl(tmp_path)
+    (tmp_path / "flows.jsonl.tailstate").write_text("{ this is not json")
+    assert load_tail_state(str(f)).offset == 0
+
+
+def test_an_impossible_cursor_is_ignored(tmp_path):
+    """A NEGATIVE or absent offset is not a position. Treating it as one re-reads from the start
+    or seeks backwards, and neither is what the checkpoint meant."""
+    f = _jsonl(tmp_path)
+    for bad in ('{"offset": -5, "inode": 1}', '{"inode": 1}', "{}", "[]", "null"):
+        (tmp_path / "flows.jsonl.tailstate").write_text(bad)
+        assert load_tail_state(str(f)).offset == 0, f"accepted a cursor from {bad!r}"
+
+
+def test_a_checkpoint_that_cannot_be_written_does_not_raise(tmp_path):
+    """NEVER RAISES is the contract. A full or read-only filesystem costs duplicate rows on the
+    next restart, which is recoverable; an exception here would stop ingestion entirely."""
+    f = _jsonl(tmp_path)
+    st = TailState(offset=123, inode=1)
+    # A directory where the checkpoint file must go: the write fails, the call must not.
+    (tmp_path / "flows.jsonl.tailstate").mkdir()
+    save_tail_state(str(f), st)
+
+
+def test_the_checkpoint_round_trips_the_cursor(tmp_path):
+    """Basic integrity, so the tests above are not passing on a function that writes nothing.
+
+    THE OFFSET IS COMPUTED FROM THE FIXTURE, NOT HARDCODED, and that is the lesson from two
+    failures in a row. The first version used 978 -- the fixture's exact size, so one byte PAST the
+    end -- and `_offset_is_on_boundary` rightly rejected it. The second used 489, a value I had
+    checked against a file built in a scratch script, but the test's own `_flow_row` writes a
+    different `dst_addr` and the byte layout differs, so 489 landed mid-line. An offset is only
+    meaningful relative to a specific file, so the test derives one from the file it actually has:
+    the end of the first complete line.
+    """
+    f = _jsonl(tmp_path)
+    body = f.read_bytes()
+    offset = body.index(b"\n") + 1
+    assert len(body) > offset, "fixture too small for this test to mean anything"
+    assert offset > 0
+    save_tail_state(str(f), TailState(offset=offset, inode=42, identity=(42, 7, 7)))
+    st = load_tail_state(str(f))
+    assert st.offset == offset, (
+        f"a valid in-file cursor ({offset}) was not restored: got {st.offset}"
+    )
+    assert st.inode == 42
+    assert st.identity == (42, 7, 7), f"identity did not round-trip: {st.identity!r}"
+
+
+# ── AND THE WIRING, NOT JUST THE TWO FUNCTIONS ───────────────────────────────────────────────
+#
+# WHY THESE EXIST. The tests above exercise `load_tail_state`/`save_tail_state` in isolation, and
+# MUTATION TESTING SHOWED THEY PROVE NOTHING ABOUT THE FIX: reverting `tail_forever` to
+# `state = TailState()`, and deleting its `save_tail_state(...)` call entirely, BOTH left them
+# passing. The defect was in `tail_forever`'s wiring, and tests that never call `tail_forever`
+# cannot see it -- a green suite over the exact bug it was written for.
+#
+# `tail_forever` blocks forever by design, so these run it on a thread with a stop event and a
+# short interval, which is the real loop rather than a reimplementation of it.
+
+def _run_tail_forever(path, seconds=1.2, interval=0.2):
+    """Run the REAL `tail_forever` for a moment on a background thread, then STOP AND JOIN it.
+
+    Returns the client it wrote through. The thread is stopped through `tail_forever`'s own `stop`
+    flag and joined, so nothing is still tailing when the test ends -- an earlier version let the
+    threads run on as daemons, and they kept checkpointing into directories the test fixture had
+    already deleted, which put warnings from dead fixtures in the suite's output.
+    """
+    client = _CountingClient()
+    stop = threading.Event()
+
+    def _target():
+        # The loop is daemonised and joined below; an exception here would only surface as an
+        # obscure thread traceback, and `tail_forever` already logs its own pass failures.
+        with contextlib.suppress(Exception):
+            tail_forever(client, str(path), interval_s=interval, zeek_dir="",
+                         exporter_allow="", stop=stop)
+
+    th = threading.Thread(target=_target, daemon=True)
+    th.start()
+    # Poll rather than sleep a fixed span: the loop beats immediately, so this is fast in the
+    # common case and still bounded when it is not.
+    deadline = time.time() + seconds
+    while time.time() < deadline and client.inserts == 0:
+        time.sleep(0.05)
+    time.sleep(interval * 1.5)  # let a second pass complete, which is what checkpoints
+    stop.set()
+    th.join(timeout=5)
+    assert not th.is_alive(), (
+        "tail_forever did not stop when its stop flag was set -- the thread outlives the test"
+    )
+    return client
+
+
+def test_TAIL_FOREVER_checkpoints_and_a_RESTART_does_not_re_ingest(tmp_path):
+    """THE DEFECT, THROUGH THE REAL LOOP. This is the test that was missing: it fails if
+    `tail_forever` builds its cursor fresh, and it fails if it stops checkpointing."""
+    f = _jsonl(tmp_path)
+
+    first = _run_tail_forever(f)
+    assert first.inserts > 0, "the first run ingested nothing, so this proves nothing"
+    assert (tmp_path / "flows.jsonl.tailstate").exists(), (
+        "tail_forever ran but wrote no checkpoint, so a restart has nothing to resume from -- "
+        "this is audit F018 exactly"
+    )
+
+    # A RESTART: a brand-new loop over the same, unchanged file.
+    second = _run_tail_forever(f)
+    assert second.inserts == 0, (
+        f"a restart through the real loop re-ingested {second.inserts} row(s) from an unchanged "
+        f"file. Every pod restart, node reboot and image update duplicates flow data into the "
+        f"aggregates and baselines"
+    )
+
+
+def test_TAIL_FOREVER_resumes_and_still_reads_new_rows(tmp_path):
+    """And it must not overshoot: after a restart, an appended row is still ingested."""
+    f = _jsonl(tmp_path)
+    _run_tail_forever(f)
+
+    with f.open("a") as fh:
+        fh.write(_flow_row(99) + "\n")
+
+    after = _run_tail_forever(f)
+    assert after.inserts == 1, (
+        f"after a restart and an append the loop inserted {after.inserts} row(s); exactly 1 is "
+        f"correct. More means the cursor was ignored, 0 means it skipped real data"
+    )
+
+
+def test_a_cursor_for_a_DELETED_file_is_discarded(tmp_path):
+    """The file can be gone entirely -- a rotated-away log, or a volume not yet mounted. Seeking
+    into a file that does not exist is not a resume, and the cursor must not be carried into
+    whatever appears at that path next."""
+    f = _jsonl(tmp_path)
+    save_tail_state(str(f), TailState(offset=978, inode=42))
+    f.unlink()
+    assert load_tail_state(str(f)).offset == 0, (
+        "a cursor survived the deletion of the file it described, so it would be applied to "
+        "whatever is written at that path next"
+    )

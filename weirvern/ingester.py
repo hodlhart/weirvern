@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pathlib
 import sys
+import threading
 import time
 from datetime import datetime
 from ipaddress import ip_address, ip_network
@@ -1715,28 +1717,135 @@ def _exporter_permitted(addr: object, allowed: list | None) -> bool:
     return any(parsed in net for net in allowed if parsed.version == net.version)
 
 
+def _tail_state_path(path: str) -> str:
+    """Where the cursor for `path` is checkpointed.
+
+    Kept NEXT TO the file it describes rather than in a fixed location, so two tailed files (the
+    NetFlow JSONL and each Zeek log) get separate cursors without a registry to keep in sync.
+    """
+    return path + ".tailstate"
+
+
+def load_tail_state(path: str) -> TailState:
+    """The checkpointed cursor for `path`, or a fresh one.
+
+    ── WHY THIS EXISTS (audit F018, CONFIRMED BY RUNNING IT) ──────────────────────────────────
+
+    `tail_forever` built its `TailState()` in memory and never wrote it anywhere, so the cursor
+    died with the process. Measured with a 6-row JSONL: two passes in ONE process inserted 6 then
+    0 (correct), and a restart with the file unchanged inserted 6 AGAIN.
+
+    The docstring at the top of `tail_forever` documents the duplicate-insert failure mode as
+    solved -- "re-reading the whole file from offset 0 every pass inserted every row ~12x per
+    minute into `flows`, corrupting aggregates and baselines". That fix covered the repeat-pass
+    case and left the restart case wide open, which is the same corruption with a longer period:
+    every pod restart, every node reboot, every image update.
+
+    IT REVALIDATES THE CURSOR AGAINST THE FILE, and that is the part worth not getting wrong.
+    An offset is only meaningful for the file instance it was taken from; a checkpoint from before
+    a ROTATION would skip everything written since, silently losing data rather than
+    duplicating it. `_offset_is_on_boundary` is the same content-based check `TailState` already
+    documents (a valid continuation offset is preceded by a newline), so a cursor that does not
+    belong to the current file is discarded here rather than trusted.
+    """
+    cp = _tail_state_path(path)
+    try:
+        raw = pathlib.Path(cp).read_text()
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return TailState()
+    if not isinstance(data, dict):
+        return TailState()
+    try:
+        offset = int(data.get("offset") or 0)
+        inode = int(data.get("inode") or 0)
+        identity = data.get("identity")
+    except (TypeError, ValueError):
+        return TailState()
+    if offset <= 0:
+        return TailState()
+    # The file may be gone, replaced, or rotated since the checkpoint was written.
+    if not pathlib.Path(path).exists():
+        return TailState()
+    if not _offset_is_on_boundary(path, offset):
+        logger.info(
+            "Tail cursor for %s discarded: byte before offset %d is not a line boundary, so the "
+            "checkpoint belongs to a previous file instance",
+            path, offset,
+        )
+        return TailState()
+    clean_identity: tuple[int, int, int] | None = None
+    if isinstance(identity, (list, tuple)) and len(identity) == 3:
+        try:
+            clean_identity = (int(identity[0]), int(identity[1]), int(identity[2]))
+        except (TypeError, ValueError):
+            clean_identity = None
+    return TailState(offset=offset, inode=inode, identity=clean_identity)
+
+
+def save_tail_state(path: str, state: TailState) -> None:
+    """Checkpoint `state` for `path`.
+
+    NEVER RAISES. A failed checkpoint costs duplicate rows on the next restart, which is
+    recoverable; an exception here would kill ingestion, which is not. A read-only or full
+    filesystem must not be able to stop the product from tailing.
+    """
+    cp = _tail_state_path(path)
+    payload = {
+        "offset": int(state.offset),
+        "inode": int(state.inode),
+        "identity": list(state.identity) if state.identity else None,
+    }
+    try:
+        tmp = cp + ".tmp"
+        pathlib.Path(tmp).write_text(json.dumps(payload))
+        # Atomic replace, so a crash mid-write cannot leave a truncated cursor that parses as a
+        # plausible SMALLER offset -- which would re-read a slice of the file rather than fail.
+        os.replace(tmp, cp)
+    except OSError as exc:
+        logger.warning("Could not checkpoint the tail cursor for %s: %s", path, exc)
+
+
 def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
-                 zeek_dir: str = "", exporter_allow: str = "") -> None:
+                 zeek_dir: str = "", exporter_allow: str = "",
+                 stop: threading.Event | None = None) -> None:
     """Block forever: tail NetFlow JSONL and (optionally) Zeek logs.
 
     Duplicate-insert failure mode of the first v20 pass: re-reading the whole
     file from offset 0 every pass inserted every row ~12x per minute into
     `flows`, corrupting aggregates and baselines.
 
+    THE SAME FAILURE ACROSS RESTARTS (audit F018). Carrying the state in memory fixed the
+    repeat-pass case; the cursor was still lost on every process start, so a restart re-ingested
+    the whole file once. It is now checkpointed beside the file and reloaded here.
+
     `exporter_allow` is passed through to every pass so the filter cannot be applied on one pass
     and forgotten on the next -- a filter that flickers is worse than none, because the data it let
     through is indistinguishable from the data it should have rejected.
+
+    `stop` (optional) ends the loop when set. The loop ran on a daemon thread for the process's
+    lifetime, so a test that started one could never stop it -- the threads kept tailing, kept
+    checkpointing, and kept writing warnings about directories that no longer existed. A loop that
+    cannot be stopped is hard to test and hard to shut down; the caller already owns a stop flag.
     """
-    state = TailState()
+    state = load_tail_state(path)
+    if state.offset:
+        logger.info("Resuming NetFlow tail at offset %d for %s", state.offset, path)
     zeek_state: dict[str, ZeekTailState] = {}
-    while True:
+    while not (stop is not None and stop.is_set()):
         try:
             _, offset, inode = tail_and_insert(client, path, state=state, allow=exporter_allow)
+            save_tail_state(path, state)
             if zeek_dir:
                 _, zeek_state = tail_zeek_dir(client, zeek_dir, zeek_state)
         except Exception as exc:  # noqa: BLE001
             logger.error("Ingest pass failed: %s", exc)
-        time.sleep(interval_s)
+        # `stop.wait` rather than `sleep`: an interval of 5s means a shutdown asked for now still
+        # waits 5s with a sleep, and the wait returns immediately when the flag is set.
+        if stop is not None:
+            stop.wait(interval_s)
+        else:
+            time.sleep(interval_s)
 
 
 if __name__ == "__main__":
