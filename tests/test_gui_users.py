@@ -28,6 +28,7 @@ narrowest way available, and says so.
 from __future__ import annotations
 
 import importlib
+import json
 import re
 from pathlib import Path
 
@@ -1347,4 +1348,112 @@ def test_the_PASSIVE_check_is_not_metered():
     )
     assert all(c == "" for _p, c in ctx.auth.checked), (
         f"the passive check passed a client address to auth.check: {ctx.auth.checked}"
+    )
+
+
+# ── A FAILED STORE READ MUST NOT BE CACHED FOR THE LIFE OF THE PROCESS (audit F090) ─────────────
+#
+# `load()` set `self._loaded = True` whether the read succeeded or threw, and `snapshot()` returns the
+# cache whenever `_loaded` is set -- so ONE transient failure (an API-server blip at pod startup, a
+# rate-limited read) left `has_users()` False forever. MEASURED against the real store with a client
+# that fails once and then answers: `client.reads` stayed at 1 across three `has_users()` calls, so an
+# account that EXISTED was invisible to the login gate for the whole process lifetime.
+#
+# The open-read posture itself is deliberate and is NOT what these tests change: `_accounts_on`
+# documents that an unanswerable store is treated as unprovisioned so a broken store cannot lock
+# everyone out. What was wrong is the persistence -- the decision is "degrade WHILE unreadable", not
+# "degrade until someone restarts the pod".
+
+
+class _FlakyStoreClient:
+    """Fails a given number of reads, then returns a document holding one account."""
+
+    def __init__(self, failures: int = 1):
+        self.failures = failures
+        self.reads = 0
+
+    def read(self):
+        self.reads += 1
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("transient API failure (429 rate limited)")
+        return {users_mod.USERS_KEY: _one_account_doc()}
+
+
+def _one_account_doc() -> str:
+    """A store document with one admin, in the shape the store itself writes."""
+    rec = users_mod.UserRecord(
+        username="admin", role=users_mod.ROLE_ADMIN,
+        hash="scrypt$n=16384$r=8$p=1$" + "aa" * 16 + "$" + "bb" * 32,
+    )
+    return json.dumps({"users": [rec.to_json()]}, indent=1)
+
+
+def test_a_TRANSIENT_store_failure_heals_without_a_restart():
+    """THE DEFECT. One failure, then a working store -- the gate must come back on its own."""
+    client = _FlakyStoreClient(failures=1)
+    store = users_mod.UserStore(client)
+
+    assert store.has_users() is False, "the first (failing) read did not report no-accounts"
+    assert client.reads == 1
+
+    assert store.has_users() is True, (
+        "the store still reported no accounts after the failure cleared, so ONE transient read "
+        "failure disabled the login gate permanently -- audit F090"
+    )
+    assert client.reads == 2, f"the store did not retry (reads={client.reads})"
+
+
+def test_a_SUCCESSFUL_read_is_still_cached():
+    """The other direction. Caching a real answer is the intent -- it keeps a Kubernetes API call off
+    the login hot path -- so the fix must not turn every request into a read."""
+    client = _FlakyStoreClient(failures=0)
+    store = users_mod.UserStore(client)
+    for _ in range(4):
+        assert store.has_users() is True
+    assert client.reads == 1, (
+        f"a successful read was not cached ({client.reads} reads for 4 calls); the login path would "
+        f"now hit the Kubernetes API on every request"
+    )
+
+
+def test_a_CONFIRMED_absence_is_cached_and_is_not_treated_as_a_failure():
+    """A MISSING ConfigMap is the normal first-start state, and caching it is correct.
+
+    Only a read that could not ANSWER is retried; absence IS an answer, or every request on a
+    not-yet-bootstrapped deployment would re-read with no benefit.
+    """
+    from weirvern.admin.cluster_config import NotFoundError
+
+    class _Missing:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self):
+            self.reads += 1
+            raise NotFoundError("no such configmap")
+
+    client = _Missing()
+    store = users_mod.UserStore(client)
+    assert store.has_users() is False
+    assert store.exists is False, "a confirmed absence must set exists=False, not None"
+    assert store.has_users() is False
+    assert client.reads == 1, "a confirmed absence was re-read; it is an answer, not a failure"
+
+
+def test_the_open_gate_is_a_WARNING_not_a_debug_line(caplog):
+    """The condition is security-relevant, so it must not be quieter than an ordinary log line.
+
+    The gate is OFF while the store is unreadable -- every read is served without an account -- and
+    the only other signal is `accounts_note` on /api/session, which an unauthenticated reader may
+    never fetch.
+    """
+    import logging
+
+    client = _FlakyStoreClient(failures=99)
+    store = users_mod.UserStore(client)
+    with caplog.at_level(logging.WARNING, logger="weirvern.admin.users"):
+        store.has_users()
+    assert any("login gate is OFF" in r.message for r in caplog.records), (
+        f"an unreadable store logged nothing at WARNING: {[r.message for r in caplog.records]}"
     )

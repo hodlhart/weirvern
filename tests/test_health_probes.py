@@ -629,3 +629,121 @@ def test_the_report_is_COMPLETE_when_everything_works():
         assert "could not run" not in str(p.detail), (
             f"{p.name} reported a check failure on a healthy cluster: {p.detail!r}"
         )
+
+
+# ── THE HEALTH VIEW WAS BLIND TO THE LOGIN GATE (audit F090) ────────────────────────────────────
+#
+# Nothing in status.py read `user_store`, `has_users` or `USERS_CONFIGMAP`, so a store that could not
+# be read produced NO probe, NO failure, and an overall report that read green -- while every API read
+# was served WITHOUT an account. The only signal anywhere was `accounts_note` on /api/session.
+#
+# The open-read POSTURE is deliberate (`_accounts_on` documents it: a broken store must not lock
+# everyone out of the dashboard). What was missing is that the condition is VISIBLE.
+
+
+class _Store:
+    """A user store whose observable state is scripted."""
+
+    def __init__(self, records, exists):
+        self._records = records
+        self.exists = exists
+
+    def snapshot(self):
+        return list(self._records)
+
+    def has_users(self):
+        return bool(self._records)
+
+
+def _account_probe(store):
+    """The account_store probe from a real collect_health, with the given store."""
+    report = status.collect_health(_StubClient({}), _settings(), user_store=store)
+    return next((p for p in report.probes if p.name == "account_store"), None)
+
+
+def _one_admin():
+    from weirvern.admin import users as users_mod
+
+    return users_mod.UserRecord(
+        username="admin", role=users_mod.ROLE_ADMIN,
+        hash="scrypt$n=16384$r=8$p=1$" + "aa" * 16 + "$" + "bb" * 32,
+    )
+
+
+def test_the_health_report_REPORTS_an_unreadable_account_store():
+    """THE DEFECT. An unreadable store leaves the gate OFF; the report must say so."""
+    probe = _account_probe(_Store([], exists=None))
+    assert probe is not None, (
+        "collect_health produced no account_store probe, so the health view cannot tell an operator "
+        "that the dashboard is serving reads without an account"
+    )
+    assert probe.ok is None, (
+        f"an unreadable store reported ok={probe.ok!r}. None is right: it is neither a pipeline "
+        f"failure nor a pass -- 'measured, and not applicable here'"
+    )
+    assert "login gate is OFF" in probe.detail, probe.detail
+
+
+def test_the_health_report_is_RED_when_the_store_exists_but_holds_no_accounts():
+    """A different fact from unreadable: the store ANSWERED and it is empty, which should not persist
+    after a successful bootstrap."""
+    probe = _account_probe(_Store([], exists=True))
+    assert probe.ok is False, f"an empty account store reported ok={probe.ok!r}"
+    assert "NO accounts" in probe.detail, probe.detail
+
+
+def test_the_health_report_is_GREEN_when_accounts_exist():
+    """The other direction, so the probe cannot be 'always complain'."""
+    probe = _account_probe(_Store([_one_admin()], exists=True))
+    assert probe.ok is True, f"a store with an account reported ok={probe.ok!r}: {probe.detail}"
+    assert "1 account" in probe.detail, probe.detail
+
+
+def test_the_probe_row_is_PRESENT_even_with_no_store():
+    """THE F047 RULE: an absent probe is indistinguishable from a passing one.
+
+    The CLI's status path has no store to hand. It must still produce the row, explaining why it
+    cannot answer, rather than dropping it.
+    """
+    report = status.collect_health(_StubClient({}), _settings())  # no user_store
+    names = [p.name for p in report.probes]
+    assert "account_store" in names, (
+        f"no account_store row when no store was supplied, so its absence is unreadable. "
+        f"Probes: {names}"
+    )
+    probe = next(p for p in report.probes if p.name == "account_store")
+    assert probe.ok is None and "not probed" in probe.detail, probe.detail
+
+
+def test_the_GUI_health_routes_pass_the_store():
+    """A probe nothing feeds is the same silence in a new shape.
+
+    Checked with `ast` rather than by searching lines: my first version looked for `user_store` on the
+    SAME LINE as the call, and a later reformat (for a line-length rule) moved the argument onto its
+    own line -- so the test failed on a change that was correct. A source-text assertion that depends
+    on formatting is testing the formatter.
+    """
+    import ast
+    import pathlib as _p
+
+    src = (_p.Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web.py").read_text()
+    tree = ast.parse(src)
+    gui_calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+        if name != "collect_health":
+            continue
+        rendered = ast.unparse(node)
+        if "ctx" in rendered:
+            gui_calls.append(node)
+
+    assert gui_calls, "no GUI collect_health call sites found in web.py"
+    for node in gui_calls:
+        kws = {k.arg for k in node.keywords}
+        assert "user_store" in kws, (
+            f"a GUI health route does not pass the account store, so the probe reports 'not probed' "
+            f"in the very process that HAS one: {ast.unparse(node)}"
+        )

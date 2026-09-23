@@ -371,7 +371,10 @@ def _build_handler(ctx: GuiContext):
             data_error = None
             try:
                 with self._with_client() as client:
-                    report = status_mod.collect_health(client, ctx.settings)
+                    report = status_mod.collect_health(
+                        client, ctx.settings,
+                        user_store=getattr(ctx, "user_store", None),
+                    )
                     anomalies = status_mod.anomalies_detailed(client, limit=25)
                     talkers = status_mod.top_talkers(client, limit=10)
                     # What the sensor reports about itself. Separate from the health
@@ -530,7 +533,10 @@ def _build_handler(ctx: GuiContext):
                            "by_reason": [], "recent": [], "suppressed": 0}
             try:
                 with self._with_client() as client:
-                    report = status_mod.collect_health(client, ctx.settings)
+                    report = status_mod.collect_health(
+                        client, ctx.settings,
+                        user_store=getattr(ctx, "user_store", None),
+                    )
                     sensor = status_mod.sensor_status(client)
                     ingest = soc_mod.ingestion_series(client, hours=hours)
                     sizes = soc_mod.table_sizes(client)

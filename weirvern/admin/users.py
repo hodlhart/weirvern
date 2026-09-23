@@ -275,11 +275,30 @@ class UserStore:
     # -- read ------------------------------------------------------------------
 
     def load(self) -> list[UserRecord]:
-        """Read the store ONCE. Sets `exists`; an unreadable store is an empty list + None."""
+        """Read the store ONCE. Sets `exists`; an unreadable store is an empty list + None.
+
+        ── A FAILED READ MUST NOT BE CACHED FOR THE LIFE OF THE PROCESS (audit F090) ────────────
+
+        This used to set `self._loaded = True` in the same block whether the read succeeded or threw,
+        and `snapshot()` returns the cache whenever `_loaded` is set. So ONE transient failure -- a
+        five-second API-server blip at pod startup, a rate-limited read -- left `has_users()` False
+        forever. MEASURED against the real store with a client that fails once and then answers
+        correctly: `client.reads` stayed at 1 across three `has_users()` calls, so the account that
+        existed in the store was invisible to the login gate for the entire process lifetime.
+
+        The DELIBERATE part of this behaviour is that an unanswerable store leaves the gate off rather
+        than locking everyone out of the dashboard; `_accounts_on` documents that and it is a stated
+        availability decision, so it is NOT changed here. What was wrong is the persistence: the
+        decision is "degrade WHILE the store is unreadable", not "degrade until someone restarts the
+        pod". A SUCCESSFUL read is still cached for the process -- that is the intent, and it keeps a
+        Kubernetes API call off the login hot path.
+        """
         raw = ""
         exists: bool | None = None
+        readable = False
         try:
             data = self._client.read()
+            readable = True
             if isinstance(data, dict):
                 exists = True
                 raw = str(data.get(USERS_KEY) or "")
@@ -289,7 +308,13 @@ class UserStore:
             # CONFIRMED. See the `exists` comment above.
             from weirvern.admin.cluster_config import NotFoundError
 
-            exists = False if isinstance(exc, NotFoundError) else None
+            if isinstance(exc, NotFoundError):
+                # ABSENCE IS CONFIRMED, so this is an ANSWER, not a failure: the store really has no
+                # accounts and caching it is correct.
+                exists = False
+                readable = True
+            else:
+                exists = None
             logger.info("user store read: exists=%s (%s)", exists, exc)
         records: list[UserRecord] = []
         if raw.strip():
@@ -301,10 +326,22 @@ class UserStore:
             except ValueError as exc:
                 logger.warning("user store is not valid JSON; refusing to guess at accounts: %s", exc)
                 records = []
+                # CORRUPT IS ALSO AN ANSWER, and the one case where caching a wrong-looking result is
+                # right: the bytes are read and they are not accounts. Refusing to guess is a
+                # decision, not a failure to decide. `readable` already covers it because the READ
+                # succeeded.
         with self._lock:
             self._records = records
-            self._loaded = True
+            # THE FIX: only a read that ANSWERED -- or a confirmed absence -- is cached. An unreadable
+            # store leaves `_loaded` False so the next caller retries, which is what lets a transient
+            # failure heal without a pod restart.
+            self._loaded = readable
             self.exists = exists
+        if not readable:
+            logger.warning(
+                "the user store could not be read, so the login gate is OFF for now and will be "
+                "retried on the next request (%s)", self.exists,
+            )
         return list(records)
 
     def snapshot(self) -> list[UserRecord]:

@@ -178,8 +178,14 @@ def _probe_failed(report, name: str, err: Exception, ms: float) -> None:
     ))
 
 
-def collect_health(client, settings) -> HealthReport:
-    """Probe ClickHouse and the pipeline. Never raises."""
+def collect_health(client, settings, user_store=None) -> HealthReport:
+    """Probe ClickHouse and the pipeline. Never raises.
+
+    `user_store` (optional) adds the ACCOUNT STORE probe. It is optional rather than required because
+    the CLI's `status` path has no store to hand and must not be forced to build one; when it is
+    absent the probe reports `ok=None` ("not applicable here") rather than staying silent, per the F047
+    rule that a missing row is indistinguishable from a passing one.
+    """
     report = HealthReport()
 
     # 1. Connectivity + server version.
@@ -656,6 +662,76 @@ def collect_health(client, settings) -> HealthReport:
             ))
     else:
         _probe_failed(report, "fingerprint_feed", err, ms)
+
+    # ── THE ACCOUNT STORE (audit F090) ───────────────────────────────────────────────────────────
+    #
+    # THE HEALTH VIEW WAS BLIND TO THE LOGIN GATE. Nothing in this module read `user_store`,
+    # `has_users` or `USERS_CONFIGMAP`, so a store that could not be read produced no probe, no
+    # failure, and an overall report that read green -- while every API read was served WITHOUT AN
+    # ACCOUNT. The only signal anywhere was `accounts_note` on `/api/session`, and an operator who is
+    # not signed in may never fetch that.
+    #
+    # The open-read behaviour itself is DELIBERATE and is not changed (see `_accounts_on`: a store
+    # that cannot answer is treated as unprovisioned so a broken store cannot lock everyone out of
+    # the dashboard). What was missing is that the condition is invisible. This probe makes it a red
+    # row instead of a silent posture change.
+    #
+    # THREE STATES, because "no accounts yet" and "cannot read the accounts" are different facts:
+    #
+    #   ok=None  the store could not be read, so the gate is off FOR NOW and will be retried. Not a
+    #            failure of the pipeline, and not a pass either -- `None` is exactly "measured, and
+    #            not applicable".
+    #   ok=False the gate is armed but the store is EMPTY, which cannot happen after a successful
+    #            bootstrap and means the accounts were lost.
+    #   ok=True  accounts exist and reads are gated.
+    #
+    # No store was handed in (the CLI path) -> `None` with a reason, rather than omitting the row.
+    if user_store is None:
+        report.add(Probe(
+            "account_store", ok=None,
+            detail="not probed: no account store available in this process (the worker has none; "
+                   "the GUI reports it)",
+        ))
+    else:
+        def _store_state():
+            # Deliberately re-reads rather than trusting the cache: F090 was that a FAILED read used
+            # to be cached permanently, so a cached "no accounts" is the exact condition this probe
+            # must not report as healthy. `load()` now only caches an answered read, so this is the
+            # live state.
+            records = user_store.snapshot()
+            return len(records), getattr(user_store, "exists", None)
+
+        try:
+            n_users, exists = _store_state()
+            if exists is None:
+                report.add(Probe(
+                    "account_store", ok=None,
+                    detail=(
+                        "the account store could not be read, so the login gate is OFF and the "
+                        "dashboard is serving reads WITHOUT an account. It is retried on the next "
+                        "request, so a transient API failure heals on its own; a persistent one is "
+                        "an open dashboard. Check the GUI pod's RBAC and the Kubernetes API."
+                    ),
+                    value={"users": n_users, "exists": None},
+                ))
+            elif n_users == 0:
+                report.add(Probe(
+                    "account_store", ok=False,
+                    detail=(
+                        "the account store exists but holds NO accounts, so the login gate is OFF. "
+                        "Bootstrap creates the admin on first startup, so this should not persist -- "
+                        "the accounts may have been lost."
+                    ),
+                    value={"users": 0, "exists": True},
+                ))
+            else:
+                report.add(Probe(
+                    "account_store", ok=True,
+                    detail=f"{n_users} account(s); reads are gated",
+                    value={"users": n_users, "exists": True},
+                ))
+        except Exception as exc:  # noqa: BLE001
+            _probe_failed(report, "account_store", exc, 0.0)
 
     return report
 
