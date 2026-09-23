@@ -59,6 +59,20 @@ SONAR_TIMEOUT_S = 120.0
 SONAR_POLL_S = 2.0
 # The survey's own bound on ARP drain time, passed through to intercept.arp_sweep.
 SONAR_SWEEP_TIMEOUT_S = 4.0
+
+# HOW LONG TO WATCH A SEGMENT BEFORE SWEEPING IT, when the interface carries no address of its
+# own. A passive capture port has none by design, so the segment has to be LEARNED from traffic
+# rather than read off the interface.
+#
+# 45 seconds is chosen against what actually has to arrive: a DHCP lease renewal (typically
+# every 30 minutes per host, so with any real population of devices one lands inside 45s most of
+# the time) and the gratuitous ARP a gateway sends at boot or failover. The first draft used 60s
+# and was reduced because this is a wait an operator sits through, and the fallback (inferring
+# the prefix from observed addresses) covers the case where no DHCP arrives.
+#
+# IT IS NOT LONGER FOR A REASON: a longer window finds more hosts but proves nothing extra about
+# liveness, which is the sweep's job. Watching and sweeping answer different questions.
+SONAR_WATCH_S = 45.0
 # How many free addresses are offered. Five is enough to choose from without turning the
 # panel into a list; the FIRST is the recommendation.
 SONAR_FREE_OFFERED = 5
@@ -136,25 +150,91 @@ def _top_of_range_first(addr: str) -> int:
     return -int(addr.split(".")[-1])
 
 
+def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str,
+                         observed: dict, gateway: str, gateway_source: str,
+                         notes: list[str], source_ip: str) -> dict:
+    """A survey that could only WATCH, because there was no address to sweep from.
+
+    RETURNED RATHER THAN RAISED, and the shape says which questions it answers. The observation
+    is a genuine answer to "what network is this", while "who is alive right now" is explicitly
+    NOT answered -- reporting `hosts_answered: 0` would be a measured zero for a question nobody
+    asked, which this project treats as the failure it is.
+
+    `ok` is true because the survey ran and produced real findings. `swept` is absent, not 0.
+    """
+    notes.append(
+        "THIS SURVEY DID NOT SWEEP. No addresses were probed, so nothing here says who is "
+        "alive: the hosts listed are the ones that happened to SPEAK during the window, and a "
+        "quiet host is invisible. Give the capture interface an address on the segment (or run "
+        "the intercept, which has one) to sweep it."
+    )
+    return {
+        "ok": True,
+        "interface": iface,
+        "mgmt_interface": mgmt_iface or "",
+        "our_mac": our_mac,
+        # No address of our own: stated as empty rather than invented, because every other
+        # field here is read against this one.
+        "address": source_ip or "",
+        "address_source": "none: this interface only listens" if not source_ip else "",
+        "segment": segment,
+        "segment_derivation": observed.get("segment_derivation", ""),
+        "gateway": gateway,
+        "gateway_mac": "",
+        "gateway_source": gateway_source,
+        "hosts": [{"ip": a, "mac": m} for a, m in sorted(observed.get("arp_pairs", {}).items())],
+        "hosts_answered": len(observed.get("arp_pairs", {}) or {}),
+        "hosts_seen": observed.get("hosts_seen", 0),
+        # ABSENT, not zero: no sweep ran, so there is no count to report.
+        "swept": None,
+        "free_addresses": [],
+        "observed": observed,
+        "passive_only": True,
+        "recommended": {},
+        "notes": notes,
+    }
+
+
 def survey(iface: str, mgmt_iface: str = "", *,
            sweep=None, mac_reader=None, addr_reader=None, route_reader=None,
+           watcher=None, watch_s: float | None = None,
            sweep_timeout_s: float = SONAR_SWEEP_TIMEOUT_S) -> dict:
     """Measure the segment on `iface` and produce recommendations. Read-only.
 
     Every side-effecting dependency is injectable -- sweep (ARP), mac_reader, addr_reader,
-    route_reader -- so the arithmetic and the recommendations are testable without a root
-    socket or a live segment, the same shape the siphon supervisor's spawn hook uses.
+    route_reader, watcher (passive capture) -- so the arithmetic and the recommendations are
+    testable without a root socket or a live segment, the same shape the siphon supervisor's
+    spawn hook uses.
 
-    Raises SonarError with a named remedy for every structural refusal (no interface, no
-    address, segment too small to survey). Everything else is reported in `notes`.
+    TWO WAYS TO LEARN THE SEGMENT, AND THE SECOND IS THE ONE THAT MATTERS HERE.
+
+    THE ADDRESSED CASE reads the interface's own IPv4 address and netmask. Correct on an
+    interface that has one, and WRONG for the deployment this feature is for: a passive
+    capture port (SPAN, tap, mirrored vSwitch port) has NO IPv4 address, deliberately, since
+    assigning one makes the sensor a participant on a segment it is meant to observe silently.
+    Measured live: the capture interface carried only a link-local IPv6 address, and this
+    function refused, so Sonar could not run in the one place it exists for.
+
+    THE PASSIVE CASE therefore WATCHES FIRST. A silent port still sees the segment's traffic,
+    and that traffic carries what is needed: the subnet mask from a DHCP reply, the gateway
+    from the DHCP router option or a gratuitous ARP, and the hosts from their own frames.
+    Nothing is transmitted, which is also what makes it safe on a port where transmitting is
+    not possible.
+
+    The sweep then runs over whatever segment was learned, so the two phases compose rather
+    than replacing each other: passive learning answers "what network is this", and the sweep
+    answers "who is there right now". Only the second can find a host that is quiet.
+
+    Raises SonarError with a named remedy for every structural refusal.
     """
     from weirvern.admin import intercept as ic_mod
-    from weirvern.admin import siphonnet
+    from weirvern.admin import segmentwatch, siphonnet
 
     mac_reader = mac_reader or siphonnet.read_mac
     addr_reader = addr_reader or iface_ipv4
     route_reader = route_reader or _route_gateway
     sweep = sweep or ic_mod.arp_sweep
+    watcher = watcher or segmentwatch.observe_segment
 
     our_mac = (mac_reader(iface) or "").strip()
     if not our_mac:
@@ -163,35 +243,86 @@ def survey(iface: str, mgmt_iface: str = "", *,
             f"sensor node (check the interface name in Settings against the node's NICs)"
         )
 
+    notes: list[str] = []
+    observed: dict = {}
+
     ip, mask = addr_reader(iface)
-    net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
-    if net.version != 4:
-        raise SonarError(f"'{iface}' carries IPv6 ({ip}); siphon mode is IPv4-only")
-    if net.prefixlen >= 31:
-        raise SonarError(
-            f"'{iface}' is {ip}/{net.prefixlen} -- too small to be a segment. Siphon needs the "
-            f"interface to sit ON the segment it will intercept (a /24 is the common case)"
-        )
+    if not ip:
+        # ── THE PASSIVE PATH. No address on the interface is the NORMAL case for a capture
+        # port, not an error, so this is a fallback rather than a refusal.
+        window = SONAR_WATCH_S if watch_s is None else watch_s
+        obs = watcher(iface, seconds=window)
+        observed = segmentwatch.summarise(obs)
+        notes.extend(segmentwatch.notes_for(obs, observed))
+        if not observed.get("segment"):
+            raise SonarError(
+                f"'{iface}' has no IPv4 address of its own, and watching it for "
+                f"{int(window)}s found no traffic to learn the segment from. Either the port "
+                f"is not mirroring anything, or the segment was silent. Give the interface an "
+                f"address on the segment you intend to test if you know it, or check the "
+                f"mirror configuration."
+            )
+        net = ipaddress.ip_network(observed["segment"], strict=False)
+        # No local address: the interface is only listening, so there is nothing of ours to
+        # exclude from the sweep and nothing to advertise as our source. The sweep still
+        # needs a source address the segment will accept, and without our own address the
+        # only honest choices are the gateway (which we may have learned) or nothing.
+        ip = observed.get("gateway") or ""
+        if not ip:
+            notes.append(
+                "this interface has no address of its own and no gateway was learned, so an "
+                "ARP sweep cannot source its requests from an address the segment accepts. "
+                "The survey reports what was OBSERVED and does not sweep."
+            )
+        else:
+            notes.append(
+                f"no address on '{iface}', so the sweep sources its ARP requests from the "
+                f"learned gateway {ip}. That is a real transmission on the segment: the "
+                f"survey is no longer purely passive from this point."
+            )
+    else:
+        net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
+        if net.version != 4:
+            raise SonarError(f"'{iface}' carries IPv6 ({ip}); siphon mode is IPv4-only")
+        if net.prefixlen >= 31:
+            raise SonarError(
+                f"'{iface}' is {ip}/{net.prefixlen} -- too small to be a segment. Siphon needs "
+                f"the interface to sit ON the segment it will intercept (a /24 is the common case)"
+            )
 
     segment = str(net)
 
-    # The gateway: prefer the interface's own default route; otherwise assume the segment's
-    # first host (the near-universal convention) and SAY it was assumed. Either way the
-    # sweep verifies it.
-    gateway = route_reader(iface) or ""
-    gateway_source = "default route on the interface"
+    # The gateway: prefer the interface's own default route; an OBSERVED DHCP router option or
+    # gratuitous ARP beats an assumption; otherwise assume the segment's first host (the
+    # near-universal convention) and SAY it was assumed. Either way the sweep verifies it.
+    gateway = route_reader(iface) or (observed.get("gateway") or "")
+    gateway_source = (
+        "default route on the interface" if route_reader(iface)
+        else (observed.get("gateway_source") or "assumed as the first host of the segment")
+    )
     if not gateway:
         first = next(net.hosts(), None)
         if first is None:
             raise SonarError(f"segment {segment} has no usable host addresses")
         gateway = str(first)
         gateway_source = "assumed as the first host of the segment (no default route here)"
+        if observed:
+            notes.append(
+                f"the gateway {gateway} is ASSUMED (first host of the segment): no default "
+                f"route, no DHCP router option and no gratuitous ARP were available to observe."
+            )
 
     # Free candidates exclude ourselves and the gateway before the sweep; the sweep decides
     # the rest by who answers.
     skip = {ip, gateway}
-    candidates = [str(h) for h in net.hosts() if str(h) not in skip]
+    candidates = [str(h) for h in net.hosts() if str(h) not in skip] if ip else []
     if not candidates:
+        if observed:
+            # Passive-only survey: report what was seen and say the liveness question is
+            # unanswered, rather than raising -- the observation IS a useful answer.
+            return _passive_only_result(
+                iface, mgmt_iface, our_mac, segment, observed, gateway, gateway_source,
+                notes, ip)
         raise SonarError(f"segment {segment} has no addresses to survey")
 
     # ONE SWEEP. It answers both questions -- who is alive, and which addresses are free --
@@ -202,7 +333,6 @@ def survey(iface: str, mgmt_iface: str = "", *,
     hosts = {a: m for a, m in answered.items()
              if (m or "").lower() != our_mac.lower() and a != gateway}
 
-    notes: list[str] = []
     gateway_mac = (answered.get(gateway) or "").lower()
     if not gateway_mac:
         # Second source: the kernel's neighbour cache. Only reached when the gateway did not
@@ -256,6 +386,15 @@ def survey(iface: str, mgmt_iface: str = "", *,
         "our_mac": our_mac,
         "address": f"{ip}/{net.prefixlen}",
         "segment": segment,
+        # HOW THE SEGMENT WAS LEARNED, present on BOTH paths. Empty when it came from the
+        # interface's own address, which needs no explanation; a sentence when it was observed
+        # or inferred, which does.
+        "segment_derivation": (
+            "read from this interface's own address and netmask"
+            if not observed else observed.get("segment_derivation", "")
+        ),
+        "observed": observed or None,
+        "passive_only": False,
         "gateway": gateway,
         "gateway_mac": gateway_mac,
         "gateway_source": gateway_source,

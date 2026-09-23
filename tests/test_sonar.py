@@ -281,3 +281,110 @@ def test_the_module_is_runnable_as_a_module():
     i = src.index("def main(")
     body = src[i:]
     assert "SONAR_PREFIX" in body, "main() must emit the result line the GUI reads"
+
+
+
+# ── the passive path: a capture port with NO address of its own ──────────────────────────────
+#
+# THE DEFECT THESE PIN. `survey` derived the segment from the interface's own IPv4 address and
+# netmask. A passive capture port (SPAN, tap, mirrored vSwitch port) has none BY DESIGN, since an
+# address would make the sensor a participant on a segment it exists to observe silently.
+# Measured live: the capture interface carried only a link-local IPv6 address, and survey
+# refused with "has no IPv4 address ... so its segment cannot be derived" -- so Sonar could not
+# run in the one deployment it exists for.
+#
+# These drive the fallback with injected readers, so no socket and no live segment are needed.
+
+def _obs(*, segment="198.51.100.0/24", gateway="198.51.100.1", frames=10):
+    """A SegmentObservations shaped like the real one for a watched segment."""
+    from weirvern.admin.segmentwatch import SegmentObservations
+    o = SegmentObservations(iface="ens19")
+    o.frames = frames
+    o.sources = {"198.51.100.5": 3, "198.51.100.9": 2, "198.51.100.1": 5}
+    o.arp_pairs = {"198.51.100.5": "aa:bb:cc:dd:ee:01", "198.51.100.9": "aa:bb:cc:dd:ee:02"}
+    o.dhcp_frames = 2
+    o.observed_mask = "255.255.255.0"
+    o.observed_gateway = gateway
+    o.gratuitous = [gateway]
+    import datetime as _dt
+    o.started_at = _dt.datetime.now(_dt.UTC)
+    o.ended_at = o.started_at + _dt.timedelta(seconds=45)
+    return o
+
+
+def test_an_interface_with_no_address_is_learned_by_watching_rather_than_refused():
+    """THE WHOLE POINT OF THE FIX: a SPAN port has no address, and that must not be fatal."""
+    result = sonar.survey(
+        "ens19",
+        mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+        addr_reader=lambda i: ("", ""),          # no IPv4: the live SPAN-port case
+        route_reader=lambda i: "",
+        watcher=lambda iface, **kw: _obs(),
+        sweep=lambda *a, **k: {},
+        watch_s=1,
+    )
+    assert result["ok"] is True
+    assert result["segment"] == "198.51.100.0/24"
+    assert result["gateway"] == "198.51.100.1", "the OBSERVED gateway must be used"
+
+
+def test_the_passive_path_says_the_segment_was_learned_not_read_off_the_interface():
+    result = sonar.survey(
+        "ens19", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+        addr_reader=lambda i: ("", ""), route_reader=lambda i: "",
+        watcher=lambda iface, **kw: _obs(), sweep=lambda *a, **k: {}, watch_s=1,
+    )
+    assert result["segment_derivation"], "a derived segment must say how it was derived"
+    assert "DHCP" in result["segment_derivation"] or "INFERRED" in result["segment_derivation"]
+
+
+def test_a_silent_capture_port_names_the_remedy_rather_than_reporting_no_hosts():
+    """AN EMPTY NETWORK AND AN UNOBSERVED ONE ARE DIFFERENT FACTS. Raising with the remedy is
+    the honest answer; returning a survey with zero hosts would read as a working sensor on a
+    quiet segment."""
+    from weirvern.admin.segmentwatch import SegmentObservations
+    empty = SegmentObservations(iface="ens19")
+    import datetime as _dt
+    empty.started_at = _dt.datetime.now(_dt.UTC)
+    empty.ended_at = empty.started_at
+    with pytest.raises(sonar.SonarError) as e:
+        sonar.survey("ens19", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+                     addr_reader=lambda i: ("", ""), route_reader=lambda i: "",
+                     watcher=lambda iface, **kw: empty, sweep=lambda *a, **k: {}, watch_s=1)
+    msg = str(e.value)
+    assert "no IPv4 address" in msg
+    assert "mirror" in msg or "not mirroring" in msg
+
+
+def test_passive_only_survey_does_not_report_a_swept_count():
+    """A count of 0 for a sweep that never ran is a measured zero for a question nobody asked.
+    The field is absent (None), not zero."""
+    o = _obs()
+    o.observed_mask = None
+    o.observed_gateway = ""      # nothing to source the sweep from
+    o.gratuitous = []
+    result = sonar.survey("ens19", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+                          addr_reader=lambda i: ("", ""), route_reader=lambda i: "",
+                          watcher=lambda iface, **kw: o, sweep=lambda *a, **k: {}, watch_s=1)
+    assert result.get("passive_only") is True
+    assert result.get("swept") is None, "no sweep ran, so there is no count"
+    assert any("DID NOT SWEEP" in n for n in result["notes"])
+
+
+def test_the_addressed_case_is_unchanged():
+    """The fallback must not alter the path that already worked: an interface WITH an address
+    still reads it and still sweeps normally."""
+    called = {"swept": False}
+
+    def fake_sweep(iface, mac, src, targets, timeout_s=0):
+        called["swept"] = True
+        return {"198.51.100.7": "aa:bb:cc:dd:ee:07", "198.51.100.1": "aa:bb:cc:dd:ee:01"}
+
+    result = sonar.survey("eth1", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+                          addr_reader=lambda i: ("198.51.100.50", "255.255.255.0"),
+                          route_reader=lambda i: "198.51.100.1",
+                          sweep=fake_sweep)
+    assert called["swept"] is True, "the addressed path must still sweep"
+    assert result["ok"] is True
+    assert result["swept"] is not None
+    assert not result.get("passive_only")
