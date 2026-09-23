@@ -404,28 +404,58 @@ class NftBackend(Backend):
     every packet, so its cost grows with the list -- 500 addresses would be 500 comparisons for
     every packet on the wire. A `set` with `flags interval` is a lookup with no meaningful growth.
 
-    MEASURED ON THE LIVE SENSOR, with iperf3 through a real forwarded path (2 streams, 5s each,
-    three runs per size, so the spread is visible rather than a single flattering sample):
+    ── MEASURED: WHAT THE GATE COSTS, AND WHAT IS TOO NOISY TO CLAIM ──────────────────────────
 
-        no gate (baseline)     55.1  55.1  56.6 Gbit/s
-        gate, 10 entries       55.5  54.7  53.8
-        gate, 500 entries      54.6  54.2  55.0
-        gate, 5000 entries     53.8  54.5  54.0
-        gate, 20000 entries    53.3  53.9  53.6
+    scripts/bench_sluice_cost.py measures this on a real forwarded path (two network namespaces on
+    two subnets, routed by the host) with iperf3, three runs per configuration. Two full runs,
+    taken back to back on the same node:
 
-    The blocklist's cost is INSIDE the run-to-run spread until 20000 entries, where it is ~3%. That
-    is the shape sets buy: the kernel work per packet is a lookup, so the cost tracks the RULE COUNT
-    (constant) rather than the member count. A per-address compilation would have made the 20000
-    case 20000 comparisons per packet, which on a gigabit link is a different class of number.
+        configuration                        run 1    run 2
+        baseline (no gate)                   120.0    119.0   Gbit/s
+        10 members, no input rules           109.2    115.7
+        240 members, no input rules          109.2    116.0
+        240 members + 1 input port rule      108.7    114.1
+        240 members + 25 input port rules    109.0    115.7
+        240 members + 100 input port rules   109.8    108.7
 
-    And enforcement was verified at the same time: with the source in the set, the transfer failed
-    and the counter read `packets 11 bytes 660`; after teardown it succeeded again. Load, drop,
-    unload.
+    TWO THINGS ARE STABLE ACROSS BOTH RUNS, and those are the only ones stated as findings:
 
-    A NOTE ON WHAT THESE NUMBERS ARE NOT. They are a loopback-adjacent veth test on one host, not a
-    production segment. They establish that the gate does not impose a size-dependent penalty and
-    that it is not the bottleneck -- not a throughput figure for a real network, which would be
-    governed by the NIC and the switch.
+      * THE MEMBER COUNT DOES NOT MATTER. 10 members and 240 members are indistinguishable in both
+        runs. That is the property the sets buy, and it is what makes a large blocklist viable:
+        the kernel's per-packet work tracks the number of RULES, not the number of addresses.
+      * The cost is SMALL in absolute terms -- single-digit percent of a >100 Gbit/s path.
+
+    WHAT IS NOT CLAIMABLE, and this matters more than the numbers: the two runs disagree by up to
+    6 percentage points on the SAME configuration, which is larger than the differences being
+    attributed. Run 1 has the 100-input-rule case as the FASTEST gate configuration; run 2 has it
+    as the slowest. So no per-configuration cost is asserted here -- an earlier version of this
+    comment quoted "~3%" and "~3% at 20000 entries" from a single set of runs, which is a precision
+    this environment does not support. Resolving a 2% effect here would need many more samples per
+    configuration, and the honest statement is the one above.
+
+    WHY THAT IS WORTH WRITING DOWN RATHER THAN QUIETLY DROPPING: an operator deciding whether to
+    enable the gate on a production segment needs to know the order of magnitude, and needs to know
+    when a number is a measurement and when it is noise. The input chain evaluates up to one rule
+    per configured port, in order, for packets addressed to this host -- that is a real scaling
+    property, it is visible in the configuration, and it is not resolvable on this path.
+
+    And enforcement was verified separately, which needs no statistics: with the source in the set
+    the transfer FAILS, and after teardown it succeeds again. Load, drop, unload.
+
+    THE FIRST RUN OF THE HARNESS MEASURED NOTHING AND LOOKED LIKE A CATASTROPHE. Every
+    configuration reported "no transfer", baseline included, because k3s sets
+    `iptables -P FORWARD DROP` on the node -- the same defect this project found in siphon mode,
+    where relayed LAN traffic is discarded before any nft hook is reached. Read as a performance
+    result it would have said the gate costs 100% of throughput. The harness now inserts the
+    interface-scoped ACCEPTs that the product itself reports, and PROVES the path carries traffic
+    with a ping before measuring anything.
+
+
+    A NOTE ON WHAT THESE NUMBERS ARE NOT. They are a veth test on one host, not a production
+    segment. They establish that the gate imposes no MEMBER-COUNT-dependent penalty and that it is
+    not the bottleneck -- and they do not resolve a per-configuration percentage, as the two runs
+    above show. A throughput figure for a real network would be governed by the NIC and the switch,
+    and would need to be measured there.
     """
 
     name = "nft"
