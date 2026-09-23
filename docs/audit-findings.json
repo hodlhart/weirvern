@@ -743,7 +743,7 @@
       "area": "Operability",
       "title": "Alert suppression state is per-process; a restart resets cooldowns and the hourly cap",
       "verdict": "CONFIRMED",
-      "note": "AlertState is two in-memory dicts built fresh at worker startup and never rehydrated; push_alert writes the audit row but never reads alert_events back. A crash loop or a rollout therefore re-arms the full hourly budget instantly.\n\nEVIDENCE: alerts.py:28-32 (last_sent/hourly_events dicts) + worker.py:874 `alert_state = AlertState()`; `grep query( alerts.py` -> no reads, only the insert in _audit. Ran: state with last_sent=now-10s and 50 hourly events -> can_send (False,'cooldown'); a fresh AlertState() (i.e. a restart) at the same instant -> (True,'').",
+      "note": "CONFIRMED by running it: `AlertState` is two in-memory dicts built fresh at worker startup and never rehydrated (`alerts.py:28-32`, `worker.py:874`); `push_alert` writes the audit row but nothing reads `alert_events` back. Measured: a state with last_sent=now-10s and 50 hourly events returns (False,'cooldown'), while a fresh AlertState() at the same instant returns (True,''). A crash loop or a rollout therefore re-arms the full hourly budget instantly. NOT YET FIXED.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k11_ops_ux",
       "id": "F083"
     },
@@ -806,7 +806,7 @@
       "area": "Security",
       "title": "The account gate fails open: a store error turns the GUI into an open dashboard, and the concrete misconfiguration that causes it is plausible",
       "verdict": "CONFIRMED",
-      "note": "A non-NotFound read error leaves has_users() False and latches _loaded=True, so _accounts_on() is False for the whole process lifetime and every API read is served without an account \u2014 exactly the posture the module docstring says it removed. The failure is cached, so it does not even heal on the next request.\n\nEVIDENCE: users.py:277-308 \u2014 a generic exception sets exists=None, records=[], `_loaded=True`; has_users()/snapshot() then return the empty cache without retrying. Ran with a client whose read() raises: load() -> 0 records, exists None, has_users() False, web._accounts_on(ctx) False. web.py:1078-1097 `_require_read`: `if not _accounts_on(ctx): return True`. (Bootstrap correctly refuses to create accounts in this state, so the gate simply stays off.)",
+      "note": "CONFIRMED by driving it: a non-NotFound read error leaves has_users() False and latches `_loaded=True`, so `_accounts_on` is False for the whole process lifetime and every API read is served without an account (`web.py:1078-1097` `if not _accounts_on(ctx): return True`). The failure is CACHED, so it does not heal on the next request. Bootstrap correctly refuses to create accounts in this state, which is why the gate simply stays off. NOT YET FIXED -- and this one warrants attention because it fails OPEN.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k10_security",
       "id": "F090"
     },
@@ -815,7 +815,7 @@
       "area": "Security",
       "title": "Sonar's `interface`/`mgmt_interface` are the only free-text inputs with no shape validation, and they leave the process",
       "verdict": "CONFIRMED",
-      "note": "The values go from the request body verbatim into a root, NET_RAW, hostNetwork Job's env and into path construction (/sys/class/net/<iface>/...), with no shape check at any layer. \"The only\" is imprecise \u2014 INTERCEPT_SEGMENT/ADDR/GATEWAY/TARGETS are also unvalidated at write time \u2014 but the substance holds.\n\nEVIDENCE: web.py:1742-1748 takes interface/mgmt_interface from JSON with only .strip(); sonar.build_job then sets env SONAR_IFACE to the value verbatim (ran: build_job(... 'eth0; echo pwned') -> [{'name':'SONAR_IFACE','value':'eth0; echo pwned'}]); sonar.survey has no re/validate (inspect.getsource); siphonnet.read_mac builds Path(f'/sys/class/net/{iface}/address') (ran read_mac('../../etc/passwd') -> None, i.e. it resolves outside /sys/class/net). For contrast, cluster_config.validate does apply an (advisory, confirmable) shape check to ZEEK_IFACE.",
+      "note": "CONFIRMED by running it: `interface`/`mgmt_interface` go from the request body verbatim into a root, NET_RAW, hostNetwork Job's env and into path construction. `build_job(... 'eth0; echo pwned')` sets SONAR_IFACE to that string verbatim, and `read_mac('../../etc/passwd')` resolves outside /sys/class/net. The finding's 'the only' is imprecise (INTERCEPT_SEGMENT/ADDR/GATEWAY/TARGETS are also unvalidated at write time) but the substance holds. NOT YET FIXED.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k10_security",
       "id": "F091"
     },
@@ -950,7 +950,7 @@
       "area": "Test suite",
       "title": "gate.sh's `run()` always exits 0: the ruff fallback is dead, and the gate only works with the author's `.venv`",
       "verdict": "CONFIRMED",
-      "note": "run() returns 0 on both the PASS and FAIL branches, so `run A || run B` can never fire B \u2014 demonstrated with a failing command and with a nonexistent binary, both of which still returned 0. The tests step additionally invokes .venv/bin/pytest directly with no $PY fallback.\n\nEVIDENCE: scripts/gate.sh:26-36 run() has no return/exit after 'FAIL'; shell harness reproducing it: `run \"false-cmd\" false; echo $?` -> 0 and `.venv/bin/does_not_exist` -> run printed FAIL yet returned 0, so scripts/gate.sh:56-57's `|| run \"lint (ruff, pinned)\" ruff check ...` never executed; scripts/gate.sh:110 hardcodes `.venv/bin/pytest -q` while $PY is only used for the other steps",
+      "note": "CONFIRMED, then fixed. `scripts/gate.sh`'s `run()` set `FAIL=1` and fell off the end, so it returned 0 even when its command failed -- measured: `run \"x\" false` printed FAIL and returned 0, as did a nonexistent binary. CORRECTION TO THE FINDING AS WORDED: the final `exit \"$FAIL\"` still refused the push, so the gate was NOT silent and 'the gate only works with the author's .venv' overstates it. What was actually broken is every `run A || run B` composition: the fallback can never fire when the failure it responds to reports success. The dead composition was real -- the ruff step fell back to a PATH ruff, AND that fallback had a second defect: it linted only `weirvern tests`, silently skipping `scripts/`, the exact directory whose unlinted state the gate was written to catch. FIXED: run() returns 0/1; the ruff and mypy steps branch venv -> PATH -> a loud FAILURE (a missing linter now refuses the push rather than reporting lint as clean); the tests step uses `$PY` (which already carries a python3 fallback) instead of hardcoding `.venv/bin/pytest`. TESTS: 6 in tests/test_gate_script.py that EXTRACT run() from the shipping script rather than copying it, because a copy cannot fail on a change to the thing it copies. 5 mutations, all effective ones caught (two of my first mutations were no-ops -- one inserted a line BEFORE the return it needed to defeat, the other changed 'FAIL --' to 'SKIP --' while the substring I grepped for survived).\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F106"
     },
@@ -986,7 +986,7 @@
       "area": "Test suite",
       "title": "The %-in-SQL guard forbids the `%%` escape its own docstring prescribes, and scans only three hardcoded modules",
       "verdict": "CONFIRMED",
-      "note": "The regex `%(?!\\()` flags `%%` as a violation, so following the docstring's own advice to escape a literal percent would fail the test; and the module list is a literal three names, omitting worker.py and sluice_store.py, which also carry %(name)s SQL.\n\nEVIDENCE: tests/test_host_fingerprint.py:727-756: docstring says '`%%` is the escape when a literal percent really is needed' while the scanner is re.finditer(r'%(?!\\()'); ran that regex on a comment '100%% of hosts' -> flagged twice; `mods = [host_identity, admin.status, fingerprint]` hardcoded, while a scan of triple-quoted SQL with '%(' finds blocks also in weirvern/worker.py and weirvern/sluice_store.py",
+      "note": "CONFIRMED by running the scanner: the docstring prescribes `%%` as the escape while the scanner is `re.finditer(r'%(?!\\\\()')`, which flags `%%` as a violation -- so following the docstring's own advice fails the test. Also CONFIRMED: the module list is a hardcoded three names and omits weirvern/worker.py and weirvern/sluice_store.py, which carry `%(name)s` SQL of the same shape. NOT YET FIXED -- recorded for the next round.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F110"
     },
@@ -995,7 +995,7 @@
       "area": "Test suite",
       "title": "A gzipped capture evades both the capture guard and .gitignore",
       "verdict": "CONFIRMED",
-      "note": "'.pcap.gz' is in the format set but Path.suffix only ever returns '.gz', so a gzipped capture is flagged only when 'capture' appears in its name, and .gitignore has no .gz pattern \u2014 git check-ignore confirms it is committable.\n\nEVIDENCE: tests/test_sanitation.py:176 `_capture_formats = {\".pcap\", \".pcapng\", \".cap\", \".pcap.gz\"}` compared against `Path(p).suffix.lower()`; ran the rule: zeek/conn.pcap.gz -> flagged=False (capture.pcap.gz -> True, i.e. name-dependent); `git check-ignore -q --no-index zeek/conn.pcap.gz` -> NOT IGNORED (zeek/conn.pcap -> IGNORED); .gitignore:62-65 lists only *.pcap, *.pcapng, *.cap, /captures/",
+      "note": "CONFIRMED and FIXED IMMEDIATELY -- this touches the permanent sanitation directive. The guard's rule named `.pcap.gz` in its format set while comparing `Path(p).suffix`, which is ALWAYS just the final component, so `zeek/conn.pcap.gz` had suffix `.gz`, matched nothing, and was gitignored by nothing either. MEASURED BY HAND: `git check-ignore --no-index zeek/conn.pcap.gz` -> NOT IGNORED while `zeek/conn.pcap` -> IGNORED. The SET was right and the COMPARISON was wrong. FIXED by walking the whole SUFFIX CHAIN (base format followed only by compression suffixes), which catches every compression of every format without enumerating the cross-product; `.gitignore` gains *.pcap.gz, *.pcapng.gz, *.cap.gz, *.pcap.zst, *.pcap.bz2, *.pcap.xz. THREE MUTATIONS SURVIVED until a `.pcap.gz` path was added to the must-fire test's list: the gzip format was listed as covered and never exercised. HONEST LIMIT: no compressed capture was ever committed (verified with git ls-files), so this is a hole that was open, not one that was used.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F111"
     },
@@ -1004,7 +1004,7 @@
       "area": "Test suite",
       "title": "The capture-rule must-fire test exercises a private copy of the rule, not the guard",
       "verdict": "CONFIRMED",
-      "note": "The must-fire test defines its own local is_capture() from literal sets and never touches the guard, so narrowing the guard's rule leaves this test passing and unchanged \u2014 a guard proof that cannot fail on its own defect.\n\nEVIDENCE: tests/test_sanitation.py:236-273 defines `def is_capture(path: str)` locally; the guard is tests/test_sanitation.py:155-196 (test_no_captured_traffic_is_committed); mutation experiment replacing the guard's `if Path(p).suffix.lower() in _capture_formats` clause left the must-fire test's text byte-identical and still passing on its private copy",
+      "note": "CONFIRMED, then fixed -- and it is the reason F111 survived. The guard's own must-fire test carried a PRIVATE COPY of the rule (its own local `is_capture` built from its own literal sets), so narrowing the guard left that test passing and byte-identical: a proof that cannot fail on the thing it proves. FIXED by moving the rule ONCE into the product module (`sanitize_identifiers.is_capture_path`) and having both the guard and its test import it, so they cannot disagree. This is the same failure mode as the F186 mutation-test finding (a latch test that re-implemented the latch) and, earlier, the F016 drift tests duplicating web.py logic.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F112"
     },
@@ -1031,7 +1031,7 @@
       "area": "Test suite",
       "title": "The anomaly arity check counts the LAST append-of-a-list in worker.py, and checks count but not order",
       "verdict": "CONFIRMED",
-      "note": "The AST walk overwrites n_values on every matching node, so the last append-of-a-list wins; today only one such site exists (worker.py:673, 20 elements) so the count is right, but only the column list's last-two names are order-checked \u2014 a swap inside the row keeps the length and passes every guard.\n\nEVIDENCE: tests/test_audit_regressions.py:30-45 and tests/test_schema_migrations.py:121-133 both assign n_values inside the loop (no break); AST scan of worker.py: one append([...]) at line 673 with 20 elements vs 20 _ANOMALY_COLUMNS; swapping row elements keeps len==20 and the only order assertion is tests/test_audit_regressions.py:82-89 names[-2:] == ['attack_techniques','attack_label']",
+      "note": "CONFIRMED by reading the guards: the AST walk assigns `n_values` on every matching node with no break, so the LAST append-of-a-list wins; only one such site exists today (worker.py:673, 20 elements) so the count is currently right, but it is right by accident of there being one site. Order is also unchecked except for names[-2:]. NOT YET FIXED.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F115"
     },
@@ -1040,7 +1040,7 @@
       "area": "Test suite",
       "title": "The ALTER-existence guard does not anchor the table",
       "verdict": "CONFIRMED",
-      "note": "The regex binds only the column name, so an ALTER on any table satisfies it; the sibling 'column is created somewhere' check likewise harvests column names regardless of table. The fully-qualified-target test checks qualification, not which table.\n\nEVIDENCE: tests/test_schema_migrations.py:37-46 `re.search(rf\"ADD COLUMN IF NOT EXISTS\\s+{column}\\b\", alters)`; ran it against a doctored 005 whose two ALTERs both target weirvern.something_else -> both columns reported present, and the created-set regex at :88-91 also yields {'attack_techniques','attack_label'}; real ALTERs at weirvern/schema/005_attack_techniques.sql:26,29 target weirvern.netflow_anomalies",
+      "note": "CONFIRMED by running the guard's regex against a doctored migration: `ADD COLUMN IF NOT EXISTS\\s+{column}\\b` binds only the column NAME, so an ALTER on any table satisfies it. NOT YET FIXED.\n\n(Original batch evidence retained in the delegation log deleg_801271f7; this note supersedes it.)",
       "report": "k12_testing",
       "id": "F116"
     },
