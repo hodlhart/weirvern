@@ -477,6 +477,85 @@ def collect_health(client, settings) -> HealthReport:
             value=arows, latency_ms=ms,
         ))
 
+    # 8. The identity feed: is evidence still ARRIVING?
+    #
+    # ── NOTHING WATCHED THIS, AND IT WENT QUIET FOR TWENTY HOURS (audit F094) ───────────────────
+    #
+    # `host_fingerprints` is the input to host identification: the raw observations (MAC vendor,
+    # DHCP hostname, JA4, software) that `build_identity` classifies. MEASURED on the live sensor
+    # while looking for something else: the newest observation was 72,837 seconds old -- 20.2 hours
+    # -- while every probe on this page read green. The `identity` probe reports COVERAGE from the
+    # VERDICT table, which shrinks slowly as hosts age out of a 7-day window, so a dead feed looks
+    # like a stable deployment for most of a week. Nothing in the admin surface reads
+    # `host_fingerprints` at all: `grep -c host_fingerprints weirvern/admin/*.py` returns nothing.
+    #
+    # WHY IT IS A PROBE AND NOT A WARNING ON THE WRITE PATH. The write path already swallows its
+    # failures by design -- `_record_observations` logs at DEBUG so a dropped row cannot stop ingest
+    # (identification is enrichment; losing flow data would be trading the important thing for the
+    # useful one). That design is correct and this probe is the other half of it: if failures are
+    # deliberately quiet, something has to measure the RESULT instead, or a total outage and a quiet
+    # segment are indistinguishable. The DEBUG-level drop was the reported symptom; the missing
+    # measurement is the defect.
+    #
+    # TRI-STATE, like `zeek_freshness` (F081): a deployment with no Zeek sensor at all writes no
+    # observations, correctly, and must not be reported as failing. The distinction is made on
+    # EVIDENCE -- a fingerprint row written at any point in the retention -- rather than on absence
+    # being interpreted either way. An empty table is `ok=None` and says so.
+    def fingerprint_feed():
+        return client.query(
+            "SELECT dateDiff('second', max(ts), now()), count() "
+            "FROM weirvern.host_fingerprints "
+            "WHERE ts > now() - INTERVAL 7 DAY"
+        ).result_rows
+
+    frows, ms, err = _timed(fingerprint_feed)
+    if err is None:
+        if not frows or not frows[0][1]:
+            # No observations in the whole retention window. Either no Zeek sensor is deployed (the
+            # NetFlow-only case, where this is correct) or the feed has been dead for a week -- and
+            # those are not the same fact, so this reports neither as a pass.
+            report.add(Probe(
+                "fingerprint_feed", ok=None, latency_ms=ms,
+                detail=(
+                    "no host-fingerprint observations in the last 7 days, so host identification "
+                    "has no input. Correct on a NetFlow-only deployment (no Zeek sensor); a FAULT "
+                    "if this cluster has one -- check that the sensor's dhcp/ssl/software logs are "
+                    "being written, since a log that stops produces no rows and no error."
+                ),
+            ))
+        else:
+            age_s = float(frows[0][0] or 0)
+            count = int(frows[0][1])
+            # ── THE THRESHOLD COMES FROM THE FEED'S OWN HEALTHY GAPS, MEASURED ─────────────────
+            #
+            # My first version used 24 hours, on the reasoning that a quiet segment legitimately
+            # produces nothing for hours. Then I measured the actual gaps between observations on the
+            # live sensor and that reasoning was wrong:
+            #
+            #     observations: 73   median gap: 73s   p90: 212s   p99: 2,277s
+            #
+            # A healthy feed produces observations MINUTES apart, not hours -- so a 24h bound would
+            # not have flagged the very stall this probe exists for until a full day had passed, and
+            # it reported `ok` at 20h17m while the feed was in fact dead. A threshold that only fires
+            # after the failure has already run most of a day is barely a probe.
+            #
+            # Four hours sits an order of magnitude above p99 and well below the measured stall. It
+            # is still generous enough for a genuinely idle segment overnight, which is the false
+            # positive to avoid: a probe that cries wolf gets ignored, and an ignored probe is how
+            # this went unseen in the first place.
+            threshold_s = 4 * 3600
+            report.add(Probe(
+                "fingerprint_feed", ok=age_s < threshold_s,
+                detail=(
+                    f"newest observation {_human_age(age_s)} ago ({count} in 7d)"
+                    + ("" if age_s < threshold_s else
+                       ". Host identification has had no input for hours: check the sensor's "
+                       "dhcp/ssl/software logs. A log that stops produces no rows and no error, and "
+                       "the identity view keeps reporting coverage from stale verdicts for days.")
+                ),
+                value=age_s, latency_ms=ms,
+            ))
+
     return report
 
 

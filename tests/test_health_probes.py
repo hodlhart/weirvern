@@ -398,3 +398,97 @@ def test_a_FRESH_zeek_table_still_reports_ok():
         f"the record count is not reported anywhere, so a probe on a large but stalled table gives "
         f"no way to tell: {p.detail!r}"
     )
+
+
+# ── THE IDENTITY FEED HAD NO PROBE AT ALL, AND WENT QUIET FOR 20 HOURS (F094) ────────────────
+#
+# `host_fingerprints` is the input to host identification. MEASURED on the live sensor while looking
+# for something else: the newest observation was 72,837 seconds old -- 20.2 hours -- while every
+# probe on the health page read green. The `identity` probe reports COVERAGE from the VERDICT table,
+# which shrinks slowly as hosts age out of a 7-day window, so a dead feed looks like a stable
+# deployment for most of a week. Nothing in the admin surface read `host_fingerprints` at all.
+#
+# WHY A PROBE AND NOT A WRITE-PATH WARNING: `_record_observations` logs dropped rows at DEBUG on
+# purpose -- identification is enrichment, and losing flow data to report a fingerprint problem would
+# be trading the important thing for the useful one. That design is right, and the missing
+# measurement is the defect: if failures are deliberately quiet, something must measure the RESULT,
+# or a total outage and a quiet segment are indistinguishable.
+
+
+def test_a_STALLED_identity_feed_is_reported_as_not_ok():
+    """THE DEFECT. The live stall was 20.2 hours with every other probe green."""
+    p = _probe("fingerprint_feed", by_fragment={
+        "FROM weirvern.host_fingerprints": [(72_837, 5872)],
+    })
+    assert p is not None, "the fingerprint_feed probe does not exist"
+    assert p.ok is False, (
+        f"a feed with no observations for 20.2 hours reported ok={p.ok}. That is the live state "
+        f"this probe exists for, and nothing was watching it"
+    )
+    assert "dhcp" in str(p.detail), (
+        f"the detail must name what to check (the sensor's logs): {p.detail!r}"
+    )
+
+
+def test_a_HEALTHY_identity_feed_is_ok():
+    """The other direction. The measured healthy gaps are median 73s, p90 212s, p99 2,277s, so a
+    feed observed minutes ago is normal and must not be flagged -- a probe that cries wolf gets
+    ignored, and an ignored probe is how the stall went unseen."""
+    for age in (10, 73, 212, 2_277, 3_599):
+        p = _probe("fingerprint_feed", by_fragment={
+            "FROM weirvern.host_fingerprints": [(age, 5_000)],
+        })
+        assert p is not None and p.ok is True, (
+            f"an observation {age}s old was flagged; healthy gaps reach {2_277}s at p99: {p.detail!r}"
+        )
+
+
+def test_the_threshold_sits_ABOVE_the_measured_healthy_gaps():
+    """The bound is derived from the feed's own gap distribution, not picked.
+
+    My first version used 24 hours, on the reasoning that a quiet segment produces nothing for hours.
+    The measurement contradicted that -- p99 is 2,277s, under 40 minutes -- and the consequence was
+    concrete: at 20h17m of real staleness the probe still reported `ok`. This asserts the bound is
+    above p99 (no false positives on a healthy feed) AND below the measured stall (it actually
+    fires), so neither mistake can come back.
+    """
+    healthy_p99_s = 2_277
+    measured_stall_s = 72_837
+    just_under = _probe("fingerprint_feed", by_fragment={
+        "FROM weirvern.host_fingerprints": [(healthy_p99_s + 60, 100)],
+    })
+    assert just_under is not None and just_under.ok is True, (
+        "a gap just above the measured healthy p99 was flagged as a fault"
+    )
+    stalled = _probe("fingerprint_feed", by_fragment={
+        "FROM weirvern.host_fingerprints": [(measured_stall_s, 100)],
+    })
+    assert stalled is not None and stalled.ok is False, (
+        "the measured 20.2-hour stall does not trip the probe, so it cannot detect what it exists for"
+    )
+    four_hours = _probe("fingerprint_feed", by_fragment={
+        "FROM weirvern.host_fingerprints": [(4 * 3600 + 1, 100)],
+    })
+    assert four_hours is not None and four_hours.ok is False, (
+        "a gap beyond four hours -- an order of magnitude above p99 -- went unflagged"
+    )
+
+
+def test_no_observations_at_all_is_TRI_STATE_not_a_failure():
+    """A NetFlow-only deployment has no Zeek sensor and correctly writes nothing.
+
+    Reporting that as a failure would make the probe wrong on every such deployment -- which is
+    exactly the mistake `zeek_freshness` made before F081. `ok=None` means "not measurable here":
+    neither a pass nor a fault, and the detail says which case it might be.
+    """
+    p = _probe("fingerprint_feed", by_fragment={
+        "FROM weirvern.host_fingerprints": [(0, 0)],
+    })
+    assert p is not None, "the probe did not run for an empty table"
+    assert p.ok is None, (
+        f"an empty observation table reported ok={p.ok}. On a NetFlow-only deployment this is "
+        f"CORRECT and must not be a failure; the absence is not evidence either way"
+    )
+    assert "NetFlow-only" in str(p.detail), (
+        f"the detail must name the benign case as well as the fault: {p.detail!r}"
+    )
