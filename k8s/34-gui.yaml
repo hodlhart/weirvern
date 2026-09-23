@@ -100,6 +100,15 @@ spec:
               value: "0.0.0.0"
             - name: GUI_PORT
               value: "8088"
+            # NODE_NAME, for the same reason as the worker: the GUI READS the gate's state rows,
+            # which are keyed by sensor, and it must compute the SAME identity the worker writes
+            # under. Inside a pod `socket.gethostname()` is the pod name, so without this the GUI
+            # filters to a name the worker never wrote and the panel reports "the gate has not run
+            # yet" on a gate that is working. See k8s/33-worker.yaml for the full reasoning.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           envFrom:
             - configMapRef:
                 name: weirvern-env

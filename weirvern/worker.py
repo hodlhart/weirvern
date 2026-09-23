@@ -113,15 +113,42 @@ def _sluice_maybe(settings, client) -> None:
 
 
 def _sensor_name(settings) -> str:
-    """What this sensor calls itself in the gate's state row.
+    """What this sensor calls itself in the gate's state row, and in every sensor-keyed table.
 
-    Falls back to the hostname rather than to a literal, because a state row with an empty sensor
-    name cannot be attributed to a box -- and the moment there is more than one sensor (the
-    weirlings case) an unattributable row is worse than no row.
+    ── WHY THIS IS NOT socket.gethostname(), MEASURED IN CLUSTER ───────────────────────────────
+    Inside Kubernetes `socket.gethostname()` returns the POD NAME, not the node. Measured on the
+    live deployment: the worker wrote rows under `weirvern-worker-84899c6f55-9z7g2` while the GUI
+    computed `weirvern-gui-79c77d8667-b7c7q` for itself. Two consequences, both real:
+
+      * the GUI can never match the worker's rows, so a panel filtering to its own sensor finds
+        nothing and reports "the gate has not run yet" on a gate that is running fine; and
+      * the name CHANGES ON EVERY RESTART, because a pod name carries its ReplicaSet hash. Rows
+        accumulate under a new identity each time, so no query can follow one gate across a
+        restart -- which is exactly when an operator looks.
+
+    THE ORDER OF PREFERENCE, and what each source is for:
+
+      settings.sensor_name   an explicit name, for a deployment that wants to call itself something
+                             (and the field the weirlings case will use to tell sensors apart)
+      NODE_NAME              the node, supplied by the DOWNWARD API. Stable across pod restarts and
+                             identical in every pod scheduled to that node -- so the worker's rows
+                             and the GUI's reads agree, and they keep agreeing after a rollout.
+      hostname               last resort for a non-cluster run (a bare python invocation, the CLI,
+                             a test), where the hostname IS the box and is stable.
+
+    Falls back rather than to a literal, because a state row with an empty sensor name cannot be
+    attributed to a box -- and once there is more than one sensor an unattributable row is worse
+    than no row.
     """
+    import os  # noqa: PLC0415
     import socket  # noqa: PLC0415
 
-    return (getattr(settings, "sensor_name", "") or socket.gethostname() or "sensor")
+    explicit = getattr(settings, "sensor_name", "") or ""
+    if explicit:
+        return str(explicit)
+    # The downward API is wired in both deployments. When it is absent (a non-cluster run) the
+    # hostname is the correct answer, not a failure.
+    return os.environ.get("NODE_NAME") or socket.gethostname() or "sensor"
 
 
 def current_detections_for_blocking(client, window_minutes: int = 60) -> list[dict]:

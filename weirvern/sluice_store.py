@@ -242,17 +242,42 @@ def load_gate_state(client: Client, sensor: str = "") -> dict:
     Follows the project's route convention: a failure and an empty result must not look alike. A
     gate that was never armed and a gate whose state could not be read are different situations, and
     the operator acts differently on each.
+
+    ── WHY THE ROW IS CHOSEN BY RECENCY AND THAT IS WRONG ON ITS OWN ──────────────────────────
+    MEASURED (live, 2026-09-23). This query took the newest row ACROSS ALL SENSORS. The Sluice Gate
+    state table is shared, and anything that runs an enforcement pass writes to it -- the worker,
+    the CLI, an ad-hoc script. A single harness run that armed and exited left an `armed` row that
+    then outranked the worker's own rows, so the panel showed ARMED while the node had zero sluice
+    tables. The operator was reading another process's history and had no way to know.
+
+    So when a caller names a sensor, the state is filtered to it. The project already keys
+    `sensor_status` per sensor for the same reason. The staleness check covers the remaining case --
+    a row that is current but abandoned -- and the two together mean the panel can only ever show
+    the named sensor's own state, and can say when even that has stopped.
     """
     try:
-        rows = client.query(
-            """
-            SELECT sensor, updated_at, state, iface, mgmt_iface, rules_active, rules_total,
-                   packets_blocked, bytes_blocked, detail, backend, backend_expected
-            FROM weirvern.sluice_state FINAL
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-        ).result_rows
+        if sensor:
+            rows = client.query(
+                """
+                SELECT sensor, updated_at, state, iface, mgmt_iface, rules_active, rules_total,
+                       packets_blocked, bytes_blocked, detail, backend, backend_expected
+                FROM weirvern.sluice_state FINAL
+                WHERE sensor = {sensor:String}
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                parameters={"sensor": sensor},
+            ).result_rows
+        else:
+            rows = client.query(
+                """
+                SELECT sensor, updated_at, state, iface, mgmt_iface, rules_active, rules_total,
+                       packets_blocked, bytes_blocked, detail, backend, backend_expected
+                FROM weirvern.sluice_state FINAL
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+            ).result_rows
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "reason": f"cannot read the gate state: {type(exc).__name__}"}
     if not rows:

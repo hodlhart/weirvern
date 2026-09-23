@@ -993,3 +993,117 @@ def test_an_unreadable_timestamp_is_not_evidence_of_staleness():
     """
     out = _load_gate_state("not a datetime")
     assert "stale" not in out, "an unreadable timestamp was reported as a stale gate"
+
+
+# ── the sensor identity must be STABLE and MUST MATCH between writer and reader ────────────────
+#
+# MEASURED IN CLUSTER (2026-09-23), and this is the defect that made the previous fix wrong.
+# `socket.gethostname()` inside a pod returns the POD NAME. The worker wrote gate state under
+# `weirvern-worker-84899c6f55-9z7g2` while the GUI computed `weirvern-gui-79c77d8667-b7c7q` for
+# itself. So:
+#
+#   * a panel filtering to its own sensor finds NOTHING and reports "the gate has not run yet" on a
+#     gate that is running correctly -- the fix for one silent failure would have created another;
+#   * the name carries the ReplicaSet hash, so it CHANGES ON EVERY RESTART and rows accumulate
+#     under throwaway identities. No query can follow one gate across a rollout, which is exactly
+#     when an operator looks.
+#
+# The order tested here is the contract: an explicit name wins, then the node (stable, identical in
+# every pod on that node), then the hostname for a non-cluster run.
+def _name_with(node_name: str | None = "UNSET"):  # noqa: ANN001
+    """Resolve the sensor name under a controlled NODE_NAME.
+
+    `None` means UNSET (delete it), which is the non-cluster case. A sentinel default of "UNSET"
+    is needed because `None` is meaningful here -- the first version of this helper passed None to
+    os.environ.update and raised TypeError instead of testing the fallback.
+    """
+    import os
+    from types import SimpleNamespace
+
+    from weirvern.worker import _sensor_name
+
+    saved = os.environ.get("NODE_NAME")
+    try:
+        if node_name == "UNSET":
+            pass  # leave the environment as it is
+        elif node_name is None:
+            os.environ.pop("NODE_NAME", None)
+        else:
+            os.environ["NODE_NAME"] = node_name
+        return _sensor_name(SimpleNamespace())
+    finally:
+        if saved is None:
+            os.environ.pop("NODE_NAME", None)
+        else:
+            os.environ["NODE_NAME"] = saved
+
+
+def test_the_node_name_wins_over_the_naive_hostname():
+    """In cluster, NODE_NAME must be used -- the pod name is neither stable nor shared."""
+    got = _name_with("sensor-node-a")
+    assert got == "sensor-node-a", (
+        f"resolved to {got!r}; a pod hostname would change on every restart and could never "
+        "match what another pod on the same node writes"
+    )
+
+
+def test_an_explicit_name_beats_the_node():
+    """A deployment that names itself keeps that name. This is the weirlings hook."""
+    from types import SimpleNamespace
+
+    from weirvern.worker import _sensor_name
+
+    assert _sensor_name(SimpleNamespace(sensor_name="edge-01")) == "edge-01"
+
+
+def test_the_hostname_is_the_fallback_when_there_is_no_cluster():
+    """A bare CLI or test run has no NODE_NAME, and the hostname IS the box there."""
+    import os
+    import socket
+
+    got = _name_with(None)
+    assert got == socket.gethostname(), (
+        f"resolved to {got!r}; a non-cluster run should fall back to the hostname"
+    )
+    assert not os.environ.get("NODE_NAME")
+
+
+def test_an_empty_node_name_falls_through_rather_than_producing_a_blank_sensor():
+    """An empty sensor name cannot be attributed to a box, which is worse than no row.
+
+    An empty string is falsy, so it must fall through to the hostname. A gate whose rows carry an
+    empty sensor is one no query can attribute to a machine -- and once there is more than one
+    sensor that is worse than having no row at all.
+    """
+    import socket
+
+    got = _name_with("")
+    assert got != "", "an empty NODE_NAME produced an empty sensor name"
+    assert got == socket.gethostname(), f"resolved to {got!r} instead of falling through"
+
+
+def test_the_gui_and_the_worker_agree_on_the_identity():
+    """THE ACTUAL INVARIANT. A reader that computes a different name than the writer finds nothing.
+
+    This is what failed live, so it is asserted directly rather than left implied by the two
+    components' own tests passing.
+    """
+    import os
+
+    from weirvern.admin.web import _gate_sensor_name
+    from weirvern.worker import _sensor_name
+
+    saved = os.environ.get("NODE_NAME")
+    os.environ["NODE_NAME"] = "sensor-node-a"
+    try:
+        written = _sensor_name(__import__("types").SimpleNamespace())
+        read = _gate_sensor_name()
+        assert written == read, (
+            f"the worker writes under {written!r} but the GUI reads {read!r}; the panel would "
+            "report that the gate has never run"
+        )
+    finally:
+        if saved is None:
+            os.environ.pop("NODE_NAME", None)
+        else:
+            os.environ["NODE_NAME"] = saved

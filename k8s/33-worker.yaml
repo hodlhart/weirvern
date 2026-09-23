@@ -103,6 +103,27 @@ spec:
                 name: weirvern-env
             - secretRef:
                 name: weirvern-secrets
+          env:
+            # ── NODE_NAME: THE SENSOR'S STABLE IDENTITY ─────────────────────────────────────
+            #
+            # The gate's state rows are keyed by sensor, and `socket.gethostname()` inside a pod
+            # returns the POD NAME -- measured here, the worker wrote rows under
+            # `weirvern-worker-84899c6f55-9z7g2` while the GUI computed
+            # `weirvern-gui-79c77d8667-b7c7q` for itself. So the GUI could never match the
+            # worker's rows, and the name changed on every restart, meaning no query could follow
+            # one gate across a rollout -- which is exactly when an operator looks.
+            #
+            # The node name is stable and identical in every pod scheduled to that node, so the
+            # worker's writes and the GUI's reads agree, and keep agreeing after a restart. It is
+            # also the right answer for the weirlings case: multiple sensors ARE multiple nodes.
+            #
+            # Supplied by the downward API rather than read from an environment the ConfigMap
+            # would have to be edited to carry, because a per-node value has no business in a
+            # shared ConfigMap -- every sensor would overwrite it for the others.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           volumeMounts:
             - name: flow-data
               mountPath: /data

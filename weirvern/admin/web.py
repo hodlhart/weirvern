@@ -106,6 +106,34 @@ STATIC_FILES = {
 NO_CACHE = "no-store, must-revalidate"
 
 
+def _gate_sensor_name() -> str:
+    """The sensor identity the Sluice Gate's state rows are keyed by.
+
+    MUST MATCH THE WRITER, or the panel silently reads nothing. Rather than repeat the expression
+    the worker uses -- `getattr(settings, "sensor_name", "") or socket.gethostname()` -- this calls
+    the worker's own helper. A second convention here would drift: `sensor_name` is read with
+    `getattr` because it is NOT a declared field on Settings, so a copy that used attribute access
+    would raise on every request, and a copy that guessed a different fallback would show a
+    permanently empty panel on any deployment that ever sets one.
+
+    WHY THIS EXISTS AT ALL: the state query used to take the newest row across ALL sensors, so an
+    `armed` row left behind by a harness or a CLI run outranked the worker's own, and the panel
+    reported ARMED while the node's kernel held zero rules. Naming the sensor is what stops the
+    operator reading another process's history.
+    """
+    import socket  # noqa: PLC0415
+
+    try:
+        from weirvern.config import get_settings  # noqa: PLC0415
+        from weirvern.worker import _sensor_name  # noqa: PLC0415
+
+        return _sensor_name(get_settings())
+    except Exception:  # noqa: BLE001
+        # A name is needed to filter a query, and failing to derive one must not fail the route.
+        # The worker's own fallback is the hostname, so this still matches the writer.
+        return socket.gethostname() or "sensor"
+
+
 class GuiContext:
     """Everything a request handler needs, assembled once at startup.
 
@@ -618,7 +646,7 @@ def _build_handler(ctx: GuiContext):
                 from weirvern import sluice_store  # noqa: PLC0415
                 with self._with_client() as client:
                     rules = sluice_store.load_all_rules(client)
-                    gate = sluice_store.load_gate_state(client)
+                    gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice view unavailable: %s", exc)
                 return self._json({
@@ -658,7 +686,7 @@ def _build_handler(ctx: GuiContext):
             try:
                 from weirvern import sluice_store  # noqa: PLC0415
                 with self._with_client() as client:
-                    state = sluice_store.load_gate_state(client)
+                    state = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot read the gate: {type(exc).__name__}"})
