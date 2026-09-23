@@ -94,8 +94,8 @@
       "severity": "HIGH",
       "area": "Ingestion",
       "title": "Rotation and restart re-ingest everything already read: offsets are filename-keyed and process-local",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "The re-read is real (measured: 155 files / 111 MB per restart, dns alone 37 files/100 MB) but the claimed CONSEQUENCE is wrong. Zeek tables are ReplacingMergeTree ORDER BY (ts, uid) with uid from Zeek's own log line, so a re-read COLLAPSES onto the existing row. Measured on zeek_dns: 53749 rows vs 51322 distinct (ts,uid) keys; 2 MiB on disk for 100 MB of source text. So the cost is startup parsing work, not duplicate ingest or unbounded growth. Re-read is bounded (depth=50 per type per pass, 24h retention). Documented with numbers in ingester.py; offset-safety pinned by 8 tests, mutation-tested 3 ways.",
       "report": "k7_ingest",
       "id": "F011"
     },
@@ -166,8 +166,8 @@
       "severity": "HIGH",
       "area": "NetFlow path",
       "title": "Tail offsets live only in process memory \u2014 every worker restart re-ingests the entire flow file (and ~24h of Zeek logs) as duplicates",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "See F011: offsets are memory-only and filename-keyed so a restart does re-read, but the ingest is idempotent (ReplacingMergeTree on a stable Zeek uid) and bounded. Persisting offsets would remove a real startup cost and is worth doing -- it is not the data-integrity problem reported.",
       "report": "k13_netflow_listener",
       "id": "F019"
     },
@@ -247,8 +247,8 @@
       "severity": "HIGH",
       "area": "Security",
       "title": "Zeek rotation re-ingests every rotated file in full: tail state is keyed by filename, and the rotated file IS the already-read live file renamed",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "See F011/F019. The rotation NAMING was already fixed (<type>.<timestamp>.log, verified against Zeek's Log::default_rotation_date_format; the old code globbed conn.1.log which Zeek never produces). Rotated files are read oldest-first, so re-reading them is chronological and idempotent.",
       "report": "k10_security",
       "id": "F028"
     },

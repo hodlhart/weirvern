@@ -194,3 +194,97 @@ def test_missing_file_is_not_an_error():
     fake = FakeCH()
     with tempfile.TemporaryDirectory() as d:
         assert tail_and_insert(fake, os.path.join(d, "absent.jsonl"))[0] == 0
+
+
+# ── the offset-safety mechanism, tested rather than described ──────────────────────────────────
+#
+# WHY THESE EXIST. Three audit findings claimed the filename-keyed tail state causes duplicate
+# ingest and unbounded growth. MEASURED on the live sensor: it does re-read (155 files, 111 MB —
+# dominated by dns at 100 MB), but the Zeek tables are `ReplacingMergeTree ORDER BY (ts, uid)` with
+# `uid` taken from Zeek's own log line, so a re-read COLLAPSES onto the existing row rather than
+# adding one (53,749 rows against 51,322 distinct keys; 2 MiB on disk for 100 MB of source text).
+#
+# So the cost is startup parsing work, not corruption — and the thing that makes resuming safe at
+# all is `_offset_is_on_boundary`, which checks that a stored offset sits just after a newline.
+# Writing about it was not enough: my first draft of the docstring described this mechanism wrongly
+# twice (I thought offset 12 was a boundary in a 29-byte file when it is mid-line, and I read a
+# mis-stored offset as a defect in the append path). These tests pin the behaviour I then verified.
+def _boundary_probe(tmp_path, content: str):
+    from weirvern.ingester import _offset_is_on_boundary
+
+    path = tmp_path / "conn.log"
+    path.write_text(content)
+    return [(off, _offset_is_on_boundary(str(path), off)) for off in range(len(content) + 1)]
+
+
+def test_a_boundary_is_exactly_the_position_after_a_newline(tmp_path):
+    content = "line one\nline two\n"
+    results = dict(_boundary_probe(tmp_path, content))
+    for off, ok in results.items():
+        expected = off == 0 or content[off - 1] == "\n"
+        assert ok is expected, (
+            f"offset {off} (prev char {content[off - 1]!r}) reported boundary={ok}, expected "
+            f"{expected} — a boundary must be the position just after a newline"
+        )
+
+
+def test_an_offset_in_the_middle_of_a_line_is_NOT_a_boundary(tmp_path):
+    """The specific reading I got wrong first, kept as a case so it stays settled."""
+    results = dict(_boundary_probe(tmp_path, "line one\nline two\n"))
+    assert results[12] is False, "offset 12 of a 19-byte two-line file is mid-line"
+    assert results[9] is True, "offset 9 is just after the first newline"
+
+
+def test_a_missing_file_fails_open(tmp_path):
+    """An I/O error must not trigger a full re-read of a file that may be large.
+
+    Fail-open here is the deliberate choice: the alternative is that a transient read problem on a
+    100 MB log causes the tailer to re-parse it.
+    """
+    from weirvern.ingester import _offset_is_on_boundary
+
+    assert _offset_is_on_boundary(str(tmp_path / "nope.log"), 4096) is True
+
+
+def test_an_appended_file_keeps_its_offset(tmp_path):
+    """THE HEALTHY PATH, and the one that must not be disturbed.
+
+    Zeek appends continuously. If appending were mistaken for replacement, every pass would re-read
+    the whole file — which is the very cost these findings were about.
+    """
+    from weirvern.ingester import TailState
+
+    path = tmp_path / "conn.log"
+    first = "line one\nline two\n"
+    path.write_text(first)
+    state = TailState()
+    state.note_read(path.stat(), len(first))
+
+    path.write_text(first + "line three\n")
+    assert state.reset_reason(path.stat(), str(path)) == "", (
+        "an appended file was treated as replaced, so the offset would be discarded and the whole "
+        "file re-read every pass"
+    )
+
+
+def test_a_reused_filename_is_detected(tmp_path):
+    """THE DEFECT THE MECHANISM EXISTS FOR.
+
+    Zeek's rotation timestamp has second resolution, so a sensor restarting within the same second
+    writes a new file under a name an old state entry still holds. Applying the stored offset to
+    that content would resume mid-record and silently skip data.
+    """
+    from weirvern.ingester import TailState
+
+    path = tmp_path / "conn.log"
+    first = "line one\nline two\n"
+    path.write_text(first)
+    state = TailState()
+    state.note_read(path.stat(), len(first))
+
+    path.write_text("entirely different content, longer\n")
+    reason = state.reset_reason(path.stat(), str(path))
+    assert reason, "a reused filename with different content was trusted, so records would be skipped"
+    assert "boundary" in reason or "inode" in reason or "truncated" in reason, (
+        f"the reason does not name a mechanism: {reason!r}"
+    )

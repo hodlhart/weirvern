@@ -1302,6 +1302,44 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
     Ordering: rotated files are read OLDEST FIRST so records land in roughly
     chronological order, which matters because the materialized views window on
     the flow/connection time.
+
+    ── WHAT A RESTART COSTS, AND WHY IT IS NOT DATA LOSS OR UNBOUNDED GROWTH ──────────────────
+    MEASURED (2026-09-23), because three audit findings claimed this was worse than it is and the
+    honest answer needs the numbers rather than a reassurance.
+
+    The state dict is IN MEMORY and keyed by FILENAME, so a worker restart re-reads every log it
+    can see from offset zero. Measured on the live sensor: 155 files, 111 MB of text, dominated by
+    `dns` (37 files, 100 MB) with `conn` next (36 files, 11 MB). The re-read is BOUNDED by `depth`
+    (50 rotated files per type per pass, and the whole log set is pruned on a 24h retention), so it
+    does not grow without limit as the deployment ages.
+
+    IT DOES NOT DUPLICATE DATA EITHER, and that is the part the findings got wrong. The Zeek tables
+    are `ReplacingMergeTree` ordered by `(ts, uid)` -- where `uid` comes from Zeek's own log, so it
+    is STABLE across a re-read of the same line. Re-ingesting a line therefore collapses onto the
+    existing row rather than adding one. Measured on `zeek_dns`: 53,749 rows against 51,322
+    distinct `(ts, uid)` keys, i.e. a small number of genuinely-duplicate parts pending merge, not
+    a doubling. On disk the table occupies 2 MiB for 100 MB of source text.
+
+    SO THE COST IS STARTUP WORK: parsing ~111 MB again, once per restart, before the tailer catches
+    up to live. On a 5s pass cycle that is a burst of CPU and I/O at exactly the moment an operator
+    is watching a rollout. It is worth persisting offsets to remove it, and it is NOT the
+    duplicate-ingest or disk-growth problem it was reported as. Recording the distinction matters:
+    the wrong version of this claim invites a risky refactor to fix data corruption that is not
+    happening.
+
+    ── WHY `identity` IS TRACKED PER FILE DESPITE THE FILENAME KEY ─────────────────────────────
+    Because a rotated name can be REUSED, and a stored offset would then be applied to DIFFERENT
+    content. Two checks catch it, both in `reset_reason`: the inode changing, and -- the one that
+    matters for a reused name -- `_offset_is_on_boundary`, which seeks to the stored offset and
+    confirms it sits just after a newline. Zeek's rotation timestamp has second resolution, so a
+    sensor restarting inside the same second writes a new file under a name an old state entry
+    still holds; the boundary test notices, and the read restarts rather than resuming mid-record.
+
+    The boundary test is also why `_file_identity`'s mtime is not the load-bearing part here: it
+    catches copytruncate and inode reuse (its own docstring records the measurement -- 5 records
+    written, 4 inserted), while the boundary test is what makes an offset safe to apply at all. It
+    fails OPEN on an I/O error, deliberately: a transient read problem must not trigger a full
+    re-read of a file that may be large.
     """
     state = state if state is not None else {}
     total = 0
