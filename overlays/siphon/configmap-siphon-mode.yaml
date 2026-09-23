@@ -1,0 +1,51 @@
+# SENSOR_MODE, set by the overlay that grants the capability for it.
+#
+# ── THE DEFECT THIS FIXES ──────────────────────────────────────────────────────────────────────
+#
+# MEASURED (verified against the tree, 2026-09-23). `kubectl apply -k overlays/siphon/` granted
+# every capability siphon needs -- hostNetwork, NET_RAW, NET_ADMIN, the forwarding sysctls, the
+# save/restore of the node's own settings -- and then left `SENSOR_MODE: "loch"` from the base
+# ConfigMap. The overlay was named "siphon", its comments described siphon, and the sensor it
+# produced reported itself as passive. Three consequences, each of which misleads someone:
+#
+#   1. THE HEALTH CHECK CANNOT WARN. `weirvern status` reads the CONFIGURED mode and calls
+#      siphon_liveness() for exactly one purpose: to shout when a siphon sensor has no live
+#      intercept, which is the state where every surface says "in-path" while nothing is
+#      redirected. On a siphon-configured deployment that reads "loch", that check is skipped --
+#      so the one loud warning about a half-applied in-path setup is silent by construction.
+#
+#   2. THE SLUICE GATE REPORTS DEGRADED ON A DEPLOYMENT BUILT TO ENFORCE. The gate refuses to
+#      claim ARMED while a sensor is not in the traffic path (a separate fix, for the case where
+#      it genuinely is not). With the mode stuck at loch, an operator who APPLIED THE SIPHON
+#      OVERLAY is told "this deployment cannot enforce" -- which is now wrong, and it teaches them
+#      to distrust a warning that is right everywhere else.
+#
+#   3. IT CONTRADICTS THE OVERLAY'S OWN NAME. An operator who applied the siphon overlay and reads
+#      "loch" in Settings has to decide which of the two to believe. The overlay is the thing they
+#      did; the label should follow it.
+#
+# ── WHY THE MODE IS SET HERE AND NOT IN THE BASE ───────────────────────────────────────────────
+#
+# `loch` is the correct default: passive capture cannot break a network, and a monitoring
+# appliance that starts rerouting a segment on first boot would be a surprise. The mode is switched
+# deliberately. Applying the siphon overlay IS that deliberate act -- it is the step an operator
+# takes to say "I want this host in the path" -- so the mode belongs to the same gesture as the
+# capability. Splitting them is what produced a host configured for one mode that reports another.
+#
+# Applying the overlay still does NOT start intercepting. Forging ARP mappings and installing the
+# policy route remain explicit commands (`weirvern intercept`), documented as such. What changes
+# here is only what the deployment SAYS it is, and therefore which warnings it can give.
+#
+# ── SYSCTLS ARE THE SAME KIND OF PROBLEM, HANDLED ELSEWHERE ────────────────────────────────────
+#
+# The node sysctls are set by an initContainer rather than by a ConfigMap key, and that is
+# deliberate: a pod cannot declare `net.ipv4.ip_forward` in its own securityContext under
+# hostNetwork (the API server refuses it), and Kubernetes mounts /proc/sys read-only for an
+# ordinary container, so CAP_NET_ADMIN alone is not enough. See zeek-siphon-sysctl-init.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weirvern-env
+  namespace: weirvern
+data:
+  SENSOR_MODE: "siphon"

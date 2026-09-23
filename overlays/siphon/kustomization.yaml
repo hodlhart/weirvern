@@ -77,6 +77,21 @@ patches:
       kind: DaemonSet
       name: zeek
 
+  # SENSOR_MODE, so applying this overlay also makes the deployment SAY it is in-path.
+  #
+  # MEASURED DEFECT: the overlay granted every capability siphon needs and left
+  # `SENSOR_MODE: "loch"`, so a host set up for in-path interception reported itself as passive.
+  # That silently disabled the health check's loud warning about a siphon sensor with no live
+  # intercept, and made the Sluice Gate report DEGRADED on a deployment an operator had explicitly
+  # built to enforce. See the patch file for the full reasoning.
+  #
+  # A strategic-merge patch rather than a replacement ConfigMap: replacing one would drop every
+  # key this overlay does not name, which is how a settings change silently reverts other settings.
+  - path: configmap-siphon-mode.yaml
+    target:
+      kind: ConfigMap
+      name: weirvern-env
+
   # The WORKER runs the intercept -- `weirvern intercept` is a control-plane command, so it
   # executes in the worker pod, and the sensor's NET_ADMIN does nothing for it. See the patch
   # for why NET_RAW and NET_ADMIN are both needed and neither implies the other.

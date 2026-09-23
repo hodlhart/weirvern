@@ -121,8 +121,8 @@
       "severity": "HIGH",
       "area": "Kubernetes",
       "title": "The siphon overlay never enables siphon mode",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "Verified against the tree: the overlay granted hostNetwork, NET_RAW, NET_ADMIN and the forwarding sysctls, and left SENSOR_MODE='loch'. Effects: weirvern status reads the configured mode, so the loud check for 'a siphon sensor with no live intercept' was skipped by construction; and the Sluice Gate reported DEGRADED on a deployment an operator had explicitly built to enforce. Fixed with a merge patch wired into the overlay; base still defaults to loch. Mutation-tested four ways.",
       "report": "k9_k8s",
       "id": "F014"
     },
