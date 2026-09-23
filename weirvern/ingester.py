@@ -31,6 +31,16 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+
+class IngesterError(RuntimeError):
+    """A record cannot be ingested correctly, so ingesting it would be worse than stopping.
+
+    Used for CONTRACT violations -- a mapper and its column list disagreeing, for instance -- where
+    the alternative is writing wrong values into a positional INSERT and never knowing. See the
+    mapper/columns check in `tail_zeek_log` for the case that made this necessary (audit F013).
+    """
+
+
 PROTO_MAP = {"ICMP": 1, "TCP": 6, "UDP": 17}
 ETYPE_MAP = {"IPV4": 2048, "IPV6": 34525}
 BATCH_SIZE = 10_000
@@ -1143,6 +1153,78 @@ def observations_from_ssl(rec: dict[str, str], row: dict[str, Any]) -> list[dict
     return out
 
 
+def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
+                  columns: list[str]) -> int:
+    """Insert one batch, isolating a bad row so it cannot wedge the whole tail.
+
+    ── THE POISON PILL (audit F013, CONFIRMED BY RUNNING IT) ────────────────────────────────────
+
+    The insert used to be called directly, and an exception from it escaped `tail_zeek_log` BEFORE
+    `state.note_read(...)` ran. Measured with an insert that rejects the batch, as a schema or arity
+    mismatch does:
+
+        pass 1 RAISED: DB::Exception: Cannot parse input: expected column of type String
+        state.offset after the failure: 0
+
+        pass 2 re-reads from offset 0 and hits the SAME row again -> RAISED AGAIN
+
+    So ONE unparseable record is a poison pill: the cursor never advances, every subsequent pass
+    fails on the same line, and that log type is never ingested again. Nothing else in the product
+    reports it -- the worker's loop catches the exception, logs it, and retries, forever.
+
+    WHAT THIS DOES INSTEAD, and the trade it makes. A batch that fails as a whole is retried
+    ROW BY ROW: the good rows land and only the offending rows are lost. That is the deliberate
+    choice, because the alternative -- refusing the batch -- loses every good record alongside the
+    bad one AND stops all future ingestion of that log type.
+
+    THE ROW-LEVEL FAILURES ARE NAMED, not counted. "3 rows dropped" tells an operator nothing about
+    what to fix; the exception text and the row's identity do. The count is logged at WARNING with
+    the first failure's detail, because losing flow records silently is exactly the class of bug
+    this file keeps documenting.
+
+    A SINGLE-ROW BATCH IS NOT RETRIED -- there is no smaller unit to fall back to, and retrying the
+    same row would produce the same error. It is reported and skipped, so the cursor advances.
+    """
+    try:
+        client.insert(table, batch, column_names=columns)
+        return len(batch)
+    except Exception as exc:  # noqa: BLE001 - any insert failure has the same remedy
+        first_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "Zeek batch of %d row(s) into %s failed (%s); retrying row by row so one bad record "
+            "cannot stop this log type from ever being ingested",
+            len(batch), table, first_error[:200],
+        )
+
+    dropped: list[str] = []
+    landed = 0
+    for row in batch:
+        try:
+            client.insert(table, [row], column_names=columns)
+            landed += 1
+        except Exception as exc:  # noqa: BLE001
+            # Identify the row by its most useful column rather than by its contents. `ts` and the
+            # address columns exist in every table here; a row without them is still named by index.
+            label = ""
+            for name in ("ts", "id.orig_h", "src_addr", "uids"):
+                if name in columns:
+                    label = f"{name}={row[columns.index(name)]!r}"
+                    break
+            dropped.append(f"{label or 'row'}: {type(exc).__name__}: {str(exc)[:120]}")
+
+    if dropped:
+        logger.warning(
+            "%d of %d row(s) into %s were REJECTED and skipped, so the tail can advance past them: "
+            "%s",
+            len(dropped), len(batch), table, "; ".join(dropped[:3]),
+        )
+    # THE RETURN IS WHAT ACTUALLY LANDED, not what was attempted. The caller adds this to its
+    # `inserted` total, and a total that counts rejected rows would be precisely the kind of
+    # confident number this file keeps warning about -- measured: three rows with the middle one
+    # rejected used to report `inserted: 3`.
+    return landed
+
+
 def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = None,
                   offset: int | None = None, known_inode: int | None = None,
                   header: tuple[str, list[str]] | None = None
@@ -1203,6 +1285,14 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
     inserted = 0
     consumed = start_offset
     batch: list[list[Any]] = []
+    # Whether this file's mapper/columns pair has been verified against each other. Once per file,
+    # not once per row: the pair is static, so one check settles it for every record.
+    columns_checked = columns is None
+    # The resolved table and column list for THIS file, bound before the loop so the final flush can
+    # use them even when the file contained no data rows. `None` means "this log type is not
+    # table-backed", which is the observation case -- and the flush is skipped for it.
+    table_name: str | None = None
+    column_list: list[str] | None = columns
 
     with open(path, encoding="utf-8", errors="replace") as fh:
         fh.seek(start_offset)
@@ -1274,6 +1364,34 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             row = mapper(rec)
             if row is None:
                 continue
+            # ── THE MAPPER/COLUMNS CONTRACT, CHECKED ON THE FIRST ROW (audit F013) ─────────────
+            #
+            # The write below is POSITIONAL and SILENT: `[row.get(c) for c in columns]` turns a
+            # column the mapper does not produce into `None` (a null in a NOT NULL column, or a
+            # quietly wrong value) and DROPS any key the mapper produces that no column names.
+            # Neither is an error anywhere, so a mapper/column drift corrupts data or loses fields
+            # with nothing in the logs to show it.
+            #
+            # The two tables are checked against each other in the TEST SUITE for the log types the
+            # tests enumerate. That is coverage by enumeration, which does not survive a new log
+            # type or a new field -- and the production path had no check at all.
+            #
+            # CHECKED ONCE PER FILE, on the first mapped row, because the cost is a set comparison
+            # and doing it per row would be paying it for every record. The first row is enough:
+            # a static table pair cannot disagree for one row and agree for the next.
+            if columns is not None and not columns_checked:
+                row_keys = set(row) - {"_observation"}
+                missing_cols = [c for c in columns if c not in row_keys]
+                extra_keys = sorted(row_keys - set(columns))
+                if missing_cols or extra_keys:
+                    raise IngesterError(
+                        f"Zeek {log_type}: the mapper and ZEEK_COLUMNS disagree, so the positional "
+                        f"INSERT would silently write wrong values. Columns with no value from the "
+                        f"mapper: {missing_cols}. Mapper keys with no column: {extra_keys}. "
+                        f"Fix the mapper or ZEEK_COLUMNS[{log_type!r}] together -- an unenforced "
+                        f"contract here corrupts data rather than raising."
+                    )
+                columns_checked = True
             # EXCLUSION APPLIES TO ZEEK ROWS TOO. A scanner shows up in conn.log exactly as it
             # does in NetFlow, and the two paths must agree about what the sensor refuses to learn
             # from -- one filter, installed once, consulted by both. Counting happens inside the
@@ -1298,14 +1416,28 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             if columns is None:
                 # Already written by the observation path above; nothing is batched here.
                 continue
-            batch.append([row.get(c) for c in columns])
+            # NARROWING FOR THE TYPE CHECKER, and a real invariant: a table-backed log always has
+            # a column list, so reaching here with either missing means the registries disagree --
+            # which `table` being None would turn into an insert into "None", and `columns` being
+            # None into an insert with no column names.
+            #
+            # BOUND TO LOCALS because mypy cannot narrow the outer loop's `table`/`columns` through
+            # the `if columns is None: continue` above -- it treats them as still optional at the
+            # call site. Asserting into a local makes the invariant explicit AND checkable.
+            table_name = table
+            column_list = columns
+            assert table_name is not None, f"{log_type} is table-backed but resolved to no table"
+            assert column_list is not None, f"{log_type} is table-backed but has no column list"
+            batch.append([row.get(c) for c in column_list])
             if len(batch) >= BATCH_SIZE:
-                client.insert(table, batch, column_names=columns)
-                inserted += len(batch)
+                inserted += _insert_batch(client, table_name, batch, column_list)
                 batch = []
-        if batch:
-            client.insert(table, batch, column_names=columns)
-            inserted += len(batch)
+        # THE FINAL FLUSH USES THE SAME LOCALS, and it has to: it sits outside the `with` block, so
+        # it is the one call site mypy saw as still-optional. It is also the site most likely to be
+        # forgotten when this loop changes -- the last partial batch is easy to overlook, and losing
+        # it would drop the tail of every run.
+        if batch and table_name is not None and column_list is not None:
+            inserted += _insert_batch(client, table_name, batch, column_list)
 
     if state is not None:
         state.separator, state.fields = separator, fields

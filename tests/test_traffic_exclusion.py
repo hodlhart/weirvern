@@ -299,11 +299,34 @@ def test_the_flow_write_path_consults_the_filter():
 
 def test_the_zeek_write_path_consults_the_filter_too():
     """A scanner appears in conn.log as well as NetFlow; the two paths must agree or the same
-    scanner is excluded from one view and present in the other."""
+    scanner is excluded from one view and present in the other.
+
+    SCOPE IS THE ENCLOSING FUNCTION, NOT A CHARACTER COUNT. This looked 700 characters past
+    `row = mapper(rec)`, and a comment added elsewhere in the same function pushed `_excluded(row)`
+    to 2472 characters -- so the test failed on the code being CORRECT and merely better documented.
+    A window measured in characters is a test that fails when someone explains themselves.
+    """
     src = INGESTER.read_text()
-    i = src.index("row = mapper(rec)")
-    body = src[i:i + 700]
-    assert "_excluded(row)" in body, "the Zeek path does not consult the exclusion filter"
+    body = _function_body(src, "def tail_zeek_log(")
+    assert "row = mapper(rec)" in body, "the mapping call moved out of tail_zeek_log"
+    assert "_excluded(row)" in body, (
+        "the Zeek path does not consult the exclusion filter, so a scanner would be excluded from "
+        "the NetFlow view and present in the Zeek one"
+    )
+    # AND IN THE RIGHT ORDER: the filter must run on a MAPPED row (it reads mapped field names),
+    # and before anything is batched for insertion.
+    assert body.index("row = mapper(rec)") < body.index("_excluded(row)") < body.index("batch.append")
+
+
+def _function_body(src: str, signature: str) -> str:
+    """The source of one top-level function, from its `def` to the next one.
+
+    Deliberately crude: it slices to the next line starting with `def ` at column 0, which is
+    enough for this module and cannot silently widen a window the way a character count can.
+    """
+    start = src.index(signature)
+    nxt = src.find("\ndef ", start + 1)
+    return src[start:nxt if nxt != -1 else len(src)]
 
 
 def test_the_filter_is_installed_ONCE_and_read_through_a_single_accessor():
