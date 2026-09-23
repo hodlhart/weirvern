@@ -394,6 +394,43 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     # then expected it in the results -- measured live, the operator saw all 11 hosts listed
     # including the gateway, and then a message saying that same gateway "answered neither the
     # ARP sweep nor the neighbour table".
+    # ── AND THE SAME ROLES APPLY TO A WHOLE-SEGMENT BUILD (audit F098, CONFIRMED BY RUNNING IT) ──
+    #
+    # `skip` excludes only `{our_ip, gateway_ip}`, so on a whole-segment intercept the OTHER
+    # derivable roles were never removed. Measured on a /24 that contains them:
+    #
+    #     K8s API server (.55) in the intercept targets: YES
+    #     sensor mgmt addr (.44) in the intercept targets: YES
+    #     hosts in plan: 252
+    #
+    # `never_intercept_hits` KNOWS both roles -- it derives them from KUBERNETES_SERVICE_HOST and
+    # MGMT_ADDR -- and was consulted only under `if only:`. So the safer-looking path (a whole
+    # segment, no explicit names) was the one that could forge the mapping for the control plane
+    # the sensor reports to, which is the failure this check exists to prevent.
+    #
+    # A whole-segment build CANNOT refuse the way the named path does, because refusing would make
+    # the feature impossible on any segment that contains a nameserver or an API server -- which is
+    # every real segment. So these roles are EXCLUDED from the candidate set, and the exclusion is
+    # REPORTED, because a silently-smaller intercept would look like full coverage.
+    if not only:
+        role_ips = set(never_intercept_hits(
+            [str(h) for h in parse_cidr(segment)],
+            our_ip=our_ip, gateway_ip=gateway_ip,
+        ))
+        # Our own address and the gateway are already skipped; excluding them here as well is
+        # harmless and keeps the reported list honest about what was removed.
+        role_ips -= {our_ip, gateway_ip}
+        if role_ips:
+            excluded_roles = never_intercept_hits(
+                sorted(role_ips), our_ip=our_ip, gateway_ip=gateway_ip)
+            for ip, role in sorted(excluded_roles.items()):
+                logger.info(
+                    "not intercepting %s: it is %s, and forging that mapping would break the "
+                    "sensor's own path while it relays",
+                    ip, role,
+                )
+            exclude = set(exclude or ()) | role_ips
+
     skip = set(exclude or ()) | {our_ip, gateway_ip}
     try:
         candidates = [h for h in parse_cidr(segment) if h not in skip]
@@ -407,6 +444,7 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     # is exactly where a resolver or management address could be requested, and it is the
     # form a first test uses. Refusing here, with the role named, turns a prose warning
     # into a check that fires.
+    #
     if only:
         hits = never_intercept_hits(only, our_ip=our_ip, gateway_ip=gateway_ip)
         structural = {ip: role for ip, role in hits.items()
