@@ -569,7 +569,10 @@ def test_the_migration_is_idempotent():
     for path in sorted(schema_dir.glob("*.sql")):
         for line in path.read_text().splitlines():
             stripped = line.split("--", 1)[0].strip()
-            if not stripped.upper().startswith("CREATE"):
+            # A WORD BOUNDARY, not a bare prefix. `.startswith("CREATE")` also matches the column
+            # name `created_at`, so every schema with that column failed this check while being
+            # perfectly idempotent -- a false failure that trains people to ignore the test.
+            if not re.match(r"CREATE\s", stripped, re.I):
                 continue
             assert "IF NOT EXISTS" in stripped.upper(), (
                 f"{path.name}: '{stripped[:60]}...' is not idempotent, so re-applying the "

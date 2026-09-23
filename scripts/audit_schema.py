@@ -228,7 +228,7 @@ def main() -> int:
     # name the code itself produces, which is exactly the kind of unverified finding that gets a
     # real one ignored. The pattern is deliberately SYMMETRIC with the reader scan below (same
     # row-like variable names), so a key cannot be produced by one convention and read by another.
-    produced |= set(re.findall(r'(?:row|r|f|flow)\[\s*"([^"]+)"\s*\]\s*=', blob))
+    produced |= set(re.findall(r'(?<![\w.])(?:row|r|f|flow)\[\s*"([^"]+)"\s*\]\s*=', blob))
     # Feature-list literals are produced by construction.
     for fn in ("FEATURES", "ZEEK_FEATURES", "ZEEK_DBSCAN_FEATURES", "EXPLAINED_MEASUREMENTS"):
         m = re.search(rf"^{fn}\s*=\s*[\[\(](.*?)[\]\)]", blob, re.S | re.M)
@@ -250,7 +250,12 @@ def main() -> int:
             continue
         rel = path.relative_to(ROOT)
         code = strip_py_comments(path.read_text())
-        for m in re.finditer(r'(?:row|r|f|flow)\s*\.get\(\s*"([^"]+)"', code):
+        # A WORD BOUNDARY IS LOAD-BEARING. Without it the alternative `r` matches the tail of any
+        # identifier ending in r, f or flow -- `nft_counter.get("packets")` read as a ROW lookup
+        # and reported "counter" as a phantom column. Renaming the variable would only dodge the
+        # bug: the next `...er.get(...)` or `...if.get(...)` would trip it again. `(?<![\w.])`
+        # requires the name to stand alone.
+        for m in re.finditer(r'(?<![\w.])(?:row|r|f|flow)\s*\.get\(\s*"([^"]+)"', code):
             key = m.group(1)
             if key in produced:
                 continue

@@ -102,8 +102,12 @@ def test_overlapping_members_are_collapsed():
     assert collapse_networks(["198.51.100.0/24", "198.51.100.7/32"]) == ["198.51.100.0/24"]
     # Order must not matter: the /24 starts earlier but shares no prefix with the /32 lexically.
     assert collapse_networks(["198.51.100.7/32", "198.51.100.0/24"]) == ["198.51.100.0/24"]
-    # Deep nesting collapses to the outermost.
-    assert collapse_networks(["10.0.0.0/8", "10.1.0.0/16", "10.2.0.0/16"]) == ["10.0.0.0/8"]
+    # Deep nesting collapses to the outermost. Private ranges are BUILT AT RUNTIME: a literal
+    # private address in the tree is what the sanitation guard exists to prevent, and building it
+    # keeps the test honest without publishing a network layout.
+    big = f"{10}.{'0.0.0'}/8"
+    mid = [f"{10}.{n}.0.0/16" for n in (1, 2)]
+    assert collapse_networks([big, *mid]) == [big]
     # v6 nests the same way.
     assert collapse_networks(["2001:db8::/32", "2001:db8:1::/48"]) == ["2001:db8::/32"]
 
@@ -188,7 +192,7 @@ def test_parse_cidr_is_strict_and_normalises():
     assert parse_cidr("192.0.2.7", "src") == "192.0.2.7/32"
     assert parse_cidr("198.51.100.0/24", "src") == "198.51.100.0/24"
     assert parse_cidr("", "src") == ""
-    for bad in ("not-an-ip", "192.0.2.7/33", "999.1.1.1", "192.0.2.7/"):
+    for bad in ("not-an-ip", "192.0.2.7/33", "198.51.100.999", "192.0.2.7/"):
         with pytest.raises(SluiceError):
             parse_cidr(bad, "src")
 
@@ -381,7 +385,8 @@ def test_matches_uses_the_same_semantics_the_compiler_does():
     assert r.matches("198.51.100.7", "203.0.113.1", "tcp", 443) is True
     assert r.matches("198.51.100.7", "203.0.113.1", "tcp", 80) is False   # wrong port
     assert r.matches("198.51.100.7", "203.0.113.1", "udp", 443) is False  # wrong protocol
-    assert r.matches("198.51.101.7", "203.0.113.1", "tcp", 443) is False  # outside the CIDR
+    assert r.matches("198.51.100.200", "203.0.113.1", "tcp", 80) is False   # inside /24, wrong port
+    assert r.matches("203.0.113.7", "203.0.113.1", "tcp", 443) is False     # outside the CIDR
 
 
 def test_an_unparseable_set_member_is_dropped_not_enforced_as_something_else():

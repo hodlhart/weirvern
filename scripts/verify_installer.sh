@@ -240,7 +240,7 @@ OUT="$(run_block ens18 yes '' '' 'ens18:UP:192.0.2.34/24:1' 'tailscale0:UP:100.6
 assert_not_contains "$OUT" "tailscale0" "a tunnel is never offered"
 assert_contains     "$OUT" "DECISION mgmt=ens18 capture=ens18" "the real NIC is still used"
 
-OUT="$(run_block ens18 yes '' '' 'ens18:UP:192.0.2.34/24:1' 'wg0:UP:10.9.0.2/32:1')"
+OUT="$(run_block ens18 yes '' '' 'ens18:UP:192.0.2.34/24:1' 'wg0:UP:203.0.113.9/32:1')"
 assert_not_contains "$OUT" "wg0" "wg0 is never offered"
 
 echo "  -- container plumbing --"

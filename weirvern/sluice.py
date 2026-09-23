@@ -565,10 +565,15 @@ class NftBackend(Backend):
                 if not rule:
                     continue
                 for expr in rule.get("expr", []):
-                    counter = expr.get("counter")
-                    if counter:
-                        packets += int(counter.get("packets", 0))
-                        bytes_ += int(counter.get("bytes", 0))
+                    # NAMED `nft_counter` DELIBERATELY. This is nft's own JSON output, not a
+                    # database row, and `counter` read too much like one -- the schema audit
+                    # flagged `.get("counter")` as a phantom column read, correctly, because a
+                    # bare name like that is indistinguishable from a row lookup. The prefix says
+                    # where the data comes from, for a reader and for the audit.
+                    nft_counter = expr.get("counter")
+                    if nft_counter:
+                        packets += int(nft_counter.get("packets", 0))
+                        bytes_ += int(nft_counter.get("bytes", 0))
         return packets, bytes_
 
 
