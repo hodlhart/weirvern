@@ -1239,6 +1239,44 @@ HEARTBEAT_S = 15
 HEARTBEAT_STALE_S = HEARTBEAT_S * 3
 
 
+def rank_sensor_row(row: dict, now: datetime.datetime | None = None) -> tuple:
+    """The ONE rule for choosing which `sensor_status` row describes a sensor.
+
+    Extracted so the fleet view and `sensor_status` cannot disagree about one dataset. A second
+    ranking would be the same defect as a second staleness threshold: two readers of one table
+    answering differently, with no way for an operator to tell which is lying.
+
+    Rules, in order:
+      1. A FRESH row beats a stale one. A stale row must never win.
+      2. An INTERCEPTING row (`siphon`) beats a passive one. It describes the same physical
+         sensor in a strictly more informative state, and it exists only while an intercept is
+         genuinely running.
+      3. Otherwise the newest wins.
+
+    Returns a sort key, not the row, so callers take the rule without also taking this
+    module's opinion about what the row means.
+    """
+    ts_value = row.get("ts")
+    if isinstance(ts_value, datetime.datetime):
+        # `_aware` on BOTH sides. ClickHouse returns aware datetimes while `now()` is naive, so
+        # subtracting them raises -- the exact defect `_aware` exists to prevent, and which the
+        # first version of this helper reintroduced by calling `now()` directly.
+        age_s = (_aware(now or datetime.datetime.now()) - _aware(ts_value)).total_seconds()
+    else:
+        age_s = float("inf")
+    fresh = age_s <= HEARTBEAT_STALE_S
+    active = str(row.get("mode") or "") == MODE_SIPHON
+    return (fresh, active, -age_s)
+
+
+def best_sensor_row(rows: list[dict], now: datetime.datetime | None = None) -> dict | None:
+    """The row that describes the sensor, by `rank_sensor_row`. None when there are no rows."""
+    live = [r for r in rows if isinstance(r, dict)]
+    if not live:
+        return None
+    return max(live, key=lambda r: rank_sensor_row(r, now))
+
+
 
 def _aware(dt: datetime.datetime) -> datetime.datetime:
     """Make a datetime comparable to ClickHouse's, without inventing an offset.
@@ -1347,18 +1385,15 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     #
     # This is deterministic: the same data always produces the same answer, which is what makes
     # the panel stop changing under a refresh.
-    def _rank(row: dict):
-        ts_value = row.get("ts")
-        age = (
-            (now - _aware(ts_value)).total_seconds()
-            if isinstance(ts_value, datetime.datetime)
-            else float("inf")
-        )
-        fresh = age <= HEARTBEAT_STALE_S
-        active = str(row.get("mode") or "") == MODE_SIPHON
-        return (fresh, active, -age)
-
-    best = max(rows, key=_rank)
+    # Uses the SHARED rule (best_sensor_row / rank_sensor_row) rather than a local copy, so the
+    # fleet view and this panel cannot pick different rows out of one dataset.
+    best = best_sensor_row(rows, now)
+    if best is None:
+        # Unreachable: `rows` is non-empty by the guard above, and best_sensor_row returns None
+        # only for an empty list. Stated rather than asserted away so the type narrows and so a
+        # future edit to that guard cannot turn this into a None-dereference further down.
+        out["error"] = "no sensor rows were readable"
+        return out
     r = best
 
     # AN INTERCEPT THAT STOPPED IS NOT THE SAME AS NO INTERCEPT.
