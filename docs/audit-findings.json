@@ -31,8 +31,8 @@
       "severity": "HIGH",
       "area": "Detection engine",
       "title": "The retrain clock is reset to `now()` whenever only the baseline trains \u2014 the exact bug the adjacent comment claims was fixed",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "Fixed already, and the fix's docstring describes this exact finding as the prior behaviour. worker.py:224-239 reads the age from the ARTIFACT (_oldest_trained_at), not from process uptime, and returns it as the second element; the warm-start path no longer stamps now().",
       "report": "k5_detection",
       "id": "F004"
     },
@@ -49,8 +49,8 @@
       "severity": "HIGH",
       "area": "GUI + API",
       "title": "A failed anomalies query returns 200 with an empty list \u2014 the triage view reads a broken query as a quiet network",
-      "verdict": "REFUTED",
-      "note": "_anomalies catches and returns available:False with a reason; every route follows this pattern.",
+      "verdict": "CONFIRMED",
+      "note": "CORRECTED: my first verdict was REFUTED, and that was too quick. The ROUTE does return 503 -- but the function it calls, anomalies_detailed, swallowed every exception into an empty list at DEBUG level, so the route's failure path was unreachable. A broken query therefore produced HTTP 200 with [] and the view rendered its normal empty state. Fixed: the function now raises, the route's 503 path is reachable, and three tests pin it (mutation-tested).",
       "report": "k8_gui",
       "id": "F006"
     },
@@ -220,8 +220,8 @@
       "severity": "HIGH",
       "area": "Operability",
       "title": "The retrain clock advances when only the adaptive baseline trains",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "Same code, and the OLDEST artifact governs by construction (worker.py:263-267 documents 'the retrain clock must fire when the stalest model is due, so one freshly-trained detector cannot hold a retrain back'). A baseline-only train cannot advance the full-detector clock.",
       "report": "k11_ops_ux",
       "id": "F025"
     },
@@ -337,8 +337,8 @@
       "severity": "HIGH",
       "area": "Test suite",
       "title": "The gate prints PASS for the frontend check when node is not installed",
-      "verdict": "CONFIRMED",
-      "note": "gate.sh prints 'node not installed -- skipping' then PASS; a skipped check must not read as a pass.",
+      "verdict": "REFUTED",
+      "note": "gate.sh:90-92 prints 'SKIP node is not installed, so the frontend was NOT syntax-checked' and line 104 counts it; line 132-136 distinguishes PASSED from PASSED WITH N SKIPPED. The finding describes the pre-fix version.",
       "report": "k12_testing",
       "id": "F038"
     },
@@ -374,7 +374,7 @@
       "area": "Zeek features",
       "title": "Protocol-records UNION mixes String and IPv4 in the `src_addr` position \u2014 the query raises and the failure is swallowed",
       "verdict": "REFUTED",
-      "note": "Ran zeek_window_summary_sql against the live schema: 2055 rows, 53 columns. The UNION executes.",
+      "note": "Ran the SQL on live ClickHouse: 1367 rows, 13 named columns, no exception. The UNION normalises src_addr per branch and the x509 case is handled explicitly in the builder's comment.",
       "report": "k6_zeek_features",
       "id": "F042"
     },

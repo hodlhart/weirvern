@@ -584,3 +584,80 @@ def test_the_migration_is_idempotent():
                 f"{path.name}: '{stripped[:60]}...' is not idempotent, so re-applying the "
                 f"schema would fail the Job"
             )
+
+
+# ── a failed query is not an empty result ──────────────────────────────────────────────────────
+#
+# MEASURED DEFECT (found by triaging an independent audit finding, 2026-09-23). `anomalies_detailed`
+# caught every exception, logged at DEBUG, and returned []. The route above it HAS a proper failure
+# path -- `except Exception: return self._error(503, ...)` -- which could never run, because the
+# function never raised. So a broken query produced HTTP 200 with an empty array and the Anomalies
+# view rendered its normal empty state.
+#
+# That is this project's named failure mode in its most consequential place: an operator looking at
+# an empty triage queue on a deployment whose detection query is broken sees "nothing to review",
+# which is a statement about the NETWORK rather than about the query. The only trace was a DEBUG log
+# line, and no deployment runs at DEBUG.
+class _BoomClient:
+    """A client whose query always fails, standing in for an unreachable database."""
+
+    def query(self, *a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("Code: 60. DB::Exception: Table weirvern.netflow_anomalies does not exist")
+
+
+class _OkClient:
+    """A client that answers with a fixed shape, so the success path is exercised too."""
+
+    def query(self, *a, **k):  # noqa: ANN002, ANN003
+        class R:
+            column_names = ["detected_at", "src_addr", "anomaly_score"]
+            result_rows = [("2026-09-23 00:00:00", "198.51.100.9", 0.9)]
+        return R()
+
+
+def test_a_failed_anomalies_query_RAISES_rather_than_reading_as_nothing():
+    """The route's 503 path must be reachable.
+
+    Asserting only that the function raises would be weak on its own -- the point is that the
+    FAILURE reaches the caller, so the caller can say which it is. A function that returned None
+    instead of raising would satisfy "does not return []" while still hiding the failure.
+    """
+    import pytest as _pytest
+
+    from weirvern.admin import status as status_mod
+
+    with _pytest.raises(Exception):  # noqa: B017, PT011
+        status_mod.anomalies_detailed(_BoomClient())
+
+
+def test_a_working_anomalies_query_still_returns_rows():
+    """The converse, so the fix cannot pass by raising unconditionally."""
+    from weirvern.admin import status as status_mod
+
+    rows = status_mod.anomalies_detailed(_OkClient())
+    assert len(rows) == 1, f"a working query returned {rows!r}"
+    assert rows[0]["src_addr"] == "198.51.100.9"
+
+
+def test_an_empty_result_and_a_failure_are_distinguishable():
+    """THE INVARIANT THE PROJECT USES EVERYWHERE.
+
+    Both cases must be tellable apart by the caller. An empty result is [] with no exception; a
+    failure is an exception. If a future change makes the failure silent again, this test fails
+    while the two above might not -- because it is the only one that compares them.
+    """
+    import pytest as _pytest
+
+    from weirvern.admin import status as status_mod
+
+    class Empty:
+        def query(self, *a, **k):  # noqa: ANN002, ANN003
+            class R:
+                column_names = ["detected_at", "src_addr", "anomaly_score"]
+                result_rows: list = []
+            return R()
+
+    empty = status_mod.anomalies_detailed(Empty())
+    assert empty == [], f"an empty result should be an empty list, got {empty!r}"
+    with _pytest.raises(Exception):  # noqa: B017, PT011
+        status_mod.anomalies_detailed(_BoomClient())

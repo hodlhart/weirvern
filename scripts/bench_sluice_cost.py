@@ -43,8 +43,8 @@ import subprocess
 import sys
 import time
 
-HOST_A = "198.51.100.2"   # client side
-HOST_B = "198.51.101.2"   # server side
+HOST_A = "198.51.100.2"   # client side (RFC 5737 TEST-NET-2)
+HOST_B = "192.0.2.2"      # server side (RFC 5737 TEST-NET-1)
 NS_A = "wvbench_a"
 NS_B = "wvbench_b"
 VETH_A = "wvba"
@@ -151,7 +151,7 @@ def setup() -> None:
         if f"default via {gateway}" not in routes:
             raise RuntimeError(f"{ns} has no default route via {gateway}: {routes!r}")
     run(["ip", "addr", "add", "198.51.100.1/24", "dev", HOST_A_IF], check=True)
-    run(["ip", "addr", "add", "198.51.101.1/24", "dev", HOST_B_IF], check=True)
+    run(["ip", "addr", "add", "192.0.2.1/24", "dev", HOST_B_IF], check=True)
     run(["sysctl", "-qw", "net.ipv4.ip_forward=1"], check=True)
 
     # ── THE FORWARD POLICY, WHICH IS WHAT BROKE THE FIRST RUN ──────────────────────────────
@@ -215,7 +215,7 @@ def install_gate(members: int, ports: int) -> str:
     ENFORCEMENT while claiming to measure performance -- and it is exactly the kind of
     misattribution this project keeps finding. So the members come from 203.0.113.0/24 (TEST-NET-3,
     reserved for documentation and never routable), while the test path lives on
-    198.51.100.0/24 and 198.51.101.0/24 (TEST-NET-2/1). Every packet therefore traverses the hook,
+    198.51.100.0/24 (TEST-NET-2) and 192.0.2.0/24 (TEST-NET-1). Every packet therefore traverses the hook,
     is compared against the whole set, matches nothing, and continues.
     """
     nft("delete", "table", "inet", "weirvern_sluice")

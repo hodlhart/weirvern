@@ -977,23 +977,36 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0) -> list
 
     Dicts rather than tuples because the web layer serialises them directly and a
     positional tuple would silently misalign if a column is ever added.
+
+    ── WHY A FAILURE NOW RAISES INSTEAD OF RETURNING [] ───────────────────────────────────────
+    MEASURED DEFECT (found by triaging an independent audit finding, 2026-09-23). This function
+    used to catch every exception, log it at DEBUG, and return an empty list. The web handler
+    above it has a proper failure path -- `except Exception: return self._error(503, ...)` -- but
+    it could never run, because this function never raised. So a database that was unreachable or
+    a query that had been broken by a schema change produced HTTP 200 with an empty array, and the
+    Anomalies view rendered its normal empty state.
+
+    That is this project's named failure mode in its most consequential place: an operator looking
+    at an empty triage queue on a deployment whose detection query is broken sees "nothing to
+    review", which is a statement about the network rather than about the query. The log line
+    exists, at DEBUG, which no deployment runs.
+
+    The caller distinguishes the cases and says which one it is. `recent_anomalies` (the summary
+    counter) keeps its lenient behaviour deliberately -- it is a badge on an overview page, and a
+    badge that says "unavailable" is honest where an empty list is not; see its own docstring.
     """
-    try:
-        res = client.query(
-            "SELECT detected_at, window_start, src_addr, anomaly_score, confidence, "
-            "severity, detected_by_models, model_agreement, "
-            "isolation_forest_score, gradient_boosting_score, dbscan_score, baseline_score, "
-            "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
-            "feature_contributions, baseline_comparison "
-            "FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s "
-            "ORDER BY detected_at DESC LIMIT %(n)s",
-            parameters={"s": min_score, "n": limit},
-        )
-        cols = list(res.column_names)
-        return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("anomalies_detailed failed: %s", exc)
-        return []
+    res = client.query(
+        "SELECT detected_at, window_start, src_addr, anomaly_score, confidence, "
+        "severity, detected_by_models, model_agreement, "
+        "isolation_forest_score, gradient_boosting_score, dbscan_score, baseline_score, "
+        "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
+        "feature_contributions, baseline_comparison "
+        "FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s "
+        "ORDER BY detected_at DESC LIMIT %(n)s",
+        parameters={"s": min_score, "n": limit},
+    )
+    cols = list(res.column_names)
+    return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
 
 
 def host_detail(client, src_addr: str, hours: int = 24) -> dict:
