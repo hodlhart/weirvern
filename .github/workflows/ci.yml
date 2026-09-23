@@ -129,12 +129,29 @@ jobs:
           pvcs = {d["metadata"]["name"] for d in docs if d.get("kind") == "PersistentVolumeClaim"}
 
           def refs(o):
+              """Every ConfigMap/Secret reference, in ALL the shapes Kubernetes allows.
+
+              ── WHY configMapKeyRef WAS THE GAP THAT MATTERED ────────────────────────────────
+              MEASURED (2026-09-23, mutation-tested): this function matched `configMap`,
+              `configMapRef`, `secretRef` and `secretKeyRef` -- but NOT `configMapKeyRef`. It
+              checked 1 secretKeyRef in the tree while 7 configMapKeyRefs went unexamined, and
+              mutating one of those to a name that does not exist produced `problems: NONE`, so
+              CI passed a manifest that could not start. The pod would fail with
+              CreateContainerConfigError at deploy time, on the operator's cluster, with the
+              check that exists to catch it reporting green.
+
+              A reference is a reference whatever its shape: `name` is the field that must
+              resolve, and leaving one variant out is how a checker becomes decorative. Both
+              `configMap*` and `secret*` variants are now matched by prefix rather than by an
+              enumerated list, so a shape nobody thought of is caught too.
+              """
               if isinstance(o, dict):
                   for k, v in o.items():
-                      if k in ("configMap", "configMapRef") and isinstance(v, dict) and "name" in v:
-                          yield ("configmap", v["name"])
-                      if k in ("secretRef", "secretKeyRef") and isinstance(v, dict) and "name" in v:
-                          yield ("secret", v["name"])
+                      if isinstance(v, dict) and "name" in v:
+                          if k.startswith("configMap"):
+                              yield ("configmap", v["name"])
+                          elif k.startswith("secret"):
+                              yield ("secret", v["name"])
                       yield from refs(v)
               elif isinstance(o, list):
                   for i in o:

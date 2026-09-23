@@ -85,8 +85,8 @@
       "severity": "HIGH",
       "area": "GitHub face",
       "title": "The manifest reference checker is blind to `configMapKeyRef` \u2014 the most common ConfigMap reference form",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "Reproduced by mutation: renaming a configMapKeyRef to a nonexistent name produced 'problems: NONE' from the CI checker, so it would pass a manifest whose pod cannot start (CreateContainerConfigError on the operator's cluster). The tree has 7 configMapKeyRef uses vs 1 secretKeyRef, so the checker examined the rare shape and ignored the common one. Fixed by matching configMap*/secret* by prefix, and pinned by tests/test_ci_manifest_refs.py which extracts the SHIPPING function from the workflow and drives it with fixtures. Mutation-tested: restoring the original lists fails 4 tests; flagging every name field fails 2.",
       "report": "kr1",
       "id": "F010"
     },
