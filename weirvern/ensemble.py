@@ -45,6 +45,13 @@ def _detector_catalog() -> tuple[str, ...]:
     )
 
 
+# The ceiling every fused score is capped at. NAMED BECAUSE IT IS HALF OF AN INVARIANT (audit F186):
+# `detection_confidence_factor` multiplies a capped score by `thin_window_floor`, so the reachable
+# maximum for a thin window is THIS times that floor -- and a floor below base_threshold/this makes a
+# whole category of windows unalertable. See `assert_thin_floor_is_reachable`.
+MAX_FUSED_SCORE = 0.99
+
+
 def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = None,
                 mode: str = "max") -> float:
     """Ensemble fusion.
@@ -74,8 +81,8 @@ def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = Non
     if mode == "mean":
         w = weights or {}
         total = sum(w.get(n, 1.0) for n in scores)
-        return float(min(0.99, sum(scores[n] * w.get(n, 1.0) for n in scores) / total))
-    return float(min(0.99, max(scores.values())))
+        return float(min(MAX_FUSED_SCORE, sum(scores[n] * w.get(n, 1.0) for n in scores) / total))
+    return float(min(MAX_FUSED_SCORE, max(scores.values())))
 
 
 def detection_confidence_factor(flow: dict, cfg) -> float:
@@ -94,6 +101,29 @@ def detection_confidence_factor(flow: dict, cfg) -> float:
 
     Returns a multiplier in [floor, 1.0]. Windows at/above
     `min_flows_for_full_confidence` are untouched.
+
+    ── THE FLOOR CANNOT BE BELOW base_threshold / MAX_FUSED_SCORE (audit F186) ──────────────────
+
+    A MULTIPLIER FLOOR AND AN ABSOLUTE THRESHOLD ARE NOT THE SAME KIND OF NUMBER, and they shipped
+    as the same value (0.35), which hid the relationship between them. `fuse_scores` caps every
+    score at MAX_FUSED_SCORE = 0.99, so the best a thin window can reach is
+
+        0.99 * thin_window_floor
+
+    and if that is below `base_threshold`, the window is not scored low -- it is UNREACHABLE, no
+    matter how loud the signal. With floor 0.35: 0.99 * 0.35 = 0.3465 against a bar of 0.35, short by
+    0.0035. MEASURED ON THE LIVE CLUSTER: 23 of 23 near misses scored exactly 0.3465 across six
+    unrelated hosts -- a constant score is not a coincidence, it is a ceiling -- and 566 of 567
+    windows in a 6-hour span (99.8%, carrying 99.98% of the bytes) had too few flows to clear it.
+
+    The instrument was checked before the finding was trusted: the counts were taken from the
+    COLLAPSED per-window aggregates (`_collapse_partial_aggregates`), because F181 established that
+    the raw table is fragmented per insert block and a per-block read would have understated the
+    counts. After collapsing, 25 of 25 windows were still under `min_flows_for_full_confidence`.
+
+    The floor is now above the derived minimum, and `assert_thin_floor_is_reachable` makes the
+    relationship checked rather than implied, so the two constants cannot drift apart again in
+    silence.
     """
     flows = float(flow.get("flow_count", 0) or 0)
     min_flows = float(cfg.min_flows_for_full_confidence)
@@ -101,6 +131,31 @@ def detection_confidence_factor(flow: dict, cfg) -> float:
         return 1.0
     ratio = flows / min_flows
     return float(max(cfg.thin_window_floor, ratio))
+
+
+def assert_thin_floor_is_reachable(cfg, base_threshold: float) -> None:
+    """Raise if a maximally-signalled thin window cannot clear the bar.
+
+    THE RELATIONSHIP, in one place so it cannot drift: `thin_window_floor` is a MULTIPLIER on a capped
+    score, `base_threshold` is an absolute score, and a thin window is only reachable when
+
+        MAX_FUSED_SCORE * cfg.thin_window_floor >= base_threshold
+
+    A violation is not a tuning preference -- it is a category of windows that cannot alert whatever
+    the detectors report, which is why this raises instead of warning. Called once per sweep rather
+    than per flow: the cost is a comparison, and the alternative is discovering it from a constant
+    score on every near miss, months later.
+    """
+    ceiling = MAX_FUSED_SCORE * float(cfg.thin_window_floor)
+    if ceiling < float(base_threshold):
+        raise ValueError(
+            f"a window below min_flows_for_full_confidence ({cfg.min_flows_for_full_confidence}) "
+            f"cannot reach the alert threshold. The best such a window can score is "
+            f"{MAX_FUSED_SCORE} * thin_window_floor ({cfg.thin_window_floor}) = {round(ceiling, 4)}, "
+            f"but the bar is {base_threshold}. Raise thin_window_floor above "
+            f"{round(float(base_threshold) / MAX_FUSED_SCORE, 6)} or lower base_threshold; otherwise "
+            f"every thin window is silently unalertable no matter how strong its signal (audit F186)"
+        )
 
 
 def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dict | None,

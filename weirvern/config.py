@@ -317,7 +317,23 @@ class ModelConfig:
     # statistics; scores are damped proportionally (see
     # ensemble.detection_confidence_factor for the measured rationale).
     min_flows_for_full_confidence: int = 10
-    thin_window_floor: float = 0.35
+    # ── A MULTIPLIER FLOOR, NOT AN ABSOLUTE SCORE (audit F186) ──────────────────────────────────
+    #
+    # This shipped as 0.35 -- the same value as `base_threshold` -- which made the relationship
+    # between the two invisible. They are different KINDS of number: this multiplies a score capped
+    # at `ensemble.MAX_FUSED_SCORE` (0.99), while `base_threshold` is an absolute score the result
+    # has to clear. So the reachable maximum for a thin window is 0.99 * this, and if that lands
+    # under the bar the window is UNALERTABLE whatever the detectors report.
+    #
+    # 0.35 gave 0.99 * 0.35 = 0.3465 against a bar of 0.35 -- short by 0.0035. MEASURED: 23 of 23
+    # live near misses scored exactly 0.3465 across six unrelated hosts, and 566 of 567 windows in a
+    # 6-hour span (99.8%, carrying 99.98% of the bytes) were thin enough to be capped there.
+    #
+    # 0.36 is the smallest value that clears the bar with margin (0.99 * 0.36 = 0.3564) and it keeps
+    # the measured false-positive case suppressed: a 3-flow window with a raw 0.96 still lands at
+    # 0.3456, below the bar. `ensemble.assert_thin_floor_is_reachable` enforces the relationship at
+    # runtime so these two cannot drift apart in silence again.
+    thin_window_floor: float = 0.36
 
     # SOC-2: the near-miss band, as a FRACTION of the threshold this host faced. A window
     # scoring at or above threshold * this value (and below the threshold) is recorded as a

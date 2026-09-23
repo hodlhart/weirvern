@@ -205,6 +205,42 @@ _stop = threading.Event()
 # cost the checkpoint this wait is protecting.
 _INGEST_JOIN_TIMEOUT_S = 10
 
+# The last (thin_window_floor, base_threshold) pair already reported as unalertable, so the
+# sweep logs it once per configuration rather than every cycle (audit F186).
+_thin_floor_warned: tuple[float, float] | None = None
+
+
+def check_thin_floor_reachable(cfg: ModelConfig, settings) -> bool:
+    """Verify the threshold relationship, LOGGING rather than raising on a violation (audit F186).
+
+    EXTRACTED SO IT CAN BE TESTED BY DRIVING IT. While this logic sat inline in `detection_sweep`,
+    the only way to test the once-per-configuration latch was to re-implement it in the test -- and a
+    test that re-implements the product proves nothing about the product. A mutation removing the
+    product's latch changed no test result at all, which is exactly how that shows up.
+
+    Returns True when the configuration can alert on thin windows. `main()` uses the RAISING form
+    (`ensemble.assert_thin_floor_is_reachable`) so a deployment that could never have alerted refuses
+    to start; this one exists for the live path, where `BASE_THRESHOLD` can be edited while the
+    worker runs and where stopping detection would be worse than the blind band. See the note in
+    `detection_sweep`.
+    """
+    global _thin_floor_warned
+    try:
+        ensemble.assert_thin_floor_is_reachable(cfg, settings.base_threshold)
+        _thin_floor_warned = None
+        return True
+    except ValueError as exc:
+        key = (cfg.thin_window_floor, settings.base_threshold)
+        if _thin_floor_warned != key:
+            _thin_floor_warned = key
+            logger.error("DETECTION CANNOT ALERT ON THIN WINDOWS: %s", exc)
+            logger.error(
+                "Every window below %s flows is unalertable regardless of how strong its signal is. "
+                "Raise thin_window_floor or lower BASE_THRESHOLD; windows at or above that flow "
+                "count are unaffected and detection continues.", cfg.min_flows_for_full_confidence,
+            )
+        return False
+
 
 def _handle_sigterm(signum, frame):  # noqa: ARG001
     logger.info("SIGTERM received — shutting down gracefully")
@@ -730,7 +766,24 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     anomaly rows. v20 fix: alerts use these verdicts directly instead of a
     separate re-query — the old re-query's sliding window re-alerted the
     same rows every sweep.
+
+    ── THE CONFIGURATION IS CHECKED BEFORE ANY DETECTOR RUNS (audit F186) ────────────────────────
+
+    `thin_window_floor` and `base_threshold` are different KINDS of number -- a multiplier on a
+    capped score, and an absolute score -- and when the product of the first with the score cap
+    falls under the second, EVERY window below `min_flows_for_full_confidence` is unalertable
+    whatever the detectors report. That shipped: 0.99 * 0.35 = 0.3465 against a bar of 0.35, which
+    is why 23 of 23 live near misses scored exactly 0.3465 across six unrelated hosts and 99.8% of
+    the windows on the cluster sat in the band.
+
+    THE CHECK RUNS HERE AND ITS FAILURE IS LOGGED ONCE, NOT RAISED. `BASE_THRESHOLD` is
+    operator-editable (0.0-1.0), so it can be raised on a RUNNING cluster, and raising from this
+    function would make the detection loop error every cycle -- replacing "blind to thin windows"
+    with "detection stops entirely", which is strictly worse. `main()` uses the RAISING form, so a
+    deployment that could never have alerted refuses to start; a live edit degrades to a loud
+    periodic warning. `_thin_floor_warned` keeps it to one line per distinct configuration.
     """
+    check_thin_floor_reachable(cfg, settings)
 
     # ── THE LOOKBACK MUST BE WIDER THAN THE AGGREGATION BUCKET ────────────────────────────────
     #
@@ -1208,6 +1261,22 @@ def main() -> None:
         # A malformed list is a CONFIGURATION error, and starting anyway would silently filter
         # the wrong thing (or nothing). Refusing is the honest failure.
         logger.error("WEIRVERN_EXCLUDE_CIDRS is invalid: %s", exc)
+        raise SystemExit(2) from exc
+
+    # ── A CONFIGURATION THAT CANNOT ALERT REFUSES TO START (audit F186) ─────────────────────────
+    #
+    # Same shape as the malformed-CIDR check above, and for the same reason: starting anyway would
+    # mean detection runs, reports itself healthy, and is structurally blind to every window below
+    # `min_flows_for_full_confidence`. That is the failure this project keeps finding -- a green
+    # reading over work that did not happen -- so it is refused at startup rather than warned about.
+    #
+    # The sweep ALSO checks, because BASE_THRESHOLD is operator-editable on a running cluster; there
+    # it logs rather than raises, so a bad live edit degrades the thin band instead of stopping
+    # detection altogether.
+    try:
+        ensemble.assert_thin_floor_is_reachable(cfg, settings.base_threshold)
+    except ValueError as exc:
+        logger.error("Detection configuration is unalertable: %s", exc)
         raise SystemExit(2) from exc
 
     client = db.connect(settings)

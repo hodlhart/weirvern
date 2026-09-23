@@ -1,4 +1,5 @@
 
+import dataclasses
 import pathlib
 from datetime import datetime
 
@@ -8,6 +9,7 @@ from weirvern import ensemble
 from weirvern.config import ModelConfig, Settings
 from weirvern.ensemble import (
     adaptive_threshold_for,
+    assert_thin_floor_is_reachable,
     detection_confidence_factor,
     fuse_scores,
     severity_of,
@@ -621,3 +623,258 @@ def test_weight_baseline_missing_is_applied_at_RUNTIME_not_in_the_base_map():
         "genuinely dead rather than applied at runtime"
     )
     assert "has_baseline" in src, "the runtime baseline-present branch is gone"
+
+
+# ── A WHOLE CATEGORY OF WINDOWS WAS MATHEMATICALLY UNALERTABLE (audit F186) ─────────────────────
+#
+# FOUND LIVE: 23 of 23 near misses scored EXACTLY 0.3465 across six unrelated hosts, against a
+# threshold of 0.35. A constant score is not a coincidence, it is an arithmetic ceiling.
+#
+# `fuse_scores` caps every score at MAX_FUSED_SCORE (0.99); `detection_confidence_factor` multiplies
+# by `max(thin_window_floor, flow_count / min_flows_for_full_confidence)`. For a window with 1-3
+# flows the ratio is 0.1-0.3, so the floor applies: 0.99 * 0.35 = 0.3465, which is 0.0035 SHORT of
+# the 0.35 bar. So a one-flow window where EVERY detector reports the maximum was suppressed, and no
+# input could change that -- the window was not scored low, it was UNREACHABLE.
+#
+# MEASURED ON THE CLUSTER: 566 of 567 windows in a 6-hour span (99.8%, carrying 99.98% of the bytes)
+# were thin enough to be capped there. The counts were read from the COLLAPSED aggregates, because
+# F181 established the raw table is fragmented per insert block and a per-block read would have
+# understated them.
+#
+# THE TWO CONSTANTS ARE DIFFERENT KINDS OF NUMBER -- a multiplier floor and an absolute threshold --
+# and they shipped as the same value, which is how the relationship went unstated and untested.
+
+
+def test_the_shipped_config_lets_a_maximally_signalled_thin_window_alert():
+    """THE DEFECT, on the shipped configuration rather than a synthetic one."""
+    assert_thin_floor_is_reachable(CFG, _settings_lite().base_threshold)
+
+    dets = [_FixedDetector("Isolation Forest", 0.99), _FixedDetector("Gradient Boosting", 0.99),
+            _FixedDetector("DBSCAN", 0.99), _FixedDetector("Adaptive Baseline", 0.99)]
+    for flows in (1, 2, 3):
+        flow = {"window_start": "2026-09-19 10:00:00", "src_addr": "203.0.113.5",
+                "flow_count": flows, "unique_dst_ips": 1, "total_bytes": 900}
+        nm: list = []
+        got = ensemble.detect_flows([dict(flow)], dets, _settings_lite(), CFG, near_misses=nm)
+        assert got, (
+            f"a {flows}-flow window with ALL FOUR detectors at the maximum 0.99 was suppressed "
+            f"(score {nm[0]['anomaly_score'] if nm else None}, bar "
+            f"{nm[0]['threshold_used'] if nm else None}). It cannot alert whatever the detectors "
+            f"report, because MAX_FUSED_SCORE * thin_window_floor ({CFG.thin_window_floor}) is below "
+            f"base_threshold -- audit F186"
+        )
+
+
+def test_the_check_REJECTS_the_configuration_that_shipped():
+    """The old value must fail loudly, or the guard proves nothing."""
+    bad = dataclasses.replace(CFG, thin_window_floor=0.35)
+    with pytest.raises(ValueError) as e:
+        assert_thin_floor_is_reachable(bad, _settings_lite().base_threshold)
+    msg = str(e.value)
+    assert "cannot reach the alert threshold" in msg, msg
+    assert "0.3465" in msg, f"the error must name the actual ceiling so the fix is obvious: {msg}"
+
+
+def test_a_zero_flow_window_is_still_handled():
+    """`flow_count` 0 is a real value in the aggregate tables; it must not divide by zero or pass."""
+    assert_thin_floor_is_reachable(CFG, _settings_lite().base_threshold)
+    assert detection_confidence_factor({"flow_count": 0}, CFG) >= CFG.thin_window_floor
+
+
+def test_the_measured_false_positive_is_STILL_suppressed():
+    """THE OTHER DIRECTION. The damping exists because benign 3-4 flow windows scored 'critical':
+    a single heavy-tailed flow dominates the window's mean/stddev. Raising the floor must not undo
+    that, or this fix trades a blind band for alert noise."""
+    dets = [_FixedDetector("Isolation Forest", 0.96), _FixedDetector("Gradient Boosting", 0.96),
+            _FixedDetector("DBSCAN", 0.96), _FixedDetector("Adaptive Baseline", 0.96)]
+    flow = {"window_start": "2026-09-19 10:00:00", "src_addr": "203.0.113.5",
+            "flow_count": 3, "unique_dst_ips": 4, "total_bytes": 900}
+    nm: list = []
+    got = ensemble.detect_flows([dict(flow)], dets, _settings_lite(), CFG, near_misses=nm)
+    assert not got, (
+        "the measured benign 3-flow false positive (raw 0.96) now ALERTS. The damping was added "
+        "for exactly this case; the floor must be reachable for a maximal signal without promoting "
+        "a merely high one"
+    )
+    assert nm and nm[0]["anomaly_score"] < nm[0]["threshold_used"]
+
+
+def test_the_relationship_is_expressed_once_not_reimplemented():
+    """The guard computes the ceiling from MAX_FUSED_SCORE; a second copy of the literal would let
+    the two drift, which is how this went wrong in the first place."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "weirvern" / "ensemble.py").read_text()
+    assert "MAX_FUSED_SCORE = 0.99" in src, "the score cap is no longer a named constant"
+    # The cap must be USED, not merely declared.
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    uses = [ln for ln in code if "MAX_FUSED_SCORE" in ln]
+    assert len(uses) >= 4, (
+        f"MAX_FUSED_SCORE appears in only {len(uses)} code lines; the cap and the guard must share "
+        f"one definition or they can disagree"
+    )
+
+
+def test_the_sweep_refuses_to_run_an_unalertable_configuration():
+    """The check must run BEFORE detectors do, so a broken configuration names itself."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "weirvern" / "worker.py").read_text()
+    assert "assert_thin_floor_is_reachable" in src, (
+        "detection_sweep no longer verifies the threshold relationship; a configuration that cannot "
+        "alert would be silently accepted again"
+    )
+    i_check = src.index("assert_thin_floor_is_reachable")
+    i_score = src.index("verdicts = ensemble.detect_flows(")
+    assert i_check < i_score, "the configuration check runs AFTER scoring began"
+
+
+def test_an_operators_RAISED_threshold_is_caught_without_stopping_detection():
+    """`BASE_THRESHOLD` is operator-editable, so the guard has to hold for values nobody shipped.
+
+    A raise from inside the sweep would be a worse failure than the one being fixed: the detection
+    loop would error every cycle, replacing "blind to thin windows" with "detection stopped". So the
+    sweep LOGS, and `main()` refuses to start. This pins the sweep's half -- the guard detects the
+    condition -- and the startup half is asserted against the source below.
+    """
+    for raised in (0.36, 0.40, 0.50, 0.70):  # 0.3564 is the reachable ceiling at floor 0.36
+        with pytest.raises(ValueError):
+            assert_thin_floor_is_reachable(CFG, raised)
+    # ...and the boundary itself must still be ACCEPTED, or the guard is off by its own rounding.
+    assert_thin_floor_is_reachable(CFG, 0.3564)
+
+
+def test_startup_REFUSES_an_unalertable_configuration_while_the_sweep_only_warns():
+    """Two call sites, two behaviours, for a reason: startup can refuse, a live edit cannot.
+
+    The startup check exists so a deployment that could never have alerted fails loudly instead of
+    reporting itself healthy. The sweep check exists because BASE_THRESHOLD can change while the
+    worker is running, and there the honest response is a loud warning -- stopping detection would
+    trade a blind band for no detection at all.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "weirvern" / "worker.py").read_text()
+
+    # startup: raises SystemExit next to the malformed-CIDR precedent
+    assert "Detection configuration is unalertable" in src, (
+        "main() no longer refuses to start on an unalertable configuration"
+    )
+    assert "raise SystemExit(2) from exc" in src, "the startup refusal no longer exits non-zero"
+
+    # sweep: logs, and only once per distinct configuration
+    assert "_thin_floor_warned" in src, (
+        "the sweep has no once-per-configuration latch, so a bad live edit would log every cycle"
+    )
+    assert "DETECTION CANNOT ALERT ON THIN WINDOWS" in src
+
+    i_sweep_check = src.index("global _thin_floor_warned")
+    i_scoring = src.index("verdicts = ensemble.detect_flows(")
+    assert i_sweep_check < i_scoring, "the sweep checks the configuration after detection has run"
+
+
+# ── THE TWO CALL SITES BEHAVE DIFFERENTLY, AND ONLY SOURCE GREPS PINNED IT (audit F186) ─────────
+#
+# Mutation testing missed both of these when the tests only searched the source text:
+#   * making `main()` warn instead of exit was not detected, because "raise SystemExit" still
+#     appeared elsewhere in the file;
+#   * removing the sweep's once-per-configuration latch was not detected at all, because the only
+#     assertion was that the name `_thin_floor_warned` exists.
+
+
+def test_main_REFUSES_TO_START_on_an_unalertable_configuration(monkeypatch, caplog):
+    """Behavioural, not textual. `main()` must exit non-zero, not merely mention the problem.
+
+    Driven through the real `main()` with a settings object that can never alert, and with the work
+    that follows it stubbed to fail loudly -- so if the refusal is removed, the test fails on the
+    stubbed call rather than silently passing.
+    """
+    import weirvern.worker as worker_mod
+
+    bad_cfg = dataclasses.replace(ModelConfig(), thin_window_floor=0.30)
+    # Settings is a FROZEN dataclass, so a field cannot be assigned -- `replace` is the way to build
+    # a variant, and my first version raised FrozenInstanceError instead of testing anything.
+    bad_settings = dataclasses.replace(Settings(), base_threshold=0.90)
+
+    monkeypatch.setattr(worker_mod, "get_settings", lambda: bad_settings)
+    monkeypatch.setattr(worker_mod, "ModelConfig", lambda: bad_cfg)
+
+    # If the refusal does NOT happen, execution continues into these and the test fails on them.
+    def _must_not_be_reached(*a, **k):
+        raise AssertionError("main() continued past an unalertable configuration")
+
+    monkeypatch.setattr(worker_mod.db, "connect", _must_not_be_reached)
+    monkeypatch.setattr(worker_mod.db, "apply_schema", _must_not_be_reached)
+    monkeypatch.setattr(worker_mod, "_handle_sigterm", lambda *a, **k: None)
+    monkeypatch.setattr(worker_mod.signal, "signal", lambda *a, **k: None)
+
+    with pytest.raises(SystemExit) as e:
+        worker_mod.main()
+    assert e.value.code == 2, f"refused with the wrong exit code: {e.value.code}"
+
+
+def test_the_sweep_warns_ONCE_per_configuration_not_once_per_cycle(monkeypatch):
+    """THE LATCH, BY DRIVING IT.
+
+    MY FIRST VERSION RE-IMPLEMENTED THE LATCH INSIDE THE TEST, so a mutation removing the product's
+    latch changed nothing and the mutation survived. A test that re-implements what it is testing
+    proves nothing about the product. The check is now a real function and this drives it.
+
+    A warning that repeats every 300s is a warning operators filter out, which is the same silence
+    by another route -- so it must fire once, and it must fire AGAIN when the configuration changes,
+    or a second distinct misconfiguration hides behind the first.
+    """
+    import logging
+
+    import weirvern.worker as worker_mod
+
+    bad_settings = dataclasses.replace(Settings(), base_threshold=0.95)
+    cfg = dataclasses.replace(ModelConfig(), thin_window_floor=0.36)
+
+    seen = []
+
+    class _Rec(logging.Handler):
+        def emit(self, record):  # noqa: ANN001
+            seen.append(record.getMessage())
+
+    logger = logging.getLogger("weirvern.worker")
+    h = _Rec()
+    logger.addHandler(h)
+    worker_mod._thin_floor_warned = None
+    try:
+        # Three sweeps with an UNCHANGED bad configuration.
+        for _ in range(3):
+            assert worker_mod.check_thin_floor_reachable(cfg, bad_settings) is False
+
+        alarms = [m for m in seen if "CANNOT ALERT" in m]
+        assert len(alarms) == 1, (
+            f"the unalertable-configuration warning fired {len(alarms)} times across three sweeps "
+            f"with an unchanged configuration. It must fire once per configuration, or operators "
+            f"learn to filter it out"
+        )
+
+        # A DIFFERENT bad configuration must warn again.
+        worker_mod.check_thin_floor_reachable(cfg, dataclasses.replace(Settings(), base_threshold=0.99))
+        alarms = [m for m in seen if "CANNOT ALERT" in m]
+        assert len(alarms) == 2, (
+            "a DIFFERENT unalertable configuration did not warn again; a latch that never re-fires "
+            "hides a second misconfiguration behind the first"
+        )
+
+        # And a GOOD configuration clears the latch, so returning to bad warns afresh.
+        assert worker_mod.check_thin_floor_reachable(cfg, _settings_lite()) is True
+        assert worker_mod._thin_floor_warned is None, (
+            "a passing check left the latch set, so the next violation would be swallowed"
+        )
+    finally:
+        logger.removeHandler(h)
+        worker_mod._thin_floor_warned = None
+
+
+def test_the_sweep_CALLS_the_check_before_scoring(monkeypatch):
+    """The extracted function must actually be wired into the sweep, not merely exist.
+
+    A helper nothing calls is the same silent failure in a new shape; this asserts the call site.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "weirvern" / "worker.py").read_text()
+    assert "check_thin_floor_reachable(cfg, settings)" in src, (
+        "detection_sweep no longer calls check_thin_floor_reachable; the guard exists but nothing "
+        "runs it"
+    )
+    i_call = src.index("check_thin_floor_reachable(cfg, settings)")
+    i_score = src.index("verdicts = ensemble.detect_flows(")
+    assert i_call < i_score, "the check runs after detection has already scored"
