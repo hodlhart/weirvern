@@ -487,6 +487,11 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
     service_creates: list[str] = []
     dce_endpoints: list[str] = []
     kerb_types: dict[str, int] = {}
+    # The DISTINCT service principals per request type. `kerb_types` counts requests; these count
+    # what the Kerberoasting rule actually claims to measure (audit F044). See the note at the
+    # T1558 arm for the measurements that separate the two.
+    tgs_spns: set[str] = set()
+    as_spns: set[str] = set()
     ntlm_failures = 0.0
     ntlm_total = 0.0
     weak_tls = 0.0
@@ -513,17 +518,72 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
                 admin_shares.append(path)
 
         # ── T1021.003 / T1569.002: DCE/RPC service control ─────────────────────
-        op = str(r.get("operation") or "")
-        ep = str(r.get("endpoint") or "")
-        if op or ep:
-            dce_endpoints.append(ep or op)
-        if op.lower() in {"createservicew", "startservicew", "changeserviceconfigw"}:
-            service_creates.append(op)
+        #
+        # GATED ON `kind`, BECAUSE `endpoint` IS NOT A DCE/RPC FIELD (audit F044).
+        #
+        # The protocol union reuses the trailing column names across every arm, and SEVEN of them put
+        # something other than a DCE endpoint in `endpoint`:
+        #
+        #     zeek_dce_rpc      operation, endpoint          <- the ONLY real DCE endpoint
+        #     zeek_kerberos     request_type, service        <- a Kerberos SPN
+        #     zeek_x509         fingerprint, subject         <- a certificate subject
+        #     zeek_tunnel       tunnel_type, action          <- a tunnel action
+        #     zeek_quic         client_protocol, server_name <- an SNI
+        #     zeek_ldap_search  scope, base                  <- an LDAP base DN
+        #     zeek_dhcp         msg_types, mac               <- a MAC address
+        #
+        # Reading it unconditionally made a pure-Kerberos window raise T1021.003 with the evidence
+        #
+        #     "DCE/RPC to endpoint cifs/dc01.example.com without a service-control operation"
+        #
+        # -- a sentence about a protocol that is not in the record, built from a field that is a
+        # service principal. MEASURED by driving the real mapper with a kerberos row: both T1021.003
+        # and T1558 were raised.
+        #
+        # AN ALLOWLIST, NOT A DENYLIST. Excluding one protocol would leave the other six leaking, and
+        # would rot the moment an arm is added. `kind` is populated by every arm, so the rule can
+        # simply require that it IS this arm.
+        #
+        # AN EMPTY `kind` KEEPS THE PREVIOUS BEHAVIOUR, deliberately: callers that hand-build a row
+        # (and any older payload) predate the column, and silently dropping their DCE evidence would
+        # trade a false positive for a false negative. An unknown kind is also accepted -- the check
+        # is "is this definitely some other protocol", not "is this definitely DCE/RPC".
+        kind = str(r.get("kind") or "")
+        if kind in ("", "zeek_dce_rpc"):
+            op = str(r.get("operation") or "")
+            ep = str(r.get("endpoint") or "")
+            if op or ep:
+                dce_endpoints.append(ep or op)
+            if op.lower() in {"createservicew", "startservicew", "changeserviceconfigw"}:
+                service_creates.append(op)
 
         # ── T1558: Kerberos ────────────────────────────────────────────────────
+        #
+        # THE SPN IS COUNTED SEPARATELY FROM THE REQUEST (audit F044). `kerb_types` is a bare
+        # per-request-type counter, so testing it against a threshold named `KERB_MIN_SPNS` counted
+        # REQUESTS while claiming to count SERVICE PRINCIPALS. Kerberoasting is defined by DISTINCT
+        # services -- a client requests tickets for every SPN it can name, to crack them offline --
+        # whereas asking for the same service repeatedly is what any Kerberos client does.
+        #
+        # MEASURED by driving the real mapper:
+        #     15 requests naming 15 DISTINCT SPNs -> T1558   (genuine signature)
+        #     15 requests naming  1 SPN, x15      -> T1558   (FALSE POSITIVE)
+        #    200 requests naming  1 SPN          -> T1558   (FALSE POSITIVE)
+        #      9 requests naming  9 DISTINCT SPNs -> no T1558 (MISS, just under the threshold)
+        #
+        # The SPN is already in the row: the union's kerberos arm selects
+        # `request_type AS operation, service AS endpoint`. So this needs no new data, only for the
+        # rule to read the field it was already being given.
         rt = str(r.get("operation") or r.get("request_type") or "").upper()
         if rt:
             kerb_types[rt] = kerb_types.get(rt, 0) + 1
+            # Only a NON-EMPTY SPN counts. An empty one means the log did not carry the service, and
+            # counting that as a distinct principal would manufacture the very signal being measured.
+            _spn = str(r.get("service") or r.get("endpoint") or "").strip()
+            if rt == "TGS" and _spn:
+                tgs_spns.add(_spn)
+            elif rt == "AS" and _spn:
+                as_spns.add(_spn)
 
         # ── T1110: NTLM authentication failures ────────────────────────────────
         # NTLM successes are identified by the presence of a username, which only
@@ -585,18 +645,25 @@ def map_zeek_techniques(rows: list[dict[str, Any]], src_addr: str | None = None)
             ["WMI/service execution arrives as DCE/RPC to SVCCTL"],
         ))
 
-    # Many TGS requests from one principal is Kerberoasting; AS requests for preauth-exempt
-    # accounts is AS-REP roasting. Reported separately because they are different weaknesses.
-    if kerb_types.get("TGS", 0) >= KERB_MIN_SPNS:
+    # Many DISTINCT TGS service principals from one principal is Kerberoasting; AS requests for
+    # preauth-exempt accounts is AS-REP roasting. Reported separately because they are different
+    # weaknesses.
+    #
+    # THE THRESHOLD IS APPLIED TO THE SPN COUNT, NOT THE REQUEST COUNT (audit F044). The evidence line
+    # names both numbers so an operator can see which is which, and so a window that trips the rule on
+    # a single retried service is visibly different from one that named ten real services.
+    if len(tgs_spns) >= KERB_MIN_SPNS:
         out.append(Match(
             TECHNIQUES["T1558"], "medium",
-            [f"{kerb_types['TGS']} TGS requests in this window -- Kerberoasting signature"],
+            [f"{len(tgs_spns)} distinct TGS service principals requested "
+             f"({kerb_types.get('TGS', 0)} requests) -- Kerberoasting signature"],
         ))
-    if kerb_types.get("AS", 0) >= KERB_MIN_SPNS:
+    if len(as_spns) >= KERB_MIN_SPNS:
         out.append(Match(
             TECHNIQUES["T1558"], "low",
-            [f"{kerb_types['AS']} AS requests in this window -- check for accounts without "
-             f"preauthentication required (AS-REP roasting)"],
+            [f"{len(as_spns)} distinct AS service principals requested "
+             f"({kerb_types.get('AS', 0)} requests) -- check for accounts without preauthentication "
+             f"required (AS-REP roasting)"],
         ))
 
     if ntlm_total >= BRUTE_MIN_ATTEMPTS:

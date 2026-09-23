@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from weirvern import attack
 
 # ── every emitted technique must be a real, network-observable ATT&CK technique ──
@@ -260,13 +262,126 @@ def test_entropy_alone_is_not_tunnelling():
 
 # ── Kerberos and authentication ─────────────────────────────────────────────────
 
-def test_many_spns_from_one_principal_maps_to_kerberos_ticket_theft():
+def test_many_DISTINCT_spns_from_one_principal_maps_to_kerberos_ticket_theft():
     """Kerberoasting is one client requesting many service principals in order to crack the
-    tickets offline -- and it is invisible in conn.log."""
-    rows = [{"operation": "TGS", "endpoint": f"svc{i}/host.corp.local"}
+    tickets offline -- and it is invisible in conn.log.
+
+    `kind` is set because that is what the protocol union emits; see the F044 note below for why a
+    row without it exercises a different code path.
+    """
+    rows = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": f"svc{i}/host.corp.local"}
             for i in range(attack.KERB_MIN_SPNS + 5)]
     matches = attack.map_zeek_techniques(rows)
     assert "T1558" in {m.technique.id for m in matches}
+
+
+# ── THE THRESHOLD COUNTED REQUESTS, NOT SERVICE PRINCIPALS (audit F044) ──────────────────────────
+#
+# `KERB_MIN_SPNS` is named for service principals and the comment says "many DISTINCT service
+# principals", but the rule tested `kerb_types["TGS"]` -- a bare per-request-type counter. The SPN was
+# already in the row (`request_type AS operation, service AS endpoint`) and simply never read.
+#
+# MEASURED by driving the real mapper, with `kind` set as the union sets it:
+#     15 requests naming 15 DISTINCT SPNs -> T1558   (genuine signature)
+#     15 requests naming  1 SPN, x15      -> T1558   (FALSE POSITIVE before the fix)
+#    200 requests naming  1 SPN          -> T1558   (FALSE POSITIVE before the fix)
+#
+# This matters because asking for the SAME service repeatedly is what any Kerberos client does, so
+# the rule fired on the benign pattern while calling it a roasting signature.
+
+
+def test_one_SPN_requested_repeatedly_is_NOT_kerberoasting():
+    """THE DEFECT. Ten tickets for one service is a client reconnecting, not an attack."""
+    rows = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": "cifs/dc01.example.com"}
+            for _ in range(attack.KERB_MIN_SPNS + 5)]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1558" not in ids, (
+        f"{len(rows)} TGS requests naming ONE service principal raised Kerberoasting. The rule is "
+        f"counting requests, not distinct SPNs (audit F044)"
+    )
+
+
+def test_a_FLOOD_against_one_SPN_is_still_not_kerberoasting():
+    """The strongest version: 200 requests, one SPN. Volume alone must not manufacture the signal."""
+    rows = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": "host/dc01.example.com"}
+            for _ in range(200)]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1558" not in ids, "200 requests for a single SPN raised Kerberoasting"
+
+
+def test_an_empty_spn_does_not_count_as_a_distinct_principal():
+    """A log line with no `service` must not be counted as a principal.
+
+    Counting an absent SPN as distinct would manufacture the exact signal being measured: a window of
+    kerberos rows with no service field would look like a roast.
+    """
+    rows = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": ""}
+            for _ in range(attack.KERB_MIN_SPNS + 20)]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1558" not in ids, (
+        f"{attack.KERB_MIN_SPNS + 20} TGS rows with NO service principal raised Kerberoasting; an "
+        f"absent SPN is being counted as a distinct one"
+    )
+
+
+def test_the_evidence_reports_BOTH_numbers():
+    """The operator must be able to tell a real roast from a retried service."""
+    rows = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": f"svc{i}/h.example.com"}
+            for i in range(14)]
+    ev = [m.evidence[0] for m in attack.map_zeek_techniques(rows) if m.technique.id == "T1558"]
+    assert ev, "the genuine signature did not fire"
+    assert "14 distinct TGS service principals" in ev[0], ev[0]
+    assert "14 requests" in ev[0], ev[0]
+
+
+# ── `endpoint` IS NOT A DCE/RPC FIELD (audit F044, found while measuring the above) ──────────────
+#
+# The protocol union reuses trailing column names across arms, and FIVE arms put something other than
+# a DCE endpoint in `endpoint`: kerberos -> service, tunnel -> action, quic -> server_name,
+# ldap_search -> base_object, dhcp -> mac. Reading it unconditionally made a pure-Kerberos window
+# raise T1021.003 with evidence "DCE/RPC to endpoint cifs/dc01.example.com".
+
+
+@pytest.mark.parametrize(("kind", "operation", "endpoint"), [
+    ("zeek_kerberos", "TGS", "cifs/dc01.example.com"),
+    ("zeek_tunnel", "dns", "established"),
+    ("zeek_quic", "h3", "host-a.example.com"),
+    ("zeek_ldap_search", "sub", "DC=corp,DC=local"),
+    ("zeek_dhcp", "ACK", "aa:bb:cc:dd:ee:ff"),
+])
+def test_a_NON_dce_arm_does_not_raise_the_DCE_technique(kind, operation, endpoint):
+    """Each of these puts a real value in `endpoint` that is NOT a DCE endpoint."""
+    rows = [{"kind": kind, "operation": operation, "endpoint": endpoint}]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1021.003" not in ids, (
+        f"a {kind} row raised T1021.003 with the evidence naming {endpoint!r} as a DCE/RPC endpoint. "
+        f"`endpoint` is a shared column alias, not a DCE field (audit F044)"
+    )
+
+
+def test_the_real_dce_rpc_arm_still_raises_the_technique():
+    """The allowlist must not have broken the case it exists for."""
+    rows = [{"kind": "zeek_dce_rpc", "operation": "NetrShareEnum", "endpoint": "lsarpc"}]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1021.003" in ids, "a genuine DCE/RPC row no longer raises T1021.003"
+
+    rows2 = [{"kind": "zeek_dce_rpc", "operation": "CreateServiceW", "endpoint": "svcctl"}]
+    ids2 = {m.technique.id for m in attack.map_zeek_techniques(rows2)}
+    assert "T1021.003" in ids2, "a real service-control operation no longer raises T1021.003"
+
+
+def test_a_row_with_NO_kind_keeps_the_previous_behaviour():
+    """Compatibility, deliberately.
+
+    Callers that hand-build a row predate the `kind` column. Silently dropping their DCE evidence
+    would trade a false positive for a false negative.
+    """
+    rows = [{"operation": "NetrShareEnum", "endpoint": "lsarpc"}]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1021.003" in ids, (
+        "a row without `kind` stopped raising T1021.003; rows that predate the column must keep "
+        "working"
+    )
 
 
 def test_a_few_tgs_requests_do_not_map_to_roasting():
@@ -471,3 +586,81 @@ def test_every_tactic_used_is_a_real_attack_tactic():
     }
     for tid, tech in attack.TECHNIQUES.items():
         assert tech.tactic in real, f"{tid} has tactic {tech.tactic!r}, which is not an ATT&CK tactic"
+
+
+# ── THE AS-REP ARM HAD NO TEST, SO ITS MUTATION SURVIVED (audit F044) ────────────────────────────
+#
+# Mutation testing caught the TGS threshold reverting but MISSED the AS arm reverting, because every
+# test above only ever exercised TGS. The two arms were fixed together and only one was pinned.
+
+
+def test_many_DISTINCT_as_spns_maps_to_as_rep_roasting():
+    """AS-REP roasting iterates principals to find those without preauth required."""
+    rows = [{"kind": "zeek_kerberos", "operation": "AS", "endpoint": f"user{i}@corp.local"}
+            for i in range(attack.KERB_MIN_SPNS + 5)]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1558" in ids, (
+        f"{len(rows)} AS requests naming distinct principals did not raise T1558; the AS arm is not "
+        f"counting distinct principals"
+    )
+
+
+def test_one_AS_principal_requested_repeatedly_is_NOT_as_rep_roasting():
+    """THE AS ARM'S OWN F044 CASE: the same defect shape as TGS, on the arm nothing tested."""
+    rows = [{"kind": "zeek_kerberos", "operation": "AS", "endpoint": "user1@corp.local"}
+            for _ in range(attack.KERB_MIN_SPNS + 5)]
+    ids = {m.technique.id for m in attack.map_zeek_techniques(rows)}
+    assert "T1558" not in ids, (
+        f"{len(rows)} AS requests naming ONE principal raised AS-REP roasting; the AS arm is counting "
+        f"REQUESTS, not distinct principals (audit F044)"
+    )
+
+
+def test_an_absent_spn_never_becomes_a_distinct_principal():
+    """THE EMPTY-SPN CASE, with rows that DIFFER in every other field.
+
+    My first version used identical rows with an empty endpoint, and a mutation counting empty SPNs
+    as distinct was MISSED -- because the empty string entered a SET, so N identical empty values
+    still counted as ONE and the assertion could not tell. The rows here differ in request_type-adjacent
+    detail, so the only way to reach the threshold is to treat "no service" as a principal.
+    """
+    # THE MIXED WINDOW IS WHERE THE GUARD ACTUALLY BITES, and my first two attempts at this test did
+    # not reach it. Identical empty rows collapse to a ONE-element set, so counting them changes
+    # nothing -- which is why the mutation kept surviving. The harm is an empty string acting as a
+    # TENTH distinct principal in a window that named only nine real ones, pushing it over a
+    # threshold of ten. That is a real false positive built entirely from absent data.
+    real = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": f"svc{i}/h.example.com"}
+            for i in range(attack.KERB_MIN_SPNS - 1)]        # 9 distinct, one under the bar
+    blank = [{"kind": "zeek_kerberos", "operation": "TGS", "endpoint": "", "uuid": f"u{i}"}
+             for i in range(50)]                             # 50 rows with no service at all
+
+    under = {m.technique.id for m in attack.map_zeek_techniques(real)}
+    assert "T1558" not in under, "the 9-SPN fixture already trips the rule, so this proves nothing"
+
+    ids = {m.technique.id for m in attack.map_zeek_techniques(real + blank)}
+    assert "T1558" not in ids, (
+        f"{attack.KERB_MIN_SPNS - 1} distinct real SPNs plus 50 rows with NO service principal raised "
+        f"Kerberoasting. The empty string is being counted as a distinct principal, so an absent "
+        f"service field supplies the tenth 'principal' and manufactures the signal"
+    )
+
+
+def test_an_absent_AS_principal_never_becomes_a_distinct_one():
+    """The AS arm's version of the mixed window, which the TGS test cannot cover.
+
+    Same shape as the TGS case: nine real principals, one under the bar, plus rows with no service at
+    all. Counting the empty string pushes the AS arm over its threshold on absent data.
+    """
+    real = [{"kind": "zeek_kerberos", "operation": "AS", "endpoint": f"user{i}@corp.local"}
+            for i in range(attack.KERB_MIN_SPNS - 1)]
+    blank = [{"kind": "zeek_kerberos", "operation": "AS", "endpoint": "", "uuid": f"u{i}"}
+             for i in range(50)]
+
+    under = {m.technique.id for m in attack.map_zeek_techniques(real)}
+    assert "T1558" not in under, "the 9-principal AS fixture already trips the rule"
+
+    ids = {m.technique.id for m in attack.map_zeek_techniques(real + blank)}
+    assert "T1558" not in ids, (
+        f"{attack.KERB_MIN_SPNS - 1} distinct AS principals plus 50 rows with NO service raised "
+        f"AS-REP roasting; the empty string is being counted as a principal on the AS arm too"
+    )
