@@ -617,6 +617,38 @@ cat <<EOF
 
 ───────────────────────────────────────────────────────────────────────────────
  Weirvern is up.
+EOF
+
+# ── bringing it ONLINE ────────────────────────────────────────────────────────────────────────
+#
+# Everything above gets the software running. This decides what it DOES -- which is the difference
+# between an installed system and one that is doing what the operator wanted. It asks three
+# questions, each answerable with Enter, and writes each answer to the cluster ConfigMap so it
+# survives the next apply.
+SELECTIONS_SELF="$PROJECT_DIR/scripts/install_selections.sh"
+if [ -f "$SELECTIONS_SELF" ]; then
+    # shellcheck source=/dev/null
+    . "$SELECTIONS_SELF"
+    export PROJECT_DIR NAMESPACE ZEEK_IFACE MGMT_IFACE
+    SELECTIONS_ASSUME_YES="$ASSUME_YES"
+    export SELECTIONS_ASSUME_YES
+    run_selections
+    log "Applying your choices"
+    if kubectl apply -k k8s/ >/dev/null 2>&1; then
+        ok "ConfigMap applied; the worker picks the changes up on its next cycle"
+    else
+        warn "could not apply the manifests -- the choices are written but not yet active"
+        warn "run:  kubectl apply -k $PROJECT_DIR/k8s/"
+    fi
+    ok "change any of this later in the GUI's Settings, or by re-running:"
+    ok "  sudo sh $PROJECT_DIR/scripts/install_selections.sh"
+else
+    warn "scripts/install_selections.sh is missing, so the system is running with DEFAULTS:"
+    warn "  passive capture, no exclusions, detections alert but never block."
+    warn "  The GUI's Settings can change all of it."
+fi
+
+cat <<EOF
 
    GUI (sign-in)   http://${NODE_IP}:${NODEPORT}/   (or http://$(hostname):${NODEPORT}/)
    Namespace       kubectl -n ${NAMESPACE} get pods
