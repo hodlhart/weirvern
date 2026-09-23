@@ -514,19 +514,73 @@ class NftBackend(Backend):
         lines += ["  }", "}"]
 
         if inbound:
-            in_v4 = [r.src_cidr for r in inbound if r.src_cidr and ":" not in r.src_cidr]
-            in_v6 = [r.src_cidr for r in inbound if r.src_cidr and ":" in r.src_cidr]
+            # ── THE PORT MUST SURVIVE INTO THE INPUT RULE ─────────────────────────────────────
+            #
+            # MEASURED DEFECT (found by running the shipped path on the live node, 2026-09-23). The
+            # input rule was a bare `ip saddr @in_v4 counter drop`, so an operator who asked to
+            # block ONE PORT from a source had EVERY port from that source dropped. The proof was
+            # decisive rather than suggestive: blocking 127.0.0.1:9473 dropped 9473 AND 9474, and
+            # the compiled ruleset did not contain the port number anywhere (`str(9473) in
+            # ruleset` was False).
+            #
+            # That is the most dangerous shape a gate can have: it does MORE than the operator
+            # asked. A block intended for one service becomes a full-source block on the INPUT
+            # hook, which is where this host's own management and API traffic arrives -- so the
+            # likely outcome is an operator locking themselves out of the box they are defending,
+            # having asked for something far narrower.
+            #
+            # WHY A SET PER (proto, port), like the forward chain: nft's interval sets match
+            # addresses only, so a port cannot be a set member. One set per port keeps the lookup a
+            # hash regardless of how many addresses are in it, which is the same reason the forward
+            # chain compiles that way. A rule with no port applies to the whole source, which is
+            # what "block this source" means and is correct.
+            def _in_split(rs: list[Rule], v6: bool) -> tuple[list[str], dict[tuple[str, int], list[str]]]:
+                plain: list[str] = []
+                by_port: dict[tuple[str, int], list[str]] = {}
+                for r in rs:
+                    if not r.src_cidr or (":" in r.src_cidr) != v6:
+                        continue
+                    if r.dst_port and r.protocol:
+                        by_port.setdefault((r.protocol, r.dst_port), []).append(r.src_cidr)
+                    else:
+                        plain.append(r.src_cidr)
+                return plain, by_port
+
+            in_v4, in_p4 = _in_split(inbound, v6=False)
+            in_v6, in_p6 = _in_split(inbound, v6=True)
+            lines.append(f"table inet {NFT_TABLE_IN} {{")
+            lines.append(_set("in_v4", "ipv4_addr", in_v4))
+            lines.append(_set("in_v6", "ipv6_addr", in_v6))
+            for (proto, port), members in sorted(in_p4.items()):
+                lines.append(_set(f"inport_{proto}_{port}", "ipv4_addr", members))
+            for (proto, port), members in sorted(in_p6.items()):
+                lines.append(_set(f"inport6_{proto}_{port}", "ipv6_addr", members))
             lines += [
-                f"table inet {NFT_TABLE_IN} {{",
-                _set("in_v4", "ipv4_addr", in_v4),
-                _set("in_v6", "ipv6_addr", in_v6),
                 "  chain input {",
                 "    type filter hook input priority -50; policy accept;",
+            ]
+            for proto, port in sorted(in_p4):
+                lines.append(
+                    f"    {proto} dport {port} ip saddr @inport_{proto}_{port} counter drop"
+                )
+            for proto, port in sorted(in_p6):
+                lines.append(
+                    f"    {proto} dport {port} ip6 saddr @inport6_{proto}_{port} counter drop"
+                )
+            lines += [
                 "    ip saddr @in_v4 counter drop",
                 "    ip6 saddr @in_v6 counter drop",
                 "  }",
                 "}",
             ]
+            # ORDER MATTERS, and it is load-bearing: the PORT-SCOPED rules come first, the
+            # whole-source rules last. A port-scoped rule and a whole-source rule for the same
+            # address can coexist (an operator may block a source entirely and one of its ports,
+            # which collapse_networks does not merge because they are different rules), and nft
+            # evaluates in order -- putting the whole-source rule first would drop the narrow
+            # traffic before the narrow rule's counter ever saw it, making the port rule
+            # unobservable while still being enforced. This order keeps every rule's counter
+            # meaningful, which is what the GUI displays.
         return "\n".join(lines) + "\n"
 
     def arm(self, rules: list[Rule], *, iface: str) -> tuple[bool, str]:

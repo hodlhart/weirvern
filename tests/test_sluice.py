@@ -803,3 +803,77 @@ def test_a_disarm_the_backend_could_not_do_is_not_reported_as_disarmed():
         f"a failed disarm reported {state.state!r}; the operator would believe it was removed"
     )
     assert state.detail and "open and no rules are installed" not in state.detail
+
+
+# ── an `in` rule must honor its PORT ───────────────────────────────────────────────────────────
+#
+# MEASURED DEFECT (live node, 2026-09-23). The input chain compiled to a bare
+# `ip saddr @in_v4 counter drop` with no port anywhere in the ruleset. An operator blocking
+# 127.0.0.1:9473 therefore dropped 9473 AND 9474 -- everything from that source arriving at this
+# host -- and the proof was the absence of the literal port in the compiled text, plus a control
+# connection to an unrelated port that also timed out.
+#
+# WHY THIS IS THE WORST SHAPE FOR THIS BUG. The forward chain honoured ports correctly, so a
+# relay rule behaved as asked and hid the problem: only INPUT was affected, and INPUT is where this
+# host's own management, API and SSH traffic arrives. The likely consequence is an operator
+# locking themselves out of the machine they were defending, after asking for something far
+# narrower. It is also the opposite of this project's stated failure bias -- the gate did MORE
+# than the operator asked, silently.
+#
+# These tests assert on the COMPILED TEXT because that is the artifact the kernel receives; a test
+# on Rule.dst_port would pass while the compiler threw it away.
+def _compiled(rules: list[Rule], iface: str = "eth1") -> str:
+    from weirvern.sluice import NftBackend
+
+    return NftBackend()._base_ruleset(rules, iface)
+
+
+def test_an_inbound_rule_with_a_port_compiles_that_port():
+    ruleset = _compiled([live("p1", direction="in", src_cidr="127.0.0.1/32",
+                              protocol="tcp", dst_port=9473)])
+    assert "9473" in ruleset, (
+        "the port an operator asked for is absent from the compiled ruleset, so the rule would "
+        "block every port from that source instead of the one requested"
+    )
+    assert "dport 9473" in ruleset, f"the port is not matched as a destination port:\n{ruleset}"
+
+
+def test_the_inbound_port_rule_carries_its_own_set():
+    """A per-port set, so the address lookup stays a hash rather than a linear walk."""
+    ruleset = _compiled([live("p1", direction="in", src_cidr="198.51.100.9/32",
+                              protocol="tcp", dst_port=9473)])
+    assert "inport_tcp_9473" in ruleset, f"no per-port set for the inbound rule:\n{ruleset}"
+
+
+def test_an_inbound_rule_WITHOUT_a_port_still_blocks_the_whole_source():
+    """The converse: "block this source" must keep meaning the whole source.
+
+    Without this, a fix for the bug above could over-correct into never blocking anything broad.
+    """
+    ruleset = _compiled([live("w1", direction="in", src_cidr="198.51.100.9/32")])
+    input_part = ruleset.split("weirvern_sluice_in")[-1]
+    assert "ip saddr @in_v4 counter drop" in input_part, (
+        f"a port-less inbound rule no longer drops the whole source:\n{input_part}"
+    )
+
+
+def test_inbound_port_rules_precede_the_whole_source_rules():
+    """ORDER IS LOAD-BEARING, which is why it is asserted rather than assumed.
+
+    nft evaluates in order. A port-scoped rule for an address and a whole-source rule for the same
+    address can coexist, and if the whole-source rule came first it would drop the narrow traffic
+    before the narrow rule's counter saw any of it -- the port rule would be enforced but
+    permanently unobservable, and the GUI would show 0 packets for a rule that is working.
+    """
+    ruleset = _compiled([
+        live("w1", direction="in", src_cidr="198.51.100.9/32"),
+        live("p1", direction="in", src_cidr="198.51.100.9/32", protocol="tcp", dst_port=9473),
+    ])
+    input_part = ruleset.split("weirvern_sluice_in")[-1]
+    port_at = input_part.find("dport 9473")
+    whole_at = input_part.find("ip saddr @in_v4 counter drop")
+    assert port_at != -1 and whole_at != -1, f"both rules should be present:\n{input_part}"
+    assert port_at < whole_at, (
+        "the whole-source drop precedes the port-scoped drop, so the port rule can never count "
+        f"a packet and the GUI would report zero for a working rule:\n{input_part}"
+    )
