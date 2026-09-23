@@ -17,9 +17,12 @@ GitHub's overlayfs (inode reused). Never assert inode differences here.
 import contextlib
 import json
 import os
+import pathlib
 import tempfile
 import threading
 import time
+
+import pytest
 
 from weirvern.ingester import (
     TailState,
@@ -29,6 +32,12 @@ from weirvern.ingester import (
     tail_and_insert,
     tail_forever,
 )
+
+
+def _tail_state_path_for(p):
+    """The checkpoint path the product would use for `p`, resolved the same way it resolves it."""
+    from weirvern.ingester import _tail_state_path
+    return _tail_state_path(str(p))
 
 
 class FakeCH:
@@ -638,6 +647,25 @@ def _flow_row(i: int) -> str:
     })
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_tail_state(tmp_path_factory, monkeypatch):
+    """Point the checkpoint at a per-test directory.
+
+    THE CHECKPOINT DOES NOT LIVE BESIDE THE TAILED FILE (measured: the deployed worker mounts the
+    flow directory READ-ONLY, so a checkpoint written there silently failed on every restart). It
+    resolves through `TAIL_STATE_DIR`, defaulting to `/models`, so these tests must redirect it or
+    they would write into the real deployment's model volume.
+
+    THIS FIXTURE IS ALSO THE REASON THE BUG SURVIVED ITS FIRST TESTS: `tmp_path` is always
+    writable, so a checkpoint written beside the file works perfectly in a test and fails on the
+    live cluster. See `test_a_read_only_data_mount_still_checkpoints_somewhere_writable` below,
+    which is the test that would have caught it.
+    """
+    d = tmp_path_factory.mktemp("tailstate")
+    monkeypatch.setenv("TAIL_STATE_DIR", str(d))
+    return d
+
+
 class _CountingClient:
     """Counts inserts. The product only needs `insert` and `query` to exist."""
 
@@ -726,7 +754,7 @@ def test_a_corrupt_cursor_file_is_ignored_not_fatal(tmp_path):
     """A truncated or hand-edited checkpoint must cost a re-read, never a crash: the cursor is an
     optimisation, and ingestion must not depend on it being readable."""
     f = _jsonl(tmp_path)
-    (tmp_path / "flows.jsonl.tailstate").write_text("{ this is not json")
+    pathlib.Path(_tail_state_path_for(f)).write_text("{ this is not json")
     assert load_tail_state(str(f)).offset == 0
 
 
@@ -735,7 +763,7 @@ def test_an_impossible_cursor_is_ignored(tmp_path):
     or seeks backwards, and neither is what the checkpoint meant."""
     f = _jsonl(tmp_path)
     for bad in ('{"offset": -5, "inode": 1}', '{"inode": 1}', "{}", "[]", "null"):
-        (tmp_path / "flows.jsonl.tailstate").write_text(bad)
+        pathlib.Path(_tail_state_path_for(f)).write_text(bad)
         assert load_tail_state(str(f)).offset == 0, f"accepted a cursor from {bad!r}"
 
 
@@ -826,9 +854,11 @@ def test_TAIL_FOREVER_checkpoints_and_a_RESTART_does_not_re_ingest(tmp_path):
 
     first = _run_tail_forever(f)
     assert first.inserts > 0, "the first run ingested nothing, so this proves nothing"
-    assert (tmp_path / "flows.jsonl.tailstate").exists(), (
-        "tail_forever ran but wrote no checkpoint, so a restart has nothing to resume from -- "
-        "this is audit F018 exactly"
+    from weirvern.ingester import _tail_state_path
+    cp = pathlib.Path(_tail_state_path(str(f)))
+    assert cp.exists(), (
+        f"tail_forever ran but wrote no checkpoint at {cp}, so a restart has nothing to resume "
+        f"from -- this is audit F018 exactly"
     )
 
     # A RESTART: a brand-new loop over the same, unchanged file.
@@ -866,3 +896,103 @@ def test_a_cursor_for_a_DELETED_file_is_discarded(tmp_path):
         "a cursor survived the deletion of the file it described, so it would be applied to "
         "whatever is written at that path next"
     )
+
+
+# ── THE CHECKPOINT MUST SURVIVE A READ-ONLY DATA MOUNT ───────────────────────────────────────
+#
+# THE TEST THAT WAS MISSING, and the reason the fix was inert in production while every other test
+# passed. The first version of `_tail_state_path` returned `path + ".tailstate"` -- beside the
+# tailed file -- which is the obvious choice and is wrong for the deployed worker, whose flow
+# directory is mounted READ-ONLY on purpose (it belongs to the host and is shared with whatever
+# writes it). Deployed to the live cluster and restarted, the log said:
+#
+#     Ingested 1086 flow records from /data/flows.jsonl (offset 1059787)
+#     Could not checkpoint the tail cursor for /data/flows.jsonl: [Errno 30] Read-only file system
+#
+# So the cursor never saved, and every restart still re-read the whole file: the defect the fix
+# was written for, entirely unaddressed in the only environment that matters.
+#
+# `tmp_path` is ALWAYS WRITABLE, which is exactly why no test caught it. These tests are not
+# allowed to assume that.
+
+def test_a_READ_ONLY_data_dir_still_checkpoints_somewhere_writable(tmp_path, monkeypatch):
+    """THE REGRESSION. Tailing from a read-only directory must still persist a cursor.
+
+    The mode bits are set on the fixture directory rather than mocked, so this fails if the
+    product ever tries to write beside the tailed file again.
+    """
+    ro = tmp_path / "data"
+    ro.mkdir()
+    f = ro / "flows.jsonl"
+    f.write_text("\n".join(_flow_row(i) for i in range(6)) + "\n")
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("TAIL_STATE_DIR", str(state_dir))
+
+    # ACTUALLY MAKE IT READ-ONLY. The first version of this test asserted `not os.access(...)`
+    # without ever calling chmod, so the assertion failed on a directory it had left writable --
+    # the test was asserting a property of the fixture it had not established.
+    ro.chmod(0o555)
+    try:
+        assert not os.access(ro, os.W_OK), (
+            "the fixture directory is writable, so this test cannot prove anything about a "
+            "read-only mount"
+        )
+
+        save_tail_state(str(f), TailState(offset=200, inode=7))
+        cp = pathlib.Path(_tail_state_path_for(f))
+        assert cp.exists(), (
+            f"no checkpoint at {cp}. A checkpoint written beside the tailed file cannot be created "
+            f"under a read-only mount, which is how the deployed worker mounts its flow directory"
+        )
+        assert state_dir in cp.parents, f"the checkpoint landed outside the writable state dir: {cp}"
+    finally:
+        # Leave the fixture removable by pytest's cleanup.
+        ro.chmod(0o755)
+
+
+def test_the_checkpoint_PATH_is_not_beside_the_tailed_file(tmp_path, monkeypatch):
+    """Naming the rule directly, because the mistake is a one-line change anyone would re-make.
+
+    `path + ".tailstate"` reads as obviously correct and is wrong here.
+    """
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    f = "/data/flows.jsonl"
+    cp = _tail_state_path_for(f)
+    assert cp != f + ".tailstate", (
+        "the checkpoint is beside the tailed file again. That directory is mounted read-only in "
+        "the deployed worker, so the cursor silently never saves and every restart re-reads the "
+        "whole log"
+    )
+    assert cp.startswith(str(tmp_path / "state")), cp
+
+
+def test_two_tailed_files_get_DIFFERENT_cursors(tmp_path, monkeypatch):
+    """A flat state directory needs distinct names, or two tailed files (the NetFlow JSONL and
+    each Zeek log) would overwrite each other's position and one of them would re-read forever."""
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    a = _tail_state_path_for("/data/flows.jsonl")
+    b = _tail_state_path_for("/zeek/logs/conn.log")
+    assert a != b, f"two tailed files share a cursor: {a!r}"
+    assert "flows.jsonl" in pathlib.Path(a).name, f"the name is not recognisable: {a!r}"
+
+
+def test_the_state_DIR_is_configurable(tmp_path, monkeypatch):
+    """An operator must be able to move the checkpoint without a code change, and the default is
+    `/models` (a writable persistent volume) rather than the read-only data mount."""
+    custom = tmp_path / "elsewhere"
+    monkeypatch.setenv("TAIL_STATE_DIR", str(custom))
+    cp = _tail_state_path_for("/data/flows.jsonl")
+    assert cp.startswith(str(custom)), cp
+
+    monkeypatch.delenv("TAIL_STATE_DIR")
+    from weirvern.ingester import DEFAULT_TAIL_STATE_DIR
+    assert DEFAULT_TAIL_STATE_DIR == "/models", (
+        f"the default checkpoint location is {DEFAULT_TAIL_STATE_DIR!r}, which must be a writable "
+        f"persistent path. /data and /zeek/logs are mounted read-only in the deployed worker, so "
+        f"checkpointing beside a tailed file silently fails there"
+    )
+    # And when that directory is genuinely usable, it is what gets used. Asserted on the resolved
+    # path only in that case, because on a dev box without /models the code deliberately falls
+    # back rather than refusing to ingest.
+    if os.path.isdir(DEFAULT_TAIL_STATE_DIR) and os.access(DEFAULT_TAIL_STATE_DIR, os.W_OK):
+        assert _tail_state_path_for("/data/flows.jsonl").startswith(DEFAULT_TAIL_STATE_DIR)

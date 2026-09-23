@@ -83,6 +83,17 @@ data:
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
 
+  # ── Tail cursor checkpoints ────────────────────────────────────────────────
+  # Where the ingester records how far it has read each tailed log, so a restart
+  # resumes instead of re-reading the file from the beginning and duplicating
+  # every row into `flows` (which the detectors then baseline against).
+  #
+  # `/models` and NOT the tailed file's own directory: /data and /zeek/logs are
+  # mounted READ-ONLY here by design, so a cursor written beside the log silently
+  # fails to save and the restart re-reads everything. The models volume is the
+  # one writable PERSISTENT mount the worker already has.
+  TAIL_STATE_DIR: "/models"
+
   # ── Reverse DNS (display names in the GUI) ─────────────────────────────────
   # How the web UI labels addresses. Read by the GUI process at startup (it does the
   # lookups), so a change restarts deploy/weirvern-gui.

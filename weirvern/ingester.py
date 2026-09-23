@@ -1717,13 +1717,52 @@ def _exporter_permitted(addr: object, allowed: list | None) -> bool:
     return any(parsed in net for net in allowed if parsed.version == net.version)
 
 
+# Where tail cursors are checkpointed when `TAIL_STATE_DIR` is unset.
+#
+# `/models` because it is the one writable PERSISTENT volume the worker already mounts -- the
+# checkpoint has to outlive a restart to be worth writing at all, and `/data` and `/zeek/logs` are
+# both read-only by design.
+DEFAULT_TAIL_STATE_DIR = "/models"
+
+
 def _tail_state_path(path: str) -> str:
     """Where the cursor for `path` is checkpointed.
 
-    Kept NEXT TO the file it describes rather than in a fixed location, so two tailed files (the
-    NetFlow JSONL and each Zeek log) get separate cursors without a registry to keep in sync.
+    ── NOT BESIDE THE TAILED FILE, AND THAT WAS MEASURED THE HARD WAY ─────────────────────────
+
+    The first version of this returned `path + ".tailstate"`, which is the obvious choice and is
+    WRONG IN THE DEPLOYED CONFIGURATION. The worker mounts the flow directory READ-ONLY, on
+    purpose: it is the host's, shared with whatever writes it, and the worker has no business
+    writing into it. Deployed to the live cluster and restarted, the log said exactly what the
+    tests could never have shown:
+
+        Ingested 1086 flow records from /data/flows.jsonl (offset 1059787)
+        Could not checkpoint the tail cursor for /data/flows.jsonl: [Errno 30] Read-only file
+        system: '/data/flows.jsonl.tailstate.tmp'
+
+    So the cursor kept failing to save and every restart still re-read the whole file -- the fix
+    was inert in production while its unit tests passed, because a tmp_path is always writable.
+
+    The checkpoint therefore lives in a directory the process OWNS and that survives a restart,
+    chosen by env var so an operator can move it without a code change:
+    `TAIL_STATE_DIR`, defaulting to `/models` (a writable persistent volume shared with the model
+    artifacts). The FILENAME is derived from the tailed path so two tailed files (the NetFlow JSONL
+    and each Zeek log) get separate cursors without a registry to keep in sync -- a flat directory
+    still needs distinct names, and a hash would not be readable when debugging.
+
+    A caller that cannot write anywhere still works: `save_tail_state` logs and carries on, which
+    degrades to the old behaviour rather than breaking ingestion.
     """
-    return path + ".tailstate"
+    state_dir = os.environ.get("TAIL_STATE_DIR") or DEFAULT_TAIL_STATE_DIR
+    try:
+        pathlib.Path(state_dir).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Fall back to the tailed file's own directory: on a writable mount that is the natural
+        # place, and on a read-only one the save will fail softly and log why.
+        state_dir = os.path.dirname(path) or "."
+    # Keep the name recognisable while making it safe as a flat filename.
+    safe = path.strip("/").replace("/", "_")
+    return os.path.join(state_dir, f"{safe}.tailstate")
 
 
 def load_tail_state(path: str) -> TailState:
