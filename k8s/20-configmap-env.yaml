@@ -63,6 +63,21 @@ data:
   #
   # List what this node actually has, and get a verdict, with:
   #     weirvern interfaces --node <sensor-node>
+  #
+  # ── THESE ARE PLACEHOLDERS, AND NOTHING DETECTS THAT ────────────────────────────────────────
+  #
+  # eth1/eth0 are the conventional Ubuntu names, not a discovery. On a node whose NICs are
+  # ens18/ens19 (the common Proxmox/KVM shape) these names DO NOT EXIST, and the sensor refuses
+  # to start: "FATAL: interface 'eth1' does not exist on this node", CrashLoopBackOff.
+  #
+  # The installer replaces them with the interfaces it detected -- by WRITING THIS FILE, so the
+  # file is authoritative after an install, and `kubectl apply -k k8s/` from an un-installed
+  # checkout puts the placeholders back. That revert happened here during testing and took the
+  # sensor down. MEASURED, not hypothetical. If that happens, restore the real names:
+  #
+  #     kubectl -n weirvern patch cm weirvern-env --type merge \
+  #       -p '{"data":{"ZEEK_IFACE":"<capture>","MGMT_IFACE":"<mgmt>"}}'
+  #     kubectl -n weirvern rollout restart ds/zeek
   ZEEK_IFACE: "eth1"
   MGMT_IFACE: "eth0"
   ZEEK_LOG_DIR: "/zeek/logs"

@@ -222,10 +222,42 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     NAMESPACE="${NAMESPACE:-weirvern}"
     [ "$(id -u)" = "0" ] || die "run as root: it rewrites the cluster ConfigMap"
     run_selections
-    log "Applying"
+    log "Applying your choices"
+    # ── THE APPLY MUST NOT REVERT THE INTERFACES ─────────────────────────────────────────────
+    #
+    # MEASURED HAZARD, and it is easy to walk into. `k8s/20-configmap-env.yaml` ships PLACEHOLDER
+    # interfaces (eth1/eth0). The installer replaces them with what the node actually has
+    # (ens19/ens18 here) by writing the file, so the file is authoritative AFTER an install --
+    # but a plain `kubectl apply -k k8s/` on a checkout where that write did not happen puts the
+    # placeholders back. Measured: the zeek DaemonSet went CrashLoopBackOff with
+    # "FATAL: interface 'eth1' does not exist on this node" after exactly that.
+    #
+    # So read the LIVE values first and re-assert them after the apply. A config that is working
+    # must not be downgraded by a command whose purpose was to apply a different setting.
+    LIVE_IFACE="$(kubectl -n "${NAMESPACE:-weirvern}" get cm weirvern-env \
+        -o jsonpath='{.data.ZEEK_IFACE}' 2>/dev/null || true)"
+    LIVE_MGMT="$(kubectl -n "${NAMESPACE:-weirvern}" get cm weirvern-env \
+        -o jsonpath='{.data.MGMT_IFACE}' 2>/dev/null || true)"
     if kubectl apply -k "$PROJECT_DIR/k8s/" >/dev/null 2>&1; then
         ok "manifests applied; the ConfigMap change is now live"
-        ok "the worker picks up settings changes on its next cycle (within ~5 minutes)"
+        # Re-assert the interfaces the node is actually running on, and VERIFY the result rather
+        # than trusting the patch to have taken.
+        if [ -n "$LIVE_IFACE" ] && [ "$LIVE_IFACE" != "eth1" ]; then
+            kubectl -n "${NAMESPACE:-weirvern}" patch cm weirvern-env --type merge \
+                -p "{\"data\":{\"ZEEK_IFACE\":\"$LIVE_IFACE\",\"MGMT_IFACE\":\"$LIVE_MGMT\"}}" \
+                >/dev/null 2>&1 || true
+            NOW_IFACE="$(kubectl -n "${NAMESPACE:-weirvern}" get cm weirvern-env \
+                -o jsonpath='{.data.ZEEK_IFACE}' 2>/dev/null || true)"
+            if [ "$NOW_IFACE" = "$LIVE_IFACE" ]; then
+                ok "kept the live capture interface ($LIVE_IFACE); the manifest placeholders did not take"
+            else
+                warn "the capture interface is now '$NOW_IFACE' but the sensor was running on '$LIVE_IFACE'."
+                warn "  The sensor will fail to start on a placeholder interface. Fix with:"
+                warn "    kubectl -n ${NAMESPACE:-weirvern} patch cm weirvern-env --type merge -p '{\"data\":{\"ZEEK_IFACE\":\"$LIVE_IFACE\",\"MGMT_IFACE\":\"$LIVE_MGMT\"}}'"
+                warn "    kubectl -n ${NAMESPACE:-weirvern} rollout restart ds/zeek"
+            fi
+        fi
+        ok "the worker picks settings changes up on its next cycle (within ~5 minutes)"
     else
         warn "could not apply the manifests -- the ConfigMap is written but not yet active"
         warn "run: kubectl apply -k $PROJECT_DIR/k8s/"
