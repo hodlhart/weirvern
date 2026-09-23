@@ -254,15 +254,27 @@ def load_or_train(client: Client, detectors, settings,
 
     end_dt, start_dt = datetime.now(), datetime.now() - timedelta(hours=settings.retrain_window_h)
     trained_any = False
+    # WHICH detectors actually trained, tracked as we go. `_record_model_metadata` writes a
+    # TRAINING-HISTORY row, and the health probe counts those rows -- so writing one for a detector
+    # that did not train is a false claim about the pipeline (audit F023, confirmed live). The list
+    # is built from the real return values rather than inferred later from `trained_at`, because
+    # that inference is the same guess that produced the defect.
+    trained: list = []
     if if_model.train(start_dt, end_dt, client) and if_model.X_train_unscaled is not None:
         gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client)
+        # The GB teacher is fitted from IF's own labels, so it counts as trained only when IF
+        # produced them -- which the enclosing condition has just established.
+        trained.extend([if_model, gb_model])
         trained_any = True
     if db_model.train(start_dt, end_dt, client):
+        trained.append(db_model)
         trained_any = True
     if bl_model.train(start_dt, end_dt, client):
+        trained.append(bl_model)
         trained_any = True
         bl_model.persist_history(client, settings.retrain_window_h)
-    _record_model_metadata(client, detectors)
+    if trained:
+        _record_model_metadata(client, trained)
 
     if not trained_any:
         logger.warning(
@@ -334,19 +346,25 @@ def train_if_due(
         logger.info("🔄 Full retrain (window %dh)", settings.retrain_window_h)
         if_model, gb_model, db_model, bl_model = detectors
         trained_any = False
+        # Same rule as the cold start: record history ONLY for what trained (audit F023).
+        trained: list = []
         if if_model.train(start_dt, end_dt, client):
             trained_any = True
+            trained.append(if_model)
             if if_model.X_train_unscaled is not None:
                 gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client)
+                trained.append(gb_model)
         if db_model.train(start_dt, end_dt, client):
             trained_any = True
+            trained.append(db_model)
         if bl_model.train(start_dt, end_dt, client):
             trained_any = True
+            trained.append(bl_model)
             bl_model.persist_history(client, settings.retrain_window_h)
         if not trained_any:
             logger.warning("Full retrain produced nothing (insufficient data) — will retry next cycle")
             return last_full_train
-        _record_model_metadata(client, detectors)
+        _record_model_metadata(client, trained)
         return now
 
     # Fast baseline refresh (legacy: every 5-min cycle, 1-day window).
@@ -359,6 +377,26 @@ def train_if_due(
 
 
 def _record_model_metadata(client: Client, detectors) -> None:
+    """Record training history for the detectors that ACTUALLY TRAINED.
+
+    ── A ROW FOR A DETECTOR THAT DID NOT TRAIN IS A FALSE CLAIM ──────────────────────────────
+    #
+    # CONFIRMED DEFECT (audit F023). This wrote a metadata row for every detector it was handed,
+    # and both call sites hand it the whole list. So a detector whose `train()` returned False
+    # still got a `ml_models` row -- and that row is what the health probe counts:
+    #
+    #     models  ok=True  "4 detector(s) with training history"
+    #
+    # MEASURED on the live cluster: every detector's last training was 27.2 HOURS old against
+    # RETRAIN_EVERY_H=6, and the probe still reported ok because it only counts rows (see F024).
+    # Together those two make a pipeline that is not training look healthy, so the honest fix
+    # starts here: do not write the row in the first place.
+    #
+    # `trained_at` is set by each detector's own `train()`, so a detector that did not train
+    # carries a STALE or absent one. Rather than trust that, the call site passes only the
+    # detectors that returned True -- this function cannot know otherwise, and guessing from
+    # `trained_at` would reintroduce the same defect one level down.
+    """
     for d in detectors:
         try:
             client.insert(

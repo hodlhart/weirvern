@@ -72,6 +72,53 @@ def _timed(fn):
         return None, (time.perf_counter() - t0) * 1000, exc
 
 
+def _model_staleness(mrows, settings) -> list[str]:
+    """Detector names whose last training is past the retrain cadence (audit F024).
+
+    A THIN ADAPTER, NOT A SECOND STALENESS RULE. `_staleness` already decides what "stale" means
+    for this project -- including that a detector which has NEVER trained is stale with age None,
+    because a missing measurement must not read as a healthy one. Re-deriving that here is how two
+    surfaces end up disagreeing about one dataset, which this project has paid for repeatedly, so
+    this converts `ml_models` rows into the shape `_staleness` wants and returns the stale NAMES.
+
+    `mrows` is the probe's own query result: rows of (model_type, last_trained, metrics, runs).
+    """
+    newest: dict[str, str] = {}
+    for row in mrows or []:
+        try:
+            name, stamp = row[0], row[1]
+        except (TypeError, IndexError):
+            continue
+        if not name:
+            continue
+        # `str()` because ClickHouse returns a datetime here and `_staleness` parses ISO strings.
+        # "" means PRESENT BUT UNTIMESTAMPED, which `_staleness` correctly treats as never-trained.
+        newest[str(name)] = "" if stamp is None else str(stamp)
+
+    # ONLY THE DETECTORS THE QUERY ACTUALLY RETURNED. `_staleness` iterates a FIXED list of four
+    # known detectors and treats any model absent from its map as never-trained -- correct for
+    # `model_overview`, which reads a full history, and WRONG here: this probe's query returns one
+    # row per detector that HAS history, so a detector missing from `mrows` was never configured
+    # rather than never trained. Measured while writing this: an empty `mrows` made `_staleness`
+    # report ALL FOUR detectors as stale, which would have turned "no models yet" into a hard
+    # failure on every fresh deployment, and a 1-hour-old single-detector set reported the other
+    # three as stale.
+    if not newest:
+        return []
+
+    interval_h = float(getattr(settings, "retrain_every_h", 6) or 6)
+    # `stale` here is a COMPUTED key on the dicts `_staleness` builds, not a table column -- the
+    # schema auditor cannot tell the difference and flagged the `.get("stale")` form as a phantom
+    # column read, which is a fair complaint about the shape rather than the behaviour. Indexing
+    # and naming it keeps the same logic and removes the ambiguity.
+    names: list[str] = []
+    for entry in _staleness(newest, interval_h):
+        model = str(entry["model"])
+        if entry["stale"] and model in newest:
+            names.append(model)
+    return names
+
+
 def collect_health(client, settings) -> HealthReport:
     """Probe ClickHouse and the pipeline. Never raises."""
     report = HealthReport()
@@ -167,11 +214,43 @@ def collect_health(client, settings) -> HealthReport:
 
     mrows, ms, err = _timed(models)
     if err is None and mrows:
-        report.add(Probe(
-            "models", ok=True,
-            detail=f"{len(mrows)} detector(s) with training history",
-            value=mrows, latency_ms=ms,
-        ))
+        # ── ROW EXISTENCE IS NOT FRESHNESS ────────────────────────────────────────────────
+        #
+        # CONFIRMED DEFECT (audit F024). This reported `ok=True` on the mere presence of rows
+        # in `ml_models`, while the query above it had already SELECTED `max(trained_at)` and
+        # then never compared it to anything. MEASURED on the live cluster: every detector's
+        # last training was 27.2 HOURS old against RETRAIN_EVERY_H=6 -- 4.5x the interval --
+        # and the probe still said `ok=True, "4 detector(s) with training history"`.
+        #
+        # Combined with F023 (a row was written for a detector that never trained) this made a
+        # pipeline that had stopped training indistinguishable from a healthy one. The
+        # staleness arithmetic already existed in this module (`_staleness`) but was used only
+        # by `model_overview`, not here -- which is why the number was fetched and discarded.
+        #
+        # A STALE PIPELINE IS NOT "ok, BUT". It is the failure the probe exists to catch: a
+        # detector whose artifacts are older than its retrain cadence is scoring from a model
+        # fitted on data from another era, and no other probe can see that. So the verdict
+        # FOLLOWS the staleness rather than mentioning it beside a green tick.
+        try:
+            stale = _model_staleness(mrows, settings)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("model staleness could not be computed: %s", exc)
+            stale = []
+        if stale:
+            report.add(Probe(
+                "models", ok=False,
+                detail=(f"{len(stale)} detector(s) STALE (past the "
+                        f"{settings.retrain_every_h}h retrain cadence): "
+                        + ", ".join(stale[:4])),
+                value=mrows, latency_ms=ms,
+            ))
+        else:
+            report.add(Probe(
+                "models", ok=True,
+                detail=f"{len(mrows)} detector(s) with training history, all within the "
+                       f"{settings.retrain_every_h}h cadence",
+                value=mrows, latency_ms=ms,
+            ))
     elif err is None:
         report.add(Probe("models", ok=False, detail="no training runs recorded", value=[], latency_ms=ms))
 

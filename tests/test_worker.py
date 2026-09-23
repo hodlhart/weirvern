@@ -538,3 +538,94 @@ def test_the_bucket_constant_matches_the_SCHEMA():
         f"AGG_BUCKET_S is {AGG_BUCKET_S} while window_start is toStartOfFiveMinute (300s). "
         f"Change one OR the other, never just this number"
     )
+
+
+# ── A METADATA ROW FOR A DETECTOR THAT DID NOT TRAIN IS A FALSE CLAIM ────────────────────────
+#
+# CONFIRMED DEFECT (audit F023, measured against the live cluster). `_record_model_metadata`
+# writes a TRAINING-HISTORY row, and both call sites handed it the WHOLE detector list
+# unconditionally -- so a detector whose `train()` returned False still got a row. That row is
+# what the health probe counts:
+#
+#     models  ok=True  "4 detector(s) with training history"
+#
+# Combined with F024 (the probe ignored the staleness it selected), a pipeline that had stopped
+# training was indistinguishable from a healthy one. The fix passes only the detectors that
+# returned True; these tests pin that, because a fix with no test is one refactor from returning.
+
+def _metadata_rows_recorded(monkeypatch, train_results):
+    """Run the cold-start train path with the given per-detector train() results, and return the
+    detector NAMES whose metadata was recorded."""
+    import weirvern.db as db
+
+    recorded: list[str] = []
+
+    class _Meta:
+        def to_row(self):
+            return {"model_id": "m", "model_type": "t", "trained_at": 1}
+
+    class _Det:
+        def __init__(self, name, trains):
+            self.name = name
+            self._trains = trains
+            self.metadata = _Meta()
+            self.X_train_unscaled = object()
+
+        def train(self, *a, **k):
+            return self._trains
+
+        def persist_history(self, *a, **k):
+            return None
+
+        def load(self):
+            return False
+
+        def is_ready(self):
+            # `load_or_train` calls this while computing `_oldest_trained_at`, which is the retrain
+            # clock's input. A detector that is not ready contributes nothing to that clock.
+            return True
+
+    detectors = [_Det(n, ok) for n, ok in train_results.items()]
+
+    class _Client:
+        def insert(self, table, rows, column_names=None):
+            if table == "weirvern.ml_models":
+                recorded.append("recorded")
+
+    # The cold-start path needs a client and its own db reads stubbed out.
+    monkeypatch.setattr(db, "fetch_rows_named", lambda *a, **k: ([], []))
+    monkeypatch.setattr(db, "fetch_rows", lambda *a, **k: [])
+    from weirvern import worker as worker_mod
+
+    real = worker_mod._record_model_metadata
+
+    def spy(client, dets):
+        for d in dets:
+            recorded.append(d.name)
+        return real(client, dets)
+
+    monkeypatch.setattr(worker_mod, "_record_model_metadata", spy)
+    worker_mod.load_or_train(_Client(), detectors, Settings(), ModelConfig())
+    return recorded
+
+
+def test_only_detectors_that_TRAINED_get_a_metadata_row(monkeypatch):
+    """THE DEFECT: an untrained detector must not be recorded as having a training history."""
+    names = _metadata_rows_recorded(monkeypatch, {
+        "Isolation Forest": True, "Gradient Boosting": True,
+        "DBSCAN": False, "Adaptive Baseline": True,
+    })
+    assert "DBSCAN" not in names, (
+        "DBSCAN did not train but was recorded. Its row is what makes the health probe report "
+        "'4 detector(s) with training history' for a pipeline that is not training"
+    )
+    assert "Isolation Forest" in names and "Adaptive Baseline" in names
+
+
+def test_NOTHING_that_failed_to_train_is_recorded(monkeypatch):
+    """And when nothing trains, no history is written at all."""
+    names = _metadata_rows_recorded(monkeypatch, {
+        "Isolation Forest": False, "Gradient Boosting": False,
+        "DBSCAN": False, "Adaptive Baseline": False,
+    })
+    assert names == [], f"detectors that all failed to train were recorded: {names}"
