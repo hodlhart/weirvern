@@ -256,8 +256,8 @@
       "severity": "HIGH",
       "area": "Security",
       "title": "The initial admin password is written to pod logs, and the least-privileged Role can read pod logs",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "Verified with kubectl auth can-i against the live cluster: viewer get pods/log -> YES, viewer get configmaps -> NO, operator create/patch configmaps -> YES. The bootstrap admin password was logged at WARNING, so a READ-ONLY account could recover an ADMIN credential. Exposure was bounded (must_change=True, window ends at first sign-in) but it is a privilege escalation of any duration. FIXED: the password now goes to the weirvern-bootstrap ConfigMap, whose audience is exactly the accounts that can already change the deployment; the log says WHERE rather than what. The write is VERIFIED by reading the value back (this failure would otherwise leave an operator with no credential and no error), the payload is piped on stdin so the value never reaches argv (/proc would expose it), and a cluster-less deployment falls back to the log WITH a note that the channel is weaker. install.sh reads the ConfigMap first and the log second, so deployments predating this change still work. 12 tests, mutation-tested 4 ways -- including one that caught my own source-scanning test surviving removal of the actual read-back comparison, which is why the read-back now has a behavioural test that drives it with a wrong value.",
       "report": "k10_security",
       "id": "F029"
     },

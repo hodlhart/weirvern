@@ -906,3 +906,223 @@ def test_the_users_configmap_is_NOT_a_shipped_manifest():
             f"{path.name} references the account store; it is created at runtime and must "
             f"not be declared in a manifest"
         )
+
+
+# ── the bootstrap password must not be readable by a VIEWER ────────────────────────────────────
+#
+# MEASURED DEFECT (triaged from an independent finding, 2026-09-23). `bootstrap()` logged the
+# generated admin password at WARNING. The reasoning was sound -- the log is the only place the
+# value is knowable at creation, and `kubectl logs` is what an operator runs at install time -- but
+# the AUDIENCE was wrong.
+#
+# VERIFIED against the live cluster with `kubectl auth can-i`:
+#
+#     viewer  get pods/log   -> YES     (reading logs is what a viewer does)
+#     viewer  get configmaps -> NO
+#     operator create/patch configmaps -> YES
+#
+# So a read-only account could recover an ADMIN credential. The exposure was bounded -- the account
+# is created with must_change=True, so the window ends at the first sign-in -- but "a viewer can
+# read the admin password" is a privilege escalation of any duration, and the kind that survives
+# review because a log line reading "created the initial admin account" looks like a courtesy.
+#
+# The credential now goes to the `weirvern-bootstrap` ConfigMap, whose audience is exactly the
+# accounts that can already change the deployment.
+def test_the_bootstrap_password_is_not_written_to_the_log_by_default():
+    """The log must not carry the value when the ConfigMap write succeeds."""
+    from weirvern.admin import users as users_mod
+
+    lines: list[str] = []
+
+    class Log:
+        def warning(self, fmt, *args):  # noqa: ANN001, ANN002
+            lines.append(fmt % args if args else fmt)
+
+        info = warning  # type: ignore[assignment]
+
+    class Store:
+        exists = False
+
+        def has_users(self) -> bool:
+            return False
+
+        def create_user(self, *a, **k):  # noqa: ANN002, ANN003
+            return None
+
+    published: dict = {}
+
+    def fake_publish(log, username, password):  # noqa: ANN001, ANN002
+        published["username"] = username
+        published["password"] = password
+
+    real = users_mod._publish_bootstrap_secret
+    users_mod._publish_bootstrap_secret = fake_publish
+    try:
+        result = users_mod.bootstrap(Store(), log=Log())
+    finally:
+        users_mod._publish_bootstrap_secret = real
+
+    assert result.created
+    joined = "\n".join(lines)
+    assert result.password not in joined, (
+        "the bootstrap password appeared in a log line, which the viewer role can read"
+    )
+    assert published.get("password") == result.password, (
+        "the password was never handed to the ConfigMap writer"
+    )
+    assert "weirvern-bootstrap" in joined, (
+        f"the log does not say WHERE the password is, so an operator cannot find it: {joined!r}"
+    )
+
+
+def test_a_deployment_that_cannot_write_the_configmap_still_publishes_somewhere():
+    """The fallback must still reveal the credential, and say the channel is less private.
+
+    A workstation running the GUI locally has no cluster to write to. Losing the password there
+    would lock the operator out of their own instance, so it falls back to the log -- with a note
+    naming the reason, because a reader needs to know the channel is weaker than usual.
+    """
+    from weirvern.admin import users as users_mod
+
+    lines: list[str] = []
+
+    class Log:
+        def warning(self, fmt, *args):  # noqa: ANN001, ANN002
+            lines.append(fmt % args if args else fmt)
+
+        info = warning  # type: ignore[assignment]
+
+    class Store:
+        exists = False
+
+        def has_users(self) -> bool:
+            return False
+
+        def create_user(self, *a, **k):  # noqa: ANN002, ANN003
+            return None
+
+    def boom(log, username, password):  # noqa: ANN001, ANN002
+        raise RuntimeError("no RBAC for configmaps")
+
+    real = users_mod._publish_bootstrap_secret
+    users_mod._publish_bootstrap_secret = boom
+    try:
+        result = users_mod.bootstrap(Store(), log=Log())
+    finally:
+        users_mod._publish_bootstrap_secret = real
+
+    joined = "\n".join(lines)
+    assert result.created
+    assert result.password in joined, (
+        "the fallback did not reveal the password, so an operator on a cluster-less deployment "
+        "is locked out"
+    )
+    assert "viewers" in joined, (
+        "the fallback does not explain that the log is the less private channel"
+    )
+
+
+def test_the_publisher_uses_the_clients_api_not_a_kubectl_subprocess():
+    """The GUI image has no `kubectl`. Measured in the deployed pod:
+
+        FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'
+
+    The first version of this publisher shelled out to it, which on a real deployment fell through
+    to the log -- reintroducing the exact defect the change removes, while looking fixed. The pod
+    DOES write ConfigMaps, through `cluster_config.ClusterConfig`, which is what every settings
+    change already uses.
+    """
+    import inspect
+
+    src = inspect.getsource(users_mod._publish_bootstrap_secret)
+    assert "subprocess" not in src, (
+        "the publisher shells out to a binary; the GUI image ships no kubectl, so on a real "
+        "deployment this fails and falls back to logging the password"
+    )
+    assert "ClusterConfig" in src, "the publisher does not use the existing ConfigMap client"
+
+
+def test_the_publisher_creates_then_falls_back_to_patching(caplog):  # noqa: ANN001
+    """A pre-existing ConfigMap must be REPLACED, not treated as an error.
+
+    The account that exists now is the one whose password must be readable. A stale value would
+    send an operator to a password that no longer works -- and the natural reading, "it already
+    exists, so nothing to do", is how that happens.
+    """
+    from weirvern.admin import users as users_mod
+
+    calls: list[str] = []
+    state: dict = {}
+
+    class FakeCfg:
+        def __init__(self, **kw):  # noqa: ANN003
+            self.cm = kw.get("configmap")
+
+        def create(self, data):  # noqa: ANN001
+            calls.append("create")
+            from weirvern.admin.cluster_config import ConfigError
+
+            raise ConfigError("the ConfigMap 'weirvern-bootstrap' already exists")
+
+        def patch_data(self, data):  # noqa: ANN001
+            calls.append("patch_data")
+            state.update(data)
+
+        def read(self):  # noqa: ANN201
+            return state
+
+    from weirvern.admin import cluster_config
+
+    real = cluster_config.ClusterConfig
+    cluster_config.ClusterConfig = FakeCfg  # type: ignore[assignment]
+    try:
+        users_mod._publish_bootstrap_secret(None, "admin", "pw-123456")
+    finally:
+        cluster_config.ClusterConfig = real  # type: ignore[assignment]
+
+    assert calls == ["create", "patch_data"], (
+        f"the publisher did not fall back to a patch on a pre-existing ConfigMap: {calls}"
+    )
+    assert state.get("password") == "pw-123456"
+
+
+def test_a_write_that_does_not_land_RAISES_rather_than_being_trusted():
+    """THE READ-BACK MUST BE ABLE TO FAIL, proved by driving it.
+
+    Mutation testing showed a source-scanning version of this SURVIVED removing the actual
+    comparison -- a string in the source is not a check that can fail. This drives the publisher
+    with a client that accepts the write and returns the WRONG value, which is the case the
+    read-back exists for: an operator who cannot sign in, with nothing saying why.
+    """
+    from weirvern.admin import users as users_mod
+
+    class FakeCfg:
+        def __init__(self, **kw):  # noqa: ANN003
+            pass
+
+        def create(self, data):  # noqa: ANN001
+            return None
+
+        def patch_data(self, data):  # noqa: ANN001
+            return None
+
+        def read(self):  # noqa: ANN201
+            return {"password": "some-other-value"}
+
+    from weirvern.admin import cluster_config
+
+    real = cluster_config.ClusterConfig
+    cluster_config.ClusterConfig = FakeCfg  # type: ignore[assignment]
+    raised = None
+    try:
+        users_mod._publish_bootstrap_secret(None, "admin", "correct-horse")
+    except Exception as exc:  # noqa: BLE001
+        raised = exc
+    finally:
+        cluster_config.ClusterConfig = real  # type: ignore[assignment]
+
+    assert raised is not None, (
+        "a ConfigMap whose value did not match was accepted, so a failed publish would leave the "
+        "operator with no credential and no error"
+    )
+    assert "correct-horse" not in str(raised), f"the failure message leaked the password: {raised}"

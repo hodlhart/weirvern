@@ -548,11 +548,123 @@ def bootstrap(store: UserStore, log: logging.Logger | None = None) -> BootstrapR
         # Not just UserError: on a cluster-less GUI the create fails for a transport reason,
         # and that is a normal state (a workstation showing local data), not a crash.
         return BootstrapResult(created=False, note=f"could not create the admin account: {exc}")
-    # LOGGED ONCE, AT WARNING: this is the only time the value is knowable, and an operator
-    # reading `kubectl logs` at install time is exactly who needs it.
-    log.warning(
-        "created the initial admin account. username: %s  password: %s"
-        "  -- change it after signing in; it will not be shown again",
-        BOOTSTRAP_USERNAME, password,
-    )
+    # ── WHERE THE PASSWORD IS PUBLISHED, AND WHY NOT THE POD LOG ───────────────────────────────
+    #
+    # MEASURED DEFECT (triaged from an independent finding, 2026-09-23). This used to log the
+    # password at WARNING. The reasoning was sound -- the log is the only place the value is
+    # knowable, and `kubectl logs` is what an operator runs at install time -- but the AUDIENCE was
+    # wrong. `Role/weirvern-viewer` grants `pods/log: get`, and the README hands viewers exactly
+    # that kubeconfig, because reading logs is what a viewer does. So a read-only account could
+    # recover an ADMIN credential.
+    #
+    # The exposure was bounded: the account is created with `must_change=True`, so the password
+    # cannot be used indefinitely, and the window is from first startup until the first sign-in.
+    # But "a viewer can read the admin password" is a privilege escalation whatever its duration,
+    # and it is the kind that would pass a code review because the log line reads like a courtesy.
+    #
+    # SO IT GOES TO A CONFIGMAP INSTEAD, which the roles treat differently: `weirvern-operator`
+    # may read and patch configmaps, and `weirvern-viewer` may not read them at all. The credential
+    # is therefore visible to exactly the accounts that can already change the deployment, which is
+    # the correct audience for a bootstrap secret.
+    #
+    # The log line now says WHERE to look rather than what the value is, so an operator following
+    # the old instructions finds a pointer instead of nothing, and an installer that greps this
+    # message still learns that an account was created.
+    published = False
+    try:
+        _publish_bootstrap_secret(log, BOOTSTRAP_USERNAME, password)
+        published = True
+    except Exception as exc:  # noqa: BLE001
+        # A deployment without the RBAC to write a ConfigMap (a workstation running the GUI
+        # locally) is a normal state, not a failure -- but then the value must still be obtainable,
+        # so fall back to the log AND say that the fallback is the less private channel.
+        log.warning(
+            "created the initial admin account. username: %s  password: %s  -- change it after "
+            "signing in. (Shown here because this deployment cannot write the bootstrap "
+            "ConfigMap: %s. On a cluster deployment the password goes there instead, because "
+            "reading pod logs is granted to viewers.)",
+            BOOTSTRAP_USERNAME, password, type(exc).__name__,
+        )
+        return BootstrapResult(created=True, username=BOOTSTRAP_USERNAME, password=password)
+    if published:
+        log.warning(
+            "created the initial admin account. username: %s  -- the password is in the "
+            "weirvern-bootstrap ConfigMap (kubectl -n %s get cm weirvern-bootstrap -o "
+            "jsonpath='{.data.password}'), which viewers cannot read. Change it after signing in; "
+            "it will not be shown again.",
+            BOOTSTRAP_USERNAME, _namespace(),
+        )
     return BootstrapResult(created=True, username=BOOTSTRAP_USERNAME, password=password)
+
+
+def _namespace() -> str:
+    try:
+        with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return "weirvern"
+
+
+def _publish_bootstrap_secret(log, username: str, password: str) -> None:
+    """Write the bootstrap credential to a ConfigMap, and make sure the write LANDED.
+
+    ── THE FIRST VERSION OF THIS WAS BROKEN, AND ONLY RUNNING IT SHOWED THAT ───────────────────
+    It shelled out to `kubectl apply -f -`. The GUI image does not contain kubectl -- measured in
+    the deployed pod:
+
+        FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'
+
+    The code had a fallback, so it would not have crashed: it would have logged the password
+    instead, which is precisely the defect this change exists to remove. A fix that silently
+    degrades to the thing it is fixing is worse than no fix, because the log line would look like
+    the documented behaviour.
+
+    The pod DOES write ConfigMaps already -- `cluster_config.ClusterConfig` talks to the API
+    directly with the ServiceAccount token, and the GUI uses it for every settings change. That is
+    the mechanism used here, so this path is one the deployment already exercises.
+
+    A ConfigMap rather than a Secret on purpose: the Secret holding the operator token is created
+    out of band and is not writable by this ServiceAccount, and adding write access would let a
+    compromised GUI rotate the credential it authenticates with. The ConfigMap carries one
+    short-lived value, and `weirvern-viewer` has no read on it.
+
+    VERIFIED WITH A READ-BACK rather than trusting the write: this project has been burned by
+    commands that succeeded while the effect did not happen, and here the consequence would be an
+    operator who cannot sign in at all.
+    """
+    from weirvern.admin import cluster_config  # noqa: PLC0415
+
+    cm_name = "weirvern-bootstrap"
+    payload = {
+        "username": username,
+        "password": password,
+        "note": (
+            "the initial admin password. Delete this object once you have signed in and changed "
+            "it. It is here rather than in the pod log because reading pod logs is granted to the "
+            "viewer role."
+        ),
+    }
+    cfg = cluster_config.ClusterConfig(configmap=cm_name)
+    created = False
+    try:
+        cfg.create(payload)
+        created = True
+    except cluster_config.ConfigError as exc:
+        if "already exists" not in str(exc):
+            raise
+    if not created:
+        # A pre-existing object means a previous startup already published a credential, or this
+        # one is being re-run. Replace the data rather than failing: the account that exists NOW is
+        # the one whose password must be readable, and a stale value would send the operator to a
+        # password that no longer works.
+        cfg.patch_data(payload)
+
+    # READ BACK. The write's exit status says the API accepted the request; only a read says the
+    # VALUE is there. Lengths are reported rather than contents, so a mismatch cannot leak the
+    # password into a log while diagnosing why.
+    back = cfg.read()
+    if back.get("password") != password:
+        raise RuntimeError(
+            "the bootstrap ConfigMap did not contain the expected value "
+            f"(read back {len(back.get('password') or '')} chars, expected {len(password)})"
+        )

@@ -598,19 +598,33 @@ else
 fi
 
 log "Admin account"
-# The bootstrap password is LOGGED ONCE, at WARNING, by the GUI pod that created the
-# store -- this is the only moment it exists outside the database. Surfacing it here
-# is the difference between "sign in with the password from the logs" and a support
-# question. It is shown only when the log carries it (a fresh deployment). The full
-# history: `kubectl -n $NAMESPACE logs deploy/weirvern-gui | grep 'initial admin'`.
-ADMIN_LINE=$(kubectl -n "$NAMESPACE" logs deploy/weirvern-gui --tail=4000 2>/dev/null \
-    | grep 'created the initial admin account' | tail -1 || true)
-if [ -n "$ADMIN_LINE" ]; then
+# The bootstrap password is published ONCE, by the GUI pod that created the store -- this is the
+# only moment it exists outside the database. Surfacing it here is the difference between "sign in
+# with the password from the ConfigMap" and a support question.
+#
+# WHERE IT LIVES CHANGED, and this reads the new place first. It used to be the pod log, which
+# looked right and was not: `Role/weirvern-viewer` grants `pods/log: get`, so a READ-ONLY account
+# could recover an admin credential. It now goes to the `weirvern-bootstrap` ConfigMap, which the
+# viewer role cannot read at all.
+#
+# BOTH ARE CHECKED, in that order, because a deployment that started before this change (or one
+# whose ServiceAccount cannot write a ConfigMap) still publishes to the log -- and an installer
+# that only knew the new location would silently show nothing on those.
+ADMIN_PW=$(kubectl -n "$NAMESPACE" get cm weirvern-bootstrap -o jsonpath='{.data.password}' 2>/dev/null || true)
+ADMIN_USER=$(kubectl -n "$NAMESPACE" get cm weirvern-bootstrap -o jsonpath='{.data.username}' 2>/dev/null || true)
+if [ -n "$ADMIN_PW" ]; then
+    echo
+    echo "    username: ${ADMIN_USER:-admin}"
+    echo "    password: $ADMIN_PW"
+    echo "    (shown once; change it after signing in, then delete the ConfigMap:)"
+    echo "      kubectl -n $NAMESPACE delete cm weirvern-bootstrap"
+elif ADMIN_LINE=$(kubectl -n "$NAMESPACE" logs deploy/weirvern-gui --tail=4000 2>/dev/null \
+        | grep 'created the initial admin account' | tail -1) && [ -n "$ADMIN_LINE" ]; then
     echo
     echo "    $(printf '%s' "$ADMIN_LINE" | sed 's/.*username:/username:/')"
-    echo "    (shown once; change it after signing in)"
+    echo "    (from the pod log: this deployment could not write the bootstrap ConfigMap)"
 else
-    ok "no bootstrap password in the log: accounts already exist (sign in with your admin, or use the break-glass token door on the sign-in screen)"
+    ok "no bootstrap password found: accounts already exist (sign in with your admin, or use the break-glass token door on the sign-in screen)"
 fi
 
 cat <<EOF
