@@ -391,8 +391,11 @@ def _build_handler(ctx: GuiContext):
                     # deployment whose schema job has not re-run -- a join would make the
                     # WHOLE anomalies view fail, where this degrades to per-row
                     # "review state unavailable" chips while the alerts still render.
-                    idx, rev_err = status_mod.review_index(client)
-                    status_mod.attach_reviews(rows, idx, rev_err)
+                    idx, rev_err, covered_since = status_mod.review_index(client)
+                    # covered_since is the index's OWN lower bound, so a row older than the
+                    # review window is marked unknowable rather than reading as "unreviewed".
+                    # Without it, an analyst re-triages an alert that was already dispositioned.
+                    status_mod.attach_reviews(rows, idx, rev_err, covered_since)
                     # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
                     # state we could not read would answer "nothing is unreviewed" -- a
                     # confident claim built from a failed query. Better to return the rows

@@ -1695,14 +1695,21 @@ def _parse_stamp(value) -> datetime.datetime | None:
     return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
 
 
-def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None]:
+def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None, datetime.datetime | None]:
     """Reviews keyed by (window_start, src_addr), for merging into anomaly rows.
 
-    Returns (index, error). The error string is the honest "cannot tell": a missing
-    alert_reviews table (schema job has not run yet on an older deployment) must not read
-    as "nothing has been reviewed", so the caller distinguishes the two and the UI renders
-    a distinct chip for each.
+    Returns (index, error, covered_since). The error string is the honest "cannot tell": a missing
+    alert_reviews table (schema job has not run yet on an older deployment) must not read as
+    "nothing has been reviewed", so the caller distinguishes the two and the UI renders a distinct
+    chip for each.
+
+    `covered_since` is the index's OWN lower bound, returned rather than recomputed by the caller.
+    Measured defect: the anomalies query has no time bound while this one reads a 72h window, so an
+    older row found no match and was labelled "unreviewed" -- a false claim about the operator's
+    work. The caller cannot fix that by guessing the window; the window has to come from here, or
+    the two drift apart the next time either changes.
     """
+    covered_since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=hours)
     try:
         res = client.query(
             "SELECT window_start, src_addr, state, note, reviewed_at "
@@ -1720,22 +1727,60 @@ def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None
             # not merged, so a false-positive marking looked like it never saved.
             key = (_parse_stamp(row[0]), row[1])
             idx[key] = {"state": row[2], "note": row[3], "reviewed_at": row[4]}
-        return idx, None
+        return idx, None, covered_since
     except Exception as exc:  # noqa: BLE001
         logger.debug("alert_reviews unavailable: %s", exc)
-        return {}, "review state is unavailable (has the schema job run since this feature deployed?)"
+        return {}, "review state is unavailable (has the schema job run since this feature deployed?)", covered_since
 
 
-def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None) -> list[dict]:
+def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None,
+                   covered_since=None) -> list[dict]:
     """Merge review state onto anomaly dicts, in place. Returns the rows.
 
     Every row gains `review_state` and `review_note` so a consumer never has to
     distinguish a missing key from a null value -- the rule the sensor payload already
     follows. On a read failure every row is marked REVIEW_UNAVAILABLE rather than left
     looking unreviewed.
+
+    ── A ROW OLDER THAN THE REVIEW WINDOW IS NOT "UNREVIEWED" ─────────────────────────────────
+    MEASURED DEFECT (triaged from an independent finding, 2026-09-23). `review_index` reads a
+    BOUNDED window (72h by default) while `anomalies_detailed` has NO time bound -- it returns the
+    newest N rows whatever their age. A row older than the window therefore finds no match in the
+    index and was labelled `review_state: ""`, which reads as "nobody has looked at this".
+
+    That label is a claim about the operator's work, and it can be false: the review may exist and
+    simply fall outside the window. The consequence is an analyst re-triaging an alert that was
+    already dispositioned, and losing trust in the queue when they find the notes elsewhere.
+
+    So a row whose window_start predates the index is marked REVIEW_STATE_UNKNOWN instead. The
+    caller passes `covered_since` -- the index's own lower bound -- so this function never has to
+    guess the window, which is what would let the two drift apart again.
     """
     for row in rows:
-        key = (_parse_stamp(row.get("window_start")), row.get("src_addr"))
+        stamp = _parse_stamp(row.get("window_start"))
+        key = (stamp, row.get("src_addr"))
+        # ── THE COMPARISON MUST BE NAIVE-TO-NAIVE ─────────────────────────────────────────────
+        #
+        # `_parse_stamp` returns a NAIVE datetime (that is what makes the index keys match, see
+        # its own note), while the bound this function is handed is timezone-AWARE. Comparing them
+        # raises TypeError -- and this is the THIRD time this project has hit the same naive/aware
+        # mismatch, so it is handled by normalising rather than by hoping.
+        #
+        # The failure mode if it is not: the exception propagates out of attach_reviews into the
+        # route's handler, which reports "cannot read the anomalies", so a WORKING view looks
+        # broken and the real cause is a comparison in the merge step.
+        bound = covered_since
+        if bound is not None and bound.tzinfo is not None:
+            bound = bound.replace(tzinfo=None)
+        if bound is not None and stamp is not None and stamp < bound:
+            # Older than what the index could possibly contain: unknowable, not unreviewed.
+            row["review_state"] = REVIEW_UNAVAILABLE
+            row["review_note"] = (
+                "older than the review history this view reads, so a review may exist without "
+                "being shown here"
+            )
+            row["reviewed_at"] = None
+            continue
         found = idx.get(key)
         if found is not None:
             row["review_state"] = found["state"]

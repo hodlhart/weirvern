@@ -155,7 +155,7 @@ class _Reader:
 def test_review_index_reads_final_and_keys_by_the_anomaly_pair():
     stamp = datetime.datetime(2026, 9, 20, 10, 5, 0)
     c = _Reader([[stamp, "198.51.100.9", "false_positive", "it is our scanner", stamp]])
-    idx, err = status.review_index(c)
+    idx, err, _since = status.review_index(c)
     assert err is None
     assert idx[(stamp, "198.51.100.9")]["state"] == "false_positive"
     assert "FINAL" in c.query_text.upper(), (
@@ -181,7 +181,7 @@ def test_a_TIMEZONE_AWARE_stamp_merges_with_its_naive_twin():
     naive = datetime.datetime(2026, 9, 20, 10, 5, 0)
 
     # The index, built from what ClickHouse actually returned (aware)...
-    idx, err = status.review_index(_Reader([[aware, "198.51.100.9", "ack", "", aware]]))
+    idx, err, _since = status.review_index(_Reader([[aware, "198.51.100.9", "ack", "", aware]]))
     assert err is None
     # ...must merge onto a row whose value round-tripped as naive (what the API sends
     # the browser, and what the browser sends back).
@@ -197,7 +197,7 @@ def test_a_missing_table_is_unavailable_not_empty():
     """THE THREE-VALUED RULE. 'Cannot read the reviews' must not collapse into
     'nothing has been reviewed' -- the analyst would stop looking for their own
     earlier decisions."""
-    idx, err = status.review_index(_Reader(fail=True))
+    idx, err, _since = status.review_index(_Reader(fail=True))
     assert idx == {}
     assert err and "unavailable" in err
 
@@ -308,3 +308,92 @@ def test_the_harness_covers_the_review_flow():
     assert re.search(r"POSTs the disposition to /api/review", js), (
         "the harness no longer asserts the review request, only the render"
     )
+
+
+# ── a row older than the review window is NOT "unreviewed" ─────────────────────────────────────
+#
+# MEASURED DEFECT (triaged from an independent finding, 2026-09-23). `review_index` reads a BOUNDED
+# window (72h) while `anomalies_detailed` has NO time bound -- it returns the newest N rows whatever
+# their age. So an anomaly older than the window found no match in the index and was labelled
+# review_state="", which the UI renders as "nobody has looked at this".
+#
+# That label is a claim about the OPERATOR'S WORK and it can be false: the review may exist and
+# simply fall outside the window. The consequence is an analyst re-triaging an alert that was
+# already dispositioned, and losing trust in the queue when they later find the notes elsewhere.
+#
+# The bound comes from review_index itself rather than being recomputed by the caller, because two
+# places computing "the window" is how they drift apart.
+def test_a_row_older_than_the_index_is_marked_unknowable_not_unreviewed():
+    import datetime as _dt
+
+    from weirvern.admin import status
+
+    covered_since = _dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=72)
+    old_row = {"window_start": (covered_since - _dt.timedelta(hours=1)).isoformat(),
+               "src_addr": "198.51.100.9"}
+    status.attach_reviews([old_row], {}, None, covered_since)
+    assert old_row["review_state"] == status.REVIEW_UNAVAILABLE, (
+        f"an out-of-window row read as {old_row['review_state']!r}; an empty state means "
+        "'nobody has reviewed this', which may be false"
+    )
+    assert "older than the review history" in old_row["review_note"]
+
+
+def test_a_row_inside_the_window_with_no_review_is_still_plainly_unreviewed():
+    """The converse: the fix must not turn every unreviewed alert into an unknowable one.
+
+    Without this, over-correcting would make the queue useless -- an analyst could never tell which
+    alerts genuinely need attention.
+    """
+    import datetime as _dt
+
+    from weirvern.admin import status
+
+    covered_since = _dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=72)
+    fresh = {"window_start": (covered_since + _dt.timedelta(hours=1)).isoformat(),
+             "src_addr": "198.51.100.9"}
+    status.attach_reviews([fresh], {}, None, covered_since)
+    assert fresh["review_state"] == "", (
+        f"a fresh unreviewed row read as {fresh['review_state']!r}; it should be plainly empty"
+    )
+
+
+def test_a_review_inside_the_window_is_still_merged():
+    """Guards the merge path against the new early-continue."""
+    import datetime as _dt
+
+    from weirvern.admin import status
+
+    covered_since = _dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=72)
+    stamp = covered_since + _dt.timedelta(hours=2)
+    row = {"window_start": stamp.isoformat(), "src_addr": "198.51.100.9"}
+    # Build the key the same way the index does.
+    from weirvern.admin.status import _parse_stamp
+
+    merged = {(_parse_stamp(stamp.isoformat()), "198.51.100.9"):
+              {"state": "ack", "note": "known scanner", "reviewed_at": stamp}}
+    status.attach_reviews([row], merged, None, covered_since)
+    assert row["review_state"] == "ack", f"a matching review was not merged: {row}"
+
+
+def test_the_index_reports_its_own_lower_bound():
+    """The bound must come from the function that applies the WHERE clause.
+
+    A caller that recomputes the window is a second copy of the same fact, and the defect above is
+    exactly what happens when the two disagree.
+    """
+    import datetime as _dt
+
+    from weirvern.admin import status
+
+    class Reader:
+        def query(self, *a, **k):  # noqa: ANN002, ANN003
+            class R:
+                result_rows: list = []
+            return R()
+
+    idx, err, covered_since = status.review_index(Reader(), hours=24)
+    assert err is None
+    assert covered_since is not None, "review_index returned no bound for its own window"
+    age_h = (_dt.datetime.now(_dt.UTC) - covered_since).total_seconds() / 3600
+    assert 23 < age_h < 25, f"the reported bound is {age_h:.1f}h old, expected ~24h"

@@ -58,8 +58,8 @@
       "severity": "HIGH",
       "area": "GUI + API",
       "title": "Review state silently expires after 72 hours: `review_index` is time-bounded, the anomalies list is not",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "The route's review_index reads a 72h window while anomalies_detailed has NO time bound, so an anomaly older than the window found no index match and was labelled review_state='' -- which the UI renders as 'nobody has reviewed this'. That is a claim about the OPERATOR'S WORK and it can be false. Fixed: review_index now returns its own covered_since and attach_reviews marks an out-of-window row REVIEW_UNAVAILABLE with a reason. Four tests, mutation-tested three ways (no guard / no naive-aware normalisation / everything unknowable).",
       "report": "k8_gui",
       "id": "F007"
     },
