@@ -754,3 +754,52 @@ def test_the_downgrade_still_records_the_state_row():
     enforcement_pass(store, _supervisor(), client=object(), sensor="s1", sensor_mode="loch")
     assert len(store.written) == 1
     assert getattr(store.written[0], "state", None) == GATE_STATE_DEGRADED
+
+
+# ── a downgraded deployment must be able to CLEAN UP what it installed ─────────────────────────
+#
+# MEASURED FAILURE (live, after removing the siphon overlay): the gate had installed
+# `table inet weirvern_sluice` on the NODE. Removing the overlay took away hostNetwork and
+# NET_ADMIN, so `choose_backend("nft")` began answering `available() == False` -- and the table it
+# had written stayed on the node with nothing left that could remove it (verified: the worker's
+# backend reported `none`/unavailable, and `nft list tables` still showed the sluice table until it
+# was deleted by hand). It was INERT -- policy accept, empty sets, counters 0/0 -- so nothing broke.
+# But it survived a downgrade the operator believed had undone the feature.
+#
+# The property that makes it recoverable: disarm() must go to the SAME backend that armed, not to
+# a freshly-chosen one. A caller that re-chooses after the privilege is gone gets a backend that
+# can do nothing, and the cleanup silently does not happen.
+def test_disarm_reaches_the_backend_that_installed_the_rules():
+    backend = FakeBackend()
+    sup = SluiceSupervisor(iface="eth1", mgmt_iface="eth0", backend=backend)
+    sup.arm([live("r1")])
+    assert backend.armed_with, "the arm should have reached the backend"
+
+    state = sup.disarm()
+    assert backend.disarmed is True, (
+        "disarm did not reach the backend that installed the rules; a deployment that lost "
+        "NET_ADMIN would leave its nft table on the host with nothing able to remove it"
+    )
+    assert state.state == GATE_STATE_DISARMED
+
+
+def test_a_disarm_the_backend_could_not_do_is_not_reported_as_disarmed():
+    """The report must not claim a success it could not verify.
+
+    Claiming 'disarmed' while a table is still installed is the same class of defect as claiming
+    'armed' while blocking nothing -- and it is the one an operator would act on, since they
+    downgraded precisely to stop the gate touching their network.
+    """
+    # A backend whose disarm genuinely FAILS. FakeBackend.disarm() returns success
+    # regardless of its `ok` flag (that flag governs arm), so it cannot express this case --
+    # using it here would assert against a backend that always claims to have cleaned up.
+    class CannotDisarm(FakeBackend):
+        def disarm(self):
+            return False, "nft is not usable here: the deployment no longer has NET_ADMIN"
+
+    sup = SluiceSupervisor(iface="eth1", mgmt_iface="eth0", backend=CannotDisarm())
+    state = sup.disarm()
+    assert state.state == GATE_STATE_DEGRADED, (
+        f"a failed disarm reported {state.state!r}; the operator would believe it was removed"
+    )
+    assert state.detail and "open and no rules are installed" not in state.detail

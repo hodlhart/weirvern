@@ -69,8 +69,30 @@
 #     NOT resolve `clickhouse.weirvern.svc.cluster.local`. That is a real failure mode and the
 #     one line that prevents it.
 #
-# This is granted ONLY in the siphon overlay. The default `loch` deployment keeps the worker in
+# These are granted ONLY in the siphon overlay. The default `loch` deployment keeps the worker in
 # its own network namespace, where a compromise cannot see the host's interfaces at all.
+#
+# ── REMOVING THIS OVERLAY CAN ORPHAN AN NFT TABLE ON THE NODE ─────────────────────────────
+#
+# MEASURED, and worth knowing before downgrading. With the overlay applied, the Sluice Gate
+# installs `table inet weirvern_sluice` in the NODE's kernel (the worker shares the node's network
+# namespace, so that is unavoidable and intended). Removing the overlay takes away hostNetwork and
+# NET_ADMIN, so `choose_backend("nft")` starts answering unavailable -- and the table stays,
+# because the process that wrote it can no longer reach the kernel to delete it.
+#
+# The orphan is INERT: the chain policy is `accept` and both sets are empty, with counters at
+# 0 packets / 0 bytes. It drops nothing -- verified with the full ruleset in hand and the node
+# forwarding normally. It is untidy rather than dangerous, but an operator who downgrades
+# specifically to stop the gate touching their network will not expect anything left behind.
+#
+# So downgrade in this ORDER: disarm from the GUI (or set SLUICE_ENABLED=0 and let one pass run)
+# BEFORE removing the overlay, while the worker still has the privilege to clean up. If the table
+# is already orphaned, remove it directly on the node:
+#
+#     nft delete table inet weirvern_sluice
+#
+# `k8s/32-zeek.yaml` carries the same warning for the sensor's sysctls, which have the identical
+# problem: an init container writes them and nothing reverts them on overlay removal.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
