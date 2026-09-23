@@ -110,6 +110,36 @@ def test_never_seen_in_path_says_the_segment_may_be_waiting():
     assert "in-path" in joined or "in path" in joined
 
 
+def test_a_STALE_unregistered_row_is_not_a_problem():
+    """MEASURED on the live cluster: the fleet filled with `unregistered` rows that were STALE
+    GHOSTS -- heartbeat rows written under a sensor identity that no longer exists (before the
+    sensor-name fix that identity was the POD NAME, so every rollout left one behind). Counting
+    those as problems is indistinguishable from a sensor feeding the hub RIGHT NOW that nobody
+    declared, and the real one is the security-relevant case. The stale row stays VISIBLE; it
+    just does not raise."""
+    h = classify(None, [hb("old-pod-name", age_s=HEARTBEAT_STALE_S * 100)], now=NOW)
+    assert h.state == STATE_UNREGISTERED, "the row must still be visible"
+    assert h.is_problem is False, "a ghost is not actionable and must not raise"
+    said = " ".join(h.findings).lower()
+    # BOTH PHRASES, because "historical" alone is also carried by the later explanation clause, so
+    # asserting only that word did not notice when the identifying sentence was replaced by a bare
+    # "stopped" -- mutation testing caught that the assertion did not bite. This pins the sentence
+    # that actually says WHAT happened (reported once, under a name, and stopped).
+    assert "reported once under this name" in said, (
+        "the finding must say the row is a single historical report, not imply an active sensor"
+    )
+    assert "nobody ever declared it" in said
+
+
+def test_a_FRESH_unregistered_row_IS_a_problem():
+    """The other half: something feeding the hub right now that nobody declared. This is the
+    security-relevant case and it must raise."""
+    h = classify(None, [hb("mystery-box", age_s=1)], now=NOW)
+    assert h.state == STATE_UNREGISTERED
+    assert h.is_problem is True
+    assert "right now" in " ".join(h.findings).lower()
+
+
 def test_unregistered_is_flagged_and_is_a_problem():
     """Something feeds this hub that nobody declared. Security-relevant: same class as an
     unexpected NetFlow exporter, and it must not render as a normal fleet row."""
@@ -117,6 +147,9 @@ def test_unregistered_is_flagged_and_is_a_problem():
     assert h.state == STATE_UNREGISTERED
     assert h.is_problem
     assert h.registered is False
+    # The wording now distinguishes FRESH from stale, so it says "not registered" either way and
+    # adds that it is feeding the hub right now. The FRESH/STALE split is pinned by the two tests
+    # above; this one keeps the original claim (it raises, and it is not silent).
     assert "not registered" in " ".join(h.findings)
 
 

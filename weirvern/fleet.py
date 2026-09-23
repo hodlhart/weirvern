@@ -247,7 +247,16 @@ class SensorHealth:
 
     @property
     def is_problem(self) -> bool:
-        return self.state in PROBLEM_STATES
+        """Whether this needs a human to act.
+
+        `unregistered` is a problem ONLY while it is actively reporting; with no fresh heartbeat
+        there is nothing an operator can do, and counting ghosts as problems buries the real
+        undeclared sensor. The state stays `unregistered` either way, so the row is still visible
+        and still says what it is.
+        """
+        if self.state != STATE_UNREGISTERED:
+            return self.state in PROBLEM_STATES
+        return self.age_s is not None and self.age_s <= HEARTBEAT_STALE_S
 
 
 def _age_s(ts: object, now: datetime) -> float | None:
@@ -322,10 +331,34 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
 
     # ── Classify, most specific first.
     if reg is None:
+        # AN UNREGISTERED SENSOR IS ONLY A PROBLEM WHILE IT IS ACTUALLY REPORTING.
+        #
+        # MEASURED on the live cluster: the fleet filled with `unregistered` rows that were
+        # STALE GHOSTS -- heartbeat rows written under a sensor identity that no longer exists
+        # (before the sensor-name fix, that identity was the POD NAME, so every rollout left one
+        # behind). Treating those as problems the same way as an undeclared sensor that is feeding
+        # the hub right now makes the two indistinguishable, and the real one -- the
+        # security-relevant case, same class as an unexpected NetFlow exporter -- gets buried
+        # under historical noise. That is the same defect this module exists to prevent, one level
+        # up: a distinction collapsed in the renderer.
+        #
+        # So the freshness of the heartbeat decides, and the finding says which case it is.
+        if age is not None and age > HEARTBEAT_STALE_S:
+            h.state = STATE_UNREGISTERED
+            # NOT a problem: nothing is feeding the hub now. It is kept visible because
+            # "something reported once that nobody declared" is worth being able to see, and
+            # kept OUT of the problem count because an operator can do nothing about a ghost.
+            h.findings.append(
+                f"reported once under this name and stopped {int(age)}s ago, and nobody ever "
+                f"declared it. This is a historical row rather than an active sensor: nothing is "
+                f"feeding the hub under this name now, so there is nothing to act on. It ages out "
+                f"of the window on its own."
+            )
+            return h
         h.state = STATE_UNREGISTERED
         h.findings.append(
-            "this sensor is feeding the hub but is not registered, so nobody declared it. "
-            "Identify it, then register it or add it to the flow exporter allow-list."
+            "this sensor is feeding the hub RIGHT NOW and is not registered, so nobody declared "
+            "it. Identify it, then register it or add it to the flow exporter allow-list."
         )
         return h
 
