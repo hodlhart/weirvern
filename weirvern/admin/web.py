@@ -963,30 +963,57 @@ def _build_handler(ctx: GuiContext):
                 return None
             return sessions.get(gui_auth.session_from_request(self))
 
-        def _token_role(self) -> str:
+        def _token_role(self, *, gated: bool = False) -> str:
             """users_mod.ROLE_ADMIN when this request presents the operator token, else "".
 
             The PASSIVE form of the token check, for reporting state (the session probe, the
             settings payload). It records no failures and applies no delay -- those belong to
             `_authorize`, which is the gate -- so a read that merely *might* carry a token
             cannot be used to rack up delays against someone else's address.
+
+            `gated=True` is the form the GATE uses, where the address is real and a wrong token
+            must count toward the escalating delay. One implementation with a switch, rather than
+            two checks that could drift apart.
             """
             auth = getattr(ctx, "auth", None)
             if auth is None or not auth.enabled:
                 return ""
             presented = gui_auth.token_from_request(self)
-            if presented and auth.check(presented, client=""):
+            if presented and auth.check(presented, client=self._client_addr() if gated else ""):
                 return users_mod.ROLE_ADMIN
             return ""
 
         def _caller_role(self) -> tuple[str, str]:
-            """(role, via) for this request: ("admin"|"viewer"|"", "session"|"token"|"")."""
+            """(role, via) for this request: ("admin"|"viewer"|"", "session"|"token"|"").
+
+            ── THE TOKEN IS CONSULTED EVEN WHEN A SESSION EXISTS (audit F049) ──────────────────
+
+            This returned the SESSION's role and never looked at the token if any session was
+            present, and `_authorize` had the same shape. The consequence, measured against the real
+            handler:
+
+                viewer session + VALID token  -> 403 "this account is a viewer"  role=viewer via=session
+                no session     + VALID token  -> AUTHORIZED                      role=admin  via=token
+
+            The SAME valid token was accepted or refused depending only on whether the caller
+            happened to be signed in as a viewer. Nothing was protected by that: a viewer holding
+            the token can simply present it with no session, which is the line above. What was lost
+            is the operator's ability to use their break-glass credential from a browser they were
+            already signed into -- and the refusal said "ask an admin", pointing at an account
+            problem when the credential they needed was already on the request.
+
+            THE TOKEN WINS where both are present. It is admin-equivalent and independent of the
+            account, and `via="token"` keeps the write attributable to that credential rather than
+            to whichever account it happened to travel alongside.
+            """
+            role = self._token_role()
+            if role:
+                return (role, "token")
             ident = self._identity()
             if ident is not None:
                 role = users_mod.ROLE_ADMIN if ident.is_admin else users_mod.ROLE_VIEWER
                 return (role, "session")
-            role = self._token_role()
-            return (role, "token" if role else "")
+            return ("", "")
 
         # -- weirlings writes -----------------------------------------------
 
@@ -1122,9 +1149,29 @@ def _build_handler(ctx: GuiContext):
                 password and drives automation, and it is why losing every password cannot
                 lock a deployment out of its own configuration.
 
-            Returns False having already written the response, so every caller reads the same:
-            `if not self._authorize(): return`.
+            ── ORDER: THE TOKEN IS CHECKED REGARDLESS OF THE SESSION (audit F049) ──────────────
+
+            This used to return the session's verdict FIRST, so a request carrying a viewer session
+            AND the valid token was refused as a viewer with the token never examined -- measured
+            against the real handler:
+
+                viewer session + VALID token  -> 403 "this account is a viewer"
+                no session     + VALID token  -> AUTHORIZED
+
+            Same credential, opposite answers, decided by whether the browser happened to be
+            signed in. The token is a deployment-wide credential that does not depend on the
+            account, so it is now evaluated first and `via="token"` records which one opened the
+            gate. Nothing is weakened by that ordering: a viewer without the token still gets the
+            viewer refusal below, which is the case that must keep working.
+
+            The TOKEN check is `gated=True` so a wrong token counts toward the escalating delay,
+            and a token that is merely ABSENT still falls through to the account path -- the
+            difference matters, because a read that carries no token must not be slowed down here.
             """
+            presented = gui_auth.token_from_request(self)
+            if presented and self._token_role(gated=True):
+                return True
+
             ident = self._identity()
             if ident is not None:
                 if ident.must_change:
@@ -1148,10 +1195,7 @@ def _build_handler(ctx: GuiContext):
                 else:
                     self._error(403, auth.reason)
                 return False
-            presented = gui_auth.token_from_request(self)
             addr = self._client_addr()
-            if auth.check(presented, client=addr):
-                return True
             # Escalating delay, bounded. The response never distinguishes absent, empty and wrong.
             delay = auth.delay_for(addr)
             if delay:

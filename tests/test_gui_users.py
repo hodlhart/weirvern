@@ -1126,3 +1126,225 @@ def test_a_write_that_does_not_land_RAISES_rather_than_being_trusted():
         "operator with no credential and no error"
     )
     assert "correct-horse" not in str(raised), f"the failure message leaked the password: {raised}"
+
+
+# ── A VIEWER HOLDING THE OPERATOR TOKEN WAS REFUSED, WITH THE TOKEN NEVER EXAMINED (F049) ───
+#
+# CONFIRMED BY DRIVING THE REAL HANDLER before it was fixed:
+#
+#     viewer session + VALID token  -> 403 "this account is a viewer"  role=viewer via=session
+#     no session     + VALID token  -> AUTHORIZED                      role=admin  via=token
+#
+# The SAME valid credential was accepted or refused depending only on whether the caller happened
+# to be signed in as a viewer. `_authorize` returned the session's verdict first, so the token below
+# it was never reached. Nothing was protected by that -- a viewer holding the token can drop the
+# session and be authorised, which is the second line -- but the operator could not use their
+# break-glass credential from a browser they were already signed into, and the refusal said "ask an
+# admin", pointing at an account problem when the needed credential was already on the request.
+#
+# These tests drive `_authorize` itself rather than asserting the order on the source, because the
+# ORDER is exactly what a source-text check cannot verify.
+
+
+class _FullAuth:
+    """The auth object the REAL gate calls, including the refusal-path methods.
+
+    The harness's own `_Auth` lacks `delay_for`/`failures_for`, so a request that reaches the
+    refusal path raises AttributeError instead of being refused -- which would make an unauthorized
+    case look like a crash. Those are filled in here so every branch is reachable.
+
+    IT MODELS THE FAILURE COUNT, deliberately. A version whose `delay_for` merely recorded the
+    address could not tell `gated=True` from the passive check: a mutation that dropped the gate's
+    `gated=True` was MISSED, because the wrong token still reached the refusal path below and the
+    delay bookkeeping still ran. What that mutation actually breaks is the COUNTING -- a wrong
+    token stops adding to the client's failure record, so the escalating delay stops escalating and
+    guessing becomes unmetered. Modelling the count is what makes the test able to see it.
+    """
+
+    def __init__(self, token: str):
+        self._token = token
+        self.enabled = bool(token)
+        self.reason = "" if token else "write access is disabled: token not set"
+        self.delays: list[str] = []
+        self.checked: list[tuple[str | None, str]] = []
+        self.failures: dict[str, int] = {}
+
+    def check(self, presented, client=""):
+        self.checked.append((presented, client))
+        ok = bool(self._token) and presented == self._token
+        # The REAL AuthState records a failure on a miss, and ONLY when it was given a client to
+        # record against: `client=""` is the passive form, which must not meter anything.
+        if ok:
+            self.failures.pop(client, None) if client else None
+        elif client:
+            self.failures[client] = self.failures.get(client, 0) + 1
+        return ok
+
+    def delay_for(self, client):
+        self.delays.append(client)
+        # Escalating with the recorded failure count, like the product's bounded backoff.
+        return min(0.01 * self.failures.get(client, 0), 5.0)
+
+    def failures_for(self, client):
+        return self.failures.get(client, 0)
+
+
+def _auth_ctx(token, sessions=None):
+    """A ctx carrying the REAL gate's dependencies, on the repo's own handler harness."""
+    ctx = _ctx(_store_with(), sessions=sessions, token=token)
+    ctx.auth = _FullAuth(token)
+    return ctx
+
+
+def _viewer_and_admin_sessions():
+    sessions = users_mod.SessionRegistry()
+    viewer = sessions.create(users_mod.Identity(username="viewer1", role=users_mod.ROLE_VIEWER))
+    admin = sessions.create(users_mod.Identity(username="admin1", role=users_mod.ROLE_ADMIN))
+    return sessions, viewer, admin
+
+
+def test_a_VIEWER_holding_the_token_is_AUTHORISED():
+    """THE DEFECT. Same credential, opposite answer, decided by an unrelated session."""
+    from weirvern.admin import gui_auth
+
+    sessions, viewer, _admin = _viewer_and_admin_sessions()
+    ctx = _auth_ctx("break-glass-value", sessions)
+
+    h = _Handler(ctx, headers={gui_auth.SESSION_HEADER: viewer,
+                               gui_auth.AUTH_HEADER: "break-glass-value"})
+    # `call` returns the EMITTED payload, and `_authorize` sends its refusal through `_json`: an
+    # empty payload is the authorised case. Asserting `is True` here asserted the harness's return
+    # convention rather than the gate's behaviour -- my first version of this test did exactly that
+    # and failed on a correctly authorised request.
+    h.call("_authorize")
+    assert h.emitted == {} and h.status is None, (
+        f"a viewer presenting the VALID operator token was refused: {h.emitted}. The token is "
+        f"admin-equivalent and does not depend on the account, so the session must not decide this."
+    )
+    role, via = h.inst._caller_role()
+    assert (role, via) == (users_mod.ROLE_ADMIN, "token"), (
+        f"the write was attributed to ({role!r}, {via!r}); a token-authorised write must be "
+        f"attributable to the token, not to whatever account it travelled alongside"
+    )
+
+
+def test_an_ADMIN_holding_the_token_is_also_authorised():
+    """Both credentials are admin-equivalent, so the pairing must not break the normal case."""
+    from weirvern.admin import gui_auth
+
+    sessions, _viewer, admin = _viewer_and_admin_sessions()
+    ctx = _auth_ctx("break-glass-value", sessions)
+
+    h = _Handler(ctx, headers={gui_auth.SESSION_HEADER: admin,
+                               gui_auth.AUTH_HEADER: "break-glass-value"})
+    h.call("_authorize")
+    assert h.emitted == {}, f"an admin holding the token was refused: {h.emitted}"
+
+
+def test_a_viewer_WITHOUT_the_token_is_still_refused():
+    """THE CASE THAT MUST NOT REGRESS: the fix must not widen access for a viewer."""
+    from weirvern.admin import gui_auth
+
+    sessions, viewer, _admin = _viewer_and_admin_sessions()
+    ctx = _auth_ctx("break-glass-value", sessions)
+
+    h = _Handler(ctx, headers={gui_auth.SESSION_HEADER: viewer})
+    h.call("_authorize")
+    assert h.emitted != {}, "a viewer without the token was authorised"
+    assert h.status == 403, f"expected a 403 refusal, got {h.status}: {h.emitted}"
+    assert "viewer" in str(h.emitted.get("error", "")), (
+        "the refusal no longer explains that the ACCOUNT is the problem"
+    )
+
+
+def test_a_viewer_with_the_WRONG_token_is_refused_and_still_told_about_the_account():
+    """A wrong token must not mask the viewer explanation, and must not be treated as no token."""
+    from weirvern.admin import gui_auth
+
+    sessions, viewer, _admin = _viewer_and_admin_sessions()
+    ctx = _auth_ctx("break-glass-value", sessions)
+
+    h = _Handler(ctx, headers={gui_auth.SESSION_HEADER: viewer,
+                               gui_auth.AUTH_HEADER: "not-the-token"})
+    h.call("_authorize")
+    assert h.emitted != {}, "a WRONG token was authorised"
+    assert "viewer" in str(h.emitted.get("error", "")), (
+        "the wrong-token case stopped explaining the account problem"
+    )
+
+
+def test_no_credentials_at_all_is_still_refused():
+    """The baseline, and the one that must never pass by accident."""
+    ctx = _auth_ctx("break-glass-value", users_mod.SessionRegistry())
+
+    h = _Handler(ctx, headers={})
+    h.call("_authorize")
+    assert h.emitted != {}, "a request with no credentials at all was authorised"
+    assert h.status == 401, f"expected 401, got {h.status}: {h.emitted}"
+
+
+def test_the_token_ALONE_still_works_with_no_session():
+    """Break-glass: the token must not depend on an account existing or being signed in."""
+    from weirvern.admin import gui_auth
+
+    ctx = _auth_ctx("break-glass-value", users_mod.SessionRegistry())
+
+    h = _Handler(ctx, headers={gui_auth.AUTH_HEADER: "break-glass-value"})
+    h.call("_authorize")
+    assert h.emitted == {}, f"the token alone was refused with no session: {h.emitted}"
+
+
+def test_a_wrong_token_COUNTS_against_the_client_so_guessing_escalates():
+    """The delay is on the guessing path, and moving the token check to the top must not bypass it.
+
+    THIS TEST REPLACED A WEAKER ONE. The first version asserted only that the client address reached
+    `delay_for`, and a mutation that dropped the gate's `gated=True` was MISSED by it: the wrong
+    token still fell through to the refusal path, so the address was still recorded. What the
+    mutation actually breaks is the COUNTING -- a wrong token stops adding to the client's failure
+    record, so the escalating delay stops escalating. Asserting the count is what makes it visible.
+    """
+    from weirvern.admin import gui_auth
+
+    ctx = _auth_ctx("break-glass-value", users_mod.SessionRegistry())
+
+    for attempt in range(3):
+        h = _Handler(ctx, headers={gui_auth.AUTH_HEADER: "not-the-token"})
+        h.call("_authorize")
+        assert h.emitted != {}, f"attempt {attempt + 1}: a wrong token was authorised"
+
+    assert ctx.auth.failures_for("198.51.100.5") == 3, (
+        f"three wrong-token attempts recorded {ctx.auth.failures_for('198.51.100.5')} failures, so "
+        f"guessing is not being metered"
+    )
+    assert ctx.auth.checked, "the token was never checked at all"
+
+
+def test_a_VALID_token_does_not_count_as_a_failure():
+    """A correct credential must clear the record, not add to it -- otherwise an operator using
+    break-glass as intended slides toward the delay."""
+    from weirvern.admin import gui_auth
+
+    ctx = _auth_ctx("break-glass-value", users_mod.SessionRegistry())
+
+    h = _Handler(ctx, headers={gui_auth.AUTH_HEADER: "break-glass-value"})
+    h.call("_authorize")
+    assert ctx.auth.failures_for("198.51.100.5") == 0, (
+        "a VALID token was recorded as a failure"
+    )
+
+
+def test_the_PASSIVE_check_is_not_metered():
+    """`_token_role()` is used for reporting state. A read that merely MIGHT carry a token must not
+    be a way to rack up delays against someone else's address."""
+    from weirvern.admin import gui_auth
+
+    ctx = _auth_ctx("break-glass-value", users_mod.SessionRegistry())
+
+    h = _Handler(ctx, headers={gui_auth.AUTH_HEADER: "not-the-token"})
+    assert h.inst._token_role() == "", "a wrong token was reported as a role"
+    assert ctx.auth.failures_for("198.51.100.5") == 0, (
+        "the passive check metered the client, so a read can be used to delay someone else"
+    )
+    assert all(c == "" for _p, c in ctx.auth.checked), (
+        f"the passive check passed a client address to auth.check: {ctx.auth.checked}"
+    )
