@@ -200,3 +200,109 @@ def test_security_md_states_there_is_no_tls():
     assert re.search(r"no TLS|plain HTTP|cleartext", text, re.IGNORECASE), (
         "SECURITY.md does not state that the GUI is served over plain HTTP with no TLS"
     )
+
+
+# ── the break-glass token must be provisionable, or the recovery path is decoration ────────────
+#
+# MEASURED DEFECT (2026-09-23). The sign-in screen carries a "Lost the admin password? Use the
+# operator token instead." door -- index.html:37-57, where the code even explains why it lives on
+# the LOCKED screen rather than behind it -- and the README names it as the recovery path for a
+# password that was never captured.
+#
+# But `WEIRVERN_GUI_TOKEN` appeared NOWHERE: not in install.sh, not in the README's commands, not in
+# any manifest. `weirvern-secrets` was created with a ClickHouse password and two empty Pushover
+# values, and the token simply was not there. So the documented recovery path led to a door with no
+# key, and an operator who lost the admin password had: no password (a scrypt hash, unrecoverable),
+# no token, and no CLI command to set either.
+#
+# It surfaced as exactly that during this session, which is the only reason it was found: the
+# account existed, the door was visible, and nobody could walk through it.
+def test_the_installer_creates_the_break_glass_token():
+    """The installer must SET the token, not just rely on it being mentioned in prose."""
+    text = (ROOT / "install.sh").read_text()
+    assert "WEIRVERN_GUI_TOKEN" in text, (
+        "install.sh never sets WEIRVERN_GUI_TOKEN, so the sign-in screen's recovery door cannot "
+        "accept anything on a fresh deployment"
+    )
+    # It must be part of the Secret creation, so it exists the moment the GUI starts.
+    secret_block = text[text.index("create secret generic weirvern-secrets"):]
+    secret_block = secret_block[: secret_block.index("fi")]
+    assert "WEIRVERN_GUI_TOKEN" in secret_block, (
+        "the token is mentioned but not written into weirvern-secrets, so it would never exist"
+    )
+
+
+def test_the_installer_SHOWS_the_token_because_a_secret_nobody_knows_is_useless():
+    """Generating a credential and not telling anyone is the same as not generating it.
+
+    The admin password is printed once for exactly this reason; the token needs the same
+    treatment, or an operator has a recovery door whose key is only in a Secret they were never
+    told to read.
+    """
+    text = (ROOT / "install.sh").read_text()
+    assert "operator token:" in text, (
+        "the install summary does not print the operator token, so a fresh install leaves the "
+        "operator with a credential they do not know"
+    )
+    assert "jsonpath='{.data.WEIRVERN_GUI_TOKEN}'" in text, (
+        "the installer does not tell the operator how to read the token again later"
+    )
+
+
+def test_the_readme_documents_reading_and_setting_the_token():
+    """The README names the recovery path, so it must also name the credential and how to make one.
+
+    A recovery procedure that references a value with no way to obtain it is worse than silence:
+    it tells the operator a way out exists and then fails to provide it.
+    """
+    text = (ROOT / "README.md").read_text()
+    assert "WEIRVERN_GUI_TOKEN" in text, (
+        "the README describes the operator-token recovery door but never names the variable"
+    )
+    assert "base64 -d" in text, (
+        "the README does not show how to read the existing token out of the Secret"
+    )
+    # Setting one must be documented too, for installs that predate the provisioning.
+    assert "patch secret weirvern-secrets" in text, (
+        "the README does not document how to SET a token on a deployment that has none"
+    )
+
+
+def test_the_last_resort_recovery_command_uses_real_api_names():
+    """THE COMMAND I GOT WRONG TWICE, now pinned.
+
+    I first wrote `ClusterUserStore`, which does not exist; then `UserStore(ClusterConfig())`
+    without `load()`, which read `exists: False` because the store had not been loaded. Both would
+    have failed in an operator's hands, at the moment they were already locked out.
+
+    A command in the documentation is a claim that it works, and the only way to keep that true is
+    to execute it against the real objects.
+    """
+    import inspect
+
+    from weirvern.admin import cluster_config, users
+
+    assert hasattr(users, "UserStore"), "the README names a store class that does not exist"
+    assert not hasattr(users, "ClusterUserStore"), "the name I first used is not in the module"
+    assert hasattr(users.UserStore, "set_password")
+    assert hasattr(users.UserStore, "load"), (
+        "the store has a load() step; a command omitting it reads nothing"
+    )
+    # THE CONSTRUCTOR TAKES A CLIENT -- the mistake that produced `exists: False`.
+    sig = inspect.signature(users.UserStore.__init__)
+    required = [
+        p.name for p in sig.parameters.values()
+        if p.name != "self" and p.default is inspect.Parameter.empty
+        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    assert required == ["client"], (
+        f"UserStore now takes {required}; the documented command passes a client "
+        "(ClusterConfig(configmap=USERS_CONFIGMAP))"
+    )
+    # And the README's command must build the client with the account store's own ConfigMap name.
+    text = (ROOT / "README.md").read_text()
+    assert "ClusterConfig(configmap=users.USERS_CONFIGMAP)" in text, (
+        "the README's command does not bind the client to the account store's ConfigMap"
+    )
+    assert "store.load()" in text, "the README's command omits the load() step"
+    assert hasattr(cluster_config, "ClusterConfig")

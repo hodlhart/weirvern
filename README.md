@@ -994,6 +994,42 @@ created the account — rolling the GUI replaces that pod and the log with it. (
 never captured: the sign-in screen carries a "Lost the admin password?" door that accepts
 the operator token, and from there Settings → Users → **Reset password** mints a new one.)
 
+**The operator token is generated at install and printed once**, at the end of the install
+summary. It is the only recovery path on a deployment with no email, so keep it:
+
+```bash
+# read it again later (it lives in weirvern-secrets)
+kubectl -n weirvern get secret weirvern-secrets \
+  -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d; echo
+```
+
+If it is **empty**, the "Lost the admin password?" door will not accept anything — an empty
+token disables writes rather than opening them, which is the safe default. Set one:
+
+```bash
+kubectl -n weirvern patch secret weirvern-secrets --type merge \
+  -p "{\"data\":{\"WEIRVERN_GUI_TOKEN\":\"$(openssl rand -base64 24 | base64 -w0)\"}}"
+kubectl -n weirvern rollout restart deploy/weirvern-gui
+```
+
+Treat it like a root password: it grants admin with no account. An install that predates
+this provisioning the token can be given one the same way.
+
+As a last resort, with neither the password nor the token, a new one can be set directly
+in the account store from the GUI pod. Change `must_change` is forced, so the account is
+held at the password gate until the owner replaces the temporary value:
+
+```bash
+P=$(kubectl -n weirvern get pods --no-headers | grep gui | grep Running | awk '{print $1}' | head -1)
+kubectl -n weirvern exec $P -c gui -- python -c "
+from weirvern.admin import users
+from weirvern.admin.cluster_config import ClusterConfig
+store = users.UserStore(ClusterConfig(configmap=users.USERS_CONFIGMAP))
+store.load()
+store.set_password('admin', 'TEMPORARY-PASSWORD', must_change=True)
+"
+```
+
 Sign in with `admin` and that password, choose your own password when prompted (the change
 is forced), then add accounts from **Settings → Users**. There is no email on this
 deployment: to help someone who lost their password, an admin uses **Reset password** on

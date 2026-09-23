@@ -535,11 +535,34 @@ if kubectl -n "$NAMESPACE" get secret weirvern-secrets >/dev/null 2>&1; then
     ok "weirvern-secrets already exists -- left untouched"
 else
     CH_PASSWORD=$(openssl rand -base64 24)
+    # ── THE OPERATOR TOKEN, WHICH NOTHING USED TO CREATE ────────────────────────────────────────
+    #
+    # MEASURED DEFECT (2026-09-23). The sign-in screen carries a "Lost the admin password? Use the
+    # operator token instead." door -- it exists precisely for the case where the admin password is
+    # gone, and the README names it as the recovery path. But `WEIRVERN_GUI_TOKEN` appeared NOWHERE:
+    # not in this installer, not in the README, not in any manifest. `weirvern-secrets` was created
+    # with a ClickHouse password and two empty Pushover values, and the token simply was not there.
+    #
+    # So the documented recovery path led to a door with no key. An operator who lost the admin
+    # password had: no password (a scrypt hash, unrecoverable), no token, and no CLI command to set
+    # either -- which is a lockout, on a deployment whose own documentation says there is a way back.
+    # It surfaced as exactly that during this session: the account existed, the door was visible, and
+    # nobody could walk through it.
+    #
+    # The token is generated here, at the moment the Secret is created, alongside the other
+    # credentials. It is printed ONCE, at the end of the install, with the admin password -- because
+    # a break-glass credential nobody knows the value of is not a break-glass credential.
+    #
+    # Empty is NOT the same as absent for this value: gui_auth treats a missing token and an empty
+    # token identically (writes disabled), so an unset variable is safe by default -- the door is
+    # shut rather than open. That is the right default; it just has to be possible to open it.
+    GUI_TOKEN=$(openssl rand -base64 24)
     kubectl -n "$NAMESPACE" create secret generic weirvern-secrets \
         --from-literal=CLICKHOUSE_PASSWORD="$CH_PASSWORD" \
+        --from-literal=WEIRVERN_GUI_TOKEN="$GUI_TOKEN" \
         --from-literal=PUSHOVER_USER_KEY='' \
         --from-literal=PUSHOVER_API_TOKEN='' >/dev/null
-    ok "created weirvern-secrets (ClickHouse password generated; Pushover left empty = log-only)"
+    ok "created weirvern-secrets (ClickHouse password and break-glass operator token generated; Pushover left empty = log-only)"
 fi
 
 # The schema Job and the pods that mount the Secret were applied before it existed,
@@ -672,9 +695,43 @@ cat <<EOF
    1. Sign in as 'admin' (password above, if this was a fresh install).
    2. Settings -> sensor: confirm the interfaces (${ZEEK_IFACE} capture / ${MGMT_IFACE} management).
    3. NetFlow exporters (if you have any): point them at ${NODE_IP}:32055 (NetFlow)
-      and ${NODE_IP}:32063 (sFlow) -- the NODEPORTs, not 2055/6343.
+      and ${NODE_IP}:32063 (sFlow). Those NodePorts are what this deployment documents, and
+      the conventional 2055/6343 ALSO work -- the collector binds the node's own interfaces,
+      so either form reaches it. Check with: ss -lunp | grep -E '32055|32063|2055|6343'
 
 EOF
+
+# ── THE BREAK-GLASS TOKEN, SHOWN ONCE ───────────────────────────────────────────────────────────
+#
+# The sign-in screen's "Lost the admin password?" door accepts this token, and it is the only
+# recovery path on a deployment with no email. A credential an operator does not know the value of
+# cannot serve that purpose, so it is printed here -- once, at the end, next to the admin password.
+#
+# It is printed only on a FRESH install, because a re-run leaves an existing Secret untouched and
+# the value is then only in the Secret (which is the correct place for it).
+if [ -n "${GUI_TOKEN:-}" ]; then
+    cat <<EOF
+   Break-glass token (shown once -- save it; it recovers a lost admin password)
+       operator token: ${GUI_TOKEN}
+     Use it from the sign-in screen: "Lost the admin password? Use the operator token instead."
+     It grants admin with no account, so treat it like a root password.
+     To read it again later:
+       kubectl -n ${NAMESPACE} get secret weirvern-secrets \\
+         -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d
+
+EOF
+else
+    GUI_TOKEN_NOW=$(kubectl -n "$NAMESPACE" get secret weirvern-secrets \
+        -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null || true)
+    if [ -n "$GUI_TOKEN_NOW" ]; then
+        ok "an operator token already exists in weirvern-secrets (read it with the command in the README if you need it)"
+    else
+        warn "no break-glass operator token is set, so the sign-in screen's 'Lost the admin password?'"
+        warn "  door will not accept anything. Set one with:"
+        warn "    kubectl -n $NAMESPACE patch secret weirvern-secrets --type merge \\"
+        warn "      -p \"{\\\"data\\\":{\\\"WEIRVERN_GUI_TOKEN\\\":\\\"\$(openssl rand -base64 24 | base64 -w0)\\\"}}\""
+    fi
+fi
 
 if [ "$SIPHON" = "1" ]; then
     cat <<EOF
