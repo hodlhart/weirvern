@@ -651,7 +651,24 @@ def _heartbeat_thread(settings, siphon=None) -> None:
     """
     from weirvern.admin import sensorwatch, status
 
-    sid = os.environ.get("SENSOR_ID") or os.environ.get("HOSTNAME", "worker")
+    # THE SAME IDENTITY THE REST OF THE SYSTEM USES. `_sensor_name` prefers settings.sensor_name,
+    # then NODE_NAME from the downward API, then the hostname. This used to read `HOSTNAME`
+    # directly, which in a pod IS THE POD NAME: it carries the ReplicaSet hash, so it changes on
+    # every restart and leaves a row behind under the old name each time.
+    #
+    # MEASURED on the live cluster after a rollout: the fleet carried TWENTY-THREE distinct
+    # `weirvern-worker-<hash>-<suffix>` identities, and two of them were reporting as fresh
+    # undeclared sensors at that moment. So this was not only history: it made a healthy
+    # deployment look like it had unknown sensors feeding it, which is the security-relevant
+    # case the fleet view raises.
+    #
+    # The fix is to CALL the existing helper rather than re-derive its rule. A second expression
+    # is how the two drifted in the first place -- `_sensor_name` was corrected for the gate's
+    # state row and this site was missed.
+    #
+    # SENSOR_ID still wins when set explicitly: a deployment that names its sensors wants that
+    # name everywhere, and the heartbeat is the row an operator reads a sensor's health from.
+    sid = (os.environ.get("SENSOR_ID") or "").strip() or _sensor_name(settings)
     interval = max(5, int(getattr(settings, "heartbeat_interval_s", 15)))
     logger.info("Sensor heartbeat every %ds, observing %s", interval,
                 sensorwatch._log_dir())

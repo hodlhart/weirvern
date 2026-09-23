@@ -1159,3 +1159,119 @@ def test_the_empty_state_read_says_why_rather_than_looking_broken():
     assert "has not run yet" in out["detail"], (
         f"the empty case does not explain itself: {out['detail']!r}"
     )
+
+
+# ── THE HEARTBEAT MUST USE THE SAME IDENTITY AS EVERYTHING ELSE ──────────────────────────────
+#
+# MEASURED DEFECT, 2026-09-23. The heartbeat loop computed its own sensor id:
+#
+#     sid = os.environ.get("SENSOR_ID") or os.environ.get("HOSTNAME", "worker")
+#
+# `HOSTNAME` in a Kubernetes pod is THE POD NAME, which carries the ReplicaSet hash. So the id
+# changed on every restart and left a row behind under the old one each time. After ONE rollout the
+# fleet carried TWENTY-THREE distinct `weirvern-worker-<hash>-<suffix>` identities, and two were
+# reporting as FRESH at that moment -- a healthy deployment looking like it had unknown sensors
+# feeding it, which is exactly the security-relevant case the fleet view raises.
+#
+# `_sensor_name` already solved this (explicit -> NODE_NAME -> hostname) and the gate's state row
+# used it. This write site re-derived the rule and got it wrong, which is how the two drifted apart.
+#
+# HOW THESE TESTS AVOID PROVING NOTHING. The first version re-implemented the FIXED expression and
+# asserted on that, so it stayed green with worker.py reverted to the bug -- it tested the test.
+# These drive the REAL `_heartbeat_thread` with stubbed collaborators and capture the `sensor_id`
+# it actually hands to `status.heartbeat`, which is the value that reaches the database.
+
+def _heartbeat_writes(node_name="UNSET", sensor_id=None, sensor_name="", once=True):
+    """Run the PRODUCT's heartbeat thread briefly and return the sensor_id(s) it wrote.
+
+    Everything the thread touches is stubbed -- the database, the observation, the interval -- so
+    this exercises the identity expression at its real site without a cluster. The thread is asked
+    to stop after `once` passes.
+    """
+    import os
+    import threading as _threading
+    import time as _time
+    from types import SimpleNamespace
+
+    from weirvern import worker as worker_mod
+    from weirvern.admin import sensorwatch, status
+
+    written: list[str] = []
+    saved = {k: os.environ.get(k) for k in ("NODE_NAME", "SENSOR_ID", "HOSTNAME")}
+    real_heartbeat = status.heartbeat
+    real_observe = sensorwatch.observe
+    real_stop = worker_mod._stop
+
+    class _Ctx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *a):
+            return False
+
+    try:
+        if node_name is None:
+            os.environ.pop("NODE_NAME", None)
+        elif node_name != "UNSET":
+            os.environ["NODE_NAME"] = node_name
+        if sensor_id is None:
+            os.environ.pop("SENSOR_ID", None)
+        else:
+            os.environ["SENSOR_ID"] = sensor_id
+        # A pod-name-shaped HOSTNAME: what makes the old expression wrong.
+        os.environ["HOSTNAME"] = "weirvern-worker-84899c6f55-9z7g2"
+
+        import weirvern.db as db_mod
+
+        worker_mod._stop = _threading.Event()
+        status.heartbeat = lambda client, *, sensor_id, **kw: (written.append(sensor_id), True)[1]
+        sensorwatch.observe = lambda *a, **k: {}
+        db_mod.connect = lambda *a, **k: _Ctx()
+
+        settings = SimpleNamespace(heartbeat_interval_s=1, sensor_name=sensor_name)
+        th = _threading.Thread(target=worker_mod._heartbeat_thread, args=(settings,),
+                               kwargs={"siphon": None}, daemon=True)
+        th.start()
+        deadline = _time.monotonic() + 2.0
+        while not written and _time.monotonic() < deadline:
+            _time.sleep(0.02)
+        worker_mod._stop.set()
+        th.join(timeout=2.0)
+        return written
+    finally:
+        status.heartbeat = real_heartbeat
+        sensorwatch.observe = real_observe
+        worker_mod._stop = real_stop
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_the_heartbeat_uses_the_NODE_name_not_the_pod_name():
+    """THE DEFECT: the heartbeat wrote rows under a name that changed on every restart."""
+    written = _heartbeat_writes(node_name="weirvern")
+    assert written, "the heartbeat thread wrote nothing, so this test proves nothing"
+    assert written[0] == "weirvern", (
+        "the heartbeat must identify itself by the NODE: with the pod name, every rollout leaves a "
+        "ghost row and a healthy deployment looks like it has unknown sensors feeding it"
+    )
+    assert "84899c6f55" not in written[0], "the pod name must not reach the sensor id"
+
+
+def test_an_explicit_SENSOR_ID_still_wins_for_the_heartbeat():
+    """A deployment that names its sensors wants that name everywhere, heartbeat included."""
+    written = _heartbeat_writes(node_name="weirvern", sensor_id="floor3-idf")
+    assert written and written[0] == "floor3-idf"
+
+
+def test_an_explicit_settings_sensor_name_wins_over_the_node():
+    written = _heartbeat_writes(node_name="weirvern", sensor_name="lab-sensor")
+    assert written and written[0] == "lab-sensor"
+
+
+def test_with_no_node_name_the_hostname_is_still_the_answer():
+    """A bare CLI or test run has no NODE_NAME, and there the hostname IS the box."""
+    written = _heartbeat_writes(node_name=None)
+    assert written and written[0]
