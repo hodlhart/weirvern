@@ -1107,3 +1107,55 @@ def test_the_gui_and_the_worker_agree_on_the_identity():
             os.environ.pop("NODE_NAME", None)
         else:
             os.environ["NODE_NAME"] = saved
+
+
+# ── the DISABLED gate: does the shipped default record anything? ───────────────────────────────
+#
+# MEASURED (live, 2026-09-23). A default deployment (SLUICE_ENABLED=0) writes NO state row and no
+# log line at all. The reason is a guard in the disabled branch:
+#
+#     if _SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED:
+#         ... disarm, record, log ...
+#     return
+#
+# A FRESH supervisor's state IS already "disarmed" (GateState defaults to it), so on a process that
+# never armed, the condition is False and the entire block is skipped -- deliberately, since
+# re-disarming 1440 times a day would shell out to nft for nothing.
+#
+# The SKIP IS SAFE: a process that never armed installed no rules, so there is nothing to remove.
+# But it has a consequence worth stating rather than discovering: a fresh default deployment leaves
+# the gate state table EMPTY, so the Sluice panel's "the gate has not run yet" is the permanent
+# state of a deployment that has not turned the gate on. That is honest -- nothing has run -- and
+# it is not the same as the panel being broken, which is why the empty case carries its own reason.
+#
+# These tests pin the behaviour so a future change to the guard is a DECISION.
+def test_a_fresh_supervisor_starts_disarmed():
+    from weirvern.sluice import GATE_STATE_DISARMED, SluiceSupervisor
+
+    assert SluiceSupervisor().state.state == GATE_STATE_DISARMED, (
+        "a fresh supervisor no longer starts disarmed, so the disabled branch would now disarm "
+        "and record on every start -- a behaviour change, not necessarily a bug, but not silent"
+    )
+
+
+def test_the_empty_state_read_says_why_rather_than_looking_broken():
+    """An empty gate table must be distinguishable from an unreadable one.
+
+    The route convention this project uses everywhere: a failure and an empty result must not look
+    alike, because the operator acts differently on each. For a default deployment the EMPTY case is
+    the normal one, so it must read as a statement rather than as an error.
+    """
+    from weirvern.sluice_store import load_gate_state
+
+    class NoRows:
+        def query(self, *a, **k):  # noqa: ANN002, ANN003
+            class R:
+                result_rows: list = []
+            return R()
+
+    out = load_gate_state(NoRows(), sensor="weirvern")
+    assert out["available"] is True, "an empty table was reported as a read failure"
+    assert out["state"] == "disarmed"
+    assert "has not run yet" in out["detail"], (
+        f"the empty case does not explain itself: {out['detail']!r}"
+    )
