@@ -62,4 +62,13 @@ Thumbs.db
 *.pcap
 *.pcapng
 *.cap
+# COMPRESSED CAPTURES (audit F111). A gzipped capture is still a complete record of a real network,
+# and `*.pcap` does not match it -- git's patterns match the WHOLE name, so `conn.pcap.gz` slipped
+# through both this file and the sanitation guard, which compared `Path.suffix` (always `.gz`).
+*.pcap.gz
+*.pcapng.gz
+*.cap.gz
+*.pcap.zst
+*.pcap.bz2
+*.pcap.xz
 /captures/

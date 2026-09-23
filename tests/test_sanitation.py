@@ -173,23 +173,12 @@ def test_no_captured_traffic_is_committed():
     #   1. a capture FORMAT, always;
     #   2. a capture-named file that is DATA (not source, not schema, not docs);
     #   3. a capture-named file whose suffix is one a log/record would use.
-    _capture_formats = {".pcap", ".pcapng", ".cap", ".pcap.gz"}
-    _source_suffixes = {".py", ".sql", ".md", ".sh", ".js", ".css", ".html", ".yaml", ".yml",
-                        ".toml", ".cfg", ".json"}
-    _data_suffixes = {".log", ".txt", ".tsv", ".csv", ".jsonl", ".ndjson", ".bin", ".dat"}
-    captures = [
-        p for p in tracked
-        if Path(p).suffix.lower() in _capture_formats
-        or (
-            "capture" in Path(p).name.lower()
-            and Path(p).suffix.lower() not in _source_suffixes
-        )
-        or (
-            "capture" in Path(p).name.lower()
-            and Path(p).suffix.lower() in _data_suffixes
-            and Path(p).suffix.lower() not in _source_suffixes
-        )
-    ]
+    # THE RULE LIVES IN THE PRODUCT MODULE (audit F111/F112), not here. It used to be defined inline
+    # AND again inside its own must-fire test, which meant the test could not fail on a change to the
+    # guard. One definition, imported, is the only way that proof means anything.
+    from weirvern.tools.sanitize_identifiers import is_capture_path
+
+    captures = [p for p in tracked if is_capture_path(p)]
     assert not captures, (
         f"traffic captures must not be committed: {captures}. Keep them locally and gitignore "
         f"the directory."
@@ -238,30 +227,26 @@ def test_the_capture_rule_catches_real_captures_and_spares_source():
 
     The rule flagged any path containing "capture", which reported SOURCE FILES as captures --
     `tests/test_capture_loss.py` and `weirvern/schema/007_sensor_capture.sql` are code ABOUT a
-    capture-loss metric and contain no packets. A guard that reports the wrong thing gets
-    switched off, so it was narrowed rather than the files renamed. This proves each direction,
-    because "it stopped complaining" is not the same as "it still works".
+    capture-loss metric and contain no packets. A guard that reports the wrong thing gets switched
+    off, so it was narrowed rather than the files renamed.
+
+    THIS TEST USED TO CARRY ITS OWN COPY OF THE RULE (audit F112): it defined a local `is_capture`
+    from literal sets and never called the guard's. Narrowing the guard therefore left this test
+    passing and byte-identical -- a proof that could not fail on the thing it proves. It now imports
+    the product's single definition, so the two cannot disagree.
     """
-    from pathlib import PurePosixPath
+    from weirvern.tools.sanitize_identifiers import is_capture_path
 
-    fmt = {".pcap", ".pcapng", ".cap", ".pcap.gz"}
-    source = {".py", ".sql", ".md", ".sh", ".js", ".css", ".html", ".yaml", ".yml", ".toml",
-              ".cfg", ".json"}
-    data = {".log", ".txt", ".tsv", ".csv", ".jsonl", ".ndjson", ".bin", ".dat"}
-
-    def is_capture(path: str) -> bool:
-        name, suffix = PurePosixPath(path).name.lower(), PurePosixPath(path).suffix.lower()
-        return (
-            suffix in fmt
-            or ("capture" in name and suffix not in source)
-            or ("capture" in name and suffix in data and suffix not in source)
-        )
-
-    # MUST STILL FIRE.
+    # A COMPRESSED CAPTURE IS IN THIS LIST BECAUSE ITS ABSENCE IS WHAT LET F111 SHIP. The rule named
+    # ".pcap.gz" in its format set while comparing `Path(...).suffix`, which is always just the final
+    # component -- so the gzip case was listed as covered and never exercised, and three mutations
+    # survived this test until a `.pcap.gz` path was added here.
     for path in ("capture_loss.log", "zeek/capture.pcap",
                  "data/capture_loss.2026-01-01.log", "tests/fixtures/sample.cap",
-                 "flows.pcapng"):
-        assert is_capture(path), f"{path} is a capture but the rule misses it"
+                 "flows.pcapng",
+                 # compressed forms must be caught too
+                 "zeek/conn.pcap.gz", "flows.pcapng.gz", "x.cap.bz2", "y.pcap.zst", "z.pcap.gz.zst"):
+        assert is_capture_path(path), f"{path} is a capture but the rule misses it"
 
     # MUST NOT FIRE: source, schema, docs.
     # Paths are assembled from parts: these are FABRICATED examples, and a quoted path-like
@@ -270,4 +255,4 @@ def test_the_capture_rule_catches_real_captures_and_spares_source():
     _src = "scripts" + "/" + "audit_" + "capture" + ".py"
     for path in ("tests/test_capture_loss.py", "weirvern/schema/007_sensor_capture.sql",
                  _doc, "weirvern/admin/sensorwatch.py", _src):
-        assert not is_capture(path), f"{path} contains no packets but the rule flags it"
+        assert not is_capture_path(path), f"{path} contains no packets but the rule flags it"

@@ -36,7 +36,7 @@ import argparse
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CAPTURE_SEGMENT = "198.51.100.0/24"
 MANAGEMENT_SEGMENT = "203.0.113.0/24"
@@ -236,6 +236,55 @@ SKIP_FILES = {
     "weirvern/tools/sanitize_identifiers.py",
     "tests/test_sanitation.py",
 }
+
+
+# ── THE CAPTURE RULE, IN THE PRODUCT MODULE SO THE GUARD AND ITS TEST SHARE ONE DEFINITION ──────
+#
+# A capture is a complete record of a real network, more revealing than any single address in it, and
+# none may be committed. The rule lived only inside the guard, and the guard's own must-fire test
+# carried a PRIVATE COPY of it (audit F112) -- so narrowing the guard could not fail that test, which
+# is a proof that cannot fail on the thing it proves.
+#
+# A CAPTURE'S FORMAT IS NOT ITS LAST SUFFIX (audit F111). The set named ".pcap.gz" while the
+# comparison used `Path(...).suffix`, which is ALWAYS the final component, so `conn.pcap.gz` had
+# suffix ".gz" and was committable AND invisible to the guard. The rule below walks the WHOLE suffix
+# chain, which catches every compression of every format without enumerating the cross-product.
+_CAPTURE_BASES = frozenset({".pcap", ".pcapng", ".cap"})
+_COMPRESSION_SUFFIXES = frozenset({".gz", ".zst", ".bz2", ".xz", ".zip", ".7z"})
+# Source and documentation suffixes. A file NAMED for a capture that is code or prose is not a
+# capture: `tests/test_capture_loss.py` and 007_sensor_capture.sql are about a metric.
+_SOURCE_SUFFIXES = frozenset({
+    ".py", ".sql", ".md", ".sh", ".js", ".css", ".html", ".yaml", ".yml", ".toml", ".cfg", ".json",
+})
+# Suffixes that actually carry recorded traffic.
+_DATA_SUFFIXES = frozenset({".log", ".txt", ".tsv", ".csv", ".jsonl", ".ndjson", ".bin", ".dat"})
+
+
+def is_capture_path(path: str) -> bool:
+    """True when `path` names a packet capture, compressed or not, or a capture-shaped data file.
+
+    Three cases, in order of certainty:
+      1. a capture FORMAT, however it is compressed (`x.pcap`, `x.pcap.gz`, `x.pcap.zst`);
+      2. a file NAMED for a capture whose suffix is neither source nor documentation code;
+      3. a file NAMED for a capture with a data suffix (a raw recording under a descriptive name).
+
+    `suffixes` is used rather than `suffix` for case 1, and that is the whole of F111: `conn.pcap.gz`
+    has a LAST suffix of `.gz` and a suffix CHAIN of `['.pcap', '.gz']`.
+    """
+    p = PurePosixPath(path)
+    suffixes = [s.lower() for s in p.suffixes]
+    name = p.name.lower()
+    if not suffixes:
+        return False
+
+    for i, s in enumerate(suffixes):
+        if s in _CAPTURE_BASES and all(r in _COMPRESSION_SUFFIXES for r in suffixes[i + 1:]):
+            return True
+
+    last = suffixes[-1]
+    if "capture" in name and last not in _SOURCE_SUFFIXES:
+        return True
+    return bool("capture" in name and last in _DATA_SUFFIXES and last not in _SOURCE_SUFFIXES)
 
 
 def tracked_files(root: Path) -> list[Path]:
