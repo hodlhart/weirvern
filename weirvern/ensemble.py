@@ -281,7 +281,7 @@ def detect_flows(
                     "reason": "below-threshold",
                     "model_agreement": round(
                         len([n for n, s in scores.items() if s > 0.20])
-                        / max(1, len([d for d in detectors if d.is_ready()])), 4),
+                        / max(1, len(detectors)), 4),
                     "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
                     "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
                     "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
@@ -291,8 +291,29 @@ def detect_flows(
             continue
 
         detected_by = [n for n, s in scores.items() if s > 0.20]
-        active = len([d for d in detectors if d.is_ready()])
-        agreement = len(detected_by) / active if active else 0.0
+        # ── A MISSING DETECTOR MUST NOT LOOSEN THE GATE (audit F043) ─────────────────────────────
+        #
+        # This used to divide by the number of detectors that reported READY, so a detector that
+        # failed to train removed itself from the denominator -- and agreement is a RATIO, so losing
+        # detectors made it LARGER. MEASURED by driving the real ensemble with the same flow and the
+        # same scores, varying only readiness:
+        #
+        #     all 4 ready (healthy)   score=0.550  agreement=0.25  -> SUPPRESSED
+        #     DBSCAN failed to train  score=0.550  agreement=0.33  -> ALERT
+        #     GB and DBSCAN failed    score=0.550  agreement=0.50  -> ALERT
+        #     only IF ready           score=0.550  agreement=1.00  -> ALERT, confidence 0.550
+        #
+        # So a broken model turned a window the ensemble had DELIBERATELY SUPPRESSED into an alert
+        # that looked BETTER corroborated than a healthy one -- the confidence is score*agreement, so
+        # the fewer detectors that worked, the higher the reported confidence. The failure is silent
+        # in the worst direction: it manufactures alerts, and its alerts look more certain.
+        #
+        # THE DENOMINATOR IS THE ENSEMBLE, NOT THE SURVIVORS. `build_detectors` always constructs
+        # four, so the size of the intended ensemble is what a reader of "3 of 4 models agreed"
+        # expects, and a detector that did not train is a detector that did not agree. `max(1, ...)`
+        # keeps the ratio defined when the list is empty for any reason.
+        active = max(1, len(detectors))
+        agreement = len(detected_by) / active
 
         # The agreement gate now reads settings.min_agreement (MIN_AGREEMENT)
         # instead of hardcoding the value.
