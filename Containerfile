@@ -28,8 +28,33 @@ FROM python:3.11-slim
 #
 # Installed at BUILD time per the note below -- never at container boot.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends iproute2 \
+ && apt-get install -y --no-install-recommends iproute2 nftables \
  && rm -rf /var/lib/apt/lists/*
+
+# ── WHY nftables IS HERE, AND WHY IT IS NOT OPTIONAL ──────────────────────────────────────────
+#
+# The Sluice Gate compiles operator blocks into nftables sets. `choose_backend` asks whether `nft`
+# is usable and, if not, returns a backend whose `available()` is False -- so the gate reports
+# DEGRADED and blocks nothing. That fallback is correct (it refuses to claim ARMED while enforcing
+# nothing), but it means the feature was INSTALLED AND INERT: every deployment announced a Sluice
+# Gate tab, offered a block button, and could never enforce a single rule.
+#
+# MEASURED before this line existed, inside the running worker:
+#     $ command -v nft     -> not found
+#     $ nft list tables    -> sh: 1: nft: not found
+# and the gate's own log line:
+#     sluice gate: degraded -- ... the 'none' backend cannot install rules on this host
+#     (nft missing, or no NET_ADMIN).
+#
+# Both halves of that message were true: no binary, and no capability. The capability is granted
+# by the siphon overlay (see overlays/siphon/worker-siphon-caps.yaml, which documents why
+# runAsUser: 0 is required for added capabilities to be EFFECTIVE rather than merely present in
+# the bounding set). The binary has to be here in the image, because a cluster cannot install
+# packages at runtime.
+#
+# A test pins that this line exists -- see tests/test_image_contract.py. Removing it would not
+# break any build, any probe, or any other test; it would only make the Sluice Gate silently
+# unable to enforce, which is exactly the class of failure this project keeps finding.
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
