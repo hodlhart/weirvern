@@ -13,7 +13,14 @@ from typing import Any
 
 from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
-from weirvern.worker import detection_sweep, train_if_due
+from weirvern.worker import (
+    AGG_BUCKET_S,
+    _covered_through,
+    _load_detect_cursor,
+    _save_detect_cursor,
+    detection_sweep,
+    train_if_due,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -629,3 +636,268 @@ def test_NOTHING_that_failed_to_train_is_recorded(monkeypatch):
         "DBSCAN": False, "Adaptive Baseline": False,
     })
     assert names == [], f"detectors that all failed to train were recorded: {names}"
+
+
+# ── A SLOW CYCLE STEPPED OVER WINDOWS THAT WERE NEVER EXAMINED (audit F045) ──────────────────
+#
+# CONFIRMED ON THE LIVE CLUSTER before it was fixed, from `baseline_history.computed_at` gaps over
+# 48 hours:
+#
+#     cycles: 292   median gap: 300s   p99: 966s   MAX: 1183s
+#     ten separate gaps over 600s: 1183, 1170, 1138, 949, 897, 893, 847, 835, 818, 778
+#     gap 1183s  ->  2 whole 5-minute buckets never examined
+#
+# `detection_sweep` computed `since = now() - (AGG_BUCKET_S + detect_interval_s)` EVERY cycle, which
+# silently assumes the previous cycle ran `detect_interval_s` ago. `train_if_due` runs BEFORE the
+# sweep in this module's loop and blocks, so the 6-hourly full retrain pushed the next sweep's
+# `now()` forward with `since` moving in lockstep. Those buckets are still in `flows_aggregated` --
+# they age out of the LOOKBACK, not out of the table -- so the data was there and stopped being
+# examined, with the only trace being a heartbeat gap.
+
+
+def _empty_sweep_client():
+    """A client whose aggregate queries return no rows at all.
+
+    Written here rather than reusing an existing stub because the assertion is about the ABSENCE of
+    rows: `detection_sweep` must not record coverage for a window that contained nothing to examine.
+    """
+    class _R:
+        column_names: list = []
+        result_rows: list = []
+
+    class _C:
+        def query(self, *a, **kw):
+            return _R()
+
+        def insert(self, *a, **kw):
+            return None
+
+    return _C()
+
+
+def _cursor_since(settings, cursor):
+    """The window start the product's cursor function returns for a given carried cursor."""
+    since, _new_cursor = _covered_through(settings, cursor)
+    return since
+
+
+def test_a_HEALTHY_cycle_covers_exactly_what_the_old_code_covered():
+    """THE INVARIANT THAT MATTERS MOST: the fix must change NOTHING when cycles run on time.
+
+    A recovery mechanism that alters the healthy path is a second defect. The two arms of the `min`
+    coincide when the cursor is one interval old, and this asserts that rather than trusting the
+    arithmetic.
+    """
+    settings = Settings()
+    now = datetime.now()
+    lookback = AGG_BUCKET_S + settings.detect_interval_s
+
+    since = _cursor_since(settings, now - timedelta(seconds=settings.detect_interval_s))
+    old_behaviour = now - timedelta(seconds=lookback)
+
+    assert abs((since - old_behaviour).total_seconds()) < 1, (
+        f"a healthy cycle now starts its window at {since} instead of {old_behaviour}. The fix must "
+        f"be inert when the previous cycle ran on time."
+    )
+
+
+def test_a_SLOW_cycle_re_covers_the_buckets_it_would_have_skipped():
+    """THE DEFECT. A 1183s gap stepped over ~2 whole buckets, never examined, never logged."""
+    settings = Settings()
+    now = datetime.now()
+    lookback = AGG_BUCKET_S + settings.detect_interval_s
+
+    slow_gap_s = 1183  # the maximum measured on the live cluster
+    since = _cursor_since(settings, now - timedelta(seconds=slow_gap_s))
+    old_window_start = now - timedelta(seconds=lookback)
+
+    recovered = (old_window_start - since).total_seconds()
+    assert recovered > 0, (
+        f"a {slow_gap_s}s cycle still starts its window at {since}, the same place the old code did, "
+        f"so the buckets in between are still never examined"
+    )
+    # The recovered span must cover the full gap, not a token amount.
+    assert recovered >= slow_gap_s - lookback - 1, (
+        f"only {recovered:.0f}s recovered of a {slow_gap_s - lookback:.0f}s hole"
+    )
+
+
+def test_the_window_always_ends_at_NOW_so_coverage_means_covered():
+    """The returned cursor is the sweep's start, in every branch -- so the next cycle's window starts
+    from what THIS one actually reached, and a cursor can never claim more than was examined."""
+    settings = Settings()
+    now = datetime.now()
+    for cursor in (None, now - timedelta(seconds=300), now - timedelta(seconds=1183),
+                   now + timedelta(hours=3), now - timedelta(hours=100)):
+        _since, new_cursor = _covered_through(settings, cursor)
+        assert new_cursor is not None, f"no cursor returned for {cursor}"
+        assert new_cursor >= now - timedelta(seconds=5), (
+            f"the cursor {new_cursor} predates the sweep for input {cursor}"
+        )
+
+
+def test_with_NO_cursor_the_behaviour_is_the_old_window():
+    """First run, or an unreadable checkpoint: nothing to resume from, so the DEFAULT window is right
+    -- and the cursor returned is this sweep's start, because a first sweep that ran to completion
+    genuinely covered up to now.
+
+    An earlier version of this test asserted the cursor came back as None, which was the first draft
+    of the design (advance only when a cursor already existed) rather than what the function does.
+    Returning None on first run would mean the SECOND sweep still had nothing to resume from, so a
+    slow early cycle would be unprotected -- which is exactly the case this fix is for.
+    """
+    settings = Settings()
+    now = datetime.now()
+    since, cursor = _covered_through(settings, None)
+
+    expected = now - timedelta(seconds=AGG_BUCKET_S + settings.detect_interval_s)
+    assert abs((since - expected).total_seconds()) < 1, (
+        "with no cursor to resume from, the window must be the default one"
+    )
+    assert cursor is not None and cursor >= now - timedelta(seconds=5), (
+        "no cursor was returned, so the next sweep has nothing to resume from either"
+    )
+
+
+def test_a_cursor_in_the_FUTURE_falls_back_instead_of_wedging(caplog):
+    """A clock that stepped backwards would otherwise put the cursor in the future, where every later
+    sweep examines nothing -- turning a clock correction into a permanent detection outage."""
+    import logging
+
+    settings = Settings()
+    now = datetime.now()
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        since, cursor = _covered_through(settings, now + timedelta(hours=3))
+
+    expected = now - timedelta(seconds=AGG_BUCKET_S + settings.detect_interval_s)
+    assert abs((since - expected).total_seconds()) < 1, "did not fall back to the default window"
+    assert cursor is not None, "the cursor was not reset, so it stays in the future forever"
+    assert any("FUTURE" in r.getMessage() for r in caplog.records), (
+        "the clock step was not reported, so a silent fallback is all an operator would see"
+    )
+
+
+def test_an_outage_longer_than_the_RETENTION_is_clamped_and_reported(caplog):
+    """A worker scaled to zero for a day must not turn into a scoring burst over the whole retention
+    -- and the unrecoverable part must be LOGGED, because silently narrowing the window is how the
+    original defect hid."""
+    import logging
+
+    settings = Settings()
+    now = datetime.now()
+    gap_h = settings.retrain_window_h + 28
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        since, _cursor = _covered_through(settings, now - timedelta(hours=gap_h))
+
+    floor = now - timedelta(hours=settings.retrain_window_h)
+    assert abs((since - floor).total_seconds()) < 2, (
+        f"the window start {since} was not clamped to the {settings.retrain_window_h}h retention "
+        f"floor {floor}"
+    )
+    assert any("CANNOT be scored" in r.getMessage() for r in caplog.records), (
+        "the unrecoverable part of the gap was not reported"
+    )
+
+
+def test_an_outage_WITHIN_retention_is_fully_recovered():
+    """The clamp must not blunt the fix: a gap inside the retention is covered in full."""
+    settings = Settings()
+    now = datetime.now()
+    gap_h = max(1, settings.retrain_window_h - 48)
+
+    since, _cursor = _covered_through(settings, now - timedelta(hours=gap_h))
+
+    wanted = now - timedelta(hours=gap_h) - timedelta(seconds=AGG_BUCKET_S)
+    assert abs((since - wanted).total_seconds()) < 2, (
+        f"a {gap_h}h gap inside the {settings.retrain_window_h}h retention was not covered in full: "
+        f"window starts at {since}, expected {wanted}"
+    )
+
+
+def test_the_swep_ADVANCES_the_cursor_only_when_it_examined_something(tmp_path):
+    """A cursor written BEFORE the work would turn any mid-sweep exception into a permanently skipped
+    window -- the same defect made worse. This checks the three real paths: rows read and scored,
+    rows read but nothing anomalous, and no rows at all."""
+    settings = Settings(model_dir=str(tmp_path))
+
+    # No aggregates at all: the window was not examined, so coverage must NOT be recorded.
+    assert _load_detect_cursor(settings) is None
+    fake = _empty_sweep_client()
+    assert detection_sweep(fake, [StubDetector(0.9)], settings, ModelConfig()) == []
+    assert _load_detect_cursor(settings) is None, (
+        "a sweep that read no aggregates recorded coverage, so the window is skipped next cycle"
+    )
+
+
+def test_a_corrupt_cursor_is_DISCARDED_not_raised(tmp_path, caplog):
+    """A malformed checkpoint must not stop detection. Refusing to sweep because a file is unreadable
+    trades a small recovery for a total outage."""
+    import logging
+
+    settings = Settings(model_dir=str(tmp_path))
+    (tmp_path / "detect_cursor.json").write_text("{ this is not json")
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        cursor = _load_detect_cursor(settings)
+
+    assert cursor is None, "a corrupt cursor was trusted"
+    assert any("unusable" in r.getMessage() for r in caplog.records), "the corruption was not reported"
+
+
+def test_an_UNWRITABLE_cursor_does_not_lose_the_sweep(tmp_path, caplog):
+    """A checkpoint that cannot be written is a bookkeeping problem. Raising would discard verdicts
+    the sweep had already persisted and was about to alert on."""
+    import logging
+
+    settings = Settings(model_dir=str(tmp_path / "nope" / "deeper"))
+    (tmp_path / "nope").write_text("this is a FILE, so the directory cannot be created")
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
+        _save_detect_cursor(settings, datetime.now())  # must not raise
+
+    assert any("Could not record" in r.getMessage() for r in caplog.records), (
+        "an unwritable cursor failed silently, so an operator would never know coverage was lost"
+    )
+
+
+def test_a_sweep_that_EXAMINED_rows_RECORDS_coverage(monkeypatch, tmp_path):
+    """THE OTHER DIRECTION, which mutation testing showed was untested.
+
+    A mutation that removed the cursor write entirely went UNCAUGHT, because the tests above only
+    proved the empty case does NOT advance. Both directions matter: a sweep that read aggregates has
+    genuinely covered that window, and if it never records that, every cycle re-reads the same
+    lookback and a slow cycle is unprotected -- the defect this fix exists for.
+    """
+    from weirvern.worker import _load_detect_cursor
+
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, _inserted = _capturing_client()
+
+    settings = Settings(model_dir=str(tmp_path))
+    assert _load_detect_cursor(settings) is None, "a cursor existed before anything ran"
+
+    detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)], settings, ModelConfig())
+
+    cursor = _load_detect_cursor(settings)
+    assert cursor is not None, (
+        "a sweep that read and scored aggregates recorded no coverage, so the next cycle starts "
+        "from now() again and a slow cycle still steps over windows"
+    )
+    assert cursor >= datetime.now() - timedelta(seconds=10), f"the cursor {cursor} is stale"
+
+
+def test_the_cursor_ROUND_TRIPS_through_the_file(monkeypatch, tmp_path):
+    """The checkpoint is only useful if the NEXT process reads what this one wrote -- a worker
+    restart is one of the ways the skipped window occurred."""
+    from weirvern.worker import _load_detect_cursor
+
+    settings = Settings(model_dir=str(tmp_path))
+    when = datetime.now() - timedelta(minutes=7)
+    _save_detect_cursor(settings, when)
+
+    # A fresh read, exactly as a restarted process would do it.
+    assert _load_detect_cursor(settings) == when, "the cursor did not survive a round trip"
+
+    # And a SECOND Settings over the same directory sees it too, which is the restart case.
+    assert _load_detect_cursor(Settings(model_dir=str(tmp_path))) == when

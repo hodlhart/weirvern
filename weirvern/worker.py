@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
@@ -421,6 +422,140 @@ _ANOMALY_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime, datetime | None]:
+    """The lower bound for this sweep's window, and the new cursor to carry forward.
+
+    ── A SLOW CYCLE LEFT WINDOWS UNEXAMINED, WITH NOTHING LOGGED (audit F045) ──────────────────
+
+    The lookback is `AGG_BUCKET_S + detect_interval_s` = 600s at the shipped settings, and it used to
+    be applied to `now()` EVERY cycle. That is correct for a cycle that starts on time, and it
+    silently assumes the previous one ran 300s ago. When a cycle takes longer than the lookback, the
+    window has MOVED PAST windows that were never examined, and the only trace is a gap in a
+    heartbeat.
+
+    MEASURED ON THE LIVE CLUSTER, from `baseline_history.computed_at` gaps over 48 hours:
+
+        cycles: 292   median gap: 300s   p99: 966s   MAX: 1183s
+        ten separate gaps over 600s: 1183, 1170, 1138, 949, 897, 893, 847, 835, 818, 778
+        gap 1183s  ->  2 whole 5-minute buckets never examined
+
+    The cause is in this module's own loop: `train_if_due` runs BEFORE the sweep and blocks, so the
+    6-hourly full retrain (and any ClickHouse slowness) pushes the next sweep's `now()` forward while
+    `since` moves with it. The loop compensates the SLEEP at the end of the cycle -- so the cadence
+    looks healthy afterwards -- but nothing recovers the window that was skipped. Those buckets are
+    still in `flows_aggregated`: they age out of the lookback, not out of the table, so the data is
+    THERE and simply stops being examined.
+
+    THE FIX: carry the time this sweep STARTED, and back off one bucket from it. Concretely,
+
+        since = min(now - lookback, cursor - AGG_BUCKET_S)
+
+    WHY `min` AND WHY THE BACK-OFF, exactly:
+
+      * `now - lookback` is the healthy-case window. Keeping it as one arm of the `min` means this
+        function returns EXACTLY the previous window whenever cycles run on time -- the fix changes
+        nothing in the healthy case, which is the property to want in a recovery mechanism.
+      * `cursor - AGG_BUCKET_S` is the recovery arm: it re-covers the bucket that was IN FLIGHT when
+        the previous sweep started. That bucket was only partially written at the time (its flows
+        keep arriving for the rest of its 300s), so the previous sweep saw a partial row. Re-reading
+        it is safe -- the (window_start, src_addr) dedupe below skips what was already recorded --
+        and NOT re-reading it would be the gap this function exists to close.
+      * The two arms coincide in the healthy case: cursor = now - detect_interval_s, so
+        `cursor - AGG_BUCKET_S = now - detect_interval_s - AGG_BUCKET_S`, which is precisely
+        `now - lookback`. Verified by test rather than by arithmetic alone.
+
+    CLAMPED TO THE RETENTION THAT EXISTS. Widening the window across a long outage (a worker scaled
+    to zero for a day, say) would try to score 24 hours of aggregates in one pass: a burst that costs
+    far more than it finds, and the models are trained on `retrain_window_h` in any case. So the
+    window is never older than that retention, and a gap exceeding it is LOGGED as unrecoverable
+    rather than silently re-windowed.
+
+    RETURNED, NOT STORED. The caller owns the cursor, so this stays a pure function of its inputs and
+    is testable with no filesystem and no loop.
+    """
+    now = datetime.now()
+    lookback_s = max(AGG_BUCKET_S + settings.detect_interval_s, settings.detect_interval_s)
+    default_since = now - timedelta(seconds=lookback_s)
+
+    since = default_since
+    if last_covered is not None:
+        if last_covered > now:
+            # A clock that went BACKWARDS (an NTP step, a restarted node) must not be trusted: the
+            # cursor would sit in the future and every later sweep would examine nothing. The
+            # default window is self-correcting, so fall back to it.
+            logger.warning(
+                "Detection cursor %s is in the FUTURE (clock stepped?); falling back to the "
+                "default %ds window", last_covered, lookback_s,
+            )
+        else:
+            recovery_since = last_covered - timedelta(seconds=AGG_BUCKET_S)
+            since = min(default_since, recovery_since)
+
+    # Never older than the retention the models were trained against -- see the docstring.
+    floor = now - timedelta(hours=max(1, settings.retrain_window_h))
+    if since < floor:
+        logger.warning(
+            "Detection covered nothing for %.1fh before %s (retention %dh): those aggregates have "
+            "aged past the window the models know and CANNOT be scored now. Sweeping %.1fh instead. "
+            "A gap this large means detection was not running at all -- that is what the "
+            "detect_loop probe is for.",
+            (now - since).total_seconds() / 3600, last_covered, settings.retrain_window_h,
+            settings.retrain_window_h,
+        )
+        since = floor
+
+    return since, now
+
+
+def _load_detect_cursor(settings) -> datetime | None:
+    """The boundary the previous sweep covered, or None if there is no usable checkpoint.
+
+    ── WHY THIS IS ON DISK AND NOT IN MEMORY ───────────────────────────────────────────────────
+
+    A worker restart is one of the ways this gap occurs: the loop exits and the next process starts
+    a fresh `now() - lookback` window, stepping over everything the previous process had not reached.
+    An in-memory cursor would be reset by exactly the event it needs to survive, so it lives beside
+    the model artifacts -- the same `MODEL_DIR` that already persists across restarts for this
+    reason.
+
+    A MISSING OR UNREADABLE FILE IS NOT AN ERROR. On first run there is nothing to resume from, and
+    the default window is correct. A corrupt file is discarded rather than raising: refusing to
+    sweep because a checkpoint is malformed would trade a small recovery for a total detection
+    outage, which is the worse of the two.
+    """
+    path = Path(settings.model_dir) / "detect_cursor.json"
+    try:
+        data = json.loads(path.read_text())
+        value = data.get("covered_through")
+        if not value:
+            return None
+        return datetime.fromisoformat(value)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        logger.warning("Detection cursor at %s is unusable (%s); starting a fresh window", path, exc)
+        return None
+
+
+def _save_detect_cursor(settings, covered_through: datetime) -> None:
+    """Record the boundary this sweep covered. Failure here is logged, never raised.
+
+    A CHECKPOINT THAT CANNOT BE WRITTEN IS NOT A REASON TO LOSE THE SWEEP'S VERDICTS. The sweep has
+    already persisted its anomalies and is about to alert on them; raising here would discard that
+    work to report a bookkeeping problem. The consequence of a failed write is one skipped-window
+    risk, the same as before this fix, not a lost detection cycle.
+    """
+    path = Path(settings.model_dir) / "detect_cursor.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"covered_through": covered_through.isoformat()}))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not record the detection cursor at %s (%s). A cycle longer than the lookback "
+            "may skip a window until this is writable.", path, exc,
+        )
+
+
 def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> list[dict]:
     """One detection pass over the last DETECT_INTERVAL_S of aggregates.
 
@@ -467,8 +602,19 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     # importantly, SAFE: the (window_start, src_addr) dedupe below uses this SAME `since`, so rows
     # already recorded are skipped rather than re-alerted. That guard now has to work, where before
     # it was mostly idle because the window held nothing.
-    lookback_s = max(AGG_BUCKET_S + settings.detect_interval_s, settings.detect_interval_s)
-    since = (datetime.now() - timedelta(seconds=lookback_s)).strftime("%Y-%m-%d %H:%M:%S")
+    #
+    # ── FROM WHERE THE LAST SWEEP FINISHED, NOT FROM now() (audit F045) ─────────────────────────
+    #
+    # The lookback above is the window for a cycle that STARTS ON TIME, and it lives in
+    # `_covered_through` now -- it used to be computed here as an unused local, which is how a second
+    # copy of the arithmetic would have started drifting from the function that decides the window.
+    # Applied to `now()` on every cycle, it silently assumed the previous one ran `detect_interval_s`
+    # ago, so a cycle longer than the lookback moved the window past buckets that were never
+    # examined. See `_covered_through` for the measured gaps and `_load_detect_cursor` for why the
+    # cursor is on disk.
+    _last_covered = _load_detect_cursor(settings)
+    _since_dt, _new_cursor = _covered_through(settings, _last_covered)
+    since = _since_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     agg_cols, agg_rows = db.fetch_rows_named(
         client,
@@ -476,6 +622,9 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         since=since,
     )
     if not agg_rows:
+        # A cursor advanced here would be WRONG: an empty aggregate table means the window was not
+        # examined because there was nothing in it, and `_covered_through` must re-cover it next
+        # cycle in case rows arrive late. Only a sweep that actually ran records coverage.
         return []
 
     div_cols, div_rows = db.fetch_rows_named(
@@ -636,6 +785,10 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not record near misses (continuing): %s", exc)
     if not verdicts:
+        # The aggregates WERE read and scored here; there was simply nothing above threshold, so
+        # coverage is real and must be recorded -- otherwise a quiet network would look like the
+        # loop was stuck and every sweep would re-read the same window.
+        _save_detect_cursor(settings, _new_cursor)
         return []
 
     flow_by_key = {(f["window_start"], f["src_addr"]): f for f in flows}
@@ -742,6 +895,12 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     client.insert("weirvern.netflow_anomalies", rows, column_names=list(_ANOMALY_COLUMNS))
     logger.info("🚨 %d anomalies recorded", len(rows))
+    # ── THE SWEEP RAN TO COMPLETION: RECORD WHAT IT COVERED (audit F045) ────────────────────────
+    #
+    # Placed HERE, at the end, and not at the top: the cursor means "this time was examined", and a
+    # sweep that raised on the way would not have examined it. Recording at the start would turn any
+    # mid-sweep exception into a permanently skipped window -- the defect this fixes, made worse.
+    _save_detect_cursor(settings, _new_cursor)
     return fresh
 
 
