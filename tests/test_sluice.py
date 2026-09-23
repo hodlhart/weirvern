@@ -877,3 +877,119 @@ def test_inbound_port_rules_precede_the_whole_source_rules():
         "the whole-source drop precedes the port-scoped drop, so the port rule can never count "
         f"a packet and the GUI would report zero for a working rule:\n{input_part}"
     )
+
+
+# ── a STALE state row must not read as a current one ───────────────────────────────────────────
+#
+# MEASURED (live, 2026-09-23). Two test harnesses wrote an 'armed' row, exited, and left it. The
+# GUI then showed ARMED with 1 rule enforced while the node had ZERO sluice tables -- nothing was
+# blocked. Every reading on the panel was a historical fact presented as current, including the
+# drop counters, and an operator has no way to tell from the panel.
+#
+# The store already refuses to report ARMED alongside a backend mismatch, for the same reason. A
+# row's own timestamp is the extra evidence available, so it is used: the gate writes a row every
+# minute, and a row several minutes old means the writer has stopped.
+class _Result:
+    def __init__(self, rows) -> None:
+        self.result_rows = rows
+
+
+class _GateStore:
+    """A store whose query returns a prepared row, so staleness can be driven directly.
+
+    The column order must match the SELECT in load_gate_state exactly, including the two backend
+    columns -- a fake that ignores the column list is how this project once produced a test that
+    passed against a payload the server could never emit.
+    """
+
+    def __init__(self, updated_at, state: str = "armed") -> None:
+        self._row = ("sensor1", updated_at, state, "eth1", "eth0", 1, 1,
+                     5, 500, "detail text", "nft", "nft")
+
+    def query(self, sql, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        return _Result([self._row])
+
+
+def _load_gate_state(updated_at, state: str = "armed") -> dict:
+    from weirvern.sluice_store import load_gate_state
+
+    return load_gate_state(_GateStore(updated_at, state))
+
+
+def test_a_fresh_state_row_is_not_flagged_stale():
+    from datetime import UTC, datetime
+
+    out = _load_gate_state(datetime.now(UTC))
+    assert "stale" not in out, f"a fresh row was flagged stale: {out.get('warning')}"
+    assert out["age_s"] < 5
+
+
+def test_an_old_state_row_is_flagged_stale_and_explained():
+    from datetime import UTC, datetime, timedelta
+
+    out = _load_gate_state(datetime.now(UTC) - timedelta(minutes=20))
+    assert out.get("stale") is True, "a 20-minute-old 'armed' row was reported as current"
+    assert out["age_s"] >= 1200
+    assert "HISTORICAL" in out["warning"], f"the warning does not say what to do: {out['warning']}"
+
+
+def test_a_naive_timestamp_is_read_as_UTC_rather_than_giving_up():
+    """ClickHouse returns aware datetimes; a naive one must still yield an AGE.
+
+    THE FIRST VERSION OF THIS TEST WAS WORTHLESS, and mutation testing is what showed it: it
+    asserted only `available is True`, which holds whether the timestamp was normalised OR the
+    subtraction blew up and the except swallowed it. Both paths leave the read "successful", so the
+    test could not tell a working staleness check from a missing one.
+
+    What actually matters is that the row still gets an age. A naive timestamp that is silently
+    treated as unreadable means the staleness warning never fires for that row -- the gate could be
+    dead for a day and the panel would show a fresh ARMED.
+    """
+    from datetime import UTC, datetime
+
+    # Naive, but representing UTC -- which is what the conversion assumes.
+    naive_utc = datetime.now(UTC).replace(tzinfo=None)
+    out = _load_gate_state(naive_utc)
+    assert out["available"] is True, f"the read failed outright: {out.get('reason')}"
+    assert out.get("age_s") is not None, (
+        "a naive timestamp produced no age, so no staleness warning can ever fire for this row"
+    )
+    assert out["age_s"] < 60, f"a just-written naive row read as {out['age_s']}s old"
+
+
+def test_a_timestamp_that_cannot_be_subtracted_is_treated_as_unknown():
+    """The `except` branch is reachable, which mutation testing proved it was not before.
+
+    A datetime whose tzinfo raises is the case: `isinstance(written, datetime)` is True, so the
+    conversion is attempted, and the subtraction itself fails. That is the only way into the
+    handler -- the previous test passed a STRING, which fails the isinstance check and never
+    reaches it at all, so the branch was dead code as far as the suite was concerned.
+    """
+    from datetime import datetime, tzinfo
+
+    class Hostile(tzinfo):
+        def utcoffset(self, dt):  # noqa: ANN001, ANN201
+            raise ValueError("this timezone cannot be resolved")
+
+        def dst(self, dt):  # noqa: ANN001, ANN201
+            return None
+
+        def tzname(self, dt):  # noqa: ANN001, ANN201
+            return "hostile"
+
+    out = _load_gate_state(datetime(2026, 9, 22, 21, 0, 0, tzinfo=Hostile()))
+    assert out["available"] is True, f"the read failed: {out.get('reason')}"
+    assert "stale" not in out, "an unreadable timestamp was reported as a stale gate"
+    assert "age_s" not in out, (
+        "an age was reported for a timestamp that could not be read, so the number is invented"
+    )
+
+
+def test_an_unreadable_timestamp_is_not_evidence_of_staleness():
+    """Cannot-measure is not the same as measured-stale.
+
+    Reporting "stale" because a timestamp could not be read would be a conclusion drawn from the
+    instrument failing -- the failure mode the stress harness had to fix three times.
+    """
+    out = _load_gate_state("not a datetime")
+    assert "stale" not in out, "an unreadable timestamp was reported as a stale gate"

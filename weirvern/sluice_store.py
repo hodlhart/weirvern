@@ -281,6 +281,51 @@ def load_gate_state(client: Client, sensor: str = "") -> dict:
         )
         if out["state"] == GATE_STATE_ARMED:
             out["state"] = GATE_STATE_DEGRADED
+    # ── A STALE 'ARMED' MUST NOT READ AS CURRENT ─────────────────────────────────────────────
+    #
+    # MEASURED (live, 2026-09-23). Two of my own test harnesses wrote an 'armed' row, exited, and
+    # left it behind. The GUI then showed ARMED with 1 rule enforced while the node had ZERO
+    # sluice tables -- the gate was not blocking anything. Every reading on the panel was a
+    # historical fact presented as a current one, including the drop counters.
+    #
+    # The supervisor already refuses to call itself healthy without a recent confirmation
+    # (`SluiceSupervisor.healthy`), because "a supervisor that stopped running leaves state=armed
+    # behind". That reasoning applies to the ROW as well: whoever wrote it may have died, and the
+    # row cannot know. The row's own timestamp is the evidence, so it is used here rather than
+    # trusted blindly.
+    #
+    # HOW THE THRESHOLD IS CHOSEN: the enforcement pass runs every 60s (SLUICE_INTERVAL_S), so a
+    # row older than a few intervals means the process that writes it has stopped. 300s is five
+    # missed passes -- long enough that a slow cycle or a brief database stall does not trip it,
+    # short enough that an operator looking at the panel after a crash is told.
+    if out["state"] in (GATE_STATE_ARMED, GATE_STATE_DEGRADED):
+        age_s: float | None = None
+        try:
+            written = out.get("updated_at")
+            if isinstance(written, datetime):
+                # ClickHouse returns timezone-AWARE datetimes and `datetime.now()` is naive, so the
+                # subtraction raises TypeError inside this function -- which a caller's except would
+                # turn into "cannot read the gate state", hiding a working gate behind a bug in the
+                # staleness check. The project has hit exactly this before; normalise first.
+                stamp = written if written.tzinfo else written.replace(tzinfo=UTC)
+                age_s = (datetime.now(UTC) - stamp).total_seconds()
+        except Exception:  # noqa: BLE001
+            # An unreadable timestamp is not evidence of staleness. Leave age_s None, which the
+            # check below treats as "cannot say" rather than "stale" -- the same three-state
+            # reasoning the stress harness had to adopt after a false DEAD verdict.
+            age_s = None
+        if age_s is not None:
+            out["age_s"] = int(age_s)
+            if age_s > 300:
+                stale_note = (
+                    f"this state was recorded {int(age_s // 60)} minutes ago and the gate writes "
+                    "one every minute, so whatever recorded it has stopped. Treat the state and "
+                    "the counters below as HISTORICAL: they are what the gate last reported, not "
+                    "what it is doing now."
+                )
+                out["stale"] = True
+                existing = out.get("warning")
+                out["warning"] = f"{existing} {stale_note}" if existing else stale_note
     return out
 
 
