@@ -75,13 +75,34 @@ def cli_surface() -> tuple[set[str], dict[str, set[str]]]:
 
 
 def declared_env_vars() -> set[str]:
-    """Env var names read ANYWHERE in the package, through any helper."""
+    """Env var names read ANYWHERE in the package, through any helper.
+
+    ── WHY CONSTANTS ARE INCLUDED, AND THE DEFECT THAT MADE IT NECESSARY ───────────────────────
+    MEASURED (2026-09-23). This used to look only for a literal at the read site:
+    `environ.get("NAME")` or a helper taking a quoted string. That misses the ordinary pattern of
+    naming the variable once and referring to the constant:
+
+        TOKEN_ENV = "WEIRVERN_GUI_TOKEN"        # module constant
+        env.get(TOKEN_ENV)                      # read via the name, not a literal
+
+    The consequence was a FALSE FINDING in the other direction: the README documents
+    `WEIRVERN_GUI_TOKEN` (correctly -- it is how the break-glass door is authorized) and the audit
+    reported the claim as unsupported, because it could not see the read. Chasing that produced this
+    fix and also confirmed the read really exists, which is the point: the checker was wrong about
+    the CODE, and acting on it would have meant "fixing" correct documentation.
+
+    So uppercase module-level string constants are collected too. That is deliberately broad -- the
+    risk is a false PASS (a name that appears as a constant but is never read), and a false pass here
+    is far cheaper than telling someone their accurate documentation is wrong.
+    """
     names: set[str] = set()
     for path in (ROOT / "weirvern").rglob("*.py"):
         src = path.read_text()
         names |= set(re.findall(r"environ(?:\.get)?\(\s*[\"']([A-Z][A-Z0-9_]+)", src))
         names |= set(re.findall(r"_env_[a-z]+\(\s*[\"']([A-Z][A-Z0-9_]+)", src))
         names |= set(re.findall(r"_int_env\(\s*[\"']([A-Z][A-Z0-9_]+)", src))
+        # Module-level constants holding an env-var NAME: `TOKEN_ENV = "WEIRVERN_GUI_TOKEN"`.
+        names |= set(re.findall(r"^[A-Z][A-Z0-9_]*\s*=\s*[\"']([A-Z][A-Z0-9_]{3,})[\"']", src, re.M))
     return names
 
 

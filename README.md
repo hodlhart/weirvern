@@ -1007,10 +1007,25 @@ If it is **empty**, the "Lost the admin password?" door will not accept anything
 token disables writes rather than opening them, which is the safe default. Set one:
 
 ```bash
+# 1. write the token
 kubectl -n weirvern patch secret weirvern-secrets --type merge \
   -p "{\"data\":{\"WEIRVERN_GUI_TOKEN\":\"$(openssl rand -base64 24 | base64 -w0)\"}}"
+
+# 2. RESTART THE GUI -- this is not optional and not merely tidiness
 kubectl -n weirvern rollout restart deploy/weirvern-gui
+
+# 3. VERIFY the running pod actually holds it, before you need it
+P=$(kubectl -n weirvern get pods --no-headers | grep gui | grep Running | awk '{print $1}' | head -1)
+kubectl -n weirvern exec $P -c gui -- printenv WEIRVERN_GUI_TOKEN | tr -d '\n' | head -c 8; echo
 ```
+
+**Step 2 is the one that bites.** The token reaches the container through `envFrom`, which
+injects values **at container start** — so between patching the Secret and restarting the
+deployment, the running pod still holds the OLD value and **the token you just set is
+rejected**. Measured on a live deployment: a Secret patched 21 seconds after a pod started
+left that pod answering 401 to its own token until it was restarted. Without step 3 you
+discover this while already locked out, and the natural conclusion -- "the token does not
+work" -- is wrong.
 
 Treat it like a root password: it grants admin with no account. An install that predates
 this provisioning the token can be given one the same way.

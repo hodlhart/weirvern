@@ -730,6 +730,35 @@ else
         warn "  door will not accept anything. Set one with:"
         warn "    kubectl -n $NAMESPACE patch secret weirvern-secrets --type merge \\"
         warn "      -p \"{\\\"data\\\":{\\\"WEIRVERN_GUI_TOKEN\\\":\\\"\$(openssl rand -base64 24 | base64 -w0)\\\"}}\""
+        warn "    kubectl -n $NAMESPACE rollout restart deploy/weirvern-gui"
+        warn "  The RESTART is required: the token reaches the pod through envFrom, which injects"
+        warn "  values at container start, so the running pod keeps the old value until it restarts."
+    fi
+fi
+
+# ── VERIFY THE TOKEN THE RUNNING POD ACTUALLY HOLDS ─────────────────────────────────────────────
+#
+# MEASURED (2026-09-23): a Secret patched 21 seconds AFTER a pod started left that pod answering
+# 401 to its own token until it was restarted. `envFrom` injects values at container start, so the
+# Secret's value and the pod's environment can disagree for as long as the pod lives -- and the
+# symptom appears precisely when an operator is already locked out and trying the recovery door.
+#
+# Comparing the two here means the installer reports a MISMATCH at install time, when a restart is
+# a trivial fix, rather than leaving it to be discovered during an incident. The comparison does not
+# print either value: only whether they agree.
+GUI_POD=$(kubectl -n "$NAMESPACE" get pods --no-headers 2>/dev/null \
+    | grep gui | grep Running | awk '{print $1}' | head -1)
+if [ -n "${GUI_POD:-}" ]; then
+    SECRET_TOKEN=$(kubectl -n "$NAMESPACE" get secret weirvern-secrets \
+        -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\n' || true)
+    POD_TOKEN=$(kubectl -n "$NAMESPACE" exec "$GUI_POD" -c gui -- printenv WEIRVERN_GUI_TOKEN 2>/dev/null | tr -d '\n' || true)
+    if [ -n "$SECRET_TOKEN" ] && [ "$SECRET_TOKEN" != "$POD_TOKEN" ]; then
+        warn "the GUI pod is NOT holding the operator token from the Secret:"
+        warn "  the Secret and the running pod disagree, because envFrom injects values at"
+        warn "  container start. The break-glass door will reject the token you can read."
+        warn "  Fix: kubectl -n $NAMESPACE rollout restart deploy/weirvern-gui"
+    elif [ -n "$SECRET_TOKEN" ] && [ "$SECRET_TOKEN" = "$POD_TOKEN" ]; then
+        ok "the GUI pod is holding the operator token from the Secret (the break-glass door will work)"
     fi
 fi
 

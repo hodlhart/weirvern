@@ -306,3 +306,54 @@ def test_the_last_resort_recovery_command_uses_real_api_names():
     )
     assert "store.load()" in text, "the README's command omits the load() step"
     assert hasattr(cluster_config, "ClusterConfig")
+
+
+# ── envFrom bakes values at container start: the token needs a RESTART ─────────────────────────
+#
+# MEASURED DEFECT (2026-09-23). A Secret was patched 21 seconds AFTER its pod started, and that pod
+# answered 401 to its own token for as long as it lived. `envFrom` injects environment variables at
+# CONTAINER START, so the Secret's value and the running pod's environment can disagree, and the
+# symptom appears at the worst possible moment: an operator who lost the admin password reads the
+# token out of the Secret, finds the recovery door rejects it, and concludes the documented recovery
+# path is broken. It is not broken; it is one restart away from working.
+#
+# The discovery was confusing enough that I first suspected a token baked into the IMAGE -- which
+# would have been a public credential -- before checking timestamps showed the mundane cause.
+def test_the_readme_says_the_restart_is_required():
+    """Documenting the patch without the restart hands the operator a token that does not work."""
+    text = (ROOT / "README.md").read_text()
+    idx = text.index("patch secret weirvern-secrets")
+    window = text[idx: idx + 900]
+    assert "rollout restart deploy/weirvern-gui" in window, (
+        "the README's set-a-token command omits the restart, so the token it writes is rejected by "
+        "the running pod until something else restarts it"
+    )
+    assert "envFrom" in window or "container start" in window, (
+        "the README does not explain WHY the restart is required, so a reader treats it as "
+        "tidiness and skips it"
+    )
+    assert "printenv WEIRVERN_GUI_TOKEN" in window, (
+        "the README does not show how to VERIFY the running pod holds the token, which is the "
+        "step that catches the mismatch before it matters"
+    )
+
+
+def test_the_installer_verifies_the_pod_holds_the_secret_token():
+    """The installer must compare the two, not assume the Secret reached the container.
+
+    An installer that writes the Secret and moves on leaves the mismatch to be discovered during an
+    incident. Comparing at install time turns it into a one-line fix.
+    """
+    text = (ROOT / "install.sh").read_text()
+    assert "POD_TOKEN" in text and "SECRET_TOKEN" in text, (
+        "install.sh does not compare the Secret's token against the running pod's environment"
+    )
+    idx = text.index("POD_TOKEN")
+    window = text[idx: idx + 900]
+    assert "rollout restart" in window, (
+        "the installer detects the mismatch but does not tell the operator the fix"
+    )
+    # It must not print either value: this is a credential, and a mismatch report is enough.
+    assert "printenv WEIRVERN_GUI_TOKEN" in window, (
+        "the verification does not read the pod's environment, so it cannot detect anything"
+    )
