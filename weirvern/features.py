@@ -99,18 +99,47 @@ def extract_features(flow: dict[str, Any], diversity: dict[str, Any] | None = No
         "log_flow_count": _safe_log1p(flow_count),
     }
 
-    # Temporal cyclic encoding
+    # ── TEMPORAL CYCLIC ENCODING, ON CLICKHOUSE'S DAY NUMBERING (audit: scale mismatch) ────────
+    #
+    # `dow` MUST be ClickHouse's `toDayOfWeek`, which is Monday=1 .. Sunday=7, NOT Python's
+    # `datetime.weekday()`, which is Monday=0 .. Sunday=6. The training queries in
+    # models/detectors.py encode the day with:
+    #
+    #     sin(2*pi()*toDayOfWeek(a.window_start)/7)
+    #
+    # and this function encoded the same window with a day number ONE LOWER. MEASURED against the
+    # cluster for a Wednesday window, which both agree is day-index 3 vs 2:
+    #
+    #     from ClickHouse: dow_sin  0.4338837  dow_cos -0.9009689
+    #     from this module: dow_sin  0.9749279  dow_cos -0.2225209
+    #
+    # So the model was trained on one point on the weekly circle and asked to score another. Every
+    # score was computed on a vector that does not mean what the training row meant: the model was
+    # not wrong, it was answering a different question. That is the whole of the "train/score scale
+    # mismatch", and it is silent -- the vector has the right length and every number is a valid
+    # number, so nothing raises and no metric looks wrong.
+    #
+    # `toDayOfWeek` IS ALSO WHAT MAKES THE WEEKDAY RANGE NON-CONTIGUOUS-AT-THE-EDGE, which is why
+    # the value is converted to Python's convention FIRST and then used for everything downstream.
+    # Writing the sine with CH's number but leaving `is_business_hours` on Python's would put the
+    # two halves of the same time encoding on different calendars.
     try:
         dt = flow["window_start"]
         hour = dt.hour
-        dow = dt.weekday()
+        # `isoweekday()` is Monday=1..Sunday=7 -- the SAME numbering as ClickHouse's toDayOfWeek,
+        # and the only Python accessor that is. Using it directly is what keeps this readable as
+        # "the same number the query uses".
+        dow = dt.isoweekday()
     except (KeyError, AttributeError):
         hour, dow = 0, 0
     f["hour_sin"] = math.sin(2 * math.pi * hour / 24)
     f["hour_cos"] = math.cos(2 * math.pi * hour / 24)
     f["dow_sin"] = math.sin(2 * math.pi * dow / 7)
     f["dow_cos"] = math.cos(2 * math.pi * dow / 7)
-    f["is_business_hours"] = 1.0 if 8 <= hour <= 18 and dow < 5 else 0.0
+    # ClickHouse: `toDayOfWeek(...) < 6` -> Mon..Fri, because 6 is Saturday. The same five days in
+    # Python's numbering would be `< 5`, so this predicate now reads on the SAME number as the
+    # query rather than on a translated one. A test pins the two against each other for all 7 days.
+    f["is_business_hours"] = 1.0 if 8 <= hour <= 18 and dow < 6 else 0.0
 
     # Diversity metrics (Phase 2)
     if diversity:
