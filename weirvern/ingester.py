@@ -305,12 +305,22 @@ def map_zeek_ssl(rec: dict[str, str]) -> dict[str, Any] | None:
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
         "dst_port": _safe_int(rec.get("id.resp_p"), 0),
-        "version": rec.get("version") or "",
-        "cipher": rec.get("cipher") or "",
-        "server_name": rec.get("server_name") or "",
-        "ja4": rec.get("ja4") or "",
-        "ja4_orig": rec.get("ja4_o") or rec.get("ja4_orig") or "",
-        "validation_status": rec.get("validation_status") or "",
+        # THROUGH zeek_value, like every other mapper in this file. These previously read the
+        # record directly with `rec.get(...) or ""`, which bypasses the sentinel handling -- so
+        # `(empty)` was stored as the literal 7-character string. `ja4` is the one that mattered
+        # most: a live ML feature counts DISTINCT ja4 values, so a sentinel stored literally
+        # reported a fingerprint for a host that had none, and `ja4 != '-'` guards elsewhere
+        # matched against the text.
+        #
+        # The read layer now normalises both sentinels as well, so this is belt-and-braces. It is
+        # kept because THIS mapper is also reached from the observation path, which does not pass
+        # through `tail_zeek_log` -- and a value that is wrong in one caller is wrong.
+        "version": zeek_value(rec.get("version", "")) or "",
+        "cipher": zeek_value(rec.get("cipher", "")) or "",
+        "server_name": zeek_value(rec.get("server_name", "")) or "",
+        "ja4": zeek_value(rec.get("ja4", "")) or "",
+        "ja4_orig": zeek_value(rec.get("ja4_o") or rec.get("ja4_orig", "")) or "",
+        "validation_status": zeek_value(rec.get("validation_status", "")) or "",
         "established": 1 if (rec.get("established") or "").lower() in {"t", "true"} else 0,
     }
 
@@ -1234,7 +1244,31 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
             # literal `-`, because each mapper had to remember to do it per field. Doing it
             # once here means a mapper cannot forget -- and the per-field normalisations were
             # left in place, since they are now no-ops that document the intent.
-            rec = {k: ("" if v == "-" else v) for k, v in rec.items()}
+            #
+            # ── BOTH SENTINELS, AND THE SECOND ONE WAS MISSING HERE ────────────────────────
+            #
+            # MEASURED: this normalised `-` ONLY. Zeek's header declares TWO sentinels and
+            # they mean different things -- `-` is "not set", `(empty)` is "set, but to an
+            # empty value" -- so `(empty)` reached the database as a literal 7-character
+            # string. `zeek_value()` has handled both since it was written, but it is called
+            # PER FIELD by each mapper, so a mapper that reads a field directly with
+            # `rec.get(...) or ""` bypasses it entirely. `map_zeek_ssl` does exactly that for
+            # EVERY string field in its row:
+            #
+            #     "ja4": rec.get("ja4") or "",
+            #     "server_name": rec.get("server_name") or "",
+            #     "cipher": rec.get("cipher") or "",
+            #
+            # WHY IT MATTERED, measured rather than assumed: `weirvern.zeek_ssl.ja4` held the
+            # literal `(empty)`, and `uniqExactIf(ja4, ja4 != '')` counts it as a REAL
+            # DISTINCT FINGERPRINT -- so `zeek_ja4_count`, a live ML feature, reported 1 on
+            # hosts that had no fingerprint at all. `ja4 != '-'` guards elsewhere were
+            # satisfied by it, so a detection rule could compare against the literal text.
+            #
+            # Normalising BOTH here is what makes the guarantee real: the mapper-level
+            # per-field calls stay (they document intent and cover the observation path), and
+            # this cannot be bypassed by a mapper that forgets.
+            rec = {k: ("" if v in (ZEEK_NULL, ZEEK_EMPTY) else v) for k, v in rec.items()}
             row = mapper(rec)
             if row is None:
                 continue

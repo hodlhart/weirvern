@@ -404,3 +404,207 @@ def test_a_cross_version_membership_test_does_not_raise():
 
     assert (ip_address("2001:db8::1") in ip_network("198.51.100.0/24")) is False
     assert (ip_address("198.51.100.9") in ip_network("2001:db8::/32")) is False
+
+
+# ── BOTH Zeek sentinels must reach the database as absent ────────────────────────────────────
+#
+# MEASURED DEFECT (audit F012/F021/F027, confirmed by reading the code AND running it). Zeek's
+# header declares TWO sentinels with different meanings:
+#
+#     #unset_field   -         "not set"
+#     #empty_field   (empty)   "set, but to an empty value"
+#
+# `zeek_value()` handles both, but it is applied PER FIELD by each mapper, so a mapper reading a
+# field directly with `rec.get(...) or ""` bypasses it. `map_zeek_ssl` did exactly that for EVERY
+# string field in its row, so `weirvern.zeek_ssl.ja4` held the literal 7-character `(empty)`:
+#
+#   * `uniqExactIf(ja4, ja4 != '') AS ja4_count` counted it as a REAL DISTINCT FINGERPRINT, so
+#     `zeek_ja4_count` (a live ML feature) reported 1 on hosts with no fingerprint at all;
+#   * `ja4 != '-'` guards elsewhere were satisfied by it, so a detection rule could compare
+#     against the literal text;
+#   * `weirvern/tools/sanitize_identifiers.py` counts address-shaped tokens, and `(empty)` is not
+#     one, so no other guard noticed either.
+#
+# THE READ LAYER NOW NORMALISES BOTH, which is the fix: a mapper cannot forget what it does not
+# have to remember. These tests drive the REAL tailer so they cannot be satisfied by a
+# mapper-level change alone.
+
+def test_map_zeek_ssl_leaves_the_empty_sentinel_as_an_absent_value():
+    """The mapper in isolation: every string field it reads directly must come out absent."""
+    from weirvern.ingester import map_zeek_ssl
+
+    row = map_zeek_ssl({
+        "ts": "1758000000.0", "uid": "C1",
+        "id.orig_h": "198.51.100.5", "id.resp_h": "198.51.100.9", "id.resp_p": "443",
+        "version": "TLSv13", "cipher": "(empty)", "server_name": "(empty)",
+        "ja4": "(empty)", "ja4_o": "(empty)", "validation_status": "(empty)",
+    })
+    assert row is not None
+    for field in ("ja4", "ja4_orig", "server_name", "cipher", "validation_status"):
+        assert row[field] != "(empty)", (
+            f"{field} stored Zeek's empty sentinel literally. A sentinel counted as a real value "
+            f"is how `zeek_ja4_count` reported 1 for a host with no fingerprint"
+        )
+        assert row[field] == "", f"{field} should be an empty string, not {row[field]!r}"
+
+
+# ── a REAL dns.log shape, copied from the live sensor ────────────────────────────────────────
+#
+# THE ARITY IS THE POINT. The header declares 26 fields; a fixture with fewer makes every row
+# unmappable, so the tailer inserts NOTHING and the test passes VACUOUSLY. Three attempts at
+# this test did exactly that before the real header was read off the sensor with `cat -A`.
+_DNS_FIELDS = [
+    'ts',
+    'uid',
+    'id.orig_h',
+    'id.orig_p',
+    'id.resp_h',
+    'id.resp_p',
+    'proto',
+    'trans_id',
+    'rtt',
+    'query',
+    'qclass',
+    'qclass_name',
+    'qtype',
+    'qtype_name',
+    'rcode',
+    'rcode_name',
+    'AA',
+    'TC',
+    'RD',
+    'RA',
+    'Z',
+    'answers',
+    'TTLs',
+    'rejected',
+    'opcode',
+    'opcode_name',
+]
+_DNS_TYPES = [
+    'time',
+    'string',
+    'addr',
+    'port',
+    'addr',
+    'port',
+    'enum',
+    'count',
+    'interval',
+    'string',
+    'count',
+    'string',
+    'count',
+    'string',
+    'count',
+    'string',
+    'bool',
+    'bool',
+    'bool',
+    'bool',
+    'count',
+    'vector[string]',
+    'vector[interval]',
+    'bool',
+    'count',
+    'string',
+]
+
+
+class _CaptureClient:
+    """A client that records what the tailer would insert."""
+
+    def __init__(self):
+        self.rows = []
+
+    def insert(self, table, rows, column_names=None):
+        for r in rows:
+            self.rows.append(dict(zip(column_names or [], r, strict=False)))
+
+
+def _real_dns_log(tmp_path, answers, *, subdir="a"):
+    """A dns.log matching the real header, with `answers` set to the given value.
+
+    ── TWO THINGS THAT MAKE THIS TEST PROVE SOMETHING, BOTH LEARNED THE HARD WAY ────────────────
+
+    1. THE FILENAME IS THE LOG TYPE. `tail_zeek_log` computes `log_type` from `basename(path)`
+       split on "." and returns EARLY when that name is not in `ZEEK_MAPPERS`. So a fixture named
+       `dns2.log` reads nothing at all and the assertion fails for a reason that has nothing to do
+       with the code under test -- and, worse, a fixture named `dns.log` in a test that forgot to
+       assert the insert happened would pass VACUOUSLY. Every fixture here is `dns.log`, each in
+       its own subdirectory.
+
+    2. THE ROW MUST SATISFY THE MAPPER. `map_zeek_dns` returns None when `id.orig_h`/`id.resp_h`
+       are absent, so a shortened fixture is dropped before it can reach the insert. A minimal
+       3-field row therefore inserts NOTHING, and a test built on one asserts against an empty
+       list while looking like a passing test of the normalisation.
+    """
+    T = chr(9)
+    row = ["1758000000.0", "C1", "198.51.100.5", "40000", "198.51.100.9", "53", "udp", "51987",
+           "0.1", "example.test", "1", "C_INTERNET", "1", "A", "0", "NOERROR",
+           "F", "F", "T", "F", "0", answers, "300", "F", "0", "query"]
+    assert len(row) == len(_DNS_FIELDS), "the fixture arity must match the header it declares"
+    d = tmp_path / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "dns.log"
+    p.write_text(
+        "#separator " + chr(92) + "x09" + chr(10)
+        + "#unset_field" + T + "-" + chr(10)
+        + "#empty_field" + T + "(empty)" + chr(10)
+        + "#fields" + T + T.join(_DNS_FIELDS) + chr(10)
+        + "#types" + T + T.join(_DNS_TYPES) + chr(10)
+        + T.join(row) + chr(10)
+    )
+    return p
+
+
+def test_the_READ_LAYER_covers_what_a_mapper_forgets(tmp_path):
+    """THE BACKSTOP, driven through the real tailer, on a field NO MAPPER NORMALISES.
+
+    `map_zeek_dns` reads `answers` with `rec.get("answers") or ""` (measured: 79 such raw reads
+    across the mappers), so the READ LAYER is the only thing that can turn its `(empty)` into an
+    absent value. That is what makes this a test of the backstop rather than of a mapper.
+
+    Deliberately NOT ja4: the SSL mapper normalises ja4 itself, so reverting the read layer alone
+    left the first version of this test green.
+    """
+    from weirvern.ingester import tail_zeek_log
+
+    client = _CaptureClient()
+    tail_zeek_log(client, str(_real_dns_log(tmp_path, "(empty)", subdir="a")))
+    assert client.rows, (
+        "the tailer inserted nothing. The fixture's ARITY must match the header it declares -- a "
+        "shorter row is unmappable and this test would pass while proving nothing"
+    )
+    assert client.rows[0].get("answers") == "", (
+        "the sentinel reached the INSERT as literal text. The read layer normalised only `-`, and "
+        "the DNS mapper reads this field raw, so nothing else could have caught it"
+    )
+    for field, val in client.rows[0].items():
+        assert val != "(empty)", f"{field} reached the INSERT as the literal sentinel"
+
+
+def test_the_read_layer_still_normalises_the_unset_sentinel(tmp_path):
+    """The original guarantee survives the change: `-` is still absent, for the same reason."""
+    from weirvern.ingester import tail_zeek_log
+
+    client = _CaptureClient()
+    tail_zeek_log(client, str(_real_dns_log(tmp_path, "-", subdir="b")))
+    assert client.rows, (
+        "the tailer inserted nothing. Either the fixture is not named dns.log (the tailer derives "
+        "the log type from the FILENAME and skips anything it has no mapper for), or the row does "
+        "not satisfy the mapper -- both of which make this test pass while proving nothing"
+    )
+    assert client.rows[0].get("answers") == ""
+
+
+def test_a_REAL_value_still_reaches_the_table(tmp_path):
+    """And the normalisation must not eat real data. Without this, a normaliser that blanked EVERY
+    field would satisfy the two tests above."""
+    from weirvern.ingester import tail_zeek_log
+
+    client = _CaptureClient()
+    tail_zeek_log(client, str(_real_dns_log(tmp_path, "198.51.100.20", subdir="c")))
+    assert client.rows, "the tailer inserted nothing, so this test proves nothing"
+    assert client.rows[0].get("answers") == "198.51.100.20"
+    assert client.rows[0].get("query") == "example.test"
