@@ -494,7 +494,8 @@ class Intercept:
 
     def __init__(self, plan: InterceptPlan, sender=None, refresh_s: float = DEFAULT_REFRESH_S,
                  forwarding: ForwardingState | None = None,
-                 max_runtime_s: float | None = None) -> None:
+                 max_runtime_s: float | None = None,
+                 allow_management_iface: bool = False) -> None:
         self.plan = plan
         self._sender = sender or ArpSender(plan.iface)
         self.refresh_s = refresh_s
@@ -505,6 +506,15 @@ class Intercept:
         self.max_runtime_s = max_runtime_s
         self._started = False
         self.started_at: float = 0.0
+        # AN EXPLICIT ESCAPE HATCH FOR THE MANAGEMENT-INTERFACE REFUSAL (audit F033).
+        #
+        # Default False, so the check fires unless a caller deliberately opts out. A single-NIC
+        # test host genuinely has one interface for both roles, and refusing outright would make
+        # that case impossible rather than merely dangerous -- so the door exists, but it has to be
+        # opened on purpose and it is visible in the call rather than inherited from a flag that
+        # happened to be set. The refusal message names the alternative (split the roles, or set
+        # MGMT_IFACE elsewhere) before anyone reaches for this.
+        self.allow_management_iface = allow_management_iface
         # Records the node's network sysctls BEFORE this intercept changes them, so `stop()` can put
         # the exact previous values back. Measured on a real host: they were left at the intercept's
         # values hours after a clean-looking teardown, and `rp_filter=0` on a whole node disables a
@@ -555,9 +565,44 @@ class Intercept:
 
     # -- lifecycle -------------------------------------------------------------
     def start(self) -> None:
-        """Arm the watchdog, THEN poison. The order is the safety property."""
+        """Arm the watchdog, THEN poison. The order is the safety property.
+
+        ── THE LAST GATE BEFORE ANYTHING IS POISONED (audit F033, CONFIRMED BY RUNNING IT) ───────
+
+        The "never intercept the management interface" rule was PROSE on this path. `mode.py`
+        states it in NEVER_INTERCEPT, the CLI enforces it when a mode is enabled, and
+        `cluster_config.validate` enforces it when a ConfigMap is written -- but measured, there
+        were ZERO references to MGMT_IFACE in intercept.py, siphon_supervisor.py or worker.py, and
+        an `InterceptPlan` for the management interface constructed and armed without objection.
+
+        That matters because BOTH write-time checks are bypassable: the CLI has `--force` (for the
+        watchdog, but it writes the mode anyway) and the ConfigMap can be edited by anyone with
+        cluster access. Intercepting the management port cuts the sensor off from the cluster that
+        manages it -- and in siphon mode the relay is also what keeps the segment reachable, so the
+        failure is not "the sensor goes dark", it is "the sensor goes dark while holding the
+        segment's traffic".
+
+        CHECKED HERE, at the point of no return, because a check that only exists upstream is a
+        check that can be skipped by anything that does not go through the upstream.
+        """
         if self._started:
             return
+
+        # THE MANAGEMENT-INTERFACE REFUSAL, FIRST, before the sysctls are recorded and before
+        # anything is installed. Deliberately NOT skippable: this is the structural role, and
+        # forging mappings on the path the sensor itself depends on cannot relay anything -- it
+        # only cuts the sensor off.
+        if not self.allow_management_iface:
+            mgmt = (os.environ.get("MGMT_IFACE") or "").strip()
+            if mgmt and mgmt == self.plan.iface:
+                raise InterceptError(
+                    f"refusing to intercept on {self.plan.iface}: it is the MANAGEMENT interface "
+                    f"(MGMT_IFACE). Intercepting the management path cuts this sensor off from the "
+                    f"cluster that manages it, and in siphon mode the relay is what keeps the "
+                    f"segment reachable -- so the sensor would go dark while still holding the "
+                    f"segment's traffic. Set a separate capture interface, or set MGMT_IFACE to a "
+                    f"different interface if this host genuinely has only one."
+                )
 
         # 0. RECORD THE SYCTLS BEFORE TOUCHING ANYTHING. Reading them later would capture the
         #    intercept's own values, and restoring those is the same as not restoring at all.
@@ -663,13 +708,31 @@ class Intercept:
         # `restore()` is idempotent and returns the sysctls it could NOT put back, which is reported
         # rather than swallowed: a silent failure here leaves the node's spoofing defence off, and
         # the operator has no other way to learn that.
+        #
+        # ── TWO DIFFERENT FACTS, REPORTED DIFFERENTLY (audit F034, CONFIRMED BY RUNNING IT) ────
+        #
+        # `restore()` in the DEPLOYED container returns every managed name, because /proc/sys is
+        # read-only there and nothing could be written -- so the old code logged "could NOT restore
+        # 5 network sysctl(s) ... Set them back by hand" on EVERY stop, in the deployment where
+        # that is the NORMAL state. Measured: applied=[], unrestorable=5 entries.
+        #
+        # That warning was false in the way that matters. This process changed none of those
+        # values; the overlay's privileged init container owns them. A warning that fires on every
+        # clean stop trains the operator to ignore it, and then the one that matters is ignored
+        # too -- which is the same reasoning `apply()` already applies to per-sysctl write
+        # failures, and the reason `needs_node_restore()` exists.
+        #
+        # So: a sysctl WE changed and cannot put back is a WARNING with the way back. A sysctl we
+        # merely could not write is a LIMITATION, stated once at debug, because in this deployment
+        # it is expected.
         unrestored = self._sysctls.restore()
-        if unrestored:
+        ours = self._sysctls.changed_by_us()
+        if ours:
             logger.warning(
-                "could NOT restore %d network sysctl(s): %s. The node is still configured for "
-                "an intercept -- rp_filter=0 disables reverse-path filtering for EVERY interface. "
-                "Set them back by hand.",
-                len(unrestored), ", ".join(unrestored),
+                "could NOT restore %d network sysctl(s) that THIS intercept changed: %s. The node "
+                "is still configured for an intercept -- rp_filter=0 disables reverse-path "
+                "filtering for EVERY interface. Set them back by hand.",
+                len(ours), ", ".join(ours),
             )
             # PRINT THE WAY BACK, not just the problem. In the deployed container /proc/sys is
             # read-only, so this process CANNOT restore the node -- the sysctls were set by the
@@ -683,6 +746,14 @@ class Intercept:
                     "run this on the node to put the sysctls back (values recorded before "
                     "this intercept changed anything):\n%s", command,
                 )
+        elif unrestored:
+            # Read-only /proc/sys: the normal state in the deployment. Nothing here was changed by
+            # this process, so there is nothing to undo -- the node-side init container owns them.
+            logger.debug(
+                "%d network sysctl(s) are set node-side and were not changed by this process (%s); "
+                "the overlay's init container owns them",
+                len(unrestored), ", ".join(unrestored),
+            )
         self._started = False
 
     @property

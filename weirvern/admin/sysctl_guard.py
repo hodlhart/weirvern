@@ -277,6 +277,31 @@ class SysctlGuard:
             not self.snapshot.applied and not self.capability.can_write and bool(self.snapshot.original)
         )
 
+    def changed_by_us(self) -> list[str]:
+        """The sysctls THIS PROCESS actually wrote, and therefore must put back.
+
+        ── WHY THIS EXISTS (audit F034, CONFIRMED BY RUNNING IT) ────────────────────────────────
+
+        `restore()` returns `unrestorable`, which in the deployed container is populated by
+        `apply()` with EVERY managed name -- because /proc/sys is read-only here, so nothing in
+        this process could be written. Measured with `can_write = False`:
+
+            applied after a read-only apply:  []
+            unrestorable:                     5 entries
+            restore() returned:               5 names
+
+        `intercept.stop()` then logs "could NOT restore 5 network sysctl(s) ... Set them back by
+        hand" on EVERY stop, in the deployment where that is the NORMAL state. The warning is
+        false: this process changed none of them, and the overlay's privileged init container owns
+        them. A warning that fires on every clean stop is one an operator learns to ignore, and
+        then the one that matters is ignored too -- which is the same reasoning `apply()` already
+        uses for not reporting five per-sysctl write failures.
+
+        So the caller needs both facts separately: what WE changed (report the way back when we
+        cannot restore it) versus what we merely could not read (report as a limitation, once).
+        """
+        return [n for n in self.snapshot.applied if self.snapshot.original.get(n) is not None]
+
     def record_only(self) -> list[str]:
         """Record the originals WITHOUT changing anything. For a dry run or an audit.
 

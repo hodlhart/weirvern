@@ -292,8 +292,8 @@
       "severity": "HIGH",
       "area": "Siphon",
       "title": "The management-interface never-intercept rule is prose-only, and the `ZEEK_IFACE` fallback turns a known loch misconfiguration into the siphon poison interface",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED BY RUNNING IT, then fixed. The 'never intercept the management interface' rule was PROSE on the path that arms an intercept. Measured: ZERO references to MGMT_IFACE in intercept.py, siphon_supervisor.py or worker.py -- `grep -c` returns 0 for all three -- and an InterceptPlan for the management interface constructed and ARMED without objection. The two places that did check are both WRITE-TIME and both bypassable: cli.py when a mode is enabled (and that command takes --force) and cluster_config.validate when a ConfigMap is written (anyone with cluster access can edit a ConfigMap). The consequence in siphon mode is not 'the sensor goes dark' but 'the sensor goes dark WHILE HOLDING the segment's traffic', because the relay is also what keeps the segment reachable. FIXED at the point of no return: Intercept.start() now refuses when MGMT_IFACE equals the intercept interface, BEFORE the sysctls are recorded and before anything is installed, with an explicit `allow_management_iface=False` escape hatch for single-NIC test hosts. VERIFIED in isolation (all later stages stubbed): MGMT_IFACE unset -> armed; MGMT_IFACE==iface -> REFUSED naming the interface and the alternative; different interface -> armed; hatch -> armed. 4 mutations caught including removing the gate and defaulting the hatch to True. The ZEEK_IFACE fallback half was checked too: an unset ZEEK_IFACE resolves to empty, NOT to MGMT_IFACE, so the product does not construct the collision its own gate refuses.",
       "report": "kr2",
       "id": "F033"
     },
@@ -301,8 +301,8 @@
       "severity": "HIGH",
       "area": "Siphon",
       "title": "In the deployed (read-only) case, every intercept stop logs \"could NOT restore \u2026 Set them back by hand\" and prints a remedy that re-applies the intercept's values",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED BY RUNNING IT, then fixed. In the deployed container /proc/sys is READ-ONLY, so `SysctlGuard.apply()` correctly writes nothing and records the originals -- but it also marks EVERY managed name `unrestorable`, which `restore()` returns. Measured with can_write=False: applied=[], unrestorable=5 entries, restore() returned 5 names. `intercept.stop()` therefore logged 'could NOT restore 5 network sysctl(s) ... Set them back by hand' on EVERY stop, in the deployment where that is the NORMAL state. The warning was false: this process changed none of those values, and the overlay's privileged init container owns them. This is the same reasoning apply() already applies to per-sysctl write failures ('reporting five per-sysctl write failures on every run trains the reader to ignore them -- and then the one that matters is ignored too'), and needs_node_restore() already existed to describe this case. FIXED: a new `changed_by_us()` separates 'we wrote this and cannot put it back' (WARNING, with the node_restore_command printed) from 'we could not write this at all' (debug, once), so the warning now fires only when it is true. 3 mutations caught, including suppressing the warning unconditionally and dropping the way back. NOTE: report body not recoverable (tmp/kr2.md cleaned); the title's claim was verified directly by running the code.",
       "report": "kr2",
       "id": "F034"
     },
