@@ -722,3 +722,35 @@ def test_the_installer_never_offers_to_remove_the_management_address():
     assert 'ZEEK_IFACE" != "$MGMT_IFACE"' in block, (
         "the removal is not guarded against a shared-NIC install"
     )
+
+
+def test_every_query_that_uses_named_params_can_actually_be_bound():
+    """A literal `%` inside SQL text is a FORMAT PLACEHOLDER to clickhouse-connect.
+
+    Writing "100%" in a SQL COMMENT made the driver raise `TypeError: not enough arguments for
+    format string`, so the query never ran, coverage returned None, and the panel rendered dashes
+    -- a working query reporting nothing because of prose in a comment. Prose inside SQL is still
+    SQL. `%%` is the escape when a literal percent really is needed.
+    """
+    import inspect
+    import re
+
+    mods = [__import__("weirvern.host_identity", fromlist=["x"]),
+            __import__("weirvern.admin.status", fromlist=["x"]),
+            __import__("weirvern.fingerprint", fromlist=["x"])]
+    problems = []
+    for mod in mods:
+        src = inspect.getsource(mod)
+        # Every triple-quoted block that looks like SQL and takes named params.
+        for block in re.findall(r'"""(.*?)"""', src, re.S):
+            if not re.search(r"\b(SELECT|INSERT|FROM|WHERE)\b", block, re.I):
+                continue
+            if "%(" not in block:
+                continue
+            for m in re.finditer(r"%(?!\()", block):
+                ctx = block[max(0, m.start() - 40):m.start() + 12].replace("\n", " ")
+                problems.append(f"{mod.__name__}: ...{ctx}")
+    assert not problems, (
+        "a literal % in a parameterised query breaks binding at runtime:\n  "
+        + "\n  ".join(problems)
+    )

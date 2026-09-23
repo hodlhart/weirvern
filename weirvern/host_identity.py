@@ -351,8 +351,8 @@ def coverage(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> dict[str, Any]
               WHERE timestamp >= now() - INTERVAL %(d)s DAY)          AS hosts_seen,
             -- WINDOWED LIKE THE DENOMINATOR. `FINAL` collapses versions per host, not history, so
             -- an unfiltered numerator counted every host EVER classified while the denominator was
-            -- this window -- a ratio that can exceed 100%. Measured: seen=50 with classified=200
-            -- reported 400%, and seen=0 with classified=12 reported 1200%. A percentage above 100
+            -- this window -- a ratio that can exceed one hundred percent. Measured: seen=50 with classified=200
+            -- reported 400 pct, and seen=0 with classified=12 reported 1200 pct. A percentage above 100
             -- is nonsense on its face; the subtler harm is the normal-looking case, where a host
             -- classified last month inflates coverage of this week's segment.
             (SELECT uniqExact(host) FROM weirvern.host_identity FINAL
