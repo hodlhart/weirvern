@@ -342,3 +342,178 @@ def test_the_count_is_right_when_the_BATCH_FLUSHES_mid_file(tmp_path):
         f"remainder path must both report what LANDED"
     )
     assert offset == f.stat().st_size, "the cursor must advance past every row either way"
+
+
+# ── ZEEK'S JSON OUTPUT WAS READ BY A TSV PARSER (audit F064) ─────────────────────────────────
+#
+# CONFIRMED BY RUNNING IT. `tail_zeek_dir` has always listed BOTH `conn.log` and `conn.log.json` as
+# supported filenames, but `tail_zeek_log` read every line as TSV. A JSON file has no `#` header, so
+# `fields` stayed empty and every line hit the "data before header" branch: read, discarded, cursor
+# advanced. Measured with a real two-row conn.log.json:
+#
+#     inserted: 0 of 2 rows
+#     cursor advanced: 832 of 832
+#
+# So an operator who switched Zeek to JSON output got empty tables, no error, and a warning
+# repeating once per line -- the supported-filename list and the parser disagreed.
+
+def _json_log(tmp_path: pathlib.Path, n: int = 2, name: str = "conn.log.json") -> pathlib.Path:
+    """Zeek's JSON output: one JSON object per line, no header."""
+    import json
+
+    f = tmp_path / name
+    rows = [
+        {
+            "ts": 1700000000.0 + i, "uid": f"C{i}", "id.orig_h": "198.51.100.5",
+            "id.orig_p": 1234 + i, "id.resp_h": "203.0.113.9", "id.resp_p": 80,
+            "proto": "tcp", "service": "http", "duration": 0.1, "orig_bytes": 100,
+            "resp_bytes": 200, "conn_state": "SF", "local_orig": None, "local_resp": None,
+            "missed_bytes": 0, "history": "ShAdDaF", "orig_pkts": 2, "orig_ip_bytes": 150,
+            "resp_pkts": 2, "resp_ip_bytes": 250, "tunnel_parents": [],
+        }
+        for i in range(n)
+    ]
+    f.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return f
+
+
+def test_a_json_log_INGESTS_instead_of_being_silently_dropped(tmp_path):
+    """THE DEFECT. Every line was skipped and the cursor advanced past all of it."""
+    f = _json_log(tmp_path)
+    client = _Rejecting()
+
+    inserted, offset, _, _ = tail_zeek_log(client, str(f), state=ZeekTailState())
+
+    assert inserted == 2, (
+        f"a conn.log.json ingested {inserted} of 2 rows. `tail_zeek_dir` lists .log.json as a "
+        f"supported filename, so this file is read and thrown away -- empty tables, no error"
+    )
+    assert offset == f.stat().st_size
+
+
+def test_a_json_log_produces_the_SAME_row_as_the_tsv_form(tmp_path):
+    """ONE INPUT CONTRACT, NOT TWO. The mappers are shared, so the same record in either format must
+    land identically -- otherwise the JSON path is a second shape that only Zeek's JSON
+    configuration exercises, which is where a null becomes the string "None"."""
+    import json
+
+    rec = {
+        "ts": 1700000000.0, "uid": "C1", "id.orig_h": "198.51.100.5", "id.orig_p": 1234,
+        "id.resp_h": "203.0.113.9", "id.resp_p": 80, "proto": "tcp", "service": "http",
+        "duration": 0.1, "orig_bytes": 100, "resp_bytes": 200, "conn_state": "SF",
+        "local_orig": None, "local_resp": None, "missed_bytes": 0, "history": "ShAdDaF",
+        "orig_pkts": 2, "orig_ip_bytes": 150, "resp_pkts": 2, "resp_ip_bytes": 250,
+        "tunnel_parents": [],
+    }
+    jf = tmp_path / "conn.log.json"
+    jf.write_text(json.dumps(rec) + "\n")
+
+    # The same record as Zeek's TSV writer would emit it.
+    tf = _write_log(tmp_path, [_row(1)])
+    # `_row` uses uid C1 and the same addresses/ports; align the remaining fields.
+    fields = ["ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p", "proto",
+              "service", "duration", "orig_bytes", "resp_bytes", "conn_state", "local_orig",
+              "local_resp", "missed_bytes", "history", "orig_pkts", "orig_ip_bytes", "resp_pkts",
+              "resp_ip_bytes", "tunnel_parents"]
+    vals = ["1700000000.000000", "C1", "198.51.100.5", "1234", "203.0.113.9", "80", "tcp", "http",
+            "0.100000", "100", "200", "SF", "-", "-", "0", "ShAdDaF", "2", "150", "2", "250", "-"]
+    header = [
+        "#separator \\x09", "#set_separator\t,", "#empty_field\t(empty)", "#unset_field\t-",
+        "#path\tconn", "#open\t2026-09-23-00-00-00",
+        "#fields\t" + "\t".join(fields), "#types\t" + "\t".join(["string"] * len(fields)),
+    ]
+    tf.write_text("\n".join(header + ["\t".join(vals)]) + "\n")
+
+    def read_one(path):
+        class _C:
+            def __init__(self):
+                self.rows = []
+                self.cols = None
+
+            def insert(self, table, batch, column_names=None):
+                self.rows.extend(batch)
+                self.cols = column_names
+
+            def query(self, *a, **kw):
+                class _R:
+                    result_rows: list = []
+
+                return _R()
+
+        c = _C()
+        tail_zeek_log(c, str(path), state=ZeekTailState())
+        assert c.rows, f"{path.name} ingested nothing"
+        return dict(zip(c.cols, c.rows[0], strict=False))
+
+    jrow, trow = read_one(jf), read_one(tf)
+    for col in ZEEK_COLUMNS["conn"]:
+        assert jrow.get(col) == trow.get(col), (
+            f"column {col!r} differs between the JSON and TSV forms of the same record: "
+            f"json={jrow.get(col)!r} tsv={trow.get(col)!r}. The mappers are shared, so a difference "
+            f"here means the JSON path is a second input shape nothing else exercises."
+        )
+
+
+def test_the_value_normaliser_matches_zeek_TSV_conventions():
+    """`null`, booleans and set-valued lists must arrive as the strings the TSV path produces:
+    Zeek's own TSV writer emits T/F for booleans and a comma-joined set, so the two formats have to
+    agree or a column's contents depend on which output mode the sensor runs."""
+    from weirvern.ingester import _json_field_value
+
+    assert _json_field_value(None) == "", "a JSON null must read as absent, not as 'None'"
+    assert _json_field_value(True) == "T", "Zeek's TSV writer emits T for true"
+    assert _json_field_value(False) == "F", "Zeek's TSV writer emits F for false"
+    assert _json_field_value([]) == "", "an empty set is an absent value"
+    assert _json_field_value(["a", "b"]) == "a,b", "a set joins with Zeek's set separator"
+    assert _json_field_value(80) == "80"
+    assert _json_field_value("x") == "x", "a string passes through unchanged"
+
+
+def test_a_MALFORMED_json_line_is_reported_not_silently_skipped(tmp_path, caplog):
+    """A line that is not valid JSON must be named. Silently skipping it would reproduce the defect
+    this fix is for -- with the difference that the failure would now be this code's fault."""
+    import logging
+
+    f = tmp_path / "conn.log.json"
+    f.write_text('{"ts": 1700000000.0, "uid": "C1", "id.orig_h": "198.51.100.5", '
+                 '"id.resp_h": "203.0.113.9", "proto": "tcp"}\n'
+                 "{ this is not json\n")
+
+    # A CLIENT THAT ACCEPTS, deliberately. `_Rejecting()` would reject the single valid row and the
+    # count would be 0 for a reason that has nothing to do with JSON -- which is exactly what an
+    # earlier version of this test asserted and failed on.
+    class _Accepting:
+        def __init__(self):
+            self.rows = []
+
+        def insert(self, table, batch, column_names=None):
+            self.rows.extend(batch)
+
+        def query(self, *a, **kw):
+            class _R:
+                result_rows: list = []
+
+            return _R()
+
+    with caplog.at_level(logging.WARNING, logger="weirvern.ingester"):
+        inserted, offset, _, _ = tail_zeek_log(_Accepting(), str(f), state=ZeekTailState())
+
+    assert inserted == 1, f"the valid row was not ingested: inserted={inserted}"
+    assert any("not valid JSON" in r.getMessage() for r in caplog.records), (
+        "a malformed JSON line was skipped with no warning naming it"
+    )
+    assert offset == f.stat().st_size, (
+        "the cursor did not advance past the malformed line, so it would be retried forever"
+    )
+
+
+def test_a_TSV_log_renamed_to_dot_json_json_log_is_REFUSED_visibly(tmp_path):
+    """The misconfiguration this branch makes possible: a TSV log with a .json suffix is read as
+    JSON and every line fails. It must be reported, not silently ingested as nothing."""
+    f = _write_log(tmp_path, [_row(1), _row(2)], name="conn.log.json")
+    client = _Rejecting()
+
+    inserted, offset, _, _ = tail_zeek_log(client, str(f), state=ZeekTailState())
+
+    assert inserted == 0, "a TSV file was somehow ingested through the JSON path"
+    assert offset == f.stat().st_size, "the cursor must advance, or the file is re-read forever"

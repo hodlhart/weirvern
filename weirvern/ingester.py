@@ -220,6 +220,41 @@ def parse_zeek_header(lines: list[str]) -> tuple[str, list[str]]:
     return separator, fields
 
 
+def _json_field_value(v: Any) -> str:  # noqa: ANN401 - JSON gives us anything
+    """One field of a Zeek JSON record, as the STRING the mappers expect.
+
+    ── ONE INPUT CONTRACT, NOT TWO (audit F064) ────────────────────────────────────────────────
+
+    The TSV path hands every mapper `dict[str, str]` -- `line.split(separator)` produces strings,
+    and `zeek_value` normalises the sentinels on top. Zeek's JSON output produces NATIVE TYPES
+    instead: numbers for ports and byte counts, `null` for unset, lists for set-valued fields such
+    as `tunnel_parents`.
+
+    Handing those to the mappers unchanged would work for most fields, because they use
+    `rec.get(...) or ""` and `_safe_int`/`_safe_float` -- but it would leave TWO input shapes
+    flowing through one mapper set, and the second shape is only exercised by a Zeek configuration
+    almost nobody runs. That is how a `null` becomes the string "None" in a column, or a list
+    becomes its repr.
+
+    So JSON values are normalised HERE into the same strings the TSV path produces:
+      * `null`      -> "" (unset; the mappers' `or ""` then treats it as absent)
+      * `True/False` -> "T"/"F", which is exactly how Zeek's OWN TSV output writes booleans
+      * list        -> comma-joined, matching Zeek's TSV set-separator convention
+      * numbers     -> their string form
+    and then the sentinel normalisation below runs on the result unchanged, because a JSON `null`
+    and a TSV `-` must reach the mappers as the same absence.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        # Zeek's TSV writer emits T/F for booleans -- keep the two formats identical rather than
+        # letting "True" reach a column whose TSV rows say "T".
+        return "T" if v else "F"
+    if isinstance(v, list):
+        return ",".join(_json_field_value(x) for x in v)
+    return str(v)
+
+
 def zeek_value(val: str) -> str | None:
     """Zeek's unset sentinels mean 'no value' -> None.
 
@@ -1265,6 +1300,10 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
         separator, fields = "\t", []  # a new file brings its own header
 
     log_type = os.path.basename(path).split(".")[0]
+    # ZEEK'S JSON OUTPUT, DETECTED FROM THE FILENAME (audit F064). `tail_zeek_dir` already lists
+    # both `conn.log` and `conn.log.json`, so the caller's intent is unambiguous; the suffix is the
+    # same signal this function uses for `log_type` and it cannot be confused by a record's content.
+    json_lines = os.path.basename(path).endswith(".log.json")
     # An observation mapper is not a table row: it is routed to the identity store below, so it
     # must be recognised here or the log would be read and silently discarded.
     target = ZEEK_MAPPERS.get(log_type)
@@ -1316,13 +1355,55 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
                 elif line.startswith("#separator"):
                     separator = sep
                 continue
-            if not fields:
-                # No header seen yet and none cached: cannot map this line
-                # safely (a wrong positional mapping is worse than a gap).
-                logger.warning("Zeek %s: data before header, skipping a line", log_type)
-                continue
-            values = line.split(separator)
-            rec = dict(zip(fields, values, strict=False))
+            # ── ZEEK'S JSON OUTPUT IS A DIFFERENT FORMAT, NOT A DIFFERENT SEPARATOR (audit F064) ──
+            #
+            # `tail_zeek_dir` has always LISTED `.log.json` as a supported filename -- it looks for
+            # both `conn.log` and `conn.log.json` -- but this function reads every line as TSV. A
+            # JSON file has no `#` header, so `fields` stayed empty and every line hit the "data
+            # before header" branch below: read, discarded, and the cursor advanced past it.
+            # MEASURED with a real two-row conn.log.json:
+            #
+            #     inserted: 0 of 2 rows
+            #     cursor advanced: 832 of 832
+            #     header found: (none -- no # header in JSON output)
+            #
+            # So an operator who switched Zeek to JSON output got empty tables, no error, and a
+            # warning that repeats once per line. THE SUPPORTED-FILENAME LIST AND THE PARSER
+            # DISAGREED, which is the shape this whole campaign keeps finding: a surface that says
+            # something is handled over a path that silently drops it.
+            #
+            # DETECTED FROM THE FILENAME, because that is what the caller already keys on and it
+            # cannot be confused by a record's content. `json.loads` per line: Zeek writes one JSON
+            # object per line, not an array, which is also why the partial-line holdback above
+            # applies unchanged.
+            if json_lines:
+                try:
+                    parsed_obj = json.loads(line)
+                except ValueError as exc:
+                    logger.warning(
+                        "Zeek %s: a line is not valid JSON (%s); skipping it. The file is read as "
+                        "JSON because of its .json suffix -- a TSV log renamed to .log.json would "
+                        "land here.",
+                        log_type, exc,
+                    )
+                    continue
+                if not isinstance(parsed_obj, dict):
+                    continue
+                # Zeek's JSON uses `null` for unset, which the mappers already handle via
+                # `rec.get(...) or ""`, and lists for set-valued fields. Normalised to strings so
+                # the mappers see the same shapes the TSV path gives them -- one input contract,
+                # not two.
+                rec = {
+                    k: _json_field_value(v) for k, v in parsed_obj.items()
+                }
+            else:
+                if not fields:
+                    # No header seen yet and none cached: cannot map this line
+                    # safely (a wrong positional mapping is worse than a gap).
+                    logger.warning("Zeek %s: data before header, skipping a line", log_type)
+                    continue
+                values = line.split(separator)
+                rec = dict(zip(fields, values, strict=False))
             # NORMALISE ZEEK'S UNSET SENTINEL BEFORE THE MAPPER SEES IT.
             #
             # Zeek writes `-` for any field it did not set. Storing that literally makes an
