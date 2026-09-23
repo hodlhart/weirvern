@@ -25,10 +25,31 @@ from weirvern.admin.mode import MODE_SIPHON  # noqa: E402
 
 @dataclass
 class Probe:
-    """One checked thing, with an explicit outcome."""
+    """One checked thing, with an explicit outcome.
+
+    ── `ok` IS TRI-STATE, AND THE THIRD VALUE EXISTS FOR A REASON (audit F081) ─────────────────
+
+    `True` is healthy, `False` is a fault, and `None` is NOT APPLICABLE -- the check ran and could
+    not measure anything because the thing it measures is not deployed here. A NetFlow-only cluster
+    has no capture sensor, so Zeek freshness is neither healthy nor broken there, and collapsing
+    that into either value is a lie in one direction or the other:
+
+      * `ok=True` would claim a measurement nothing made, which is the failure this campaign keeps
+        finding.
+      * `ok=False` would make every NetFlow-only deployment report a fault it does not have, and a
+        report that is always failing is one an operator stops reading.
+
+    AN OMITTED PROBE IS NOT AN OPTION, which is what the probe this was added for got wrong: it was
+    absent from the report entirely, so a consumer could not distinguish "not applicable" from "the
+    check did not run" -- and the missing row read as healthy.
+
+    `HealthReport.ok` treats `None` as neither healthy nor broken, so a not-applicable row cannot
+    mask a real failure elsewhere. The row is still PRESENT, which is the whole point: a missing row
+    now always means the check did not run.
+    """
 
     name: str
-    ok: bool
+    ok: bool | None
     detail: str = ""
     value: Any = None
     latency_ms: float = 0.0
@@ -41,7 +62,15 @@ class HealthReport:
 
     @property
     def ok(self) -> bool:
-        return all(p.ok for p in self.probes) if self.probes else False
+        """True when nothing is BROKEN. A not-applicable probe (`ok is None`) is neither.
+
+        `all(p.ok for p in ...)` would have treated None as falsy, so every NetFlow-only deployment
+        would report an overall failure for a Zeek probe that has nothing to measure -- the
+        always-failing report an operator stops reading. Filtering the Nones keeps a
+        not-applicable row from masking a real failure while also not inventing one.
+        """
+        measured = [p.ok for p in self.probes if p.ok is not None]
+        return all(measured) if measured else False
 
     def by_name(self, name: str) -> Probe | None:
         return next((p for p in self.probes if p.name == name), None)
@@ -189,20 +218,90 @@ def collect_health(client, settings) -> HealthReport:
             ))
 
     # 4. Zeek freshness (only meaningful if the sensor is enabled).
+    #
+    # ── "ONLY MEANINGFUL IF THE SENSOR IS ENABLED" WAS A COMMENT, NEVER A CHECK (F081) ─────────
+    #
+    # `collect_health` has no way to know whether a capture sensor is deployed for this cluster, so
+    # the probe was conditional on DATA EXISTING instead -- which conflates two different facts:
+    #
+    #   * a cluster with no sensor at all (the NetFlow-only deployment). No rows, correctly.
+    #   * a cluster WITH a sensor that has captured nothing. No rows, and that is a fault.
+    #
+    # Reporting the second as a failure and the first as nothing is the right outcome, but the old
+    # code got there by accident and reported BOTH as nothing -- so the fault was invisible. The
+    # distinction is now made on evidence rather than on the absence being interpreted: a row must
+    # have been written by SOME sensor for the probe to be meaningful, and the heartbeat table is
+    # what says a sensor exists.
+    def zeek_sensor_deployed() -> bool:
+        rows = client.query(
+            "SELECT count() FROM weirvern.sensor_status "
+            "WHERE ts > now() - INTERVAL 1 DAY"
+        ).result_rows
+        return bool(rows and rows[0] and int(rows[0][0] or 0) > 0)
+
     def zeek_freshness():
         rows = client.query(
-            "SELECT dateDiff('second', max(ts), now()) FROM weirvern.zeek_conn"
+            "SELECT count(), dateDiff('second', max(ts), now()) FROM weirvern.zeek_conn"
         ).result_rows
-        return rows[0][0] if rows and rows[0][0] is not None else None
+        if not rows or not rows[0]:
+            return None, None
+        n = int(rows[0][0] or 0)
+        if n == 0:
+            return 0, None
+        age = rows[0][1]
+        return n, (None if age is None else float(age))
 
-    z_age, ms, err = _timed(zeek_freshness)
-    if err is None and z_age is not None:
-        z_age = float(z_age)
-        report.add(Probe(
-            "zeek_freshness", ok=z_age < 900,
-            detail=f"newest Zeek record {_human_age(z_age)} ago",
-            value=z_age, latency_ms=ms,
-        ))
+    z_rows, ms, err = _timed(zeek_freshness)
+    if err is None:
+        n_records, z_age = z_rows if z_rows else (None, None)
+        if n_records == 0 and z_age is None:
+            # ── AN ABSENT PROBE IS NOT A PASSING ONE (audit F081, CONFIRMED BY RUNNING IT) ──────
+            #
+            # This used to add the probe ONLY when an age came back, so an empty `zeek_conn` left
+            # NO zeek_freshness row in the report at all. Measured with an empty table:
+            #
+            #     probes: ['clickhouse', 'tables', 'ingest_freshness', 'models', 'detect_loop', ...]
+            #     zeek_freshness present? False
+            #
+            # A consumer reading `overall ok` could not tell "the sensor is healthy" from "the
+            # sensor has never produced a single record" -- the same green-reading-over-work-that-
+            # did-not-happen shape as F022 and F024 in this campaign. `ingest_freshness` two probes
+            # above already reports its empty case as a FAILURE with a remedy, so the two sibling
+            # probes disagreed about how to treat emptiness.
+            deployed, _ms2, dep_err = _timed(zeek_sensor_deployed)
+            if dep_err is not None or not deployed:
+                # NO SENSOR IS DEPLOYED, so an empty zeek_conn is the expected state and this probe
+                # has nothing to say. Reported as `ok=None` rather than omitted: the row IS present
+                # so a consumer can see the check ran, but it does not claim health it cannot
+                # measure. `None` is the same "not applicable" signal the rest of this report uses
+                # for a measurement that does not exist.
+                report.add(Probe(
+                    "zeek_freshness", ok=None, latency_ms=ms,
+                    detail=(
+                        "no capture sensor is deployed in this cluster (no heartbeat in the last "
+                        "24h), so there is no Zeek freshness to measure. This row is present so "
+                        "that a MISSING row always means a fault rather than 'not applicable'."
+                    ),
+                    value=None,
+                ))
+            else:
+                report.add(Probe(
+                    "zeek_freshness", ok=False, latency_ms=ms,
+                    detail=(
+                        "a capture sensor IS deployed but no Zeek records have EVER been written -- "
+                        "zeek_conn is empty, so it has captured nothing. Check that the capture "
+                        "DaemonSet is running, that ZEEK_IFACE names a real interface on the node, "
+                        "and that the sensor holds NET_RAW."
+                    ),
+                    value=None,
+                ))
+        elif z_age is not None:
+            report.add(Probe(
+                "zeek_freshness", ok=z_age < 900,
+                detail=f"newest Zeek record {_human_age(z_age)} ago"
+                       + (f" ({n_records} total)" if n_records else ""),
+                value=z_age, latency_ms=ms,
+            ))
 
     # 5. Model freshness — when did each detector last train?
     def models():

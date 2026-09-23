@@ -306,9 +306,27 @@ async function loadHealthDeep() {
   document.getElementById("hp-window").textContent = `${hours}h window`;
   const h = d.health || {};
   const checks = (h && h.checks) || [];
-  const bad = checks.filter((c) => !c.ok).length;
+  // ── THREE STATES, NOT TWO (audit F081) ───────────────────────────────────────────────────────
+  //
+  // `ok` is tri-state: true, false, or null for NOT APPLICABLE -- a check that ran and had nothing
+  // to measure, because the thing it measures is not deployed here. A NetFlow-only cluster has no
+  // capture sensor, so Zeek freshness is neither healthy nor broken.
+  //
+  // `checks.filter((c) => !c.ok)` counted a null as FAILING, and the renderer below painted it red
+  // with the text "FAIL". So the very probe added to STOP a missing row reading as healthy would
+  // have appeared as a failure in the GUI -- an always-failing check is one an operator stops
+  // reading, which is the outcome the tri-state exists to avoid.
+  //
+  // `n/a` rows are EXCLUDED from the counts rather than shown as passing: they are not evidence
+  // either way, and counting them as passing would overstate how much was measured.
+  const measurable = checks.filter((c) => c.ok !== null && c.ok !== undefined);
+  const bad = measurable.filter((c) => !c.ok).length;
+  const notApplicable = checks.length - measurable.length;
+  const naSuffix = notApplicable ? `, ${notApplicable} not applicable` : "";
   document.getElementById("hp-summary").textContent = d.health
-    ? (bad === 0 ? `All ${checks.length} checks passing.` : `${bad} of ${checks.length} checks FAILING — see below.`)
+    ? (bad === 0
+        ? `All ${measurable.length} checks passing${naSuffix}.`
+        : `${bad} of ${measurable.length} checks FAILING — see below${naSuffix}.`)
     : "Health checks are unavailable — cannot reach ClickHouse.";
 
   // The header pill. It was populated by the removed Overview loader, so without this it read
@@ -320,7 +338,7 @@ async function loadHealthDeep() {
       pill.textContent = "no database";
       pill.className = "pill bad";
     } else {
-      pill.textContent = `${checks.length - bad}/${checks.length} checks passing`;
+      pill.textContent = `${measurable.length - bad}/${measurable.length} checks passing${naSuffix}`;
       pill.className = "pill " + (h.ok ? "ok" : "bad");
     }
   }
@@ -333,9 +351,14 @@ async function loadHealthDeep() {
   const tbody = document.querySelector("#hp-checks tbody");
   tbody.replaceChildren();
   for (const c of checks) {
+    // THREE STATES RENDERED AS THREE. `c.ok ? ... : ...` put null in the failure branch.
+    const notApplicable = c.ok === null || c.ok === undefined;
+    const state = notApplicable
+      ? el("span", { class: "sev low", text: "n/a" })
+      : el("span", { class: c.ok ? "sev low" : "sev high", text: c.ok ? "ok" : "FAIL" });
     tbody.appendChild(el("tr", {}, [
       el("td", { text: c.name }),
-      el("td", {}, [el("span", { class: c.ok ? "sev low" : "sev high", text: c.ok ? "ok" : "FAIL" })]),
+      el("td", {}, [state]),
       el("td", { class: "mono", text: String(c.value ?? "") }),
       el("td", { text: c.latency_ms != null ? `${c.latency_ms} ms` : "" }),
     ]));

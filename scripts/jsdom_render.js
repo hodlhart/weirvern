@@ -687,7 +687,36 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // The routes, each registered with the payload it serves. One list, so a payload cannot be
   // declared and then forgotten.
+  // ── the tri-state health payload (audit F081) ─────────────────────────────────────────────────
+  //
+  // Carries all THREE probe states, because the renderer's bug was specifically that a
+  // not-applicable probe (`ok: null`) was counted and painted as a failure:
+  //
+  //     checks.filter((c) => !c.ok)   <- null is falsy, so it counted as failing
+  //     c.ok ? "ok" : "FAIL"          <- null fell into the FAIL branch
+  //
+  // A fixture with only true/false cannot see that. The three rows below are the whole point.
+  const HEALTH_PAYLOAD = {
+    health: {
+      ok: true,
+      fetched_at: "2026-01-03T10:00:00Z",
+      checks: [
+        // A DOCUMENTATION-RANGE address, deliberately. This was the deployment's real server
+        // version for one revision -- read off the live cluster -- which is deployment information
+        // in a tracked file and tripped the sanitation guard. The value is irrelevant: the renderer
+        // prints whatever `value` holds, so a reserved address demonstrates it just as well.
+        { name: "clickhouse", ok: true, value: "198.51.100.10", latency_ms: 4 },
+        { name: "ingest_freshness", ok: false, value: 2000, latency_ms: 6 },
+        { name: "zeek_freshness", ok: null, value: null, latency_ms: 5 },
+      ],
+    },
+    ingest: { available: true, points: [] },
+    tables: { available: true, points: [] },
+    sensor: {}, alert_audit: { available: true, by_reason: [], recent: [], suppressed: 0 },
+  };
+
   ROUTES.push(
+    ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
@@ -1394,6 +1423,34 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("view-overview") === null);
   check("sensor state and the health checks live on the Health tab now",
         !!doc.getElementById("hp-sensor") && !!doc.getElementById("hp-checks"));
+    // ── THREE PROBE STATES RENDER AS THREE (audit F081) ────────────────────────────────────────
+    //
+    // The probe added to stop a MISSING row reading as healthy would itself have read as FAILING,
+    // because `!c.ok` counts null as false and `c.ok ? "ok" : "FAIL"` sends it to the FAIL branch.
+    // The counts exclude it as not-applicable, and the row says so.
+    await H.loadHealthDeep();
+    {
+      const rows = [...doc.querySelectorAll("#hp-checks tbody tr")];
+      const states = rows.map(tr => tr.children[1].textContent.trim());
+      check("a tri-state probe row renders n/a rather than FAIL",
+            states.includes("n/a"),
+            `states are ${JSON.stringify(states)}`);
+      check("the healthy and failing rows still render ok and FAIL",
+            states.includes("ok") && states.includes("FAIL"),
+            `states are ${JSON.stringify(states)}`);
+      const summary = doc.getElementById("hp-summary").textContent;
+      check("the summary counts only MEASURABLE checks (2, not 3)",
+            /of 2 checks FAILING/.test(summary),
+            summary.slice(0, 140));
+      check("the summary states how many were not applicable",
+            /not applicable/.test(summary),
+            summary.slice(0, 140));
+      const pill = doc.getElementById("health-pill").textContent;
+      check("the pill excludes the not-applicable probe from its ratio",
+            /1\/2 checks passing/.test(pill),
+            pill.slice(0, 140));
+    }
+
   check("the alert audit panels are on the Health tab (SOC-8)",
         !!doc.getElementById("hp-alerts-reasons")
           && !!doc.getElementById("hp-alerts-recent")

@@ -283,3 +283,118 @@ def test_a_broken_query_does_not_produce_a_false_verdict():
         f"execution did not reach the later probes, so this test is vacuous: {names}"
     )
     assert "detect_loop" not in names, "a failed query must not emit a detect_loop verdict"
+
+
+# ── an ABSENT probe is not a passing one (audit F081) ────────────────────────────────────────
+
+def test_an_EMPTY_zeek_table_reports_the_probe_rather_than_omitting_it():
+    """THE DEFECT. The probe was added only when a freshness age came back, so an empty
+    `zeek_conn` left NO zeek_freshness row in the report at all. Measured before the fix:
+
+        probes: ['clickhouse', 'tables', 'ingest_freshness', 'models', 'detect_loop', ...]
+        zeek_freshness present? False
+
+    A consumer reading `overall ok` could not tell "the sensor is healthy" from "the sensor has
+    never produced a single record". `ingest_freshness`, two probes above, already reports its own
+    empty case as a FAILURE with a remedy -- so the two siblings disagreed about emptiness.
+    """
+    class _C(_StubClient):
+        def __init__(self, heartbeats):
+            super().__init__()
+            self.heartbeats = heartbeats
+
+        def query(self, sql, *a, **kw):
+            if "sensor_status" in sql:
+                return _Result([(self.heartbeats,)])
+            if "zeek_conn" in sql:
+                return _Result([(0, None)])          # empty table
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_C(0), _settings())
+    names = [p.name for p in report.probes]
+    assert "zeek_freshness" in names, (
+        f"an empty zeek_conn produced NO zeek_freshness row at all, so a missing row reads as "
+        f"healthy. Probes present: {names}"
+    )
+    p = report.by_name("zeek_freshness")
+    assert p.ok is None, (
+        f"with no sensor deployed there is nothing to measure, so the verdict must be "
+        f"not-applicable rather than a claim either way: ok={p.ok!r}, detail={p.detail!r}"
+    )
+
+
+def test_a_DEPLOYED_sensor_with_no_records_is_a_FAILURE():
+    """THE FAULT F081 HID. A sensor that IS deployed and has captured nothing is broken, and the
+    probe must say so rather than reporting "not applicable"."""
+    class _C(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "sensor_status" in sql:
+                return _Result([(5,)])               # a sensor IS reporting heartbeats
+            if "zeek_conn" in sql:
+                return _Result([(0, None)])          # and it has captured nothing
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_C(), _settings())
+    p = report.by_name("zeek_freshness")
+    assert p is not None and p.ok is False, (
+        f"a deployed sensor with an empty zeek_conn must be a failure, not silence: "
+        f"ok={p.ok if p else None!r}"
+    )
+    assert "NET_RAW" in str(p.detail) or "ZEEK_IFACE" in str(p.detail), (
+        f"the detail does not name anything actionable: {p.detail!r}"
+    )
+
+
+def test_a_NOT_APPLICABLE_probe_does_not_make_the_whole_report_fail():
+    """The complementary mistake: if `ok=None` were treated as falsy, every NetFlow-only deployment
+    would report an overall fault for a check that has nothing to measure -- and a report that is
+    always failing is one an operator stops reading."""
+    report = status.HealthReport(probes=[
+        status.Probe("clickhouse", ok=True),
+        status.Probe("zeek_freshness", ok=None),
+    ])
+    assert report.ok is True, (
+        "a not-applicable probe made the whole report fail, so a cluster with no capture sensor "
+        "would always report unhealthy"
+    )
+
+
+def test_a_NOT_APPLICABLE_probe_cannot_MASK_a_real_failure():
+    """The paired case, so the fix cannot pass by ignoring Nones in a way that also ignores
+    failures."""
+    report = status.HealthReport(probes=[
+        status.Probe("clickhouse", ok=False),
+        status.Probe("zeek_freshness", ok=None),
+    ])
+    assert report.ok is False, "a not-applicable probe masked a failing one"
+
+
+def test_a_report_of_ONLY_not_applicable_probes_is_not_healthy():
+    """If every check is not applicable, nothing was measured, and claiming health would be a
+    measurement nothing made."""
+    report = status.HealthReport(probes=[status.Probe("zeek_freshness", ok=None)])
+    assert report.ok is False
+
+
+def test_a_FRESH_zeek_table_still_reports_ok():
+    """The working case, so the new branches did not break the ordinary path."""
+    class _C(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "sensor_status" in sql:
+                return _Result([(5,)])
+            if "zeek_conn" in sql:
+                return _Result([(1000, 7)])
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_C(), _settings())
+    p = report.by_name("zeek_freshness")
+    assert p is not None and p.ok is True, f"{p.detail if p else 'probe missing'!r}"
+    # THE VALUE IS THE AGE, and the count appears only in the prose. An earlier version of this
+    # assertion used age 42 and count 1000 and then asserted "42" was absent -- which failed on the
+    # probe being correct, because 42.0 IS the age. The numbers must be distinguishable:
+    # age 7, count 1000, so the value can only be one of them.
+    assert float(p.value) == 7.0, f"the probe value is not the freshness age: {p.value!r}"
+    assert "1000" in str(p.detail), (
+        f"the record count is not reported anywhere, so a probe on a large but stalled table gives "
+        f"no way to tell: {p.detail!r}"
+    )
