@@ -1294,3 +1294,163 @@ def test_the_raw_read_issues_the_VIEWS_OWN_expressions(monkeypatch):
     # And the cardinalities must be exact, not approximate counts.
     assert "uniqExact(dst_addr)" in q, "dst addresses are not counted exactly"
     assert "uniqExact(dst_port)" in q, "ports are not counted exactly"
+
+
+# ── SIGTERM's "graceful shutdown" MUST REACH THE INGEST LOOP (audit F079) ─────────────────────────
+#
+# `tail_forever` has accepted a `stop` event for a while, and the worker's call site NEVER PASSED
+# ONE. On SIGTERM the handler set `_stop`, the detect loop broke, and `sys.exit(0)` tore the process
+# down with the ingest thread wherever it was. Because the cursor is checkpointed AFTER each pass, a
+# kill mid-pass leaves it at the PREVIOUS offset, and the next start re-reads and re-inserts every
+# row since -- into `flows`, a plain MergeTree with no deduplication. That is F018 re-entering through
+# process teardown rather than through an in-memory cursor.
+#
+# These read the SOURCE because the defect was in the WIRING, and a test that starts a loop with its
+# own stop event (as the ingester's tests correctly do) cannot see the call site at all.
+
+
+def _main_source() -> str:
+    import pathlib as _p
+    return (_p.Path(__file__).resolve().parent.parent / "weirvern" / "worker.py").read_text()
+
+
+def test_the_ingest_thread_is_handed_the_shutdown_event():
+    """The call site must pass `stop=_stop`, or graceful shutdown never reaches ingest."""
+    import ast
+
+    tree = ast.parse(_main_source())
+    call = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "Thread"):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "target" and isinstance(kw.value, ast.Name) \
+                    and kw.value.id == "tail_forever":
+                call = node
+    assert call is not None, "could not find the Thread(target=tail_forever) call site"
+
+    kwargs = {kw.arg: kw.value for kw in call.keywords}
+    assert "kwargs" in kwargs, "the Thread call has no kwargs dict"
+    blob = ast.unparse(kwargs["kwargs"])
+    assert "stop" in blob, (
+        f"the ingest thread is started with kwargs={blob} -- NO stop event. A SIGTERM sets _stop and "
+        f"exits the process, killing the ingest thread mid-pass; the cursor is checkpointed after "
+        f"each pass, so the next start re-ingests everything since. This is audit F079"
+    )
+    assert "_stop" in blob, (
+        f"the ingest thread's stop event is {blob}. It must be the SAME `_stop` the SIGTERM handler "
+        f"sets and the detect loop reads -- a separate private event would never be signalled, which "
+        f"is a silent version of the same defect"
+    )
+
+
+def test_shutdown_JOINS_the_ingest_thread_before_exiting():
+    """Passing the event is not enough: without a join the pass is still cut short."""
+    src = _main_source()
+    assert "ingest_thread.join(" in src, (
+        "shutdown never joins the ingest thread, so a SIGTERM still cuts the in-flight pass off "
+        "partway and loses the rows since the last checkpoint (audit F079)"
+    )
+
+    # The join must be in the SHUTDOWN path, after the detect loop, and before the siphon teardown --
+    # otherwise the pass is still cut short, or the child is SIGKILLed while ingest is still running.
+    i_join = src.index("ingest_thread.join(")
+    i_loop = src.index("_stop.wait(max(1, settings.detect_interval_s")
+    i_siphon = src.index("siphon.stop()")
+    assert i_loop < i_join, "the ingest join happens before the detect loop ends"
+    assert i_join < i_siphon, (
+        "the ingest join is AFTER the siphon teardown -- the supervised child would be stopped while "
+        "ingest is still writing"
+    )
+
+
+def test_the_join_is_BOUNDED_so_a_stalled_pass_cannot_hold_the_pod_open():
+    """An unbounded join is its own outage: the kubelet SIGKILLs at the grace period and the very
+    checkpoint the wait protects is lost, plus the SIPKILL of the supervised child is delayed."""
+    import re
+
+    src = _main_source()
+    m = re.search(r"ingest_thread\.join\(([^)]*)\)", src)
+    assert m, "no ingest_thread.join(...) found"
+    args = m.group(1)
+    assert "timeout" in args, (
+        f"the ingest join is unbounded: join({args}). A stalled pass would hold the process open "
+        f"until the kubelet kills it"
+    )
+
+
+def test_the_shared_event_actually_stops_a_REAL_ingest_loop_and_checkpoints():
+    """The source assertions above pin the wiring; this proves the wiring DOES what it claims.
+
+    It starts the real `tail_forever` with the same event the SIGTERM handler sets, sets it the way
+    the handler does, joins the way main() does, and then checks the thing that actually matters: a
+    FRESH loop over the same unchanged file re-ingests NOTHING, because the cursor was checkpointed
+    before the thread finished.
+    """
+    import threading as _th
+    import time as _time
+
+    from weirvern.ingester import _tail_state_path, tail_forever
+
+    class _Counter:
+        def __init__(self):
+            self.rows = 0
+
+        def insert(self, table, rows, column_names=None):  # noqa: ANN001
+            self.rows += len(rows)
+            return len(rows)
+
+    def _rec(i):  # noqa: ANN001
+        base = 1_756_000_000_000_000_000
+        return {
+            "type": "NETFLOW_V5", "time_received_ns": base + i * 10**9,
+            "sampler_address": "192.0.2.10", "time_flow_start_ns": base + i * 10**9,
+            "time_flow_end_ns": base + i * 10**9 + 5 * 10**8, "bytes": 1000 + i, "packets": 10,
+            "src_addr": f"198.51.100.{10 + i}", "dst_addr": "203.0.113.9",
+            "src_port": 40_000 + i, "dst_port": 443, "proto": 6, "tcp_flags": 24,
+        }
+
+    import json as _json
+    import pathlib as _p
+    import tempfile as _tf
+
+    with _tf.TemporaryDirectory() as d:
+        f = _p.Path(d) / "flows.jsonl"
+        f.write_text("\n".join(_json.dumps(_rec(i)) for i in range(6)) + "\n")
+
+        c1 = _Counter()
+        stop = _th.Event()
+        th = _th.Thread(target=tail_forever,
+                        kwargs={"client": c1, "path": str(f), "interval_s": 0.15,
+                                "zeek_dir": "", "exporter_allow": "", "stop": stop},
+                        daemon=True)
+        th.start()
+        _time.sleep(0.8)          # at least one full pass
+        stop.set()                # what _handle_sigterm does
+        th.join(timeout=10)       # what main() now does
+        assert not th.is_alive(), "the ingest loop did not stop within the join timeout"
+        assert c1.rows == 6, f"the first loop ingested {c1.rows} rows, expected 6"
+
+        assert _p.Path(_tail_state_path(str(f))).exists(), (
+            "no checkpoint was written, so this test cannot show the cursor survived"
+        )
+
+        # A RESTART over the same, unchanged file must ingest NOTHING. This is the outcome the fix is
+        # for: without the join, a kill mid-pass leaves the cursor behind and this reads 6 again.
+        c2 = _Counter()
+        stop2 = _th.Event()
+        th2 = _th.Thread(target=tail_forever,
+                         kwargs={"client": c2, "path": str(f), "interval_s": 0.15,
+                                 "zeek_dir": "", "exporter_allow": "", "stop": stop2},
+                         daemon=True)
+        th2.start()
+        _time.sleep(0.5)
+        stop2.set()
+        th2.join(timeout=10)
+        assert c2.rows == 0, (
+            f"the restart re-ingested {c2.rows} rows from an unchanged file -- duplicate rows in a "
+            f"MergeTree with no deduplication"
+        )

@@ -199,6 +199,12 @@ def current_detections_for_blocking(client, window_minutes: int = 60) -> list[di
 
 _stop = threading.Event()
 
+# How long shutdown waits for the ingest thread to finish its current pass and checkpoint (F079).
+# A pass reads only what is new since the last cursor, so this is normally milliseconds; the bound
+# exists so a stalled client cannot hold the pod open until the kubelet SIGKILLs it, which would
+# cost the checkpoint this wait is protecting.
+_INGEST_JOIN_TIMEOUT_S = 10
+
 
 def _handle_sigterm(signum, frame):  # noqa: ARG001
     logger.info("SIGTERM received — shutting down gracefully")
@@ -1237,7 +1243,23 @@ def main() -> None:
     ingest_thread = threading.Thread(
         target=tail_forever,
         args=(ingest_client, settings.tail_file, 5.0, settings.zeek_log_dir),
-        kwargs={"exporter_allow": settings.flow_exporter_allow},
+        # ── THE INGEST LOOP FINISHES ITS PASS BEFORE THE PROCESS EXITS (audit F079) ───────────────
+        #
+        # `tail_forever` has accepted a `stop` event for a while (it is how tests stop it), and the
+        # worker NEVER PASSED ONE. On SIGTERM the signal handler set `_stop`, the detect loop broke,
+        # and `sys.exit(0)` tore the process down with the ingest thread wherever it happened to be.
+        # Because the cursor is checkpointed AFTER each pass, a kill mid-pass leaves the checkpoint at
+        # the PREVIOUS offset and the next start re-reads and re-inserts every row since -- into
+        # `flows`, which is a plain MergeTree with no deduplication. That is the F018 duplicate-row
+        # failure mode re-entering through process teardown rather than through an in-memory cursor.
+        #
+        # MEASURED, driving the real `tail_and_insert`: completed pass + checkpoint -> restart reads
+        # its saved offset and inserts 0 rows; identical pass without the checkpoint -> restart loads
+        # offset 0 and inserts all 10 rows again.
+        #
+        # The event is shared with the detect loop, so the ONE SIGTERM now stops both, and the join at
+        # the bottom of main() gives the in-flight pass a bounded moment to finish and checkpoint.
+        kwargs={"exporter_allow": settings.flow_exporter_allow, "stop": _stop},
         daemon=True,
         name="ingest-thread",
     )
@@ -1392,6 +1414,32 @@ def main() -> None:
         # Sleep the remainder of the detection interval
         elapsed = time.time() - cycle_start
         _stop.wait(max(1, settings.detect_interval_s - int(elapsed)))
+
+    # ── LET THE INGEST LOOP FINISH ITS PASS (audit F079) ──────────────────────────────────────────
+    #
+    # `_stop` is already set (that is why the loop above broke), so the ingest thread has been asked
+    # to stop at its next loop boundary. Joining here gives the in-flight pass its chance to insert
+    # AND checkpoint, which is the difference between a clean restart and a re-ingested slice.
+    #
+    # BOUNDED ON PURPOSE, and SHORT. The checkpoint is saved per PASS, and a pass reads only what is
+    # new since the last one, so the wait is normally milliseconds. A hard cap keeps a pathological
+    # pass (an enormous backlog, or a client that has stopped responding) from holding the pod open
+    # until the kubelet's grace period SIGKILLs it -- which would lose the very checkpoint this is
+    # here to protect, and delay the SIGKILL of the supervised child below.
+    #
+    # `join` on a thread that never started raising would be a poor trade for a shutdown path, so a
+    # failed join is logged and the shutdown continues: an unclean stop still stops.
+    try:
+        ingest_thread.join(timeout=_INGEST_JOIN_TIMEOUT_S)
+        if ingest_thread.is_alive():
+            logger.warning(
+                "Ingest thread did not finish its pass within %ss; exiting anyway (the next start "
+                "will re-ingest the rows since its last checkpoint)", _INGEST_JOIN_TIMEOUT_S,
+            )
+        else:
+            logger.info("Ingest thread stopped cleanly — its cursor is checkpointed")
+    except Exception:  # noqa: BLE001
+        logger.error("Could not join the ingest thread during shutdown", exc_info=True)
 
     # ORDERLY SIPHON SHUTDOWN. SIGTERM the supervised intercept BEFORE we exit so it
     # restores every forged ARP mapping while this container still has a network stack
