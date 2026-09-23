@@ -382,6 +382,34 @@ curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh |
 Run it from a checkout (`sudo ./install.sh [--siphon] [--zeek-iface X --mgmt-iface Y]`)
 and it uses that checkout instead of cloning.
 
+**If the target host cannot reach GitHub** — an isolated or air-gapped box, or a host you
+deliberately keep without deploy credentials — copy the tree and run the installer inside it. No
+clone and no network fetch is attempted, because the installer uses the checkout it finds around
+itself:
+
+```bash
+# from a machine that does have the code:
+tar --exclude=.venv --exclude=.git --exclude=__pycache__ -czf weirvern.tgz -C /path/to/weirvern .
+scp weirvern.tgz you@target:/tmp/
+# on the target:
+sudo mkdir -p /opt/weirvern && sudo tar xzf /tmp/weirvern.tgz -C /opt/weirvern
+cd /opt/weirvern && sudo ./install.sh
+```
+
+That path is identical in effect: same manifests, same image builds, same readiness checks. The
+only difference is where the source came from. The private-repository case is the common one — a
+`git clone` would ask for credentials the target is not supposed to hold.
+
+**It asks what the deployment should DO, after it is running.** Three questions, each answerable
+with Enter, and each written to the cluster ConfigMap so it survives the next `kubectl apply -k`:
+which mode the sensor runs in, which traffic to ignore when counting flows, and whether model
+detections may block traffic (off by default). A repeated Enter produces a working deployment with
+the documented defaults. The same questions can be revisited later:
+
+```bash
+sudo sh /opt/weirvern/scripts/install_selections.sh
+```
+
 **It detects your interfaces and asks you to confirm them.** Getting this wrong is silent — a
 sensor pointed at the management port produces a capture full of this host's own traffic and
 broadcast. It looks completely healthy: rows arrive, charts draw, and it contains none of the
