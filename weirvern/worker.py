@@ -38,7 +38,21 @@ from weirvern.zeek_features import (
     zeek_window_sql,
 )
 
-logger = logging.getLogger("weirvern.worker")
+logger = logging.getLogger(__name__)
+
+# ── THE AGGREGATION BUCKET SIZE, AND WHY IT IS A NAMED CONSTANT ───────────────────────────────
+#
+# The materialised views in `weirvern/schema/001_weirvern.sql` bucket flows with
+# `toStartOfFiveMinute(time_flow_start)`, so every aggregate row's `window_start` is a 5-minute
+# boundary. The detection sweep must look back STRICTLY MORE than this, or a bucket falls out of
+# the window before the next one has any rows in it -- MEASURED on the live cluster: the sweep's
+# own query matched ZERO rows while raw flows kept arriving, and every health probe read green.
+#
+# It is a constant here because the schema cannot export one, and it is READ rather than repeated:
+# the sweep's lookback is computed from it, so changing the view's bucketing means changing ONE
+# number that both sides consult. A second copy of "300" in the sweep's arithmetic is exactly the
+# drift that produced the defect -- the two durations were equal and looked independent.
+AGG_BUCKET_S = 300  # toStartOfFiveMinute in weirvern/schema/001_weirvern.sql
 
 
 # The gate's supervisor lives at module scope so its `last_ok` SURVIVES BETWEEN PASSES. Rebuilding
@@ -377,7 +391,46 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     separate re-query — the old re-query's sliding window re-alerted the
     same rows every sweep.
     """
-    since = (datetime.now() - timedelta(seconds=settings.detect_interval_s)).strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── THE LOOKBACK MUST BE WIDER THAN THE AGGREGATION BUCKET ────────────────────────────────
+    #
+    # MEASURED DEFECT, on the live cluster. The materialised views bucket flows on
+    # `toStartOfFiveMinute(time_flow_start)`, and this sweep used to look back exactly
+    # `detect_interval_s` -- 300s -- which is THE SAME DURATION AS THE BUCKET. Measured state:
+    # all three aggregation tables held 16,934/16,870 rows, their newest `window_start` was a
+    # 5-minute boundary 315 seconds old, raw flows were still arriving, and this function's own
+    # query matched ZERO rows when run by hand. Detection was analysing nothing.
+    #
+    # WHY EQUAL DURATIONS RACE, precisely:
+    #
+    #   * Bucket B covers [B, B+300) and is only WRITTEN once a flow lands inside it.
+    #   * A sweep at wall-clock T computes `since = T - 300` and requires `window_start >= since`.
+    #   * So bucket B is visible only while T <= B + 300 -- which is exactly when the bucket's own
+    #     flows stop arriving, and the NEXT bucket has only just opened and may be empty.
+    #   * With the cadence equal to the bucket size the phase never drifts, so a sweep can sit in
+    #     the empty case indefinitely rather than averaging out.
+    #
+    # At T = 00:21:50 with B = 00:15:00, `since` = 00:16:50 and `00:15:00 >= 00:16:50` is false:
+    # zero rows, every cycle, while every health probe reads green -- which is why nothing caught
+    # it (see audit F022: nothing probes the detection loop at all).
+    #
+    # THE FIX: look back the BUCKET plus one full interval. A bucket then stays inside the window
+    # for its whole life plus a full interval of slack, so a sweep landing just after a bucket
+    # boundary still sees the bucket that just closed.
+    #
+    # DERIVED FROM THE BUCKET, NOT FROM TWICE THE INTERVAL. `2 * detect_interval_s` happens to work
+    # at the shipped value of 300s, and is WRONG the moment an operator raises the cadence -- at
+    # DETECT_INTERVAL_S=60 the lookback would be 120s against a 300s bucket and the race would come
+    # straight back, silently, on a deployment that had just made detection faster. The bucket size
+    # is a property of the schema, so it is named once (AGG_BUCKET_S, next to the views it
+    # describes) and this arithmetic reads it.
+    #
+    # The cost is re-examining up to one extra bucket per sweep, which is cheap and, more
+    # importantly, SAFE: the (window_start, src_addr) dedupe below uses this SAME `since`, so rows
+    # already recorded are skipped rather than re-alerted. That guard now has to work, where before
+    # it was mostly idle because the window held nothing.
+    lookback_s = max(AGG_BUCKET_S + settings.detect_interval_s, settings.detect_interval_s)
+    since = (datetime.now() - timedelta(seconds=lookback_s)).strftime("%Y-%m-%d %H:%M:%S")
 
     agg_cols, agg_rows = db.fetch_rows_named(
         client,

@@ -6,12 +6,16 @@ isinstance-based lookup (which deliberately avoids positional indexing) is
 exercised faithfully.
 """
 import logging
+import pathlib
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
 from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.worker import detection_sweep, train_if_due
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 class _FakeMeta:
@@ -418,3 +422,119 @@ def test_a_POPULATED_side_table_does_not_warn(monkeypatch, caplog):
     text = caplog.text.lower()
     assert "diversity metrics are empty" not in text, "a populated side-table must not warn"
     assert "temporal metrics are empty" not in text
+
+
+# ── THE LOOKBACK MUST BE WIDER THAN THE AGGREGATION BUCKET ───────────────────────────────────
+#
+# MEASURED LIVE DEFECT (audit F022, found from outside). The materialised views bucket on
+# `toStartOfFiveMinute(time_flow_start)` while the sweep looked back exactly `detect_interval_s`
+# = 300s -- THE SAME DURATION. Consequences, all measured on the box:
+#
+#   * all three aggregation tables held 16,934/16,870 rows, newest `window_start` a 5-minute
+#     boundary 315s old, raw flows still arriving;
+#   * the sweep's own query (`window_start >= now() - INTERVAL 300 SECOND`) matched ZERO rows
+#     when run by hand;
+#   * /api/health reported clickhouse ok, tables ok, ingest_freshness ok, zeek_freshness ok,
+#     models ok, alerts ok -- every probe green while detection analysed nothing.
+#
+# WHY EQUAL DURATIONS RACE: bucket B covers [B, B+300) and is only WRITTEN once a flow lands in
+# it, while the sweep requires `window_start >= T - 300`. So B is visible only while T <= B+300,
+# which is exactly when its flows stop arriving and the next bucket has only just opened and may
+# be empty. With cadence == bucket the phase never drifts, so a sweep can sit in the empty case
+# indefinitely rather than averaging out.
+#
+# These tests pin the WINDOW the sweep asks for, because the window is the whole defect -- a test
+# that only checked "detection returns verdicts" passes with an empty window and is exactly the
+# failure mode being fixed.
+
+def _sweep_since(monkeypatch, *, interval_s):
+    """The `since` the sweep computes, captured from the query it actually issues."""
+    import weirvern.db as db
+    from weirvern.config import Settings
+
+    seen: list[str] = []
+
+    def fake_named(client, query, **params):  # noqa: ANN001
+        seen.append(str(params.get("since", "")))
+        return [], []
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", lambda c, q, **p: [])
+    # Settings is FROZEN, so the value is passed to the constructor -- the first version of this
+    # helper tried to assign the field and got FrozenInstanceError.
+    settings = Settings(detect_interval_s=interval_s)
+    detection_sweep(_capturing_client()[0], [StubDetector(0.9)], settings, ModelConfig())
+    return seen[0] if seen else None
+
+
+def test_the_lookback_is_WIDER_than_the_aggregation_bucket(monkeypatch):
+    """THE DEFECT ITSELF: equal durations race, so the window must exceed the bucket."""
+    from weirvern.worker import AGG_BUCKET_S
+
+    since = _sweep_since(monkeypatch, interval_s=AGG_BUCKET_S)
+    assert since, "the sweep issued no query, so this test proves nothing"
+    asked = datetime.fromisoformat(since)
+    span = (datetime.now() - asked).total_seconds()
+    assert span > AGG_BUCKET_S, (
+        f"the lookback is {span:.0f}s against a {AGG_BUCKET_S}s bucket. A bucket is then dropped "
+        f"before the next one has rows, and the sweep analyses NOTHING while every probe reads green"
+    )
+
+
+def test_a_FASTER_cadence_cannot_reintroduce_the_race(monkeypatch):
+    """The trap in the obvious fix. `2 * detect_interval_s` works at the shipped 300s and BREAKS
+    the moment an operator raises the cadence: at DETECT_INTERVAL_S=60 that gives a 120s lookback
+    against a 300s bucket, and the race returns silently on a deployment that just made detection
+    faster. The lookback is derived from the BUCKET for this reason."""
+    from weirvern.worker import AGG_BUCKET_S
+
+    for interval in (10, 60, 120, 300, 900):
+        since = _sweep_since(monkeypatch, interval_s=interval)
+        asked = datetime.fromisoformat(since)
+        span = (datetime.now() - asked).total_seconds()
+        assert span > AGG_BUCKET_S, (
+            f"at DETECT_INTERVAL_S={interval} the lookback is {span:.0f}s against a "
+            f"{AGG_BUCKET_S}s bucket, so a bucket falls out of the window before the next has rows"
+        )
+
+
+def test_the_lookback_still_covers_at_least_one_detection_interval(monkeypatch):
+    """The other direction: the window must also be at least one cadence, or a slow cadence would
+    skip rows entirely."""
+    for interval in (10, 60, 300, 900):
+        since = _sweep_since(monkeypatch, interval_s=interval)
+        span = (datetime.now() - datetime.fromisoformat(since)).total_seconds()
+        assert span >= interval, (
+            f"at DETECT_INTERVAL_S={interval} the lookback is only {span:.0f}s, so consecutive "
+            f"sweeps would not overlap and rows between them would never be scored"
+        )
+
+
+def test_the_bucket_constant_matches_the_SCHEMA():
+    """A constant that drifts from the view it describes is worse than a magic number: the sweep
+    would look back a comfortable margin against a bucket that is no longer that size. This reads
+    the schema file itself rather than trusting the constant.
+
+    PRECISE ABOUT WHAT IT CHECKS: `window_start` is the column the sweep filters on, so THIS test
+    pins how `window_start` is computed. The schema also uses `toStartOfMinute` inside an
+    aggregation (`count(DISTINCT toStartOfMinute(time_flow_start)) AS active_minutes`), which is a
+    count of distinct minutes within a bucket and NOT a bucket boundary -- so a check for the
+    string "toStartOfMinute(" anywhere in the file is wrong, and the first version of this test
+    failed for exactly that reason.
+    """
+    from weirvern.worker import AGG_BUCKET_S
+
+    schema = (ROOT / "weirvern" / "schema" / "001_weirvern.sql").read_text()
+
+    # Every `... AS window_start` expression, which is what the sweep's WHERE clause filters on.
+    exprs = re.findall(r"([A-Za-z_][\w.]*\([^)]*\))\s+AS window_start", schema)
+    assert exprs, "no `AS window_start` expression found: the schema's shape changed"
+    assert set(exprs) == {"toStartOfFiveMinute(time_flow_start)", "toStartOfFiveMinute(ts)"}, (
+        f"the schema computes window_start as {sorted(set(exprs))}, but AGG_BUCKET_S assumes a "
+        f"single 5-minute bucket. Two bucket sizes in one schema means one lookback cannot serve "
+        f"them both, and the sweep would race the larger one"
+    )
+    assert AGG_BUCKET_S == 300, (
+        f"AGG_BUCKET_S is {AGG_BUCKET_S} while window_start is toStartOfFiveMinute (300s). "
+        f"Change one OR the other, never just this number"
+    )
