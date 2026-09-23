@@ -98,6 +98,24 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            # ── PINNED, BECAUSE NOTHING ELSE PINS IT (audit F041) ─────────────────────────────
+            #
+            # This container ran as uid 100 in practice -- but ONLY because the goflow2 IMAGE
+            # declares `USER flow`. Nothing in this manifest said so, so the guarantee was a
+            # property of a third-party image tag that a version bump could silently change.
+            #
+            # Measured on the live pod: the container's `runAsUser` and `runAsNonRoot` were both
+            # unset at every level, so the container ran as whatever the image said. The deployment
+            # was one image update away from collecting flows as root, and the root-container
+            # tripwire could not have noticed, because it resolves a uid and an unset uid is
+            # neither 0 nor absent-but-suspicious to it.
+            #
+            # `runAsNonRoot` is the load-bearing line: the kubelet ENFORCES it and refuses to start
+            # the container if the image would run as root, which turns a silent drift into a
+            # startup failure. `runAsUser` states the uid explicitly so the runtime value matches
+            # what the image already did.
+            runAsNonRoot: true
+            runAsUser: 100
           # TCP is not a valid probe for a UDP-only collector, so readiness is
           # the metrics endpoint, which is the only listener that proves the
           # process is up and serving.

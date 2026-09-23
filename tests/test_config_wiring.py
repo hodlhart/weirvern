@@ -181,9 +181,28 @@ def test_root_containers_are_only_ones_with_a_documented_reason(docs):
 
     Anything else at uid 0 is a new privilege grant and should be a deliberate decision,
     not something that slips in unnoticed. This test is the tripwire for that.
+
+    ── AN UNSET UID WAS INVISIBLE TO THIS TRIPWIRE (audit F041, CONFIRMED) ──────────────────────
+
+    It resolved `uid = sc.get("runAsUser", pod_sc.get("runAsUser"))` and flagged `uid == 0`. A
+    container that sets runAsUser NOWHERE resolves to None, not 0, so it was skipped -- and a
+    container with no runAsUser and no runAsNonRoot runs as whatever its IMAGE says, which is
+    usually root, because root is the container default.
+
+    Measured on the live cluster: `goflow2` was exactly that shape at both levels, and it happened
+    to run as uid 100 only because the goflow2 image declares `USER flow`. Nothing in the manifest
+    said so, the tripwire could not see it, and one image update would have collected flow data as
+    root with no guard noticing. It is now pinned with runAsNonRoot and an explicit uid, and this
+    test treats an UNSPECIFIED uid as needing the same deliberate decision as root -- with
+    `zeek`'s own manifest showing why an unspecified uid is not safe merely because it is not 0.
     """
-    expected = {"zeek", "fix-permissions"}
+    expected_root = {"zeek", "fix-permissions"}
+    # Containers whose uid is unspecified at BOTH levels. They inherit the image's USER, which for
+    # most images is root, so each one needs an explicit decision like root does.
+    expected_unspecified: set[str] = set()
+
     root: set[str] = set()
+    unspecified: set[str] = set()
     for kind in ("Deployment", "DaemonSet", "Job", "StatefulSet"):
         for d in docs:
             if d.get("kind") != kind:
@@ -193,13 +212,25 @@ def test_root_containers_are_only_ones_with_a_documented_reason(docs):
             for c in _containers(spec):
                 sc = c.get("securityContext") or {}
                 uid = sc.get("runAsUser", pod_sc.get("runAsUser"))
+                name = c.get("name", "?")
                 if uid == 0:
-                    root.add(c.get("name", "?"))
-    unexpected = root - expected
+                    root.add(name)
+                elif uid is None:
+                    unspecified.add(name)
+
+    unexpected = root - expected_root
     assert not unexpected, (
         f"these containers run as root without a documented reason: {sorted(unexpected)}. "
         f"If deliberate, add the name to `expected` in this test and explain why in the "
         f"manifest — a silently-root workload widens the blast radius."
+    )
+    assert unspecified == expected_unspecified, (
+        f"containers whose uid is UNSPECIFIED at every level: {sorted(unspecified)}. An unset "
+        f"runAsUser is not a neutral default -- it means 'take whatever the image says', and the "
+        f"container default is root. Set runAsNonRoot and an explicit uid, or add the name to "
+        f"`expected_unspecified` here and explain in the manifest why the image's own USER is "
+        f"trusted. `goflow2` was the case that proved this: it ran as uid 100 purely because its "
+        f"image declared `USER flow`, with nothing in the deployment pinning it."
     )
     # And the documented ones must actually still be there: if a capability fix makes
     # zeek able to run unprivileged, this test should be updated rather than quietly
