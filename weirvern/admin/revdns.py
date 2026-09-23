@@ -33,6 +33,7 @@ useful case (naming your own hosts) by default and makes the leaky case a choice
 """
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import logging
 import os
@@ -49,8 +50,10 @@ TTL_POSITIVE_S = 3600.0
 # host, and a stale "no name" is less harmful than a stale WRONG name, but it
 # should still correct itself within a reasonable window.
 TTL_NEGATIVE_S = 300.0
-# A single lookup must never block a page render. Measured worst case was ~0.3s,
-# so 1s is generous headroom; anything slower is treated as "no name".
+# A single lookup must never block a page render. Measured worst case against a WORKING resolver was
+# ~0.3s, so 1s is generous headroom; anything slower is treated as "no name". THIS IS NOW A REAL
+# BOUND -- it is OUR wall clock on a thread we own, not `setdefaulttimeout`, which never applied to
+# `gethostbyaddr` (see the note beside `_LOOKUP_POOL`).
 LOOKUP_TIMEOUT_S = 1.0
 
 # Modes:
@@ -148,11 +151,62 @@ class _Cache:
 
 _CACHE = _Cache()
 
-# Resolving is done with a socket timeout rather than in a thread pool. gethostbyaddr
-# is blocking with no timeout argument, so setdefaulttimeout is the only portable
-# way to bound it; per-call threads would add unbounded thread creation on a
-# dashboard listing hundreds of addresses.
-socket.setdefaulttimeout(LOOKUP_TIMEOUT_S)
+# ── BOUNDING A BLOCKING RESOLVER: THE MECHANISM THAT DOES NOT WORK, AND THE ONE THAT DOES ────────
+#
+# This used to call `socket.setdefaulttimeout(LOOKUP_TIMEOUT_S)` at import, with a comment claiming
+# it was "the only portable way to bound" `gethostbyaddr`. Both halves were wrong.
+#
+# IT DOES NOT BOUND THE LOOKUP. `setdefaulttimeout` sets the timeout for socket objects created by
+# Python's `socket` module, and glibc's resolver inside `gethostbyaddr` creates none -- it talks to
+# DNS itself. MEASURED in an isolated network namespace against a UDP listener on :53 that received
+# queries and deliberately never answered:
+#
+#     QUERIES REACHED THE BLACKHOLE = 2
+#     python sockets created        = 0        <- nothing for the default to bind
+#     elapsed                       = 4.01s    <- with a 1.0s default set at import
+#
+# The 4.01s is glibc's own `timeout:2 attempts:2`, not ours. My first attempt at this measurement
+# returned 0.01s and proved nothing: this host's nsswitch `hosts:` line sends lookups to
+# systemd-resolved over a varlink socket, so the query never reached DNS at all. Only after forcing
+# `hosts: files dns` and COUNTING the queries the blackhole received did the number mean anything.
+#
+# AND IT IS A PROCESS-WIDE SIDE EFFECT. `setdefaulttimeout` is global, so importing this module for a
+# dashboard label silently reconfigured the timeout of every socket created later in the process --
+# including the GUI's `ThreadingHTTPServer` and the AF_PACKET sockets the SIPHON intercept forges ARP
+# with. A display concern must not change how the intercept behaves.
+#
+# SO THE LOOKUP RUNS IN A THREAD WE OWN, and the bound is OUR wall clock. The thread is a daemon, so
+# a resolver that never answers leaks one thread per distinct address rather than pinning a page
+# render; the result is cached either way, so the leak is bounded by the number of distinct addresses
+# asked about, and the negative result stops the same address being asked again for TTL_NEGATIVE_S.
+_LOOKUP_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="revdns",
+)
+
+
+def _resolve_bounded(addr: str) -> str | None:
+    """`gethostbyaddr` with a wall-clock bound that actually applies.
+
+    Returns the PTR name, or None on any failure -- including our own timeout, which is the case the
+    old mechanism could not produce.
+    """
+    try:
+        return _LOOKUP_POOL.submit(socket.gethostbyaddr, addr).result(timeout=LOOKUP_TIMEOUT_S)[0]
+    except concurrent.futures.TimeoutError:
+        # THE CASE THE GLOBAL DEFAULT COULD NEVER PRODUCE, and the reason this is worth a thread: a
+        # resolver that has gone quiet is the failure the bound exists for, and it is now reported as
+        # what it is rather than as "no PTR record".
+        logger.debug("reverse lookup for %s exceeded %.1fs; treating as no name", addr,
+                     LOOKUP_TIMEOUT_S)
+        return None
+    except (socket.herror, socket.gaierror, OSError) as exc:
+        logger.debug("no PTR for %s: %s", addr, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        # A failure inside the pool must not take a page render with it: the caller falls back to the
+        # address, which is a worse label and not a broken dashboard.
+        logger.debug("reverse lookup for %s failed: %s", addr, exc)
+        return None
 
 
 def lookup(addr: str, use_cache: bool = True) -> str | None:
@@ -173,9 +227,11 @@ def lookup(addr: str, use_cache: bool = True) -> str | None:
 
     name: str | None = None
     try:
-        name = socket.gethostbyaddr(addr)[0]
-    except (socket.herror, socket.gaierror, OSError) as exc:
-        logger.debug("no PTR for %s: %s", addr, exc)
+        name = _resolve_bounded(addr)
+    except Exception as exc:  # noqa: BLE001
+        # `_resolve_bounded` already absorbs its own failures; this is a belt-and-braces guard so a
+        # future change inside it cannot take a page render down.
+        logger.debug("lookup(%s) failed: %s", addr, exc)
         name = None
 
     # A PTR record that just repeats the address is worse than no name: it looks

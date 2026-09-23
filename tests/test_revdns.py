@@ -167,3 +167,145 @@ def test_lookup_never_raises_on_a_garbage_address():
     """A malformed address in flow data must not break a page render."""
     assert revdns.lookup("not-an-address") is None
     assert revdns.lookup("") is None
+
+
+# ── THE TIMEOUT THAT DID NOT BOUND ANYTHING, AND THE GLOBAL IT MUTATED (audit F088) ──────────────
+#
+# `revdns` called `socket.setdefaulttimeout(LOOKUP_TIMEOUT_S)` at import, with a comment claiming it
+# was "the only portable way to bound" `gethostbyaddr`. Both halves were wrong:
+#
+#   * IT DID NOT BOUND THE LOOKUP. `setdefaulttimeout` applies to socket objects created by Python's
+#     `socket` module; glibc's resolver inside `gethostbyaddr` creates none. MEASURED in an isolated
+#     network namespace against a resolver that received queries and never answered:
+#         QUERIES REACHED THE BLACKHOLE = 2
+#         python sockets created        = 0
+#         elapsed                       = 4.01s   with a 1.0s default set at import
+#     (4.01s is glibc's own `timeout:2 attempts:2`.) My first measurement returned 0.01s and proved
+#     nothing, because this host's nsswitch sends lookups to systemd-resolved over a varlink socket --
+#     the query never reached DNS. Only after forcing `hosts: files dns` AND counting the queries the
+#     blackhole received did the number mean anything.
+#   * IT WAS A PROCESS-WIDE SIDE EFFECT. Importing revdns for a dashboard label silently reconfigured
+#     every socket created later in the process -- including the GUI's `ThreadingHTTPServer` and the
+#     AF_PACKET sockets the SIPHON intercept forges ARP with. revdns runs INSIDE the GUI process.
+
+
+def test_importing_revdns_does_not_reconfigure_the_process_sockets():
+    """THE GLOBAL HALF. A display concern must not change how the intercept's sockets behave."""
+    import socket as _socket
+
+    before = _socket.getdefaulttimeout()
+    # The module is already imported, so re-executing it is what would re-set the global.
+    import importlib
+
+    importlib.reload(revdns)
+    after = _socket.getdefaulttimeout()
+
+    assert after == before, (
+        f"importing revdns changed the process-wide socket default from {before!r} to {after!r}. "
+        f"Every socket created afterwards inherits it, including the GUI's HTTP server and the SIPHON "
+        f"intercept's AF_PACKET sockets (audit F088)"
+    )
+    # And the CALL must be gone, not merely moved somewhere harmless.
+    #
+    # Asserted with `ast`, not by searching the text: the module's own comment NAMES
+    # setdefaulttimeout while explaining why it is not used, so a substring check flags the
+    # explanation. My first version did exactly that and failed on the comment.
+    import ast
+    import pathlib as _p
+
+    tree = ast.parse(_p.Path(revdns.__file__).read_text())
+    calls = [
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    ]
+    offenders = [c for c in calls if c.endswith("setdefaulttimeout")]
+    assert not offenders, (
+        f"revdns still CALLS {offenders}; it is process-global state, and it never bounded the "
+        f"lookup it was added for (audit F088)"
+    )
+
+
+def test_a_resolver_that_never_answers_is_bounded_by_OUR_clock(monkeypatch):
+    """THE BOUND HALF, and the case the old mechanism could never produce.
+
+    A resolver that swallows the query is exactly what LOOKUP_TIMEOUT_S exists for. The old code
+    returned None only when the resolver eventually GAVE UP (glibc's ~4s); it had no path that cut a
+    quiet resolver off, because the default it set was never consulted.
+    """
+    import time as _time
+
+    def _never_answers(addr):  # noqa: ANN001
+        _time.sleep(3.0)
+        raise AssertionError("should have been abandoned before this returned")
+
+    monkeypatch.setattr(revdns.socket, "gethostbyaddr", _never_answers)
+    revdns.clear_cache()
+
+    t0 = _time.time()
+    got = revdns.lookup("203.0.113.42")
+    elapsed = _time.time() - t0
+
+    assert got is None, f"a lookup that never answers returned {got!r} instead of None"
+    assert elapsed < 2.5, (
+        f"the lookup took {elapsed:.2f}s against a resolver that never answers. LOOKUP_TIMEOUT_S is "
+        f"{revdns.LOOKUP_TIMEOUT_S}s, so the bound is not applying -- this is audit F088 exactly, "
+        f"where setdefaulttimeout left glibc's own ~4s in charge"
+    )
+
+
+def test_the_bound_is_OURS_not_the_resolver_library(monkeypatch):
+    """Pin the SHAPE too: our timeout must be shorter than any plausible resolver timeout, or the
+    test above would pass on glibc's behaviour rather than on the fix."""
+    assert revdns.LOOKUP_TIMEOUT_S <= 2.0, (
+        f"LOOKUP_TIMEOUT_S is {revdns.LOOKUP_TIMEOUT_S}s, which is not meaningfully tighter than a "
+        f"resolver's own give-up time -- the bound would be indistinguishable from no bound"
+    )
+
+
+def test_a_WORKING_resolver_still_returns_the_name(monkeypatch):
+    """The other direction. A bound that returned None for everything would be a WORSE bug than the
+    one being fixed: the UI would silently lose every hostname."""
+    _clean = lambda a: ("host-a.example", [], [a])  # noqa: E731
+    monkeypatch.setattr(revdns.socket, "gethostbyaddr", _clean)
+    revdns.clear_cache()
+    monkeypatch.setenv("WEIRVERN_REVERSE_DNS", "private")
+
+    assert revdns.lookup("203.0.113.42") == "host-a.example"
+    assert revdns.label("203.0.113.42") == "host-a.example (203.0.113.42)"
+
+
+def test__resolve_bounded_absorbs_its_own_failures(monkeypatch):
+    """`_resolve_bounded`'s OWN contract, tested directly.
+
+    A mutation making it re-raise was MISSED when only `lookup` was tested, because `lookup` has a
+    belt-and-braces `except Exception` of its own -- so the raise never reached the caller and the
+    behaviour looked fine. That guard is worth keeping, but it hides this helper's contract, and a
+    future caller that used the helper directly would get an exception a "never raises" resolver
+    should not produce.
+    """
+    import socket as _socket
+
+    for exc in (_socket.herror("no PTR"), _socket.gaierror("temp fail"), OSError("boom"),
+                RuntimeError("something unexpected")):
+        monkeypatch.setattr(revdns, "_LOOKUP_POOL", _RaisingPool(exc))
+        assert revdns._resolve_bounded("203.0.113.42") is None, (
+            f"{type(exc).__name__} escaped _resolve_bounded; a dashboard must render with addresses "
+            f"even when lookup is broken"
+        )
+
+
+class _RaisingPool:
+    """A pool whose work item raises the given exception, so the helper's guards can be exercised."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def submit(self, fn, *a, **k):  # noqa: ANN001
+        exc = self._exc
+
+        class _Fut:
+            def result(self, timeout=None):  # noqa: ANN001
+                raise exc
+
+        return _Fut()
