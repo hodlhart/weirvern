@@ -1,5 +1,8 @@
 
+import pathlib
 from datetime import datetime
+
+import pytest
 
 from weirvern import ensemble
 from weirvern.config import ModelConfig, Settings
@@ -517,3 +520,104 @@ def test_the_denominator_is_the_LENGTH_OF_THE_LIST_not_a_literal():
         assert near[0]["model_agreement"] == 1.0, (
             f"a two-detector ensemble where both agree reported {near[0]['model_agreement']}"
         )
+
+
+# ── THE WEIGHTS ARE INERT UNDER max FUSION, AND THAT IS A DECISION, NOT A BUG (audit F046) ───────
+#
+# F046 claimed the weight settings are inert AND that "an operator's validated edit changes nothing".
+# The first half is true and documented in `fuse_scores`; the second half is REFUTED, and the
+# difference matters because acting on the false half would mean "fixing" the inertness of settings
+# nobody can set -- which is how a documented decision gets undone by an audit.
+#
+# These tests pin BOTH halves so neither is rediscovered as a defect.
+
+
+def test_weights_are_INERT_under_max_fusion_by_design():
+    """The documented behaviour: max fusion reports the strongest detector, unscaled.
+
+    Pinned so that making the weights "work" under max is a deliberate change with a failing test in
+    front of it, rather than something an audit round does by accident. The rationale is measured:
+    averaging a confident specialist's 0.99 down against quiet detectors is what let a seeded port
+    scan score below benign hosts.
+    """
+    scores = {"Isolation Forest": 0.90, "Gradient Boosting": 0.10,
+              "DBSCAN": 0.20, "Adaptive Baseline": 0.30}
+    neutral = fuse_scores(dict(scores), {n: 1.0 for n in scores}, mode="max")
+    scaled_down = fuse_scores(dict(scores), {**{n: 1.0 for n in scores}, "Isolation Forest": 0.1},
+                              mode="max")
+    scaled_up = fuse_scores(dict(scores), {**{n: 1.0 for n in scores}, "Isolation Forest": 9.9},
+                            mode="max")
+
+    assert neutral == scaled_down == scaled_up, (
+        f"max fusion responded to a per-detector weight ({neutral} / {scaled_down} / {scaled_up}). "
+        f"Scaling the strongest detector down re-introduces the dilution `fuse_scores` documents"
+    )
+    assert neutral == 0.90, f"max fusion is not the strongest signal: {neutral}"
+
+
+def test_weights_DO_apply_under_mean_fusion():
+    """The other half: the weights are not dead, they are scoped to the mode that reads them.
+
+    A fix that deleted them as "unused" would break the A/B comparison the mode exists for.
+    """
+    scores = {"Isolation Forest": 0.90, "Gradient Boosting": 0.10,
+              "DBSCAN": 0.20, "Adaptive Baseline": 0.30}
+    low = fuse_scores(dict(scores), {**{n: 1.0 for n in scores}, "Isolation Forest": 0.1},
+                      mode="mean")
+    high = fuse_scores(dict(scores), {**{n: 1.0 for n in scores}, "Isolation Forest": 9.9},
+                       mode="mean")
+    assert low != high, (
+        f"mean fusion ignored the weights ({low} == {high}); the weights exist for this mode"
+    )
+    assert low < high, f"raising a detector's weight lowered the mean-fused score ({low} > {high})"
+
+
+def test_no_operator_path_can_SET_a_weight_or_fusion_mode():
+    """THE HALF OF F046 THAT IS FALSE, pinned so it stays false.
+
+    No env binding, not in the config's editable allowlist, and rejected by `validate()` -- so an edit
+    is refused rather than silently discarded. If any of these ever becomes settable, this test fails
+    and the inertness becomes a real finding at that moment.
+    """
+    import dataclasses
+
+    from weirvern.admin.cluster_config import EDITABLE_KEYS, validate
+    from weirvern.config import ModelConfig
+
+    names = [f.name for f in dataclasses.fields(ModelConfig)
+             if f.name.startswith("weight")] + ["fusion_mode"]
+    assert names, "no weight fields found; the audit's subject has moved"
+
+    for n in names:
+        assert n.upper() not in EDITABLE_KEYS, (
+            f"{n} is now settable from the GUI. It is INERT under max fusion, so an operator edit "
+            f"would now genuinely change nothing -- audit F046 becomes a REAL finding"
+        )
+        with pytest.raises(Exception) as e:
+            validate(n, "0.5")
+        assert "not editable" in str(e.value), (
+            f"validate({n!r}) no longer rejects on editability, so this guard no longer proves the "
+            f"value cannot be set through the settings path"
+        )
+
+
+def test_weight_baseline_missing_is_applied_at_RUNTIME_not_in_the_base_map():
+    """`weight_baseline_missing` is absent from `cfg.weights` on purpose.
+
+    It is the baseline detector's weight when NO baseline exists for the host, and only
+    `detection_sweep` knows which case applies -- the runtime branch overrides the base map there.
+    Removing the override, or adding a base entry and calling it wired, are the two ways to break it.
+    """
+    from weirvern.config import ModelConfig
+
+    cfg = ModelConfig()
+    assert "weight_baseline_missing" not in cfg.weights, (
+        "weight_baseline_missing moved into the base weight map; the runtime branch that decides "
+        "baseline-present vs baseline-absent is the only place that can know which applies"
+    )
+    src = (pathlib.Path(__file__).resolve().parent.parent / "weirvern" / "ensemble.py").read_text()
+    assert "weight_baseline_missing" in src, (
+        "nothing in ensemble.py references weight_baseline_missing any more, so the setting is "
+        "genuinely dead rather than applied at runtime"
+    )
+    assert "has_baseline" in src, "the runtime baseline-present branch is gone"

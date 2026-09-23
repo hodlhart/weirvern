@@ -377,7 +377,14 @@ class ModelConfig:
 
     @property
     def weights(self) -> dict[str, float]:
-        """Base weights keyed by detector name (baseline adjusted at runtime)."""
+        """Base weights keyed by detector name (baseline adjusted at runtime).
+
+        `weight_baseline_missing` is deliberately NOT here: it is not a base weight, it is the
+        baseline detector's weight in the case where NO baseline exists for the host, and only
+        `ensemble.detection_sweep` knows which case applies. It is applied there, where
+        `has_baseline` is known. Putting a value here would make the mapping look complete while
+        the runtime branch silently overrode it for exactly the case the field names.
+        """
         return {
             "isolation_forest": self.weight_if,
             "gradient_boosting": self.weight_gb,
