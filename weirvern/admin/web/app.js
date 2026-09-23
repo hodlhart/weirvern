@@ -1559,6 +1559,10 @@ function showView(name) {
   // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
   // at. Same reasoning as the SOC views above.
   if (name === "identity") loadIdentity().then(clearError).catch(showError);
+  // The Sluice Gate loads on demand for the same reason as Identity: it reads two tables and the
+  // gate's state row, and firing that in the background every 15s would query ClickHouse for a
+  // panel nobody is looking at.
+  if (name === "sluice") loadSluice().then(clearError).catch(showError);
   if (name === "health") loadHealthDeep().then(clearError).catch(showError);
 }
 
@@ -1609,6 +1613,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // in showView: these run aggregate queries and should not fire on a background timer.
   for (const [id, fn] of [
     ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep], ["id-reload", loadIdentity],
+    ["sl-reload", loadSluice],
     ["st-reload", loadSettings],
     // The token controls. `Use token` stores it and re-reads the page so the server's answer about
     // write access is what updates the UI -- the browser never assumes it succeeded.
@@ -1722,6 +1727,16 @@ document.addEventListener("DOMContentLoaded", () => {
     ASSETS_STATE.showNames = e.target.checked;
     renderNetwork();
   });
+
+  // ── Sluice Gate controls ───────────────────────────────────────────────────
+  // Wired from HERE rather than from sluice.js so that every listener in this application is
+  // registered in one place -- a file that wires itself on load makes "what is bound to this
+  // button" a search across the whole bundle.
+  //
+  // GUARDED because sluice.js is a separate file: if it failed to load, an unguarded call would
+  // throw during bootstrap and leave EVERY other view unwired. A missing module should cost one
+  // tab, not the dashboard.
+  if (typeof wireSluice === "function") wireSluice();
 
   // ── accounts: the gates and their forms ────────────────────────────────────
   const gateForm = document.getElementById("gate-form");

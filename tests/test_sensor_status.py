@@ -404,6 +404,12 @@ def test_no_orphan_placeholder_elements_remain():
                   #     tbody, #id-count, #id-empty, #id-detail) carry the data. It is
                   #     referenced by showView's class toggle rather than by getElementById.
                   "view-identity",
+                  #   view-sluice: the same shape -- a view SECTION toggled by class, whose
+                  #     contents carry the data (#sl-state, #sl-state-note, #sl-count, the rules
+                  #     table's tbody, #sl-empty, #sl-policies, #sl-criticality-note). Listed
+                  #     explicitly rather than implied by the pattern, so a future section that
+                  #     really is an orphan cannot hide behind its neighbours.
+                  "view-sluice",
                   "gate-submit", "pw-submit", "gate-token-submit"}
 
     orphans = {i for i in ids

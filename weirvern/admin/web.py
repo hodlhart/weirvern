@@ -87,6 +87,10 @@ STATIC_FILES = {
     # as soc.js, and because the force-free graph layout is code a reader should be able to
     # find on its own.
     "/assets.js": ("assets.js", "application/javascript; charset=utf-8"),
+    # The Sluice Gate tab. Its own file for the same reason as the others, and because "what is
+    # being blocked, and is the gate actually holding" is a distinct concern from what the dashboard
+    # shows -- a reader looking for the blocking logic should find it in one place.
+    "/sluice.js": ("sluice.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -263,6 +267,14 @@ def _build_handler(ctx: GuiContext):
             # PASSIVE HOST IDENTIFICATION: what each host IS, from traffic already seen.
             if path == "/api/identity":
                 return self._host_identity()
+            # ── SLUICE GATE ─────────────────────────────────────────────────────────────────
+            # GET reads (the tab's payload and a cheap state poll). The writes are POST below and
+            # pass the operator gate like every other mutation, so a viewer cannot block a host.
+            # Reads stay open: looking at what is blocked never requires a password.
+            if path == "/api/sluice":
+                return self._sluice()
+            if path == "/api/sluice/state":
+                return self._sluice_state()
             # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
             # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
             # restart the GUI and hide the real problem); this one exists precisely to answer
@@ -570,6 +582,219 @@ def _build_handler(ctx: GuiContext):
                 })
             self._json(payload)
 
+        def _sluice(self) -> None:
+            """Every rule -- live AND lapsed -- plus the gate's own state.
+
+            Both sets, deliberately: "this rule exists but is not enforced" is a different statement
+            from "this rule does not exist", and a view showing only live rules would make a lapsed
+            block look DELETED, which is exactly the question an operator asks after a block stops
+            working.
+            """
+            payload: dict = {
+                "available": False, "reason": "", "rules": [], "live": 0, "gate": {},
+                "policies": {}, "criticality": "", "enabled": False, "iface": "",
+            }
+            # The policies are STATIC, so they are populated even when the database is unreachable:
+            # an operator can read what each level does, and the GUI can render the choice, without
+            # a working cluster.
+            try:
+                from weirvern.sluice import CRITICALITY_POLICIES  # noqa: PLC0415
+                payload["policies"] = {
+                    k: {"label": v["label"], "description": v["description"],
+                        "ttl_minutes": v["ttl_minutes"], "min_severity": v["min_severity"],
+                        "min_confidence": v["min_confidence"]}
+                    for k, v in CRITICALITY_POLICIES.items()
+                }
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                payload["criticality"] = str(ctx.settings.sluice_criticality)
+                payload["enabled"] = bool(ctx.settings.sluice_enabled)
+                payload["iface"] = str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or "")
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                from weirvern import sluice_store  # noqa: PLC0415
+                with self._with_client() as client:
+                    rules = sluice_store.load_all_rules(client)
+                    gate = sluice_store.load_gate_state(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice view unavailable: %s", exc)
+                return self._json({
+                    **payload, "available": False,
+                    "reason": f"cannot read the gate: {type(exc).__name__}",
+                })
+
+            import datetime as _dt  # noqa: PLC0415
+
+            now = _dt.datetime.now(_dt.UTC)
+            rows = []
+            for r in rules:
+                exp = r.expires_at
+                if exp is not None and exp.tzinfo is None:
+                    # ClickHouse can hand back naive values; comparing one to an aware `now` RAISES,
+                    # and the row would then render as neither live nor lapsed.
+                    exp = exp.replace(tzinfo=_dt.UTC)
+                rows.append({
+                    "rule_id": r.rule_id, "describes": r.describes(),
+                    "src_cidr": r.src_cidr, "dst_cidr": r.dst_cidr, "protocol": r.protocol,
+                    "dst_port": r.dst_port, "direction": r.direction, "reason": r.reason,
+                    "origin": r.origin, "severity": r.severity, "created_by": r.created_by,
+                    "origin_ref": r.origin_ref, "live": r.is_live(now),
+                    "revoked": r.revoked_at is not None,
+                    "expires_at": exp.isoformat() if exp else "",
+                    # SECONDS, not a timestamp: the GUI should not do clock arithmetic against a
+                    # server it may not share a timezone with, and a NEGATIVE value is a meaningful
+                    # answer ("lapsed N seconds ago") rather than an error.
+                    "expires_in_s": int((exp - now).total_seconds()) if exp else None,
+                })
+            payload.update({"available": True, "rules": rows,
+                            "live": sum(1 for r in rows if r["live"]), "gate": gate})
+            self._json(payload)
+
+        def _sluice_state(self) -> None:
+            """Just the gate's state, for a cheap poll on a short interval."""
+            try:
+                from weirvern import sluice_store  # noqa: PLC0415
+                with self._with_client() as client:
+                    state = sluice_store.load_gate_state(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot read the gate: {type(exc).__name__}"})
+            self._json(state)
+
+        def _sluice_block(self) -> None:
+            """Create a blocking rule.
+
+            Body: {"src_cidr", "dst_cidr", "protocol", "dst_port", "direction", "ttl_minutes",
+                   "reason"}
+
+            THE REFUSALS MATTER MORE THAN THE WRITE. A rule that blocks the wrong thing takes a
+            network down, so every predicate is checked here and returned as a sentence the operator
+            can act on -- rather than as a 500 from a layer that cannot explain itself.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            from weirvern import sluice_store  # noqa: PLC0415
+            from weirvern.sluice import SluiceError, parse_cidr, refuse_reason  # noqa: PLC0415
+
+            src_raw = str(body.get("src_cidr") or "").strip()
+            dst_raw = str(body.get("dst_cidr") or "").strip()
+            protocol = str(body.get("protocol") or "").strip().lower()
+            direction = str(body.get("direction") or "forward").strip().lower()
+            try:
+                dst_port = int(body.get("dst_port") or 0)
+            except (TypeError, ValueError):
+                return self._error(400, "dst_port must be a number")
+            try:
+                ttl = int(body.get("ttl_minutes") or 60)
+            except (TypeError, ValueError):
+                return self._error(400, "ttl_minutes must be a number")
+
+            try:
+                src = parse_cidr(src_raw, "source")
+                dst = parse_cidr(dst_raw, "destination")
+            except SluiceError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+
+            why = refuse_reason(
+                src_cidr=src, dst_cidr=dst,
+                iface=str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or ""),
+                mgmt_iface=str(ctx.settings.mgmt_iface or ""),
+                sensor_addrs=self._sensor_addresses(), protocol=protocol, dst_port=dst_port,
+            )
+            if why:
+                return self._json({"ok": False, "error": why}, 400)
+
+            reason = str(body.get("reason") or "").strip()
+            if not reason:
+                # REQUIRED: the question asked three weeks later is always "why is this blocked",
+                # and a rule with no reason cannot answer it.
+                return self._json({
+                    "ok": False,
+                    "error": "a reason is required -- it is the only record of why this rule "
+                             "exists, and the question asked later is always 'why is this blocked?'",
+                }, 400)
+
+            try:
+                with self._with_client() as client:
+                    ident = self._identity()
+                    rule = sluice_store.create_rule(
+                        client, src_cidr=src, dst_cidr=dst, protocol=protocol,
+                        dst_port=dst_port, direction=direction, ttl_minutes=ttl,
+                        created_by=(ident.username if ident else "operator"), reason=reason,
+                    )
+            except SluiceError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice block failed: %s", exc)
+                return self._error(502, f"could not record the rule: {type(exc).__name__}")
+
+            self._json({
+                "ok": True, "rule_id": rule.rule_id, "describes": rule.describes(),
+                "expires_at": rule.expires_at.isoformat() if rule.expires_at else "",
+                # The gate arms on its own interval, so say so rather than letting the operator
+                # assume the block is instant.
+                "note": f"recorded; enforcement picks it up within "
+                        f"{int(ctx.settings.sluice_interval_s)}s",
+            })
+
+        def _sluice_revoke(self) -> None:
+            """Stop enforcing a rule, keeping the RECORD.
+
+            The audit trail of what was blocked and why must not be destroyed by the act of
+            unblocking it -- that record is what an incident review reads.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            rule_id = str(body.get("rule_id") or "").strip()
+            if not rule_id:
+                return self._error(400, "rule_id is required")
+            from weirvern import sluice_store  # noqa: PLC0415
+            try:
+                with self._with_client() as client:
+                    ident = self._identity()
+                    ok = sluice_store.revoke_rule(
+                        client, rule_id, by=(ident.username if ident else "operator")
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice revoke failed: %s", exc)
+                return self._error(502, f"could not revoke the rule: {type(exc).__name__}")
+            if not ok:
+                return self._json({"ok": False, "error": f"no rule with id {rule_id!r}"}, 404)
+            self._json({"ok": True, "rule_id": rule_id,
+                        "note": f"revoked; enforcement stops within "
+                                f"{int(ctx.settings.sluice_interval_s)}s"})
+
+        def _sensor_addresses(self) -> list[str]:
+            """This host's own addresses, for the self-block check.
+
+            Best-effort BY DESIGN: if they cannot be determined the check is SKIPPED, not failed. A
+            self-block check that errored would refuse every rule on a host where the lookup is
+            unavailable, which is worse than occasionally missing one -- the operator still sees the
+            rule in the list and can revoke it.
+            """
+            import socket  # noqa: PLC0415
+            out: list[str] = []
+            try:
+                for info in socket.getaddrinfo(socket.gethostname(), None):
+                    addr = str(info[4][0])
+                    if addr and addr not in out:
+                        out.append(addr)
+            except OSError:
+                pass
+            return out
+
         def _zeeklog(self, query: dict) -> None:
             """Per-log detail for ONE Zeek log, for click-through from the Zeek view.
 
@@ -809,6 +1034,11 @@ def _build_handler(ctx: GuiContext):
             # anyone on the LAN mark alerts as handled.
             if path == "/api/review":
                 return self._review()
+            # ── SLUICE GATE writes ────────────────────────────────────────────────────────
+            if path == "/api/sluice/block":
+                return self._sluice_block()
+            if path == "/api/sluice/revoke":
+                return self._sluice_revoke()
             self._error(404, f"no write route at {path}")
 
         # -- accounts -------------------------------------------------------

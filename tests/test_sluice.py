@@ -21,6 +21,7 @@ pinned here so they cannot come back:
 from __future__ import annotations
 
 import ipaddress
+import pathlib
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -41,6 +42,8 @@ from weirvern.sluice import (
     policy_allows,
     refuse_reason,
 )
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 SOON = datetime.now(UTC) + timedelta(minutes=30)
 LONG_GONE = datetime.now(UTC) - timedelta(seconds=1)
@@ -461,3 +464,219 @@ def test_the_forward_policy_check_says_nothing_when_the_host_permits_relaying():
         assert siphonnet.forward_policy_problem("ens19") == ""
     finally:
         siphonnet.forward_policy = original
+
+
+# ── the enforcement loop ─────────────────────────────────────────────────────────────────────
+
+
+class FakeStore:
+    """A store that records what it was asked to do, and can be made to fail on demand."""
+
+    def __init__(self, rules=None, fail_read=False):
+        self.rules = rules or []
+        self.fail_read = fail_read
+        self.created: list[dict] = []
+        self.states: list = []
+        self.events: list = []
+
+    def load_live_rules(self, _client):
+        if self.fail_read:
+            raise RuntimeError("simulated database failure")
+        return list(self.rules)
+
+    def create_rule(self, _client, **kw):
+        self.created.append(kw)
+        return Rule(kw.get("src_cidr", "x") + "-derived", **{
+            k: v for k, v in kw.items() if k in
+            {"src_cidr", "dst_cidr", "protocol", "dst_port", "direction", "reason",
+             "origin", "origin_ref", "severity", "created_by"}
+        } | {"expires_at": SOON})
+
+    def write_gate_state(self, _client, _sensor, state):
+        self.states.append(state)
+
+    def write_events(self, _client, events, **_kw):
+        self.events.extend(events)
+        return len(events)
+
+    def derived_rules_for_detections(self, detections, *, policy, max_ttl_minutes):
+        from weirvern.sluice_store import derived_rules_for_detections as real
+        return real(detections, policy=policy, max_ttl_minutes=max_ttl_minutes)
+
+
+def test_an_unreadable_ruleset_does_NOT_reopen_the_gate():
+    """THE MOST IMPORTANT ASSERTION IN THIS FILE.
+
+    A database failure must not disarm. The tempting implementation is `rules = load(...) or []` and
+    then arm an empty set -- which OPENS the gate, so a query failure silently unblocks every host
+    an operator had stopped. Worse, an attacker who can slow the database can then unblock
+    themselves. Failing open on a LOST CONNECTION is right; failing open on a FAILED QUERY is not.
+
+    Note what the supervisor is NOT asked to do here: `arm` is never called, so nothing the kernel
+    currently has installed is disturbed.
+    """
+    from weirvern.sluice import enforcement_pass
+
+    backend = FakeBackend()
+    sup = SluiceSupervisor(iface="ens19", backend=backend)
+    sup.arm([live("existing")])          # the gate is currently holding a rule
+    before = list(backend.armed_with)
+
+    store = FakeStore(fail_read=True)
+    state = enforcement_pass(store, sup, client=object(), sensor="s1")
+
+    assert state.state == GATE_STATE_DEGRADED
+    assert "unreadable ruleset is not an empty one" in state.detail
+    # THE KERNEL WAS NOT TOUCHED: no further arm() call, so the installed rule is still there.
+    assert backend.armed_with == before, "the pass re-armed the kernel, risking opening the gate"
+    assert sup.state.held_rules() == ["existing"] if hasattr(sup.state, "held_rules") else True
+
+
+def test_a_successful_pass_arms_and_records_the_state():
+    from weirvern.sluice import enforcement_pass
+
+    backend = FakeBackend()
+    sup = SluiceSupervisor(iface="ens19", backend=backend)
+    store = FakeStore(rules=[live("a"), live("b")])
+    state = enforcement_pass(store, sup, client=object(), sensor="s1")
+
+    assert state.state == GATE_STATE_ARMED
+    assert state.rules_active == 2
+    assert [r.rule_id for r in backend.armed_with] == ["a", "b"]
+    assert len(store.states) == 1, "the gate state was not recorded, so the GUI cannot show it"
+
+
+def test_a_state_write_failure_is_reported_not_hidden():
+    """The gate IS armed even if the state row failed. Saying otherwise would hide a working gate."""
+    from weirvern.sluice import enforcement_pass
+
+    class NoStateStore(FakeStore):
+        def write_gate_state(self, *_a, **_k):
+            raise RuntimeError("simulated write failure")
+
+    backend = FakeBackend()
+    sup = SluiceSupervisor(iface="ens19", backend=backend)
+    state = enforcement_pass(NoStateStore(rules=[live("a")]), sup, client=object(), sensor="s1")
+
+    assert state.state == GATE_STATE_ARMED
+    assert "could not be recorded" in state.detail
+
+
+def test_detections_only_block_when_the_policy_says_so():
+    """With the policy OFF, a high-severity detection must not create a rule.
+
+    This is the operator's trust boundary: auto-blocking is off unless they turned it on, and a
+    default that blocked would surprise anyone who installed the tool to watch.
+    """
+    from weirvern.sluice import enforcement_pass
+
+    det = [{"src_addr": "198.51.100.9", "severity": "high", "anomaly_score": 0.99}]
+
+    store = FakeStore()
+    sup = SluiceSupervisor(iface="ens19", backend=FakeBackend())
+    enforcement_pass(store, sup, client=object(), sensor="s1", policy="off", detections=det)
+    assert store.created == [], "a detection created a block while the policy was Off"
+
+    store2 = FakeStore()
+    sup2 = SluiceSupervisor(iface="ens19", backend=FakeBackend())
+    enforcement_pass(store2, sup2, client=object(), sensor="s1", policy="high", detections=det)
+    assert len(store2.created) == 1, "a qualifying detection did not create a block"
+    assert store2.created[0]["origin"] == "detection", "the block is not attributable to a detection"
+
+
+def test_a_detection_with_no_source_address_is_skipped():
+    """There is nothing to block that is not 'the whole segment', and blocking that is an outage."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    out = derived_rules_for_detections(
+        [{"src_addr": "", "severity": "high", "anomaly_score": 0.99}],
+        policy="high", max_ttl_minutes=60,
+    )
+    assert out == []
+
+
+def test_the_operators_ceiling_caps_the_policys_ttl():
+    """A policy change must never produce a longer block than the operator allowed."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    det = [{"src_addr": "198.51.100.9", "severity": "high", "anomaly_score": 0.99}]
+    # The 'high' policy says 30 minutes; the operator has capped blocks at 5.
+    out = derived_rules_for_detections(det, policy="high", max_ttl_minutes=5)
+    assert out and out[0]["ttl_minutes"] == 5, f"the ceiling was not applied: {out}"
+
+
+# ── the GUI loader's failure contract, proved behaviourally ──────────────────────────────────
+
+
+def test_a_failed_gate_query_reports_rather_than_rendering_empty():
+    """The Sluice Gate loader must not return QUIETLY when its request fails.
+
+    Proved by EXECUTING the shipping JavaScript against a rejecting fetch, not by reading it. The
+    check exists because the jsdom DOM harness cannot reach this path: its stub dispatcher resolves
+    the override rather than rejecting through to the page, so an assertion there would be testing
+    the harness. Verified in isolation that the loader does produce the banner; this pins it so a
+    future edit that drops the catch is caught.
+
+    WHY IT MATTERS: `showView` fires the loader without awaiting it, so a bare `await getJSON(...)`
+    that rejects becomes an unhandled rejection. The panel then keeps whatever it had and NO banner
+    appears -- a failed query reading exactly like an empty gate, which would tell an operator that
+    nothing is blocked when the truth is that nobody knows.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed, so the shipping JavaScript cannot be executed")
+
+    harness = ROOT / "scripts" / "jsdom_render.js"
+    js = r"""
+    const fs = require("fs");
+    const src = fs.readFileSync(process.argv[2], "utf8");
+    const made = [];
+    global.document = {
+      getElementById: (id) => (id === "data-banner" ? (made.find((b) => b.id === id) || null)
+                                                    : { replaceChildren(){}, appendChild(){},
+                                                        textContent: "", checked: false,
+                                                        addEventListener(){}, value: "" }),
+      querySelector: () => ({ prepend: (n) => made.push(n) }),
+      createElement: () => ({ set className(v){}, set textContent(v){}, appendChild(){},
+                              addEventListener(){} }),
+    };
+    global.el = (tag, opts = {}, kids = []) => {
+      const n = { id: (opts.attrs && opts.attrs.id) || "", className: opts.class || "",
+                  textContent: opts.text || "", children: kids, appendChild(c){ this.children.push(c); } };
+      return n;
+    };
+    global.showDataError = (msg) => {
+      if (!msg) return;
+      let b = made.find((x) => x.id === "data-banner");
+      if (!b) { b = { id: "data-banner", textContent: "" }; made.push(b); }
+      b.textContent = "Data unavailable: " + msg;
+    };
+    global.showError = () => {};
+    global.getJSON = async () => { throw new Error("simulated transport failure"); };
+    global.postJSON = async () => ({ ok: true });
+    eval(src);
+    (async () => {
+      await loadSluice().catch(() => {});
+      const b = made.find((x) => x.id === "data-banner");
+      process.stdout.write(b ? b.textContent : "");
+    })();
+    """
+    script = ROOT / ".tmp_sluice_loader_check.js"
+    script.write_text(js)
+    try:
+        proc = subprocess.run(
+            [node, str(script), str(ROOT / "weirvern" / "admin" / "web" / "sluice.js")],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    out = (proc.stdout or "") + (proc.stderr or "")
+    assert "Data unavailable" in out, (
+        "a failed gate query produced no banner, so the panel would look like an empty gate. "
+        f"loader output: {out[:300]!r}"
+    )
+    assert harness.exists(), "the DOM harness has gone missing"

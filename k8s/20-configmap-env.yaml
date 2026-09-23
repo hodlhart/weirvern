@@ -188,6 +188,32 @@ data:
   # startup failure, which is the honest behaviour — better to crash loudly than
   # to run believing alerts are being delivered.
   PUSHOVER_ENABLED: "0"
+
+  # ── Sluice Gate: operator-controlled blocking ──────────────────────────────────────────
+  #
+  # OFF BY DEFAULT, and that is a deliberate choice about what kind of tool this is. Weirvern is a
+  # monitoring appliance first: installing it should not start blocking traffic before anyone has
+  # looked at what it sees. An operator opens the gate when they have a reason to.
+  SLUICE_ENABLED: "0"
+
+  # The interface enforcement attaches to. Empty means the capture interface, which is right for an
+  # in-path deployment. It can NEVER be the management interface: the gate refuses that at
+  # authoring time with a sentence, because blocking there cuts off whoever administers this box.
+  SLUICE_IFACE: ""
+
+  # Whether DETECTIONS may block on their own: off | high | medium | strict. Defaults to off even
+  # when the gate is enabled, because auto-blocking on model output is a decision an operator makes
+  # having seen what the ensemble calls high severity on their own network. See
+  # weirvern/sluice.py CRITICALITY_POLICIES for what each level does and what it costs.
+  SLUICE_CRITICALITY: "off"
+
+  # A CEILING on the policy's own TTL, in seconds. An operator who distrusts automated blocking can
+  # set this low and keep the convenience: "block for a minute, tell me, and let me look".
+  SLUICE_MAX_BLOCK_S: "3600"
+
+  # How often the gate re-arms. Also the interval within which a LAPSED rule stops being enforced,
+  # since expiry is re-evaluated on every pass. Compiling a ruleset is milliseconds, so short is cheap.
+  SLUICE_INTERVAL_S: "60"
   PUSHOVER_COOLDOWN_S: "1800"
   PUSHOVER_MAX_PER_HOUR: "20"
 

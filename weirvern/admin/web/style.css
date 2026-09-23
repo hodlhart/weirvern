@@ -493,3 +493,49 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .conf-medium { border-color: var(--border); color: var(--fg); }
 .conf-low { color: var(--muted); }
 .conf-unknown { color: var(--muted); opacity: .8; font-style: italic; }
+
+/* ── Sluice Gate ───────────────────────────────────────────────────────────────────────────────
+   Only the classes the tab introduces. The chips, cards and stat blocks are the shared ones -- a
+   tab that invented its own would drift from the rest of the GUI, and "which chip style is this"
+   is not a question a reader should have to ask. */
+.sluice-policy .policy-row,
+.policy-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+/* The ACTIVE policy is marked by a border, not by colour alone: an operator scanning this needs to
+   find "which one is in force" without relying on a hue they may not distinguish. */
+.policy-row.active { border-color: var(--accent); border-left-width: 4px; }
+.policy-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.policy-head strong { font-size: 1.02em; }
+
+/* The gate-state strip reads as a row of stats rather than a list, because it answers one question
+   ("is this holding?") with several numbers at once. */
+#sl-state { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0; }
+#sl-state .stat .v { font-size: 1.15em; font-weight: 600; }
+
+/* The rule form: two columns on a wide screen, one on a narrow one. `minmax(0, 1fr)` rather than
+   `1fr` so a long CIDR in a placeholder cannot force the column wider than its share. */
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 10px 16px;
+  margin: 8px 0;
+}
+.grid2 label, #view-sluice > .card > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.94em;
+}
+#view-sluice input[type=text], #view-sluice input[type=number], #view-sluice select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+#view-sluice button.small { padding: 2px 8px; font-size: 0.86em; }

@@ -106,6 +106,7 @@
   <button class="tab" data-view="netflow">Netflow</button>
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="identity">Identity</button>
+  <button class="tab" data-view="sluice">Sluice Gate</button>
   <button class="tab" data-view="models">Models</button>
   <button class="tab" data-view="settings">Settings</button>
 </nav>
@@ -647,6 +648,110 @@
     EFFECTIVE configuration -- what is actually running, read from the cluster -- and offers
     the controls to change it to admins only. Viewers see every value, read-only.
   -->
+
+  <!-- ── Sluice Gate ────────────────────────────────────────────────────────────
+    WHAT PASSES, AND WHAT DOES NOT. Weirvern already sees everything; this is the
+    part that can stop it. A sluice gate is a decision point: the water arrives either
+    way, and the gate decides what continues. Every decision it makes is recorded.
+
+    THE GATE FAILS OPEN ON PURPOSE. This is a monitoring appliance sitting in line
+    with a network, so if its supervisor dies the gate OPENS rather than staying
+    shut: a tool that takes the network down when it has a bad day is a tool nobody
+    deploys twice. The panel therefore leads with the gate's own state, because
+    "armed" and "degraded, and here is why" must never look alike.
+  -->
+  <section id="view-sluice" class="view">
+    <div class="card">
+      <h2>Sluice Gate</h2>
+      <p class="muted">
+        Block traffic by address, port or direction. Every rule is bounded -- this system does not
+        create permanent blocks, so a rule that has lapsed shows here as lapsed rather than silently
+        continuing to enforce. Blocking runs in the kernel on the sensor, so it does not slow the
+        traffic it inspects.
+      </p>
+      <!-- THE GATE'S OWN STATE, FIRST AND LARGEST. An operator's first question is "is this
+           actually blocking anything", and the answer is not the rule count. -->
+      <div id="sl-state" class="stat-row"></div>
+      <p id="sl-state-note" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Block a host or network</h2>
+      <div class="grid2">
+        <label>source address or CIDR
+          <input id="sl-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24">
+        </label>
+        <label>destination (optional)
+          <input id="sl-dst" type="text" placeholder="leave empty for any">
+        </label>
+        <label>protocol
+          <select id="sl-proto">
+            <option value="">any</option>
+            <option value="tcp">tcp</option>
+            <option value="udp">udp</option>
+            <option value="icmp">icmp</option>
+          </select>
+        </label>
+        <label>destination port (optional)
+          <input id="sl-port" type="number" min="0" max="65535" placeholder="any">
+        </label>
+        <label>direction
+          <select id="sl-direction">
+            <option value="forward" selected>forwarded (traffic passing through)</option>
+            <option value="in">inbound (traffic to this sensor)</option>
+          </select>
+        </label>
+        <label>duration in minutes
+          <input id="sl-ttl" type="number" min="1" max="10080" value="60">
+        </label>
+      </div>
+      <!-- THE REASON IS REQUIRED, AND THE FIELD SAYS SO RATHER THAN THE SERVER REJECTING IT
+           after the operator has filled in six other fields. -->
+      <label>reason (required)
+        <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
+      </label>
+      <div class="controls">
+        <button id="sl-block" class="primary">Block</button>
+        <span id="sl-block-note" class="muted"></span>
+      </div>
+      <p class="muted">
+        Refused on purpose: a rule with no address, a port without a protocol, the management
+        interface, this sensor's own address, and anything covering the whole internet. Each refusal
+        names the fix.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Rules <span id="sl-count" class="muted"></span></h2>
+      <div class="controls">
+        <button id="sl-reload">Reload</button>
+        <label class="muted"><input id="sl-live-only" type="checkbox"> live rules only</label>
+      </div>
+      <table id="sl-table">
+        <thead>
+          <tr>
+            <th>rule</th><th>state</th><th>origin</th><th>expires</th>
+            <th>severity</th><th>reason</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="sl-empty" class="empty"></p>
+    </div>
+
+    <div class="card">
+      <h2>Blocking on detections</h2>
+      <p class="muted">
+        Whether the ensemble's own verdicts may block. Off by default: a tool that starts blocking on
+        model output the moment it is installed would surprise anyone who installed it to watch
+        first. The policy below is the operator's trust boundary, and each level states what it
+        costs.
+      </p>
+      <div id="sl-policies"></div>
+      <p id="sl-criticality-note" class="muted"></p>
+    </div>
+  </section>
+
   <section id="view-settings" class="view">
     <div class="card">
       <h2>Settings <span class="muted" id="st-window"></span></h2>
@@ -815,6 +920,7 @@
 <script src="/app.js"></script>
 <script src="/soc.js"></script>
 <script src="/assets.js"></script>
+<script src="/sluice.js"></script>
 </body>
 </html>
 

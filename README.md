@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 behavioural baselines, flags the deviations that match real attack shapes, and shows a
 human *why*, with the measurements that fired.
 
-Current release: **0.10.4** · Runs on any conformant Kubernetes · No payload inspection ·
+Current release: **0.11.0** · Runs on any conformant Kubernetes · No payload inspection ·
 Alerts via [Pushover](https://pushover.net), or log-only.
 
 **What you get**
@@ -141,10 +141,10 @@ Coverage is stated as a fraction of hosts seen, so a small numerator cannot misl
 | `clickhouse` | StatefulSet | `clickhouse/clickhouse-server:26.8` | Time-series store; aggregation via materialized views |
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.5.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
-| `weirvern-worker` | Deployment | `weirvern-worker:0.10.4` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.10.4` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
-| `weirvern-prune` | **CronJob** | `weirvern-worker:0.10.4` | Enforces the per-component disk caps |
-| `weirvern-schema` | Job | `weirvern-worker:0.10.4` | Applies the ClickHouse schema |
+| `weirvern-worker` | Deployment | `weirvern-worker:0.11.0` | Ingest (both sources), ensemble detection, Pushover alerts |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.11.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-prune` | **CronJob** | `weirvern-worker:0.11.0` | Enforces the per-component disk caps |
+| `weirvern-schema` | Job | `weirvern-worker:0.11.0` | Applies the ClickHouse schema |
 
 Three details of this table are Kubernetes design statements, not incidentals:
 
@@ -448,8 +448,8 @@ and runs the schema Job and the prune CronJob) and the Zeek sensor.
 
 ```bash
 # podman or buildah — any OCI image builder your workstation has
-podman build -t registry.example.com/weirvern-worker:0.10.4 .
-podman push registry.example.com/weirvern-worker:0.10.4
+podman build -t registry.example.com/weirvern-worker:0.11.0 .
+podman push registry.example.com/weirvern-worker:0.11.0
 
 # The Zeek image is DERIVED, and its build context is zeek/, not the repo root —
 # vendor/ja4-zeek-scripts and verify-ja4.sh are COPYd from there.
@@ -466,7 +466,7 @@ Then point the manifests at them — one place, no per-file editing:
 
 ```bash
 cd k8s
-kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.10.4
+kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.11.0
 kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.5.0
 cd ..
 ```
@@ -638,11 +638,11 @@ harness can fail. See [Detection and alerting](#detection-and-alerting).
 
 ```bash
 # 1. Build and push the new image
-podman build -t registry.example.com/weirvern-worker:0.10.4 .
-podman push registry.example.com/weirvern-worker:0.10.4
+podman build -t registry.example.com/weirvern-worker:0.11.0 .
+podman push registry.example.com/weirvern-worker:0.11.0
 
 # 2. Point the manifests at it (single place)
-cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.10.4 && cd ..
+cd k8s && kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:0.11.0 && cd ..
 
 # 3. Apply. The Deployments roll automatically because they use the Recreate
 #    strategy, so the collector and worker stop before their replacements start
@@ -682,7 +682,7 @@ ssh "$NODE" 'sudo rm -rf /var/lib/weirvern'
 kubectl label node "$NODE" weirvern.io/sensor-node-
 
 # Optional: the image, if nothing else uses it
-podman rmi registry.example.com/weirvern-worker:0.10.4
+podman rmi registry.example.com/weirvern-worker:0.11.0
 ```
 
 If you created an image-pull secret (`regcred`) it lives inside the namespace and
@@ -979,6 +979,7 @@ sessions are in memory, so a restart signs everyone out.
 | Zeek | Per-log volume, a trend by log, observed services, DNS names; **click a log to see which hosts it contains**, then a host to drill into it |
 | Models | Training history, score distribution, model agreement, per-feature deviations — and **near misses**: the windows that scored close to the bar, or cleared it and were stopped by the agreement gate. The surface a threshold change should be judged against |
 | Identity | What each host **is**, derived passively from traffic already seen — nothing is probed and nothing is sent. Sources are application banners (`software.log`, which names its own platform), DHCP leases, NIC vendors and TLS ClientHello fingerprints. Confidence reflects how many **independent** sources agree, so a hostname convention alone reads as `low`. A host whose sources **contradict** each other is flagged rather than smoothed over — a renamed machine, a dual-boot host or a spoofed hostname all look like that, and it is a finding. Coverage is stated as a fraction of hosts seen, so a small numerator cannot mislead |
+| Sluice Gate | What **passes**, and what does not: block traffic by address, port or direction, and see whether the gate is holding. Blocking is compiled into kernel sets on the sensor, so it does not slow what it inspects. Every rule is **bounded** — this system does not create permanent blocks, and a rule that has lapsed shows as lapsed rather than silently continuing to enforce. Live, lapsed and revoked rules look **different**, because "this rule exists but is not enforced" is a different statement from "this rule does not exist". Refused on purpose: a rule with no address, a port without a protocol, the management interface, the sensor's own address, and anything covering the whole internet. Detections may block too, under a criticality policy that is **off by default** — the operator decides whether model output is grounds to stop traffic |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
 | Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version — each setting rendered as the control that changes it (toggle / dropdown / bounded number) with a **?** explaining what it does, plus **Account** (change your password) and **Users** (admin-only account management). Secrets show as `(set, N chars)` or `(not set)`, never in value |
 

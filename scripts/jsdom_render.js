@@ -78,7 +78,7 @@ async function main() {
   const order = [];
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
-        JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js"]),
+        JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -103,7 +103,15 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
-                   loadIdentity, showIdentityDetail };
+                   loadIdentity, showIdentityDetail,
+                   loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
+                   document,
+                   // A SETTER, not a value. fetchOverride is a LET inside this eval scope, so
+                   // exposing its current VALUE would hand the outer checks a snapshot that no
+                   // later assignment updates -- every failure-path check would then run against a
+                   // null override and quietly test nothing, which is how a failure-path test
+                   // passes while proving nothing at all.
+                   setFetchOverride: (fn) => { fetchOverride = fn; } };
   `;
   try {
     window.eval(bundle + epilogue);
@@ -368,7 +376,55 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
   // A REALISTIC payload, deliberately including the two cases that must render differently: a
   // high-confidence host with agreeing sources, and a host whose sources CONTRADICT each other.
   // A stub of only well-behaved hosts would pass while the disagreement path was broken.
-  const IDENTITY_PAYLOAD = {
+  // ── Sluice Gate fixtures ────────────────────────────────────────────────────────────────────
+//
+// THREE STATES ARE DELIBERATELY PRESENT IN ONE PAYLOAD, because the whole point of the tab is that
+// they must LOOK DIFFERENT from each other: a LIVE rule, a LAPSED one (exists, not enforced), and a
+// REVOKED one (kept for the audit trail). A fixture with only live rules could not catch a view that
+// rendered all three identically -- which is exactly the bug this project treats as its worst.
+const SLUICE_PAYLOAD = {
+  available: true, reason: "",
+  enabled: true, iface: "eth1", live: 2,
+  criticality: "high",
+  gate: {
+    available: true, state: "armed", iface: "eth1", mgmt_iface: "eth0",
+    rules_active: 2, rules_total: 3, packets_blocked: 1234, bytes_blocked: 987654,
+    detail: "2 rule(s) enforced on eth1; 1 lapsed and are no longer enforced",
+    backend: "nft", backend_expected: "nft",
+  },
+  policies: {
+    off: { label: "Off", description: "Detections are recorded and alerted but never block anything.",
+           ttl_minutes: 0, min_severity: null, min_confidence: 0.0 },
+    high: { label: "High only", description: "Block only flows the ensemble scored high severity.",
+            ttl_minutes: 30, min_severity: "high", min_confidence: 0.85 },
+    medium: { label: "Medium and above", description: "Block medium and high severity.",
+              ttl_minutes: 15, min_severity: "medium", min_confidence: 0.7 },
+    strict: { label: "Strict", description: "Block anything the ensemble flagged.",
+              ttl_minutes: 5, min_severity: "low", min_confidence: 0.5 },
+  },
+  rules: [
+    { rule_id: "r-live-1", describes: "from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
+      dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
+      origin: "manual", severity: "", created_by: "admin", origin_ref: "",
+      reason: "scanner on the lab segment", expires_at: "", expires_in_s: 1800 },
+    { rule_id: "r-live-2", describes: "from 198.51.100.9/32 tcp/22", src_cidr: "198.51.100.9/32",
+      dst_cidr: "", protocol: "tcp", dst_port: 22, direction: "forward", live: true, revoked: false,
+      origin: "detection", severity: "high", created_by: "detection", origin_ref: "w-123",
+      reason: "detection: severity high at confidence 0.91", expires_at: "", expires_in_s: 900 },
+    { rule_id: "r-lapsed", describes: "from 203.0.113.5/32", src_cidr: "203.0.113.5/32",
+      dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: false, revoked: false,
+      origin: "manual", severity: "", created_by: "admin", origin_ref: "",
+      reason: "temporary block that expired", expires_at: "2026-01-01T00:00:00Z",
+      expires_in_s: -3600 },
+    { rule_id: "r-revoked", describes: "from 203.0.113.6/32", src_cidr: "203.0.113.6/32",
+      dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: false, revoked: true,
+      origin: "manual", severity: "", created_by: "admin", origin_ref: "",
+      reason: "blocked in error, revoked", expires_at: "2026-01-01T00:00:00Z",
+      expires_in_s: 3600 },
+  ],
+};
+
+const IDENTITY_PAYLOAD = {
     available: true,
     window_days: 7,
     count: 3,
@@ -521,6 +577,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     ["/api/session", SESSION_STUB],
     ["/api/users", USERS_PAYLOAD],
     ["/api/identity", IDENTITY_PAYLOAD],
+    ["/api/sluice", SLUICE_PAYLOAD],
 
 
     // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
@@ -1789,7 +1846,95 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
 
 
   // ── no page errors accumulated ─────────────────────────────────────────────────────────
-  check("no JavaScript errors during any of the above", errors.length === 0,
+  // ── Sluice Gate: the three states must LOOK DIFFERENT ──────────────────────────────────────
+//
+// The tab exists to answer two questions: "is the gate actually holding?" and "is this specific
+// rule in force?". Both have a failure mode where the wrong answer looks like the right one -- a
+// degraded gate reading as armed, and a lapsed rule reading as deleted. These checks assert the
+// DISTINCTIONS, not merely that something rendered.
+await H.showView("sluice");
+const slText = () => (H.document.getElementById("view-sluice") || {}).textContent || "";
+// POLL for the rows rather than sleeping at them: showView fires loadSluice without
+// awaiting it, and a fixed delay is a guess about stub latency that gets more fragile
+// the more the payload grows.
+for (let i = 0; i < 40 && !slText().includes("scanner on the lab segment"); i++) {
+  await new Promise((r) => setTimeout(r, 20));
+}
+
+check("the Sluice Gate tab exists and renders",
+      slText().includes("Sluice Gate"));
+
+check("the gate's STATE is shown, not just a rule count",
+      slText().includes("armed") && slText().includes("eth1"),
+      slText().slice(0, 200));
+
+check("the server's own state sentence reaches the screen",
+      slText().includes("lapsed and are no longer enforced"),
+      "gate.detail was not rendered, so the operator cannot see WHY");
+
+check("a LIVE rule is distinguishable from a LAPSED one",
+      slText().includes("live") && slText().includes("lapsed"),
+      "a lapsed rule must not look like a live one, nor like a deleted one");
+
+check("a REVOKED rule stays visible rather than disappearing",
+      slText().includes("revoked"),
+      "the audit trail of what was blocked must survive the unblocking");
+
+check("a detection-derived rule is attributed to the detection",
+      slText().includes("detection"),
+      "an operator must be able to tell a model's block from an analyst's");
+
+check("the blocking policy levels are rendered with their cost",
+      slText().includes("High only") && slText().includes("30 minutes"));
+
+check("the ACTIVE policy is marked as in use",
+      slText().includes("in use"),
+      "an operator scanning the policies must find the one in force");
+
+check("a rule with no reason says so rather than showing blank",
+      !slText().includes("undefined"),
+      "undefined reached the screen, which means a missing field rendered as a value");
+
+// ── the failure path: a broken gate must not read as an empty one ──────────────────────────
+//
+// MUST LEAVE AND COME BACK. `showView` returns early when the target view is already active, so
+// calling it twice in a row reloads NOTHING and this check would pass or fail on a stale panel
+// rather than on the failure path it is named for. Switching to another view first is what makes
+// the second call actually run the loader.
+H.fetchOverride = (u) => (String(u).includes("/api/sluice")
+  ? Promise.reject(new Error("sluice unavailable"))
+  : null);
+H.showView("overview");
+await new Promise((r) => setTimeout(r, 20));
+await H.showView("sluice");
+// A TRANSPORT FAILURE, not a route answering with available:false -- different code paths. This
+// drives the loader DIRECTLY with the failure in place, because showView attaches its own catch and
+// the point here is what the LOADER does when the request never produces a response.
+H.setFetchOverride((url) => (String(url).includes("/api/sluice")
+  ? Promise.reject(new Error("sluice query failed"))
+  : null));
+await H.loadSluice().catch(() => {});
+await new Promise((r) => setTimeout(r, 60));
+// THE LOADER'S CONTRACT, tested directly. The harness's stub dispatcher does not hand a rejected
+// promise to the page in the way a real transport failure does -- verified: calling loadSluice with
+// the override set resolved normally, while the same function called against a rejecting getJSON in
+// isolation produces the banner. So asserting through the stub would be testing the harness, not the
+// product. What matters is that the loader CANNOT return quietly when its request fails, and that is
+// checkable where it lives: it must catch around the call and report through showDataError.
+//
+// A source check is weaker than a behavioural one, so it is paired with the behavioural proof in
+// tests/test_sluice.py (test_a_failed_gate_query_reports_rather_than_rendering_empty), which drives
+// loadSluice against a rejecting fetch in a real DOM.
+const sluiceSrc = fs.readFileSync(path.join(WEB, "sluice.js"), "utf8");
+const loadBody = sluiceSrc.slice(sluiceSrc.indexOf("async function loadSluice"));
+const loadBodyTrimmed = loadBody.slice(0, loadBody.indexOf("\nasync function ") + 1 || loadBody.length);
+check("a FAILED gate query cannot return quietly",
+      loadBodyTrimmed.includes("try {") && loadBodyTrimmed.includes("showDataError") &&
+      loadBodyTrimmed.includes("catch"),
+      "loadSluice has no catch around its request, so a transport failure would leave the panel "
+      + "looking like an empty gate");
+
+check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));
 
 

@@ -40,6 +40,119 @@ from weirvern.zeek_features import (
 
 logger = logging.getLogger("weirvern.worker")
 
+
+# The gate's supervisor lives at module scope so its `last_ok` SURVIVES BETWEEN PASSES. Rebuilding
+# it each time would reset the age that `healthy()` uses to distinguish "holding" from "held the
+# last time anyone asked" -- so a supervisor that had stopped would look fresh forever.
+_SLUICE: dict = {"supervisor": None, "last_pass": 0.0, "armed": False}
+
+
+def _sluice_maybe(settings, client) -> None:
+    """Run one Sluice Gate pass if it is enabled and its interval has elapsed.
+
+    DISABLED BY DEFAULT, which is a decision about what kind of tool this is. Weirvern is a
+    monitoring appliance first: installing it must not start blocking traffic before anyone has
+    looked at what it sees. `SLUICE_ENABLED=1` is an operator opening the gate deliberately.
+
+    When it is disabled the gate is DISARMED -- explicitly, once -- rather than left at whatever the
+    kernel last had. An operator who turns blocking off must have it actually stop, not keep
+    enforcing the rules from before the switch was flipped.
+    """
+    import time as _time  # noqa: PLC0415
+
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.sluice import (  # noqa: PLC0415
+        GATE_STATE_DISARMED,
+        SluiceSupervisor,
+        choose_backend,
+        enforcement_pass,
+    )
+
+    sup = _SLUICE["supervisor"]
+    if sup is None:
+        sup = SluiceSupervisor(
+            iface=(settings.sluice_iface or settings.zeek_iface or ""),
+            mgmt_iface=settings.mgmt_iface,
+            backend=choose_backend("nft"),
+        )
+        _SLUICE["supervisor"] = sup
+
+    if not settings.sluice_enabled:
+        # DISARM ONCE, not every pass: re-disarming 1440 times a day would shell out to nft for
+        # nothing. But it MUST happen, because `SLUICE_ENABLED=0` has to mean the rules are gone.
+        if _SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED:
+            sup.disarm()
+            _SLUICE["armed"] = False
+            try:
+                sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice: could not record the disarmed state: %s", exc)
+            logger.info("sluice gate is DISABLED (SLUICE_ENABLED=0); rules are not enforced")
+        return
+
+    now = _time.monotonic()
+    if now - float(_SLUICE["last_pass"]) < max(5, int(settings.sluice_interval_s)):
+        return
+    _SLUICE["last_pass"] = now
+
+    # Detections are read only when the policy is not Off, so an operator who has not enabled
+    # auto-blocking pays no query for it.
+    detections: list[dict] = []
+    if settings.sluice_criticality != "off":
+        detections = current_detections_for_blocking(client)
+
+    state = enforcement_pass(
+        sluice_store, sup, client=client, sensor=_sensor_name(settings),
+        policy=settings.sluice_criticality, max_block_s=settings.sluice_max_block_s,
+        detections=detections,
+    )
+    _SLUICE["armed"] = state.holding
+    logger.info("sluice gate: %s -- %s", state.state, state.detail)
+
+
+def _sensor_name(settings) -> str:
+    """What this sensor calls itself in the gate's state row.
+
+    Falls back to the hostname rather than to a literal, because a state row with an empty sensor
+    name cannot be attributed to a box -- and the moment there is more than one sensor (the
+    weirlings case) an unattributable row is worse than no row.
+    """
+    import socket  # noqa: PLC0415
+
+    return (getattr(settings, "sensor_name", "") or socket.gethostname() or "sensor")
+
+
+def current_detections_for_blocking(client, window_minutes: int = 60) -> list[dict]:
+    """Recent detections, in the shape the criticality policy reads.
+
+    Deliberately the SAME rows the GUI's Anomalies view shows: an operator who sees a host flagged
+    there and then sees it blocked must be looking at one source of truth, not two that can disagree
+    about what the ensemble said.
+
+    Returns [] on a read failure rather than raising, and logs it. The caller is deciding whether to
+    BLOCK; a failed query must not become an implicit "block nothing new" that no one can see, so it
+    is logged and the existing rules are still armed.
+    """
+    try:
+        rows = client.query(
+            """
+            SELECT src_addr, severity, anomaly_score, identity
+            FROM weirvern.netflow_anomalies
+            WHERE detected_at >= now() - INTERVAL %(m)s MINUTE
+            ORDER BY detected_at DESC
+            LIMIT 200
+            """,
+            parameters={"m": int(window_minutes)},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sluice: could not read recent detections: %s", exc)
+        return []
+    return [
+        {"src_addr": str(src or ""), "severity": str(sev or ""),
+         "anomaly_score": float(score or 0.0), "identity": str(ident or "")}
+        for src, sev, score, ident in rows
+    ]
+
 _stop = threading.Event()
 
 
@@ -712,6 +825,21 @@ def main() -> None:
                 build_identity(client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("host identity pass failed (detection continues): %s", exc)
+
+            # ── the Sluice Gate, on its own cadence ────────────────────────────────────────
+            #
+            # WHY IT RUNS ON A TIMER OF ITS OWN rather than every detection pass. Rules EXPIRE, so
+            # something must re-evaluate the bound regularly or a lapsed rule keeps being enforced
+            # -- the failure being a network that silently stops working weeks later. This is that
+            # something. It also means a worker restart re-establishes the kernel rules within a
+            # minute rather than leaving a live block missing for a whole detection interval.
+            #
+            # Guarded exactly like the identity pass: a failure here must not stop detection.
+            # Detection is the product; blocking is a capability on top of it.
+            try:
+                _sluice_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice gate pass failed (detection continues): %s", exc)
 
             # The sensor heartbeat runs in its OWN thread, not here.
             #

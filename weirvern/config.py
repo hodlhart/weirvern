@@ -178,6 +178,31 @@ class Settings:
     )
 
     # Alerting
+    # ── Sluice Gate: operator-controlled blocking ──────────────────────────────────────────
+    #
+    # SLUICE_ENABLED is the MASTER SWITCH and defaults to OFF, deliberately. A monitoring appliance
+    # that blocks traffic the moment it is installed would surprise an operator who wanted to look
+    # before touching; the gate is opened by a decision, not by an install.
+    sluice_enabled: bool = field(default_factory=lambda: _env_bool("SLUICE_ENABLED", False))
+    # WHICH INTERFACE enforcement attaches to. Empty means "use the capture interface", which is the
+    # right answer for an in-path deployment; it can never be the management interface (the gate
+    # refuses at authoring time), because blocking there locks the operator out of the appliance.
+    sluice_iface: str = field(default_factory=lambda: os.environ.get("SLUICE_IFACE", ""))
+    # The criticality policy: whether detections may block on their own, and how aggressively. The
+    # default is OFF even when the gate is enabled -- auto-blocking on ML output is a decision an
+    # operator makes deliberately, having seen what the ensemble calls high severity on their own
+    # network.
+    sluice_criticality: str = field(
+        default_factory=lambda: os.environ.get("SLUICE_CRITICALITY", "off").strip().lower()
+    )
+    # The longest a derived block may last, as a CEILING on the policy's own TTL. An operator who
+    # distrusts automated blocking can set this to a minute and keep the convenience.
+    sluice_max_block_s: int = field(default_factory=lambda: _env_int("SLUICE_MAX_BLOCK_S", 3600))
+    # How often the gate is re-armed. Every pass re-evaluates expiry, so this is also the interval
+    # within which a lapsed rule stops being enforced. Short is cheap: compiling a ruleset is
+    # milliseconds.
+    sluice_interval_s: int = field(default_factory=lambda: _env_int("SLUICE_INTERVAL_S", 60))
+
     pushover_enabled: bool = field(default_factory=lambda: _env_bool("PUSHOVER_ENABLED", False))
     pushover_user_key: str = field(default_factory=lambda: os.environ.get("PUSHOVER_USER_KEY", ""))
     pushover_api_token: str = field(default_factory=lambda: os.environ.get("PUSHOVER_API_TOKEN", ""))

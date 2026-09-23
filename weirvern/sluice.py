@@ -788,3 +788,70 @@ def policy_allows(policy: str, *, severity: str, confidence: float) -> tuple[boo
         f"severity {severity} at confidence {confidence:.2f} meets the {spec['label']} policy; "
         f"the block lapses after {spec['ttl_minutes']} minutes"
     )
+
+# ── the enforcement loop ──────────────────────────────────────────────────────────────────────
+
+
+def enforcement_pass(
+    store: Any,
+    supervisor: SluiceSupervisor,
+    *,
+    client: Any,
+    sensor: str,
+    policy: str = "off",
+    max_block_s: int = 3600,
+    detections: list[dict] | None = None,
+) -> GateState:
+    """One cycle: load rules, let detections add more, arm, and RECORD what happened.
+
+    WHY THE DETECTIONS ARE ADDED EVERY PASS RATHER THAN ONCE. The worker re-derives them anyway, and
+    the alternative -- keeping a list of what has already been blocked -- is state that must survive
+    a restart, and its loss would mean either duplicate rules or silently unblocked hosts. Re-deriving
+    from the policy is stateless, and the policy's own TTL bounds the result.
+
+    A FAILURE READING RULES DOES NOT DISARM. `load_live_rules` raises on a database error, and the
+    correct response is to report DEGRADED and leave whatever the kernel currently has installed
+    alone -- NOT to arm an empty ruleset, which would open the gate because the database blipped.
+    Failing open on a LOST CONNECTION is right; failing open on a FAILED QUERY would mean an
+    attacker who can slow the database can unblock themselves.
+    """
+    rules: list[Rule] = []
+    try:
+        rules = store.load_live_rules(client)
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately NOT `arm([])`. See the docstring: an unreadable ruleset is not an empty one.
+        state = supervisor.state
+        return GateState(
+            state=GATE_STATE_DEGRADED,
+            iface=supervisor.iface, mgmt_iface=supervisor.mgmt_iface,
+            rules_total=state.rules_total, rules_active=state.rules_active,
+            packets_blocked=state.packets_blocked, bytes_blocked=state.bytes_blocked,
+            detail=(
+                f"could not read the rules ({type(exc).__name__}), so the gate is left as it is. "
+                "It is NOT reopened: an unreadable ruleset is not an empty one, and a query "
+                "failure must not unblock a host."
+            ),
+            backend=supervisor.backend.name, backend_expected="nft",
+        )
+
+    if policy != "off" and detections:
+        for spec in store.derived_rules_for_detections(
+            # max_block_s is SECONDS (a config knob an operator reads); the function takes
+            # MINUTES. Named conversion rather than a bare //60, because that is the line a
+            # unit-change breaks silently.
+            detections, policy=policy, max_ttl_minutes=max(1, int(max_block_s) // 60)
+        ):
+            try:
+                rules.append(store.create_rule(client, **spec))
+            except Exception as exc:  # noqa: BLE001
+                # One bad detection must not stop the pass: the manual rules still need arming.
+                logger.warning("sluice: could not record a derived rule: %s", exc)
+
+    state = supervisor.arm(rules)
+    try:
+        store.write_gate_state(client, sensor, state)
+    except Exception as exc:  # noqa: BLE001
+        # The gate IS armed even if the state row failed; say so rather than implying it is not.
+        logger.warning("sluice: gate state could not be recorded: %s", exc)
+        state.detail += f" (note: this state could not be recorded: {type(exc).__name__})"
+    return state
