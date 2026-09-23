@@ -76,8 +76,8 @@
       "severity": "HIGH",
       "area": "GitHub face",
       "title": "`.env.example` and `SECURITY.md` contradict each other about which ports face the LAN",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "Measured on the live node: ss -lunp shows goflow2 bound on *:2055 and *:6343 -- every interface, because the collector runs with hostNetwork (added deliberately after a real router sent NetFlow to 2055 while the listener was at 32055 and its packets vanished with NOTHING logged). SECURITY.md said those ports 'are cluster-internal and are not reachable from outside', and README.md repeated it in TWO places, one of which claimed an exporter aimed at 2055 'sends its packets nowhere'. All three were wrong, and they were wrong in the SECURITY document, where a reader goes to learn what is exposed. Corrected in all three files, which now name the two controls (firewall to the exporter addresses; WEIRVERN_FLOW_EXPORTER_ALLOW) and say the protocols are unauthenticated. Guarded by tests/test_docs_port_claims.py, which asserts the CLAIM shape against the MANIFEST shape -- mutation-tested three ways, including that it STANDS DOWN if hostNetwork is ever turned off.",
       "report": "kr1",
       "id": "F009"
     },
