@@ -618,7 +618,7 @@ Expected result: the seeded scanner and the exfil host appear in
 `low`/`medium`. Query it directly:
 
 ```bash
-kubectl -n weirvern exec deploy/clickhouse -- \
+kubectl -n weirvern exec statefulset/clickhouse -- \
   clickhouse-client --query "SELECT detected_at, src_addr, round(anomaly_score,3), severity
                              FROM weirvern.netflow_anomalies
                              ORDER BY detected_at DESC LIMIT 20"

@@ -56,6 +56,7 @@ run "lint (ruff, pinned)" .venv/bin/ruff check weirvern tests scripts 2>/dev/nul
     run "lint (ruff, pinned)" ruff check weirvern tests
 run "types (mypy)" .venv/bin/mypy weirvern --ignore-missing-imports
 run "schema audit" "$PY" scripts/audit_schema.py
+run "README claims vs the code" "$PY" scripts/audit_readme.py
 run "version agreement (code, kustomize, README)" sh scripts/verify_versions.sh
 run "shell syntax" sh -n scripts/siphon_stress_test.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
