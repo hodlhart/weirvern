@@ -422,8 +422,15 @@ _ANOMALY_COLUMNS: tuple[str, ...] = (
 )
 
 
-def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime, datetime | None]:
+def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime, datetime]:
     """The lower bound for this sweep's window, and the new cursor to carry forward.
+
+    The cursor is returned as a plain `datetime`, NOT `datetime | None`: this function always knows
+    the time the sweep started, so "there was no cursor to resume from" is a fact about the INPUT and
+    is never a reason to return no cursor. An earlier version typed the return as optional and mypy
+    caught the consequence -- two call sites passed a possibly-None cursor to the writer, which would
+    have silently recorded nothing (or raised) on the very first cycle after a restart, the case the
+    checkpoint exists for.
 
     ── A SLOW CYCLE LEFT WINDOWS UNEXAMINED, WITH NOTHING LOGGED (audit F045) ──────────────────
 

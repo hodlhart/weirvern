@@ -676,7 +676,11 @@ def _empty_sweep_client():
 
 
 def _cursor_since(settings, cursor):
-    """The window start the product's cursor function returns for a given carried cursor."""
+    """The window start the product's cursor function returns for a given carried cursor.
+
+    Returns a plain `datetime`: `_covered_through` never returns a None cursor, because it always
+    knows the sweep's start time. The optionality is in the INPUT.
+    """
     since, _new_cursor = _covered_through(settings, cursor)
     return since
 
