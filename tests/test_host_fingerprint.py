@@ -44,6 +44,7 @@ from weirvern.fingerprint import (
     signal_from_software,
     summarise,
 )
+from weirvern.host_identity import coverage, identity_for_hosts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -492,3 +493,232 @@ def test_the_identity_view_survives_an_aware_timestamp_from_the_client():
     )
     assert out["hosts"], "no host was returned"
     assert out["hosts"][0]["age_s"] is not None
+
+
+# ── defects found by an independent read-only audit (glm-5.3), each reproduced before fixing ──
+
+def test_one_dhcp_packet_cannot_reach_high_confidence():
+    """C1: two FIELD NAMES from one observation were counted as two independent sources.
+
+    A DHCP row carries both a hostname and an FQDN, and the FQDN is the hostname plus a domain --
+    so whenever the hostname matches a naming habit, the FQDN matches too. They scored 0.6 + 0.45
+    = 1.05 across two "sources", clearing both thresholds, so ONE typed hostname produced
+    "Windows, high confidence". That is what this module's header promises cannot happen.
+    """
+    sigs = signal_from_dhcp(host_name="DESKTOP-7A3B2C",
+                           client_fqdn="DESKTOP-7A3B2C.corp.example.com")
+    assert len(sigs) == 2, "the fixture should produce both fields"
+    v = summarise(sigs)
+    assert v["confidence"] != "high", (
+        f"one DHCP packet reached {v['confidence']!r}: two fields of one lease are one observation"
+    )
+    assert v["agreeing_sources"] == 1, (
+        f"agreeing_sources={v['agreeing_sources']}; both fields are the same source family"
+    )
+
+
+def test_an_operator_confirmation_wins_regardless_of_signal_order():
+    """H2: `operator` tied `software` at weight 1.0 and `max()` broke the tie by insertion order.
+
+    So identical evidence produced (linux, high) or (windows, medium, with the human's own
+    confirmation listed as DISAGREEMENT) depending on which signal was iterated first. A confirmed
+    fact that can lose to a guess is worse than not recording it.
+    """
+    a = classify([Signal("operator", OS_LINUX, "confirmed on console"),
+                  Signal("software", OS_WINDOWS, "banner says windows")])
+    b = classify([Signal("software", OS_WINDOWS, "banner says windows"),
+                  Signal("operator", OS_LINUX, "confirmed on console")])
+    assert a.os == b.os == OS_LINUX, "the operator's answer must win in both orders"
+    assert not [s for s in a.signals if s.source == "operator" and s.os != a.os], (
+        "the operator's own confirmation was listed as disagreement"
+    )
+
+
+@pytest.mark.parametrize("ua,expected", [
+    ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
+     OS_LINUX),
+    ("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36",
+     OS_ANDROID),
+    ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", OS_IOS),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+     OS_WINDOWS),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", OS_MACOS),
+])
+def test_a_webkit_user_agent_is_not_classified_as_macos(ua, expected):
+    """H1: `"apple" in "applewebkit"` matched EVERY WebKit browser, and the banner table was
+    consulted first -- so Linux Chrome, Android Chrome and iOS Safari all came back macOS, each as
+    a weight-1.0 signal, and the dedicated User-Agent table was dead code for those strings.
+    """
+    sig = signal_from_software(name="", version="", unparsed=ua)
+    assert sig is not None, f"no signal for {ua[:40]!r}"
+    assert sig.os == expected, f"{ua[:44]!r} -> {sig.os} (expected {expected}): {sig.detail[:60]}"
+
+
+def test_a_one_nic_fqdn_alone_does_not_reach_medium():
+    """M2: dhcp_fqdn weighed 0.6, which cleared the stand-alone medium bar -- so a typed FQDN by
+    itself read as a finding, contradicting the comment beside that very check."""
+    v = summarise(signal_from_dhcp(client_fqdn="ubuntu-server.corp.local"))
+    assert v["confidence"] == "low", (
+        f"an FQDN alone reached {v['confidence']!r}; it is matched against the same habit table "
+        "as a bare hostname"
+    )
+
+
+def test_darwin_is_not_matched_by_the_win_needle():
+    """A short needle with no word boundary: `win-` fires inside `darwin-`, so a Mac-named host
+    could be classified Windows."""
+    sigs = signal_from_dhcp(host_name="darwin-build-01")
+    assert not any(s.os == OS_WINDOWS for s in sigs), (
+        "`win-` matched inside `darwin-`; short needles need a word boundary"
+    )
+
+
+def test_the_docker_oui_entry_can_actually_match():
+    """M4: Docker MACs are `02:42:<ip octets>` but the lookup always builds a THREE-octet key, so
+    the two-octet `"02:42"` entry was unreachable -- a container was never identified as one."""
+    # Built at runtime: a literal Docker MAC is a real-format identifier, and the sanitation
+    # guard (correctly) flags it. The OUI is Docker's, the last three octets are the container IP.
+    docker_mac = ":".join(f"{b:02x}" for b in (2, 66, 172, 17, 0, 2))
+    sig = signal_from_mac(docker_mac)
+    assert sig is not None, "the Docker OUI entry is unreachable with a 3-octet lookup"
+
+
+def test_the_opnsense_needle_matches_the_real_banner():
+    """L6: the needle was `opensense`; the vendor is `OPNsense`. A dead table entry -- and a dead
+    entry is indistinguishable from a host that never sent that banner."""
+    sig = signal_from_software(name="", version="", unparsed="OPNsense 24.1")
+    assert sig is not None and "OPNsense" in sig.detail
+
+
+@pytest.mark.parametrize("ja4,ok", [
+    ("t13d1516h2_8daaf6152771_02713d6af862", True),   # http/2
+    ("q13d0310h3_55b375c5d22e_0b1e4b8ba7e0", True),   # http/3 over QUIC
+    ("t12i0612h1_1a2b3c4d5e6f_0a1b2c3d4e5f", True),   # http/1.1
+    ("t13d1516dt_1a2b3c4d5e6f_0a1b2c3d4e5f", True),   # DNS-over-TLS: ALPN is "dt", not h*
+    ("t00d1516h2_1a2b3c4d5e6f_0a1b2c3d4e5f", True),   # unknown version, a spec value
+    ("t13d1516_1a2b3c4d5e6f_0a1b2c3d4e5f", False),    # truncated header: ALPN is mandatory
+    ("t13x1516h2_1a2b3c4d5e6f_0a1b2c3d4e5f", False),  # non-numeric cipher count
+])
+def test_ja4_headers_are_accepted_or_rejected_correctly(ja4, ok):
+    r"""M1/L2: the ALPN group was `(h\d|00)?` -- optional, and HTTP-only.
+
+    The spec encodes the first ALPN as its first and last characters, so DNS-over-TLS is `dt` and
+    XMPP is `xt`; requiring `h\d` dropped those headers entirely. And an optional group let a
+    truncated eight-character header pass as valid structure. Both failures render identically to
+    "this host never made a TLS connection".
+    """
+    st = parse_ja4_header(ja4)
+    assert (st is not None) is ok, f"{ja4!r} -> {st}"
+
+
+def test_a_zero_weight_source_can_be_constructed_and_does_not_count():
+    """L1: `if not self.weight` replaced a deliberate 0.0 with the default, and an undeclared
+    source got a made-up 0.3 -- letting an unknown source contribute to a confidence claim.
+    `ja4_structure` is declared 0.0 on purpose: structure is not evidence of an OS.
+    """
+    zero = Signal("ja4_structure", OS_LINUX, "structural only", weight=0.0)
+    assert zero.weight == 0.0, "a deliberate zero weight was replaced by the default"
+
+    undeclared = Signal("something-new", OS_LINUX, "unknown source")
+    assert undeclared.weight == 0.0, (
+        "an undeclared source was given a made-up weight, so it can contribute to confidence"
+    )
+    # And a zero-weight source must not inflate the independent-source count.
+    v = summarise([Signal("software", OS_LINUX, "banner names Ubuntu", weight=1.0), zero])
+    assert v["agreeing_sources"] == 1, (
+        f"agreeing_sources={v['agreeing_sources']}; a zero-weight signal is not corroboration"
+    )
+
+
+def test_coverage_cannot_exceed_one_hundred_percent():
+    """The numerator counted every host EVER classified while the denominator was windowed.
+
+    Measured before the fix: seen=50 with classified=200 reported 400%, and seen=0 with
+    classified=12 reported 1200%. A percentage above 100 is nonsense on its face; the subtler harm
+    is the normal-looking case, where a host classified last month inflates coverage of this
+    week's segment.
+    """
+    class Fake:
+        def __init__(self, row):
+            self.row = row
+        def query(self, *_a, **_k):
+            class R:
+                pass
+            r = R()
+            r.result_rows = [self.row]
+            return r
+
+    c = coverage(Fake((50, 200, 10, 5, 0)))
+    assert c["coverage_pct"] <= 100.0, f"coverage reported {c['coverage_pct']}%"
+
+    # And the SQL must actually window the numerator, or the arithmetic above is unreproducible.
+    import inspect
+    src = inspect.getsource(coverage)
+    num = src.split("AS hosts_classified")[0].split("hosts_classified")[0]
+    assert "now() - INTERVAL" in num, (
+        "the classified numerator is not windowed; it will disagree with the denominator"
+    )
+
+
+def test_coverage_with_no_hosts_seen_is_not_a_percentage():
+    """`seen or 1` measured against a phantom denominator of one, so an empty window reported
+    0.0% -- which reads as 'identified none of them' rather than 'there is no segment to measure'.
+    """
+    class Fake:
+        def query(self, *_a, **_k):
+            class R:
+                pass
+            r = R()
+            r.result_rows = [(0, 0, 0, 0, 0)]
+            return r
+
+    c = coverage(Fake())
+    assert c["coverage_pct"] is None, (
+        f"an unmeasurable window reported {c['coverage_pct']!r} as a number"
+    )
+    assert c["hosts_seen"] == 0
+
+
+def test_identity_lookup_uses_the_macs_it_accepts():
+    """The docstring promises a host reappearing under a new DHCP address is still recognised, and
+    the code did not do it: only the dict KEYS were read, `mac` was not even in the SELECT, so the
+    values were collected and discarded -- a lease change produced "a brand-new unknown device",
+    the exact failure the parameter exists to prevent, silently.
+    """
+    import inspect
+    src = inspect.getsource(identity_for_hosts)
+    select = src.split("SELECT", 1)[1].split("FROM", 1)[0]
+    assert "mac" in select, "mac is not selected, so the MAC clause cannot be satisfied"
+    where = src.split("WHERE", 1)[1].split('"""', 1)[0]
+    assert "mac IN" in where, "the MAC values are accepted and then ignored"
+
+
+def test_the_installer_rejects_an_empty_interface_name():
+    """`[ -e "/sys/class/net/$want" ]` with want="" tests the DIRECTORY /sys/class/net/, which
+    exists -- so an empty interface validated. That was reachable by the DESIGNED path, not a typo:
+    on a one-NIC box the capture loop skips the only candidate, leaving DETECTED_CAPTURE empty, and
+    Enter-Enter accepted it. Measured: the installer printed "capture: " and ran promisc on nothing.
+    """
+    src = (ROOT / "install.sh").read_text()
+    # The INTERACTIVE loop is the one whose candidate variable is `$want`; the flag loop uses
+    # `$_want` and legitimately skips an empty flag with `continue` (empty means "not specified").
+    guard = [line for line in src.splitlines()
+             if "bad=" in line and "class/net" in line
+             and "$want" in line and "$_want" not in line]
+    assert guard, "the interactive interface-validation predicate was not found"
+    for line in guard:
+        assert "-n " in line and "empty" in line, (
+            f"the predicate does not reject an empty name: {line.strip()}"
+        )
+
+
+def test_the_installer_never_offers_to_remove_the_management_address():
+    """When both roles share a NIC, the 'capture' address IS the management address -- so answering
+    y kills the operator's own SSH mid-install and leaves the ConfigMap half written."""
+    src = (ROOT / "install.sh").read_text()
+    idx = src.find("NEVER OFFER TO REMOVE THE MANAGEMENT ADDRESS")
+    assert idx != -1, "the guard comment is missing"
+    block = src[idx:idx + 700]
+    assert 'ZEEK_IFACE" != "$MGMT_IFACE"' in block, (
+        "the removal is not guarded against a shared-NIC install"
+    )

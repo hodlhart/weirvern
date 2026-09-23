@@ -198,7 +198,9 @@ def persist(client: Client, verdicts: list[dict[str, Any]]) -> None:
             v["os_label"],
             v["confidence"],
             float(v["score"]),
-            len(v.get("sources") or []),
+            # The AGREEING count, not the count of all sources: the schema names this column
+            # "how many independent SOURCES agreed", and `sources` includes disagreeing ones.
+            int(v.get("agreeing_sources") or 0),
             json.dumps(v.get("signals") or []),
             json.dumps(v.get("disagreement") or []),
             json.dumps(v.get("ja4_structure") or {}),
@@ -277,20 +279,31 @@ def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[
     """
     if not hosts:
         return {}
-    addrs = list(hosts)
+    addrs = [a for a in hosts if a]
+    macs = [m for m in hosts.values() if m]
+    if not addrs and not macs:
+        return {}
+    # THE MAC CLAUSE IS WHY THIS TAKES A DICT. The docstring promises that a host reappearing
+    # under a new DHCP address is still recognised, and the code did not do it: only the keys were
+    # read, `mac` was not even in the SELECT, so the values were collected and discarded and a
+    # lease change produced "a brand-new unknown device" -- the exact failure the parameter exists
+    # to prevent, silently.
     rows = db.fetch_rows(
         client,
         """
-        SELECT host, os, os_label, confidence, score, agreeing_sources,
+        SELECT host, mac, os, os_label, confidence, score, agreeing_sources,
                signals, disagreement, ja4_structure, updated_at
         FROM weirvern.host_identity FINAL
-        WHERE host IN %(h)s
+        WHERE (host IN %(h)s OR mac IN %(m)s)
         """,
-        h=tuple(addrs),
+        h=tuple(addrs) or ("",),
+        m=tuple(macs) or ("",),
     )
     out: dict[str, dict[str, Any]] = {}
-    for host, os_name, os_label, conf, score, n_src, signals, disagreement, ja4_raw, updated in rows:
+    for (host, mac, os_name, os_label, conf, score, n_src, signals, disagreement,
+         ja4_raw, updated) in rows:
         out[str(host)] = {
+            "mac": str(mac or ""),
             "os": str(os_name), "os_label": str(os_label), "confidence": str(conf),
             "score": float(score or 0), "agreeing_sources": int(n_src or 0),
             "signals": _load(signals), "disagreement": _load(disagreement),
@@ -336,28 +349,45 @@ def coverage(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> dict[str, Any]
         SELECT
             (SELECT uniqExact(src_addr) FROM weirvern.flows
               WHERE timestamp >= now() - INTERVAL %(d)s DAY)          AS hosts_seen,
-            (SELECT uniqExact(host) FROM weirvern.host_identity FINAL) AS hosts_classified,
+            -- WINDOWED LIKE THE DENOMINATOR. `FINAL` collapses versions per host, not history, so
+            -- an unfiltered numerator counted every host EVER classified while the denominator was
+            -- this window -- a ratio that can exceed 100%. Measured: seen=50 with classified=200
+            -- reported 400%, and seen=0 with classified=12 reported 1200%. A percentage above 100
+            -- is nonsense on its face; the subtler harm is the normal-looking case, where a host
+            -- classified last month inflates coverage of this week's segment.
+            (SELECT uniqExact(host) FROM weirvern.host_identity FINAL
+              WHERE updated_at >= now() - INTERVAL %(d)s DAY)           AS hosts_classified,
             (SELECT count() FROM weirvern.host_identity FINAL
-              WHERE confidence = 'high')                               AS high,
+              WHERE confidence = 'high'
+                AND updated_at >= now() - INTERVAL %(d)s DAY)           AS high,
             (SELECT count() FROM weirvern.host_identity FINAL
-              WHERE confidence = 'medium')                             AS medium,
+              WHERE confidence = 'medium'
+                AND updated_at >= now() - INTERVAL %(d)s DAY)           AS medium,
             (SELECT count() FROM weirvern.host_identity FINAL
-              WHERE os = 'unknown')                                    AS unknown
+              WHERE os = 'unknown'
+                AND updated_at >= now() - INTERVAL %(d)s DAY)           AS unknown
         """,
         d=int(days),
     )
     if not row:
         return {"available": False, "reason": "coverage query returned no row"}
-    seen, classified, high, medium, unknown = row[0]
+    seen, classified, high, medium, unknown = (int(x or 0) for x in row[0])
     return {
         "available": True,
-        "hosts_seen": int(seen or 0),
-        "hosts_classified": int(classified or 0),
-        "high_confidence": int(high or 0),
-        "medium_confidence": int(medium or 0),
-        "unknown": int(unknown or 0),
-        # Stated as a fraction AND a count, because a bare percentage hides a small denominator.
-        "coverage_pct": round(100.0 * int(classified or 0) / int(seen or 1), 1),
+        "hosts_seen": seen,
+        "hosts_classified": classified,
+        "high_confidence": high,
+        "medium_confidence": medium,
+        "unknown": unknown,
+        # A PERCENTAGE WITH NO DENOMINATOR IS NOT A PERCENTAGE. `seen or 1` produced a number
+        # measured against a phantom denominator of one: with no hosts seen it reported 0.0%,
+        # which reads as "identified none of them" rather than as "there is no segment to
+        # measure". None lets the panel say the honest thing.
+        # CLAMPED AS WELL AS WINDOWED. The SQL window is the fix; this clamp is the invariant. A
+        # percentage above 100 is not a number anyone can act on, and a reader who sees one stops
+        # trusting the panel -- so the module refuses to emit one even if a future query change
+        # makes the numerator larger than the denominator again.
+        "coverage_pct": (min(100.0, round(100.0 * classified / seen, 1)) if seen else None),
         "window_days": int(days),
     }
 

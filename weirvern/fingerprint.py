@@ -95,9 +95,11 @@ OS_LABELS: dict[str, str] = {
 # These are not arbitrary. A software banner is the application stating its own build, so it is
 # near-authoritative for the platform it was compiled on. A DHCP hostname is a naming habit. A
 # MAC vendor says who made the NIC. A JA4 identifies the TLS library, not the operating system.
+WEIGHT_UNSET = -1.0
+
 SOURCE_WEIGHTS: dict[str, float] = {
     "software": 1.0,
-    "dhcp_fqdn": 0.6,
+    "dhcp_fqdn": 0.55,   # below the stand-alone medium bar: a typed name is a habit, not evidence
     "dhcp_hostname": 0.45,
     "dhcp_vendor": 0.5,
     "oui": 0.35,
@@ -153,7 +155,7 @@ KNOWN_SOFTWARE: list[tuple[str, str, str]] = [
     ("routeros", OS_NETWORK, "banner names RouterOS"),
     ("fortinet", OS_NETWORK, "banner names Fortinet"),
     ("pfsense", OS_BSD, "banner names pfSense (FreeBSD-based)"),
-    ("opensense", OS_BSD, "banner names OPNsense (FreeBSD-based)"),
+    ("opnsense", OS_BSD, "banner names OPNsense (FreeBSD-based)"),
     # Windows does NOT put its version in the SSH banner, but Windows OpenSSH ships a
     # distinctive one, and WinHTTP/win-http appear in HTTP User-Agents.
     ("windows", OS_WINDOWS, "banner names Windows"),
@@ -162,7 +164,6 @@ KNOWN_SOFTWARE: list[tuple[str, str, str]] = [
     ("win64", OS_WINDOWS, "banner names win64"),
     ("darwin", OS_MACOS, "banner names Darwin (macOS kernel)"),
     ("macos", OS_MACOS, "banner names macOS"),
-    ("apple", OS_MACOS, "banner names Apple"),
 ]
 
 # HTTP User-Agent substrings. A browser's UA is a deliberate, well-known string, so this is a
@@ -185,7 +186,7 @@ KNOWN_USER_AGENT: list[tuple[str, str, str]] = [
 KNOWN_HOSTNAME: list[tuple[str, str, str]] = [
     ("desktop-", OS_WINDOWS, "Windows default computer-name pattern"),
     ("laptop-", OS_WINDOWS, "Windows default computer-name pattern"),
-    ("win-", OS_WINDOWS, "Windows default computer-name pattern"),
+    ("win-", OS_WINDOWS, "Windows default computer-name pattern"),  # see _match_at_start
     ("-pc", OS_WINDOWS, "Windows-style hostname suffix"),
     ("macbook", OS_MACOS, "Apple naming convention"),
     ("imac", OS_MACOS, "Apple naming convention"),
@@ -224,7 +225,9 @@ KNOWN_OUI: dict[str, tuple[str, str]] = {
     "52:54:00": (OS_UNKNOWN, "QEMU / KVM"),
     "08:00:27": (OS_UNKNOWN, "VirtualBox"),
     "bc:24:11": (OS_UNKNOWN, "Proxmox VE"),
-    "02:42": (OS_UNKNOWN, "Docker container"),
+    # Docker assigns 02:42:<first two IP octets>, so a two-octet key can never match a
+    # three-octet lookup. The default bridge pool is 172.17.0.0/16 -> 02:42:ac.
+    "02:42:ac": (OS_UNKNOWN, "Docker container (default bridge)"),
     # Common physical NIC vendors, for the "what is this" question.
     "00:1b:21": (OS_UNKNOWN, "Intel"),
     "00:1e:67": (OS_UNKNOWN, "Intel"),
@@ -263,7 +266,19 @@ KNOWN_OUI: dict[str, tuple[str, str]] = {
 # flag, and 't'/'f' where the format uses 'd'/'i'), so it rejected EVERY real fingerprint. It
 # failed closed -- no structure reported, no crash -- which is why only a live-value test caught
 # it: a regex that matches nothing looks exactly like a sensor that sends nothing.
-_JA4_HEADER = re.compile(r"^([tq])(\d{2})([di])(\d{2})(\d{2})(h\d|00)?$", re.I)
+#
+# THE ALPN FIELD IS MANDATORY AND NOT HTTP-ONLY. Two over-rejections were measured against real
+# forms: the spec encodes the first ALPN as its FIRST and LAST characters, so `http/2` is `h2` but
+# DNS-over-TLS is `dt` and `xmpp-client` is `xt` -- `(h\d|00)` dropped every non-HTTP ALPN and,
+# with it, the whole header. And the group was optional, so a truncated eight-character header
+# passed as valid structure. Both failures render as "no TLS seen", which is indistinguishable
+# from a host that never made a TLS connection.
+_JA4_HEADER = re.compile(r"^([tq])(\d{2})([di])(\d{2})(\d{2})([a-z0-9]{2})$", re.I)
+
+# Spec values, plus "00" for a ClientHello with an unrecognised version. Rejecting NON-SPEC values
+# is the point; rejecting spec ones is what made this drop real fingerprints.
+_JA4_VERSIONS = {"00": "unknown", "10": "TLS 1.0", "11": "TLS 1.1", "12": "TLS 1.2",
+                 "13": "TLS 1.3", "16": "TLS 1.6?"}
 
 
 def parse_ja4_header(ja4: str) -> dict[str, Any] | None:
@@ -284,9 +299,9 @@ def parse_ja4_header(ja4: str) -> dict[str, Any] | None:
     # version that does not exist, and decoding it would report "version 99" as a structural fact
     # about a host -- a malformed input producing a confident answer, which is the failure mode
     # this module exists to avoid.
-    if ver not in {"13", "12", "11", "10"}:
+    if ver not in _JA4_VERSIONS:
         return None
-    version = {"13": "TLS 1.3", "12": "TLS 1.2", "11": "TLS 1.1", "10": "TLS 1.0"}[ver]
+    version = _JA4_VERSIONS[ver]
     return {
         "transport": "QUIC" if proto.lower() == "q" else "TCP",
         "tls_version": version,
@@ -310,11 +325,21 @@ class Signal:
     source: str
     os: str
     detail: str
-    weight: float = 0.0
+    # WEIGHT_UNSET (negative) means "the caller did not say", which `__post_init__` resolves from
+    # SOURCE_WEIGHTS. It is a sentinel rather than None so that `weight` stays a plain float at
+    # every arithmetic site -- an Optional here forced a None check into each score addition, and
+    # the checks were the only thing standing between a typo and a silent no-op.
+    weight: float = WEIGHT_UNSET
 
     def __post_init__(self) -> None:
-        if not self.weight:
-            object.__setattr__(self, "weight", SOURCE_WEIGHTS.get(self.source, 0.3))
+        # `weight == 0.0` is a MEANINGFUL value -- ja4_structure is declared at 0.0 because a
+        # decoded header is a structural fact, not evidence of an OS. Testing falsiness replaced
+        # that deliberate zero with the default, silently re-pricing a source that must not count.
+        # So only an UNSET weight is defaulted, and an UNDECLARED source gets 0.0 rather than a
+        # made-up 0.3: a source the table does not know carries no known weight, and inventing one
+        # would let it contribute to a confidence claim it cannot support.
+        if self.weight < 0:
+            object.__setattr__(self, "weight", SOURCE_WEIGHTS.get(self.source, 0.0))
 
 
 @dataclass
@@ -345,6 +370,22 @@ class Verdict:
         return [s for s in self.signals if s.os != self.os]
 
 
+def _match_word(table: list[tuple[str, str, str]], text: str) -> tuple[str, str] | None:
+    """Like `_match`, but the needle must sit on a word boundary.
+
+    Needed for short needles that occur inside longer words: `win-` matched `darwin-`, so a
+    Mac-named host could be classified Windows. A substring match is right for a build banner
+    ("OpenSSH_10.2p1 Ubuntu-...") and wrong for a two- or three-character fragment.
+    """
+    low = (text or "").lower()
+    if not low:
+        return None
+    for needle, os_name, reason in table:
+        if re.search(rf"(?<![a-z0-9]){re.escape(needle)}", low):
+            return os_name, reason
+    return None
+
+
 def _match(table: list[tuple[str, str, str]], text: str) -> tuple[str, str] | None:
     """First case-insensitive substring match, or None. Order matters: specific entries first."""
     low = (text or "").lower()
@@ -364,22 +405,45 @@ def signal_from_software(name: str, version: str = "", unparsed: str = "",
     what carries the distribution name ("OpenSSH_10.2p1 Ubuntu-2ubuntu3.6"). `name`/`version`
     are Zeek's parse of the same thing and are the fallback when a banner is absent.
     """
-    # The banner first, then Zeek's parse of name+version. Both are source "software"; the
-    # order is what matters, because the banner is the string the build actually emitted.
-    for text in (unparsed, f"{name} {version}"):
-        hit = _match(KNOWN_SOFTWARE, text)
+    text = (unparsed or f"{name} {version}").strip()
+
+    # THE USER-AGENT TABLE IS CONSULTED FIRST WHEN THE STRING IS ONE.
+    #
+    # Order is not cosmetic here. Every Chrome, Chromium and Safari User-Agent contains
+    # `AppleWebKit`, and `KNOWN_SOFTWARE` holds the needle "apple" -- so the banner table, checked
+    # first, matched "applewebkit" and returned macOS. Measured: Linux Chrome, Android Chrome and
+    # iOS Safari were ALL reported as macOS, each as a weight-1.0 `software` signal, i.e. medium
+    # confidence on its own. The whole `KNOWN_USER_AGENT` table was dead code for exactly the
+    # strings it was written for.
+    #
+    # A User-Agent is a recognisable SHAPE ("mozilla/..."), so it is detected as one rather than
+    # by hoping the banner table's needles do not appear inside it.
+    is_ua = "mozilla/" in text.lower() or software_type.upper().startswith("HTTP")
+    if is_ua:
+        hit = _match(KNOWN_USER_AGENT, text)
         if hit:
             os_name, reason = hit
-            shown = (unparsed or f"{name} {version}").strip()
+            return Signal(source="software", os=os_name,
+                          detail=f"{text[:120]} - {reason}")
+
+    # The banner, then Zeek's parse of name+version. The banner is the string the build emitted.
+    for candidate in (unparsed, f"{name} {version}"):
+        hit = _match(KNOWN_SOFTWARE, candidate)
+        if hit:
+            os_name, reason = hit
             kind = f" ({software_type})" if software_type else ""
+            # SHOW WHAT MATCHED, not what was available. This displayed `unparsed` even when the
+            # match came from name+version, so the evidence on screen was not the evidence used.
+            shown = candidate.strip() or text
             return Signal(source="software", os=os_name,
                           detail=f"{shown}{kind} - {reason}")
-    # A User-Agent arrives through HTTP as software with a long unparsed_version.
-    hit = _match(KNOWN_USER_AGENT, unparsed or name)
-    if hit:
-        os_name, reason = hit
-        return Signal(source="software", os=os_name,
-                      detail=f"{(unparsed or name).strip()[:120]} - {reason}")
+    # A UA-shaped string that matched nothing still deserves the UA table as a fallback.
+    if not is_ua:
+        hit = _match(KNOWN_USER_AGENT, text)
+        if hit:
+            os_name, reason = hit
+            return Signal(source="software", os=os_name,
+                          detail=f"{text[:120]} - {reason}")
     return None
 
 
@@ -391,11 +455,13 @@ def signal_from_dhcp(host_name: str = "", client_fqdn: str = "", domain: str = "
     """
     out: list[Signal] = []
     # The FQDN is the host's own statement of its name, so it is weighted above a bare hostname.
-    hit = _match(KNOWN_HOSTNAME, client_fqdn)
+    # WORD-BOUNDED, because this table's needles are short ("win-", "-pc", "imac") and a plain
+    # substring match let `win-` fire inside `darwin-`.
+    hit = _match_word(KNOWN_HOSTNAME, client_fqdn)
     if hit:
         os_name, reason = hit
         out.append(Signal("dhcp_fqdn", os_name, f"FQDN {client_fqdn!r} - {reason}"))
-    hit = _match(KNOWN_HOSTNAME, host_name)
+    hit = _match_word(KNOWN_HOSTNAME, host_name)
     if hit:
         os_name, reason = hit
         out.append(Signal("dhcp_hostname", os_name, f"hostname {host_name!r} - {reason}"))
@@ -428,6 +494,28 @@ def signal_from_ja4(ja4: str) -> tuple[Signal | None, dict[str, Any] | None]:
     return None, parse_ja4_header(ja4)
 
 
+# SOURCE FAMILIES. Two source NAMES can come from ONE observation, and counting them as
+# independent corroboration is the defect this table exists to prevent.
+#
+# The live case: a single DHCP row carries both a hostname and an FQDN, and the FQDN is the
+# hostname with a domain appended -- so whenever the hostname matches a habit, the FQDN matches
+# too. They were counted as two sources with combined weight 1.05, which cleared both the
+# source-count and the score threshold, so ONE typed hostname produced "Windows, high confidence".
+# That is precisely what this module's header promises cannot happen.
+#
+# Confidence is about INDEPENDENT evidence: a lease, a banner, a fingerprint. Two fields of the
+# same lease are one observation seen twice.
+SOURCE_FAMILY: dict[str, str] = {
+    "dhcp_hostname": "dhcp",
+    "dhcp_fqdn": "dhcp",
+    "dhcp_vendor": "dhcp",
+}
+
+
+def _family(source: str) -> str:
+    return SOURCE_FAMILY.get(source, source)
+
+
 def classify(signals: Iterable[Signal], ja4_structure: dict[str, Any] | None = None) -> Verdict:
     """Combine independent signals into one verdict with a stated confidence.
 
@@ -444,10 +532,21 @@ def classify(signals: Iterable[Signal], ja4_structure: dict[str, Any] | None = N
     tally: dict[str, float] = {}
     for s in sigs:
         tally[s.os] = tally.get(s.os, 0.0) + s.weight
-    best = max(tally, key=lambda k: tally[k])
+
+    # AN OPERATOR CONFIRMATION IS AN ANSWER, NOT A VOTE. It outranks every inference, and it must
+    # do so EXPLICITLY rather than by carrying a bigger number: at 1.0 it tied `software`, and
+    # `max()` breaks a tie by insertion order -- so the same evidence produced either
+    # (linux, high) or (windows, medium, with the operator's confirmation listed as
+    # DISAGREEMENT) depending on which signal the caller iterated first. A confirmed fact that can
+    # lose to a guess is worse than not recording it.
+    confirmed = [s for s in sigs if s.source == "operator"]
+    best = confirmed[-1].os if confirmed else max(tally, key=lambda k: tally[k])
     v.os = best
 
-    sources = {s.source for s in sigs if s.os == best}
+    # FAMILIES, and only signals that actually carry weight. A zero-weight source (ja4_structure
+    # is declared 0.0 on purpose -- structure is not evidence of an OS) must not count toward
+    # "two independent sources".
+    sources = {_family(s.source) for s in sigs if s.os == best and s.weight > 0}
     score = tally[best]
     # An operator confirmation is an answer, not an inference, so it needs no corroboration --
     # it is ORed with the agreement test rather than nested under it.
@@ -481,6 +580,12 @@ def summarise(signals: Iterable[Signal], ja4_structure: dict[str, Any] | None = 
         "os_label": v.label,
         "confidence": v.confidence,
         "score": round(v.score, 3),
+        # THE AGREEING COUNT IS THE NUMBER CONFIDENCE IS DERIVED FROM, so it is exposed HERE
+        # rather than recomputed by each consumer. `sources` previously listed every source,
+        # agreeing or not, so a writer storing its length recorded 2 when only 1 agreed -- and the
+        # GUI displayed disagreeing sources as though they had produced the verdict.
+        "agreeing_sources": len({_family(s.source) for s in v.signals
+                                 if s.os == v.os and s.weight > 0}),
         "sources": sorted({s.source for s in v.signals}),
         "signal_count": len(v.signals),
         "signals": [

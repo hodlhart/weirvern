@@ -335,6 +335,20 @@ for i in "${IFACES[@]}"; do
     break
 done
 
+# ONE NIC IS A LEGITIMATE FIRST LOOK, so it defaults to that NIC for BOTH roles rather than to an
+# empty string. That matters beyond avoiding a blank value: the same-interface branch below WARNS
+# that the capture will be thin, so falling back to a real interface produces MORE warning than an
+# empty one did -- and an empty capture interface reached the ConfigMap with no warning at all.
+if [ -z "$DETECTED_CAPTURE" ]; then
+    DETECTED_CAPTURE="$DETECTED_MGMT"
+fi
+if [ -z "$DETECTED_MGMT" ]; then
+    # No default route at all: a container, or a box whose only NIC is the capture port. Fall back
+    # to the first candidate so both roles name real interfaces, and say so.
+    DETECTED_MGMT="${IFACES[0]:-}"
+    warn "no default-route interface found; using ${DETECTED_MGMT:-nothing} for management"
+fi
+
 if [ "$LIST_IFACES" = "1" ]; then
     printf '    --list-interfaces: nothing was changed.\n'
     printf '      would use  mgmt=%s  capture=%s\n\n' "${DETECTED_MGMT:-?}" "${DETECTED_CAPTURE:-?}"
@@ -375,7 +389,12 @@ confirm_ifaces() {
         # component, looking like a Zeek problem.
         bad=""
         for want in "$MGMT_IFACE" "$ZEEK_IFACE"; do
-            [ -e "/sys/class/net/$want" ] || bad="$bad $want"
+        # AN EMPTY NAME MUST FAIL. `[ -e "/sys/class/net/$want" ]` with want="" tests the
+        # DIRECTORY /sys/class/net/, which exists -- so an empty interface validated. That was
+        # reachable by the DESIGNED path, not by a typo: on a one-NIC box the capture loop skips
+        # the only candidate (it equals the management port), leaving DETECTED_CAPTURE empty, and
+        # Enter-Enter then accepted it.
+            [ -n "$want" ] && [ -e "/sys/class/net/$want" ] || bad="$bad ${want:-<empty>}"
         done
         if [ -n "$bad" ]; then
             warn "no such interface:$bad -- these exist: ${IFACES[*]}"
@@ -395,6 +414,19 @@ confirm_ifaces() {
     done
 }
 
+# VALIDATE THE FLAGS IN EVERY PATH. The interactive loop validates what it prompts for, but a flag
+# written on the command line was used verbatim -- so `--zeek-iface teh0` reached the ConfigMap and
+# surfaced later as "device does not exist", from a different component, looking like a Zeek bug.
+if [ -n "$ZEEK_IFACE_FLAG" ] || [ -n "$MGMT_IFACE_FLAG" ]; then
+    _bad=""
+    for _want in "$ZEEK_IFACE_FLAG" "$MGMT_IFACE_FLAG"; do
+        [ -n "$_want" ] || continue
+        [ -e "/sys/class/net/$_want" ] || _bad="$_bad $_want"
+    done
+    [ -z "$_bad" ] || die "no such interface:$_bad (try --list-interfaces to see what exists)"
+    ok "flag interfaces verified against this host"
+fi
+
 confirm_ifaces
 
 # An addressed capture interface is a normal participant rather than a passive listener: it
@@ -402,7 +434,13 @@ confirm_ifaces
 # feed needs none of that. Offer to remove it -- OFFER, not do, because siphon mode legitimately
 # needs an address on its in-path interface.
 CAPTURE_ADDR=$(iface_addr "$ZEEK_IFACE")
-if [ -n "$CAPTURE_ADDR" ] && [ "$SIPHON" != "1" ]; then
+# NEVER OFFER TO REMOVE THE MANAGEMENT ADDRESS. When both roles share a NIC (the documented
+# one-NIC first look), the "capture" address IS the management address -- so answering y kills the
+# operator's own SSH session mid-install and leaves the ConfigMap half written, the precise failure
+# the non-TTY comment warns about.
+if [ -n "$CAPTURE_ADDR" ] && [ "$SIPHON" != "1" ] \
+   && [ "$ZEEK_IFACE" != "$MGMT_IFACE" ] \
+   && [ "$(iface_is_default_route "$ZEEK_IFACE")" != "yes" ]; then
     warn "capture interface $ZEEK_IFACE has address $CAPTURE_ADDR"
     warn "a passive capture port usually has none; an addressed port also answers ARP and its"
     warn "own traffic lands in the capture. (siphon mode needs an address, which is why this"
