@@ -36,6 +36,20 @@ logger = logging.getLogger(__name__)
 NAMESPACE = "weirvern"
 CONFIGMAP = "weirvern-env"
 
+# ── GUI-WRITE PROVENANCE (audit F016) ────────────────────────────────────────────────────────────
+#
+# CONFIRMED BY RUNNING IT: a GUI write to this ConfigMap is undone by the next `kubectl apply -k`,
+# because the ConfigMap is owned by a manifest and an apply is entitled to restore it. Measured: a
+# GUI write of DETECT_INTERVAL_S=240 landed and even rolled the worker, and the next apply put it
+# back to 300.
+#
+# The value of these two annotations is that the conflict becomes VISIBLE. Before them, a settings
+# view could only show the current value, which looks identical whether an operator chose it or a
+# deploy just overwrote their choice. With them, the view can say "you set this on the 23rd; a
+# deploy may have reverted it", which is a thing an operator can act on.
+GUI_WRITE_ANNOTATION = "weirvern.io/gui-written-keys"
+GUI_WRITE_LEGEND = "weirvern.io/gui-written-keys-note"
+
 # The paths the in-cluster client needs. Standard, and present in every pod that mounts a token.
 _TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 _CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -606,9 +620,57 @@ class ClusterConfig:
         compares the result against what was asked for and raises when they differ, because a
         settings UI that reports success over a change that did not take is worse than one that
         errors.
+
+        ── AND IT RECORDS THAT IT WROTE, BECAUSE `apply -k` WILL REVERT THIS (audit F016) ────────
+
+        CONFIRMED BY RUNNING IT against the live cluster: a GUI write of DETECT_INTERVAL_S=240
+        landed (the response even rolled the worker), and the very next `kubectl apply -k k8s/`
+        put it back to 300. The GUI was reporting success over a change with the lifetime of a
+        deploy, and the operator had no way to know.
+
+        This is not a bug in the write path -- it is what `kubectl apply` DOES to a ConfigMap that
+        a manifest owns. The field IS the manifest's, so an apply is entitled to reset it. Fighting
+        that (a second ConfigMap, an overlay generator, admission webhooks) would trade a silent
+        revert for a much larger machine, and the deployment's own `kustomization.yaml` already
+        chooses the opposite trade for the account store: it does NOT ship a manifest for data the
+        product writes, precisely so an apply cannot wipe it.
+
+        So the honest fix is to make the conflict LEGIBLE rather than pretend it does not exist:
+        every key the GUI writes is recorded in an annotation with its value and timestamp, so a
+        later read can tell "this is the manifest's value" from "an operator changed this, and a
+        deploy may have reverted it". The settings view surfaces that, and this method's return
+        says which keys are at risk.
         """
         want = {to_configmap_key(k): (v or "").strip() for k, v in changes.items()}
-        self._request("PATCH", {"data": want})
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Read the existing provenance so this write ADDS to it rather than replacing it: an
+        # operator who changed two keys on two days must not lose the first record.
+        prior = self.configmap_annotation(GUI_WRITE_ANNOTATION)
+        records: dict[str, dict[str, str]] = {}
+        if prior:
+            with contextlib.suppress(ValueError, TypeError):
+                parsed = json.loads(prior)
+                if isinstance(parsed, dict):
+                    records = parsed
+        # Only record keys whose value actually DIFFERS from the last write, so a no-op save does
+        # not make every key look operator-modified.
+        for key, value in want.items():
+            previous = (records.get(key) or {}).get("value")
+            if previous == value:
+                records[key]["at"] = stamp
+                continue
+            records[key] = {"value": value, "at": stamp}
+
+        self._request("PATCH", {"data": want, "metadata": {"annotations": {
+            GUI_WRITE_ANNOTATION: json.dumps(records, sort_keys=True),
+            GUI_WRITE_LEGEND: (
+                "Keys listed here were set through the Weirvern GUI, not by k8s/*.yaml. "
+                "`kubectl apply -k` RESTORES THE MANIFEST'S VALUE and will revert any of them that "
+                "a manifest also defines. Re-apply the GUI setting after a deploy, or move it into "
+                "k8s/20-configmap-env.yaml to make it permanent."
+            ),
+        }}})
 
         landed = self.read()
         missing = {k: (v, landed.get(k)) for k, v in want.items() if landed.get(k) != v}
@@ -618,6 +680,62 @@ class ClusterConfig:
                 f"still reports different values: {missing}"
             )
         return landed
+
+    def configmap_annotation(self, name: str) -> str:
+        """One annotation's value on this ConfigMap, or '' if it is absent."""
+        try:
+            meta = self._request("GET", None).get("metadata") or {}
+        except ConfigError:
+            return ""
+        return str((meta.get("annotations") or {}).get(name) or "")
+
+    def settings_drift(self) -> list[dict]:
+        """Keys the GUI wrote whose live value no longer matches, newest information first.
+
+        ── THIS IS PRODUCT CODE, NOT A HELPER FOR TESTS ──────────────────────────────────────────
+
+        The first version of this lived inline in the settings view, and the tests reimplemented it
+        in a local helper to check the behaviour. MUTATION TESTING SHOWED THE TESTS PROVED NOTHING
+        ABOUT THE VIEW: breaking the view's `reverted` expression to treat an absent key as a revert
+        left the entire suite green, because no test ever ran the view's copy. A test that
+        reimplements the logic it is checking tests its own copy.
+
+        So the computation lives here, where the view calls it and a test can too.
+        """
+        written = self.gui_written_keys()
+        if not written:
+            return []
+        live = self.read()
+        rows = []
+        for key, rec in sorted(written.items()):
+            want = str(rec.get("value") or "")
+            current = live.get(key)
+            rows.append({
+                "key": key,
+                "chosen": want,
+                "at": str(rec.get("at") or ""),
+                "current": "" if current is None else str(current),
+                # A key absent from the ConfigMap cannot have been reverted by an apply: the
+                # manifest simply may not define it. Reporting one would send an operator looking
+                # for a deploy that did nothing.
+                "reverted": current is not None and str(current) != want,
+            })
+        return rows
+
+    def gui_written_keys(self) -> dict[str, dict[str, str]]:
+        """Keys the GUI wrote, with the value and time. Empty when nothing was written.
+
+        Used by the settings view to warn before a deploy silently reverts an operator's change,
+        rather than only reporting it after the fact.
+        """
+        raw = self.configmap_annotation(GUI_WRITE_ANNOTATION)
+        if not raw:
+            return {}
+        with contextlib.suppress(ValueError, TypeError):
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): dict(v) for k, v in parsed.items() if isinstance(v, dict)}
+        return {}
 
     def restart(self, target: str) -> None:
         """Roll a workload so it re-reads the ConfigMap.

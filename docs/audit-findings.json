@@ -364,8 +364,8 @@
       "severity": "HIGH",
       "area": "Test suite",
       "title": "The root-container tripwire cannot see implicit root",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED with a concrete instance, not a hypothesis. The tripwire resolves `uid = sc.get('runAsUser', pod_sc.get('runAsUser'))` and flags `uid == 0`, so a container that sets runAsUser NOWHERE resolves to None and is skipped -- while a container with neither runAsUser nor runAsNonRoot runs as whatever its IMAGE declares, root by default. MEASURED ON THE LIVE CLUSTER: `goflow2` was exactly that shape (runAsUser and runAsNonRoot unset at both container and pod level) and ran as uid 100 ONLY because the goflow2 image declares `USER flow`. Nothing in the deployment said so; one image update would have collected flow data as root and no guard would have seen the container at all. FIXED IN TWO PLACES: k8s/31-goflow2.yaml sets runAsNonRoot: true and an explicit runAsUser: 100 (runAsNonRoot is load-bearing -- the kubelet ENFORCES it and refuses to start if the image would be root, turning silent drift into a startup failure); and the tripwire now treats an unspecified uid as needing the same deliberate decision as root, with `expected_unspecified` empty so a new uid-less container fails with an explanatory message. VERIFIED LIVE: after apply, the pod spec reads runAsUser=100 runAsNonRoot=true, `id` still returns uid=100(flow), and goflow2 is still collecting (starting collection on 2055 and 6343). VERIFIED BOTH DIRECTIONS IN TESTS: reverting the pin is CAUGHT, and the old resolution over the same manifests returns only zeek and fix-permissions, reproducing the blind spot. NOTE: report body not recoverable (tmp/k9_k8s.md cleaned); this verifies the title's claim against the code and the live pod.",
       "report": "k12_testing",
       "id": "F041"
     },

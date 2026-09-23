@@ -2001,6 +2001,51 @@ def _build_handler(ctx: GuiContext):
                 # bounds come from the same table `validate()` enforces -- the control and the
                 # rule cannot disagree because they are one table.
                 payload["controls"] = {to_row_key(k): dict(v) for k, v in SETTING_CONTROLS.items()}
+
+                # ── THE DRIFT WARNING (audit F016) ────────────────────────────────────────────
+                #
+                # CONFIRMED BY RUNNING IT against a live cluster: the GUI wrote
+                # DETECT_INTERVAL_S=240, the response reported success and rolled the worker, and
+                # the very next `kubectl apply -k k8s/` put it back to 300. The ConfigMap is owned
+                # by a manifest, so an apply is entitled to restore it -- the revert is correct
+                # Kubernetes behaviour, and the DEFECT was that nothing told the operator.
+                #
+                # So the view now says it. For every key the GUI has written whose manifest value
+                # would override it, the operator gets the value they chose, when they chose it,
+                # and the fact that a deploy can take it away. Without this the settings page
+                # cannot be trusted on a cluster that gets deployed to, which is all of them.
+                #
+                # `drift` is a LIST of rows rather than a boolean, because "this page has drifted"
+                # is not actionable and "DETECT_INTERVAL_S: you set 240 on the 23rd, a deploy will
+                # restore 300" is.
+                try:
+                    from weirvern.admin.cluster_config import ClusterConfig
+                    # THE COMPUTATION LIVES IN `settings_drift`, not here. An earlier version
+                    # computed it inline and the tests reimplemented it to check it -- mutation
+                    # testing showed that proved NOTHING about this view: breaking the `reverted`
+                    # expression here left the whole suite green. One implementation, called by
+                    # both, is the only shape where a test of the logic is a test of the view.
+                    #
+                    # It reads the LIVE ConfigMap, not the rows this view builds: those are the
+                    # PROCESS's effective settings, which for the GUI means the values it started
+                    # with, so comparing against them would report "reverted" on a healthy cluster
+                    # and "fine" on a reverted one.
+                    drift = [
+                        {**row, "key": to_row_key(row["key"])}
+                        for row in ClusterConfig(configmap="weirvern-env").settings_drift()
+                    ]
+                    payload["gui_written"] = drift
+                    if drift:
+                        payload["gui_written_note"] = (
+                            "These keys were set through this page, not by k8s/*.yaml. "
+                            "`kubectl apply -k` restores the manifest's value, so a deploy reverts "
+                            "them. Re-apply the setting after a deploy, or put it in "
+                            "k8s/20-configmap-env.yaml to make it permanent."
+                        )
+                except Exception:  # noqa: BLE001
+                    # The warning is advisory. A cluster that cannot be read must still render the
+                    # page, since that is how an operator would diagnose it.
+                    payload["gui_written"] = []
             except Exception:  # noqa: BLE001
                 payload["editable_keys"] = []
                 payload["controls"] = {}
