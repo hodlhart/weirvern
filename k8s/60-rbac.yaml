@@ -70,17 +70,64 @@ metadata:
   name: weirvern-operator
   namespace: weirvern
 rules:
-  # Everything a viewer can do, plus lifecycle control. `scale` is how
-  # `weirvern stop`/`start` works against a cluster — see K8sBackend.
+  # ── WHAT THE OPERATOR ROLE MAY REACH, AND WHY IT IS NARROWER THAN IT LOOKS ─────────────────
+  #
+  # AUDIT F017, CONFIRMED AGAINST A LIVE CLUSTER. This role granted patch/update on the WHOLE
+  # `daemonsets` resource. Measured with a server-side dry run, the GUI's ServiceAccount could
+  # rewrite the zeek DaemonSet -- which is `privileged: true`, holds CAP_NET_RAW, and mounts host
+  # paths:
+
+  #     kubectl patch ds/zeek --as=system:serviceaccount:<ns>:weirvern-operator \
+  #       -p '{"spec":{"template":{"spec":{"volumes":[{"name":"host-root",
+  #            "hostPath":{"path":"/"}}]}}}}' --dry-run=server
+  #     -> daemonset.apps/zeek patched
+  #
+  # The only objection was a PodSecurity WARNING. The namespace is labelled
+  # `pod-security.kubernetes.io/enforce: privileged`, so nothing enforces it -- and that label is
+  # deliberate, because the capture sensor genuinely needs those capabilities. The consequence:
+  # a compromised GUI pod could mount the node filesystem on every node. The GUI is a NodePort
+  # HTTP service with password auth, so "a compromised GUI pod" is not hypothetical.
+  #
+  # THE GRANT IS NOW SCOPED BY NAME. `resourceNames` is verified live to work per object:
+  #
+  #     with resourceNames=[zeek]:  patch daemonsets/zeek -> yes
+  #                                 patch daemonsets/clickhouse -> no
+  #
+  # The GUI's settings path restarts exactly two workloads (`_RESTART_FOR` in
+  # admin/cluster_config.py) plus itself, so those three names are the whole of what it needs.
+  # `update` is still NOT granted anywhere: a PUT replaces the entire object, so one malformed
+  # request could strip a workload's securityContext.
   - apiGroups: [""]
     resources: ["pods", "services", "endpoints", "persistentvolumeclaims"]
     verbs: ["get", "list"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "patch", "update"]
+    verbs: ["get", "list"]
+  # The restart path, name-scoped. Each entry is one workload the settings UI may roll.
+  #
+  # THEY ARE SEPARATE RULES ON PURPOSE: a single rule listing all three `resourceNames` would also
+  # need a single verb set, and keeping them apart means the reason for each is visible and a
+  # future addition has to be deliberate.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: ["zeek"]
+    verbs: ["patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["weirvern-worker", "weirvern-gui"]
+    verbs: ["patch"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "patch", "update"]
+  # The Sonar survey Job. THE ONE GRANT THAT CANNOT BE NAMED: the job is created with a random
+  # suffix (`weirvern-sonar-<8 hex>` in admin/sonar.py) so concurrent surveys do not collide, and
+  # `resourceNames` cannot match a name that does not exist yet. `create` therefore has to be
+  # broad within this namespace.
+  #
+  # The blast radius is bounded by what a Job CAN do here rather than by its name: it runs the
+  # weirvern-worker image, which the cluster already trusts, and it does not inherit the operator
+  # ServiceAccount. An operator who wants it tighter can drop `create` and run surveys from the CLI
+  # instead -- the GUI reports that cleanly rather than failing oddly.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "create", "delete"]
