@@ -229,8 +229,8 @@
       "severity": "HIGH",
       "area": "Operability",
       "title": "cap_mb=0 \u2014 documented as \"no cap\" \u2014 deletes every rotated log older than the grace period",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED, reproduced by running it: five rotated logs, plan_prune(cap_mb=0) returned ALL FIVE as doomed while cap_mb=1000 returned none, and prune(cap_mb=0) deleted all five BEFORE the fix (0 after). WHY IT MATTERS: config.py documents the setting as \"0 means no cap and is reported as unset rather than as within budget\", and 0 is the DEFAULT for zeek_max_mb, netflow_max_mb and ml_max_mb. plan_prune did cap_bytes = max(0, cap_mb) * 1024 * 1024, turning 0 into a ZERO-BYTE budget, so every file exceeds it and oldest-first removes everything past the grace period. The live cluster is safe (k8s/20-configmap-env.yaml sets 2048/1024/2048), so this bit a deployment running on the defaults -- exactly what defaults are for, with silent log destruction rather than an error as the failure mode. FIXED in three places: plan_prune returns early for cap_mb <= 0 (covering both the whole-directory and the per_type branch, which divides the cap by group count and so had a second path to the same defect), and prune_loop no longer gates on a comparison that reads 0 as a budget. Four mutations caught, including disabling the pruner entirely.",
       "report": "k11_ops_ux",
       "id": "F026"
     },

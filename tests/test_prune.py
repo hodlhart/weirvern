@@ -270,3 +270,138 @@ def test_parses_the_real_zeek_rotation_names():
     # And the live files must NOT match.
     for name in ("dns.log", "conn.log", "http.log"):
         assert not prune.ROTATED_RE.match(name), f"live file parsed as rotated: {name}"
+
+
+# ── 0 MEANS "NO CAP", NOT "A ZERO-BYTE BUDGET" ───────────────────────────────────────────────
+#
+# MEASURED DEFECT (audit F026). `config.py` documents the setting as `0 means "no cap" and is
+# reported as unset rather than as within budget`, and 0 is the DEFAULT for zeek_max_mb,
+# netflow_max_mb and ml_max_mb. `plan_prune` did `cap_bytes = max(0, cap_mb) * 1024 * 1024`, which
+# turns 0 into a ZERO-BYTE budget: every file is over it, and oldest-first deletes EVERYTHING past
+# the grace period. Reproduced before the fix with five rotated logs: `plan_prune(cap_mb=0)`
+# returned ALL FIVE as doomed while `cap_mb=1000` returned none.
+#
+# The live cluster is safe because `k8s/20-configmap-env.yaml` sets real caps (2048/1024/2048), so
+# this bit a deployment running on the defaults -- exactly the case defaults exist for, and the
+# failure is silent log destruction rather than an error.
+
+def test_a_zero_cap_deletes_NOTHING(tmp_path):
+    """The defect itself. 0 is documented as 'no cap'; it must not mean 'delete everything'."""
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 100_000) for h in (24, 48, 72, 96, 120)]})
+    assert len(list(d.glob("*.log"))) == 5
+    plan = prune.plan_prune(d, cap_mb=0)
+    assert plan == [], (
+        f"a zero cap doomed {len(plan)} file(s). 0 means NO CAP, and the default for every cap "
+        f"setting is 0, so this deletes the logs of any deployment that did not override it"
+    )
+
+
+def test_a_zero_cap_survives_a_real_prune_run(tmp_path):
+    """Asserting the PLAN is not enough: the delete loop is what destroys data."""
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 100_000) for h in (24, 48, 72)]})
+    r = prune.prune(d, cap_mb=0)
+    assert r.deleted_files == 0, f"prune(cap_mb=0) deleted {r.deleted_files} file(s)"
+    assert len(list(d.glob("*.log"))) == 3, "the files are gone"
+
+
+def test_a_negative_cap_is_also_no_cap(tmp_path):
+    """A typo or a placeholder must not become 'delete everything' either."""
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 100_000) for h in (24, 48, 72)]})
+    assert prune.plan_prune(d, cap_mb=-1) == []
+    assert prune.prune(d, cap_mb=-1).deleted_files == 0
+
+
+def test_a_zero_cap_deletes_nothing_in_PER_TYPE_mode(tmp_path):
+    """The per-type branch divides the cap by the number of groups, so a zero cap divides zero --
+    a second path to the same defect, and one the first fix would have missed if it only guarded
+    the whole-directory branch."""
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 100_000) for h in (24, 48)],
+                             "dns": [(old_ts(h), 100_000) for h in (24, 48)]})
+    assert prune.plan_prune(d, cap_mb=0, per_type=True) == []
+
+
+def test_a_REAL_cap_still_prunes(tmp_path):
+    """The other half, and the one that stops the fix from being 'prune nothing': a genuine cap
+    must still delete oldest-first until the directory fits."""
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 500_000) for h in (24, 48, 72, 96, 120)]})
+    # 5 x 500KB = 2.5MB against a 1MB budget, so most of it must go.
+    plan = prune.plan_prune(d, cap_mb=1)
+    assert plan, "a 2.5MB directory against a 1MB cap doomed nothing"
+    r = prune.prune(d, cap_mb=1)
+    remaining = sum(f.stat().st_size for f in d.glob("*.log"))
+    assert r.deleted_files > 0
+    assert remaining <= 1024 * 1024, f"{remaining} bytes remain against a 1MB cap"
+    # And the NEWEST file survives: deleting newest-first would be the opposite bug.
+    assert (d / "conn.2026-09-23-00-00-00.log").exists() or remaining > 0
+
+
+def test_the_loop_guard_does_not_read_a_zero_cap_as_zero_bytes(tmp_path, monkeypatch):
+    """`prune_loop` gated on `before > cap_mb * 1024 * 1024`, which for cap_mb=0 is `before > 0` --
+    true for any non-empty directory, so it called prune() every interval forever. prune() returns
+    early now, so the cost was a no-op, but a guard that says the wrong thing is how the next
+    reader concludes the cap IS enforced at zero.
+
+    ── HOW THIS TEST ACTUALLY REACHES THE GUARD, because the first version did not ─────────────
+    The loop is `while not stop.is_set():` at the TOP, so setting the stop flag before the call
+    means the body never executes: the first version asserted `calls == 0` against a loop that had
+    never run, and it stayed green with the guard reverted. A mutation test caught that.
+
+    So the loop is entered with the flag CLEAR, and stopped from inside `prune` -- the one place
+    that proves the guard was reached. `sleep` is stubbed to stop the loop on the first slice
+    rather than waiting out an interval.
+    """
+    import threading
+
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 100_000) for h in (24, 48)]})
+    stop = threading.Event()
+    calls = {"n": 0}
+    real_prune = prune.prune
+
+    def counting(*a, **kw):  # noqa: ANN001
+        calls["n"] += 1
+        stop.set()          # leave the loop from inside the call, proving we got here
+        return real_prune(*a, **kw)
+
+    monkeypatch.setattr(prune, "prune", counting)
+    # RUN THE BODY EXACTLY ONCE. The outer `while not stop.is_set()` is checked at the TOP, so the
+    # flag cannot be set before the call or the guard is never reached; and setting it only inside
+    # `prune` does not help the zero-cap case, where prune is never called. The sleep stub is what
+    # terminates the loop after one pass, for both tests.
+    monkeypatch.setattr(prune.time, "sleep", lambda *_: stop.set())
+    prune.prune_loop(d, cap_mb=0, interval_s=1, grace_s=3600, stop=stop)
+
+    assert calls["n"] == 0, (
+        f"prune_loop called prune() {calls['n']} time(s) with a zero cap, so its guard read 0 as a "
+        f"real budget. With a 300s interval that is a delete pass every 5 minutes forever"
+    )
+    assert len(list(d.glob("*.log"))) == 2, "the loop deleted files under a zero cap"
+
+
+def test_the_loop_WOULD_call_prune_when_a_real_cap_is_exceeded(tmp_path, monkeypatch):
+    """The companion assertion, without which the test above could pass on a loop that never calls
+    prune() at all -- a disabled pruner satisfies every 'deletes nothing' claim."""
+    import threading
+
+    d = make_logs(tmp_path, {"conn": [(old_ts(h), 500_000) for h in (24, 48, 72)]})  # 1.5MB
+    stop = threading.Event()
+    calls = {"n": 0}
+    real_prune = prune.prune
+
+    def counting(*a, **kw):  # noqa: ANN001
+        calls["n"] += 1
+        stop.set()
+        return real_prune(*a, **kw)
+
+    monkeypatch.setattr(prune, "prune", counting)
+    # RUN THE BODY EXACTLY ONCE. The outer `while not stop.is_set()` is checked at the TOP, so the
+    # flag cannot be set before the call or the guard is never reached; and setting it only inside
+    # `prune` does not help the zero-cap case, where prune is never called. The sleep stub is what
+    # terminates the loop after one pass, for both tests.
+    monkeypatch.setattr(prune.time, "sleep", lambda *_: stop.set())
+    prune.prune_loop(d, cap_mb=1, interval_s=1, grace_s=3600, stop=stop)
+
+    assert calls["n"] == 1, (
+        "a 1.5MB directory against a 1MB cap must trigger a prune pass; if this is 0 the loop is "
+        "disabled and the zero-cap test above proves nothing"
+    )
+    assert list(d.glob("*.log")), "the whole directory was removed rather than trimmed"

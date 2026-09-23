@@ -141,7 +141,27 @@ def plan_prune(log_dir: Path, cap_mb: int, grace_s: int = DEFAULT_GRACE_S,
     safeguard against deleting a log the worker has not ingested yet.
     """
     now = now if now is not None else time.time()
-    cap_bytes = max(0, cap_mb) * 1024 * 1024
+    # ── 0 MEANS "NO CAP", NOT "A ZERO-BYTE BUDGET" ────────────────────────────────────────────
+    #
+    # MEASURED DEFECT (audit F026). `config.py` documents the setting as `0 means "no cap" and is
+    # reported as unset rather than as within budget`, and `0` is the DEFAULT for all three caps.
+    # This function did `cap_bytes = max(0, cap_mb) * 1024 * 1024`, which turns 0 into a ZERO-BYTE
+    # budget -- so every file is over it and the oldest-first loop deletes EVERYTHING past the
+    # grace period. Reproduced: five rotated logs, `plan_prune(cap_mb=0)` returned ALL FIVE as
+    # doomed while `cap_mb=1000` returned none.
+    #
+    # The live cluster is safe because `k8s/20-configmap-env.yaml` sets real caps (2048/1024/2048),
+    # so this bites a deployment that takes the default -- which is exactly the case the default
+    # is for, and the failure mode is silent log destruction rather than an error.
+    #
+    # An empty list is the right signal here AND it is also the correct answer for "nothing to
+    # delete", which is deliberate: both cases mean DELETE NOTHING, and `prune` treats an empty
+    # plan as a no-op either way. The distinction that matters is not between those two -- it is
+    # between "no cap" and "a zero-byte cap", and conflating THOSE is the defect.
+    if cap_mb <= 0:
+        return []
+
+    cap_bytes = cap_mb * 1024 * 1024
     candidates = rotated_files(log_dir)
 
     # Newest first; everything is initially "keep".
@@ -258,7 +278,11 @@ def prune_loop(log_dir: Path, cap_mb: int, interval_s: int = 300,
     """
     while not (stop is not None and stop.is_set()):
         before = total_bytes(log_dir)
-        if before > cap_mb * 1024 * 1024:
+        # A ZERO OR NEGATIVE CAP MEANS "NO CAP" (see plan_prune), so this must not read as
+        # `before > 0` -- which is true for any non-empty directory and would call prune() every
+        # interval forever. prune() now returns early anyway, so the cost was a no-op, but a guard
+        # that says the wrong thing is how the NEXT reader concludes the cap is enforced at zero.
+        if cap_mb > 0 and before > cap_mb * 1024 * 1024:
             r = prune(log_dir, cap_mb, grace_s=grace_s, per_type=per_type)
             if r.errors:
                 logger.warning("prune completed with %d error(s)", len(r.errors))
