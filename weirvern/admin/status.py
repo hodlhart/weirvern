@@ -148,6 +148,36 @@ def _model_staleness(mrows, settings) -> list[str]:
     return names
 
 
+def _probe_failed(report, name: str, err: Exception, ms: float) -> None:
+    """Record that a probe COULD NOT RUN, instead of omitting its row.
+
+    ── AN ABSENT PROBE IS NOT A PASSING ONE (audit F047) ───────────────────────────────────────
+
+    Six probes in `collect_health` were wrapped in `if err is None:` with NO else branch, so a
+    sub-query that raised removed that probe's row from the report entirely. MEASURED by driving the
+    real `collect_health` with a stub that fails exactly one query:
+
+        tables raising      -> 5 probes, missing: ['ingest_freshness', 'alerts_24h', 'fingerprint_feed']
+        detect_loop raising -> 6 probes, missing: ['detect_loop']
+
+    A consumer reading the report -- the GUI pill, `overall ok`, or a human -- cannot tell "this check
+    passed" from "this check never ran", and the failure is attributed nowhere: every row that IS
+    present reads normally, so the view looks healthy minus a line nobody counts.
+
+    Same class as F081 (a probe absent because a table was empty) and F024 (row existence read as
+    freshness), and it is why `zeek_freshness` reports `ok=None` rather than omitting itself: THE ROW
+    IS THE EVIDENCE THAT THE CHECK RAN.
+
+    `ok=False`, not `None`: a probe that cannot run is not a pass, whereas the tri-state `None` means
+    "measured, and not applicable here". Collapsing those would make this indistinguishable from the
+    case it exists to distinguish.
+    """
+    report.add(Probe(
+        name, ok=False, latency_ms=ms,
+        detail=f"this check could not run: {type(err).__name__}: {err}",
+    ))
+
+
 def collect_health(client, settings) -> HealthReport:
     """Probe ClickHouse and the pipeline. Never raises."""
     report = HealthReport()
@@ -216,6 +246,8 @@ def collect_health(client, settings) -> HealthReport:
                 detail=f"newest flow {_human_age(age_s)} ago",
                 value=age_s, latency_ms=ms,
             ))
+    else:
+        _probe_failed(report, "ingest_freshness", err, ms)
 
     # 4. Zeek freshness (only meaningful if the sensor is enabled).
     #
@@ -302,6 +334,29 @@ def collect_health(client, settings) -> HealthReport:
                        + (f" ({n_records} total)" if n_records else ""),
                 value=z_age, latency_ms=ms,
             ))
+        else:
+            # ── THE LAST GAP IN THIS PROBE (audit F047) ─────────────────────────────────────────
+            #
+            # The branches above cover "no records" and "records with an age". This one covers
+            # "records EXIST but the age is NULL", which fell through and added NO row at all -- the
+            # same absence F081 fixed one branch up and the same absence F047 fixed across the file.
+            # MEASURED by driving collect_health with a stub whose zeek_conn reports count=7 and a
+            # NULL age: `zeek_freshness` was simply missing from the report.
+            #
+            # Records with no measurable age is a real state (`max(ts)` is NULL while rows exist is
+            # only possible with a nullable column, but the probe must not CRASH or vanish if the
+            # query shape changes to allow it). Reported as a failure of the CHECK rather than as a
+            # verdict about the sensor.
+            report.add(Probe(
+                "zeek_freshness", ok=False, latency_ms=ms,
+                detail=(
+                    f"zeek_conn holds {n_records} record(s) but the newest timestamp is NULL, so "
+                    f"freshness cannot be measured. This is a check failure, not a verdict about the "
+                    f"sensor: inspect the ts column for NULLs."
+                ),
+            ))
+    else:
+        _probe_failed(report, "zeek_freshness", err, ms)
 
     # 5. Model freshness — when did each detector last train?
     def models():
@@ -352,6 +407,8 @@ def collect_health(client, settings) -> HealthReport:
             ))
     elif err is None:
         report.add(Probe("models", ok=False, detail="no training runs recorded", value=[], latency_ms=ms))
+    else:
+        _probe_failed(report, "models", err, ms)
 
     # 6. THE DETECTION LOOP'S OWN HEARTBEAT.
     #
@@ -461,6 +518,8 @@ def collect_health(client, settings) -> HealthReport:
                 ),
                 value=best, latency_ms=ms,
             ))
+    else:
+        _probe_failed(report, "detect_loop", err, ms)
 
     # 7. Alert activity in the last 24h, split by outcome.
     def alerts():
@@ -471,11 +530,33 @@ def collect_health(client, settings) -> HealthReport:
 
     arows, ms, err = _timed(alerts)
     if err is None:
-        report.add(Probe(
-            "alerts_24h", ok=True,
-            detail="; ".join(f"{r[0]}: {r[1]}" for r in arows) or "none in 24h",
-            value=arows, latency_ms=ms,
-        ))
+        # ── A RETURNED ROW IS NOT A WELL-FORMED ROW (audit F047) ─────────────────────────────────
+        #
+        # This read `r[0]` and `r[1]` for every row, so a row with fewer than two elements raised
+        # IndexError straight out of `collect_health` -- taking out the ENTIRE health view, and
+        # pointing the traceback at this probe rather than at whatever produced the narrow row.
+        # MEASURED by driving the real function with a stub returning `[["log-only"]]`.
+        #
+        # Row shapes are not a contract the caller can enforce, so a malformed row is REPORTED as a
+        # malformed row instead of crashing the report or being silently skipped.
+        bad_rows = [r for r in (arows or []) if not hasattr(r, "__len__") or len(r) < 2]
+        if bad_rows:
+            report.add(Probe(
+                "alerts_24h", ok=False, latency_ms=ms,
+                detail=(
+                    f"the alert-activity query returned {len(bad_rows)} row(s) without the (reason, "
+                    f"count) pair, so it could not be summarised: first row {bad_rows[0]!r}. This is "
+                    f"a check failure, not a verdict about alerting."
+                ),
+            ))
+        else:
+            report.add(Probe(
+                "alerts_24h", ok=True,
+                detail="; ".join(f"{r[0]}: {r[1]}" for r in (arows or [])) or "none in 24h",
+                value=arows, latency_ms=ms,
+            ))
+    else:
+        _probe_failed(report, "alerts_24h", err, ms)
 
     # 8. The identity feed: is evidence still ARRIVING?
     #
@@ -510,7 +591,25 @@ def collect_health(client, settings) -> HealthReport:
 
     frows, ms, err = _timed(fingerprint_feed)
     if err is None:
-        if not frows or not frows[0][1]:
+        # ── A RETURNED ROW IS NOT A WELL-FORMED ROW, AND I GOT THIS WRONG FIRST ─────────────────
+        #
+        # The first version read `frows[0][1]` directly. A one-element row raised IndexError out of
+        # `collect_health`, taking out the ENTIRE health view -- and the traceback points at THIS
+        # probe, so a malformed result from anywhere would be reported as this check failing. It
+        # survived the live deployment only because ClickHouse always returns both columns; a stub
+        # with a narrower row exposed it immediately, which is the argument for testing a probe
+        # against SHAPES rather than only against a live server.
+        row = frows[0] if frows else None
+        if row is None or len(row) < 2:
+            report.add(Probe(
+                "fingerprint_feed", ok=False, latency_ms=ms,
+                detail=(
+                    "the host-fingerprint query returned no usable row, so the identity feed could "
+                    "not be measured. This is a probe failure, not an empty feed: check the query "
+                    "against the schema for weirvern.host_fingerprints."
+                ),
+            ))
+        elif not row[1]:
             # No observations in the whole retention window. Either no Zeek sensor is deployed (the
             # NetFlow-only case, where this is correct) or the feed has been dead for a week -- and
             # those are not the same fact, so this reports neither as a pass.
@@ -524,8 +623,8 @@ def collect_health(client, settings) -> HealthReport:
                 ),
             ))
         else:
-            age_s = float(frows[0][0] or 0)
-            count = int(frows[0][1])
+            age_s = float(row[0] or 0)
+            count = int(row[1])
             # ── THE THRESHOLD COMES FROM THE FEED'S OWN HEALTHY GAPS, MEASURED ─────────────────
             #
             # My first version used 24 hours, on the reasoning that a quiet segment legitimately
@@ -555,6 +654,8 @@ def collect_health(client, settings) -> HealthReport:
                 ),
                 value=age_s, latency_ms=ms,
             ))
+    else:
+        _probe_failed(report, "fingerprint_feed", err, ms)
 
     return report
 

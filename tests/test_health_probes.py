@@ -257,9 +257,11 @@ def test_the_probe_NAMES_its_evidence():
 
 
 def test_a_broken_query_does_not_produce_a_false_verdict():
-    """If the query itself fails the probe must stay silent, not guess. `_timed` returns the
-    error, and the `if err is None` guard is what prevents a database problem being reported as a
-    stopped detection loop.
+    """If the query itself fails the probe must not GUESS -- but it must not vanish either.
+
+    The original contract was silence: "the `if err is None` guard prevents a database problem being
+    reported as a stopped detection loop". That intent survives; the mechanism changed under F047,
+    because silence turned out to be indistinguishable from a pass.
 
     THE FAILURE IS SCOPED TO THIS PROBE'S OWN TABLES, and that detail is the whole test. An
     earlier version made EVERY query raise -- which aborts `collect_health` at the `clickhouse`
@@ -282,7 +284,34 @@ def test_a_broken_query_does_not_produce_a_false_verdict():
     assert "models" in names or "detect_loop" in names, (
         f"execution did not reach the later probes, so this test is vacuous: {names}"
     )
-    assert "detect_loop" not in names, "a failed query must not emit a detect_loop verdict"
+    # ── THIS ASSERTION WAS INVERTED BY AUDIT F047, DELIBERATELY ────────────────────────────────
+    #
+    # It used to read `assert "detect_loop" not in names` -- "a failed query must not emit a
+    # detect_loop verdict". The INTENT was right (a database problem must not be reported as a
+    # stopped detection loop) but the MECHANISM was wrong: omitting the row entirely means a
+    # consumer cannot tell "this check passed" from "this check never ran", and the cause is
+    # attributed nowhere because every remaining row reads normally.
+    #
+    # MEASURED by driving the real collect_health: a single failing query removed up to three
+    # probes from the report, and the health view looked healthy minus lines nobody counts.
+    #
+    # So the row IS emitted, and it says the check could not run -- which satisfies the original
+    # intent (the database problem is not reported as a stopped loop) without the silence.
+    assert "detect_loop" in names, (
+        f"a failed query removed the probe's row entirely, so the report cannot distinguish a "
+        f"passing check from one that never ran: {names}"
+    )
+    probe = next(p for p in report.probes if p.name == "detect_loop")
+    assert probe.ok is False, (
+        f"a check that could not run reported ok={probe.ok}. It must not claim either health or "
+        f"not-applicability: it did not measure anything"
+    )
+    assert "could not run" in str(probe.detail), (
+        f"the row must SAY it could not run rather than reading as a verdict: {probe.detail!r}"
+    )
+    assert "unreachable" in str(probe.detail), (
+        f"the underlying cause should be carried through, not swallowed: {probe.detail!r}"
+    )
 
 
 # ── an ABSENT probe is not a passing one (audit F081) ────────────────────────────────────────
@@ -492,3 +521,111 @@ def test_no_observations_at_all_is_TRI_STATE_not_a_failure():
     assert "NetFlow-only" in str(p.detail), (
         f"the detail must name the benign case as well as the fault: {p.detail!r}"
     )
+
+
+# ── A FAILED OR MALFORMED SUB-QUERY MUST NOT TAKE OUT THE REPORT (F047) ──────────────────────
+#
+# Six probes were wrapped in `if err is None:` with NO else branch, so a sub-query that raised
+# removed that probe's row entirely. MEASURED by driving the real `collect_health`:
+#
+#     tables raising      -> 5 probes, missing ['ingest_freshness', 'alerts_24h', 'fingerprint_feed']
+#     detect_loop raising -> 6 probes, missing ['detect_loop']
+#
+# A consumer cannot tell "this check passed" from "this check never ran", and the cause is attributed
+# nowhere because every remaining row reads normally. Two more shapes were found in the same probe:
+# a row that is well-formed enough to be returned but too short to unpack, which crashed
+# `collect_health` outright, and a probe that fell through EVERY branch and added no row.
+
+_ALL_PROBES = ("clickhouse", "tables", "ingest_freshness", "zeek_freshness", "models",
+               "detect_loop", "alerts_24h", "fingerprint_feed")
+
+
+def _report_with(monkeypatch_fragment=None, by_fragment=None):
+    """The full report from a stub, with an optional per-fragment override or injected failure."""
+    client = _StubClient(by_fragment or {})
+    if monkeypatch_fragment:
+        original = client.query
+
+        def exploding(sql, *a, **kw):
+            if monkeypatch_fragment in sql:
+                raise RuntimeError("simulated sub-query failure")
+            return original(sql, *a, **kw)
+
+        client.query = exploding
+    return status.collect_health(client, _settings())
+
+
+def test_a_single_failing_sub_query_does_not_REMOVE_a_probe_row():
+    """THE DEFECT. An absent row is indistinguishable from a passing one."""
+    report = _report_with(monkeypatch_fragment="FROM weirvern.baseline_history")
+    names = [p.name for p in report.probes]
+
+    assert "clickhouse" in names, "the report did not get past connectivity; the test is vacuous"
+    assert "detect_loop" in names, (
+        f"a failing query removed the detect_loop row entirely: {names}. A consumer cannot tell "
+        f"that from a passing check"
+    )
+    probe = next(p for p in report.probes if p.name == "detect_loop")
+    assert probe.ok is False, (
+        f"a check that could not run reported ok={probe.ok}. It measured nothing, so it must not "
+        f"claim health -- and it is not the tri-state 'not applicable' either"
+    )
+    assert "could not run" in str(probe.detail), f"the row must say so: {probe.detail!r}"
+
+
+def test_a_failing_sub_query_still_leaves_EVERY_probe_reported():
+    """The whole-report version: no probe may disappear, whichever one breaks."""
+    for fragment in ("count() FROM weirvern.flows", "FROM weirvern.baseline_history",
+                     "FROM weirvern.ml_models", "FROM weirvern.alert_events"):
+        report = _report_with(monkeypatch_fragment=fragment)
+        names = [p.name for p in report.probes]
+        missing = [n for n in _ALL_PROBES if n not in names]
+        assert not missing, (
+            f"breaking {fragment!r} removed {missing} from the report. Every probe must report "
+            f"something, or the absence is unreadable"
+        )
+
+
+def test_a_too_short_row_is_REPORTED_not_a_crash():
+    """A row that is returned but too narrow to unpack crashed `collect_health` outright.
+
+    MEASURED before the fix: `IndexError: list index out of range` from the `alerts_24h` probe's
+    `r[0]: r[1]` join, which takes out the ENTIRE health view and blames this probe for a shape
+    problem that originated in the query result.
+    """
+    report = _report_with(by_fragment={"FROM weirvern.alert_events": [["log-only"]]})
+    names = [p.name for p in report.probes]
+    assert "alerts_24h" in names, f"the short row removed the probe: {names}"
+    probe = next(p for p in report.probes if p.name == "alerts_24h")
+    assert probe.ok is False, f"a malformed row reported ok={probe.ok}"
+    assert "without the (reason, count) pair" in str(probe.detail), (
+        f"the row must say what was wrong with the shape: {probe.detail!r}"
+    )
+
+
+def test_records_with_a_NULL_age_still_report_the_probe():
+    """The branch that fell through entirely.
+
+    `zeek_conn` returning count>0 with a NULL age matched neither the empty case nor the
+    age-present case, so NO row was added. MEASURED before the fix: `zeek_freshness` simply missing.
+    """
+    report = _report_with(by_fragment={"FROM weirvern.zeek_conn": [[7, None]]})
+    names = [p.name for p in report.probes]
+    assert "zeek_freshness" in names, (
+        f"records with a NULL age removed the probe instead of reporting a check failure: {names}"
+    )
+    probe = next(p for p in report.probes if p.name == "zeek_freshness")
+    assert probe.ok is False, f"an unmeasurable freshness reported ok={probe.ok}"
+    assert "cannot be measured" in str(probe.detail), f"say why: {probe.detail!r}"
+
+
+def test_the_report_is_COMPLETE_when_everything_works():
+    """The other direction, so the fix cannot be "always emit a failure row"."""
+    report = _report_with()
+    names = [p.name for p in report.probes]
+    missing = [n for n in _ALL_PROBES if n not in names]
+    assert not missing, f"a healthy cluster is missing {missing}"
+    for p in report.probes:
+        assert "could not run" not in str(p.detail), (
+            f"{p.name} reported a check failure on a healthy cluster: {p.detail!r}"
+        )
