@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -1516,7 +1516,8 @@ def _offset_is_on_boundary(path: str, offset: int) -> bool:
 
 def tail_and_insert(client: Inserter, path: str, once: bool = False,
                     offset: int | None = None, known_inode: int | None = None,
-                    state: TailState | None = None) -> tuple[int, int, int]:
+                    state: TailState | None = None,
+                    allow: str = "") -> tuple[int, int, int]:
     """Tail `path` (JSONL) and batch-insert new records.
 
     Returns (inserted, final_offset, final_inode).
@@ -1530,6 +1531,22 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     Only COMPLETE (newline-terminated) lines are consumed: a partial trailing
     line is a write in progress, and consuming it loses the record permanently
     once the write finishes (verified).
+
+    ── `allow`: WHICH EXPORTERS MAY WRITE TO THE DETECTION DATA ────────────────────────────────
+    Empty (the default) accepts every record, which is the shipped behaviour and the right one for
+    a first deployment. When set, a record whose `sampler_address` is not in the list is SKIPPED.
+
+    WHY THIS IS FILTERED HERE rather than at the network layer. The collector runs with
+    hostNetwork so it can bind 2055/6343 on the node's interfaces, NetFlow carries no
+    authentication and no source verification, the NetworkPolicy deliberately exempts this
+    collector, and goflow2 has no accept-list. So a host on the segment can inject flow records
+    attributed to any address it likes, and those records feed the anomaly models and the charts.
+    Filtering at the one place every record passes through is the layer that can enforce it.
+
+    A SKIPPED RECORD IS COUNTED AND LOGGED, not silently dropped: "flows are arriving from an
+    unexpected device" is a finding an operator wants, and a filter that discards quietly would
+    hide the very signal it exists to surface. The offset still advances, so a rejected record is
+    not re-read on the next pass.
     """
     if not os.path.exists(path):
         logger.info("Waiting for %s to appear...", path)
@@ -1554,6 +1571,9 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
         logger.info("Re-reading %s from start (%s)", path, why)
         start_offset = 0
 
+    allowed = _exporter_networks(allow)
+    rejected = 0
+    rejected_from: dict[str, int] = {}
     inserted = 0
     batch: list[dict[str, Any]] = []
     consumed = start_offset
@@ -1570,16 +1590,31 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
             if not line:
                 continue
             try:
-                batch.append(map_flow(json.loads(line)))
+                row = map_flow(json.loads(line))
             except json.JSONDecodeError:
                 logger.warning("Skipping malformed JSON line (%.80s…)", line)
+                continue
             except Exception:  # noqa: BLE001
                 logger.warning("Skipping unparsable flow line")
+                continue
+            if allowed is not None and not _exporter_permitted(row.get("sampler_address"), allowed):
+                rejected += 1
+                src = str(row.get("sampler_address") or "(none)")
+                rejected_from[src] = rejected_from.get(src, 0) + 1
+                continue
+            batch.append(row)
             if len(batch) >= BATCH_SIZE:
                 inserted += insert_batch(client, batch)
                 batch = []
-        if batch:
-            inserted += insert_batch(client, batch)
+    if rejected:
+        # WARNING, not debug: an unexpected exporter is a security-relevant event, and the whole
+        # point of the filter is that an operator learns which devices are talking.
+        logger.warning(
+            "Rejected %d flow record(s) from exporters not in WEIRVERN_FLOW_EXPORTER_ALLOW: %s",
+            rejected, ", ".join(f"{k} ({v})" for k, v in sorted(rejected_from.items())),
+        )
+    if batch:
+        inserted += insert_batch(client, batch)  # type: ignore[arg-type]
     final_offset = consumed
     if state is not None:
         state.note_read(st, final_offset)
@@ -1587,19 +1622,82 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     return inserted, final_offset, st.st_ino
 
 
+def _exporter_networks(allow: str) -> list[Any] | None:
+    """Parse an exporter allow-list. None means "no filter", which is NOT the same as an empty list.
+
+    The distinction is the whole point: an empty list would reject everything, so a typo in one
+    config value would silently stop all flow ingest while the collector looked healthy. `None`
+    means the operator has not set a list, which is the shipped default and accepts everything.
+
+    Addresses and CIDRs are both accepted, because an operator writing this list knows their
+    exporter's address and should not have to decide whether to write /32.
+    """
+    if not allow.strip():
+        return None
+    nets = []
+    for token in allow.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            # `strict=False` so a host address written with a prefix (198.51.100.5/24) is accepted as
+            # the network it belongs to rather than refused -- the operator means "this exporter".
+            nets.append(ip_network(token, strict=False))
+        except ValueError:
+            logger.warning(
+                "Ignoring unparsable entry in WEIRVERN_FLOW_EXPORTER_ALLOW: %r", token
+            )
+    if not nets:
+        # Every entry was unparsable. Falling back to "accept everything" would be the wrong
+        # direction for a security control, so an unusable list is treated as a REFUSAL to filter
+        # and says so loudly rather than silently permitting.
+        logger.error(
+            "WEIRVERN_FLOW_EXPORTER_ALLOW is set but has no parsable entries (%r); flow records "
+            "are NOT being filtered. Fix the list or unset it.",
+            allow,
+        )
+        return None
+    return nets
+
+
+def _exporter_permitted(addr: object, allowed: list | None) -> bool:
+    """Whether a record's sampler_address is in the allow-list.
+
+    A record with NO sampler_address is permitted: goflow2 omits it for some protocol variants, and
+    rejecting those would drop legitimate flows to enforce a control against an address the record
+    does not carry. The absence is not suspicious; a *different* address is.
+    """
+    if allowed is None:
+        return True
+    if not addr:
+        return True
+    try:
+        parsed = ip_address(str(addr))
+    except ValueError:
+        # An unparsable source address is not something this filter can reason about. Accept it and
+        # let the normal mapping deal with it -- silently dropping records because of a parse
+        # failure in a filter would look like a network problem.
+        return True
+    return any(parsed in net for net in allowed if parsed.version == net.version)
+
+
 def tail_forever(client: Inserter, path: str, interval_s: float = 5.0,
-                 zeek_dir: str = "") -> None:
+                 zeek_dir: str = "", exporter_allow: str = "") -> None:
     """Block forever: tail NetFlow JSONL and (optionally) Zeek logs.
 
     Duplicate-insert failure mode of the first v20 pass: re-reading the whole
     file from offset 0 every pass inserted every row ~12x per minute into
     `flows`, corrupting aggregates and baselines.
+
+    `exporter_allow` is passed through to every pass so the filter cannot be applied on one pass
+    and forgotten on the next -- a filter that flickers is worse than none, because the data it let
+    through is indistinguishable from the data it should have rejected.
     """
     state = TailState()
     zeek_state: dict[str, ZeekTailState] = {}
     while True:
         try:
-            _, offset, inode = tail_and_insert(client, path, state=state)
+            _, offset, inode = tail_and_insert(client, path, state=state, allow=exporter_allow)
             if zeek_dir:
                 _, zeek_state = tail_zeek_dir(client, zeek_dir, zeek_state)
         except Exception as exc:  # noqa: BLE001

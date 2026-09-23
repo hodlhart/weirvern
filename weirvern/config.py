@@ -177,6 +177,27 @@ class Settings:
         default_factory=lambda: os.environ.get("INTERCEPT_TARGETS", "")
     )
 
+    # ── WHICH FLOW EXPORTERS TO BELIEVE ───────────────────────────────────────────────────────
+    #
+    # Comma-separated addresses or CIDRs. EMPTY MEANS ACCEPT ANYTHING, which is the default
+    # because a collector that silently drops a legitimate exporter on first boot is worse than
+    # one that takes whatever arrives — an operator adding an allow-list before seeing what
+    # actually sends flows would have no way to write it.
+    #
+    # WHY THIS EXISTS. The collector runs with hostNetwork so it can bind 2055/6343 on the node's
+    # own interfaces (an exporter was observed sending to the container port rather than the
+    # NodePort, and the packets vanished with nothing logged). That also means ANY device that can
+    # reach the node can send flows: NetFlow is unauthenticated UDP with no source verification in
+    # the protocol, the NetworkPolicy deliberately exempts this collector, and goflow2 has no
+    # accept-list. So a host on the segment can inject flows attributed to any address it chooses,
+    # and those flows feed the anomaly models and the charts a threat-hunt team reads.
+    #
+    # SET THIS ONCE YOU KNOW YOUR EXPORTERS: `SET` reports the addresses it has seen. Turning it on
+    # converts "any device may write to my detection data" into "these devices may".
+    flow_exporter_allow: str = field(
+        default_factory=lambda: os.environ.get("WEIRVERN_FLOW_EXPORTER_ALLOW", "")
+    )
+
     # Alerting
     # ── Sluice Gate: operator-controlled blocking ──────────────────────────────────────────
     #

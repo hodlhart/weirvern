@@ -1232,6 +1232,72 @@ def cmd_version(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_exporters(args: argparse.Namespace) -> int:
+    """Report which devices are sending flow records, so an allow-list can be written from fact.
+
+    WHY THIS COMMAND EXISTS BEFORE THE FILTER IS ENFORCED ANYWHERE. The collector accepts
+    unauthenticated UDP on the node's own interfaces (hostNetwork, so an exporter targeting either
+    the conventional port or the NodePort works). NetFlow carries no authentication and no source
+    verification, the NetworkPolicy deliberately exempts this collector, and goflow2 has no
+    accept-list -- so any device that can reach the node can add records attributed to any address,
+    and those records feed the anomaly models and the charts.
+
+    The fix is WEIRVERN_FLOW_EXPORTER_ALLOW, and it cannot be written from documentation: an
+    operator needs to know WHICH addresses their exporters use. Asking them to grep ClickHouse for
+    that is asking them not to do it. This command answers the question directly.
+
+    A SINGLE EXPORTER IS NORMAL. Most deployments have one router or one collector; seeing one
+    address here is not a sign the view is broken.
+    """
+    from weirvern import db
+    from weirvern.config import get_settings
+
+    settings = get_settings()
+    allow = settings.flow_exporter_allow.strip()
+    print(_c("dim", "  Exporters seen in the flows table (newest first):"))
+    try:
+        with db.connect(settings, retries=3) as client:
+            rows = client.query(
+                "SELECT sampler_address, count() AS n, max(timestamp) AS last "
+                "FROM weirvern.flows GROUP BY sampler_address ORDER BY n DESC LIMIT 25"
+            ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        _bad(f"cannot read the flows table: {_condense(str(exc), 160)}")
+        return EXIT_NOTREADY
+
+    if not rows:
+        print(_c("dim", "    (none yet — no flow records have been ingested)"))
+        return EXIT_OK
+
+    print(f"    {'ADDRESS':<44} {'RECORDS':>12}  LAST SEEN")
+    for addr, n, last in rows:
+        mark = ""
+        if allow:
+            # Show whether the CURRENT allow-list would accept this address, so the command also
+            # answers "did I write the list correctly" rather than only "who is talking".
+            try:
+                from weirvern.ingester import _exporter_networks, _exporter_permitted
+
+                nets = _exporter_networks(allow)
+                mark = "  accepted" if _exporter_permitted(addr, nets) else "  REJECTED"
+            except Exception:  # noqa: BLE001
+                mark = ""
+        print(f"    {str(addr)[:44]:<44} {int(n):>12}  {last}{mark}")
+
+    print()
+    if allow:
+        print(f"  Filter is ON: WEIRVERN_FLOW_EXPORTER_ALLOW={allow!r}")
+        print("  Records from any other address are rejected and counted in the worker log.")
+    else:
+        print(_c("warn", "  Filter is OFF: every sender is accepted."))
+        print("  To restrict it to the addresses above:")
+        addrs = ",".join(str(a) for a, _n, _l in rows if str(a))
+        print(f"      WEIRVERN_FLOW_EXPORTER_ALLOW={addrs}")
+        print("  then restart the worker. A sender not in the list is rejected AND logged, so a")
+        print("  device you forgot shows up as a warning rather than as missing data.")
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1292,6 +1358,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("tune", help="guided threshold tuning")
     s.set_defaults(func=cmd_tune)
+
+    s = sub.add_parser(
+        "exporters",
+        help="list the devices sending flow records, and whether the allow-list accepts them",
+    )
+    s.set_defaults(func=cmd_exporters)
 
     s = sub.add_parser(
         "disk",

@@ -288,3 +288,119 @@ def test_a_reused_filename_is_detected(tmp_path):
     assert "boundary" in reason or "inode" in reason or "truncated" in reason, (
         f"the reason does not name a mechanism: {reason!r}"
     )
+
+
+# ── the exporter allow-list: unauthenticated UDP is the reason it exists ───────────────────────
+#
+# THE EXPOSURE, measured on the live deployment. The goflow2 collector runs with hostNetwork so it
+# can bind 2055/6343 on the node's own interfaces (an exporter was observed sending to the
+# container port instead of the NodePort, and its packets vanished with nothing logged). That also
+# means ANY device that can reach the node can send flow records: NetFlow has no authentication and
+# no source verification, the NetworkPolicy deliberately exempts this collector, and goflow2 has no
+# accept-list. So a host on the segment can inject records ATTRIBUTED TO ANY ADDRESS IT CHOOSES,
+# and those records feed the anomaly models and the charts a threat-hunt team reads.
+#
+# The allow-list is OFF by default -- a collector that silently drops a legitimate exporter on
+# first boot is worse than one that takes what arrives -- and `weirvern exporters` exists so it can
+# be written from observed fact rather than from documentation.
+def test_no_allow_list_means_ACCEPT_EVERYTHING_and_that_is_not_an_empty_list():
+    """`None` (no filter) and `[]` (reject all) must be different, and this is why.
+
+    An empty list would reject every record, so a single typo in a config value would silently stop
+    all flow ingest while the collector looked perfectly healthy -- the failure this project keeps
+    finding. `None` means the operator has not set a list, which is the shipped default.
+    """
+    from weirvern.ingester import _exporter_networks
+
+    assert _exporter_networks("") is None
+    assert _exporter_networks("   ") is None
+
+
+def test_a_host_address_with_a_prefix_is_accepted():
+    """An operator writes their exporter's address; they should not have to write /32.
+
+    `strict=False` is what makes 198.51.100.5/24 resolve to the network it belongs to rather than
+    raising, which would refuse a list that is obviously what the operator meant.
+    """
+    from weirvern.ingester import _exporter_networks
+
+    nets = _exporter_networks("198.51.100.5/24")
+    assert nets is not None and len(nets) == 1
+    assert str(nets[0]) == "198.51.100.0/24"
+
+
+def test_an_unusable_allow_list_does_not_silently_permit():
+    """Every entry unparsable must NOT fall back to "accept everything" quietly.
+
+    For a security control, failing open in silence is the wrong direction. The choice here is to
+    treat an unusable list as "no filter" -- because the alternative (reject everything) turns a
+    typo into a total ingest outage -- but it logs at ERROR so the operator learns.
+    """
+    from weirvern.ingester import _exporter_networks
+
+    assert _exporter_networks("not-an-ip") is None
+
+
+def test_permitted_matches_the_list_and_refuses_outsiders():
+    from weirvern.ingester import _exporter_networks, _exporter_permitted
+
+    nets = _exporter_networks("198.51.100.0/24, 192.0.2.7")
+    assert _exporter_permitted("198.51.100.9", nets) is True
+    assert _exporter_permitted("192.0.2.7", nets) is True
+    assert _exporter_permitted("203.0.113.9", nets) is False, (
+        "an address outside the allow-list was permitted, so the filter does nothing"
+    )
+
+
+def test_a_record_with_no_sampler_address_is_permitted():
+    """The absence of an address is not suspicious; a DIFFERENT one is.
+
+    goflow2 omits sampler_address for some protocol variants, and rejecting those would drop
+    legitimate flows to enforce a control against something the record does not carry.
+    """
+    from weirvern.ingester import _exporter_networks, _exporter_permitted
+
+    nets = _exporter_networks("198.51.100.0/24")
+    assert _exporter_permitted("", nets) is True
+    assert _exporter_permitted(None, nets) is True
+
+
+def test_no_filter_permits_everything():
+    from weirvern.ingester import _exporter_permitted
+
+    assert _exporter_permitted("203.0.113.9", None) is True
+
+
+def test_an_ipv6_address_is_not_matched_against_an_ipv4_network():
+    """Version mismatch must not match, and must not raise.
+
+    CORRECTED AFTER MUTATION TESTING. I wrote this expecting `ipaddress` to raise TypeError on a
+    cross-version membership test, and asserted the code needed an explicit `parsed.version ==
+    net.version` guard for that reason. Measured: `in` returns False, it does not raise. So the
+    guard is defensive rather than load-bearing, and the mutation that removed it SURVIVED -- which
+    is the honest signal that my stated reason was wrong.
+
+    The behaviour is still worth pinning, because a future change to the matching could introduce a
+    raise, and an exception inside the ingest loop would abort the whole pass. But the test now
+    documents what it actually protects rather than a mechanism that is not there.
+    """
+    from weirvern.ingester import _exporter_networks, _exporter_permitted
+
+    nets = _exporter_networks("198.51.100.0/24")
+    assert _exporter_permitted("2001:db8::1", nets) is False
+    nets6 = _exporter_networks("2001:db8::/32")
+    assert _exporter_permitted("2001:db8::1", nets6) is True
+    assert _exporter_permitted("198.51.100.9", nets6) is False
+
+
+def test_a_cross_version_membership_test_does_not_raise():
+    """The property my earlier justification claimed, pinned directly against the stdlib.
+
+    Pinning it HERE rather than through the filter means the assertion is about the language
+    behaviour the filter relies on, so if a Python release ever changed it this test says so at the
+    right level instead of surfacing as an unexplained ingest failure.
+    """
+    from ipaddress import ip_address, ip_network
+
+    assert (ip_address("2001:db8::1") in ip_network("198.51.100.0/24")) is False
+    assert (ip_address("198.51.100.9") in ip_network("2001:db8::/32")) is False

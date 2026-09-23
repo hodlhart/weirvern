@@ -175,8 +175,8 @@
       "severity": "HIGH",
       "area": "NetFlow path",
       "title": "NetFlow/sFlow intake is unauthenticated UDP on `hostNetwork` with no source restriction anywhere in the bundle",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "Verified in the manifests: the goflow2 collector runs with hostNetwork (to bind 2055/6343 on the node's own interfaces, because an exporter was observed targeting the container port rather than the NodePort and its packets vanished silently), NetFlow carries no authentication or source verification, k8s/70-networkpolicy.yaml deliberately exempts this collector, and goflow2 has no accept-list. So any device that can reach the node can inject flow records attributed to ANY address, feeding the anomaly models and the charts. FIXED with WEIRVERN_FLOW_EXPORTER_ALLOW (off by default, so no exporter is silently dropped on first boot), enforced at the single point every record passes through, plus 'weirvern exporters' so the list can be written from observed fact. Rejected records are counted and logged at WARNING. 11 tests, mutation-tested 4 ways.",
       "report": "k13_netflow_listener",
       "id": "F020"
     },

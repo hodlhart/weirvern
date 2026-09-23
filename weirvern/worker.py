@@ -744,10 +744,24 @@ def main() -> None:
     ingest_thread = threading.Thread(
         target=tail_forever,
         args=(ingest_client, settings.tail_file, 5.0, settings.zeek_log_dir),
+        kwargs={"exporter_allow": settings.flow_exporter_allow},
         daemon=True,
         name="ingest-thread",
     )
     ingest_thread.start()
+    if settings.flow_exporter_allow.strip():
+        logger.info(
+            "Flow ingest will accept ONLY exporters in %s; every other sampler_address is "
+            "rejected and counted. (Unset WEIRVERN_FLOW_EXPORTER_ALLOW to accept any sender.)",
+            settings.flow_exporter_allow,
+        )
+    else:
+        logger.info(
+            "Flow ingest accepts ANY exporter. NetFlow is unauthenticated UDP on hostNetwork, "
+            "so any device that can reach this node can add records to the detection data. Set "
+            "WEIRVERN_FLOW_EXPORTER_ALLOW once you know your exporters (`weirvern exporters` "
+            "lists the addresses seen)."
+        )
     if settings.zeek_log_dir:
         logger.info("Ingest thread started: flows=%s zeek=%s",
                     settings.tail_file, settings.zeek_log_dir)
