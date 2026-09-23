@@ -213,6 +213,86 @@ def read_sysctl(name: str) -> int | None:
         return None
 
 
+# ── the host firewall's FORWARD policy: the failure that takes a segment down ─────────────────
+#
+# FOUND ON A REAL NODE, and it is not exotic: k3s -- the runtime this project DEPLOYS -- sets
+#
+#     iptables -P FORWARD DROP
+#
+# on the host, and its own rules only ACCEPT forwarded traffic involving pod and service subnets.
+# A siphon intercept relays traffic between two hosts on a LAN segment, which is neither. So the
+# kernel forwards the packet into the FORWARD hook, the hook's policy drops it, and the segment
+# loses its gateway exactly as if ip_forward were 0 -- while every check this module already
+# performed reads healthy.
+#
+# That is the most dangerous shape a bug can take here: the operator sees a clean dry-run, arms the
+# intercept, and breaks a network. And the tool's OWN sysctl checks make it worse, because they
+# return "forwarding is enabled" -- true, and irrelevant.
+#
+# WHY THIS IS A CHECK AND NOT AN AUTO-FIX. Changing the host's firewall is a bigger act than
+# changing a sysctl: the policy may be load-bearing for that host's own security, and silently
+# widening it so a sensor can relay would be the tool deciding it knows better. So this REPORTS
+# with the exact command, and the operator decides. `--force-unsafe` does not override it.
+
+def forward_policy() -> tuple[str, str]:
+    """The host's FORWARD chain policy, and where it was read from.
+
+    Returns (policy, source): policy is 'ACCEPT'/'DROP'/'UNKNOWN'. Read from `iptables -S` rather
+    than by running iptables-save, because the policy line is the only thing needed and the full
+    ruleset can be very large on a Kubernetes node.
+
+    'UNKNOWN' is returned rather than assuming ACCEPT: an unreadable policy is not a permissive
+    one, and treating "could not read" as "fine" is how a blackhole looks healthy.
+    """
+    for cmd in (["iptables", "-S", "FORWARD"], ["ip6tables", "-S", "FORWARD"]):
+        try:
+            proc = subprocess.run(  # noqa: S603
+                cmd, capture_output=True, text=True, timeout=10, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        for line in proc.stdout.splitlines():
+            if line.startswith("-P FORWARD"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[2].upper(), " ".join(cmd[:2])
+    return "UNKNOWN", "iptables"
+
+
+def forward_policy_problem(iface: str) -> str:
+    """A sentence if the host firewall would DROP relayed traffic, else empty.
+
+    Only consulted for a siphon intercept, and only about the FORWARD chain: a loch sensor never
+    forwards anything, so a DROP policy is irrelevant to it and warning there would be noise.
+    """
+    policy, source = forward_policy()
+    if policy == "ACCEPT":
+        return ""
+    if policy == "UNKNOWN":
+        return (
+            f"could not read the host's FORWARD policy ({source}); if it is DROP, relayed traffic "
+            "will be discarded and the segment will lose its gateway. Check with: "
+            "iptables -S FORWARD | head -1\n"
+            "      If it reports DROP (k3s does this by default on a node), allow the relay:\n"
+            "        sudo iptables -I FORWARD 1 -i <capture-iface> -j ACCEPT\n"
+            "        sudo iptables -I FORWARD 1 -o <capture-iface> -j ACCEPT"
+        )
+    return (
+        f"the host firewall DROPS forwarded traffic (iptables -P FORWARD {policy}), which is how "
+        f"k3s configures a node by default. An intercept on {iface} relays traffic between two "
+        "hosts on the segment, which that policy discards: the ARP mapping would be forged, the "
+        "packets would be dropped, and the segment would lose its gateway while every other check "
+        "here reads healthy.\n"
+        "      Fix, ON THE NODE, once you have decided this is safe for this host:\n"
+        "        sudo iptables -I FORWARD 1 -i <capture-iface> -j ACCEPT\n"
+        "        sudo iptables -I FORWARD 1 -o <capture-iface> -j ACCEPT\n"
+        "      (inserted at the top, and interface-scoped, so it does not widen the host's posture "
+        "for traffic that is not being relayed)"
+    )
+
+
 def check_forwarding(iface: str) -> ForwardingState:
     """Verify the two kernel settings siphon mode cannot work without.
 
@@ -379,6 +459,17 @@ def forwarding_path_problems(iface: str, gateway: str,
                 f"a packet from {sample_src} arriving on {iface} would leave via a "
                 f"different interface ({first.strip()})."
             )
+
+    # THE HOST FIREWALL, LAST BECAUSE IT IS THE ONE MOST LIKELY TO BE TRUE.
+    # Every check above can pass while this one fails, and when it fails the segment loses its
+    # gateway -- k3s sets `-P FORWARD DROP` on a node by default and its rules only accept traffic
+    # involving pod subnets, which a relayed LAN packet is not. Included here rather than in a new
+    # function so every existing caller (--dry-run, the CLI, the GUI's capability panel, the
+    # supervisor) inherits it without a new call site to forget.
+    policy_problem = forward_policy_problem(iface)
+    if policy_problem:
+        problems.append(policy_problem)
+
     return problems
 
 

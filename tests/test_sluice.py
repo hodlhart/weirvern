@@ -397,3 +397,67 @@ def test_an_unparseable_set_member_is_dropped_not_enforced_as_something_else():
     assert "not-an-ip" not in text
     # And the ruleset is still valid rather than silently missing a declaration.
     assert "table inet" in text
+
+
+# ── the host firewall: the failure that takes a segment down ─────────────────────────────────
+
+
+def test_a_forwarding_host_without_accept_rules_is_reported_as_a_problem():
+    """k3s sets `iptables -P FORWARD DROP`, which silently breaks every siphon relay.
+
+    MEASURED on a real k3s node, and the measurement is the whole argument for this check:
+
+        -P FORWARD DROP              iperf3 through the relay: Connection timed out
+        + 2 interface-scoped ACCEPTs iperf3 through the relay: 59.9 Gbits/sec
+
+    The relay is not slow, not lossy, and not degraded -- it does not work at all, while every
+    other check in `forwarding_path_problems` reads healthy. A tool that arms an intercept in that
+    state forges ARP on a live segment and then discards the traffic, which is a segment-wide
+    outage caused by the monitoring tool. Reporting it before the intercept starts is the
+    difference between a dry-run and a trap.
+    """
+    from weirvern.admin.siphonnet import forward_policy_problem
+
+    problem = forward_policy_problem("ens19")
+    # The check must either find no problem (a permissive host) or describe this one precisely.
+    if problem:
+        assert "DROP" in problem or "could not read" in problem
+        # A problem an operator cannot act on is noise, so the fix must be in the message.
+        assert "iptables -I FORWARD" in problem, (
+            f"the problem does not say how to fix it: {problem[:200]}"
+        )
+        # And it must be scoped to the interface, not a blanket ACCEPT: widening a host's whole
+        # FORWARD posture to make a relay work would be the tool overreaching.
+        assert "<capture-iface>" in problem, "the suggested rule is not interface-scoped"
+
+
+def test_an_unreadable_policy_is_not_assumed_permissive():
+    """'Cannot read' must never be treated as 'fine'.
+
+    This project's recurring failure mode is a value that could not be measured being rendered the
+    same as one measured to be safe. `forward_policy` returns UNKNOWN rather than ACCEPT when
+    iptables cannot be read, and the problem text says so instead of staying silent -- because
+    silence here reads as 'the host is configured for relaying', which is exactly the guess that
+    would arm an intercept into a blackhole.
+    """
+    from weirvern.admin.siphonnet import forward_policy
+
+    policy, source = forward_policy()
+    assert policy in ("ACCEPT", "DROP", "UNKNOWN"), f"unexpected policy value {policy!r}"
+    assert source, "the policy must say where it was read from"
+
+
+def test_the_forward_policy_check_says_nothing_when_the_host_permits_relaying():
+    """A permissive host must produce NO problem, or the check becomes noise and gets ignored.
+
+    This is the inverse of the test above and it matters as much: a warning that fires on every
+    healthy deployment trains operators to skip the warnings that are real.
+    """
+    from weirvern.admin import siphonnet
+
+    original = siphonnet.forward_policy
+    try:
+        siphonnet.forward_policy = lambda: ("ACCEPT", "iptables -S")
+        assert siphonnet.forward_policy_problem("ens19") == ""
+    finally:
+        siphonnet.forward_policy = original

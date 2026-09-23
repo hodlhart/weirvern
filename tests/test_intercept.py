@@ -837,6 +837,9 @@ def test_the_policy_rule_is_detected_when_present(monkeypatch):
            "32766:\tfrom all lookup main"))
     monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
+    # The forward-policy check is part of this list; pin it so the result does not depend on the
+    # host's own iptables state.
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
     assert siphonnet.forwarding_path_problems("eth1", "198.51.100.1") == [], (
         "a correctly installed policy rule was reported as a problem, so the intercept "
         "would refuse to run against a healthy configuration"
@@ -875,6 +878,11 @@ def test_a_source_less_route_lookup_is_not_treated_as_a_problem(monkeypatch):
     monkeypatch.setattr(siphonnet, "_run", lambda *a: (0, "1000:\tfrom all iif eth1 lookup 100"))
     monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
+    # STATE THE FIREWALL ASSUMPTION. This test asserts an exact empty list, and the forward-policy
+    # check is part of that list now -- so without this the result would depend on whether the
+    # machine running the tests happens to have iptables readable and permissive. Pinned rather
+    # than left to the environment.
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
     # No sample_src: the case that used to fail.
     assert siphonnet.forwarding_path_problems("eth1", "198.51.100.1") == []
 
@@ -891,6 +899,9 @@ def test_a_wrong_route_from_a_real_source_is_still_reported(monkeypatch):
     monkeypatch.setattr(siphonnet, "_run", fake_run)
     monkeypatch.setattr(siphonnet, "forwarding_table_text",
                         lambda: "default via 198.51.100.1 dev eth1")
+    # The forward-policy check is part of this list; pin it so the result does not depend on the
+    # host's own iptables state.
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
     problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1",
                                                 sample_src="198.51.100.193")
     assert any("dev eth0" in p or "different interface" in p for p in problems), (
@@ -1050,6 +1061,9 @@ def test_a_routing_error_is_not_reported_as_a_misroute(monkeypatch):
         return 2, "RTNETLINK answers: Invalid argument"
 
     monkeypatch.setattr(siphonnet, "_run", fake_run)
+    # The forward-policy check is part of this list; pin it so the result does not depend
+    # on the host's own iptables state.
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
     problems = siphonnet.forwarding_path_problems("eth1", "198.51.100.1",
                                                 sample_src="198.51.100.193")
     assert problems == [], (
