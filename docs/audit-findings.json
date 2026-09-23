@@ -310,8 +310,8 @@
       "severity": "HIGH",
       "area": "Sonar",
       "title": "A refused survey is *returned* as `{'ok': False}` after a docstring that promises every failure raises `SonarError`",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "REFUTED, verified by running the function the docstring describes. `sonar.survey()`'s docstring says 'Raises SonarError with a named remedy for every structural refusal', and it does: an unreadable MAC raised SonarError('cannot read a MAC for ...; the survey needs the interface'), and an unobservable interface with no address raised SonarError('no observation'). The {'ok': False} shape the finding describes lives in the HTTP HANDLER (web.py's sonar route, 'except sonar_mod.SonarError as exc: return self._json({\"ok\": False, \"error\": str(exc)}, 502)'), which is a DIFFERENT LAYER converting the raise into a response -- correct layering, not a contradiction. Grep confirms sonar.py contains zero occurrences of ok:False (2 ok:True) and 11 SonarError raises. The result that DOES return ok:True without sweeping, `_passive_only_result`, is deliberate and documented: the observation is a genuine answer to 'what network is this', while 'who is alive' is explicitly left unanswered via `swept: None` rather than a fabricated zero.",
       "report": "kr3",
       "id": "F035"
     },
@@ -319,8 +319,8 @@
       "severity": "HIGH",
       "area": "Sonar",
       "title": "`observe()`'s three measurement fields have no column to land in \u2014 computed, None-guarded, then discarded",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "REFUTED, verified against the schema AND the live cluster. The finding claims observe()'s three measurement fields 'have no column to land in'. They do. Migration 007_sensor_capture.sql adds all three explicitly: capture_loss_pct Nullable(Float32), packets_recv Nullable(UInt64), packets_dropped Nullable(UInt64). The write path carries them end to end: sensorwatch.observe() produces them; worker.py's heartbeat passes the whole dict to status.heartbeat(**fields); that function declares all three as keyword parameters, inserts them, and lists them in column_names; status.py reads them back for the UI and the Weirlings view. CONFIRMED LIVE: `DESCRIBE weirvern.sensor_status` returns all three columns, and a live heartbeat within the last 10 minutes holds actual values (capture_loss_pct=0, packets_recv=0, packets_dropped=0). The finding appears to be stale, written against a schema state that the 007 migration had already superseded.",
       "report": "kr3",
       "id": "F036"
     },
