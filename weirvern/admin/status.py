@@ -254,7 +254,116 @@ def collect_health(client, settings) -> HealthReport:
     elif err is None:
         report.add(Probe("models", ok=False, detail="no training runs recorded", value=[], latency_ms=ms))
 
-    # 6. Alert activity in the last 24h, split by outcome.
+    # 6. THE DETECTION LOOP'S OWN HEARTBEAT.
+    #
+    # ── WHY THIS PROBE EXISTS (audit F015 + F022, which are two views of one gap) ──────────────
+    #
+    # NOTHING PROBED THE DETECTION LOOP. Measured on the live cluster, while the sweep was
+    # analysing ZERO rows: every probe above and below reported ok -- clickhouse, tables,
+    # ingest_freshness, zeek_freshness, models, alerts. The container was healthy, data was
+    # flowing, models were loaded, and detection was doing nothing.
+    #
+    # The worker's liveness probe cannot catch this either: it imports `weirvern.config` and
+    # proves only that the interpreter and the package on disk work, and the loop swallows every
+    # exception and sleeps 30s, so a permanently-failing detection path keeps restarting nothing.
+    #
+    # THE EVIDENCE IS ALREADY WRITTEN. `AdaptiveBaselineDetector.persist_history` inserts into
+    # `baseline_history` with `computed_at = now()` on the path that runs every cycle, and
+    # `detection_sweep`'s own writes follow it. So a fresh `computed_at` IS the loop having run --
+    # measured: distinct timestamps 300s and 301s apart, matching DETECT_INTERVAL_S exactly.
+    #
+    # THE THRESHOLD IS DERIVED FROM THE CADENCE, not a literal. A hardcoded 900s would call a
+    # deployment with DETECT_INTERVAL_S=1800 dead, and a hardcoded 60s would call a 300s cadence
+    # dead on every cycle -- both are the "probe that lies" failure. Three intervals is a margin
+    # that tolerates one slow cycle and a ClickHouse hiccup without hiding a stopped loop.
+    #
+    # AN EMPTY TABLE IS NOT A STALE LOOP, and the two must not be collapsed: no rows at all means
+    # detection has never run (or the schema is missing), which is a different fact from rows that
+    # stopped arriving. Both are failures here, but the detail says which.
+    # ── TWO INDEPENDENT SIGNALS, NOT ONE ───────────────────────────────────────────────────────
+    #
+    # `baseline_history.computed_at` is written by the baseline detector's train(), and
+    # `near_misses.replaced_at` is written by the sweep when a host-window scores. They are
+    # different code paths that both run inside a cycle, so a single signal going quiet for a
+    # benign reason (nothing scored this window; the baseline had too few samples) must not be
+    # read as a stopped loop. THE LOOP RAN IF EITHER IS FRESH -- and `detect_loop` reports both
+    # ages so an operator can see which one carried the evidence rather than trusting a verdict
+    # with no visible basis.
+    def detect_loop():
+        # ── THE AGE IS COMPUTED IN SQL, DELIBERATELY ──────────────────────────────────────────
+        #
+        # Computing it in Python mixes two clocks and two timezones (`datetime.now()` is naive
+        # local; ClickHouse returns aware values) -- the trap `_aware()` exists for, and a helper
+        # defined far below this probe. Letting the database subtract its own timestamps from its
+        # own `now()` avoids the whole class of problem and needs no conversion at all.
+        #
+        # MEASURED, because the first version of this got it wrong: `dateDiff` against an EMPTY
+        # subquery does NOT return 0 or NULL -- it returns the difference from ClickHouse's
+        # default datetime, 1790165466 seconds, about 56 years. A guard for `age == 0` was dead
+        # code, and a fresh deployment would have been reported as "last cycle 56 years ago"
+        # rather than "has never run". So the COUNT decides, and the age is read only when there
+        # is something to measure. Verified against the live server:
+        #
+        #     dateDiff('second', (SELECT max(computed_at) FROM ... WHERE 0), now())  ->  1790165466
+        #     dateDiff('second', (SELECT null), now())                              ->  \N
+        def one(sql: str) -> float | None:
+            rows = client.query(sql).result_rows
+            if not rows or not rows[0] or rows[0][0] is None:
+                return None
+            n = int(rows[0][0])
+            if n == 0:
+                return None
+            age = rows[0][1]
+            return None if age is None else float(age)
+
+        base_age = one(
+            "SELECT count(), dateDiff('second', max(computed_at), now()) "
+            "FROM weirvern.baseline_history"
+        )
+        near_age = one(
+            "SELECT count(), dateDiff('second', max(replaced_at), now()) "
+            "FROM weirvern.near_misses"
+        )
+        return base_age, near_age
+
+    d_ages, ms, err = _timed(detect_loop)
+    if err is None:
+        cadence = int(getattr(settings, "detect_interval_s", 300) or 300)
+        limit_s = max(cadence * 3, 60)
+        base_age, near_age = d_ages if d_ages else (None, None)
+        fresh = [a for a in (base_age, near_age) if a is not None]
+        parts = []
+        if base_age is not None:
+            parts.append(f"baseline {_human_age(base_age)}")
+        if near_age is not None:
+            parts.append(f"scores {_human_age(near_age)}")
+        evidence = ", ".join(parts) if parts else "no signal at all"
+        if not fresh:
+            report.add(Probe(
+                "detect_loop", ok=False, latency_ms=ms,
+                detail=(
+                    "the detection loop has NEVER run: no baseline row exists and no host-window "
+                    "has been scored, so nothing is being analysed. On a fresh deployment this "
+                    "clears once flows arrive; if flows are arriving and this stays, the loop is "
+                    "failing before its first write -- check the worker log for "
+                    "'Worker loop error'"
+                ),
+            ))
+        else:
+            best = min(fresh)
+            report.add(Probe(
+                "detect_loop", ok=best <= limit_s,
+                detail=(
+                    f"last cycle {_human_age(best)} ago ({evidence})"
+                    + ("" if best <= limit_s else
+                       f" -- PAST {_human_age(float(limit_s))}, which is 3x the {cadence}s "
+                       f"cadence, so the loop has stopped. Data may still be arriving and every "
+                       f"other probe can still read green, because nothing else measures detection")
+                ),
+                value=best, latency_ms=ms,
+            ))
+
+    # 7. Alert activity in the last 24h, split by outcome.
     def alerts():
         return client.query(
             "SELECT reason, count() FROM weirvern.alert_events "

@@ -173,3 +173,113 @@ def test_every_probe_carries_a_detail_string():
     report = status.collect_health(_StubClient(), _settings())
     for p in report.probes:
         assert isinstance(p.detail, str), f"probe {p.name!r} has no detail"
+
+
+# ── the detect_loop probe: NOTHING ELSE MEASURES DETECTION ───────────────────────────────────
+#
+# WHY. Measured on the live cluster while the sweep was analysing ZERO rows, every OTHER probe
+# reported ok -- clickhouse, tables, ingest_freshness, zeek_freshness, models, alerts. The
+# container was healthy, data was flowing, models were loaded, and detection was doing nothing.
+# The worker's liveness probe cannot catch it either: it imports `weirvern.config` and proves only
+# that the interpreter works, while the loop swallows every exception and sleeps 30s.
+#
+# The evidence is written per cycle by two independent paths: `baseline_history.computed_at` (the
+# baseline detector's train) and `near_misses.replaced_at` (the sweep scoring a host-window).
+
+def _loop_probe(base, near, **settings_kw):
+    """The `detect_loop` probe for a given pair of (count, age) readings.
+
+    `base`/`near` are tuples shaped like the probe's SQL result: (count, age_seconds), or None for
+    "the query returned nothing at all".
+    """
+    by_fragment = {
+        "FROM weirvern.baseline_history": [base] if base is not None else [],
+        "FROM weirvern.near_misses": [near] if near is not None else [],
+    }
+    return _probe("detect_loop", by_fragment=by_fragment, **settings_kw)
+
+
+def test_a_FRESH_cycle_is_ok():
+    p = _loop_probe((216, 40), (329, 44))
+    assert p is not None, "the detect_loop probe did not run"
+    assert p.ok is True, f"a 40s-old cycle must be ok: {p.detail!r}"
+
+
+def test_a_STOPPED_loop_is_not_ok():
+    """THE DEFECT THIS PROBE EXISTS FOR: the loop stopped and nothing noticed."""
+    p = _loop_probe((216, 7200), (329, 7200))
+    assert p is not None and p.ok is False, f"a 2h-stale loop must not be ok: {p.detail!r}"
+    assert "stopped" in str(p.detail).lower()
+
+
+def test_EITHER_signal_being_fresh_is_enough():
+    """A single signal going quiet for a BENIGN reason must not read as a stopped loop --
+    nothing may score in a window, or the baseline may lack samples. The loop ran if either ran."""
+    assert _loop_probe((216, 99999), (1, 30)).ok is True
+    assert _loop_probe((1, 30), (329, 99999)).ok is True
+
+
+def test_BOTH_signals_stale_is_not_ok():
+    """The converse, so the either/or above cannot be satisfied by weakening this."""
+    assert _loop_probe((216, 99999), (329, 99999)).ok is False
+
+
+def test_an_EMPTY_table_reads_as_NEVER_RAN_not_as_stale():
+    """The distinction the SQL has to preserve. A zero COUNT is the only trustworthy "never ran"
+    signal -- and the detail must say "never" rather than quoting an age, because the age from an
+    empty aggregate is meaningless."""
+    p = _loop_probe((0, 1790165466), (0, 1790165466))
+    assert p is not None and p.ok is False
+    assert "NEVER run" in str(p.detail), f"an empty table must say 'never run': {p.detail!r}"
+
+
+def test_a_56_YEAR_age_is_not_quoted_to_the_operator():
+    """A regression guard on a mistake I made. `dateDiff` against an empty subquery returns the
+    difference from ClickHouse's default datetime -- 1790165466s, about 56 years -- so a probe
+    that trusted the age would tell an operator their brand-new install last ran in 1970."""
+    p = _loop_probe((0, 1790165466), (0, 1790165466))
+    assert "56 year" not in str(p.detail) and "1970" not in str(p.detail)
+
+
+def test_the_threshold_follows_the_CONFIGURED_cadence():
+    """A hardcoded 900 would call a 1800s-cadence deployment dead every cycle, and a hardcoded 60
+    would call a 300s cadence dead on every cycle. Both are the "probe that lies" failure."""
+    assert _loop_probe((1, 500), (1, 500)).ok is True           # default 300s cadence
+    assert _loop_probe((1, 500), (1, 500), detect_interval_s=60).ok is False
+    assert _loop_probe((1, 500), (1, 500), detect_interval_s=1800).ok is True
+
+
+def test_the_probe_NAMES_its_evidence():
+    """An operator reading ok=False needs to know which signal it judged, and a green verdict
+    should be auditable after the fact."""
+    p = _loop_probe((216, 120), (329, 200))
+    assert "baseline" in str(p.detail) and "scores" in str(p.detail), f"{p.detail!r}"
+
+
+def test_a_broken_query_does_not_produce_a_false_verdict():
+    """If the query itself fails the probe must stay silent, not guess. `_timed` returns the
+    error, and the `if err is None` guard is what prevents a database problem being reported as a
+    stopped detection loop.
+
+    THE FAILURE IS SCOPED TO THIS PROBE'S OWN TABLES, and that detail is the whole test. An
+    earlier version made EVERY query raise -- which aborts `collect_health` at the `clickhouse`
+    connectivity probe, so execution never reached `detect_loop` and the test passed vacuously
+    whether the guard was there or not. A mutation that removed the guard was NOT caught. Making
+    only `baseline_history`/`near_misses` fail lets the report get far enough to try.
+    """
+    class _SelectivelyExploding(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "baseline_history" in sql or "near_misses" in sql:
+                raise RuntimeError("clickhouse is unreachable")
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_SelectivelyExploding(), _settings())
+    names = [p.name for p in report.probes]
+    assert "clickhouse" in names, (
+        "the report must reach past connectivity for this test to mean anything -- if it did not, "
+        "the assertion below proves nothing"
+    )
+    assert "models" in names or "detect_loop" in names, (
+        f"execution did not reach the later probes, so this test is vacuous: {names}"
+    )
+    assert "detect_loop" not in names, "a failed query must not emit a detect_loop verdict"
