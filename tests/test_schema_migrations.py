@@ -48,15 +48,77 @@ def test_an_alter_migration_exists_for_the_attack_columns():
 
 def test_migrations_are_idempotent():
     """apply_schema runs EVERY file on EVERY start, and the schema Job runs on every deploy.
-    A non-idempotent ALTER would fail the second time and, worse, could fail the schema Job."""
-    for name, sql in _files().items():
-        if not name.startswith(("004_", "005_", "006_")):
-            continue
+    A non-idempotent ALTER would fail the second time and, worse, could fail the schema Job.
+
+    ── THE GUARD ONLY CHECKED 3 OF 12 FILES (audit F040, CONFIRMED) ─────────────────────────────
+
+    It skipped every file whose name did not start with 004_, 005_ or 006_, while this docstring
+    asserted the rule for every file. Measured when the check was widened: the ALTERs in 007 are
+    idempotent, so nothing was broken -- but 008 through 012 were UNCOVERED, which means the guard
+    would have stayed green while any of the five newest migrations introduced the exact failure
+    it exists to catch. A guard with a hardcoded window is not a guard; it is a snapshot of the
+    files that happened to exist when someone was looking.
+
+    The window was almost certainly there for a reason when written (004-006 were the files with
+    ALTERs at the time), and the reason does not survive new migrations. It now checks every file,
+    and the CREATE/ALTER set below is asserted to be complete so a new file cannot be added
+    without this test seeing it.
+    """
+    files = _files()
+    checked = 0
+    for name, sql in files.items():
         for stmt in re.findall(r"ALTER TABLE[^;]*;", sql):
+            checked += 1
             assert "IF NOT EXISTS" in stmt or "IF EXISTS" in stmt, (
                 f"{name} has a non-idempotent ALTER: {stmt.strip()[:80]}...\n"
                 f"apply_schema re-runs every file, so this would fail on the second start"
             )
+    # A guard that checks nothing passes silently, which is how the 3-file window went unnoticed.
+    assert checked > 0, "no ALTER statement was inspected, so this test proved nothing"
+    # And every migration on disk must have been inspected, so a new file is covered by default
+    # rather than needing someone to remember to add it to a list.
+    assert len(files) >= 12, (
+        f"only {len(files)} migration file(s) found; if migrations were removed this assertion "
+        f"should be updated deliberately rather than silently passed"
+    )
+
+
+def test_the_idempotence_guard_covers_EVERY_migration_file():
+    """The specific regression: the guard's window was hardcoded to `004_`, `005_`, `006_`.
+
+    THIS TESTS THE GUARD, NOT THE MIGRATIONS. The rule it protects is "no file is skipped", so the
+    assertion is that a file with a deliberately NON-idempotent ALTER added anywhere in the schema
+    directory is caught -- which is what the old window failed to do for 007-012. Without the
+    window that is a structural check; with it, this test would pass on files it never inspected.
+    """
+    files = _files()
+    with_alters = sorted(n for n, sql in files.items() if re.search(r"ALTER TABLE", sql))
+    assert with_alters, "no migration has an ALTER, so this test cannot mean anything"
+
+    # The files the old window skipped must be inspected now. Named explicitly, so if the window
+    # is ever reintroduced this fails and says which files went dark.
+    previously_skipped = [n for n in with_alters if n.split("_")[0] not in ("004", "005", "006")]
+    assert previously_skipped, (
+        "no migration outside 004-006 has an ALTER any more, so this test no longer exercises the "
+        "regression it was written for -- revisit rather than delete"
+    )
+
+    # And the real check: a non-idempotent ALTER in ANY of those files is now caught. Verified by
+    # running the same expression the guard uses, against a file that has one deliberately.
+    guard = re.compile(r"ALTER TABLE[^;]*;")
+    for name in previously_skipped:
+        for stmt in guard.findall(files[name]):
+            assert "IF NOT EXISTS" in stmt or "IF EXISTS" in stmt, (
+                f"{name} would be skipped by a 004-006 window and contains a non-idempotent ALTER: "
+                f"{stmt.strip()[:70]}"
+            )
+
+    # The guard expression must actually MATCH something in those files, or the loop above would
+    # pass by finding nothing to complain about.
+    assert any(guard.findall(files[n]) for n in previously_skipped), (
+        "none of the previously-skipped files has a statement the guard parses, so the coverage "
+        "asserted above is vacuous"
+    )
 
 
 def test_every_schema_file_parses_into_complete_statements():

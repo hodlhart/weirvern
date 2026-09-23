@@ -328,8 +328,8 @@
       "severity": "HIGH",
       "area": "Test suite",
       "title": "The detection \u2192 alert path has no test at all (highest-risk untested path)",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED and addressed with a new test module (tests/test_alert_pipeline.py, 17 tests). `push_alert` was referenced by exactly ONE test, which calls `format_message` to pin a crash that had ALREADY happened in production; nothing exercised push_alert itself, the suppression rules that decide whether an operator is told at all, the audit row every decision should leave, or the failure paths. Structurally the reason is that detection has scores and models to assert on while alerting either fires or does not -- and a defect here produces a SILENCE, which looks exactly like a quiet network. COVERAGE NOW: delivery, the operator payload carrying the reason it fired, log-only mode not claiming a send, per-host cooldown and hourly cap (and that a suppressed alert still leaves an audit row), a Pushover 4xx and an unreachable host both recorded as errors rather than sends, a failed delivery NOT starting the cooldown or consuming the cap, and the audit insert failing without taking the alert. Seven mutations caught. TWO REAL PROBLEMS THE TESTS SURFACED IN MY OWN WORK: (1) one test called the LIVE Pushover API, because it did not request the HTTP stub -- Pushover's own 400 response appears in the captured log, so a unit test sent real HTTP traffic to a third party. The HTTP stub is now autouse and refuses the network unless a test opts in. (2) the first cooldown test used two fixtures that patch the same function, so its 'successful' send actually failed and it asserted against the wrong state. Also: mutation testing found a genuine coverage gap -- the transport-failure branch could start the cooldown with every test still green, because the assertion only covered the HTTP-status path. Both are now pinned. NOTE: the report body is not recoverable (tmp/k12_testing.md was cleaned), so this verdict verifies the title's claim directly against the code.",
       "report": "k12_testing",
       "id": "F037"
     },
@@ -355,8 +355,8 @@
       "severity": "HIGH",
       "area": "Test suite",
       "title": "The idempotence guard only scans migrations 004\u2013006",
-      "verdict": null,
-      "note": "",
+      "verdict": "CONFIRMED",
+      "note": "CONFIRMED and fixed. `tests/test_schema_migrations.py::test_migrations_are_idempotent` skipped every migration whose name did not start with 004_, 005_ or 006_, WHILE ITS OWN DOCSTRING asserted the rule for every file ('apply_schema runs EVERY file on EVERY start') -- so migrations 007-012 were unchecked and the guard would have stayed green while any of the five newest introduced the exact failure it exists to catch. NOT YET BROKEN: measured by running the widened check, every ALTER in 007 is idempotent and 008-012 contain no ALTERs at all today, so this is a latent trap rather than live corruption. PROVEN both directions by planting a non-idempotent ALTER in 011: the widened guard CATCHES it, and the old 004-006 window returns False for it. FIXED: the loop now inspects every file, counts what it inspected (asserting >0 so a guard that checks nothing cannot pass silently), asserts the file count so a migration cannot be added without coverage, and a second test names the previously-skipped files so reintroducing a window fails with a message saying which files went dark. NOTE: the report body for this finding is not recoverable -- tmp/k12_testing.md was cleaned -- so this verdict is from verifying the title's claim against the code, not from re-reading the original finding text.",
       "report": "k12_testing",
       "id": "F040"
     },
