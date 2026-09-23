@@ -17,6 +17,7 @@ cd "$(dirname "$0")/.." || exit 1
 PY=.venv/bin/python
 [ -x "$PY" ] || PY=python3
 FAIL=0
+SKIPPED=0
 
 step() {
     printf '\n=== %s ===\n' "$1"
@@ -75,19 +76,33 @@ run "guard proof: JA4 integrity (5 defects)" .venv/bin/python scripts/prove_ja4_
 # The DOM-level check (scripts/jsdom_render.js) needs a server and an npm install, so it is run
 # by hand rather than in the gate -- it is documented in the README's development section.
 step "frontend syntax (node --check)"
-JS_OK=1
+# THREE STATES, NOT TWO. A check that cannot run is NOT a check that passed.
+#
+# The old version initialised JS_OK=1, printed "node not installed -- skipping", and then fell
+# through to `if [ "$JS_OK" = "1" ]; then echo PASS`. So on a machine without node -- a CI runner
+# that did not install it, a fresh clone -- the gate reported PASS for a syntax check it never
+# performed. That is this project's named failure mode ("a green reading over work that did not
+# happen") in the one place it is most costly, because the gate is what decides whether code ships.
+#
+# SKIP now reads as SKIP, and a skip is reported in the summary line so it cannot be overlooked.
+JS_STATE=PASS
 for js in weirvern/admin/web/app.js weirvern/admin/web/soc.js weirvern/admin/web/assets.js; do
-    if command -v node >/dev/null 2>&1; then
-        if ! node --check "$js" 2>/tmp/weirvern_gate_js.txt; then
-            echo "  $js: $(head -3 /tmp/weirvern_gate_js.txt | tr '\n' ' ')"
-            JS_OK=0
-        fi
-    else
-        echo "  node not installed -- skipping (install node to check the frontend)"
+    if ! command -v node >/dev/null 2>&1; then
+        JS_STATE=SKIP
+        echo "  SKIP  node is not installed, so the frontend was NOT syntax-checked."
+        echo "        Install node to have this check performed."
         break
     fi
+    if ! node --check "$js" 2>/tmp/weirvern_gate_js.txt; then
+        echo "  $js: $(head -3 /tmp/weirvern_gate_js.txt | tr '\n' ' ')"
+        JS_STATE=FAIL
+    fi
 done
-if [ "$JS_OK" = "1" ]; then echo "  PASS"; else echo "  FAIL"; FAIL=1; fi
+case "$JS_STATE" in
+    PASS) echo "  PASS" ;;
+    FAIL) echo "  FAIL"; FAIL=1 ;;
+    SKIP) echo "  SKIP -- not a pass: this check did not run"; SKIPPED=$((SKIPPED + 1)) ;;
+esac
 
 
 # The suite last: it is the slowest, and everything above is a precondition for trusting it.
@@ -114,8 +129,11 @@ else
 fi
 
 echo
-if [ "$FAIL" = "0" ]; then
-    echo "GATE PASSED -- safe to push"
+if [ "$FAIL" = "0" ] && [ "$SKIPPED" = "0" ]; then
+    echo "GATE PASSED -- safe to push (every check ran)"
+elif [ "$FAIL" = "0" ]; then
+    echo "GATE PASSED WITH $SKIPPED SKIPPED CHECK(S) -- the skipped ones did not run."
+    echo "  Install the missing tools (node, kustomize, tcpdump) for a complete verdict."
 else
     echo "GATE FAILED -- do not push. CI will fail for the same reason."
 fi

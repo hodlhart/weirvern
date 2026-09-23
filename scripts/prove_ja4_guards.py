@@ -45,13 +45,30 @@ def run_tests() -> tuple[bool, list[str]]:
     return proc.returncode != 0, names
 
 
+# A SKIP IS NOT A PASS, and this function returning True for one was a real defect.
+#
+# The old version returned True -- success -- when its anchor text was not found, with the comment
+# "not a failure of the guards; the probe is stale". The reasoning is sound about the GUARDS and
+# wrong about the PROBE: if the anchor no longer exists, the mutation was never applied, no test
+# was ever expected to fail, and the proof demonstrated NOTHING. It printed SKIP and the gate read
+# a pass -- so a guard proof that had silently stopped proving anything looked exactly like one
+# that worked. That is the failure mode this project names most often, in the script whose entire
+# job is to detect it.
+#
+# A stale anchor is now a MISPROBE: reported as such, and it fails the run. The fix for a stale
+# anchor is to update the anchor, not to keep certifying.
+MISPROBE = False
+
+
 def mutate(path: pathlib.Path, old: str, new: str, label: str) -> bool:
+    global MISPROBE
     original = path.read_text()
     if old not in original:
-        print(f"  SKIP    {label}: anchor not found (mutation would prove nothing)")
-        print(f"          looked for: {old[:70]!r}")
-        return True  # not a failure of the guards; the probe is stale
-    assert original != original.replace(old, new, 1), "the mutation changed nothing"
+        print(f"  MISPROBE {label}: the anchor is gone, so this mutation proved NOTHING.")
+        print(f"           looked for: {old[:70]!r}")
+        print("           Update the anchor in this script to match the current code.")
+        MISPROBE = True
+        return False
     path.write_text(original.replace(old, new, 1))
     caught, names = run_tests()
     path.write_text(original)

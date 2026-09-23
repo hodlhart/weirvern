@@ -1,0 +1,1629 @@
+{
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "area": "Siphon",
+      "title": "Applying the siphon overlay degrades the node's security posture immediately, and the original values are destroyed",
+      "verdict": "CONFIRMED",
+      "note": "fixed: originals saved to a hostPath + a restore script generated from them; the test proved the live capture rp_filter was 2, not the assumed 0",
+      "report": "kr2",
+      "id": "F001"
+    },
+    {
+      "severity": "CRITICAL",
+      "area": "Sonar",
+      "title": "The watchdog's health check reads the `ip_forward` *setting*, not a forwarding counter \u2014 it can structurally never detect a stall",
+      "verdict": "REFUTED",
+      "note": "ForwardingMonitor reads /proc/net/snmp's Ip: Forwarding COUNTER. The reviewer inferred the code from the module's comments.",
+      "report": "kr3",
+      "id": "F002"
+    },
+    {
+      "severity": "CRITICAL",
+      "area": "Test suite",
+      "title": "Nothing fails if the write dispatcher stops enforcing the token",
+      "verdict": "UNPROVEN",
+      "note": "needs a targeted test: remove the token check and see whether any test goes red",
+      "report": "k12_testing",
+      "id": "F003"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Detection engine",
+      "title": "The retrain clock is reset to `now()` whenever only the baseline trains \u2014 the exact bug the adjacent comment claims was fixed",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F004"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Detection engine",
+      "title": "Empty or unjoined diversity/temporal side-tables degrade scoring with no signal \u2014 unlike Zeek, which warns",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F005"
+    },
+    {
+      "severity": "HIGH",
+      "area": "GUI + API",
+      "title": "A failed anomalies query returns 200 with an empty list \u2014 the triage view reads a broken query as a quiet network",
+      "verdict": "REFUTED",
+      "note": "_anomalies catches and returns available:False with a reason; every route follows this pattern.",
+      "report": "k8_gui",
+      "id": "F006"
+    },
+    {
+      "severity": "HIGH",
+      "area": "GUI + API",
+      "title": "Review state silently expires after 72 hours: `review_index` is time-bounded, the anomalies list is not",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F007"
+    },
+    {
+      "severity": "HIGH",
+      "area": "GUI + API",
+      "title": "Netflow \"Talkers\" panel: query failure renders as \"No talkers in this window\" \u2014 `available` is hardcoded true",
+      "verdict": "REFUTED",
+      "note": "/api/netflow reports available+reason and the front end gates on it; the DOM harness has 28 failure-vs-empty checks.",
+      "report": "k8_gui",
+      "id": "F008"
+    },
+    {
+      "severity": "HIGH",
+      "area": "GitHub face",
+      "title": "`.env.example` and `SECURITY.md` contradict each other about which ports face the LAN",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F009"
+    },
+    {
+      "severity": "HIGH",
+      "area": "GitHub face",
+      "title": "The manifest reference checker is blind to `configMapKeyRef` \u2014 the most common ConfigMap reference form",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F010"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Ingestion",
+      "title": "Rotation and restart re-ingest everything already read: offsets are filename-keyed and process-local",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F011"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Ingestion",
+      "title": "The `(empty)` sentinel is still stored literally \u2014 including in `ja4`, the exact bug the docstrings claim was fixed",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F012"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Ingestion",
+      "title": "The mapper\u2194columns\u2194table arity contract is enforced nowhere, and one failing INSERT permanently blocks every later log type behind a generic handler",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F013"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Kubernetes",
+      "title": "The siphon overlay never enables siphon mode",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F014"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Kubernetes",
+      "title": "The worker liveness probe is green over a dead detection loop",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F015"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Kubernetes",
+      "title": "GUI settings writes are silently reverted by the next `kubectl apply -k`",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F016"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Kubernetes",
+      "title": "The GUI pod's RBAC is node-root by another name",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F017"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Kubernetes",
+      "title": "Worker restart loses the tail position: flow history is re-read or gapped",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F018"
+    },
+    {
+      "severity": "HIGH",
+      "area": "NetFlow path",
+      "title": "Tail offsets live only in process memory \u2014 every worker restart re-ingests the entire flow file (and ~24h of Zeek logs) as duplicates",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F019"
+    },
+    {
+      "severity": "HIGH",
+      "area": "NetFlow path",
+      "title": "NetFlow/sFlow intake is unauthenticated UDP on `hostNetwork` with no source restriction anywhere in the bundle",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F020"
+    },
+    {
+      "severity": "HIGH",
+      "area": "NetFlow path",
+      "title": "The `(empty)` sentinel fix is documented as done at the read layer, but the read layer only normalises `-` \u2014 `(empty)` still reaches table columns verbatim",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F021"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Operability",
+      "title": "Nothing probes whether the detection loop is alive",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F022"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Operability",
+      "title": "ml_models rows are written for detectors that never trained",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F023"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Operability",
+      "title": "Models probe reports ok on the mere existence of rows \u2014 staleness is fetched and ignored",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F024"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Operability",
+      "title": "The retrain clock advances when only the adaptive baseline trains",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F025"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Operability",
+      "title": "cap_mb=0 \u2014 documented as \"no cap\" \u2014 deletes every rotated log older than the grace period",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F026"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Security",
+      "title": "The `(empty)` fix the comments describe was only applied to `-`; the named ja4 path still stores it verbatim",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F027"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Security",
+      "title": "Zeek rotation re-ingests every rotated file in full: tail state is keyed by filename, and the rotated file IS the already-read live file renamed",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F028"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Security",
+      "title": "The initial admin password is written to pod logs, and the least-privileged Role can read pod logs",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F029"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Security",
+      "title": "Bearer-token auth over cleartext HTTP, on a platform whose purpose is sniffing the LAN",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F030"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Siphon",
+      "title": "Teardown of the policy rule is fire-and-forget: a failed removal is indistinguishable from success, and \"restored\" is asserted from the exit code alone",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F031"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Siphon",
+      "title": "A partial setup failure leaves the policy rule installed over an empty table \u2014 the documented black-hole \u2014 and `__exit__` provably does not run",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F032"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Siphon",
+      "title": "The management-interface never-intercept rule is prose-only, and the `ZEEK_IFACE` fallback turns a known loch misconfiguration into the siphon poison interface",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F033"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Siphon",
+      "title": "In the deployed (read-only) case, every intercept stop logs \"could NOT restore \u2026 Set them back by hand\" and prints a remedy that re-applies the intercept's values",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F034"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Sonar",
+      "title": "A refused survey is *returned* as `{'ok': False}` after a docstring that promises every failure raises `SonarError`",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F035"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Sonar",
+      "title": "`observe()`'s three measurement fields have no column to land in \u2014 computed, None-guarded, then discarded",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F036"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Test suite",
+      "title": "The detection \u2192 alert path has no test at all (highest-risk untested path)",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F037"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Test suite",
+      "title": "The gate prints PASS for the frontend check when node is not installed",
+      "verdict": "CONFIRMED",
+      "note": "gate.sh prints 'node not installed -- skipping' then PASS; a skipped check must not read as a pass.",
+      "report": "k12_testing",
+      "id": "F038"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Test suite",
+      "title": "The kustomize- and tcpdump-gated guards skip, and the gate still reports PASS",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F039"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Test suite",
+      "title": "The idempotence guard only scans migrations 004\u2013006",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F040"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Test suite",
+      "title": "The root-container tripwire cannot see implicit root",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F041"
+    },
+    {
+      "severity": "HIGH",
+      "area": "Zeek features",
+      "title": "Protocol-records UNION mixes String and IPv4 in the `src_addr` position \u2014 the query raises and the failure is swallowed",
+      "verdict": "REFUTED",
+      "note": "Ran zeek_window_summary_sql against the live schema: 2055 rows, 53 columns. The UNION executes.",
+      "report": "k6_zeek_features",
+      "id": "F042"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Detection engine",
+      "title": "A detector that fails to train is silently absent from the ensemble, and its absence *loosens* the agreement gate",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F043"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Detection engine",
+      "title": "T1558 \"Kerberoasting signature\" fires on a raw count of TGS requests \u2014 the measurement the comment and the constant name promise is never taken",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F044"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Detection engine",
+      "title": "The rolling `now \u2212 interval` query silently skips every window older than one interval \u2014 a slow cycle (the 6-hourly retrain) leaves an unlogged blind spot",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F045"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Detection engine",
+      "title": "All weight settings \u2014 including `weight_baseline_missing` \u2014 are inert under the default max fusion: an operator's validated edit changes nothing",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F046"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "One raising sub-query collapses the whole Health view and misreports the cause as \"cannot reach ClickHouse\"",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F047"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "Auto-refresh reloads only the Health view, whatever tab is visible",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F048"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "A signed-in viewer holding the operator token is refused as a viewer \u2014 the token is silently ignored",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F049"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "Evidence pivot for an aged-out alert: zero-width fallback window renders all-empty tables with no explanation",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F050"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "Host sparkline densification mixes ClickHouse wall-clock with GUI-local `now()` \u2014 a timezone mismatch zeroes the timeline while totals show traffic",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F051"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GUI + API",
+      "title": "Models view: on a failed reload, the previous staleness and near-miss tables stay on screen beside \"Unavailable\"",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F052"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The reference checker skips CronJob pod specs \u2014 a Deployment-shaped consumer reading CronJob-shaped output",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F053"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The assembly check passes vacuously and asserts no completeness \u2014 a dropped resource renders green",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F054"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The rendered artifact is never schema-validated \u2014 only its sources are",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F055"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "GUI web assets are unguarded against the exact installed-package bug the project already shipped once",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F056"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The Zeek image and the vendored JA4 module have zero CI coverage",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F057"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The DOM harness exists but never runs in CI",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F058"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The changelog is four releases stale and mislabels shipped versions as \"Unreleased\"",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F059"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "The sensor-comparison table still sells JA3, which the same README says Zeek 9.x no longer ships",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F060"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "\"Nothing else depends on it\" is false \u2014 removing Zeek silently degrades host identification and the ensemble",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F061"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "GitHub face",
+      "title": "SECURITY.md's hardening list omits the GUI NodePort \u2014 the only authenticated, browser-facing surface",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F062"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Ingestion",
+      "title": "The exclusion filter is vacuous for DHCP: excluded hosts still populate `zeek_dhcp` and the identity store",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F063"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Ingestion",
+      "title": "`.log.json` \"support\" reads JSON logs through a TSV parser and silently ingests nothing",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F064"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Ingestion",
+      "title": "Identity-observation failures are swallowed at DEBUG \u2014 the exact \"zero observations while everything looks healthy\" incident, recreated",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F065"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Ingestion",
+      "title": "`_file_identity` stores size and mtime that no code ever compares, while its docstring claims they close the same-inode-replacement gap",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F066"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Ingestion",
+      "title": "The hardcoded default excludes have no environment off-switch",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F067"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "The documented Secret procedure omits CLICKHOUSE_PASSWORD; an empty password is unenforced",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F068"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "NETFLOW_PORT / SFLOW_PORT are read by nothing in the cluster",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F069"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "goflow2's hostPath ownership is unguarded and its probe cannot see the write path",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F070"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "ClickHouse data is node-local but ClickHouse is not node-pinned",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F071"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "The siphon sysctls are node-global and are never reverted",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F072"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "The base DaemonSet puts a root, hostNetwork sniffer on every node by default",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F073"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "\"Log-only\" alerting is indistinguishable from working alerting",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F074"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Kubernetes",
+      "title": "A hung Zeek reads as a quiet network",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F075"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "NetFlow path",
+      "title": "No per-batch checkpoint: a mid-pass insert failure duplicates already-inserted rows; one rejected row stalls ingestion forever",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F076"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "NetFlow path",
+      "title": "`map_flow` default-fills any missing or renamed field with zero warning \u2014 schema drift or a different per-protocol field set reads as a healthy ingest",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F077"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "NetFlow path",
+      "title": "goflow2's decode/template failures are invisible: the metrics endpoint is exposed but nothing consumes it",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F078"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "NetFlow path",
+      "title": "`tail_forever` cannot be stopped \u2014 the SIGTERM \"graceful shutdown\" never reaches the ingest loop",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F079"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "NetFlow path",
+      "title": "A required manual node-side permission step fails as a healthy-looking total flow outage",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F080"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "zeek_freshness probe is silently absent when the sensor has never produced a row",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F081"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "The alerts probe is ok no matter how many sends are failing",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F082"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "Alert suppression state is per-process; a restart resets cooldowns and the hourly cap",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F083"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "per_type=True prunes the NEVER_PRUNE files \u2014 and the result report counts them as protected",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F084"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "netflow_max_mb and ml_max_mb are declared caps with no enforcer in the bundle",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F085"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "The detection window is computed from the worker's wall clock",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F086"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Operability",
+      "title": "An unenforceable Zeek cap fails silently",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F087"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "revdns's timeout mechanism doesn't bound DNS, and its `setdefaulttimeout` silently reconfigures every socket in the process",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F088"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "The GUI has no request/read timeout and unbounded thread creation; the login throttle sleeps inside the handler thread",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F089"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "The account gate fails open: a store error turns the GUI into an open dashboard, and the concrete misconfiguration that causes it is plausible",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F090"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "Sonar's `interface`/`mgmt_interface` are the only free-text inputs with no shape validation, and they leave the process",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F091"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "Unauthenticated flow ingestion is LAN-published; forged flows poison baselines and fabricate attributed alerts",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F092"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "Both tailers commit their offset only at the end, so a mid-file insert failure duplicates already-written batches, and a persistent failure livelocks ingestion",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F093"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "Fingerprint-observation writes fail at DEBUG level: the identity feature can be 100% dead while everything reports healthy",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F094"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Security",
+      "title": "\"Independent sources\" are independent observations, not independent actors: one lying host reaches high confidence",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F095"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "`Intercept.start()` ignores `SysctlGuard.apply()`'s failure list \u2014 the guard's documented contract is that the caller refuses",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F096"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "`ip rule del priority 1000` can delete a foreign routing rule, silently",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F097"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "Never-intercept roles are unenforced for whole-segment intercepts (`--all` / `*`)",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F098"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "The probe's 30s default window is shorter than the worker restart it triggers, so the common result is `ok: true` with `observed: null`",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F099"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "`send_redirects` is verified by no runtime gate",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F100"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Siphon",
+      "title": "The zeek container gains NET_ADMIN with no consumer in the bundle, justified by an action its own overlay proves impossible",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F101"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Sonar",
+      "title": "The siphon `running=False` guard the docstring promises does not exist in the code",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F102"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Sonar",
+      "title": "A quiet segment is reported as \"capture has stopped\" \u2014 sensor-up-capturing-nothing reads identically to sensor-dead",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F103"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Sonar",
+      "title": "Every pod-level failure that leaves the Job Active \u2014 or fails with an empty log \u2014 lands in one message that names only the node label",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F104"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Sonar",
+      "title": "The GUI must be able to create hostNetwork/NET_RAW/uid-0 Jobs \u2014 a privilege the design elsewhere insists it doesn't hold",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F105"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "gate.sh's `run()` always exits 0: the ruff fallback is dead, and the gate only works with the author's `.venv`",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F106"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The \"no-filter path survives\" check counts a substring the filtered exec line also contains",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F107"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The write path's core safety properties are pinned by source-text windows, never executed",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F108"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The coverage numerator-window check can be satisfied by the denominator's window",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F109"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The %-in-SQL guard forbids the `%%` escape its own docstring prescribes, and scans only three hardcoded modules",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F110"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "A gzipped capture evades both the capture guard and .gitignore",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F111"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The capture-rule must-fire test exercises a private copy of the rule, not the guard",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F112"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The weight-table guard hardcodes the set of sources the module emits",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F113"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The intercept ConfigMap checks are substring matches over raw YAML text",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F114"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The anomaly arity check counts the LAST append-of-a-list in worker.py, and checks count but not order",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F115"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Test suite",
+      "title": "The ALTER-existence guard does not anchor the table",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F116"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "`zeek_present` counts only 5 of the 12 logs the query joins \u2014 measured activity reads as \"Zeek absent\"",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F117"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "`extract_zeek_features` reads `ssl_count`; no query emits that column",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F118"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "A missing JA4 baseline reads as \"all familiar\", and the None-vs-empty caller convention flips the answer",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F119"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "No per-log \"measured\" signal: an unwritten Zeek log reads as \"no activity\" for seven of the twelve sources",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F120"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "DHCP features are keyed on `client_addr`, which is `0.0.0.0` exactly when the rogue-server detection matters",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F121"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "`ntlm_identity_daily.distinct_src` is destroyed by SummingMergeTree merges",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F122"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "Log-scaling stops at the old feature set \u2014 the new counts violate the module's own scaling contract",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F123"
+    },
+    {
+      "severity": "MEDIUM",
+      "area": "Zeek features",
+      "title": "`zeek_file_unique_ratio` is structurally 0.0 if the sensor does not hash files \u2014 and Zeek does not by default",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F124"
+    },
+    {
+      "severity": "LOW",
+      "area": "Detection engine",
+      "title": "The zero-stddev floor is applied to every stddev \u2264 1.0 but flagged only at exactly 0.0",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F125"
+    },
+    {
+      "severity": "LOW",
+      "area": "Detection engine",
+      "title": "Every \u226510 MB anomaly from a Zeek-uncovered host is tagged T1041 \u2014 the label cannot distinguish \"asymmetry unmeasured\" from \"asymmetry measured\"",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F126"
+    },
+    {
+      "severity": "LOW",
+      "area": "Detection engine",
+      "title": "The merge-precedence comment states the opposite of what the code does",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F127"
+    },
+    {
+      "severity": "LOW",
+      "area": "Detection engine",
+      "title": "`severity_of` accepts `agreement` and never reads it",
+      "verdict": null,
+      "note": "",
+      "report": "k5_detection",
+      "id": "F128"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "The Identity view's window selector is a no-op",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F129"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "Editable controls are pre-filled with the literal display string \"(not set)\"",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F130"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "Anomalies view copy still says reviews \"need the operator token\"",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F131"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "`/api/overview` and `API.overview` are orphaned; inside it, `backend.ps` failure is swallowed to an empty workload list",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F132"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "revdns sets a process-wide default socket timeout at import time",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F133"
+    },
+    {
+      "severity": "LOW",
+      "area": "GUI + API",
+      "title": "`flow_summary` arity mismatch degrades to a silently missing stats block",
+      "verdict": null,
+      "note": "",
+      "report": "k8_gui",
+      "id": "F134"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "The secret-name check asserts README prose by literal substring",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F135"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "The cluster-sizing numbers are a \"measured\" claim nothing re-measures",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F136"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "`pytest-cov` is declared and never used \u2014 a dependency written but never read",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F137"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "Two build tools are unpinned right next to the project's own documented reason for pinning build tools",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F138"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "NOTICE's \"Version (pinned)\" column is not pinned for Zeek, and the compatibility line names a licence the table doesn't",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F139"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "`.env.example` defaults to the author's timezone",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F140"
+    },
+    {
+      "severity": "LOW",
+      "area": "GitHub face",
+      "title": "Blanket `*.jsonl` / `*.log` ignores set the local-green / CI-red trap for test fixtures",
+      "verdict": null,
+      "note": "",
+      "report": "kr1",
+      "id": "F141"
+    },
+    {
+      "severity": "LOW",
+      "area": "Ingestion",
+      "title": "Dead constructs, one of which contradicts the guard it describes",
+      "verdict": null,
+      "note": "",
+      "report": "k7_ingest",
+      "id": "F142"
+    },
+    {
+      "severity": "LOW",
+      "area": "Kubernetes",
+      "title": "The capability check proves less than it claims",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F143"
+    },
+    {
+      "severity": "LOW",
+      "area": "Kubernetes",
+      "title": "The GUI manifest contradicts itself about how the Workloads panel gets data",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F144"
+    },
+    {
+      "severity": "LOW",
+      "area": "Kubernetes",
+      "title": "Unqualified image references only resolve on nodes that already have them",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F145"
+    },
+    {
+      "severity": "LOW",
+      "area": "Kubernetes",
+      "title": "The GUI receives Pushover credentials it has no use for",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F146"
+    },
+    {
+      "severity": "LOW",
+      "area": "Kubernetes",
+      "title": "busybox `nc -z` in the GUI init may not exist",
+      "verdict": null,
+      "note": "",
+      "report": "k9_k8s",
+      "id": "F147"
+    },
+    {
+      "severity": "LOW",
+      "area": "NetFlow path",
+      "title": "`_file_identity`'s size and mtime are never compared \u2014 the documented replacement protection is thinner than claimed",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F148"
+    },
+    {
+      "severity": "LOW",
+      "area": "NetFlow path",
+      "title": "Zeek tail-state dict grows without bound for the life of the process",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F149"
+    },
+    {
+      "severity": "LOW",
+      "area": "NetFlow path",
+      "title": "A numeric `etype` silently becomes 2048 (IPv4)",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F150"
+    },
+    {
+      "severity": "LOW",
+      "area": "NetFlow path",
+      "title": "Table names are hardcoded `weirvern.*` while `CLICKHOUSE_DB` is a configurable setting",
+      "verdict": null,
+      "note": "",
+      "report": "k13_netflow_listener",
+      "id": "F151"
+    },
+    {
+      "severity": "LOW",
+      "area": "Operability",
+      "title": "NetFlow-only deployments get a \"check your Zeek sensor\" warning every five minutes, forever",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F152"
+    },
+    {
+      "severity": "LOW",
+      "area": "Operability",
+      "title": "heartbeat_interval_s is not validated against the staleness threshold",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F153"
+    },
+    {
+      "severity": "LOW",
+      "area": "Operability",
+      "title": "Settings help says the ClickHouse default user is 'weirvern'; the code default is 'default'",
+      "verdict": null,
+      "note": "",
+      "report": "k11_ops_ux",
+      "id": "F154"
+    },
+    {
+      "severity": "LOW",
+      "area": "Security",
+      "title": "The viewer Role's `pods/portforward create` contradicts its \"read-only\" framing",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F155"
+    },
+    {
+      "severity": "LOW",
+      "area": "Security",
+      "title": "Raw exception text is returned to HTTP clients",
+      "verdict": null,
+      "note": "",
+      "report": "k10_security",
+      "id": "F156"
+    },
+    {
+      "severity": "LOW",
+      "area": "Siphon",
+      "title": "`arp_sweep` can report a false empty network by two mechanisms",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F157"
+    },
+    {
+      "severity": "LOW",
+      "area": "Siphon",
+      "title": "`liveness()` returning `None` is rendered as \"no evidence \u2014 check the overlay\", breaking the probe's own stated contract",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F158"
+    },
+    {
+      "severity": "LOW",
+      "area": "Siphon",
+      "title": "`intercept_running` renders an unreadable child state as \"not running\"",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F159"
+    },
+    {
+      "severity": "LOW",
+      "area": "Siphon",
+      "title": "`ForwardingState.rule_installed` / `table_installed` are never written",
+      "verdict": null,
+      "note": "",
+      "report": "kr2",
+      "id": "F160"
+    },
+    {
+      "severity": "LOW",
+      "area": "Sonar",
+      "title": "A successful survey whose log cannot be read is reported as \"the survey produced no output\"",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F161"
+    },
+    {
+      "severity": "LOW",
+      "area": "Sonar",
+      "title": "`sweep_probe`'s borrowed address leaks on SIGKILL \u2014 state left on the node's capture NIC",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F162"
+    },
+    {
+      "severity": "LOW",
+      "area": "Sonar",
+      "title": "`sweep_probe` defaults the interface to `eth1` one line after refusing a default segment",
+      "verdict": null,
+      "note": "",
+      "report": "kr3",
+      "id": "F163"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The envFrom handling is a dead assert plus a skip that abandons the regression check",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F164"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The startup-script scan reads only `args` and passes vacuously on an empty script",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F165"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The no-TLS boundary test is satisfied by the docstring it says is insufficient",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F166"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The installer guards pin one spelling of the fix, and one requires the comment to survive",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F167"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The ZEEKPATH guard misses the `ENV name value` form",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F168"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The service-CIDR scrubber guard pins one regex spelling of the removed rule",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F169"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The identity MAC-clause check is satisfied by the wrong column",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F170"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "Two manifest tests are blind to CronJob-shaped workloads",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F171"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "Stray `before=\"\"` parameter; the settings-route floor of 15",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F172"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "The per-request token re-read check inspects only `do_POST`",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F173"
+    },
+    {
+      "severity": "LOW",
+      "area": "Test suite",
+      "title": "Text-parsing fragility in the sanitation checks",
+      "verdict": null,
+      "note": "",
+      "report": "k12_testing",
+      "id": "F174"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "The x509 arm of the protocol union is dropped by the only reader shown in the bundle",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F175"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "The fifth JA4 exposure carries sentinels unfiltered",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F176"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "`baseline_ja4_set` is capped at an arbitrary 64; the window set is uncapped",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F177"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "\"Absent\" rows can still carry SSH/HTTP/files values",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F178"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "Two baseline columns have no reader in the bundle",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F179"
+    },
+    {
+      "severity": "LOW",
+      "area": "Zeek features",
+      "title": "The DBSCAN ordering contract is impossible as written",
+      "verdict": null,
+      "note": "",
+      "report": "k6_zeek_features",
+      "id": "F180"
+    }
+  ],
+  "provenance": {
+    "passes": 12,
+    "reviewer": "kimi-k3:cloud via a read-only text bundle",
+    "note": "Findings are triaged before being acted on. HIGH-severity false positives were common: the reviewer read the comments and inferred code from them."
+  }
+}
