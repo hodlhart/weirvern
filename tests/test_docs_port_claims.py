@@ -150,3 +150,53 @@ def test_the_readme_agrees_that_both_port_forms_listen():
         "the README does not explain why the conventional ports also listen, so the next reader "
         "will re-derive the old (wrong) conclusion"
     )
+
+
+def test_the_documented_tunnel_commands_match_the_real_service():
+    """The mitigation must be RUNNABLE, or it is advice rather than a control.
+
+    `kubectl port-forward svc/<name> <port>:<port>` fails if the Service name or port is wrong,
+    and a failure here is worse than no advice: an operator who tries the documented command, sees
+    an error, and concludes TLS is unavailable has lost the mitigation AND some trust.
+
+    MEASURED against the live cluster while writing this: `weirvern-gui  NodePort  port=8088
+    nodePort=30088`. The assertions below keep the doc pinned to the manifest, which is the half
+    that can be checked without a cluster.
+    """
+    import yaml
+
+    docs = [d for d in yaml.safe_load_all((ROOT / "k8s" / "34-gui.yaml").read_text()) if d]
+    svc = next((d for d in docs if d.get("kind") == "Service"), None)
+    assert svc is not None, "no Service in k8s/34-gui.yaml"
+    name = svc["metadata"]["name"]
+    port = svc["spec"]["ports"][0]["port"]
+    node_port = svc["spec"]["ports"][0]["nodePort"]
+
+    text = (ROOT / "SECURITY.md").read_text()
+    assert f"port-forward svc/{name}" in text, (
+        f"SECURITY.md's tunnel advice does not name the real Service ({name})"
+    )
+    assert f"{port}:{port}" in text, (
+        f"SECURITY.md's port-forward does not use the Service's real port ({port})"
+    )
+    assert f"ssh -L {port}:localhost:{port}" in text, (
+        f"SECURITY.md's ssh tunnel does not use the Service's real port ({port})"
+    )
+    # The NodePort is what an operator actually types in a browser; the doc should not send them
+    # to a port nothing listens on.
+    assert str(node_port) in text or "NodePort" in text, (
+        "SECURITY.md does not mention the NodePort the GUI is served on"
+    )
+
+
+def test_security_md_states_there_is_no_tls():
+    """The boundary must be in the OPERATOR document, not only in a module docstring.
+
+    gui_auth.py's threat model has said "there is no TLS here" for some time, and an operator
+    reading SECURITY.md could not find out. A limitation documented only where developers look is
+    not a stated boundary.
+    """
+    text = (ROOT / "SECURITY.md").read_text()
+    assert re.search(r"no TLS|plain HTTP|cleartext", text, re.IGNORECASE), (
+        "SECURITY.md does not state that the GUI is served over plain HTTP with no TLS"
+    )

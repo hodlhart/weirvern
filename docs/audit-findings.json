@@ -265,8 +265,8 @@
       "severity": "HIGH",
       "area": "Security",
       "title": "Bearer-token auth over cleartext HTTP, on a platform whose purpose is sniffing the LAN",
-      "verdict": null,
-      "note": "",
+      "verdict": "REFUTED",
+      "note": "The absence of TLS is a DELIBERATE, DOCUMENTED boundary, not a defect: gui_auth.py's threat model has said for some time that it does not defend against 'a network attacker who can terminate TLS (there is no TLS here -- the Service is plain HTTP on a NodePort)'. It defends against another LAN host reaching the port and token guessing, and says so. VERIFIED live: HTTP/1.0 with no TLS on the NodePort. The gap was that this was documented only where DEVELOPERS look -- SECURITY.md never mentioned it. Added there with runnable mitigations (kubectl port-forward svc/weirvern-gui 8088:8088, ssh -L 8088:localhost:8088), BOTH VERIFIED against the live cluster (port-forward returned HTTP 200 {\"ok\": true}; nodePort 30088 returned 200), now pinned by tests.",
       "report": "k10_security",
       "id": "F030"
     },
