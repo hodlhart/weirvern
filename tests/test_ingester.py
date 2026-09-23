@@ -28,9 +28,11 @@ from weirvern.ingester import (
     TailState,
     _offset_is_on_boundary,
     load_tail_state,
+    load_zeek_state,
     save_tail_state,
     tail_and_insert,
     tail_forever,
+    tail_zeek_dir,
 )
 
 
@@ -996,3 +998,168 @@ def test_the_state_DIR_is_configurable(tmp_path, monkeypatch):
     # back rather than refusing to ingest.
     if os.path.isdir(DEFAULT_TAIL_STATE_DIR) and os.access(DEFAULT_TAIL_STATE_DIR, os.W_OK):
         assert _tail_state_path_for("/data/flows.jsonl").startswith(DEFAULT_TAIL_STATE_DIR)
+
+
+# ── A RESTART RE-READ EVERY ZEEK LOG, MULTIPLYING ROWS IN TABLES WITH NO DEDUP KEY ────────────
+#
+# The NetFlow tailer got a persisted cursor in F018. The Zeek path never did: `tail_zeek_dir` kept a
+# dict IN MEMORY keyed by filename, so every worker restart re-read all ~155 logs (134 MB) from
+# offset zero. MEASURED on the live sensor, and the cost was NOT merely startup work:
+#
+#   * `zeek_notice` and `zeek_dhcp` are plain `MergeTree` with NO dedup key -- their `uid` is EMPTY,
+#     so they cannot be `ReplacingMergeTree ORDER BY (ts, uid)` the way `zeek_conn`/`zeek_dns` are.
+#     A re-read does not collapse; it ADDS.
+#     MEASURED: zeek_notice held 6556 rows for 162 distinct (ts, note, msg) groups; one row appeared
+#     64 times, and zeek_dhcp rows 47 times.
+#   * `zeek_features.py` aggregates those with plain `count()`, so `zeek_notice_count` read 64 where
+#     the truth was 1. That is a LIVE MODEL INPUT inflated 64x, growing with every restart.
+#
+# The re-read is what the cursor prevents, so these tests drive the REAL tailer across a simulated
+# restart rather than asserting on the checkpoint helpers in isolation.
+
+
+def _zeek_dir(tmp_path, records=2):
+    """A minimal but REAL Zeek notice.log: the header Zeek actually writes, then data rows."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    lines = [
+        "#separator \\x09",
+        "#set_separator\t,",
+        "#empty_field\t(empty)",
+        "#unset_field\t-",
+        "#path\tnotice",
+        "#open\t2026-09-23-09-00-00",
+        "#fields\tts\tuid\tsrc\tdst\tnote\tmsg",
+        "#types\ttime\tstring\taddr\taddr\tstring\tstring",
+    ]
+    for i in range(records):
+        lines.append(
+            f"170000000{i}.000000\t\t198.51.100.7\t203.0.113.9\tScan::Port_Scan\tscanned"
+        )
+    (logs / "notice.log").write_text("\n".join(lines) + "\n")
+    return logs
+
+
+class _NullClient:
+    def insert(self, table, batch, column_names=None):
+        pass
+
+    def query(self, *a, **kw):
+        class _R:
+            result_rows: list = []
+            column_names: list = []
+
+        return _R()
+
+
+def test_a_RESTART_does_not_re_read_the_zeek_logs(tmp_path, monkeypatch):
+    """THE DEFECT. Fresh in-memory state + existing checkpoints must ingest NOTHING."""
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    logs = _zeek_dir(tmp_path, records=2)
+
+    first = _NullClient()
+    n_first, state = tail_zeek_dir(first, str(logs))
+    assert n_first == 2, f"the first pass ingested {n_first} of 2 records"
+
+    # Same process, second pass.
+    n_again, state = tail_zeek_dir(first, str(logs), state)
+    assert n_again == 0, "an in-process second pass re-read records"
+
+    # A RESTART: fresh in-memory state, the on-disk checkpoints still there. This is the case that
+    # multiplied rows on the live sensor.
+    restarted = _NullClient()
+    n_restart, _ = tail_zeek_dir(restarted, str(logs), {})
+    assert n_restart == 0, (
+        f"a RESTART re-read {n_restart} record(s) from an unchanged file. zeek_notice and zeek_dhcp "
+        f"are plain MergeTree with an empty uid and no dedup key, so those records are ADDED "
+        f"-- this is what produced 64 copies of a single notice row"
+    )
+
+
+def test_a_RESTART_still_reads_what_arrived_while_it_was_down(tmp_path, monkeypatch):
+    """THE OTHER DIRECTION, so the fix cannot be "never read anything".
+
+    A persisted cursor must skip what was already read AND still pick up rows appended since.
+    """
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    logs = _zeek_dir(tmp_path, records=2)
+
+    first = _NullClient()
+    n_first, _state = tail_zeek_dir(first, str(logs))
+    assert n_first == 2
+
+    # Two MORE rows land while the process is down.
+    with open(logs / "notice.log", "a") as fh:
+        fh.write("1700000009.000000\t\t198.51.100.8\t203.0.113.9\tScan::Port_Scan\tnew\n")
+        fh.write("1700000010.000000\t\t198.51.100.8\t203.0.113.9\tScan::Port_Scan\tnew\n")
+
+    restarted = _NullClient()
+    n_restart, _ = tail_zeek_dir(restarted, str(logs), {})
+    assert n_restart == 2, (
+        f"after a restart with 2 new rows, {n_restart} were ingested; expected exactly 2. A cursor "
+        f"that skips everything is a data-loss bug, not a fix"
+    )
+
+
+def test_the_checkpoint_carries_the_FIELDS_header_not_just_the_offset(tmp_path, monkeypatch):
+    """Why a dedicated Zeek cursor exists rather than reusing the NetFlow one.
+
+    `TailState` stores offset/inode/identity. A Zeek data line is POSITIONAL, so an offset restored
+    without its `#fields` names resumes mid-file with no way to map a single row -- every record
+    silently dropped. The header has to be persisted WITH the offset or the persistence is worse than
+    nothing.
+    """
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    logs = _zeek_dir(tmp_path, records=2)
+    path = str(logs / "notice.log")
+
+    tail_zeek_dir(_NullClient(), str(logs))
+
+    st = load_zeek_state(path)
+    assert st.offset > 0, "no offset was checkpointed"
+    assert st.fields == ["ts", "uid", "src", "dst", "note", "msg"], (
+        f"the checkpoint restored fields={st.fields}. Without the header, a mid-file resume cannot "
+        f"map any row"
+    )
+    # THE SEPARATOR IS CHECKED, BUT NOT WITH AN INVENTED ONE. Real Zeek ALWAYS writes
+    # `#separator \x09` (tab) -- verified against every log on the live sensor -- so a
+    # comma-separated Zeek log does not exist to test against, and my first version of this test
+    # invented one. It failed, and the failure was informative rather than a defect: `parse_zeek_header`
+    # maps Zeek's escaped `\\x09` to a real tab, which is the same value the fallback uses, so a
+    # comma log cannot distinguish "persisted" from "dropped" either. What the assertion CAN do is
+    # pin the field list and the separator together, which is the thing a resume depends on.
+    assert st.separator == "\t", f"the separator was not restored: {st.separator!r}"
+    assert len(st.fields) == 6, (
+        f"the checkpoint restored {len(st.fields)} field names; the file's header has 6. A resume "
+        f"with a short field list silently drops the tail of every record"
+    )
+
+
+def test_the_zeek_cursor_revalidates_against_ROTATION(tmp_path, monkeypatch):
+    """A persisted cursor must be revalidated, not trusted.
+
+    This is the risk the NetFlow tailer's design already documents and the Zeek path inherits: a
+    checkpoint from before a rotation, applied to a REPLACED file, would skip everything written
+    since -- silently losing data rather than duplicating it. The existing boundary check must catch
+    it here too.
+    """
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    logs = _zeek_dir(tmp_path, records=2)
+    tail_zeek_dir(_NullClient(), str(logs))
+
+    # ROTATE: the live file is replaced by a new one with different content.
+    live = logs / "notice.log"
+    live.rename(logs / "notice.2026-09-23-09-00-00.log")
+    live.write_text(
+        "#separator \\x09\n"
+        "#fields\tts\tuid\tsrc\tdst\tnote\tmsg\n"
+        "#types\ttime\tstring\taddr\taddr\tstring\tstring\n"
+        "1700000999.000000\t\t198.51.100.9\t203.0.113.9\tScan::Port_Scan\tfresh\n"
+    )
+
+    c = _NullClient()
+    n, _ = tail_zeek_dir(c, str(logs), {})
+    assert n >= 1, (
+        "after a rotation the new file's record was NOT ingested -- the stale cursor was trusted "
+        "and the data silently lost"
+    )

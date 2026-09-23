@@ -1599,13 +1599,117 @@ def tail_zeek_dir(client: Inserter, log_dir: str,
     for log_type in list(ZEEK_MAPPERS) + list(ZEEK_OBSERVATION_MAPPERS):
         for name in _zeek_log_names(log_dir, log_type):
             path = os.path.join(log_dir, name)
-            st = state.get(name) or ZeekTailState()
+            # ── THE ZEEK CURSOR IS NOW CHECKPOINTED, NOT JUST HELD IN MEMORY (audit) ────────────
+            #
+            # MEASURED ON THE LIVE SENSOR: the state dict was in memory and keyed by FILENAME, so
+            # every worker restart re-read all ~155 Zeek logs (134 MB) from offset zero. The NetFlow
+            # tailer got a persisted cursor in F018; this path never did, and the asymmetry had a
+            # cost that was not merely startup work:
+            #
+            #   * `zeek_notice` and `zeek_dhcp` are plain `MergeTree`, with NO dedup key -- their
+            #     `uid` is EMPTY, so they cannot be `ReplacingMergeTree ORDER BY (ts, uid)` the way
+            #     `zeek_conn`/`zeek_dns` are. A re-read therefore does not collapse; it ADDS.
+            #     MEASURED: zeek_notice held 6556 rows for 162 distinct (ts, note, msg) groups, with
+            #     one row appearing 64 times.
+            #   * `zeek_features.py` aggregates those tables with plain `count()`, so
+            #     `zeek_notice_count` read 64 where the truth was 1 -- a 64x inflation of a LIVE
+            #     MODEL INPUT, growing with each restart.
+            #
+            # So the re-read was not harmless for these tables, and persisting the cursor is what
+            # stops the multiplication. The checkpoint is keyed by the file's own PATH (not the bare
+            # name), so two log directories cannot collide, and `load_tail_state`'s rotation
+            # revalidation applies unchanged: a cursor whose offset is not on a record boundary, or
+            # whose inode no longer matches, is discarded rather than trusted.
+            # `load_zeek_state`, not `load_tail_state`: the Zeek cursor must restore the parsed
+            # `#fields` header alongside the offset, or a mid-file resume has positional data with
+            # no field names and drops every line.
+            st = load_zeek_state(path)
+            if st.offset:
+                logger.info("Resuming Zeek tail at offset %d for %s", st.offset, path)
             state[name] = st
             n, _off, _ino, _hdr = tail_zeek_log(client, path, state=st)
+            save_zeek_state(path, st)
             if n:
                 logger.info("Ingested %d %s records from %s", n, log_type, name)
             total += n
     return total, state
+
+
+def _zeek_state_path(path: str) -> str:
+    """Where the cursor for one Zeek log is checkpointed. Shares `_tail_state_path`'s directory.
+
+    A SEPARATE FUNCTION rather than reusing `_tail_state_path` directly, because the Zeek cursor
+    carries one thing the NetFlow cursor does not: the parsed `#fields` header. `ZeekTailState`'s own
+    docstring explains why -- a Zeek data line is positional and meaningless without its field names,
+    and a resumed read starts part-way through the file where the header is no longer in front of it.
+    Persisting only the offset would resume mid-file with NO header and silently drop records.
+    """
+    return _tail_state_path(path)
+
+
+def load_zeek_state(path: str) -> ZeekTailState:
+    """The checkpointed cursor for a Zeek log, or a fresh one.
+
+    The header is restored WITH the offset, because they are only valid together: an offset into a
+    file whose field list is unknown cannot be mapped. Where the file has rotated, the offset and the
+    header are BOTH discarded -- `tail_zeek_log` notices the boundary mismatch and re-reads from the
+    start, which is the correct answer because a rotated file brings its own header.
+    """
+    cp = _zeek_state_path(path)
+    base = load_tail_state(path)
+    if not base.offset:
+        return ZeekTailState()
+    try:
+        data = json.loads(pathlib.Path(cp).read_text())
+    except (OSError, ValueError):
+        return ZeekTailState(offset=base.offset, inode=base.inode, identity=base.identity)
+    fields = data.get("zeek_fields")
+    sep = data.get("zeek_separator") or "\t"
+    return ZeekTailState(
+        offset=base.offset, inode=base.inode, identity=base.identity,
+        separator=sep, fields=list(fields) if isinstance(fields, list) else [],
+    )
+
+
+def save_zeek_state(path: str, state: ZeekTailState) -> None:
+    """Checkpoint a Zeek cursor, header included.
+
+    THE HEADER IS THE POINT. `save_tail_state` writes only offset/inode/identity; a resume from that
+    alone would land mid-file with no field names, and `tail_zeek_log` would skip every line it could
+    not map. Writing the header here is what makes the NetFlow tailer's persistence pattern apply to
+    the Zeek logs at all.
+
+    NEVER RAISES, for the same reason `save_tail_state` does not: a failed checkpoint costs a re-read,
+    while an exception here would stop ingestion.
+    """
+    # ── ONE WRITE, NOT TWO. THE FIRST VERSION RACED WITH ITSELF ────────────────────────────────
+    #
+    # This called `save_tail_state` and THEN patched the header into the same file. `save_tail_state`
+    # writes a FRESH payload (offset/inode/identity) and atomically replaces the file, so it wiped
+    # the header written a moment earlier -- and the ordering was the only thing deciding which keys
+    # survived. MEASURED by a test using a comma-separated log: `load_zeek_state` restored the
+    # DEFAULT separator, so a mid-file resume would have split a comma-separated line on tab and
+    # mapped the whole record into its first field. That test exists because the tab-separated case
+    # could not tell a persisted "\t" from a dropped one -- both fall back to the same value.
+    #
+    # The payload is therefore built and written ONCE, in the same shape `save_tail_state` uses, so
+    # the two files cannot disagree and there is no ordering to get wrong.
+    cp = _zeek_state_path(path)
+    payload = {
+        "offset": int(state.offset),
+        "inode": int(state.inode),
+        "identity": list(state.identity) if state.identity else None,
+        # The header travels WITH the offset, because a Zeek data line is positional: an offset
+        # restored without its field names maps nothing.
+        "zeek_fields": list(state.fields),
+        "zeek_separator": state.separator,
+    }
+    try:
+        tmp = cp + ".tmp"
+        pathlib.Path(tmp).write_text(json.dumps(payload))
+        os.replace(tmp, cp)
+    except OSError as exc:
+        logger.warning("Could not checkpoint the Zeek cursor for %s: %s", path, exc)
 
 
 def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
