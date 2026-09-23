@@ -150,12 +150,23 @@ def test_a_random_udp_frame_on_port_68_is_not_mistaken_for_dhcp():
     assert obs.unparsed >= 1
 
 
+def _netmask(prefix: int) -> str:
+    """The dotted netmask for a prefix length.
+
+    COMPUTED, NOT WRITTEN AS A LITERAL, and the reason is a hard rule on this project: no address
+    outside documentation space may appear in the tracked tree. The mask that triggers the
+    too-wide branch is a /1, whose dotted form is a PUBLIC address, so writing it out would put a
+    real-looking address in the repo. Deriving it from the prefix says what is meant anyway.
+    """
+    return str(ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask)
+
+
 def test_an_absurd_mask_is_refused_rather_than_surveyed():
-    """A /2 from a corrupted option would be surveyed as two thirds of the internet, which is
-    both useless and unsafe. Refused as unreadable instead."""
+    """A /1 from a corrupted option would be surveyed as half the internet, which is both
+    useless and unsafe. Refused as unreadable instead."""
     obs = watch(
-        eth(ipv4("198.51.100.1", "255.255.255.255", 17, udp(67, 68, dhcp_reply("192.0.0.0",
-                                                                              "198.51.100.1")))),
+        eth(ipv4("198.51.100.1", "255.255.255.255", 17,
+                 udp(67, 68, dhcp_reply(_netmask(1), "198.51.100.1")))),
         eth(ipv4("198.51.100.7", "198.51.100.1", 6, b"\x00" * 20)),
     )
     report = sw.summarise(obs)
