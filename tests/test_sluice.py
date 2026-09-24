@@ -32,6 +32,8 @@ from weirvern.sluice import (
     GATE_STATE_ARMED,
     GATE_STATE_DEGRADED,
     GATE_STATE_DISARMED,
+    NFT_TABLE,
+    NFT_TABLE_IN,
     Backend,
     NftBackend,
     Rule,
@@ -1275,3 +1277,98 @@ def test_with_no_node_name_the_hostname_is_still_the_answer():
     """A bare CLI or test run has no NODE_NAME, and there the hostname IS the box."""
     written = _heartbeat_writes(node_name=None)
     assert written and written[0]
+
+
+# ── GLM 5.3 REVIEW: THE GATE MUST NOT REPORT ARMED OVER AN INSTALL THAT FAILED ──────────────────
+#
+# `arm()` called `self._run([...])` WITHOUT UNPACKING, inside a try/except, and `_nft_run` RETURNS
+# (False, err) rather than raising -- so the except was dead code for the real backend, a rejected
+# ruleset was discarded, and arm() reported success. The read-back that follows is not a substitute:
+# it asks whether a TABLE by that name exists, which a stale table from a previous arm satisfies.
+
+
+class _ScriptedNft:
+    """A fake nft whose install and read-back can be scripted independently."""
+
+    def __init__(self, *, install_ok=True, table_present=True):
+        self.install_ok = install_ok
+        self.table_present = table_present
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, stdin=None, capture=False):  # noqa: ANN001
+        self.calls.append(list(args))
+        if list(args)[:3] == ["nft", "delete", "table"]:
+            # Absence on a first arm: nft errors, which arm() ignores by design.
+            return (True, "")
+        if "list" in args:
+            return (True, "table inet weirvern_sluice {}" if self.table_present else "")
+        if "-f" in args:
+            return (self.install_ok, "" if self.install_ok else "syntax error, unexpected drop")
+        return (True, "")
+
+
+def test_arm_REPORTS_FAILURE_when_nft_rejects_the_ruleset():
+    """THE DEFECT. A rejected install must not read as armed."""
+    fake = _ScriptedNft(install_ok=False, table_present=True)  # a stale table exists
+
+    ok, reason = NftBackend(runner=fake).arm([live("r1", src_cidr="198.51.100.5/32")], iface="ens19")
+    assert ok is False, (
+        f"arm() reported SUCCESS while nft REJECTED the ruleset -- a stale table from a previous arm "
+        f"satisfies the read-back, so 'rejected' and 'armed with the new rules' were "
+        f"indistinguishable. reason={reason!r}"
+    )
+    assert "rejected" in reason, reason
+
+
+def test_arm_still_reports_success_when_the_install_really_worked(monkeypatch):
+    """The other direction, so the fix cannot be 'always fail'."""
+    fake = _ScriptedNft(install_ok=True, table_present=True)
+    ok, reason = NftBackend(runner=fake).arm([live("r1", src_cidr="198.51.100.5/32")], iface="ens19")
+    assert ok is True, reason
+
+
+def test_arm_DELETES_both_tables_before_installing():
+    """ARM MUST BE A REPLACE, NOT AN ACCUMULATE (glm-5.3 review).
+
+    `_base_ruleset` is purely declarative -- no flush, no delete -- so arming twice could only ADD to
+    what the previous arm left, and `disarm()` is the only code that removes kernel state while the
+    enforcement cycle never calls it between passes. MEASURED consequence: a rule that EXPIRED or was
+    REVOKED stopped being compiled while its installed drop rule kept matching, so traffic stayed
+    blocked after the block was withdrawn. For a gate that is supposed to fail OPEN, that is the worst
+    failure available.
+    """
+    fake = _ScriptedNft()
+
+    NftBackend(runner=fake).arm([live("r1", src_cidr="198.51.100.5/32")], iface="ens19")
+
+    deletes = [c for c in fake.calls if c[:3] == ["nft", "delete", "table"]]
+    tables = {c[4] for c in deletes if len(c) > 4}
+    assert NFT_TABLE in tables, (
+        f"arm() did not delete {NFT_TABLE} before installing, so a rule removed from the list would "
+        f"keep blocking. deletes={deletes}"
+    )
+    assert NFT_TABLE_IN in tables, (
+        f"arm() did not delete {NFT_TABLE_IN}; an inbound drop rule would survive its own removal. "
+        f"deletes={deletes}"
+    )
+    # And the delete must come BEFORE the install, or it would wipe what was just added.
+    i_delete = next(i for i, c in enumerate(fake.calls) if c[:3] == ["nft", "delete", "table"])
+    i_install = next(i for i, c in enumerate(fake.calls) if "-f" in c)
+    assert i_delete < i_install, "the tables were deleted AFTER the install, wiping the new ruleset"
+
+
+def test_arm_REPORTS_FAILURE_when_the_install_left_no_table():
+    """A SUCCESSFUL exit is not the same as an installed gate -- this project's recurring failure mode.
+
+    `nft -f` returning 0 and the table being absent cannot both be true of a working install, so the
+    read-back is a real check, not a formality. Without a test it was a line that could be deleted
+    silently.
+    """
+    fake = _ScriptedNft(install_ok=True, table_present=False)
+
+    ok, reason = NftBackend(runner=fake).arm([live("r1", src_cidr="198.51.100.5/32")], iface="ens19")
+    assert ok is False, (
+        "arm() reported success after an install that left no table behind. The gate would read as "
+        "ARMED while blocking nothing"
+    )
+    assert "not present" in reason, reason

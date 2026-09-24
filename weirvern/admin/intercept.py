@@ -655,7 +655,12 @@ class Intercept:
         #    the victim loses the network instead of being relayed. Installing it first means
         #    a failure here aborts with NO poison frames sent.
         path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip,
-                                               gateway_mac=self.plan.gateway_mac)
+                                               gateway_mac=self.plan.gateway_mac,
+                                               # THE SEGMENT, so table 100 gets a connected route and
+                                               # return traffic for a host ON the segment is delivered
+                                               # on-link instead of being sent back at the gateway
+                                               # (glm-5.3 review, measured on a kernel).
+                                               segment=self.plan.segment)
         if path_problems:
             # ── A REFUSED START MUST LEAVE NOTHING BEHIND (audit F032, CONFIRMED BY RUNNING IT) ──
             #

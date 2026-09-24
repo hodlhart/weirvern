@@ -110,8 +110,56 @@ def write_registration(client: Client, reg: Registration) -> None:
     so it must order strictly after whatever row it is replacing. Copying a timestamp from the
     caller would let an edit lose to the row it was meant to replace, and the operator would see
     their change silently not apply.
+
+    ── THE TIMEZONE BUG THAT MADE THE VERSION COLUMN LIE (glm-5.3 review, measured live) ────────
+
+    Every timestamp here was sent as a NAIVE datetime -- `.replace(tzinfo=None)` on local writes,
+    and `added_at` from `make_registration` as `datetime.now(UTC)` with its tzinfo dropped by the
+    driver. clickhouse-connect sends a naive datetime as wall-clock text with no offset, and the
+    SERVER interprets it in the server's timezone. MEASURED on the live cluster:
+
+        server timezone()   = America/Chicago   (UTC-5)
+        true UTC now        = 2026-09-24 00:23
+        server now()        = 2026-09-23 19:23
+        a row written at the real 14:56 UTC    -> updated_at 2026-09-23 14:56:05
+
+    so the stored value named "updated_at" is FIVE HOURS EARLIER than the instant it was written.
+    For a `ReplacingMergeTree(updated_at)` version column that is not cosmetic: the version has to
+    increase or the replacement loses. An edit written in the same local hour as the row it replaces
+    computes a version EARLIER than that row, so `FINAL` keeps the OLD registration and the operator
+    watches their change silently not apply -- which is precisely the failure the docstring above
+    says this line exists to prevent.
+
+    It also made the live rows mutually incoherent: `added_at` and `updated_at` for one sensor
+    differed by 18,894s and 18,014s in two samples, which is the offset showing through rather than
+    real elapsed time.
+
+    FIXED BY SENDING AWARE UTC. An aware datetime carries its offset, so the server stores the
+    instant rather than a wall-clock reading, and the comparison is correct whatever the server's
+    timezone is. `added_at` already arrived aware from `make_registration`; the two `.replace(
+    tzinfo=None)` calls were what discarded it.
     """
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
+    # THE DOCUMENTED CONTRACT MUST COVER THE WRITE (glm-5.3 review). `register`'s docstring promises
+    # "FleetStoreError on a storage failure" and the READ path honours that (see read_registrations),
+    # but this insert was unwrapped -- so an INSERT failure (a timeout, or the table dropped between
+    # the read and the write) escaped as a raw driver exception. A caller catching FleetStoreError,
+    # which is what the contract tells them to do, would not catch it. The error taxonomy is part of
+    # the API, and one unwrapped call makes it a lie for exactly the failure class it exists for.
+    try:
+        _write_registration_row(client, reg, now)
+    except FleetStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- the caller needs one error type, not the driver's
+        logger.debug("weirlings registry write failed for %s: %s", reg.sensor_id, exc)
+        raise FleetStoreError(
+            f"the registration for {reg.sensor_id!r} could not be written, so it may not be in "
+            "effect. Check that ClickHouse is reachable and the schema job has run."
+        ) from exc
+
+
+def _write_registration_row(client: Client, reg: Registration, now: datetime) -> None:
+    """The raw insert, separated so the caller can wrap it in the module's error type."""
     client.insert(
         TABLE,
         [[reg.sensor_id, reg.address, reg.segment, reg.expected_mode,
@@ -122,23 +170,36 @@ def write_registration(client: Client, reg: Registration) -> None:
           # reset it on every edit. Taking the earliest of the two keeps the fact honest.
           reg.added_at or now,
           now,
-          reg.revoked_at.replace(tzinfo=None) if reg.revoked_at else None]],
+          reg.revoked_at or None]],
         column_names=COLUMNS,
     )
 
 
 def register(client: Client, sensor_id: str, *, address: str = "", segment: str = "",
-             expected_mode: str = "loch", note: str = "",
-             now: datetime | None = None) -> Registration:
+             expected_mode: str = "loch", note: str = "", now: datetime | None = None,
+             clear: set[str] | None = None) -> Registration:
     """Create or update a registration. Raises FleetError on bad input, FleetStoreError on a
     storage failure.
 
-    AN EDIT PRESERVES `added_at`. Re-registering an existing sensor is an ordinary thing to do
-    (fixing a typo in the segment, adding its address once known), and stamping a new added_at
-    each time would make the fleet view report every edited sensor as newly added.
+    AN EDIT PRESERVES WHAT THE CALLER DID NOT MENTION, INCLUDING `added_at` (audit, glm-5.3 review).
+
+    The docstring used to say re-registering is "an ordinary thing to do (fixing a typo in the
+    segment, adding its address once known)" while the code implemented FULL REPLACEMENT, carrying
+    over only `added_at`. So the documented example -- `register(client, "s1", address="...")` to add
+    an address -- silently blanked the sensor's `segment` and `note`, because both default to `""`.
+    An "edit" that discards previously declared facts is the row-existence problem one level up: the
+    registry looks updated while the operator's earlier declarations are gone.
+
+    The rule now: A FIELD THE CALLER NAMES IS AUTHORITATIVE, INCLUDING AN EMPTY STRING; a field left
+    unset keeps its previous value. Defaults are still `""` rather than `None` so the function
+    signature and every existing call site are unchanged -- but `""` must be taken as "unset" for a
+    field that already has a value, which is why `clear` exists. Naming a field is still how you
+    blank it deliberately: `clear={"note"}` empties the note while leaving everything else alone.
+    That way neither behaviour is a surprise, and the destructive one has to be asked for.
     """
-    reg = make_registration(sensor_id, address=address, segment=segment,
-                           expected_mode=expected_mode, note=note, now=now)
+    sid = validate_sensor_id(sensor_id)
+    reg = make_registration(sid, address=address, segment=segment,
+                            expected_mode=expected_mode, note=note, now=now)
     existing = None
     try:
         for r in read_registrations(client, include_revoked=True):
@@ -150,7 +211,20 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
         # preserve `added_at`, and inventing it would change a fact the operator reads.
         raise
     if existing is not None:
-        reg = Registration(**{**reg.__dict__, "added_at": existing.added_at})
+        # Merge, rather than replace. `added_at` is always preserved; the three descriptive fields
+        # fall back to their existing value when the caller left them empty.
+        merged = {**reg.__dict__, "added_at": existing.added_at}
+        for field_name in ("address", "segment", "note"):
+            given = getattr(reg, field_name, "")
+            if field_name in (clear or set()):
+                merged[field_name] = ""
+            elif not str(given).strip():
+                # Not named (or named empty) and the caller did not ask to clear it: keep what the
+                # operator already declared rather than blanking it.
+                merged[field_name] = getattr(existing, field_name, "")
+        # `expected_mode` is not merged: it defaults to a real value ("loch"), so an absent argument
+        # is indistinguishable from "loch" and merging it would make the mode unchangeable.
+        reg = Registration(**merged)
     write_registration(client, reg)
     return reg
 
@@ -164,6 +238,16 @@ def set_enabled(client: Client, sensor_id: str, enabled: bool,
     an alarm every refresh would train the reader to ignore the column. Raises FleetError when
     the sensor is not registered -- creating one from a toggle would register a sensor at an
     address and segment nobody specified.
+
+    ── A TOGGLE MUST NOT UN-REVOKE A RETIRED SENSOR (audit, glm-5.3 review) ────────────────────
+
+    This wrote `"revoked_at": None if enabled else reg.revoked_at`, so switching ON a sensor that
+    had been REVOKED silently erased its revocation -- and `_find` includes revoked rows, so the
+    toggle could reach exactly that sensor. The operator retired it, then a one-click toggle
+    resurrected it with the audit trail overwritten, which is how a retired sensor quietly
+    reappears in a fleet of twenty. Disabling an already-revoked row is now a no-op rather than a
+    rewrite, and enabling one is refused with an instruction to re-register: resurrecting is a
+    deliberate act and should read like one.
     """
     sid = validate_sensor_id(sensor_id)
     reg = _find(client, sid)
@@ -173,8 +257,18 @@ def set_enabled(client: Client, sensor_id: str, enabled: bool,
             "first: a toggle carries no address, segment or mode, so creating one from it "
             "would invent those facts."
         )
-    out = Registration(**{**reg.__dict__, "enabled": bool(enabled),
-                          "revoked_at": None if enabled else reg.revoked_at})
+    if reg.revoked_at is not None:
+        if enabled:
+            raise FleetError(
+                f"{sid!r} was revoked, so it cannot simply be switched back on -- that would erase "
+                "the record that it was retired. Register it again if it is coming back into "
+                "service."
+            )
+        # Already revoked and being disabled: nothing to change, and rewriting the row would only
+        # move its version.
+        return reg
+
+    out = Registration(**{**reg.__dict__, "enabled": bool(enabled)})
     write_registration(client, out)
     return out
 

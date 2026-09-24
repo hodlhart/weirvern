@@ -222,3 +222,92 @@ def test_the_intercept_records_originals_before_it_changes_anything():
         "the sysctl snapshot is taken AFTER the forwarding path is installed, so it may record the "
         "intercept's own values and 'restore' them"
     )
+
+
+# ── GLM 5.3 REVIEW: READ-ONLY DOES NOT MEAN SET, AND A SECOND APPLY MUST NOT EAT THE ORIGINALS ───
+#
+# These use the file's own `proc` fixture (a FakeProcSys behind read_sysctl/sysctl_path) rather than a
+# second home-grown fake -- my first attempt invented its own dict keys with slashes instead of dots
+# and tested nothing.
+
+
+def test_the_readonly_branch_VERIFIES_instead_of_assuming(proc, monkeypatch):
+    """THE DEFECT (glm-5.3 review, confirmed live).
+
+    In the read-only branch `apply()` returned `[]` -- "nothing failed" -- without ever comparing the
+    recorded values to the values siphon needs. It ASSUMED the overlay's privileged init container had
+    set them. MEASURED on the live cluster: the deployed Zeek DaemonSet has NO initContainers, so on
+    that node the sysctls are correct for some other reason and nothing in the product checked them.
+    Had they been wrong, every path would still have reported success, the intercept would have
+    poisoned, and the segment would have lost its gateway behind a clean-looking log.
+
+    The fixture's node has rp_filter=2 and send_redirects=1 -- NOT siphon's required 0 -- so a guard
+    that cannot write must now say so instead of reporting success.
+    """
+    guard = sysctl_guard.SysctlGuard("eth1")
+    monkeypatch.setattr(guard.capability, "can_write", False, raising=False)
+
+    failed = guard.apply(write=False)
+    assert failed, (
+        f"the read-only branch reported success on a node whose sysctls are WRONG "
+        f"(rp_filter={proc.values['net.ipv4.conf.all.rp_filter']}, "
+        f"send_redirects={proc.values['net.ipv4.conf.all.send_redirects']}). It cannot write them, "
+        f"which is fine, but an empty failure list means 'safe to poison'"
+    )
+    joined = " ".join(failed)
+    assert "rp_filter" in joined and "READ-ONLY" in joined, joined
+
+
+def test_the_readonly_branch_is_clean_when_the_values_are_CORRECT(monkeypatch):
+    """The other direction: a properly configured node must not produce noise."""
+    fake = FakeProcSys({
+        "net.ipv4.ip_forward": 1,
+        "net.ipv4.conf.all.rp_filter": 0,
+        "net.ipv4.conf.all.send_redirects": 0,
+        "net.ipv4.conf.eth1.rp_filter": 0,
+        "net.ipv4.conf.eth1.send_redirects": 0,
+    })
+    monkeypatch.setattr(sysctl_guard, "read_sysctl", fake.read)
+
+    guard = sysctl_guard.SysctlGuard("eth1")
+    monkeypatch.setattr(guard.capability, "can_write", False, raising=False)
+
+    failed = guard.apply(write=False)
+    assert failed == [], f"a correctly configured node reported problems: {failed}"
+
+
+def test_a_SECOND_apply_does_not_overwrite_the_true_originals(proc):
+    """THE OTHER DEFECT.
+
+    apply() re-read every sysctl unconditionally, so a second apply recorded the FIRST apply's own
+    values as the originals. `restore()` would then write those back and report success while the node
+    kept the intercept's settings -- a clean-looking teardown that changed nothing. The docstring
+    claims the originals are the objective record, so it has to be first-wins.
+
+    The fixture starts at rp_filter=2 / send_redirects=1, which is the pre-intercept truth.
+    """
+    guard = sysctl_guard.SysctlGuard("eth1")
+    guard.apply()
+    first = dict(guard.snapshot.original)
+    assert first["net.ipv4.conf.all.rp_filter"] == 2, (
+        f"the first apply recorded {first['net.ipv4.conf.all.rp_filter']} rather than the node's true 2"
+    )
+
+    guard.apply()          # a SECOND apply, as a repeated setup would do
+    second = dict(guard.snapshot.original)
+    assert second == first, (
+        f"a second apply() changed the recorded originals: {first} -> {second}. The values it "
+        f"recorded the second time are the ones the FIRST apply wrote, so restore() would 'restore' "
+        f"the intercept's own settings and report success"
+    )
+
+    # And the end-to-end consequence: restore still puts the node back to the TRUE values.
+    guard.restore()
+    assert proc.values["net.ipv4.conf.all.rp_filter"] == 2, (
+        f"after two applies and a restore, rp_filter is {proc.values['net.ipv4.conf.all.rp_filter']} "
+        f"rather than the node's original 2 -- the teardown reported success and changed nothing"
+    )
+    assert proc.values["net.ipv4.conf.all.send_redirects"] == 1, (
+        f"send_redirects was left at {proc.values['net.ipv4.conf.all.send_redirects']}, not its "
+        f"original 1"
+    )

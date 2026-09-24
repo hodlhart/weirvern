@@ -234,22 +234,63 @@ class SysctlGuard:
         """
         failed: list[str] = []
 
-        # READ FIRST, ALWAYS. The value to restore is the value that was here, which is not knowable
+        # READ FIRST, ALWAYS -- AND ONLY ONCE PER VALUE (glm-5.3 review).
+        #
+        # The value to restore is the value that was here before WE touched it, which is not knowable
         # from a constant -- rp_filter is 2 on some distributions and 0 on others.
+        #
+        # This used to assign unconditionally, so a SECOND apply() on the same guard overwrote the
+        # true pre-intercept originals with the values the FIRST apply() had just written
+        # (ip_forward=1, rp_filter=0). `restore()` would then write those back and report success
+        # while the node kept the intercept's settings -- a clean-looking teardown that changed
+        # nothing. The module's own docstring claims the originals are the objective record, so it has
+        # to be first-wins for that to be true.
         for name in self.names():
-            self.snapshot.original[name] = read_sysctl(name)
+            if name not in self.snapshot.original:
+                self.snapshot.original[name] = read_sysctl(name)
 
         if not self.capability.can_write:
-            # NOT A FAILURE. /proc/sys is read-only in the deployed container by design: the node's
-            # sysctls are set by the overlay's privileged init container, which is the only thing
-            # with a writable /proc/sys. Returning cleanly here, with the originals recorded, is
-            # what lets the caller know there is nothing to restore from INSIDE -- the recorded
-            # values are still the useful output.
+            # NOT A FAILURE THAT THIS PROCESS CANNOT WRITE. /proc/sys is read-only in the deployed
+            # container by design: the node's sysctls are set by the overlay's privileged init
+            # container, which is the only thing with a writable /proc/sys. The recorded values are
+            # still the useful output, so this returns without per-sysctl write failures -- reporting
+            # five of them on every run trains the reader to ignore them, and then the one that
+            # matters is ignored too.
             #
-            # Reporting five per-sysctl write failures on every run, as an earlier version did, trains
-            # the reader to ignore them -- and then the one that matters is ignored too.
+            # ── BUT READ-ONLY DOES NOT MEAN SET (glm-5.3 review, CONFIRMED LIVE) ────────────────
+            #
+            # This returned `[]` -- "nothing failed" -- WITHOUT EVER COMPARING the recorded values to
+            # the values siphon needs. It assumed the init container had done its job. MEASURED on the
+            # live node: the deployed DaemonSet has NO initContainers (`kubectl get ds zeek -o
+            # jsonpath='{...initContainers[*].name}'` is empty), so on this cluster the sysctls are
+            # correct for some OTHER reason and nothing in the product checked or set them. If they
+            # had been wrong, every path here would still have reported success, the intercept would
+            # have poisoned, and the segment would have lost its gateway with a clean-looking log.
+            #
+            # So the read-only branch now VERIFIES instead of assuming. A wrong value is reported as
+            # a failure, because the caller's contract is that an empty problem list means "safe to
+            # poison" -- and an unchecked value cannot support that claim.
             self.snapshot.unrestorable.extend(self.names())
-            return []
+            for name, want, iface_scoped in MANAGED:
+                for target in [name] + [t.format(iface=self.iface) for t in iface_scoped]:
+                    current = self.snapshot.original.get(target)
+                    if current is None:
+                        # Unreadable: cannot confirm, so it is not confirmed-good either.
+                        failed.append(
+                            f"{target} could not be read, so it could not be verified. Siphon needs "
+                            f"{want}."
+                        )
+                        continue
+                    if int(current) != int(want):
+                        failed.append(
+                            f"{target} is {current} but siphon needs {want}, and this container's "
+                            f"/proc/sys is READ-ONLY so it cannot be corrected from here. Set it on "
+                            f"the node (the overlay's privileged init container does this, or: "
+                            f"sysctl -w {target.replace('/', '.')}={want}). Until then an intercept "
+                            f"would poison ARP with forwarding misconfigured, which loses the "
+                            f"segment's gateway."
+                        )
+            return failed
 
         for name, want, iface_scoped in MANAGED:
             for target in [name] + [t.format(iface=self.iface) for t in iface_scoped]:

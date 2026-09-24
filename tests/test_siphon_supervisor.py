@@ -388,3 +388,74 @@ def test_status_is_readable_without_raising():
     for key in ("configured", "supervising", "intercept_running", "restarts",
                 "last_exit_code", "note"):
         assert key in st
+
+
+# ── GLM 5.3 REVIEW: A RESTART MUST ACTUALLY SUPERVISE ───────────────────────────────────────────
+#
+# `stop()` set `self._stop` and nothing cleared it, so a SECOND `start()` on the same instance -- after
+# a stop, or a config-reload restart -- created a thread whose first loop test
+# (`while not self._stop.is_set()`) was immediately false. start() returned normally while the
+# supervisor supervised NOTHING: the caller has no reason to check, and the log says it started.
+
+
+def test_a_SECOND_start_actually_supervises(monkeypatch):
+    """THE DEFECT. After stop(), start() again must run the loop."""
+    import time
+
+    s = sup.SiphonSupervisor(_cfg(), readiness=_ready, poll_s=0.01)
+
+    iterations = []
+
+    def _fake_run():
+        # COUNTED INSIDE THE LOOP. My first version incremented before the loop, so it reported "the
+        # loop ran" even when the loop's first test was immediately false -- the very defect under
+        # test -- and the mutation survived the test written to catch it.
+        while not s._stop.is_set():
+            iterations.append(1)
+            s._stop.wait(0.01)
+
+    monkeypatch.setattr(s, "_run", _fake_run)
+
+    s.start()
+    deadline = time.time() + 2
+    while not iterations and time.time() < deadline:
+        time.sleep(0.01)
+    assert iterations, "the first start() did not run its loop"
+    first = len(iterations)
+
+    s.stop()
+    assert s._stop.is_set(), "stop() did not set the flag"
+
+    # THE RESTART.
+    s.start()
+    deadline = time.time() + 2
+    while len(iterations) == first and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(iterations) > first, (
+        "a second start() ran no iterations: the stop flag was never cleared, so the supervisor "
+        "silently supervises nothing while start() reports success"
+    )
+    s.stop()
+
+
+def test_a_double_start_does_not_replace_a_live_supervisor(monkeypatch):
+    """One child must not get two supervisors."""
+    s = sup.SiphonSupervisor(_cfg(), readiness=_ready, poll_s=0.01)
+    started = []
+
+    def _fake_run():
+        started.append(1)
+        while not s._stop.is_set():
+            s._stop.wait(0.01)
+
+    monkeypatch.setattr(s, "_run", _fake_run)
+    s.start()
+    t1 = s._thread
+    assert t1 is not None and t1.is_alive()
+
+    s.start()          # called again while the first thread is alive
+    assert s._thread is t1, (
+        "a second start() while the first thread was alive replaced it, so one child would have two "
+        "supervisors"
+    )
+    s.stop()

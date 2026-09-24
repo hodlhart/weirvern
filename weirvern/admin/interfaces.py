@@ -258,6 +258,13 @@ class ProbeResult:
     hostname: str = ""
     source: str = "local"          # "local" or a node name
     error: str = ""
+    # THE PROBE ALREADY COMPUTED THIS AND IT WAS THROWN AWAY. The embedded probe emits
+    # `host_addresses` (it shells `hostname -I`), and `parse_probe` read only `interfaces`,
+    # `default_route_iface` and `hostname` -- so the one place in the product that knows this host's
+    # own addresses produced them and dropped them on the floor. Callers needing "our addresses" (the
+    # sluice self-block check) therefore had to guess, and guessed wrong: they used
+    # `getaddrinfo(gethostname())`, which inside a pod resolves to the POD's address.
+    host_addresses: list[str] = field(default_factory=list)
 
     def by_name(self, name: str) -> InterfaceInfo | None:
         for i in self.interfaces:
@@ -300,6 +307,8 @@ def parse_probe(stdout: str, source: str = "local") -> ProbeResult:
         default_route_iface=default_iface,
         hostname=data.get("hostname", ""),
         source=source,
+        # The probe emitted this all along; see the note on the field.
+        host_addresses=[str(a) for a in (data.get("host_addresses") or []) if str(a).strip()],
     )
 
 

@@ -474,7 +474,8 @@ def forwarding_path_problems(iface: str, gateway: str,
 
 
 def ensure_forwarding_path(iface: str, gateway: str,
-                           gateway_mac: str | None = None) -> list[str]:
+                           gateway_mac: str | None = None,
+                           segment: str = "") -> list[str]:
     """Install the policy route that makes forwarded traffic use the capture interface.
 
     Idempotent: deletes and re-adds, so a stale entry from a previous run cannot persist.
@@ -482,6 +483,32 @@ def ensure_forwarding_path(iface: str, gateway: str,
 
     Also refuses to touch anything if the gateway is not reachable on this interface, so a
     wrong --gateway cannot install a route that black-holes the segment.
+
+    ── THE RETURN PATH NEEDS THE CONNECTED SEGMENT ROUTE (glm-5.3 review, MEASURED ON A KERNEL) ──
+
+    Table 100 used to receive ONLY `default via <gateway> dev <iface>`. A policy rule pointing at a
+    table whose default matches EVERY destination means the lookup never falls through to main's
+    connected-segment route, so the return direction was broken: the gateway sends a host on the
+    segment back to us, we look that host up in table 100, match the DEFAULT, and send it straight
+    back at the gateway.
+
+    MEASURED on a real kernel in an isolated namespace, with a bridge carrying gateway, sensor and
+    peer on one segment:
+
+        BASELINE (no intercept)     198.51.100.20 from 198.51.100.1 dev br0              <- on-link
+        AS SHIPPED (default only)   198.51.100.20 from 198.51.100.1 via 198.51.100.1 dev br0  <- BACK AT THE GW
+        WITH the segment route      198.51.100.20 from 198.51.100.1 dev br0 table 100    <- on-link, correct
+
+    and the forward direction (an off-segment destination) still resolved via the gateway, so the fix
+    does not break what the default is for.
+
+    WHY THIS MATTERS OUT OF PROPORTION TO ITS SIZE: it is the best available explanation for the
+    report that the network broke during a whole-VLAN intercept test. A single-host intercept can
+    survive it; a whole-segment one cannot, because every host's return traffic becomes a loop.
+
+    The segment is OPTIONAL so a caller that cannot supply one keeps the previous behaviour rather
+    than silently gaining a route it did not ask for. Callers SHOULD pass it -- `intercept.py` passes
+    `plan.segment`.
 
     `gateway_mac` should be supplied when the caller already knows it (the plan does). The
     fallback lookup reads the kernel neighbour table, which is empty when the capture
@@ -517,6 +544,23 @@ def ensure_forwarding_path(iface: str, gateway: str,
         # pointing at an empty table drops traffic. So the failure short-circuits here and the
         # caller's cleanup removes anything already installed.
         return problems
+
+    # ── THE RETURN PATH (glm-5.3 review) ─────────────────────────────────────────────────────────
+    #
+    # The connected segment, so a packet for a host ON the segment is delivered on-link instead of
+    # being handed back to the gateway. Added BEFORE the policy rule, so the rule only ever goes in
+    # once the table can resolve BOTH directions -- the same ordering rule the F032 note above
+    # applies to the default route.
+    if segment:
+        rc, out = _run("ip", "route", "add", segment, "dev", iface, "table", str(POLICY_TABLE))
+        if rc != 0:
+            problems.append(
+                f"could not add the connected segment route {segment} dev {iface} to table "
+                f"{POLICY_TABLE}: {out}. Without it, return traffic for a host on the segment "
+                f"matches the default and is sent back at the gateway, so the segment loses its "
+                f"gateway. This is the whole-VLAN failure mode."
+            )
+            return problems
 
     _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
     rc, out = _run("ip", "rule", "add", "iif", iface, "lookup", str(POLICY_TABLE),

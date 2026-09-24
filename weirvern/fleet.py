@@ -228,6 +228,11 @@ class SensorHealth:
     # when something is misconfigured. My first version let the declaration win and dropped the
     # observation, so a sensor intercepting the wrong segment looked correctly placed.
     reported_segment: str = ""
+    # The OBSERVED source address, from the heartbeat. Separate from `address` for the same reason,
+    # and because the two being one field is what made the comparison below impossible (glm-5.3
+    # review): with `address` holding the declaration, a heartbeat from somewhere else was never
+    # recorded and the check could never fire.
+    reported_address: str = ""
     expected_mode: str = ""
     reported_mode: str = ""
     enabled: bool = True
@@ -326,8 +331,22 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
     # Shown, not stored: a heartbeat's address is an observation and may change, while the
     # registration is what the operator declared. Writing it back would make the registry a
     # moving target and lose the original declaration.
+    # ── THE OBSERVED ADDRESS IS CARRIED SEPARATELY FROM THE DECLARATION (glm-5.3 review) ─────────
+    #
+    # This used to read `if not h.address and newest:` -- so the heartbeat's address was copied into
+    # `h.address` ONLY when the registration had none. Once an operator declared an address, the
+    # observed one was never recorded, and the declared-vs-reported comparison added just below could
+    # never fire: the two sides were literally the same field. MEASURED: a registration at one address
+    # with a heartbeat reporting from another produced no finding at all.
+    #
+    # `h.address` stays the DECLARATION (the field has always meant "where we expect it") and the
+    # observation goes in its own field, the same split `reported_segment` and `reported_mode` already
+    # use. That is what makes a disagreement visible instead of unrepresentable.
+    if newest:
+        h.reported_address = str(newest.get("address") or newest.get("sampler_address") or "")
     if not h.address and newest:
-        h.address = str(newest.get("address") or newest.get("sampler_address") or "")
+        # A registration whose address was never recorded learns it from the first heartbeat.
+        h.address = h.reported_address
 
     # ── Classify, most specific first.
     if reg is None:
@@ -367,6 +386,25 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         h.findings.append(
             "this sensor is registered but switched off, so it is not expected to report."
         )
+        # ── A DISABLED ROW THAT IS STILL REPORTING IS NOT AN ALL-CLEAR (glm-5.3 review) ──────────
+        #
+        # This branch returns before consulting the heartbeat, so a registration that is switched off
+        # while the sensor is ACTIVELY feeding the hub renders `state=disabled`, "not expected to
+        # report", and `is_problem=False`. Nothing in this module tells the sensor to stop -- `enabled`
+        # is a registry-only flag -- so switching a row off does NOT stop the feed. The row then
+        # asserts "not expected to report" about a sensor reporting right now, which is the exact
+        # shape this project keeps finding: a state that means "ignore this row" silently also
+        # covering "this row is lying to you".
+        #
+        # Kept as a finding rather than a state change: the operator's instruction (do not expect it)
+        # is still what the state should say, and quietly reclassifying it as alive would undo their
+        # decision. The note is what makes the two distinguishable.
+        if h.age_s is not None and h.age_s <= HEARTBEAT_STALE_S:
+            h.findings.append(
+                f"BUT it reported {int(h.age_s)}s ago, so it is feeding this hub despite being "
+                f"switched off. The flag is registry-only -- it does not stop the sensor. If it "
+                f"should be silent, stop it on the host."
+            )
         return h
 
     if newest is None:
@@ -415,6 +453,25 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
             f"registered for segment {reg.segment!r} but reporting {h.reported_segment!r}. "
             f"The registration is the DECLARATION; the reported segment is what the sensor "
             f"believes it is covering."
+        )
+    # ── THE ADDRESS, WHICH WAS COLLECTED ON BOTH SIDES AND NEVER COMPARED (glm-5.3 review) ─────
+    #
+    # Segment and mode each had a declared-vs-reported check here; address did not, even though
+    # `reg.address` is the operator's declaration and `h.address` comes from the heartbeat. That made
+    # the registry's own stated purpose half-done: the schema's header says the registry exists so the
+    # EXPECTATION can be compared against what the hub hears, and one of the three fields an operator
+    # declares was silently exempt from that comparison.
+    #
+    # It is also the one field that would catch an identity mix-up: a sensor reporting from an address
+    # nobody registered is either mis-deployed or standing in for one that is. Reported as a
+    # disagreement rather than a failure, because a sensor can legitimately NAT or move (DHCP), which
+    # is why the registry stores an EMPTY address as "not known yet" and this check requires both
+    # sides to be non-empty.
+    if h.reported_address and reg.address and h.reported_address != reg.address:
+        h.findings.append(
+            f"registered at {reg.address} but reporting from {h.reported_address}. The registration is the "
+            f"DECLARATION; the reported address is where the hub actually hears it. Expected if the "
+            f"sensor NATs or took a new DHCP lease -- worth checking if it does not."
         )
     if reported_mode and reg.expected_mode and reported_mode != reg.expected_mode:
         h.findings.append(

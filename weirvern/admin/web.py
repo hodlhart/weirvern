@@ -911,15 +911,61 @@ def _build_handler(ctx: GuiContext):
             self-block check that errored would refuse every rule on a host where the lookup is
             unavailable, which is worse than occasionally missing one -- the operator still sees the
             rule in the list and can revoke it.
+
+            ── BUT `getaddrinfo(gethostname())` IS NOT THE HOST'S ADDRESSES (glm-5.3 review) ───────
+
+            That call is the whole derivation, and inside a pod it resolves to the POD's address. So
+            the two addresses that MUST NOT be blockable -- the management address this tool is
+            reached on, and the gateway whose loss takes the segment down -- were never in the list,
+            and the self-block check could not refuse them. MEASURED: on this cluster the pod resolves
+            to a 10.42.x address while the management address is entirely different, so blocking the
+            management interface would have been accepted.
+
+            The intercept path already reads exactly these (see intercept.py's never-intercept roles:
+            our_ip, gateway_ip, MGMT_ADDR), so this adds them from the same settings rather than
+            inventing a second source. `sluice_iface`'s own address is included too, since a rule
+            matching the capture interface's address would block this host's own traffic.
             """
             import socket  # noqa: PLC0415
             out: list[str] = []
+
+            def _add(addr: object) -> None:
+                a = str(addr or "").strip()
+                if a and a not in out:
+                    out.append(a)
+
+            # 1. What the hostname resolves to -- the only source the previous version had.
             try:
                 for info in socket.getaddrinfo(socket.gethostname(), None):
-                    addr = str(info[4][0])
-                    if addr and addr not in out:
-                        out.append(addr)
+                    _add(info[4][0])
             except OSError:
+                pass
+
+            # 2. The roles this tool must never block, from the settings the rest of the product
+            #    already trusts. Same values the intercept's never-intercept check uses.
+            try:
+                for attr in ("mgmt_addr", "ours", "our_ip", "gateway", "gateway_ip",
+                             "mgmt_iface_addr"):
+                    _add(getattr(ctx.settings, attr, ""))
+            except Exception:  # noqa: BLE001
+                pass
+
+            # 3. The product's OWN host-address probe. `probe_local()` runs the embedded stdlib probe
+            #    and reports this host's addresses; `ProbeResult.host_addresses` carries them as of the
+            #    fix in interfaces.py, because until now the probe computed them and `parse_probe`
+            #    dropped them -- which is why callers had to invent a worse source.
+            #
+            #    This is the right source rather than a second derivation: it is the same probe the
+            #    interface view and the capture-port validation already use, so "this host's addresses"
+            #    has one definition in the product instead of one per caller.
+            try:
+                from weirvern.admin import interfaces as ifaces_mod  # noqa: PLC0415
+
+                for a in ifaces_mod.probe_local(timeout=5).host_addresses or []:
+                    _add(a)
+            except Exception:  # noqa: BLE001
+                # Same best-effort contract as above: an unavailable lookup skips the check rather
+                # than refusing every rule.
                 pass
             return out
 

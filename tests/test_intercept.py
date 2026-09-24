@@ -1298,3 +1298,159 @@ def test_an_orphaned_run_is_reported_as_such():
         "the CLI no longer warns when the deadline fired; the operator would never learn "
         "that their session died without a signal"
     )
+
+
+# ── GLM 5.3 REVIEW: THE RETURN PATH (critical) ───────────────────────────────────────────────────
+#
+# MEASURED ON A REAL KERNEL in an isolated namespace, with a bridge carrying gateway, sensor and peer
+# on one segment:
+#
+#     BASELINE (no intercept)    198.51.100.20 from 198.51.100.1 dev br0                on-link
+#     AS SHIPPED (default only)  198.51.100.20 from 198.51.100.1 via 198.51.100.1 dev br0   BACK AT GW
+#     WITH the segment route     198.51.100.20 from 198.51.100.1 dev br0 table 100      on-link
+#
+# A policy rule pointing at a table whose default matches EVERY destination means the lookup never
+# falls through to main's connected-segment route, so return traffic for a host on the segment was
+# handed straight back to the gateway. This is the best available explanation for the reported
+# whole-VLAN network breakage.
+
+
+class _Kernel:
+    """A minimal model of the kernel's route/rule state, so the spies are honest.
+
+    MY FIRST VERSION OF THESE TESTS USED A SPY THAT RETURNED (0, "") FOR EVERYTHING, so every check
+    passed and the assertions failed for the wrong reason -- the function verifies what it installed
+    by reading `ip rule show` / `ip route show table 100` back, and a spy that answers "" to that
+    looks like an install that did not happen. A spy has to model the STATE the function inspects,
+    not just the exit codes.
+    """
+
+    def __init__(self):
+        self.rules: list[str] = []
+        self.routes: dict[str, list[str]] = {}
+        self.fail: set[str] = set()          # substrings whose add should fail
+
+    def __call__(self, *args, **kw):
+        a = [str(x) for x in args]
+        line = " ".join(a)
+        if a[:3] == ["ip", "route", "flush"]:
+            table = a[4] if len(a) > 4 else "?"
+            self.routes[table] = []
+            return (0, "")
+        if a[:3] == ["ip", "route", "add"]:
+            if any(f in line for f in self.fail):
+                return (2, "RTNETLINK answers: Operation not permitted")
+            table = a[a.index("table") + 1]
+            self.routes.setdefault(table, []).append(" ".join(a[3:a.index("table")]))
+            return (0, "")
+        if a[:3] == ["ip", "route", "show"]:
+            table = a[-1]
+            return (0, "\n".join(self.routes.get(table, [])))
+        if a[:3] == ["ip", "rule", "add"]:
+            self.rules.append(line)
+            return (0, "")
+        if a[:3] == ["ip", "rule", "del"]:
+            if "iif" in a:
+                iface = a[a.index("iif") + 1]
+                self.rules = [r for r in self.rules if f"iif {iface}" not in r]
+            return (0, "")
+        if a[:3] == ["ip", "rule", "show"]:
+            return (0, "\n".join(self.rules))
+        return (0, "")
+
+
+def test_ensure_forwarding_path_ADDS_the_connected_segment_route(monkeypatch):
+    """THE DEFECT (glm-5.3 review, measured on a real kernel).
+
+    With ONLY a default in table 100, a rule selecting that table never falls through to main's
+    connected-segment route, so return traffic for a host on the segment is sent back at the gateway.
+    """
+    from weirvern.admin import siphonnet
+
+    # The host's own iptables state must not decide a unit test (the convention this
+    # file already uses).
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
+
+    k = _Kernel()
+    real = siphonnet._run
+    siphonnet._run = k
+    try:
+        problems = siphonnet.ensure_forwarding_path(
+            "eth1", "198.51.100.1", gateway_mac="00:00:5e:00:53:01",
+            segment="198.51.100.0/24")
+    finally:
+        siphonnet._run = real
+
+    assert problems == [], f"a correct install reported problems: {problems}"
+    table = k.routes.get("100", [])
+    assert any("198.51.100.0/24" in r for r in table), (
+        f"table 100 has no connected-segment route, so return traffic for a host on the segment "
+        f"matches the default and is handed back to the gateway. table 100 = {table}"
+    )
+    assert any("default via 198.51.100.1" in r for r in table), (
+        f"the default route is missing from table 100: {table}"
+    )
+
+
+def test_the_segment_route_is_refused_rather_than_assumed(monkeypatch):
+    """A FAILED segment route must stop the install, like the default does."""
+    from weirvern.admin import siphonnet
+
+    # The host's own iptables state must not decide a unit test (the convention this
+    # file already uses).
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
+
+    k = _Kernel()
+    k.fail = {"198.51.100.0/24"}
+    real = siphonnet._run
+    siphonnet._run = k
+    try:
+        problems = siphonnet.ensure_forwarding_path(
+            "eth1", "198.51.100.1", gateway_mac="00:00:5e:00:53:01",
+            segment="198.51.100.0/24")
+    finally:
+        siphonnet._run = real
+
+    assert problems, "a failed segment route was not reported"
+    assert any("connected segment route" in p for p in problems), problems
+
+
+def test_a_caller_without_a_segment_is_unchanged(monkeypatch):
+    """Backwards compatibility: the parameter is optional and its absence is not an error."""
+    from weirvern.admin import siphonnet
+
+    # The host's own iptables state must not decide a unit test (the convention this
+    # file already uses).
+    monkeypatch.setattr(siphonnet, "forward_policy", lambda: ("ACCEPT", "iptables -S"))
+
+    k = _Kernel()
+    real = siphonnet._run
+    siphonnet._run = k
+    try:
+        problems = siphonnet.ensure_forwarding_path("eth1", "198.51.100.1",
+                                                    gateway_mac="00:00:5e:00:53:01")
+    finally:
+        siphonnet._run = real
+    assert problems == [], f"omitting the segment became an error: {problems}"
+
+
+def test_the_intercept_PASSES_the_segment():
+    """A parameter nothing supplies is the same silence in a new shape."""
+    import ast
+    import pathlib as _p
+
+    src = (_p.Path(__file__).resolve().parent / ".." / "weirvern" / "admin" / "intercept.py").read_text()
+    tree = ast.parse(src)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name == "ensure_forwarding_path":
+                found.append({k.arg for k in node.keywords})
+    assert found, "no ensure_forwarding_path call site found in intercept.py"
+    for kws in found:
+        assert "segment" in kws, (
+            f"an ensure_forwarding_path call does not pass the segment, so table 100 gets no "
+            f"connected route and return traffic loops through the gateway. kwargs: {kws}"
+        )

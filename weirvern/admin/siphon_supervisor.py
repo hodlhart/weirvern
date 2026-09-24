@@ -457,6 +457,20 @@ class SiphonSupervisor:
 
     def start(self) -> None:
         """Begin supervision, or explain why there is nothing to supervise."""
+        # ── A RESTART MUST CLEAR THE STOP FLAG (glm-5.3 review) ─────────────────────────────────
+        #
+        # `stop()` sets `self._stop` and nothing ever cleared it, so a SECOND start() on the same
+        # instance -- after a stop, or a config-reload restart -- created a thread whose first loop
+        # test (`while not self._stop.is_set()`) is immediately false. start() returned normally
+        # while the supervisor supervised NOTHING, which is the worst shape available: the caller has
+        # no reason to check, and the log says it started.
+        #
+        # Guarded against double-start too: spawning a second thread while the first is alive would
+        # give one child two supervisors.
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+
         if not self.cfg.enabled:
             logger.debug("siphon supervisor: mode is not siphon; nothing to supervise")
             return

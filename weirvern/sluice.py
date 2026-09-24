@@ -620,11 +620,36 @@ class NftBackend(Backend):
                 "compile; the set is loaded in one transaction and a partial load is worse than "
                 "a refused one"
             )
+        # ── ARM MUST BE A REPLACE, NOT AN ACCUMULATE (glm-5.3 review) ────────────────────────────
+        #
+        # `_base_ruleset` is purely DECLARATIVE: it creates tables and adds rules, with no flush and
+        # no delete first. So arming twice could only ADD to whatever the previous arm left, and the
+        # only code that removes kernel state is `disarm()` -- which the enforcement cycle never calls
+        # between passes. MEASURED consequence: a rule that EXPIRED, or that the operator REVOKED,
+        # stopped being compiled into the set while its already-installed drop rule kept matching, so
+        # traffic stayed blocked after the block was withdrawn. For a tool whose gate is supposed to
+        # fail OPEN, a block that outlives its rule is the worst failure available.
+        #
+        # Deleting both tables first makes arm() idempotent in the strong sense: the kernel state
+        # after arm() is a function of `rules` alone, never of what was there before.
+        for table in (NFT_TABLE, NFT_TABLE_IN):
+            # Absence is expected on a first arm, and its error is ignored for the same reason
+            # disarm() ignores it.
+            self._run(["nft", "delete", "table", "inet", table], capture=True)
         text = self._base_ruleset(rules, iface)
-        try:
-            self._run(["nft", "-f", "-"], stdin=text)
-        except Exception as exc:  # noqa: BLE001
-            return False, f"nft rejected the ruleset: {exc}"
+        # ── THE INSTALL RESULT MUST BE READ (glm-5.3 review) ─────────────────────────────────────
+        #
+        # This called `self._run([...])` without unpacking, inside a try/except. `_nft_run` RETURNS
+        # (False, err) and never raises, so the except was DEAD CODE for the real backend: a ruleset
+        # nft rejected was discarded and `arm()` reported success.
+        #
+        # The read-back below is not a substitute. It asks whether a TABLE by that name exists, which
+        # is true of a stale table left by a previous arm -- so "nft rejected this ruleset" and "the
+        # gate is armed with the new ruleset" were indistinguishable, and the second is what the
+        # caller reports to the operator.
+        ok, err = self._run(["nft", "-f", "-"], stdin=text)
+        if not ok:
+            return False, f"nft rejected the ruleset: {err}"
         # READ BACK. A successful exit is not the same as an installed gate; this is the project's
         # recurring failure mode, so the state is verified rather than assumed.
         ok, present = self._run(["nft", "list", "table", "inet", NFT_TABLE], capture=True)
