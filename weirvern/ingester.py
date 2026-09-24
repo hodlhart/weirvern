@@ -1944,6 +1944,11 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
     allowed = _exporter_networks(allow)
     rejected = 0
     rejected_from: dict[str, int] = {}
+    # Admissions the allow-list could not VERIFY, alongside the rejections it made. Both are admitted
+    # by design (see _exporter_permitted), so counting them is the only way the control's coverage
+    # becomes visible rather than assumed.
+    unverified = 0
+    unverified_why: dict[str, int] = {}
     inserted = 0
     batch: list[dict[str, Any]] = []
     consumed = start_offset
@@ -1967,11 +1972,21 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
             except Exception:  # noqa: BLE001
                 logger.warning("Skipping unparsable flow line")
                 continue
-            if allowed is not None and not _exporter_permitted(row.get("sampler_address"), allowed):
+            verdict = _exporter_permitted(row.get("sampler_address"), allowed)
+            if verdict == "rejected":
                 rejected += 1
                 src = str(row.get("sampler_address") or "(none)")
                 rejected_from[src] = rejected_from.get(src, 0) + 1
                 continue
+            if verdict in ("no-address", "unparsable"):
+                # ── COUNTED, NOT SILENT (glm-5.3 review) ────────────────────────────────────────
+                #
+                # Both of these are ADMITTED by design, and both were counted nowhere -- so with an
+                # allow-list configured an operator could not tell a fully-covered window from one
+                # with holes in it. The behaviour is unchanged; this only makes the admission
+                # account-able, which is what turns the control into something verifiable.
+                unverified += 1
+                unverified_why[verdict] = unverified_why.get(verdict, 0) + 1
             batch.append(row)
             if len(batch) >= BATCH_SIZE:
                 inserted += insert_batch(client, batch)
@@ -1982,6 +1997,21 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
         logger.warning(
             "Rejected %d flow record(s) from exporters not in WEIRVERN_FLOW_EXPORTER_ALLOW: %s",
             rejected, ", ".join(f"{k} ({v})" for k, v in sorted(rejected_from.items())),
+        )
+    if unverified:
+        # ── AN ADMITTED RECORD THE FILTER COULD NOT CHECK IS A HOLE IN THE COVERAGE (glm-5.3) ────
+        #
+        # INFO rather than WARNING, deliberately: this is not an unexpected device, it is a record
+        # whose provenance the control cannot establish. One line per pass, and only when there is
+        # something to say, so it does not become the noise that trains the reader to skip warnings.
+        #
+        # The distinction it carries is the one that was missing: a window with zero of these is
+        # fully covered by the allow-list, and a window with any of them is not -- which an operator
+        # could not previously tell apart, since both logged only the rejects they made.
+        logger.info(
+            "%d flow record(s) were ADMITTED without the exporter allow-list being able to check "
+            "them (%s), so this window's coverage is incomplete",
+            unverified, ", ".join(f"{k}: {v}" for k, v in sorted(unverified_why.items())),
         )
     if batch:
         inserted += insert_batch(client, batch)  # type: ignore[arg-type]
@@ -2030,25 +2060,44 @@ def _exporter_networks(allow: str) -> list[Any] | None:
     return nets
 
 
-def _exporter_permitted(addr: object, allowed: list | None) -> bool:
-    """Whether a record's sampler_address is in the allow-list.
+def _exporter_permitted(addr: object, allowed: list | None) -> str:
+    """WHY a record's sampler_address was admitted or rejected -- not merely whether.
 
     A record with NO sampler_address is permitted: goflow2 omits it for some protocol variants, and
     rejecting those would drop legitimate flows to enforce a control against an address the record
     does not carry. The absence is not suspicious; a *different* address is.
+
+    ── IT RETURNS WHY, NOT JUST WHETHER (glm-5.3 review, CONFIRMED) ──────────────────────────────
+
+    This returned a bare bool and its only caller counts REJECTIONS. So the two admissions it cannot
+    verify -- a record carrying no sampler_address, and one whose address will not parse -- passed
+    silently and were counted NOWHERE. The consequence is that the control's coverage is
+    unverifiable: with WEIRVERN_FLOW_EXPORTER_ALLOW set, an operator could not tell "every record
+    came from an exporter I named" from "some records bypassed the check entirely", which is the
+    difference between a control and a formality. An unparsable address is if anything the more
+    interesting of the two, since something wrote a sampler_address this code cannot read.
+
+    The BEHAVIOUR is unchanged -- every case below still admits the record, and the docstring above
+    still gives the reason for the absent case. Only the accounting was missing.
+
+    Returns one of: "ungated" (no allow-list configured), "allowed", "rejected", "no-address",
+    "unparsable".
     """
     if allowed is None:
-        return True
+        return "ungated"
     if not addr:
-        return True
+        return "no-address"
     try:
         parsed = ip_address(str(addr))
     except ValueError:
-        # An unparsable source address is not something this filter can reason about. Accept it and
-        # let the normal mapping deal with it -- silently dropping records because of a parse
-        # failure in a filter would look like a network problem.
-        return True
-    return any(parsed in net for net in allowed if parsed.version == net.version)
+        # An unparsable source address is not something this filter can reason about. Accepted, and
+        # let the normal mapping deal with it -- silently dropping records because of a parse failure
+        # in a filter would look like a network problem. Reported as its own verdict so the caller
+        # can count it, which is what makes the admission visible.
+        return "unparsable"
+    if any(parsed in net for net in allowed if parsed.version == net.version):
+        return "allowed"
+    return "rejected"
 
 
 # Where tail cursors are checkpointed when `TAIL_STATE_DIR` is unset.

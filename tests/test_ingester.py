@@ -362,13 +362,16 @@ def test_an_unusable_allow_list_does_not_silently_permit():
 
 
 def test_permitted_matches_the_list_and_refuses_outsiders():
+    """The verdict is a REASON, not a bool (glm-5.3 review): the caller needs to tell a checked
+    rejection from an admission it could not check at all, or the control's coverage is unverifiable.
+    """
     from weirvern.ingester import _exporter_networks, _exporter_permitted
 
     nets = _exporter_networks("198.51.100.0/24, 192.0.2.7")
-    assert _exporter_permitted("198.51.100.9", nets) is True
-    assert _exporter_permitted("192.0.2.7", nets) is True
-    assert _exporter_permitted("203.0.113.9", nets) is False, (
-        "an address outside the allow-list was permitted, so the filter does nothing"
+    assert _exporter_permitted("198.51.100.9", nets) == "allowed"
+    assert _exporter_permitted("192.0.2.7", nets) == "allowed"
+    assert _exporter_permitted("203.0.113.9", nets) == "rejected", (
+        "an address outside the allow-list was not reported as rejected, so the filter does nothing"
     )
 
 
@@ -381,14 +384,14 @@ def test_a_record_with_no_sampler_address_is_permitted():
     from weirvern.ingester import _exporter_networks, _exporter_permitted
 
     nets = _exporter_networks("198.51.100.0/24")
-    assert _exporter_permitted("", nets) is True
-    assert _exporter_permitted(None, nets) is True
+    assert _exporter_permitted("", nets) == "no-address"
+    assert _exporter_permitted(None, nets) == "no-address"
 
 
 def test_no_filter_permits_everything():
     from weirvern.ingester import _exporter_permitted
 
-    assert _exporter_permitted("203.0.113.9", None) is True
+    assert _exporter_permitted("203.0.113.9", None) == "ungated"
 
 
 def test_an_ipv6_address_is_not_matched_against_an_ipv4_network():
@@ -407,10 +410,10 @@ def test_an_ipv6_address_is_not_matched_against_an_ipv4_network():
     from weirvern.ingester import _exporter_networks, _exporter_permitted
 
     nets = _exporter_networks("198.51.100.0/24")
-    assert _exporter_permitted("2001:db8::1", nets) is False
+    assert _exporter_permitted("2001:db8::1", nets) == "rejected"
     nets6 = _exporter_networks("2001:db8::/32")
-    assert _exporter_permitted("2001:db8::1", nets6) is True
-    assert _exporter_permitted("198.51.100.9", nets6) is False
+    assert _exporter_permitted("2001:db8::1", nets6) == "allowed"
+    assert _exporter_permitted("198.51.100.9", nets6) == "rejected"
 
 
 def test_a_cross_version_membership_test_does_not_raise():
@@ -1268,3 +1271,110 @@ def test_a_batch_that_fails_as_a_whole_still_lands_its_good_rows(tmp_path):
         "the client never saw a multi-row batch, so the isolation path was not exercised"
     )
     assert inserted == 3, f"expected the 3 good rows to land, got {inserted}"
+
+
+# ── GLM 5.3 REVIEW: AN UNVERIFIABLE ADMISSION MUST BE COUNTED, NOT SILENT ──────────────────────
+#
+# `_exporter_permitted` returned a bare bool and its only caller counts REJECTIONS, so the two
+# admissions it cannot check -- a record carrying no sampler_address, and one whose address will not
+# parse -- were counted nowhere. An operator with WEIRVERN_FLOW_EXPORTER_ALLOW set could not tell
+# "every record came from an exporter I named" from "some records bypassed the check entirely".
+
+
+class _RecordingLogger:
+    """Captures the ingest path's own log calls, so the accounting is asserted where an operator
+    would actually see it rather than on an internal counter."""
+
+    def __init__(self):
+        self.infos: list[str] = []
+        self.warnings: list[str] = []
+
+    def info(self, msg, *args):
+        self.infos.append(msg % args if args else msg)
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+    def debug(self, msg, *args):
+        pass
+
+
+def _flows_with(path, addrs):
+    with open(path, "w") as fh:
+        for i, a in enumerate(addrs, start=1):
+            row = json.loads(_flow_row(i))
+            if a is None:
+                row.pop("sampler_address", None)
+            else:
+                row["sampler_address"] = a
+            fh.write(json.dumps(row) + "\n")
+    return path
+
+
+def test_records_the_allow_list_cannot_check_are_REPORTED_not_silent(tmp_path, monkeypatch):
+    """THE DEFECT. These were admitted and counted nowhere, so a covered window and a window with
+    holes in it logged identically."""
+    from weirvern import ingester as I
+    from weirvern.ingester import TailState
+
+    log = _RecordingLogger()
+    monkeypatch.setattr(I, "logger", log)
+
+    # One allowed, one outside the list, one with no address, one unparsable.
+    p = _flows_with(str(tmp_path / "flows.jsonl"),
+                    ["198.51.100.9", "203.0.113.9", None, "not-an-ip"])
+    I.tail_and_insert(_RejectingClient(), str(p), state=TailState(),
+                      allow="198.51.100.0/24")
+
+    joined = " ".join(log.infos + log.warnings)
+    assert "ADMITTED" in joined, (
+        f"two records were admitted without the allow-list being able to check them and nothing "
+        f"said so. An operator cannot tell a fully-covered window from one with holes. "
+        f"info={log.infos} warn={log.warnings}"
+    )
+    assert "no-address" in joined and "unparsable" in joined, (
+        f"the report must name WHICH kind of unchecked admission occurred, so the operator knows "
+        f"whether to look at an exporter configuration or at a producer writing a bad address. "
+        f"info={log.infos}"
+    )
+    assert "2 flow record(s)" in joined, (
+        f"the count must be the number of unchecked admissions. info={log.infos}"
+    )
+
+
+def test_a_fully_covered_window_says_NOTHING_about_unchecked_admissions(tmp_path, monkeypatch):
+    """The other direction, so the new line cannot become noise on every pass -- an INFO that always
+    fires is the kind of warning that trains a reader to skip the one that matters."""
+    from weirvern import ingester as I
+    from weirvern.ingester import TailState
+
+    log = _RecordingLogger()
+    monkeypatch.setattr(I, "logger", log)
+
+    p = _flows_with(str(tmp_path / "flows.jsonl"), ["198.51.100.9", "198.51.100.10"])
+    I.tail_and_insert(_RejectingClient(), str(p), state=TailState(),
+                      allow="198.51.100.0/24")
+
+    joined = " ".join(log.infos + log.warnings)
+    assert "ADMITTED" not in joined, (
+        f"a window where every record was checked still reported unchecked admissions, so the line "
+        f"would fire on every healthy pass. info={log.infos}"
+    )
+
+
+def test_no_allow_list_reports_no_unchecked_admissions(tmp_path, monkeypatch):
+    """With the filter OFF there is nothing to be unverifiable about."""
+    from weirvern import ingester as I
+    from weirvern.ingester import TailState
+
+    log = _RecordingLogger()
+    monkeypatch.setattr(I, "logger", log)
+
+    p = _flows_with(str(tmp_path / "flows.jsonl"), [None, "not-an-ip"])
+    I.tail_and_insert(_RejectingClient(), str(p), state=TailState(), allow="")
+
+    joined = " ".join(log.infos + log.warnings)
+    assert "ADMITTED" not in joined, (
+        f"an ungated deployment reported unchecked admissions, so the line is measuring the wrong "
+        f"thing. info={log.infos}"
+    )

@@ -1279,7 +1279,23 @@ def cmd_exporters(args: argparse.Namespace) -> int:
                 from weirvern.ingester import _exporter_networks, _exporter_permitted
 
                 nets = _exporter_networks(allow)
-                mark = "  accepted" if _exporter_permitted(addr, nets) else "  REJECTED"
+                # ── THE VERDICT IS A REASON, NOT A BOOL (glm-5.3 review) ──────────────────────────
+                #
+                # This was `if _exporter_permitted(...)` on a bool. The function now returns WHY, and
+                # every non-empty string is truthy -- so testing it directly would have marked every
+                # address "accepted", including the rejected ones, which is the display this command
+                # exists to get right. Branch on the verdict instead, and show the two admissions the
+                # list cannot check rather than flattening them into "accepted": an operator reading
+                # this to decide "did I write the list correctly" needs to know that one of these
+                # addresses was never actually checked.
+                verdict = _exporter_permitted(addr, nets)
+                mark = {
+                    "allowed": "  accepted",
+                    "rejected": "  REJECTED",
+                    "no-address": "  admitted (no address to check)",
+                    "unparsable": "  admitted (address will not parse)",
+                    "ungated": "  (no allow-list)",
+                }.get(verdict, f"  {verdict}")
             except Exception:  # noqa: BLE001
                 mark = ""
         print(f"    {str(addr)[:44]:<44} {int(n):>12}  {last}{mark}")
