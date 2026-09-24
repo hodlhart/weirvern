@@ -97,6 +97,40 @@ UNITS: dict[str, dict] = {
             "3. What must NEVER be blockable, and how is that enforced in code rather than prose?"
         ),
     },
+    "siphon-watchdog": {
+        "title": "The fail-open watchdog and mapping restoration under failure",
+        "files": ["weirvern/admin/intercept.py", "weirvern/admin/siphonnet.py",
+                  "weirvern/admin/siphon_supervisor.py", "weirvern/admin/cli.py"],
+        "focus": (
+            "The watchdog is the safety property of siphon: if this process dies, every forged ARP "
+            "mapping must be restored or the segment stays broken. Read the whole failure surface.\n"
+            "1. Enumerate every way the process can stop -- clean exit, SIGTERM, SIGKILL, OOM kill, "
+            "node reboot, network partition between the sensor and the hub, container eviction, "
+            "`kubectl exec` client vanishing -- and say for each whether the mappings are restored "
+            "and by what mechanism. Be explicit about which ones NOTHING covers.\n"
+            "2. A forged ARP entry in a peer's cache expires on its own. Is the refresh interval "
+            "provably shorter than the shortest plausible cache lifetime? What breaks if it is not?\n"
+            "3. Is any restoration path REPORTED as successful without being verified? Look for a "
+            "return value that is computed and discarded, or a code path that cannot fail."
+        ),
+    },
+    "weirlings-distributed": {
+        "title": "Weirlings as distributed sensors: ingestion, trust, and the hub boundary",
+        "files": ["weirvern/fleet.py", "weirvern/fleet_store.py", "weirvern/ingester.py",
+                  "weirvern/config.py", "weirvern/host_identity.py"],
+        "focus": (
+            "A weirling is a remote Zeek sensor feeding this hub. Read how remote data enters the "
+            "system, not just how it is displayed.\n"
+            "1. A remote sensor's data arrives with addresses, MACs, hostnames and JA4 values that "
+            "this hub did not observe. What validates them? Can a misconfigured or hostile weirling "
+            "poison host_identity, corrupt a baseline, or trigger a false alert?\n"
+            "2. What happens when a weirling's clock is wrong, its link is slow, or it restarts and "
+            "re-sends data it already sent? Is any of that detected, or does it silently skew the "
+            "detection window?\n"
+            "3. Is there any per-sensor identity in the ingested rows, so an operator can tell WHICH "
+            "sensor produced a record? If not, what breaks at two sensors?"
+        ),
+    },
     "weirlings-fleet": {
         "title": "Weirlings: distributed sensors feeding the hub",
         "files": ["weirvern/fleet.py", "weirvern/fleet_store.py",

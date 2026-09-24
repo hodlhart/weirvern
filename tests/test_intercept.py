@@ -1551,3 +1551,131 @@ def test_start_still_ARMS_when_the_sysctls_are_correct(monkeypatch):
         "not a check but a wall"
     )
     runner.stop()
+
+
+# ── GLM 5.3 REVIEW: A SWEEP THAT CANNOT SEND MUST NOT REPORT AN EMPTY NETWORK ──────────────────
+#
+# `arp_sweep` returned {} for both an empty source and a 0.0.0.0 source. An empty source raised
+# inside the request builder -- socket.inet_aton('') raises OSError -- and the send loop's
+# `except OSError: continue` swallowed it, so ZERO frames went on the wire. A 0.0.0.0 source sends a
+# valid 42-byte request that most stacks ignore. Either way the caller reads {} as "this segment is
+# empty", and `find_free_addresses` then offers the WHOLE network as free addresses.
+
+
+def test_arp_sweep_REFUSES_an_empty_source_instead_of_reporting_an_empty_network():
+    """THE DEFECT. Zero frames sent, and the result was indistinguishable from an empty segment."""
+    import socket as _socket
+
+    sent = []
+
+    class _Sock:
+        def __init__(self, *_a, **_k): pass
+        def bind(self, *_a): pass
+        def settimeout(self, *_a): pass
+        def send(self, frame): sent.append(frame)
+        def recv(self, *_a): raise TimeoutError
+        def close(self): pass
+
+    class _SockMod:
+        AF_PACKET = _socket.AF_PACKET
+        SOCK_RAW = _socket.SOCK_RAW
+        timeout = _socket.timeout
+
+        def socket(self, *_a, **_k):
+            return _Sock()
+
+        def htons(self, v):
+            return v
+
+    real = ic.socket
+    ic.socket = _SockMod()
+    try:
+        try:
+            ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "", ["198.51.100.10"])
+        except ValueError as exc:
+            msg = str(exc)
+            assert "empty or 0.0.0.0 source" in msg or "source" in msg, msg
+        else:
+            raise AssertionError(
+                "arp_sweep RETURNED for an empty source instead of refusing. It sent no request "
+                "(inet_aton('') raises, and the send loop swallows OSError), so its empty result "
+                "was read by callers as 'this segment is empty' -- which offers every address on a "
+                "populated segment as free"
+            )
+        assert sent == [], (
+            f"{len(sent)} frame(s) went on the wire from an unusable source; a 0.0.0.0 request is "
+            f"ignored by most stacks, so any result it produced would be a false empty"
+        )
+    finally:
+        ic.socket = real
+
+
+def test_arp_sweep_REFUSES_a_zero_source():
+    """The second mechanism: 0.0.0.0 builds a VALID request that nothing answers."""
+    try:
+        ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "0.0.0.0", ["198.51.100.10"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "arp_sweep accepted 0.0.0.0 as a source. It would send a valid request that most stacks "
+            "ignore, then report an empty result that callers read as an empty segment"
+        )
+
+
+def test_find_free_addresses_refuses_an_unusable_source_instead_of_calling_everything_free(monkeypatch):
+    """THE DAMAGE. Without this, the refusal above would escape as an unhandled ValueError, and the
+    fallback -- {} -- is what made this function dangerous: every candidate came back FREE.
+
+    `read_mac` MUST be stubbed. Without it this test passed for the WRONG reason on any machine with
+    no `eth1`: the function's own unreadable-MAC branch returns [] first, so the branch under test
+    was never reached. A mutation proved it -- removing the source check entirely left this test
+    green until the stub was added.
+    """
+    from weirvern.admin import siphonnet as siphonnet_mod
+
+    monkeypatch.setattr(siphonnet_mod, "read_mac", lambda _iface: "aa:bb:cc:dd:ee:ff")
+    free = siphonnet_mod.find_free_addresses("eth1", "198.51.100.0/24", "",
+                                             count=3, exclude=None)
+    assert free == [], (
+        f"find_free_addresses returned {free} for an empty source. Its contract is 'addresses "
+        f"nothing answered for', and it could not ask -- so [] is the only honest answer, and the "
+        f"alternative is offering an address a live host already holds"
+    )
+
+
+def test_describe_segment_reports_the_reason_an_unusable_source_gives_no_result(monkeypatch):
+    """This one HAS an error channel, so it must use it rather than returning an empty used-map that
+    the CLI renders as 'either the segment is empty, or this interface cannot reach it'.
+
+    `read_mac` is stubbed because the MAC check runs BEFORE the source check, and this machine has no
+    `eth1` -- without the stub the test would exercise the wrong branch and pass for the wrong reason.
+    """
+    from weirvern.admin import siphonnet as siphonnet_mod
+
+    monkeypatch.setattr(siphonnet_mod, "read_mac", lambda _iface: "aa:bb:cc:dd:ee:ff")
+    used, err = siphonnet_mod.describe_segment("eth1", "198.51.100.0/24", "")
+    assert used == {}, used
+    assert err, "an unusable source produced no error, so the caller would guess between two causes"
+    assert "source" in err.lower(), err
+
+
+def test_build_plan_REFUSES_rather_than_planning_when_the_sweep_cannot_send(monkeypatch):
+    """`arp_sweep` raises for an unusable source. Without a handler in build_plan the raise escapes as
+    an unhandled ValueError; with the handler's old fallback the plan would be built from an empty
+    sweep, which reports every requested host as "did not answer" and ends at "cannot resolve the
+    gateway" -- blaming the gateway for a sweep that never asked."""
+
+    # `read_mac` must resolve so the plan gets past its earlier checks and reaches the sweep; the
+    # empty `our_ip` is the condition under test.
+    monkeypatch.setattr(ic, "read_mac", lambda _iface: "aa:bb:cc:dd:ee:ff", raising=False)
+
+    plan = ic.build_plan(
+        iface="eth1", segment="198.51.100.0/24", our_ip="",
+        gateway_ip="198.51.100.1",
+    )
+    assert plan is None, (
+        "build_plan produced a plan from a sweep that never sent a request. An empty sweep makes "
+        "every requested host read as 'did not answer' and the gateway unreadable, so the operator "
+        "is told 'cannot resolve the gateway' when the real fault is the source address"
+    )

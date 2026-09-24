@@ -1163,3 +1163,108 @@ def test_the_zeek_cursor_revalidates_against_ROTATION(tmp_path, monkeypatch):
         "after a rotation the new file's record was NOT ingested -- the stale cursor was trusted "
         "and the data silently lost"
     )
+
+
+# ── GLM 5.3 REVIEW: THE FLOW PATH NEEDS THE POISON-PILL GUARD THE ZEEK PATH GOT ────────────────
+#
+# `insert_batch` called `client.insert` bare. An exception from it escaped `tail_and_insert` BEFORE
+# `state.note_read(...)` ran, so the cursor never advanced and `tail_forever` caught, logged and
+# retried the SAME batch on every pass -- forever. That is the F013 defect this file already
+# documents for Zeek, fixed there by `_insert_batch`; the flow path was the one place still not
+# using it.
+
+
+class _RejectingClient:
+    """A client that rejects a batch containing a marked row, as a schema or arity mismatch does.
+
+    It rejects by BATCH first and then accepts everything row by row -- which is what the real
+    server does when one row in a multi-row INSERT is unparseable -- so this exercises the whole
+    isolation path rather than just the first exception.
+    """
+
+    def __init__(self, bad_marker="99999999999999999999999"):
+        # THE POISON MUST BE A VALUE THE MAPPER PASSES THROUGH. My first attempt used a non-numeric
+        # `bytes`, which `map_flow` coerces to 0, so nothing bad ever reached the client and the
+        # isolation path was never exercised. An integer too large for the column survives the
+        # mapper intact, which is how a real schema/range mismatch presents.
+        #
+        # The marker is NOT an address: `_flow_row` builds src_addr from the row index, so an
+        # address-shaped marker also matched the perfectly good row whose address happened to carry
+        # that same index.
+        self.bad_marker = bad_marker
+        self.rows_landed = []
+        self.batch_calls = 0
+
+    def insert(self, table, rows, column_names=None):
+        if len(rows) > 1 and any(self.bad_marker in str(v) for row in rows for v in row):
+            self.batch_calls += 1
+            raise RuntimeError("Code: 69. DB::Exception: Value is too large for column")
+        for row in rows:
+            if any(self.bad_marker in str(v) for v in row):
+                raise RuntimeError("Code: 69. DB::Exception: Value is too large for column")
+            self.rows_landed.append(row)
+
+
+def _write_flows(path, n, bad_at):
+    with open(path, "w") as fh:
+        for i in range(1, n + 1):
+            row = json.loads(_flow_row(i))
+            if i == bad_at:
+                row["bytes"] = 99999999999999999999999   # the marker this client rejects on
+            fh.write(json.dumps(row) + "\n")
+    return path
+
+
+def test_one_BAD_FLOW_row_cannot_stop_the_cursor_from_advancing(tmp_path):
+    """THE DEFECT. Without row-by-row isolation the cursor never advances, so ONE bad row stops ALL
+    flow ingestion forever while the loop looks alive -- the exact shape F013 documents for Zeek."""
+    from weirvern.ingester import TailState
+
+    client = _RejectingClient()
+    path = _write_flows(str(tmp_path / "flows.jsonl"), 5, bad_at=3)
+    st = TailState()
+
+    inserted, offset, _ = tail_and_insert(client, path, state=st)
+
+    assert inserted == 4, (
+        f"{inserted} of 4 good rows landed. The good rows must survive a batch that fails as a "
+        f"whole -- refusing the batch loses every good record alongside the bad one"
+    )
+    assert st.offset > 0, (
+        "the cursor did NOT advance past the bad row, so every subsequent pass re-reads it and "
+        "fails the same way: this log type would never be ingested again"
+    )
+
+
+def test_the_cursor_advances_so_the_NEXT_pass_does_not_reread(tmp_path):
+    """The consequence that matters: a second pass over the same file reads nothing new."""
+    from weirvern.ingester import TailState
+
+    client = _RejectingClient()
+    path = _write_flows(str(tmp_path / "flows.jsonl"), 5, bad_at=3)
+    st = TailState()
+
+    tail_and_insert(client, path, state=st)
+    landed_first = len(client.rows_landed)
+    inserted2, _, _ = tail_and_insert(client, path, state=st)
+
+    assert inserted2 == 0, (
+        f"a second pass inserted {inserted2} more rows from a file that was fully consumed. The "
+        f"cursor did not advance, so the bad row is retried forever"
+    )
+    assert len(client.rows_landed) == landed_first, "rows were duplicated on the retry pass"
+
+
+def test_a_batch_that_fails_as_a_whole_still_lands_its_good_rows(tmp_path):
+    """The trade is deliberate and worth pinning: good rows land, only the offending row is lost."""
+    client = _RejectingClient()
+    path = _write_flows(str(tmp_path / "flows.jsonl"), 4, bad_at=2)
+
+    from weirvern.ingester import TailState
+
+    inserted, _, _ = tail_and_insert(client, path, state=TailState())
+
+    assert client.batch_calls >= 1, (
+        "the client never saw a multi-row batch, so the isolation path was not exercised"
+    )
+    assert inserted == 3, f"expected the 3 good rows to land, got {inserted}"

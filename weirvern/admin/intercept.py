@@ -212,7 +212,40 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
     `our_ip` should be an address the segment will accept as a source. A request from
     0.0.0.0 is ignored by most stacks, which also yields a false "empty network" -- the
     second way this function could lie.
+
+    ── AN UNUSABLE SOURCE IS REFUSED, NOT SWEPT (glm-5.3 review, CONFIRMED) ──────────────────────
+
+    Both ways this function can lie end in the same place: an empty dict that the caller reads as
+    "this segment is empty". MEASURED, both mechanisms:
+
+      * an EMPTY source raises inside the request builder -- `socket.inet_aton('')` raises OSError
+        ("illegal IP address string passed to inet_aton") -- and the send loop's `except OSError:
+        continue` swallowed it, so zero frames went on the wire and the function returned {};
+      * a 0.0.0.0 source builds and sends a VALID 42-byte request that most stacks ignore, so nothing
+        answers and it returns {} again.
+
+    The damage is downstream and already documented by the callers: `siphonnet.find_free_addresses`
+    returns every candidate not in the result as FREE, so a sweep that could not send offers the
+    WHOLE NETWORK as free addresses on a populated segment, and the CLI prints "nothing answered ARP
+    -- either the segment is empty, or this interface cannot reach it ... (intercepting it would
+    affect nobody, which is safe but pointless)". An operator assigning an address from that list
+    collides with a live host.
+
+    So the refusal happens HERE, before the socket is opened, and it is a refusal rather than a false
+    empty. Raise, for the same reason `add_address` raises on a bad prefix: a caller that gets a
+    result must be able to trust it, and there is no empty-dict answer that is honest about "I could
+    not ask". The zero-MAC case is refused by the caller (`sweep_probe.py` checks it first), which is
+    the same shape at the layer that knows the difference.
     """
+    if not our_ip or our_ip == "0.0.0.0":
+        raise ValueError(
+            f"refusing to sweep {iface} from source {our_ip!r}: a request from an empty or 0.0.0.0 "
+            f"source is ignored by most stacks, so the sweep would return an empty result that "
+            f"callers read as 'this segment is empty' -- and find_free_addresses would then offer "
+            f"every address on a populated segment as free. Supply an address the segment will "
+            f"accept as a source."
+        )
+
     request_tmpl = _arp_request_builder(our_mac, our_ip)
     found: dict[str, str] = {}
 
@@ -480,11 +513,28 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
     # unassigned probe address and parses replies off the socket), so it is the primary
     # source. The gateway is probed in the SAME sweep as the hosts, as its own target, so both
     # come from one mechanism and one code path.
-    hosts = arp_sweep(iface, our_mac, our_ip, candidates)
+    #
+    # ── A SWEEP THAT COULD NOT SEND MUST NOT BECOME A PLAN (glm-5.3 review) ──────────────────────
+    #
+    # `arp_sweep` raises for an empty/0.0.0.0 source instead of returning {}, because an empty result
+    # here would flow straight into the plan: `hosts` would be empty (so `only` reports every
+    # requested host as "did not answer"), and the gateway probe would come back empty too, leaving
+    # only `resolve_mac` -- which this comment already records as unreliable at plan time because the
+    # capture interface usually has no address yet. That path ends at "cannot resolve the gateway",
+    # which blames the gateway for a sweep that never asked. Refusing here names the real cause.
+    try:
+        hosts = arp_sweep(iface, our_mac, our_ip, candidates)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return None
     # A host that answered as our own MAC is us (or a mirror); never intercept ourselves.
     hosts = {ip: mac for ip, mac in hosts.items() if mac.lower() != our_mac.lower()}
 
-    gw_probe = arp_sweep(iface, our_mac, our_ip, [gateway_ip])
+    try:
+        gw_probe = arp_sweep(iface, our_mac, our_ip, [gateway_ip])
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return None
     gateway_mac = ((gw_probe.get(gateway_ip) or hosts.get(gateway_ip)
                     or resolve_mac(iface, gateway_ip) or "").lower() or None)
     if not gateway_mac:

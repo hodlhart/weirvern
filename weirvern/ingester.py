@@ -186,8 +186,25 @@ def insert_batch(client: Inserter, rows: list[dict[str, Any]]) -> int:
     keep = [r for r in rows if not _excluded(r)]
     if not keep:
         return 0
-    client.insert("weirvern.flows", [[r[c] for c in _COLUMNS] for r in keep], column_names=_COLUMNS)
-    return len(keep)
+    # ── THE FLOW PATH NEEDS THE SAME POISON-PILL GUARD THE ZEEK PATH GOT (glm-5.3 review) ────────
+    #
+    # This called `client.insert` bare. An exception from it escapes `tail_and_insert` BEFORE
+    # `state.note_read(...)` runs, so the cursor never advances and `tail_forever` catches, logs and
+    # retries the SAME batch every pass -- forever. Measured shape, identical to the F013 defect this
+    # file already documents for Zeek (see `_insert_batch`): ONE persistently-rejected row, from an
+    # out-of-range value or schema drift, stops ALL flow ingestion while the loop looks alive.
+    #
+    # The fix is not a second implementation: `_insert_batch` already does the retry-row-by-row
+    # isolation, names the offending rows rather than counting them, and its own docstring says
+    # "losing flow records silently is exactly the class of bug this file keeps documenting" -- while
+    # the flow path was the one place still not using it. Reusing it is what that helper is for.
+    #
+    # The trade is the same one the Zeek path makes deliberately: a batch that fails as a whole is
+    # retried row by row, so the good rows land and only the offending rows are lost. The alternative
+    # -- refusing the batch -- loses every good record alongside the bad one AND stops all future
+    # ingestion.
+    return _insert_batch(client, "weirvern.flows",
+                         [[r[c] for c in _COLUMNS] for r in keep], _COLUMNS)
 
 
 # =============================================================================

@@ -777,6 +777,19 @@ def find_free_addresses(iface: str, segment: str, src_ip: str,
     our_mac = read_mac(iface)
     if not our_mac:
         return []
+    # ── AN UNUSABLE SOURCE IS REFUSED, NOT REPHRASED AS "ALL FREE" (glm-5.3 review) ──────────────
+    #
+    # `arp_sweep` now raises rather than returning {} for an empty/0.0.0.0 source (see its docstring).
+    # Without this branch the raise would escape this function as an unhandled ValueError, but the
+    # alternative -- letting it fall back to {} -- is what made this function dangerous in the first
+    # place: every candidate would come back FREE, so a caller could pick an address that a live host
+    # already holds.
+    #
+    # Returns [] for the same reason the unreadable-MAC branch above does: this function's contract is
+    # "addresses nothing answered for", and it has no honest answer to give when it could not ask.
+    # Callers already treat [] as "no candidates", which is the conservative reading.
+    if not src_ip or src_ip == "0.0.0.0":
+        return []
     taken = arp_sweep(iface, our_mac, src_ip, candidates)
     free = [ip for ip in candidates if ip not in taken]
 
@@ -806,4 +819,16 @@ def describe_segment(iface: str, segment: str, src_ip: str) -> tuple[dict[str, s
     candidates = [str(h) for h in net.hosts()]
     if len(candidates) > 4094:
         return {}, f"{segment} is too large to sweep ({len(candidates)} addresses)"
+    # ── AN UNUSABLE SOURCE IS AN ERROR HERE, AND THIS FUNCTION HAS SOMEWHERE TO PUT IT ───────────
+    #
+    # Returns `(used, error)`, so unlike `find_free_addresses` it can say why it has nothing. The
+    # empty dict it used to return alongside err="" was read by the CLI as "nothing answered ARP --
+    # either the segment is empty, or this interface cannot reach it", which is a GUESS between two
+    # causes when the real cause was a third one it could have named: the sweep never sent a request.
+    if not src_ip or src_ip == "0.0.0.0":
+        return {}, (
+            f"cannot sweep {segment}: no usable source address on {iface} ({src_ip!r}). A request "
+            f"from an empty or 0.0.0.0 source is ignored by most stacks, so an empty result would "
+            f"say nothing about the segment."
+        )
     return arp_sweep(iface, our_mac, src_ip, candidates), ""

@@ -59,6 +59,20 @@ STATE_STALE = "stale"
 STATE_NEVER_SEEN = "never_seen"
 STATE_UNREGISTERED = "unregistered"
 STATE_DISABLED = "disabled"
+# ── "CANNOT SAY" IS NOT A PROBLEM VERDICT (glm-5.3 review) ──────────────────────────────────────
+#
+# This exists because every other state is a CLAIM about the sensor, and there is a case where the
+# hub cannot make one: the heartbeat store is unreadable while the registry reads fine. Before this,
+# `build_fleet` passed an empty heartbeat list in that situation, so every registered sensor was
+# classified `never_seen` -- "registered but has never reported. Check that it can reach this hub" --
+# and counted as a problem. A hub-side fault was reported as a fault in every remote sensor's INSTALL.
+#
+# Deliberately NOT in PROBLEM_STATES: `is_problem` means "a human should look at this", and the
+# action for never_seen (go check the sensor's install) is the WRONG action here. The reason is
+# carried in the row's findings instead, so the operator is told what is actually unknown. This is
+# the same three-state convention `status.py` uses for `ok=None` and `sluice_store` uses for an
+# unreadable timestamp ("cannot say", not "stale").
+STATE_UNKNOWN = "unknown"
 
 # How long this hub KEEPS a heartbeat. Read from the schema rather than invented here, because the
 # number belongs to the table: `sensor_status` is declared `TTL ts + INTERVAL 7 DAY`, and a constant
@@ -591,6 +605,10 @@ def summarise(health: list[SensorHealth]) -> dict:
     counts = {
         STATE_ALIVE: 0, STATE_STALE: 0, STATE_NEVER_SEEN: 0,
         STATE_UNREGISTERED: 0, STATE_DISABLED: 0,
+        # NAMED, not left to `counts.get`. An unknown state still increments correctly either way,
+        # but only a named key reaches the header, and a count that is invisible in the summary is
+        # how "we could not read this" would silently look like "nothing to report".
+        STATE_UNKNOWN: 0,
     }
     for h in health:
         counts[h.state] = counts.get(h.state, 0) + 1

@@ -30,6 +30,7 @@ from weirvern.fleet import (
     STATE_DISABLED,
     STATE_NEVER_SEEN,
     STATE_STALE,
+    STATE_UNKNOWN,
     STATE_UNREGISTERED,
     FleetError,
     Registration,
@@ -462,9 +463,21 @@ def test_a_registry_read_failure_is_reported_as_unavailable_not_empty():
 
 
 def test_a_heartbeat_read_failure_degrades_but_still_shows_the_fleet():
-    """The registry is what the view is built on. Without heartbeats every registered sensor
-    reads as never-seen, which is still useful -- so the tab degrades rather than erroring, and
-    says so, or a healthy-looking panel would be mistaken for a complete one."""
+    """The registry is what the view is built on, so the tab degrades rather than erroring and says
+    so, or a healthy-looking panel would be mistaken for a complete one.
+
+    ── BUT THE ROWS MUST NOT CLAIM A STATE THE HEARTBEAT CANNOT SUPPORT (glm-5.3 review) ─────────
+
+    This test used to assert `state == never_seen`, which pinned the defect: with the registry
+    readable and the heartbeat read FAILED, every registered sensor was classified `never_seen` with
+    the finding "Check that it can reach this hub and that its flow exporter points at the hub's
+    collector" -- a PROBLEM state, counted in the summary. So a hub-side fault was reported as a
+    problem with every remote sensor's INSTALL, and the operator's next action is to go and check
+    sensors that are working fine.
+
+    The distinction is now carried instead of discarded: the state is `unknown`, and `unknown` is
+    deliberately NOT a problem state, because the fix is on the hub rather than on the sensor.
+    """
     from weirvern import fleet_store
     rows = [{"sensor_id": "edge-1", "address": "", "segment": "", "expected_mode": "loch",
              "enabled": 1, "note": "", "added_at": NOW, "updated_at": NOW, "revoked_at": None}]
@@ -474,7 +487,25 @@ def test_a_heartbeat_read_failure_degrades_but_still_shows_the_fleet():
     assert payload["heartbeats_available"] is False
     assert payload["heartbeat_reason"], "the degraded state must be stated, not implied"
     assert [s["sensor_id"] for s in payload["sensors"]] == ["edge-1"]
-    assert payload["sensors"][0]["state"] == STATE_NEVER_SEEN
+
+    s = payload["sensors"][0]
+    assert s["state"] == STATE_UNKNOWN, (
+        f"a failed heartbeat read classified this sensor as {s['state']!r}. Every state except "
+        f"`unknown` is a CLAIM, and the hub has no evidence for one -- so it must not send the "
+        f"operator to check a sensor's install over a hub-side read failure"
+    )
+    assert s["is_problem"] is False, (
+        "an unreadable heartbeat was counted as a problem with the sensor. `is_problem` means 'a "
+        "human should look at this', and the action it implies (check the sensor's install) is the "
+        "wrong action for a hub fault"
+    )
+    joined = " ".join(s["findings"])
+    assert "cannot be read" in joined, (
+        f"the row must say what is unknown and why. findings: {s['findings']}"
+    )
+    assert payload["heartbeat_reason"] in joined, (
+        f"the reason must reach the row, not only the envelope. findings: {s['findings']}"
+    )
 
 
 def test_an_unmeasured_count_never_reaches_the_payload_as_zero():
@@ -525,3 +556,32 @@ def test_revoked_registrations_are_hidden_but_still_readable_for_audit():
     kept = fleet_store.read_registrations(client, include_revoked=True)
     assert [r.sensor_id for r in kept] == ["retired"]
     assert kept[0].revoked_at is not None
+
+
+def test_the_summary_PUBLISHES_the_unknown_count_even_when_it_is_zero():
+    """A count that is invisible in the header is how "we could not read this" would silently look
+    like "nothing to report".
+
+    `counts[h.state] = counts.get(h.state, 0) + 1` CREATES the key the moment a sensor has that
+    state, so a nonzero tallies correctly whether or not the state is named in the initialiser --
+    which is why my first version of this test passed with the named entry deleted. The named entry's
+    real and only job is publishing the key when NOTHING has that state, which is what lets a reader
+    tell "no sensor is in this state" from "this build does not have this state at all".
+    """
+    from weirvern.fleet import STATE_UNKNOWN as U
+
+    healthy = classify(reg("edge-1"), [hb("edge-1", age_s=1)], now=NOW)
+    assert healthy.state != U
+    s = summarise([healthy])
+    assert U in s, (
+        f"the summary does not publish {U!r} when no sensor is in that state, so a dashboard cannot "
+        f"distinguish 'nothing could not be read' from 'this build has no such state'. keys: "
+        f"{sorted(s)}"
+    )
+    assert s[U] == 0, s
+
+    # And it still tallies when one IS in that state.
+    broken = classify(reg("edge-2"), [hb("edge-2", age_s=1)], now=NOW)
+    broken.state = U
+    s2 = summarise([healthy, broken])
+    assert s2[U] == 1, s2

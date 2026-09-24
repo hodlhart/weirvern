@@ -27,6 +27,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern.fleet import (
     HEARTBEAT_STALE_S,
+    STATE_UNKNOWN,
     FleetError,
     Registration,
     SensorHealth,
@@ -343,7 +344,37 @@ def build_fleet(client: Client, *, now: datetime | None = None,
             "heartbeat_reason": hb_error,
         }
 
-    health = fleet(regs, heartbeats, now=now)
+    if hb_error:
+        # ── AN UNREADABLE HEARTBEAT READ IS NOT AN EMPTY FLEET (glm-5.3 review) ──────────────────
+        #
+        # This fell through to `fleet(regs, [], now=now)`, so with the registry readable and the
+        # heartbeat read FAILED (they carry separate column-existence rules, so one can fail alone),
+        # every registered sensor classified as never_seen with the finding "registered but has never
+        # reported. Check that it can reach this hub and that its flow exporter points at the hub's
+        # collector". A PROBLEM state, counted in the summary.
+        #
+        # So a hub-side fault was reported as a problem with every remote sensor's INSTALL, and the
+        # operator's next action is to go and check sensors that are working fine. That is the exact
+        # class this module's own docstring warns about, one layer up: `read_heartbeats` was careful
+        # to return a REASON rather than an empty list -- "the fleet view degrades to registrations
+        # only, which is still useful" -- and then the caller discarded the distinction by iterating
+        # an empty list as if it were the truth.
+        #
+        # The registrations are still shown, because "what did I declare" is readable and useful. What
+        # changes is that the ROWS do not claim a state the heartbeat cannot support: a sensor's
+        # health is left unclassified and the reason is carried, the same shape `sluice_store` uses
+        # for an unreadable timestamp ("cannot say", not "stale").
+        health = fleet(regs, [], now=now)
+        for h in health:
+            h.state = STATE_UNKNOWN
+            h.findings.insert(
+                0,
+                f"this sensor's state cannot be read: {hb_error}. The registration below is what "
+                f"was DECLARED; whether it is reporting is unknown until the heartbeat store is "
+                f"readable again.",
+            )
+    else:
+        health = fleet(regs, heartbeats, now=now)
     # THE FILTER IS APPLIED TO THE OBJECTS, NOT TO THE SERIALISED ROWS. Filtering on a payload key
     # would read a DERIVED field as though it were a database column -- the schema auditor flagged
     # exactly that, and it was right to: `is_problem` is computed here, not stored anywhere.
