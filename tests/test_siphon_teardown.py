@@ -32,6 +32,13 @@ import pytest
 
 from weirvern.admin import siphonnet
 
+# THE FORWARDING STATE, INJECTED RATHER THAN READ. `Intercept.start()` now refuses to poison when the
+# sysctls siphon depends on are not in effect, reading the state through the same `forwarding=` seam
+# `preflight()` uses. These tests are about TEARDOWN, so they must not depend on the kernel of
+# whatever machine runs them: a developer box legitimately has ip_forward=0, and reading it here
+# would make every one of them fail for a reason unrelated to what they measure.
+FORWARDING_OK = siphonnet.ForwardingState(ip_forward=True, rp_filter_off=True)
+
 
 @pytest.fixture
 def fake_ip(monkeypatch):
@@ -215,7 +222,7 @@ def test_a_REFUSED_start_withdraws_what_it_installed(monkeypatch):
             order.append("sysctl-restore")
             return []
 
-    inst = ic.Intercept(_minimal_plan())
+    inst = ic.Intercept(_minimal_plan(), forwarding=FORWARDING_OK)
     inst._sysctls = _Guard()
     with pytest.raises(ic.InterceptError):
         inst.start()
@@ -259,7 +266,7 @@ def test_the_refusal_still_RAISES(monkeypatch):
         def restore(self) -> list[str]:
             return []
 
-    inst = ic.Intercept(_minimal_plan())
+    inst = ic.Intercept(_minimal_plan(), forwarding=FORWARDING_OK)
     inst._sysctls = _Guard()
     with pytest.raises(ic.InterceptError) as exc:
         inst.start()
@@ -288,7 +295,7 @@ def test_a_CLEANUP_that_ALSO_fails_is_reported_in_the_error(monkeypatch):
         def restore(self) -> list[str]:
             return ["net.ipv4.conf.eth1.rp_filter"]
 
-    inst = ic.Intercept(_minimal_plan())
+    inst = ic.Intercept(_minimal_plan(), forwarding=FORWARDING_OK)
     inst._sysctls = _Guard()
     with pytest.raises(ic.InterceptError) as exc:
         inst.start()

@@ -259,3 +259,118 @@ def test_an_EMPTY_declared_address_is_not_a_disagreement():
     assert "registered at" not in joined, (
         f"an unset declared address was treated as a disagreement: {h.findings}"
     )
+
+
+# ── GLM 5.3 REVIEW: "NO ROW NOW" IS NOT "NEVER REPORTED" ────────────────────────────────────────
+
+
+def test_the_retention_constant_matches_the_schema_it_mirrors():
+    """A constant that disagrees with the TTL would be a second source of truth for one fact.
+
+    `HEARTBEAT_STALE_S` is IMPORTED rather than redefined for exactly this reason, so the retention
+    window has to be held to the same standard. This reads the schema file rather than restating the
+    number.
+    """
+    import pathlib
+    import re as _re
+
+    from weirvern import fleet as F
+
+    schema = (pathlib.Path(__file__).resolve().parent.parent) / F.HEARTBEAT_RETENTION_SCHEMA
+    text = schema.read_text()
+    m = _re.search(r"TTL\s+ts\s*\+\s*INTERVAL\s+([0-9]+)\s+DAY", text)
+    assert m, (
+        f"could not find a `TTL ts + INTERVAL n DAY` in {F.HEARTBEAT_RETENTION_SCHEMA}. Either the "
+        f"schema changed shape or the file moved, and either way this test is no longer measuring "
+        f"what it claims"
+    )
+    assert float(m.group(1)) == F.HEARTBEAT_RETENTION_DAYS, (
+        f"the schema keeps heartbeats for {m.group(1)} days but the module says "
+        f"{F.HEARTBEAT_RETENTION_DAYS}. classify() decides 'never reported' versus 'the evidence was "
+        f"deleted' on this number, so the two must agree"
+    )
+
+
+def test_a_long_silent_sensor_is_NOT_reported_as_a_fresh_install():
+    """THE DEFECT (confirmed against the live cluster).
+
+    `sensor_status` carries `TTL ts + INTERVAL 7 DAY`, verified live as
+    `ReplacingMergeTree(ts) ... TTL ts + toIntervalDay(7)`. EVERY row a silent sensor wrote is
+    deleted after seven days, so a sensor that reported for months and then went silent for eight
+    flips to never_seen -- and this module's own docstring says the two states "differ in the one
+    fact that matters: whether the sensor ever worked. An operator chasing a never-seen sensor into
+    its logs will find no logs." That operator would be sent hunting through logs that exist.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    reg = Registration(
+        sensor_id="s1", address="", segment="", expected_mode="loch", enabled=True, note="",
+        added_at=now - datetime.timedelta(days=40), revoked_at=None,
+    )
+
+    h = fleet_mod.classify(reg, [], now=now)
+
+    assert h.state == fleet_mod.STATE_NEVER_SEEN, (
+        f"the state changed; it is what the remaining data supports. state={h.state}"
+    )
+    joined = " ".join(h.findings)
+    assert "DELETED" in joined or "deleted" in joined, (
+        f"a sensor registered 40 days ago with no heartbeat rows was reported as 'registered but has "
+        f"never reported' with no caveat. The registry keeps `added_at` forever while heartbeats age "
+        f"out at 7 days, so this reading cannot distinguish a fresh install from a sensor whose "
+        f"history was erased. findings: {h.findings}"
+    )
+    assert "7" in joined and "40" in joined, (
+        f"the caveat must carry both numbers so the operator can see the overlap. findings: {h.findings}"
+    )
+
+
+def test_a_genuinely_new_registration_gets_no_retention_caveat():
+    """The other direction, so the caveat cannot become noise on every never-seen sensor.
+
+    A sensor registered an hour ago genuinely has no history to have lost, and telling the operator
+    its heartbeats "would have been deleted" would be false.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    reg = Registration(
+        sensor_id="s1", address="", segment="", expected_mode="loch", enabled=True, note="",
+        added_at=now - datetime.timedelta(hours=1), revoked_at=None,
+    )
+
+    h = fleet_mod.classify(reg, [], now=now)
+
+    assert h.state == fleet_mod.STATE_NEVER_SEEN
+    joined = " ".join(h.findings)
+    assert "DELETED" not in joined, (
+        f"a registration one hour old was told its earlier heartbeats would have been deleted, which "
+        f"cannot be true. findings: {h.findings}"
+    )
+
+
+def test_a_registration_with_no_added_at_does_not_crash_the_caveat():
+    """`added_at` is optional on the dataclass, and a row could have been written without one."""
+    now = datetime.datetime.now(datetime.UTC)
+    reg = Registration(sensor_id="s1", address="", segment="", expected_mode="loch", enabled=True,
+                       note="", added_at=None, revoked_at=None)
+    h = fleet_mod.classify(reg, [], now=now)
+    assert h.state == fleet_mod.STATE_NEVER_SEEN
+
+
+def test_a_NAIVE_added_at_is_read_as_UTC_rather_than_raising():
+    """`added_at` is a plain `datetime | None` on the dataclass, so a caller can hand this a naive
+    value -- and subtracting an aware `now` from a naive datetime RAISES TypeError, which would abort
+    the whole fleet view for one row. Read as UTC instead, the same rule `_age_s` and the sluice
+    staleness check already apply to a naive timestamp.
+
+    Found by mutation: removing the awareness guard left every other test green, so nothing pinned it.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    naive = (now - datetime.timedelta(days=40)).replace(tzinfo=None)
+    reg = Registration(sensor_id="s1", address="", segment="", expected_mode="loch", enabled=True,
+                       note="", added_at=naive, revoked_at=None)
+
+    h = fleet_mod.classify(reg, [], now=now)   # must not raise
+    assert h.state == fleet_mod.STATE_NEVER_SEEN
+    assert any("DELETED" in f for f in h.findings), (
+        f"a naive added_at 40 days old did not produce the retention caveat, so it was not read as "
+        f"UTC. findings: {h.findings}"
+    )

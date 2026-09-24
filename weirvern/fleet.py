@@ -60,6 +60,19 @@ STATE_NEVER_SEEN = "never_seen"
 STATE_UNREGISTERED = "unregistered"
 STATE_DISABLED = "disabled"
 
+# How long this hub KEEPS a heartbeat. Read from the schema rather than invented here, because the
+# number belongs to the table: `sensor_status` is declared `TTL ts + INTERVAL 7 DAY`, and a constant
+# in this module that disagreed with it would be a second source of truth for one fact -- the exact
+# failure `HEARTBEAT_STALE_S` is imported (not redefined) above to avoid.
+#
+# It matters to `classify()` because this is the window past which "no heartbeat row" stops meaning
+# "never reported": the evidence has been deleted, so the two readings become indistinguishable.
+HEARTBEAT_RETENTION_DAYS = 7.0
+
+# The schema file this number mirrors. Pinned so the test that greps the TTL has one place to look.
+HEARTBEAT_RETENTION_SCHEMA = "weirvern/schema/003_sensor_status.sql"
+
+
 # The states that mean "a human should look at this". Disabled and alive are deliberately
 # absent: a disabled sensor not reporting is the intended outcome, and listing it as a problem
 # would train the reader to ignore the whole column.
@@ -414,6 +427,38 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
             f"its flow exporter points at the hub's collector (heartbeats arrive every "
             f"{HEARTBEAT_STALE_S // 3}s when it runs)."
         )
+        # ── BUT "NO ROW NOW" IS NOT THE SAME AS "NEVER REPORTED" (glm-5.3 review, CONFIRMED LIVE) ─
+        #
+        # This module's own docstring names `stale` and `never_seen` as the pair most likely to be
+        # collapsed, and says they "differ in the one fact that matters: whether the sensor ever
+        # worked. An operator chasing a never-seen sensor into its logs will find no logs."
+        #
+        # They WERE collapsible, and the window is not a code path: `sensor_status` carries
+        # `TTL ts + INTERVAL 7 DAY` (verified against the live cluster: `ReplacingMergeTree(ts) ...
+        # TTL ts + toIntervalDay(7)`). Every row a silent sensor ever wrote is DELETED after seven
+        # days, so a sensor that reported for months and then went silent for eight flips to
+        # never_seen -- sending the operator to hunt through logs that definitely exist, with the one
+        # field that could have said otherwise erased by the database.
+        #
+        # The registry does NOT age out (no TTL on `weirlings`), so `added_at` is the honest evidence
+        # that survives: a registration older than the heartbeat retention, with no rows, is
+        # overwhelmingly likely to have reported at some point. Said as a caveat rather than asserted
+        # as fact, because a sensor that was registered and genuinely never came up in that time is
+        # indistinguishable from here -- and inventing certainty is the failure this project keeps
+        # finding. The state stays `never_seen` for the same reason: it is what the data supports.
+        retention_days = HEARTBEAT_RETENTION_DAYS
+        if reg.added_at is not None:
+            reg_age_days = (now - (
+                reg.added_at if reg.added_at.tzinfo else reg.added_at.replace(tzinfo=UTC)
+            )).total_seconds() / 86400.0
+            if reg_age_days > retention_days:
+                h.findings.append(
+                    f"BUT it was registered {reg_age_days:.0f} days ago and this hub keeps "
+                    f"heartbeats for only {retention_days:.0f}, so an earlier heartbeat would have "
+                    f"been DELETED and this reading cannot tell 'never reported' from 'stopped "
+                    f"reporting a while ago'. Check the sensor's own logs for an earlier run before "
+                    f"treating this as a fresh install."
+                )
         if reg.expects_in_path:
             h.findings.append(
                 "this sensor was registered as IN-PATH (siphon), so the segment it covers may "

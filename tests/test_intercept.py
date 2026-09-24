@@ -792,7 +792,7 @@ def test_a_broken_forwarding_path_aborts_before_sending_any_poison():
     m.ensure_forwarding_path = lambda _i, _g, **_kw: [
         "route goes out the wrong interface"]
     try:
-        icpt = m.Intercept(_plan(), sender=sender)
+        icpt = m.Intercept(_plan(), sender=sender, forwarding=READY)
         with pytest.raises(m.InterceptError, match="forwarding path is not correct"):
             icpt.start()
     finally:
@@ -811,7 +811,7 @@ def test_a_correct_forwarding_path_installs_the_route_and_removes_it_on_stop(mon
                         lambda i, g, **_kw: (calls.append(("install", i, g)), [])[1])
     monkeypatch.setattr(ic, "remove_forwarding_path",
                         lambda i: calls.append(("remove", i, None)))
-    with ic.Intercept(_plan(), sender=RecordingSender()):
+    with ic.Intercept(_plan(), sender=RecordingSender(), forwarding=READY):
         pass
     assert ("install", "eth1", "198.51.100.1") in calls, "the policy route was never installed"
     assert ("remove", "eth1", None) in calls, (
@@ -1454,3 +1454,100 @@ def test_the_intercept_PASSES_the_segment():
             f"an ensure_forwarding_path call does not pass the segment, so table 100 gets no "
             f"connected route and return traffic loops through the gateway. kwargs: {kws}"
         )
+
+
+# ── GLM 5.3 REVIEW: A START MUST REFUSE ON SYSCtLS IT CANNOT CONFIRM ──────────────────────────
+#
+# `start()` called `self._sysctls.apply()` and DISCARDED the result. apply() returns the sysctls that
+# could not be set -- and in the deployed container, where /proc/sys is read-only, it returns the ones
+# that are WRONG and cannot be corrected from there. Measured against the real class: ip_forward=0
+# yields a populated list, a correct node yields an empty one.
+#
+# So an intercept poisoned ARP on a node with ip_forward=0, making the kernel the segment's next hop
+# for traffic it will not forward: the victim loses the network instead of being relayed. That is
+# exactly the outcome the path check below it exists to prevent, and it could not cover this, because
+# forwarding WILLINGNESS is a separate fact from forwarding PATH.
+
+
+class _StubSysctls:
+    """The guard, with `apply()` scripted.
+
+    It mirrors the real guard's surface for the calls `Intercept` makes -- an incomplete stub fails
+    with AttributeError, which reads like a product bug and is not one, so this covers every method
+    intercept.py actually calls.
+    """
+
+    def __init__(self, problems):
+        self.problems = list(problems)
+        self.applied = 0
+        self.restored = 0
+
+    def apply(self, write=True):  # noqa: ANN001, ARG002
+        self.applied += 1
+        return list(self.problems)
+
+    def restore(self):
+        self.restored += 1
+        return []
+
+    def changed_by_us(self):
+        """Nothing, because the read-only path changes nothing. Mirrors the real contract."""
+        return []
+
+
+def _intercept_fixture(problems, state=None):
+    """An Intercept on a doc-space segment whose sender never sends a frame.
+
+    `state` is the ForwardingState the real `check_forwarding` would return; injecting it keeps the
+    test off this machine's /proc/sys, which is the same seam `preflight()` already uses.
+    """
+    from weirvern.admin import siphonnet as siphonnet_mod
+
+    bad = siphonnet_mod.ForwardingState(ip_forward=bool(not problems), rp_filter_off=bool(not problems),
+                                        problems=list(problems))
+    sent = []
+    runner = ic.Intercept(_plan(), sender=lambda *_a, **_k: sent.append(1),
+                          forwarding=(state if state is not None else bad))
+    stub = _StubSysctls(problems)
+    runner._sysctls = stub
+    return runner, stub, sent
+
+
+def test_start_REFUSES_when_a_required_sysctl_is_not_in_effect():
+    """THE DEFECT. A node that cannot forward must not be made the segment's next hop."""
+    runner, stub, sent = _intercept_fixture([
+        "net.ipv4.ip_forward is 0 but siphon needs 1, and this container's /proc/sys is READ-ONLY "
+        "so it cannot be corrected from here."
+    ])
+    try:
+        runner.start()
+    except ic.InterceptError as exc:
+        assert "sysctls are not in effect" in str(exc), str(exc)
+    else:
+        raise AssertionError(
+            "start() ARMED the intercept on a node whose forwarding sysctls are wrong (ip_forward=0), "
+            "so the sensor would become the segment's next hop for traffic the kernel will drop. "
+            "apply() reported the problem and the result was thrown away."
+        )
+    assert not sent, (
+        f"{len(sent)} poison frame(s) were sent before the refusal. A refused start must leave the "
+        f"segment untouched, or the failure itself black-holes it"
+    )
+    assert stub.restored == 1, (
+        "the refusal did not restore the sysctls it had recorded, so a refused start left the node "
+        "modified"
+    )
+
+
+def test_start_still_ARMS_when_the_sysctls_are_correct(monkeypatch):
+    """The other direction, so the fix cannot be 'refuse everything'."""
+    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda i, g, **_kw: [])
+    monkeypatch.setattr(ic, "remove_forwarding_path", lambda i: None)
+    runner, _stub, _sent = _intercept_fixture([])
+
+    runner.start()
+    assert runner._started, (
+        "the sysctl gate refused a node whose forwarding settings are CORRECT, so the check is "
+        "not a check but a wall"
+    )
+    runner.stop()

@@ -648,7 +648,50 @@ class Intercept:
         #    Nothing here CHANGES a sysctl: the mode check and the Kubernetes init container own
         #    that, and duplicating it would give two places that can disagree. This only remembers
         #    what was there so the restore has an honest target.
-        self._sysctls.apply()
+        #
+        # ── THE RESULT MUST BE READ (glm-5.3 review, CONFIRMED) ──────────────────────────────────
+        #
+        # This was `self._sysctls.apply()`, result discarded. `apply()` returns the sysctls that
+        # could NOT be set -- and in the deployed container, where /proc/sys is read-only, it returns
+        # the ones that are WRONG and cannot be corrected from here. Measured against the live class:
+        # a node with ip_forward=0 yields a populated list, and a correct node yields an empty one.
+        #
+        # Discarding it meant start() poisoned ARP with forwarding misconfigured. ip_forward=0 makes
+        # the kernel unwilling to forward at all, so the sensor becomes the segment's next hop for
+        # traffic it will drop: the victim loses the network rather than being relayed, which is the
+        # precise outcome the check exists to prevent. And `preflight()` cannot cover it -- start()
+        # is the point of no return, reachable directly, and the module's own history (see below) is
+        # a list of checks that existed upstream and were skipped by callers that bypassed them.
+        #
+        # This is deliberately NOT gated on `preflight()` having run. Doing that was already tried
+        # here and produced a deadlock, because preflight refuses on prerequisites that start()
+        # itself installs. The question answered here needs no prerequisite: are the sysctls siphon
+        # depends on actually in effect right now? If not, refuse BEFORE any poison frame.
+        # The sysctls are handled in `preflight()`, via `check_forwarding`. That helper is reached
+        # at line 570 in `preflight()` -- but preflight is a SEPARATE entry point, and start() is
+        # the point of no return, so a caller that constructs an Intercept and calls start()
+        # (the documented usage) reached the point of no return with the sysctls unexamined.
+        #
+        # Checked here too, using the SAME helper and the SAME injected seam (`self.forwarding`)
+        # rather than a second derivation of the same facts. The result is read, which the direct
+        # call above did not do.
+        state = self.forwarding or check_forwarding(self.plan.iface)
+        if not state.ready:
+            # Same contract as the path failure below: a refused start leaves NO trace, so the exit
+            # cleans up before raising and the exception describes a node actually back to its
+            # previous state.
+            withdrawn = remove_forwarding_path(self.plan.iface)
+            unrestored = self._sysctls.restore()
+            detail = ""
+            if withdrawn or unrestored:
+                detail = (
+                    f" Cleanup was also incomplete: could not withdraw {withdrawn}; could not "
+                    f"restore {unrestored}."
+                )
+            raise InterceptError(
+                "refusing to poison: the forwarding sysctls are not in effect, so relayed traffic "
+                "would be dropped instead of delivered. " + " ".join(state.problems) + detail
+            )
 
         # 1. the forwarding path, before anything claims to be the gateway. If the route is
         #    wrong, poisoning makes the kernel the next hop for traffic it cannot deliver --

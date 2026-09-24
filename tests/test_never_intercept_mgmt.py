@@ -28,6 +28,11 @@ import pytest
 
 from weirvern.admin import intercept as ic
 
+# THE FORWARDING STATE, INJECTED RATHER THAN READ -- see the note in test_siphon_teardown.py. This
+# file is about the management-interface refusal, and a real /proc/sys read would make it fail on any
+# host that is not itself a forwarding sensor.
+FORWARDING_OK = ic.ForwardingState(ip_forward=True, rp_filter_off=True)
+
 
 class _Guard:
     """A sysctl guard that records nothing and writes nothing.
@@ -96,7 +101,7 @@ def _attempt(monkeypatch, mgmt: str | None, iface: str, hatch: bool = False):
     else:
         monkeypatch.setenv("MGMT_IFACE", mgmt)
     guard = _Guard()
-    inst = ic.Intercept(_plan(iface), allow_management_iface=hatch)
+    inst = ic.Intercept(_plan(iface), allow_management_iface=hatch, forwarding=FORWARDING_OK)
     inst._sysctls = guard
     try:
         inst.start()
@@ -302,7 +307,7 @@ def test_STOP_does_not_warn_when_it_changed_NOTHING(isolated, monkeypatch, caplo
         def changed_by_us(self) -> list[str]:
             return []
 
-    inst = icm.Intercept(_plan("ens19"))
+    inst = icm.Intercept(_plan("ens19"), forwarding=FORWARDING_OK)
     inst._sysctls = _ReadOnlyGuard()
     inst._started = True
 
@@ -342,7 +347,7 @@ def test_STOP_DOES_warn_when_it_changed_something_it_cannot_restore(isolated, mo
         def changed_by_us(self) -> list[str]:
             return ["net.ipv4.conf.all.rp_filter"]
 
-    inst = icm.Intercept(_plan("ens19"))
+    inst = icm.Intercept(_plan("ens19"), forwarding=FORWARDING_OK)
     inst._sysctls = _ChangedGuard()
     inst._started = True
 
