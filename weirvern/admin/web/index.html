@@ -99,7 +99,6 @@
 </header>
 
 <nav id="tabs">
-  <button class="tab active" data-view="health">Health</button>
   <button class="tab" data-view="anomalies">Anomalies</button>
   <button class="tab" data-view="host">Assets</button>
   <button class="tab" data-view="network">Network</button>
@@ -109,6 +108,7 @@
   <button class="tab" data-view="sluice">Sluice Gate</button>
   <button class="tab" data-view="weirlings">Weirlings</button>
   <button class="tab" data-view="models">Models</button>
+  <button class="tab active" data-view="health">Health</button>
   <button class="tab" data-view="settings">Settings</button>
 </nav>
 
@@ -617,10 +617,12 @@
         <div>
           <table id="hp-alerts-reasons"><thead><tr><th>Outcome</th><th>Count</th>
           <th>Last</th></tr></thead><tbody></tbody></table>
+          <div id="hp-alerts-reasons-pager" class="pager"></div>
         </div>
         <div>
           <table id="hp-alerts-recent"><thead><tr><th>Time</th><th>Host</th><th>Severity</th>
-          <th>Score</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+          <th>Score</th><th>Outcome</th><th>Detail</th></tr></thead><tbody></tbody></table>
+          <div id="hp-alerts-recent-pager" class="pager"></div>
         </div>
       </div>
     </div>

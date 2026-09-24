@@ -236,13 +236,18 @@ function compareAddr(a, b) {
   return String(a || "").localeCompare(String(b || ""));
 }
 
-function renderPager(hostId, total, page, pages, onGo) {
+function renderPager(hostId, total, page, pages, onGo, size = ASSETS_STATE.pageSize) {
   const host = document.getElementById(hostId);
   if (!host) return;
   host.replaceChildren();
   if (total === 0) return;
 
-  const size = ASSETS_STATE.pageSize;
+  // `size` is a PARAMETER, not a module constant. It used to read ASSETS_STATE.pageSize
+  // directly, which silently made this helper single-purpose: a second table passing its own
+  // page size would render the Assets range while claiming to describe itself (the range line
+  // below is computed from `size`, so the two tables would disagree about what "showing 1-15"
+  // meant). Both tables page at 15 today, which is exactly why the bug would have gone unnoticed
+  // until one of them changed.
   const first = (page - 1) * size + 1;
   const last = Math.min(page * size, total);
 

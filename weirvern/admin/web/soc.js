@@ -405,7 +405,20 @@ async function loadHealthDeep() {
  * or cap -- the system chose not to deliver) from LOG-ONLY (nothing was configured to
  * deliver): the second is a configuration state, not a withheld alert, and calling it
  * suppressed would overstate what the system did.
+ *
+ * BOTH TABLES PAGE 15 AT A TIME, like the Assets inventory. This is the same argument the
+ * inventory makes and it applies harder here: an audit trail read as one scroll is skimmed
+ * rather than read, and the outcome breakdown can hold a row per reason-per-sent-state while
+ * the event list holds up to the fetch cap. Paging state lives in ALERTS_STATE so a re-render
+ * (the 15s auto-refresh, or a click on either pager) does not reset the operator's place.
  */
+const ALERTS_PAGE_SIZE = 15;
+const ALERTS_STATE = {
+  reasonsPage: 1,
+  recentPage: 1,
+  audit: null,   // the last payload, so a pager click re-renders without refetching
+};
+
 function renderAlertAudit(a) {
   const note = document.getElementById("hp-alerts-note");
   const rbody = document.querySelector("#hp-alerts-reasons tbody");
@@ -414,19 +427,27 @@ function renderAlertAudit(a) {
   note.replaceChildren();
   rbody.replaceChildren();
   tbody.replaceChildren();
+  ALERTS_STATE.audit = a;
 
   if (!a.available) {
     note.appendChild(el("p", { class: "muted", text:
       "Alert audit unavailable — " + (a.reason || "cannot reach ClickHouse") + "." }));
     rbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 3 },
                                               text: "—" })]));
-    tbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+    tbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 6 },
                                                text: "—" })]));
+    // The pagers are cleared rather than left showing the PREVIOUS payload's range: a range
+    // line above an unavailable table describes a window that is no longer on screen.
+    for (const id of ["hp-alerts-reasons-pager", "hp-alerts-recent-pager"]) {
+      const host = document.getElementById(id);
+      if (host) host.replaceChildren();
+    }
     return;
   }
 
   const rows = a.by_reason || [];
-  if (!rows.length) {
+  const recent = a.recent || [];
+  if (!rows.length && !recent.length) {
     note.appendChild(el("p", { class: "muted",
       text: "No alert decisions in this window — nothing fired at all." }));
   } else {
@@ -439,9 +460,22 @@ function renderAlertAudit(a) {
       bits.push(`${logOnly} log-only — Pushover is not configured, so these were `
         + "recorded, not withheld");
     }
+    // A truncated fetch is stated where the count is, because a full page of rows with no
+    // note reads as "this is everything". The list is newest-first, so what a cap hides is
+    // the OLDER end of the window.
+    if (a.truncated) {
+      bits.push(`showing the newest ${recent.length} of ${a.total} — older decisions in `
+        + "this window are not listed");
+    }
     note.appendChild(el("p", { class: "muted", text: bits.join("; ") + "." }));
   }
-  for (const r of rows) {
+
+  // ── the outcome breakdown, paged ─────────────────────────────────────────────────────────
+  const rpages = Math.max(1, Math.ceil(rows.length / ALERTS_PAGE_SIZE));
+  if (ALERTS_STATE.reasonsPage > rpages) ALERTS_STATE.reasonsPage = rpages;
+  if (ALERTS_STATE.reasonsPage < 1) ALERTS_STATE.reasonsPage = 1;
+  const rfrom = (ALERTS_STATE.reasonsPage - 1) * ALERTS_PAGE_SIZE;
+  for (const r of rows.slice(rfrom, rfrom + ALERTS_PAGE_SIZE)) {
     const label = r.reason === "log-only"
       ? "log-only (not configured)"
       : (r.sent ? "sent" : `${r.reason} (suppressed)`);
@@ -451,22 +485,41 @@ function renderAlertAudit(a) {
       el("td", { class: "mono", text: fmtTime(r.last_at) }),
     ]));
   }
+  if (!rows.length) {
+    emptyRow(rbody, 3, "no decisions in this window");
+  }
+  renderPager("hp-alerts-reasons-pager", rows.length, ALERTS_STATE.reasonsPage, rpages,
+    (next) => { ALERTS_STATE.reasonsPage = next; renderAlertAudit(ALERTS_STATE.audit); },
+    ALERTS_PAGE_SIZE);
 
-  const recent = a.recent || [];
-  for (const ev of recent) {
+  // ── the events themselves, paged ─────────────────────────────────────────────────────────
+  const names = a.names || {};
+  const pages = Math.max(1, Math.ceil(recent.length / ALERTS_PAGE_SIZE));
+  if (ALERTS_STATE.recentPage > pages) ALERTS_STATE.recentPage = pages;
+  if (ALERTS_STATE.recentPage < 1) ALERTS_STATE.recentPage = 1;
+  const from = (ALERTS_STATE.recentPage - 1) * ALERTS_PAGE_SIZE;
+  for (const ev of recent.slice(from, from + ALERTS_PAGE_SIZE)) {
     tbody.appendChild(el("tr", {}, [
       el("td", { class: "mono", text: fmtTime(ev.sent_at) }),
-      el("td", {}, [hostCell(ev.src_addr, ev.hostname)]),
+      el("td", {}, [hostCell(ev.src_addr, names[ev.src_addr])]),
       el("td", {}, [el("span", { class: "sev " + (ev.severity || "low"),
                                  text: ev.severity || "" })]),
       el("td", { class: "num", text: Number(ev.score || 0).toFixed(2) }),
       el("td", { text: ev.sent ? "sent" : ev.reason }),
+      // The message the worker WOULD have sent, or did. It was already in the payload and
+      // never rendered -- so an operator could see that a decision was made without seeing
+      // what it was about, which is the half of the audit that makes a suppression
+      // reviewable. Shortened: this is a table cell, and the full text belongs in the title.
+      el("td", { class: "muted", title: ev.message || "",
+                 text: (ev.message || "").split("\n")[0].slice(0, 80) }),
     ]));
   }
   if (!recent.length) {
-    tbody.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
-                                               text: "no decisions in this window" })]));
+    emptyRow(tbody, 6, "no decisions in this window");
   }
+  renderPager("hp-alerts-recent-pager", recent.length, ALERTS_STATE.recentPage, pages,
+    (next) => { ALERTS_STATE.recentPage = next; renderAlertAudit(ALERTS_STATE.audit); },
+    ALERTS_PAGE_SIZE);
 }
 
 /** One sentence of sensor state, from the fields the heartbeat actually carries.

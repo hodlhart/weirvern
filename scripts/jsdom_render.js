@@ -101,7 +101,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSonar, stageSonarRecommendations, renderSonarNote,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl,
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
@@ -712,7 +712,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     },
     ingest: { available: true, points: [] },
     tables: { available: true, points: [] },
-    sensor: {}, alert_audit: { available: true, by_reason: [], recent: [], suppressed: 0 },
+    // `alerts`, NOT `alert_audit`: the product's payload key is `alerts` (web_api.py) and the
+    // SOC renderer reads `d.alerts`. The stub carried `alert_audit`, so the key was never read
+    // and the loader path rendered an EMPTY audit -- meaning the one route that exercises
+    // renderAlertAudit through the real code path proved nothing about it, while the direct
+    // calls below kept passing. A name that only the test knows is a test that checks nothing.
+    sensor: {},
+    alerts: { available: true, by_reason: [], recent: [], suppressed: 0,
+              total: 0, truncated: false, names: {} },
   };
 
   ROUTES.push(
@@ -1178,9 +1185,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
 
   // The nav's LANDING state, captured before any navigation in this file changes it.
+  //
+  // ASSERTED HERE, immediately, because these describe the state at load and a later block cannot
+  // read it back: by then showView() has moved the active tab and the capture would be the only
+  // thing still describing load. That is why the two facts are stated separately -- "Health is the
+  // landing view" (asserted from this capture) and "Health sits between Models and Settings"
+  // (asserted from the live nav later). They coincided while Health happened to be first.
   const navAtLoad = [...doc.querySelectorAll("nav .tab")].map((b) => b.dataset.view);
   const healthWasActive =
     doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
+  check("Health is ACTIVE at load (it inherited the landing role from Overview)",
+        healthWasActive, `active=${healthWasActive}`);
+  check("Health sits between Models and Settings in the nav",
+        navAtLoad.indexOf("models") < navAtLoad.indexOf("health")
+          && navAtLoad.indexOf("health") < navAtLoad.indexOf("settings"),
+        `nav is ${navAtLoad.join(", ")}`);
 
 
   // ── the Zeek tab ───────────────────────────────────────────────────────────────────────────
@@ -1412,12 +1431,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // active, no Overview). Reading them after showView("settings") would assert the state this
   // block itself just changed, which is how the "Health is active" check first failed.
   const navTabs = [...doc.querySelectorAll("nav .tab")].map(b => b.dataset.view);
-  const firstTabActive = doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
+  const healthTabActive = doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
   check("the Overview tab is gone from the nav", !navTabs.includes("overview"),
         `nav is ${navTabs.join(", ")}`);
-  check("Health is first and active (it inherited the landing role)",
-        navAtLoad[0] === "health" && healthWasActive,
-        `first=${navAtLoad[0]} active=${healthWasActive}`);
+  check("the Overview SECTION is gone from the DOM", doc.getElementById("view-overview") === null);
+  // TWO FACTS, NOT ONE, and this block checks the ORDER rather than the landing state.
+  //
+  // Health inherited the LANDING role from Overview, and it used to be the first tab, so the
+  // original assertion tested both as a unit. The operator moved Health between Models and
+  // Settings, which separates them: the landing view is not necessarily the leftmost tab, and a
+  // nav whose active entry is not the first is entirely ordinary. Asserting "the first tab is
+  // Health" from here would now fail against a CORRECT nav, and the tempting repair is to weaken
+  // the check until it stops describing anything.
+  //
+  // The landing state is asserted where it was captured -- before any navigation -- rather than
+  // re-derived here, where showView("settings") has already moved it.
+  // The nav button and its section must agree: a tab marked active whose section is not, or a
+  // section shown with no tab lit, means clicking the tab appears to do nothing.
+  const healthSectionActive = doc.getElementById("view-health").classList.contains("active");
+  check("the active nav tab and the visible section agree",
+        healthTabActive === healthSectionActive,
+        `tab=${healthTabActive} section=${healthSectionActive}`);
   check("the Settings tab is in the nav", navTabs.includes("settings"));
   check("the Overview SECTION is gone from the DOM",
         doc.getElementById("view-overview") === null);
@@ -1494,6 +1528,84 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("an empty audit says nothing fired at all",
         doc.getElementById("hp-alerts-note").textContent.includes("nothing fired"),
         doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+
+  // ── the alert audit PAGES, 15 at a time ────────────────────────────────────────────────────
+  // The user asked for these tables to page like the Assets inventory. Twenty-four events means
+  // two pages, so the second page is real and the first must not render all of them -- an
+  // unpaged table here would silently be the old behaviour and still look populated.
+  const manyEvents = Array.from({ length: 24 }, (_, i) => ({
+    sent_at: `2026-01-03T10:${String(59 - i).padStart(2, "0")}:00`,
+    src_addr: `198.51.100.${i + 1}`,
+    severity: i % 2 ? "high" : "low",
+    score: 0.5 + i / 100,
+    sent: false,
+    reason: "cooldown",
+    message: `Anomaly on host ${i + 1}: sustained scan traffic`,
+  }));
+  // The BREAKDOWN gets more than 15 outcomes too, so its paging is real rather than a loop that
+  // happens to render everything. With one reason row, "paged" and "unpaged" render identically
+  // and a mutation that removes the slice survives -- which is what the first version of this
+  // check did.
+  const manyReasons = Array.from({ length: 18 }, (_, i) => ({
+    reason: i % 3 === 0 ? "cooldown" : `cause-${i}`,
+    sent: i % 3 === 0,
+    count: 24 - i,
+    last_at: "2026-01-03T10:59:00",
+  }));
+  H.renderAlertAudit({
+    available: true, suppressed: 24,
+    by_reason: manyReasons,
+    recent: manyEvents, total: 24, truncated: false,
+    names: { "198.51.100.1": "host-a.example" },
+  });
+  const reasonRows = doc.querySelectorAll("#hp-alerts-reasons tbody tr").length;
+  check("the breakdown table shows only the first 15 outcomes",
+        reasonRows === 15, `rows=${reasonRows} (expected 15 of 18)`);
+  check("the breakdown has its own pager with its own range",
+        doc.getElementById("hp-alerts-reasons-pager").textContent.includes("1\u201315 of 18"),
+        doc.getElementById("hp-alerts-reasons-pager").textContent.slice(0, 120));
+  const firstPageRows = doc.querySelectorAll("#hp-alerts-recent tbody tr").length;
+  check("the event table shows only the first 15 rows",
+        firstPageRows === 15, `rows=${firstPageRows} (expected 15 of 24)`);
+  check("the pager reports the real total and page count",
+        doc.getElementById("hp-alerts-recent-pager").textContent.includes("1\u201315 of 24"),
+        doc.getElementById("hp-alerts-recent-pager").textContent.slice(0, 120));
+  check("a host with a resolved name shows the name AND the address",
+        doc.getElementById("hp-alerts-recent").textContent.includes("host-a.example")
+          && doc.getElementById("hp-alerts-recent").textContent.includes("198.51.100.1"),
+        "the name replaced the address, or was not shown at all");
+  check("the message a decision was about is rendered, not just that it happened",
+        doc.getElementById("hp-alerts-recent").textContent.includes("sustained scan traffic"),
+        "the audit row shows the outcome without the subject");
+
+  // Page 2, through the pager's own callback.
+  const alertNext = [...doc.querySelectorAll("#hp-alerts-recent-pager .pager-btn")]
+    .find((b) => b.textContent.includes("\u203a"));
+  check("the next-page button exists", !!alertNext);
+  if (alertNext) alertNext.dispatchEvent(new window.Event("click", { bubbles: true }));
+  const page2Rows = doc.querySelectorAll("#hp-alerts-recent tbody tr").length;
+  check("page 2 shows the remaining 9 rows",
+        page2Rows === 9, `rows=${page2Rows} (expected 24-15=9)`);
+  check("page 2 reports its own range, not page 1's",
+        doc.getElementById("hp-alerts-recent-pager").textContent.includes("16\u201324 of 24"),
+        doc.getElementById("hp-alerts-recent-pager").textContent.slice(0, 120));
+
+  // A TRUNCATED fetch must say so: a full page of 15 with no note reads as "this is everything".
+  H.renderAlertAudit({
+    available: true, suppressed: 0, by_reason: [],
+    recent: manyEvents.slice(0, 15), total: 4000, truncated: true, names: {},
+  });
+  check("a capped list states how many it is showing out of how many exist",
+        doc.getElementById("hp-alerts-note").textContent.includes("newest 15 of 4000"),
+        doc.getElementById("hp-alerts-note").textContent.slice(0, 200));
+
+  // An UNAVAILABLE audit must not leave the previous payload's pager on screen: a range line
+  // above an unavailable table describes a window that is no longer there.
+  H.renderAlertAudit({ available: false, reason: "boom", by_reason: [], recent: [],
+                       suppressed: 0, total: 0, truncated: false, names: {} });
+  check("an unavailable audit clears the pagers rather than leaving a stale range",
+        doc.getElementById("hp-alerts-recent-pager").textContent.trim() === "",
+        `pager=${doc.getElementById("hp-alerts-recent-pager").textContent}`);
 
   // ── the Settings tab ───────────────────────────────────────────────────────────────────────
   // Now navigate to Settings the way a user would.

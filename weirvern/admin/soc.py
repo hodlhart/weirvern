@@ -536,7 +536,7 @@ def table_sizes(client, limit: int = 14) -> dict:
                        for r in rows]}
 
 
-def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
+def alert_audit(client, hours: int = 24, limit: int = 500) -> dict:
     """THE ALERT AUDIT TRAIL (soc-8): every alert decision, not just the delivered ones.
 
     The worker writes EVERY decision to `alert_events` -- sent, suppressed by cooldown,
@@ -550,14 +550,26 @@ def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
       * `by_reason` -- the outcome breakdown ("what did the layer DO"). `sent=0` on a
         non-log-only reason is the suppressed case and is called out in the note text.
       * `recent`    -- the events themselves, newest first, with the message that would
-        have been sent (or was). Capped; an unbounded audit list is a way to make the
-        database do arbitrary work from an HTTP request.
+        have been sent (or was). The GUI pages these 15 at a time.
+
+    ── THE FETCH IS CAPPED, AND SAYS SO (the paging rework) ──────────────────────────────────
+
+    `recent` is bounded by `limit` because an unbounded audit list is a way to make the
+    database do arbitrary work from an HTTP request. That bound is a real constraint on the
+    display, not an implementation detail, so the payload carries `total` (a real count over the
+    window) and `truncated`. Without them a full page of 15 rows reads as "this is everything
+    that happened", when the window may hold thousands -- the same misreading the audit panel
+    exists to prevent, one level up. The panel states the truncation in its note.
+
+    Hostnames are attached for the addresses in THIS window, through the same shared revdns
+    policy as every other host list, and never instead of the address.
 
     Returns the standard {available, reason, points} shape, plus the two lists. The
     unavailable case carries a reason so the panel never renders an empty audit as
     "nothing was suppressed", which would be a much stronger and possibly false claim.
     """
-    base = {"available": True, "reason": "", "by_reason": [], "recent": [], "suppressed": 0}
+    base = {"available": True, "reason": "", "by_reason": [], "recent": [],
+            "suppressed": 0, "total": 0, "truncated": False, "names": {}}
     try:
         by_reason = client.query(
             "SELECT reason, sent, count() AS n, max(sent_at) AS last_at "
@@ -566,6 +578,11 @@ def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
             "GROUP BY reason, sent ORDER BY n DESC",
             parameters={"h": hours},
         ).result_rows
+        total = int(client.query(
+            "SELECT count() FROM weirvern.alert_events "
+            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR",
+            parameters={"h": hours},
+        ).result_rows[0][0] or 0)
         recent = client.query(
             "SELECT sent_at, src_addr, severity, score, sent, reason, message "
             "FROM weirvern.alert_events "
@@ -600,10 +617,43 @@ def alert_audit(client, hours: int = 24, limit: int = 100) -> dict:
             suppressed += count
     base["by_reason"] = rows_by_reason
     base["suppressed"] = suppressed
-    base["recent"] = [
+    # Bound to a TYPED local, then assigned. `base` is inferred as dict[str, object], so
+    # `len(base["recent"])` and iteration over it are type errors -- the mypy gate caught exactly
+    # that. Working with the list directly keeps the narrowing in code instead of scattering
+    # `type: ignore` comments over every use.
+    recent_rows_out: list[dict[str, object]] = [
         {"sent_at": str(r[0])[:19], "src_addr": str(r[1]), "severity": str(r[2]),
          "score": float(r[3] or 0), "sent": bool(r[4]), "reason": str(r[5]),
          "message": str(r[6])}
         for r in recent
     ]
+    base["recent"] = recent_rows_out
+    base["total"] = total
+    # ── TRUNCATION IS WHETHER THE FETCH HIT ITS CAP, NOT A COMPARISON OF TWO COUNTS ──────────
+    #
+    # The first version of this was `max(total, len(recent)) > len(recent)`, under a comment
+    # claiming it was race-safe. It was not: `max(A, B) > B` is algebraically IDENTICAL to
+    # `A > B`, so the max() was decoration over a comparison that a count and a list can
+    # legitimately disagree on -- `total` is a separate query, so a row inserted between the two
+    # makes the count larger than a list that is nonetheless COMPLETE, and that would have been
+    # reported as truncated. A mutation that swapped one for the other survived, which is how the
+    # equivalence was found.
+    #
+    # Asking the question directly removes the race entirely: the list is truncated exactly when
+    # it came back full. Fewer rows than the cap means the table had nothing more to give at that
+    # moment, whatever a count taken before or after it says. `total` is kept for the DISPLAY
+    # ("showing the newest N of M") and is never used to decide truncation.
+    base["truncated"] = len(recent_rows_out) >= limit
+
+    # NAMES, resolved through the shared revdns policy (private by default, public only when
+    # WEIRVERN_REVERSE_DNS says 'all'), never instead of the address. Only the distinct
+    # addresses in THIS window, so the cost is one lookup per host that actually alerted. A
+    # failed lookup is absent from the map and the row shows the address alone.
+    try:
+        from weirvern.admin import revdns as _revdns
+
+        addrs = {str(r["src_addr"]) for r in recent_rows_out if r["src_addr"]}
+        base["names"] = {a: (_revdns.lookup(a) or "") for a in addrs}
+    except Exception:  # noqa: BLE001 - a name is never worth failing the audit
+        base["names"] = {}
     return base

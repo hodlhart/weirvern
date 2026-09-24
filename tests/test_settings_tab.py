@@ -218,14 +218,31 @@ def test_the_view_states_when_it_is_read_only_and_when_it_is_not():
 
 
 def test_the_overview_tab_is_gone_and_health_is_the_landing_view():
+    """Health is the LANDING view (it inherited the role when Overview was removed) and it is
+    no longer the FIRST tab.
+
+    Those were two facts that happened to coincide while Health sat at the head of the nav, and
+    this test asserted them as one. The operator asked for Health to sit between Models and
+    Settings, which separates them: the landing view is not always the leftmost tab, and a tab
+    bar whose active entry is not the first one is entirely ordinary.
+    """
     index = (WEB / "index.html").read_text()
     assert 'data-view="overview"' not in index, "the Overview tab is still in the nav"
     assert 'id="view-overview"' not in index, "the Overview section is still present"
-    # Health must be FIRST and active, since it inherited the landing role.
     tabs = re.findall(r'class="tab([^"]*)" data-view="(\w+)"', index)
     assert tabs, "no tabs parsed -- update this test"
-    assert tabs[0][1] == "health", f"the first tab is {tabs[0][1]!r}, expected health"
-    assert "active" in tabs[0][0], "the first tab is not the active one"
+    order = [k for _c, k in tabs]
+    assert "health" in order, "the Health tab is not in the nav at all"
+    active = [k for c, k in tabs if "active" in c]
+    assert active == ["health"], (
+        f"the landing tab is {active!r}, expected exactly ['health'] -- it inherited the landing "
+        f"role from Overview"
+    )
+    # The requested position: between Models and Settings.
+    assert "models" in order and "settings" in order, f"nav is {order}"
+    assert order.index("models") < order.index("health") < order.index("settings"), (
+        f"Health must sit between Models and Settings, but the nav is {order}"
+    )
 
 
 def test_the_moved_panels_exist_on_the_health_tab():

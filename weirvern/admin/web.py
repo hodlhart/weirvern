@@ -530,7 +530,8 @@ def _build_handler(ctx: GuiContext):
             sensor: dict = {}
             ingest, sizes = empty, empty
             audit: dict = {"available": False, "reason": "cannot reach ClickHouse",
-                           "by_reason": [], "recent": [], "suppressed": 0}
+                           "by_reason": [], "recent": [], "suppressed": 0,
+                           "total": 0, "truncated": False, "names": {}}
             try:
                 with self._with_client() as client:
                     report = status_mod.collect_health(

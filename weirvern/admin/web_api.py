@@ -413,6 +413,11 @@ def health_deep_payload(report, ingest: dict, sizes: dict, sensor: dict,
     `audit` is the SOC-8 alert audit -- every alerting decision, not just the delivered
     ones. Optional so callers that predate it (and tests that exercise the other panels)
     keep working; it degrades to an explicitly unavailable block, never to silence.
+
+    The fallback carries `total`/`truncated`/`names` as well as the lists, because the panel
+    reads those unconditionally: a key present only on the success path makes the pager and
+    the truncation note throw on the error path, taking down the whole view with a TypeError
+    in place of the explanation the operator needed.
     """
     return {
         "health": health_payload(report) if report is not None else None,
@@ -422,5 +427,6 @@ def health_deep_payload(report, ingest: dict, sizes: dict, sensor: dict,
         "alerts": audit if audit is not None else {
             "available": False, "reason": "alert audit was not collected",
             "by_reason": [], "recent": [], "suppressed": 0,
+            "total": 0, "truncated": False, "names": {},
         },
     }

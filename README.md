@@ -1065,7 +1065,7 @@ sessions are in memory, so a restart signs everyone out.
 
 | View | What it answers |
 |---|---|
-| Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status), the health probes, ingestion trend, table sizes, and the **alert audit** — every alerting decision, including what was suppressed and why. The landing view |
+| Health | **Sensor state** (mode, whether it is running, heartbeat age, intercept status), the health probes, ingestion trend, table sizes, and the **alert audit** — every alerting decision, including what was suppressed and why, paged 15 at a time like the inventory and stating when the list is capped. Sits between Models and Settings; still the landing view |
 | Anomalies | Every anomaly with score, agreement and the "why" line — plus its **review state**: acknowledge, resolve, or mark false-positive, with an unreviewed-only filter. Click through to **evidence** |
 | Assets | The **asset inventory**: every host seen, searchable, with bytes, services and anomaly counts; click an address to drill down |
 | Network | Every host-to-host connection as a graph; **select any number of hosts to track only their connections** |
@@ -1116,8 +1116,10 @@ draws real data or states in words what is absent and why.
 - Per-source cooldown + global hourly cap → no alert storms.
 - Dedupe keyed on `(src_addr, window_start)`; resend only on re-observation.
 - Every send recorded in `alert_events` for audit and testing — and surfaced: the Health tab's
-  alert audit shows every decision, counting suppressed alerts separately from the log-only
-  path (a configuration state, not a withheld alert).
+  alert audit shows every decision (outcome, host with its resolved name, score, and the message
+  the decision was about), counting suppressed alerts separately from the log-only path (a
+  configuration state, not a withheld alert), paged 15 at a time. The fetch is capped, and the
+  note says so — a full page with no caveat would read as "this is everything".
 - Review dispositions (`ack` / `resolved` / `false_positive`) are persisted per anomaly, which
   is also the label stream a future feedback loop needs.
 
