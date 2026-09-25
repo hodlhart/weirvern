@@ -1852,6 +1852,21 @@ def _build_handler(ctx: GuiContext):
                              "first, or name one in this request.",
                 }, 400)
 
+            # ── THE SHAPE CHECK AT THE REQUEST BOUNDARY (audit F091, CONFIRMED) ────────────────
+            #
+            # `interface`/`mgmt_interface` are the only free-text inputs this page takes, and they
+            # went from the body into a privileged Job's env with no contract at all. `build_job`
+            # now refuses too, so no caller can bypass this -- and the check is repeated HERE
+            # because only here can the refusal carry a sentence an operator reads. Letting it
+            # through to build_job would surface it as a 500-class failure with an exception name,
+            # which for a typo in an interface name is the wrong story.
+            _why = sonar_mod.validate_survey_ifaces(iface, mgmt)
+            if _why:
+                return self._json({
+                    "ok": False,
+                    "error": f"cannot survey: {_why}. {sonar_mod.iface_input_remedy()}",
+                }, 400)
+
             if ctx.config_client is not None:
                 client = ctx.config_client
             else:

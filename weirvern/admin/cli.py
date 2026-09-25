@@ -1895,6 +1895,15 @@ def _iface_has_address(iface: str, address: str) -> bool:
     """
     import subprocess as _sp
 
+    # A raw `ip` ARGV CALL, so the name must not be able to become part of the command (F091).
+    # argv (not a shell) means this is not command injection -- but an unvalidated name here still
+    # reaches a privileged binary's argument list, and the fix is one call.
+    from weirvern.admin import siphonnet as _sn
+
+    try:
+        _sn.require_iface_name(iface, what="interface")
+    except ValueError:
+        return False
     try:
         out = _sp.run(["ip", "-o", "addr", "show", "dev", iface],
                       capture_output=True, text=True).stdout

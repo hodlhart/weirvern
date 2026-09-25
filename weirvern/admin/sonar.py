@@ -236,6 +236,19 @@ def survey(iface: str, mgmt_iface: str = "", *,
     sweep = sweep or ic_mod.arp_sweep
     watcher = watcher or segmentwatch.observe_segment
 
+    # ── VALIDATE BEFORE READING ANYTHING (audit F091) ─────────────────────────────────────────
+    #
+    # First, and through a REASON rather than an exception from `read_mac`: a caller that injected
+    # its own mac_reader would otherwise bypass the check that function now performs, and the
+    # refusal here is the one that can be turned into an operator-readable SonarError. Placed
+    # before the MAC read so a malformed name is never reported as "this interface has no MAC"
+    # -- which would send the operator to inspect hardware that is fine.
+    why = validate_survey_ifaces(iface, mgmt_iface)
+    if why:
+        raise SonarError(
+            f"cannot survey: {why}. {iface_input_remedy()}"
+        )
+
     our_mac = (mac_reader(iface) or "").strip()
     if not our_mac:
         raise SonarError(
@@ -410,6 +423,42 @@ def survey(iface: str, mgmt_iface: str = "", *,
 
 # ── the Job: created by the GUI, read via its log, deleted after ────────────────────────
 
+def validate_survey_ifaces(iface: object, mgmt_iface: object = "") -> str:
+    """WHY the survey's interface inputs are unusable, or "" when they are fine.
+
+    ONE function for the whole product (audit F091), because the same two strings arrive from four
+    places -- the request body, the CLI, the Job's own environment, and `survey()`'s arguments --
+    and four copies of a rule is how a rule acquires three behaviours. Callers differ only in what
+    they do with the reason: the route formats it into a sentence, `survey` raises SonarError, and
+    `build_job` raises ValueError.
+
+    Checks BOTH names. Either one reaching the privileged Job matters: `mgmt_interface` is optional
+    but rides in the same env and drives the two-port warning, so a malformed one would be
+    reported back to the operator as a fact about their sensor.
+    """
+    from weirvern.admin import siphonnet
+
+    for value, label in ((iface, "interface"), (mgmt_iface, "mgmt_interface")):
+        if value is None or value == "":
+            continue
+        reason = siphonnet.iface_name_error(value)
+        if reason:
+            return f"{label} {str(value)!r}: {reason}"
+    return ""
+
+
+def iface_input_remedy() -> str:
+    """The sentence that tells an operator how to find the right name.
+
+    Kept beside the check rather than typed at each call site, so every refusal says the same
+    actionable thing. Interface names come from the node's own NICs, and on this product the
+    operator is usually looking at a container's view rather than the sensor's -- so naming the
+    command matters.
+    """
+    return ("Interface names come from the sensor node's own NICs -- check the name against "
+            "`ip link` on that node (Sonar surveys the node, not the pod).")
+
+
 def build_job(name: str, image: str, iface: str, mgmt_iface: str = "",
               namespace: str = "weirvern") -> dict:
     """The one-shot survey Job body.
@@ -419,10 +468,38 @@ def build_job(name: str, image: str, iface: str, mgmt_iface: str = "",
     the one capability an AF_PACKET ARP socket needs. NET_ADMIN is deliberately ABSENT:
     the survey assigns nothing, and a probe should not carry the power to reroute.
 
+    ── THE NAMES ARE VALIDATED HERE (audit F091, CONFIRMED) ─────────────────────────────────────
+
+    This is the LAST point before a string becomes a privileged pod's environment, and until now
+    it accepted anything: `build_job(... 'eth0; echo pwned')` produced a Job whose SONAR_IFACE
+    held exactly that. The value lands in an env var, not a shell, so the immediate risk is not
+    command injection -- but it is a root, hostNetwork, NET_RAW pod, the job runs on the sensor
+    node, and the string is echoed straight back into the operator's UI. A control that accepts
+    arbitrary text into a privileged workload and shows it back is a control with no input
+    contract at all, and the next person to shell out with it inherits the gap.
+
+    Refusing here rather than only at the route means every caller is covered -- the route, the
+    CLI, and any future one -- which is the difference between validating a request and validating
+    a boundary.
+
     `image` must carry its tag. The k3s node resolves images from its own containerd by
     exact name:tag, and a bare `weirvern-worker` means `:latest`, which was never imported
     -- the job would sit in ImagePullBackOff while the failure looked like a cluster problem.
     """
+    why = validate_survey_ifaces(iface, mgmt_iface)
+    if why:
+        raise ValueError(f"the survey Job will not be built with an unusable {why}")
+    if not str(iface or ""):
+        # ── EMPTY IS REFUSED HERE, THOUGH IT IS LEGAL ELSEWHERE (F091) ────────────────────────
+        #
+        # `validate_survey_ifaces` deliberately skips empty values because an empty
+        # `mgmt_interface` is a normal request, and `survey()`'s own caller may legitimately pass
+        # "" for the optional name. But the CAPTURE interface is the one thing this Job cannot do
+        # without -- it would run, survey nothing, and report that as a fact about the segment.
+        # The route already refuses an empty interface before reaching here; this makes the
+        # boundary true for every caller rather than only for the one that checks first.
+        raise ValueError("the survey Job needs a capture interface; none was given")
+    mgmt_iface = str(mgmt_iface or "")
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -604,6 +681,14 @@ def main() -> int:
                 "no capture interface is configured, so there is nothing to survey "
                 "(set ZEEK_IFACE, or CAPTURE_IFACE to override it for the intercept)"
             )
+        # DEFENCE IN DEPTH (audit F091). `build_job` already refuses a malformed name, so this
+        # should be unreachable -- which is exactly why it belongs here: this is the privileged
+        # side (root, NET_RAW, hostNetwork), and it must not depend on a check made by the
+        # process that CREATED it. An env var is an input like any other, and the one place a
+        # value is finally used is the place to be sure of it.
+        _why = validate_survey_ifaces(iface, mgmt)
+        if _why:
+            raise SonarError(f"the survey job's environment is unusable: {_why}")
         result = survey(iface, mgmt)
     except SonarError as exc:
         print(f"{SONAR_PREFIX}{json.dumps({'ok': False, 'error': str(exc)})}", flush=True)

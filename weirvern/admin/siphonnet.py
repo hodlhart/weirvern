@@ -51,8 +51,80 @@ DEFAULT_REFRESH_S = 5.0
 # ---------------------------------------------------------------------------
 
 
+def iface_name_error(iface: object) -> str:
+    """WHY an interface name is unusable, or "" when it is fine.
+
+    ── THE SHAPE CHECK THAT DID NOT EXIST (audit F091, CONFIRMED with a working rig) ────────────
+
+    Interface names are the only free-text inputs this product takes that reach a PRIVILEGED
+    context unvalidated. Measured before this existed: `build_job(... 'eth0; echo pwned')` put
+    that string into a root/NET_RAW/hostNetwork Job's env verbatim, and `read_mac` -- which
+    interpolates the name into a path -- read a MAC out of a file OUTSIDE /sys/class/net:
+
+        mkdir /tmp/x; printf 'de:ad:be:ef:00:01\\n' > /tmp/x/address
+        read_mac('../../../tmp/x')  ->  'de:ad:be:ef:00:01'
+
+    Nothing refused it at any layer: not the request handler, not build_job, not read_mac. The
+    name also reaches `ip` argv in the intercept path (`ip addr add ... dev <iface>`) and
+    `SiphonSupervisor` passes it through as `--iface`.
+
+    The rule is the KERNEL's own, not an invention: a network interface name is at most
+    IFNAMSIZ-1 = 15 bytes, cannot be empty, cannot be "." or "..", and cannot contain '/'. Those
+    are exactly the properties that make it safe as a single path COMPONENT -- which is the whole
+    requirement, since the two escapes that matter here are traversal out of a fixed directory and
+    a name that a shell or argv would treat as more than one token.
+
+    Deliberately permits the characters real names use (`eth0`, `br-lan`, `veth1a2b3c`,
+    `wlan0.1`, `enp3s0`, `@`-suffixed peer forms are NOT permitted -- the kernel's own
+    dev_valid_name rejects a slash and NUL, and our names come from our own interfaces).
+    Returns a REASON rather than a bool so the caller can put it in a message an operator reads:
+    a survey that refuses must say why, and "invalid interface name" alone does not tell them
+    which rule they broke.
+    """
+    if iface is None:
+        return "no interface name was given"
+    name = str(iface)
+    if not name:
+        return "the interface name is empty"
+    if name != name.strip():
+        return "the interface name has leading or trailing whitespace"
+    if "/" in name or "\\x00" in name:
+        return "the interface name contains a path separator"
+    if name in (".", "..") or name.startswith("../"):
+        return "the interface name is a path, not an interface"
+    if len(name.encode()) > 15:
+        return (f"the interface name is {len(name.encode())} bytes; the kernel's limit "
+                f"(IFNAMSIZ-1) is 15")
+    for ch in name:
+        if not (ch.isalnum() or ch in "_.-"):
+            return (f"the interface name contains {ch!r}, which is not allowed in a Linux "
+                    f"interface name")
+    return ""
+
+
+def require_iface_name(iface: object, *, what: str = "interface") -> str:
+    """`iface` if it is a usable interface name, else raise ValueError with the reason.
+
+    For the boundaries that cannot return a reason to a human -- constructors and helpers whose
+    callers turn exceptions into messages. Call sites that face an operator should prefer
+    `iface_name_error` and format the reason themselves.
+    """
+    reason = iface_name_error(iface)
+    if reason:
+        raise ValueError(f"{what}: {reason}")
+    return str(iface)
+
+
 def read_mac(iface: str) -> str | None:
-    """The interface's own MAC, or None if it cannot be read."""
+    """The interface's own MAC, or None if it cannot be read.
+
+    The name is validated FIRST (F091): this builds a path from it, so an unvalidated name reads
+    any directory containing a file called `address`. The validation is a raise rather than a
+    None-return, deliberately: None already means "this interface has no readable MAC", and
+    folding a REFUSED NAME into that would report a malformed request as a missing NIC -- the
+    operator would go looking at their hardware.
+    """
+    require_iface_name(iface, what="read_mac")
     path = Path(f"/sys/class/net/{iface}/address")
     try:
         mac = path.read_text().strip()
