@@ -234,6 +234,13 @@ class Settings:
     # within which a lapsed rule stops being enforced. Short is cheap: compiling a ruleset is
     # milliseconds.
     sluice_interval_s: int = field(default_factory=lambda: _env_int("SLUICE_INTERVAL_S", 60))
+    # CHANNEL: the two ports of an IN-LINE weirling -- upstream toward the network, downstream
+    # toward the protected device -- joined into one bridge. A live channel is a VERIFIED
+    # enforcement path for the Sluice Gate that needs no siphon interception and no forged
+    # ARP: the gate's rules hit traffic that physically traverses this host. The checks the
+    # gate performs before claiming it are in admin/channel.py; empty = no channel.
+    channel_upstream: str = field(default_factory=lambda: os.environ.get("CHANNEL_UPSTREAM", ""))
+    channel_downstream: str = field(default_factory=lambda: os.environ.get("CHANNEL_DOWNSTREAM", ""))
 
     pushover_enabled: bool = field(default_factory=lambda: _env_bool("PUSHOVER_ENABLED", False))
     pushover_user_key: str = field(default_factory=lambda: os.environ.get("PUSHOVER_USER_KEY", ""))

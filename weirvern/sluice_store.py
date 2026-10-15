@@ -244,12 +244,12 @@ def write_gate_state(client: Client, sensor: str, state: GateState,
         [[
             sensor, now, state.state, state.iface, state.mgmt_iface, state.rules_active,
             state.rules_total, state.packets_blocked, state.bytes_blocked, state.detail,
-            state.backend, state.backend_expected,
+            state.backend, state.backend_expected, state.enforcement,
         ]],
         column_names=[
             "sensor", "updated_at", "state", "iface", "mgmt_iface", "rules_active",
             "rules_total", "packets_blocked", "bytes_blocked", "detail", "backend",
-            "backend_expected",
+            "backend_expected", "enforcement",
         ],
     )
 
@@ -278,7 +278,7 @@ def load_gate_state(client: Client, sensor: str = "") -> dict:
             rows = client.query(
                 """
                 SELECT sensor, updated_at, state, iface, mgmt_iface, rules_active, rules_total,
-                       packets_blocked, bytes_blocked, detail, backend, backend_expected
+                       packets_blocked, bytes_blocked, detail, backend, backend_expected, enforcement
                 FROM weirvern.sluice_state FINAL
                 WHERE sensor = {sensor:String}
                 ORDER BY updated_at DESC
@@ -290,7 +290,7 @@ def load_gate_state(client: Client, sensor: str = "") -> dict:
             rows = client.query(
                 """
                 SELECT sensor, updated_at, state, iface, mgmt_iface, rules_active, rules_total,
-                       packets_blocked, bytes_blocked, detail, backend, backend_expected
+                       packets_blocked, bytes_blocked, detail, backend, backend_expected, enforcement
                 FROM weirvern.sluice_state FINAL
                 ORDER BY updated_at DESC
                 LIMIT 1
@@ -305,13 +305,17 @@ def load_gate_state(client: Client, sensor: str = "") -> dict:
             "rules_active": 0, "rules_total": 0, "packets_blocked": 0, "bytes_blocked": 0,
         }
     (name, updated, state, iface, mgmt, active, total, pkts, byts, detail, backend,
-     expected) = rows[0]
+     expected, enforcement) = rows[0]
     out = {
         "available": True, "sensor": str(name), "updated_at": updated, "state": str(state),
         "iface": str(iface or ""), "mgmt_iface": str(mgmt or ""), "rules_active": int(active or 0),
         "rules_total": int(total or 0), "packets_blocked": int(pkts or 0),
         "bytes_blocked": int(byts or 0), "detail": str(detail or ""), "backend": str(backend or ""),
         "backend_expected": str(expected or ""),
+        # WHICH verified path is enforcing ('channel'/'siphon'/'none'), machine-readable -- the
+        # state row explains itself in `detail` too, but an operator should not have to parse
+        # English to answer "by what?". See schema/013_channel.sql.
+        "enforcement": str(enforcement or ""),
     }
     # A BACKEND MISMATCH IS ITS OWN FINDING. If the gate wanted nft and got the null backend, it is
     # not enforcing whatever the state column says -- so the mismatch is surfaced rather than left

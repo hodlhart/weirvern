@@ -78,6 +78,8 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "INTERCEPT_SEGMENT",
     "INTERCEPT_ADDR",
     "INTERCEPT_GATEWAY",
+    "CHANNEL_UPSTREAM",
+    "CHANNEL_DOWNSTREAM",
     "SENSOR_MODE",
     "WEIRVERN_EXCLUDE_CIDRS",
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
@@ -141,6 +143,10 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "INTERCEPT_SEGMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_ADDR": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_GATEWAY": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    # The channel keys are read by the WORKER (it verifies the wiring from the kernel and
+    # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
+    "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "BASE_THRESHOLD": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "MIN_AGREEMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "STRONG_SIGNAL": (("deploy/weirvern-worker",), "restarts the detection worker"),
@@ -260,6 +266,8 @@ SETTING_CONTROLS: dict[str, dict] = {
     "INTERCEPT_SEGMENT": {"control": "text"},
     "INTERCEPT_ADDR": {"control": "text"},
     "INTERCEPT_GATEWAY": {"control": "text"},
+    "CHANNEL_UPSTREAM": {"control": "text"},
+    "CHANNEL_DOWNSTREAM": {"control": "text"},
     "WEIRVERN_EXCLUDE_CIDRS": {"control": "text"},
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": {"control": "text"},
 }
@@ -288,6 +296,26 @@ def validate(key: str, value: str) -> str:
             raise ConfigError(f"'{raw}' is not a sensor mode; expected 'loch' or 'siphon'")
         return ("in-path interception puts this host in the traffic path. Enabling it without "
                 "forwarding working takes the segment down — the mode gate is checked at apply.")
+
+    if key in ("CHANNEL_UPSTREAM", "CHANNEL_DOWNSTREAM"):
+        # The two ends of a channel must be DIFFERENT ports; everything else about the wiring
+        # (bridge membership, carrier, bridge-nf) is reported from the kernel by the gate itself
+        # (admin/channel.py), so this refuses only the value that can never be right.
+        import os as _os  # noqa: PLC0415
+
+        other = "CHANNEL_DOWNSTREAM" if key == "CHANNEL_UPSTREAM" else "CHANNEL_UPSTREAM"
+        if raw and raw == (_os.environ.get(other) or "").strip():
+            raise ConfigError(
+                f"{key}={raw} names the same port as {other}; the two ends of a channel must "
+                f"be different interfaces."
+            )
+        if raw == "lo":
+            raise ConfigError("'lo' is the loopback interface; a channel needs two real ports.")
+        return (
+            "a channel needs BOTH ports set (CHANNEL_UPSTREAM and CHANNEL_DOWNSTREAM); until "
+            "they are, the channel stays inactive and the Sluice Gate keeps reporting why. "
+            "Wire the two ports in line, join them into one bridge, and keep bridge-nf enabled."
+        )
 
     if key == "ZEEK_IFACE" or key == "MGMT_IFACE":
         if raw and raw == _other_iface(key):

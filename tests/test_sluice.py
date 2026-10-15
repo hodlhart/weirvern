@@ -792,14 +792,22 @@ def test_passive_mode_reports_degraded_not_armed():
 
 
 def test_siphon_mode_is_not_downgraded_for_being_out_of_path():
-    """The converse, so the check cannot pass by reporting DEGRADED unconditionally."""
+    """The converse, so the check cannot pass by reporting DEGRADED unconditionally.
+
+    UPDATED 2026-10-15 (the channel round): "siphon is not downgraded" now means VERIFIED
+    siphon -- live intercept evidence (`siphon_live=True`, the same fact `status.siphon_liveness`
+    reports to the CLI). The unverified cases are their own tests in tests/test_channel.py: a
+    CONFIGURED siphon with no live intercept is not in the traffic path, and the gate says so.
+    """
     from weirvern.sluice import enforcement_pass
 
     store = _OneRuleStore()
     state = enforcement_pass(
         store, _supervisor(), client=object(), sensor="s1", sensor_mode="siphon",
+        siphon_live=True,
     )
     assert "not in the traffic path" not in (state.detail or "")
+    assert state.state == GATE_STATE_ARMED
 
 
 def test_an_unspecified_mode_does_not_downgrade():
@@ -963,13 +971,13 @@ class _GateStore:
     """A store whose query returns a prepared row, so staleness can be driven directly.
 
     The column order must match the SELECT in load_gate_state exactly, including the two backend
-    columns -- a fake that ignores the column list is how this project once produced a test that
-    passed against a payload the server could never emit.
+    columns and the enforcement path -- a fake that ignores the column list is how this project
+    once produced a test that passed against a payload the server could never emit.
     """
 
     def __init__(self, updated_at, state: str = "armed") -> None:
         self._row = ("sensor1", updated_at, state, "eth1", "eth0", 1, 1,
-                     5, 500, "detail text", "nft", "nft")
+                     5, 500, "detail text", "nft", "nft", "channel")
 
     def query(self, sql, *a, **k):  # noqa: ANN001, ANN002, ANN003
         return _Result([self._row])

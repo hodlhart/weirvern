@@ -76,6 +76,7 @@ def _sluice_maybe(settings, client) -> None:
     import time as _time  # noqa: PLC0415
 
     from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.admin import channel as _channel  # noqa: PLC0415
     from weirvern.sluice import (  # noqa: PLC0415
         GATE_STATE_DISARMED,
         SluiceSupervisor,
@@ -83,10 +84,25 @@ def _sluice_maybe(settings, client) -> None:
         enforcement_pass,
     )
 
+    # ── THE ENFORCEMENT TARGET, RESOLVED FROM THE VERIFIED TOPOLOGY ──────────────────────────
+    #
+    # Priority: an explicit SLUICE_IFACE; then the CHANNEL's bridge when the channel is actually
+    # up (that is the interface traffic traverses -- read from the kernel, see admin/channel.py);
+    # then the capture interface. The supervisor is REBUILT when the resolved interface MOVES: its
+    # module-scope caching exists so `last_ok` age survives passes on the SAME interface, and a
+    # different interface is a different gate -- carrying the old age over would let a gate that
+    # never installed anywhere read as recently confirmed.
+    channel_state = _channel.detect(settings.channel_upstream, settings.channel_downstream)
+    _iface = (
+        settings.sluice_iface
+        or (channel_state.bridge if channel_state.active else "")
+        or settings.zeek_iface
+        or ""
+    )
     sup = _SLUICE["supervisor"]
-    if sup is None:
+    if sup is None or sup.iface != _iface:
         sup = SluiceSupervisor(
-            iface=(settings.sluice_iface or settings.zeek_iface or ""),
+            iface=_iface,
             mgmt_iface=settings.mgmt_iface,
             backend=choose_backend("nft"),
         )
@@ -116,12 +132,27 @@ def _sluice_maybe(settings, client) -> None:
     if settings.sluice_criticality != "off":
         detections = current_detections_for_blocking(client)
 
+    # WHETHER A CONFIGURED SIPHON IS ACTUALLY INTERCEPTING, checked only when it matters. A
+    # configured siphon with no live intercept is a sensor that is NOT in the path -- the gate must
+    # not read ARMED on the strength of a ConfigMap. `None` = the evidence could not be read, which
+    # the pass treats as "not verified", never as "fine".
+    siphon_live: bool | None = None
+    if settings.sensor_mode == "siphon":
+        try:
+            from weirvern.admin import status as _status  # noqa: PLC0415
+            siphon_live = bool(_status.siphon_liveness(settings.sensor_mode, client).get("live"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sluice: could not read siphon intercept evidence: %s", exc)
+            siphon_live = None
+
     state = enforcement_pass(
         sluice_store, sup, client=client, sensor=_sensor_name(settings),
         policy=settings.sluice_criticality, max_block_s=settings.sluice_max_block_s,
         detections=detections,
-        # So the pass can say plainly that a passive sensor installs rules without enforcing them.
+        # So the pass can say plainly WHICH enforcement path is live -- channel, siphon, or none.
         sensor_mode=settings.sensor_mode,
+        channel=channel_state,
+        siphon_live=siphon_live,
     )
     _SLUICE["armed"] = state.holding
     logger.info("sluice gate: %s -- %s", state.state, state.detail)

@@ -229,6 +229,13 @@ data:
   # The interface enforcement attaches to. Empty means the capture interface, which is right for an
   # in-path deployment. It can NEVER be the management interface: the gate refuses that at
   # authoring time with a sentence, because blocking there cuts off whoever administers this box.
+  # CHANNEL: an IN-LINE weirling -- CHANNEL_UPSTREAM faces the network, CHANNEL_DOWNSTREAM faces
+  # the protected device, both enslaved to one bridge. A verified, live channel lets the Sluice
+  # Gate enforce real blocks while SENSOR_MODE stays loch (nothing forged, nothing redirected).
+  # Empty (the default) = no channel; the gate reports that plainly rather than guessing.
+  CHANNEL_UPSTREAM: ""
+  CHANNEL_DOWNSTREAM: ""
+
   SLUICE_IFACE: ""
 
   # Whether DETECTIONS may block on their own: off | high | medium | strict. Defaults to off even

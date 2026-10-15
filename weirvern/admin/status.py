@@ -814,6 +814,9 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("intercept_segment", "intercept segment"),
         ("intercept_addr", "intercept address"),
         ("intercept_gateway", "intercept gateway"),
+        # The IN-LINE channel: two ports, one bridge, enforcement without siphon.
+        ("channel_upstream", "channel upstream port"),
+        ("channel_downstream", "channel downstream port"),
         ("reverse_dns", "reverse DNS"),
         # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
         # thing an operator needs to respond to without a redeploy.
@@ -890,6 +893,18 @@ _SETTINGS_HELP: dict[str, str] = {
         "The interface carrying the default route, SSH and the cluster API. The sensor never "
         "captures from it; it is used to DETECT when the capture interface is pointed at the "
         "wrong NIC. Changing it restarts the capture sensor briefly."),
+    "channel_upstream": (
+        "The port of an IN-LINE weirling that faces the NETWORK (toward the router/switch), for "
+        "when this box sits physically between a device and the network instead of on a mirror "
+        "port. With CHANNEL_DOWNSTREAM it forms one bridge, and the Sluice Gate's blocks then "
+        "drop real traffic while the sensor stays in passive 'loch' mode -- nothing is forged. "
+        "Leave both empty for a normal passive sensor."),
+    "channel_downstream": (
+        "The port that faces the PROTECTED DEVICE or segment. Both channel ports must be "
+        "different interfaces, wired in line and joined into one bridge. The gate verifies "
+        "that from the kernel -- ports on one forwarding bridge, link up, bridge-nf enabled -- "
+        "before it will claim the channel is active, and names exactly what is missing when "
+        "it is not."),
     "zeek_log_dir": (
         "Where the worker reads Zeek's logs from inside the pod. Default /zeek/logs, shared "
         "between the Zeek sensor and the worker via a host directory. Change only if you moved "

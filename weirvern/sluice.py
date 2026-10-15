@@ -282,6 +282,11 @@ class GateState:
     detail: str = ""
     backend: str = ""
     backend_expected: str = "nft"
+    # WHICH VERIFIED PATH IS ENFORCING: 'channel' (in line, physically), 'siphon' (ARP redirect
+    # with LIVE intercept evidence), 'none' (rules installed, no verified path), or '' (no
+    # verdict was taken). "Is this gate doing anything" depends on it; see admin/channel.py and
+    # schema/013_channel.sql.
+    enforcement: str = ""
 
     @property
     def holding(self) -> bool:
@@ -941,6 +946,71 @@ def policy_allows(policy: str, *, severity: str, confidence: float) -> tuple[boo
 # ── the enforcement loop ──────────────────────────────────────────────────────────────────────
 
 
+# The two VERIFIED ways a drop can be real, and the honest third answer. Recorded on the state
+# row so the panel can say HOW this gate is enforcing, not merely that it believes it is.
+ENFORCEMENT_CHANNEL = "channel"
+ENFORCEMENT_SIPHON = "siphon"
+ENFORCEMENT_NONE = "none"
+
+
+def _resolve_enforcement_path(sensor_mode: str, channel: Any,
+                              siphon_live: bool | None) -> tuple[str, str]:
+    """(path, detail) for the enforcement verdict. "" means "no opinion -- leave as-is".
+
+    THE MATRIX, cell by cell (Samuel's ask, 2026-10-15: "verify if channel and loch are active
+    or siphon"):
+
+      * a LIVE channel enforces REGARDLESS of mode -- it is physically in line, and the check
+        before calling it live is kernel-side (admin/channel.py: both ports on one forwarding
+        bridge with carrier, and bridge-nf enabled so the gate's inet hooks see bridged
+        traffic);
+      * siphon counts only with LIVE intercept evidence (True). False degrades with the
+        reason; unverifiable (None) degrades too, because "could not check" is not "fine" --
+        the rule this module's neighbours keep re-learning;
+      * loch with no channel cannot enforce, and a DECLARED-but-inactive channel says exactly
+        what is wrong with the wiring, which is the sentence the operator needs to fix it;
+      * an UNSPECIFIED mode keeps the caller's old behaviour: unknown is not the same as
+        passive, and a caller that did not say did not ask for a verdict about it.
+    """
+    if channel is not None and channel.active:
+        return ENFORCEMENT_CHANNEL, (
+            f"enforcing IN LINE on the channel bridge {channel.bridge} "
+            f"({channel.upstream} <-> {channel.downstream}): traffic between those ports "
+            f"traverses this host, so these drops are real. Capture stays passive; nothing is "
+            f"forged or redirected."
+        )
+    if sensor_mode == "siphon":
+        if siphon_live is True:
+            return ENFORCEMENT_SIPHON, (
+                "enforcing via the live siphon intercept (verified: fresh sensor_status "
+                "evidence with forged mappings)."
+            )
+        if siphon_live is False:
+            return ENFORCEMENT_NONE, (
+                "siphon mode is configured but NO live intercept is running, so this host is "
+                "not in the traffic path and nothing on the segment is actually blocked. Check "
+                "the supervisor's refusal notes in sensor_status.failures."
+            )
+        return ENFORCEMENT_NONE, (
+            "siphon mode is configured but the intercept evidence could not be verified, so "
+            "this gate does not claim the traffic path. Check the database connection."
+        )
+    if sensor_mode:
+        if channel is not None and channel.declared:
+            return ENFORCEMENT_NONE, (
+                f"the rules are installed, but the channel is not active, so nothing is "
+                f"actually blocked. {channel.detail} Fix the wiring (both ports enslaved to "
+                f"one forwarding bridge, bridge-nf enabled), or use siphon mode."
+            )
+        return ENFORCEMENT_NONE, (
+            f"the rules are installed, but this sensor is in {sensor_mode} (passive) mode and "
+            "is not in the traffic path, so nothing on the segment is actually blocked. "
+            "Enforcement needs a channel (wire two ports in line and set CHANNEL_UPSTREAM / "
+            "CHANNEL_DOWNSTREAM) or siphon mode on a segment this host sits in front of. "
+        )
+    return "", ""
+
+
 def enforcement_pass(
     store: Any,
     supervisor: SluiceSupervisor,
@@ -951,6 +1021,8 @@ def enforcement_pass(
     max_block_s: int = 3600,
     detections: list[dict] | None = None,
     sensor_mode: str = "",
+    channel: Any = None,
+    siphon_live: bool | None = None,
 ) -> GateState:
     """One cycle: load rules, let detections add more, arm, and RECORD what happened.
 
@@ -965,15 +1037,18 @@ def enforcement_pass(
     Failing open on a LOST CONNECTION is right; failing open on a FAILED QUERY would mean an
     attacker who can slow the database can unblock themselves.
 
-    WHY THE SENSOR MODE IS CONSULTED AT ALL. In `loch` (passive) mode this host is a listener: it is
-    not between the segment and its gateway, so a FORWARD drop on it discards traffic that was never
-    going to reach the kernel's forward path -- nothing on the segment is affected. The gate would
-    still compile, still install, and still count its own drops, so it would read ARMED while
-    changing nothing about the network an operator was trying to stop. That is this project's
-    most-repeated failure: a green reading over work that did not happen. Rather than refuse to arm
-    (which would make the feature silently unavailable and send the operator hunting), the gate arms
-    AND reports DEGRADED with the reason, so the panel says plainly that this deployment cannot
-    enforce until siphon is on.
+    WHY THE MODE IS CONSULTED AT ALL, AND NOW THE CHANNEL TOO. A gate only blocks anything if the
+    traffic it matches would have traversed THIS host, and there are exactly two VERIFIED ways
+    that is true: a CHANNEL (two ports wired in line on one forwarding bridge with bridge-nf on --
+    the checks are in admin/channel.py) or a LIVE siphon intercept (fresh sensor_status evidence
+    with forged mappings -- status.siphon_liveness, the same check the CLI shouts with). In `loch`
+    with neither, a FORWARD drop discards traffic that was never going to reach the kernel's
+    forward path: the gate would still compile, still install, and still count its own drops, so
+    it would read ARMED while changing nothing about the network an operator was trying to stop.
+    That is this project's most-repeated failure: a green reading over work that did not happen.
+    Rather than refuse to arm (which would make the feature silently unavailable and send the
+    operator hunting), the gate arms AND reports DEGRADED with the reason -- and says which path,
+    if any, is live, in `enforcement`.
     """
     rules: list[Rule] = []
     try:
@@ -1009,24 +1084,28 @@ def enforcement_pass(
 
     state = supervisor.arm(rules)
 
-    # ── CAN THIS DEPLOYMENT ENFORCE AT ALL? ───────────────────────────────────────────────────
+    # ── CAN THIS DEPLOYMENT ENFORCE AT ALL, AND BY WHICH VERIFIED PATH? ───────────────────────
     #
-    # The rules installed correctly and the kernel will count drops, but in passive mode this host
-    # is not in the path, so those drops are of traffic that was never going to traverse it. Report
-    # DEGRADED with the reason: an operator reading ARMED would believe a host had been cut off.
-    # Placed AFTER arm() on purpose -- the rules stay installed, so switching to siphon later starts
-    # enforcing immediately rather than requiring a re-arm.
-    if sensor_mode and sensor_mode != "siphon":
+    # The rules installed correctly and the kernel will count drops -- but a drop only matters if
+    # the traffic it matches would have traversed THIS host. There are exactly two paths that make
+    # that true, and each is VERIFIED rather than assumed (the matrix is in _resolve_enforcement_path):
+    #
+    #   * CHANNEL -- physically in line (upstream <-> downstream on one bridge), read from the
+    #     kernel by admin/channel.py. Enforces while the mode stays `loch`.
+    #   * SIPHON  -- in path by ARP redirect, and the interception must be LIVE: a configured
+    #     siphon with no intercept running is a sensor that is NOT in the path.
+    #
+    # Placed AFTER arm() on purpose -- the rules stay installed whichever way this goes, so a path
+    # coming up later starts enforcing immediately rather than requiring a re-arm.
+    path, path_detail = _resolve_enforcement_path(sensor_mode, channel, siphon_live)
+    if path:
         state = replace(
             state,
-            state=GATE_STATE_DEGRADED,
-            detail=(
-                f"the rules are installed, but this sensor is in {sensor_mode} (passive) mode and "
-                "is not in the traffic path, so nothing on the segment is actually blocked. "
-                "Enforcement needs siphon mode on a segment this host sits in front of. "
-                + (state.detail or "")
-            ),
+            detail=(path_detail + " " + (state.detail or "")).strip(),
+            enforcement=path,
         )
+    if path == ENFORCEMENT_NONE:
+        state = replace(state, state=GATE_STATE_DEGRADED)
 
     try:
         store.write_gate_state(client, sensor, state)

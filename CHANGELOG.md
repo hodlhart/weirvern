@@ -142,6 +142,22 @@ check now reads via `nft` as a last-resort fallback, passes when its printed rem
 place, still refuses on DROP without the rules, and still refuses when nothing is readable. Five
 new tests; the two pinning the defects fail on the previous code.
 
+**A channel: a weirling wired IN LINE, and the gate verifies it before claiming anything.** An
+upstream port and a downstream port joined into one bridge put this host physically in the traffic
+path, so the Sluice Gate's blocks drop REAL traffic while the sensor stays in passive `loch` mode —
+nothing forged, nothing redirected, enforcement no longer tied to siphon. And the gate stops
+trusting configuration: `enforcement_pass` now resolves and RECORDS the live path — `channel` /
+`siphon` / `none` (new column on `sluice_state`, migration 013) — where siphon counts only with
+LIVE intercept evidence (a configured siphon with no running intercept degrades, loudly) and a
+channel only when the kernel agrees: both ports on one forwarding bridge with carrier, and
+bridge-nf enabled for both families (without it, bridged traffic never reaches the inet forward
+hook the rules live on — the rules would install, count nothing, and read ARMED). The worker
+resolves its enforcement interface from that verified topology (SLUICE_IFACE, else the channel's
+bridge, else the capture port) and rebuilds the supervisor when it moves, so a relocated gate
+cannot inherit a stale "recently confirmed" age. `CHANNEL_UPSTREAM` / `CHANNEL_DOWNSTREAM` are
+editable Settings rows with help text. Tests: `tests/test_channel.py` — every check, and the whole
+verdict matrix.
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three
