@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from weirvern.admin import channel as channel_mod
 from weirvern.sluice import (
     ENFORCEMENT_CHANNEL,
@@ -28,6 +30,16 @@ from weirvern.sluice import (
 )
 
 SOON = datetime.now(UTC) + timedelta(minutes=30)
+
+
+@pytest.fixture(autouse=True)
+def _no_kernel_probes(monkeypatch):
+    """Channel checks must never touch the test machine's real firewall.
+
+    The forward-path condition shells out (iptables/nft); it is stubbed here, and the tests
+    that exercise the FAILING case override it explicitly.
+    """
+    monkeypatch.setattr(channel_mod, "_forward_ok", lambda bridge: (True, ""))
 
 
 def _live(rid: str = "r1") -> Rule:
@@ -275,6 +287,30 @@ def test_a_live_channel_outranks_siphon_when_both_are_live(tmp_path):
     state = enforcement_pass(store, _sup(), client=object(), sensor="s1",
                               sensor_mode="siphon", siphon_live=True, channel=ch)
     assert state.enforcement == ENFORCEMENT_CHANNEL
+
+
+def test_a_forward_drop_without_bridge_accepts_blackholes_the_channel(tmp_path, monkeypatch):
+    """MEASURED: bridged traffic DOES traverse the forward hook (bridge-nf on) and the BRIDGE
+    DEVICE is the name that matches. A k3s DROP policy without a scoped ACCEPT for the bridge
+    would drop everything crossing the channel -- worse than a degraded gate."""
+    monkeypatch.setattr(channel_mod, "_forward_ok",
+                        lambda bridge: (False, f"the host firewall DROPS forwarded traffic "
+                                              f"(iptables -P FORWARD DROP); fix on {bridge}."))
+    state = channel_mod.detect("eth2", "eth3", sysfs=_tree(tmp_path), proc_sys=_proc(tmp_path))
+    assert state.active is False
+    assert any("DROPS" in p for p in state.problems)
+
+
+def test_the_forward_check_is_skipped_when_bridge_nf_is_off(tmp_path, monkeypatch):
+    """With bridge-nf off the bridged traffic never reaches the hook; the nf problem already
+    names the real fault, and a second complaint about the firewall would be noise."""
+    monkeypatch.setattr(channel_mod, "_forward_ok",
+                        lambda bridge: (False, "the host firewall DROPS forwarded traffic"))
+    state = channel_mod.detect("eth2", "eth3", sysfs=_tree(tmp_path),
+                               proc_sys=_proc(tmp_path, nf4="0"))
+    assert state.active is False
+    assert not any("DROPS" in p for p in state.problems)
+    assert any("bridge-nf-call-iptables=0" in p for p in state.problems)
 
 
 def test_an_unspecified_mode_takes_no_verdict():

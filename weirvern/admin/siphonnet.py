@@ -380,7 +380,7 @@ def _accept_rule_directions(line: str, iface: str) -> tuple[bool, bool]:
     return in_ok, out_ok
 
 
-def _iface_forward_accepts(iface: str) -> tuple[bool, bool, str]:
+def iface_forward_accepts(iface: str) -> tuple[bool, bool, str]:
     """(accept_in, accept_out, source): interface-scoped ACCEPT rules in FORWARD.
 
     THE CHECK'S OWN PRINTED REMEDY MUST SATISFY THE CHECK, and until this function existed it
@@ -431,7 +431,7 @@ def forward_policy_problem(iface: str) -> str:
     policy, source = forward_policy()
     if policy == "ACCEPT":
         return ""
-    in_ok, out_ok, rules_source = _iface_forward_accepts(iface)
+    in_ok, out_ok, rules_source = iface_forward_accepts(iface)
     if rules_source and (in_ok or out_ok):
         return ""
     if policy == "UNKNOWN":

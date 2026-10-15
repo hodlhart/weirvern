@@ -22,7 +22,12 @@ names itself:
     bridged packet never reaches the inet `forward` hook where the gate's rules live: the rules
     would install, count nothing, and the panel would read ARMED. That is the measured trap
     this module exists to prevent -- the CLI has warned about this sysctl since the k3s
-    bring-up; this is the gate finally acting on it.
+    bring-up; this is the gate finally acting on it;
+  * the node's FORWARD path ADMITS bridged traffic for this bridge. On a k3s node the policy is
+    DROP, and with bridge-nf on (which a channel needs) bridged packets DO traverse the inet
+    forward hook -- MEASURED on the test box: they match the BRIDGE DEVICE name, not the port
+    names, so without `iptables -I FORWARD 1 -o <bridge> -j ACCEPT` (plus the -i twin) a channel
+    BLACKHOLES everything crossing it, which is worse than a degraded gate. Hard condition.
 
 WHAT IS DELIBERATELY NOT CHECKED: whether traffic is FLOWING. A wired, configured, quiet
 channel is a working channel; demanding counters would degrade a healthy gate on a segment
@@ -36,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +60,40 @@ BRIDGE_NF_SYSCTLS: tuple[tuple[str, str], ...] = (
 
 # /sys/class/net/<port>/brport/state: the value that means "passing frames now".
 BRIDGE_PORT_FORWARDING = 3
+
+
+def _forward_ok(bridge: str) -> tuple[bool, str]:
+    """(admitted, detail): whether the node will FORWARD bridged traffic for `bridge`.
+
+    MEASURED on the CT 111 node (2026-10-15, a synthetic bridge + two namespaces): with
+    bridge-nf on, bridged packets traverse the inet forward hook with the BRIDGE DEVICE as the
+    interface name -- `iptables -I FORWARD 1 -o <bridge> -j ACCEPT` is what let them through,
+    while the port names (`-i wv-a` / `-o wv-a`) matched NOTHING. On a k3s node the policy is
+    DROP, so without that accept a channel drops everything crossing it -- taking the segment
+    down, not enforcing on it. Reuses siphonnet's readers (the same tools, and its measured
+    nft fallback for images without iptables).
+    """
+    from weirvern.admin import siphonnet
+
+    policy, source = siphonnet.forward_policy()
+    if policy == "ACCEPT":
+        return True, ""
+    in_ok, out_ok, rules_source = siphonnet.iface_forward_accepts(bridge)
+    if rules_source and (in_ok or out_ok):
+        return True, ""
+    if policy == "UNKNOWN":
+        return False, (
+            f"could not read the host's FORWARD policy ({source}), so it is not proven that "
+            f"bridged traffic will be admitted on {bridge}; if it is DROP (k3s's default) every "
+            f"packet crossing this channel is discarded"
+        )
+    return False, (
+        f"the host firewall DROPS forwarded traffic (iptables -P FORWARD {policy}) and no "
+        f"interface-scoped ACCEPT names the bridge. MEASURED: with bridge-nf on, bridged "
+        f"packets DO traverse the forward hook, and the BRIDGE DEVICE is the name that matches "
+        f"-- so without 'iptables -I FORWARD 1 -o {bridge} -j ACCEPT' (plus the -i twin) this "
+        f"channel blackholes everything crossing it. Fix on the node, then re-check."
+    )
 
 
 @dataclass
@@ -108,7 +148,8 @@ def _int_file(path: Path) -> int | None:
 
 
 def detect(upstream: str, downstream: str, *, sysfs: str | Path = SYSFS_NET,
-           proc_sys: str | Path = PROC_SYS) -> ChannelState:
+           proc_sys: str | Path = PROC_SYS,
+           forward_ok: Callable[[str], tuple[bool, str]] | None = None) -> ChannelState:
     """Whether the declared channel is REAL, as read from the kernel. Never raises."""
     up = (upstream or "").strip()
     down = (downstream or "").strip()
@@ -168,20 +209,31 @@ def detect(upstream: str, downstream: str, *, sysfs: str | Path = SYSFS_NET,
             )
 
     proc = Path(proc_sys)
+    nf_ok = True
     for key, family in BRIDGE_NF_SYSCTLS:
         dotted = key.replace("/", ".")
         value = _read(proc / key)
         if value == "":
+            nf_ok = False
             state.problems.append(
                 f"{dotted} is missing, so bridged {family} traffic never reaches the gate's "
                 f"inet rules (is br_netfilter loaded?) -- the gate would install, count "
                 f"nothing, and read ARMED"
             )
         elif value != "1":
+            nf_ok = False
             state.problems.append(
                 f"{dotted}={value}: bridged {family} traffic bypasses the inet forward hook "
                 f"the gate's rules live on. Fix: sysctl -w {dotted}=1"
             )
+
+    # THE FORWARD PATH IS THE LAST HARD CONDITION, checked only when bridge-nf is on -- that is
+    # exactly the state where bridged packets DO reach the inet forward hook and the node's
+    # firewall policy therefore decides whether the channel carries traffic or drops all of it.
+    if nf_ok:
+        admitted, fwd_detail = (forward_ok or _forward_ok)(bridge)
+        if not admitted:
+            state.problems.append(fwd_detail)
 
     state.active = not state.problems
     if state.active:
