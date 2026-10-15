@@ -99,6 +99,24 @@ def _as_ports(value) -> list[int]:
     return out
 
 
+def _hops_from_ttl(ttl: int) -> int:
+    """The hop distance one observed IP TTL implies.
+
+    A sender stamps an initial TTL (64, 128 and 255 cover virtually everything), and every
+    router on the path decrements it once -- so the largest common initial value at-or-above
+    the observation, minus the observation, is the hop count: 64 -> 0 (same segment as the
+    collector), 63 -> 1, 61 -> 3, 128 -> 0. Clamped at 8: a smaller reading than that is far
+    more likely a mid-path or spoofed value than a real path, and it must not fling a node
+    off the map. TTL 0 is NOT MEASURED (many exporter templates do not carry the field) and
+    callers must skip it -- treating it as \"distance zero\" would drop every unmeasured host
+    onto the sensor's own ring.
+    """
+    for initial in (64, 128, 255):
+        if ttl <= initial:
+            return min(initial - ttl, 8)
+    return 8
+
+
 def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     """Every host we have seen, with a per-host summary, for the asset inventory view.
 
@@ -259,12 +277,17 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
 
     `truncated` IS REPORTED. The limit is a hard cap on edges; without saying so, a busy
     segment would silently lose hosts and the graph would look complete while being partial.
+
+    EDGES CARRY THEIR TTL RANGE, and nodes carry the `hops` distance derived from it -- when
+    the exporter's records carry the field at all. 0 means NOT MEASURED and `hops` is ABSENT
+    rather than zero, because "no reading" and "right here" are different facts.
     """
     edges = _rows(
         client,
         "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
         "       topK(5)(dst_port) AS ports, min(timestamp) AS first_seen, "
-        "       max(timestamp) AS last_seen "
+        "       max(timestamp) AS last_seen, "
+        "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
         "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
         "  AND src_addr != '' AND dst_addr != '' "
@@ -307,6 +330,10 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
             "ports": ports,
             "first_seen": r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5] or ""),
             "last_seen": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6] or ""),
+            # The TTL pair rides the edge so the view can show the evidence behind a ring
+            # position. 0/0 means these records do not carry the field.
+            "ttl_min": int(r[7] or 0),
+            "ttl_max": int(r[8] or 0),
         })
         # Degree counts INCIDENT edges, so it is bumped on both ends -- a leaf has degree 1
         # even though it appears as a target only, which is what a layout wants.
@@ -328,6 +355,25 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     for e in out_edges:
         e["source_name"] = names.get(e["source"], "")
         e["target_name"] = names.get(e["target"], "")
+
+    # ── WHERE each host SITS, from the TTLs its OWN packets carried ──────────────────────────
+    # A host's outbound packets arrive at the collector with their TTL decremented once per
+    # router hop, so the observed value (rounded up to the nearest common initial TTL) gives
+    # the host's distance from the sensor. This is the signal the Network view's force layout
+    # pulls hosts into hop rings with -- structure a pure link layout cannot see. Only
+    # SOURCE-side records count (a target's TTL describes whoever sent TO it), only records
+    # with ttl > 0 count (0 is NOT MEASURED), and when a host's flows disagree the smallest
+    # hop reading wins: decrements can only be ADDED by multi-path noise, never removed.
+    for e in out_edges:
+        if e["ttl_max"] <= 0:
+            continue
+        hops = _hops_from_ttl(e["ttl_max"])
+        src_node = nodes.get(e["source"])
+        if src_node is None:
+            continue
+        if src_node.get("hops") is None or hops < src_node["hops"]:
+            src_node["hops"] = hops
+            src_node["ttl"] = e["ttl_max"]
 
     max_degree = max(n["degree"] for n in nodes.values())
     max_bytes = max((n["bytes"] for n in nodes.values()), default=1) or 1
@@ -439,7 +485,8 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
                             nodes=[], edges=[])
     edges = _rows(
         client,
-        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows "
+        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
+        "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
         "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
         "  AND src_addr != dst_addr "
@@ -456,10 +503,11 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     def _n(a: str) -> dict:
         return nodes.setdefault(a, {"id": a, "degree": 0, "bytes": 0, "selected": a in set(addrs)})
 
-    out = []
+    out: list[dict] = []
     for r in edges:
         src, dst, b, f = str(r[0]), str(r[1]), int(r[2] or 0), int(r[3] or 0)
-        out.append({"source": src, "target": dst, "bytes": b, "flows": f})
+        out.append({"source": src, "target": dst, "bytes": b, "flows": f,
+                    "ttl_min": int(r[4] or 0), "ttl_max": int(r[5] or 0)})
         _n(src)["degree"] += 1
         _n(dst)["degree"] += 1
         _n(src)["bytes"] += b
@@ -468,6 +516,20 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     names = resolve_names(client, list(nodes))
     for a, node in nodes.items():
         node["name"] = names.get(a, "")
+
+    # The TTL distance class rides the tracked-host path too, or a filtered graph would lose
+    # its rings while the full graph keeps them -- the same fields, the same rule (see
+    # connection_graph above for why source-side only and why the closest reading wins).
+    for e in out:
+        if e["ttl_max"] <= 0:
+            continue
+        src_node = nodes.get(e["source"])
+        if src_node is None:
+            continue
+        hops = _hops_from_ttl(e["ttl_max"])
+        if src_node.get("hops") is None or hops < src_node["hops"]:
+            src_node["hops"] = hops
+            src_node["ttl"] = e["ttl_max"]
 
     return {"available": True, "reason": "", "hours": hours, "tracked": list(addrs),
             "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),

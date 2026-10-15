@@ -1731,6 +1731,10 @@ document.addEventListener("DOMContentLoaded", () => {
     ASSETS_STATE.showNames = e.target.checked;
     renderNetwork();
   });
+  // Re-settle: re-run the deterministic layout, discarding any hand-dragged arrangement --
+  // the way back to the comparable view without a reload.
+  const nwSettle = document.getElementById("nw-settle");
+  if (nwSettle) nwSettle.addEventListener("click", () => settleGraph());
 
   // ── Sluice Gate controls ───────────────────────────────────────────────────
   // Wired from HERE rather than from sluice.js so that every listener in this application is

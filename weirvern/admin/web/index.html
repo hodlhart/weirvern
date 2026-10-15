@@ -125,6 +125,13 @@
     AN EMPTY SELECTION MEANS "NO RESTRICTION", not "nothing". Clearing the selection returns the
     whole graph, which is what an operator expects, and the caption says which reading applied
     so a blank canvas is never ambiguous.
+
+    THE LAYOUT IS A DETERMINISTIC FORCE MAP (the full rationale lives in assets.js): it
+    settles once on load with a short animation, hosts can be dragged and the map re-settles
+    around them, and where the export carries IP TTL the hosts arrange in hop-distance rings
+    from the sensor -- the one piece of real topology a plain link graph cannot show. There is
+    no randomness and the tick count is fixed, so the same window of data settles to the same
+    map and the comparable-view property survives the layout change.
   -->
   <section id="view-network" class="view">
     <div class="card">
@@ -144,10 +151,13 @@
         <label class="auto"><input type="checkbox" id="nw-labels"> show names</label>
         <button id="nw-reload">Reload</button>
         <button id="nw-clear">Clear selection</button>
+        <button id="nw-settle">Re-settle</button>
       </div>
       <p class="muted">Every host-to-host edge in the window, sized by bytes. Click a node to
         select it; click more to widen the selection. Only the selected hosts' connections are
-        drawn — clear the selection to see everything again.</p>
+        drawn — clear the selection to see everything again. The map is force-directed: it
+        settles on its own, drag a dot to pull it around (Re-settle puts it back), and where
+        IP TTL is reported the hosts sit in hop-distance rings from the sensor.</p>
       <p class="muted" id="nw-caption">loading…</p>
       <div id="nw-selected" class="chips"></div>
       <div id="nw-graph" class="graph"></div>

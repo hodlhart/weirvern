@@ -405,38 +405,360 @@ function renderNetwork() {
   }
 }
 
-/** A deterministic circular layout, sized by degree.
+/** The layout's physics, in fixed numbers -- no random source anywhere: same data, same map.
  *
- * WHY NOT A FORCE SIMULATION. A force layout is an animation that settles to a different
- * picture on every load, and two people looking at the same data cannot compare screens. It
- * also has no fixed cost: a busy segment means hundreds of iterations per frame.
+ * WHY THIS IS A FORCE LAYOUT NOW, and how each objection that kept the old view a fixed
+ * circle is answered rather than ignored:
  *
- * A CIRCLE IS NOT A COMPROMISE HERE, it is the better read for this data. Every edge in this
- * graph is a host-to-host pair with no hierarchy, so there is no structure for a force layout
- * to uncover -- the information is in the DEGREE and the BYTES, which is what node size and
- * edge width encode. The backend ships a normalised degree so the browser does no scaling
- * maths and two clients cannot disagree about the layout.
- *
- * Nodes are ordered by degree before placement, so the busiest hosts land together rather than
- * in whatever order the query returned.
+ *   1. "It settles to a different picture on every load; two people cannot compare screens."
+ *      The solver below has NO randomness and a FIXED tick count. The start positions are the
+ *      old degree-ordered circle, every step is deterministic arithmetic, so one window of
+ *      data always settles to the same map -- what animates is the path to it, never the map.
+ *   2. "It has no fixed cost: hundreds of iterations per frame." The solve runs ONCE per
+ *      render, bounded by a fixed tick count, and then the picture is frozen; a drag re-runs
+ *      a bounded warm start. Nothing iterates per frame once the map has settled.
+ *   3. "There is no structure for a force layout to uncover." That was true of edges alone --
+ *      and it stopped being true when the ingest started carrying IP TTL. A host's observed
+ *      TTL is its hop distance from the sensor, and the radial pull below turns that into
+ *      distance rings: same-segment hosts inside, routed hosts outside. Where an export does
+ *      not carry TTL the rings are simply absent and the links alone shape the map.
  */
+const FORCE = {
+  ticks: 320,       // fixed: the final map must not depend on how long a browser waited
+  repel: 5000,      // pairwise push, 1/d^2 falloff
+  repelCut: 360,    // beyond this two nodes do not feel each other (the cost bound, per above)
+  linkDist: 112,    // the spring length an edge wants
+  linkK: 0.045,     // spring stiffness
+  centerK: 0.005,   // gently pulls islands back toward the middle
+  ringK: 0.12,      // pull toward the host's hop ring (only where TTL was measured) --
+                    // measured on the demo dataset: at gentler values (0.02-0.05) the springs
+                    // through the shared servers smear the two classes together and the
+                    // structure stops being readable; at 0.12 the classes hold apart
+  ringBase: 74,     // the same-segment ring's radius; deeper classes step outward
+  ringMax: 178,     // the outermost ring stays inside the frame at any hop count
+  damp: 0.85,
+  maxSpeed: 14,
+  animateMs: 750,
+};
+
+/** Which hop classes exist, and how far apart their rings sit (visual cap: class 3).
+ *
+ * Only nodes with a MEASURED reading count -- `hops` is absent, not zero, for hosts whose
+ * records carried no TTL, and those hosts float on the links alone. */
+function ringPlan(nodes) {
+  const classes = new Set();
+  for (const n of nodes) {
+    if (n.hops === null || n.hops === undefined) continue;
+    classes.add(Math.min(3, Math.max(0, Number(n.hops) || 0)));
+  }
+  const list = [...classes].sort((a, b) => a - b);
+  const maxH = list.length ? list[list.length - 1] : 0;
+  return { classes: list, dr: maxH > 0 ? (FORCE.ringMax - FORCE.ringBase) / maxH : 0 };
+}
+
+/** The positions the graph settles to -- pure and deterministic: same data in, same map out.
+ *
+ * Returns {start, end, rings}: `start` is the degree-ordered circle the view used to draw at
+ * (the settle animation's first frame), `end` the settled map it freezes at. `warmStart`
+ * (a Map of id -> {x, y}) continues from a dragged arrangement instead of the circle and
+ * keeps the previous scale, so a hand-arranged map never jumps between sizes; it is used
+ * only by the re-settle after a drag. `pinned` (a Set of ids) holds those hosts at their
+ * DROPPED positions while the rest of the map re-arranges -- the pin belongs in the solver,
+ * not in the drawing: the springs would otherwise drag the host straight back and the
+ * gesture would read as having done nothing. Only Re-settle clears the pins.
+ */
+function computeLayout(nodes, edges, box, warmStart, pinned) {
+  const n = nodes.length;
+  const cx = box.cx, cy = box.cy;
+  const radius = Math.min(box.w, box.h) / 2 - 26;
+
+  const ordered = nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0));
+  const start = new Map();
+  ordered.forEach((nd, i) => {
+    const from = warmStart && warmStart.get(nd.id);
+    if (from) {
+      start.set(nd.id, { x: from.x, y: from.y });
+    } else {
+      const angle = (i / Math.max(1, ordered.length)) * Math.PI * 2 - Math.PI / 2;
+      start.set(nd.id, { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) });
+    }
+  });
+
+  const idx = new Map(ordered.map((nd, i) => [nd.id, i]));
+  const xs = ordered.map((nd) => start.get(nd.id).x);
+  const ys = ordered.map((nd) => start.get(nd.id).y);
+  const vx = ordered.map(() => 0);
+  const vy = ordered.map(() => 0);
+  const ring = ringPlan(ordered);
+  const classOf = ordered.map((nd) => {
+    if (nd.hops === null || nd.hops === undefined) return null;
+    return Math.min(3, Math.max(0, Number(nd.hops) || 0));
+  });
+
+  const maxBytes = Math.max(1, ...ordered.map((nd) => nd.bytes || 0));
+  const links = [];
+  for (const e of edges) {
+    const a = idx.get(e.source), b = idx.get(e.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    // Heavier observed pairs sit closer (log-normalised), so the tightest knots on the map
+    // read as the busiest relationships.
+    const w = Math.min(1, Math.log10(1 + (e.bytes || 0)) / Math.log10(1 + maxBytes ** 2));
+    links.push({ a: a, b: b, len: FORCE.linkDist + 52 * (1 - w) });
+  }
+
+  const ticks = n > 300 ? 150 : n > 150 ? 220 : FORCE.ticks;
+  const cut2 = FORCE.repelCut * FORCE.repelCut;
+  for (let t = 0; t < ticks; t++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = xs[i] - xs[j], dy = ys[i] - ys[j];
+        const d2 = dx * dx + dy * dy;
+        if (d2 > cut2 || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        const f = FORCE.repel / d2;
+        const fx = (f * dx) / d, fy = (f * dy) / d;
+        vx[i] += fx; vy[i] += fy;
+        vx[j] -= fx; vy[j] -= fy;
+      }
+    }
+    for (const L of links) {
+      const dx = xs[L.b] - xs[L.a], dy = ys[L.b] - ys[L.a];
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const f = FORCE.linkK * (d - L.len);
+      const fx = (f * dx) / d, fy = (f * dy) / d;
+      vx[L.a] += fx; vy[L.a] += fy;
+      vx[L.b] -= fx; vy[L.b] -= fy;
+    }
+    for (let i = 0; i < n; i++) {
+      if (pinned && pinned.has(ordered[i].id)) {
+        // A host the operator dragged holds exactly where it was dropped; the rest of the
+        // map settles AROUND it (see the pinned note in the docstring).
+        xs[i] = start.get(ordered[i].id).x;
+        ys[i] = start.get(ordered[i].id).y;
+        vx[i] = 0; vy[i] = 0;
+        continue;
+      }
+      vx[i] += (cx - xs[i]) * FORCE.centerK;
+      vy[i] += (cy - ys[i]) * FORCE.centerK;
+      if (classOf[i] !== null) {
+        const target = FORCE.ringBase + ring.dr * classOf[i];
+        const rx = xs[i] - cx, ry = ys[i] - cy;
+        const rd = Math.hypot(rx, ry);
+        if (rd > 1e-6) {
+          const pull = (FORCE.ringK * (rd - target)) / rd;
+          vx[i] -= rx * pull; vy[i] -= ry * pull;
+        }
+      }
+      vx[i] *= FORCE.damp; vy[i] *= FORCE.damp;
+      const sp = Math.hypot(vx[i], vy[i]);
+      if (sp > FORCE.maxSpeed) { vx[i] *= FORCE.maxSpeed / sp; vy[i] *= FORCE.maxSpeed / sp; }
+      xs[i] += vx[i]; ys[i] += vy[i];
+    }
+  }
+
+  // Recentre the settled mass on the frame, when this is a fresh layout: the forces pull
+  // toward the middle, but an asymmetric link structure (all spokes through a few hubs)
+  // leaves the cloud visibly off to one side, and an off-centre map reads as a fault. A
+  // warm start skips this -- it would fight the operator's own arrangement.
+  if (!warmStart && n) {
+    let cmx = 0, cmy = 0;
+    for (let i = 0; i < n; i++) { cmx += xs[i]; cmy += ys[i]; }
+    cmx /= n; cmy /= n;
+    for (let i = 0; i < n; i++) { xs[i] += cx - cmx; ys[i] += cy - cmy; }
+  }
+
+  // Fit the settle into the frame by SCALING (never distorting), using the 95th-percentile
+  // radius so one drifting node cannot shrink the whole picture. A warm start keeps the
+  // previous scale so a dragged map does not jump between sizes.
+  const radials = [];
+  for (let i = 0; i < n; i++) radials.push(Math.hypot(xs[i] - cx, ys[i] - cy));
+  radials.sort((a, b) => a - b);
+  const fitR = radials[Math.min(radials.length - 1, Math.floor(radials.length * 0.95))] || 1;
+  const room = Math.min(box.w / 2 - 14, box.h / 2 - 14);
+  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, (room - 12) / fitR));
+  const end = new Map();
+  ordered.forEach((nd, i) => {
+    end.set(nd.id, {
+      x: Math.min(cx + room, Math.max(cx - room, cx + (xs[i] - cx) * s)),
+      y: Math.min(cy + room, Math.max(cy - room, cy + (ys[i] - cy) * s)),
+    });
+  });
+  // Rings are drawn only when TTL produced more than one class: a single circle around
+  // everything would read as a frame, not a measurement. Each circle sits at the radius its
+  // class ACTUALLY settled at (the mean), not at the nominal target -- a circle drawn at
+  // the target while the cluster settles elsewhere is a diagram of an intention.
+  const rings = [];
+  if (ring.classes.length > 1) {
+    for (const h of ring.classes) {
+      let sum = 0, cnt = 0;
+      ordered.forEach((nd, i) => {
+        if (classOf[i] !== h) return;
+        const p = end.get(nd.id);
+        sum += Math.hypot(p.x - cx, p.y - cy);
+        cnt += 1;
+      });
+      if (cnt) rings.push({ hops: h, radius: sum / cnt });
+    }
+  }
+  return { start: start, end: end, rings: rings };
+}
+
+/** The hover card for a host: address, activity, and -- when measured -- where it sits.
+ *
+ * A hop reading is always shown WITH the TTL it came from: the ring position is a
+ * measurement, and a measurement without its evidence is a conclusion. */
+function nodeTitle(n) {
+  const out = [`${n.name ? n.name + " · " : ""}${n.id}`, `${n.degree} peers`, fmtBytes(n.bytes)];
+  if (n.hops !== null && n.hops !== undefined) {
+    out.push(`${n.hops} ${n.hops === 1 ? "hop" : "hops"} from the sensor (ttl ${n.ttl})`);
+  }
+  return out.join("\n");
+}
+
+/** The hover card for one connection: the pair, the volume, and the TTL range when carried. */
+function edgeTitle(e) {
+  const out = [`${e.source} → ${e.target}`, fmtBytes(e.bytes)];
+  if (e.ttl_max > 0) {
+    out.push(e.ttl_min === e.ttl_max ? `ttl ${e.ttl_max}` : `ttl ${e.ttl_min}–${e.ttl_max}`);
+  }
+  return out.join("\n");
+}
+
+/** Draw the connection graph: a settled force map with hop rings where TTL allows.
+ *
+ * All the interactions the view already had are unchanged -- clicks open the same detail
+ * panels, the tracking selection is the same ClickHouse-side filter. What the map adds: a
+ * short settle animation on load, hop-distance rings drawn from the measured TTL, and a
+ * drag that carries a host and re-settles its neighbours (the interaction Obsidian's graph
+ * is known for, and the reason a map is worth arranging by hand). */
 function drawGraph(host, nodes, edges, truncated) {
   const W = 1000;
   const H = 460;
   const { svg, plot } = chartFrame(W, H, { l: 20, r: 20, t: 20, b: 20 });
   const cx = (plot.l + plot.r) / 2;
   const cy = (plot.t + plot.b) / 2;
-  const radius = Math.min(plot.r - plot.l, plot.b - plot.t) / 2 - 26;
+  const box = { cx: cx, cy: cy, w: plot.r - plot.l, h: plot.b - plot.t };
+  const layout = computeLayout(nodes, edges, box);
+  const pos = new Map(layout.start);
+  const pinned = new Set();  // hosts the operator has dragged; they hold until Re-settle
 
-  const ordered = nodes.slice().sort((a, b) => b.degree - a.degree);
-  const pos = new Map();
-  ordered.forEach((n, i) => {
-    const angle = (i / ordered.length) * Math.PI * 2 - Math.PI / 2;
-    pos.set(n.id, {
-      x: cx + radius * Math.cos(angle),
-      y: cy + radius * Math.sin(angle),
+  // Faint hop rings under everything; their LABELS are appended after the nodes instead
+  // (see below) so a node can never sit on top of the label that explains the ring.
+  const ringLabels = [];
+  for (const ring of layout.rings) {
+    svg.appendChild(svgEl("circle", {
+      cx: cx, cy: cy, r: ring.radius.toFixed(1), class: "ring", fill: "none",
+    }));
+    ringLabels.push({ x: cx, y: (cy - ring.radius + 11).toFixed(1),
+                      text: ring.hops + (ring.hops === 1 ? " hop" : " hops") });
+  }
+
+  // Position writers: one list applied to a Map of id -> {x, y}, so "draw at start", "draw
+  // mid-animation" and "draw mid-drag" are the same code path.
+  const edgeEls = [];
+  const nodeEls = [];
+  function applyPositions(cur) {
+    for (const ee of edgeEls) {
+      const a = cur.get(ee.source), b = cur.get(ee.target);
+      if (!a || !b) continue;
+      for (const el2 of ee.els) {
+        el2.setAttribute("x1", a.x.toFixed(1)); el2.setAttribute("y1", a.y.toFixed(1));
+        el2.setAttribute("x2", b.x.toFixed(1)); el2.setAttribute("y2", b.y.toFixed(1));
+      }
+    }
+    for (const ne of nodeEls) {
+      const p = cur.get(ne.id);
+      if (p) ne.g.setAttribute("transform", `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`);
+    }
+  }
+
+  // ── the settle: circle -> map, once, bounded ──────────────────────────────────────────────
+  // The FINAL state is applied by `finish` no matter what happens to the frames: a stalled
+  // animation frame (a backgrounded tab, a throttled renderer) must cost the ANIMATION, not
+  // the map -- and a map silently stuck at the circle would also poison the next drag's warm
+  // re-settle, which reads `pos`. The watchdog timer guarantees the settled state; the frames
+  // are only how a visible tab watches it get there.
+  let animSeq = 0;
+  function settleTo(target, ms) {
+    const seq = ++animSeq;
+    const finish = () => {
+      if (seq !== animSeq) return;
+      for (const [id, p1] of target) pos.set(id, p1);
+      applyPositions(target);
+    };
+    const reduce = typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : null;
+    if (!raf || reduce || document.hidden) {
+      finish();
+      return;
+    }
+    const from = new Map(pos);
+    const t0 = performance.now();
+    const watchdog = setTimeout(finish, ms + 300);
+    function frame(now) {
+      if (seq !== animSeq) {
+        clearTimeout(watchdog);
+        return;  // superseded by a drag or a re-render
+      }
+      const t = Math.min(1, (now - t0) / ms);
+      const e = 1 - Math.pow(1 - t, 3);
+      const cur = new Map();
+      for (const [id, p1] of target) {
+        const p0 = from.get(id) || p1;
+        cur.set(id, { x: p0.x + (p1.x - p0.x) * e, y: p0.y + (p1.y - p0.y) * e });
+      }
+      applyPositions(cur);
+      if (t < 1) {
+        raf(frame);
+      } else {
+        clearTimeout(watchdog);
+        finish();
+      }
+    }
+    raf(frame);
+  }
+
+  // Drag a node: the node carries its edges live, and on release a bounded warm re-settle
+  // lets the springs respond to where the operator put it.
+  function wireDrag(g, id) {
+    const state = { moved: false };
+    g.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      animSeq++;  // the drag owns the map now; any in-flight settle animation stops
+      state.moved = false;
+      const rect = typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null;
+      const scaleX = rect && rect.width > 0 ? W / rect.width : 1;
+      const scaleY = rect && rect.height > 0 ? H / rect.height : 1;
+      const toLocal = (e2) => ({
+        x: (e2.clientX - (rect ? rect.left : 0)) * scaleX,
+        y: (e2.clientY - (rect ? rect.top : 0)) * scaleY,
+      });
+      const onMove = (e2) => {
+        const p = toLocal(e2);
+        const cur = pos.get(id);
+        if (!cur) return;
+        const nx = Math.min(cx + box.w / 2 - 8, Math.max(cx - box.w / 2 + 8, p.x));
+        const ny = Math.min(cy + box.h / 2 - 8, Math.max(cy - box.h / 2 + 8, p.y));
+        if (Math.abs(nx - cur.x) + Math.abs(ny - cur.y) > 2) state.moved = true;
+        cur.x = nx; cur.y = ny;
+        applyPositions(pos);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        if (!state.moved) return;
+        pinned.add(id);
+        const re = computeLayout(nodes, edges, box, pos, pinned);
+        settleTo(re.end, 260);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     });
-  });
+    return state;
+  }
 
   // Edges first so nodes draw over them.
   const maxEdge = Math.max(1, ...edges.map((e) => e.bytes));
@@ -462,22 +784,27 @@ function drawGraph(host, nodes, edges, truncated) {
       ev.stopPropagation();
       showEdgeDetail(e);
     });
-    hit.appendChild(svgEl("title", {}, `${e.source} → ${e.target}\n${fmtBytes(e.bytes)}`));
+    hit.appendChild(svgEl("title", {}, edgeTitle(e)));
     svg.appendChild(hit);
-
-    svg.appendChild(svgEl("line", {
+    const line = svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "edge",
       "stroke-width": w.toFixed(2),
       opacity: shown, "pointer-events": "none",
-    }));
+    });
+    svg.appendChild(line);
+    edgeEls.push({ source: e.source, target: e.target, els: [hit, line] });
   }
 
   const maxBytes = Math.max(1, ...nodes.map((n) => n.bytes || 0));
+  const ordered = nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0));
   for (const n of ordered) {
     const p = pos.get(n.id);
     const selected = ASSETS_STATE.tracked.includes(n.id);
     const r = 5 + 9 * Math.sqrt((n.bytes || 0) / maxBytes);
-    const g = svgEl("g", { class: "node" + (selected ? " selected" : ""), transform: `translate(${p.x},${p.y})` });
+    const g = svgEl("g", {
+      class: "node" + (selected ? " selected" : ""),
+      transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
+    });
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
       fill: selected ? "#5ec26a" : "#4ea1ff",
@@ -490,16 +817,28 @@ function drawGraph(host, nodes, edges, truncated) {
         text: n.name || n.id,
       }));
     }
-    g.appendChild(svgEl("title", {}, `${n.name ? n.name + " · " : ""}${n.id}\n${n.degree} peers\n${fmtBytes(n.bytes)}`));
+    g.appendChild(svgEl("title", {}, nodeTitle(n)));
     // CLICK LEADS WITH DATA. It used to toggle tracking only, which the user could not infer
     // from anything on screen -- "i dont understand what clicking down". The detail panel now
     // opens on the host's connections, and tracking is an explicit button inside it.
-    g.addEventListener("click", () => showNodeDetail(n));
-    g.style.cursor = "pointer";
+    const drag = wireDrag(g, n.id);
+    g.addEventListener("click", () => {
+      if (drag.moved) return;  // a drag is not a click
+      showNodeDetail(n);
+    });
+    nodeEls.push({ id: n.id, g: g });
     svg.appendChild(g);
   }
 
   host.appendChild(svg);
+  // Ring labels ride ON TOP of the map (with a halo in CSS): drawn underneath, the 0-hop
+  // label sat behind a node on the settled demo map and read as "hops".
+  for (const rl of ringLabels) {
+    svg.appendChild(svgEl("text", {
+      x: rl.x, y: rl.y, "text-anchor": "middle", class: "ring-label",
+    }, rl.text));
+  }
+  settleTo(layout.end, FORCE.animateMs);
 
   const legend = document.getElementById("nw-legend");
   if (legend) {
@@ -509,11 +848,18 @@ function drawGraph(host, nodes, edges, truncated) {
       ["#5ec26a", "tracked"],
       ["edge width", "log of bytes"],
     ];
+    if (layout.rings.length) {
+      items.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
+    }
     for (const [colour, label] of items) {
+      const swatch = colour === "ring"
+        ? el("span", { class: "legend-swatch ring" })
+        : el("span", {
+            class: "legend-swatch",
+            attrs: { style: `background:${colour.startsWith("#") ? colour : "var(--border)"}` },
+          });
       legend.appendChild(el("span", { class: "legend-item" }, [
-        colour.startsWith("#")
-          ? el("span", { class: "legend-swatch", attrs: { style: `background:${colour}` } })
-          : el("span", { class: "legend-swatch", attrs: { style: "background:var(--border)" } }),
+        swatch,
         el("span", { text: label }),
       ]));
     }
@@ -524,6 +870,16 @@ function drawGraph(host, nodes, edges, truncated) {
       }));
     }
   }
+}
+
+/** Re-run the layout from its deterministic start, discarding any hand-dragged arrangement.
+ *
+ * The counterpart to dragging a node somewhere unhelpful: the map returns to the exact
+ * picture the data settles to, so there is always a way back to the comparable view. */
+function settleGraph() {
+  const d = ASSETS_STATE.graph;
+  if (!d || d.available === false) return;
+  renderNetwork();
 }
 
 /* The window the Zeek view is currently showing, from its own control. */
@@ -555,9 +911,14 @@ function showEdgeDetail(edge) {
 
   title.textContent = "one connection";
   const ports = (edge.ports || []).length ? edge.ports.join(", ") : "—";
+  // The TTL range is the evidence a ring position rests on, so it shows when the records
+  // carried the field -- and says nothing when they did not.
+  const ttl = edge.ttl_max > 0
+    ? ` Observed TTL ${edge.ttl_min === edge.ttl_max ? edge.ttl_max : `${edge.ttl_min}–${edge.ttl_max}`}.`
+    : "";
   note.textContent =
     `${label(edge.source_name, edge.source)} → ${label(edge.target_name, edge.target)}` +
-    ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.`;
+    ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.${ttl}`;
 
   // The pair, as a single prominent row, because "source and destination" is the question.
   host.appendChild(el("div", { class: "pair" }, [
@@ -622,9 +983,12 @@ function showNodeDetail(node) {
                           .sort((a, b) => b.bytes - a.bytes);
 
   title.textContent = label(node.name, node.id);
+  const dist = (node.hops === null || node.hops === undefined)
+    ? ""
+    : ` · ${node.hops} ${node.hops === 1 ? "hop" : "hops"} from the sensor (ttl ${node.ttl})`;
   note.replaceChildren(el("span", { text:
     `${node.degree} peer${node.degree === 1 ? "" : "s"} · ${fmtBytes(node.bytes)} · ` +
-    `${outbound.length} outbound, ${inbound.length} inbound` }));
+    `${outbound.length} outbound, ${inbound.length} inbound${dist}` }));
 
   // Tracking stays available, but as an explicit ACTION inside the panel rather than the thing
   // a click silently did.

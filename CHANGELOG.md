@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
+
+**The connection graph was a fixed circle; it is now a settled force map.** The three
+objections that made the circle the right call are answered in code, not waived:
+
+- **Comparable, still.** No randomness and a fixed tick count: the start is the old
+  degree-ordered circle and every step is deterministic arithmetic, so one window of data
+  settles to the same map on every load — what animates is the path to it. The settled map
+  is applied by a watchdog even when animation frames stall (a backgrounded tab costs the
+  animation, never the map), and **Re-settle** returns a hand-dragged map to the arranged
+  one — verified end-to-end: drag a host, re-settle, get the identical map back.
+- **Bounded, still.** The solve runs once per render (measured: ~12ms for the demo
+  segment's 20 nodes / 63 edges) and then the picture is frozen; a drag re-runs a bounded
+  warm start. Nothing iterates per frame once the map has settled.
+- **Now with real structure to uncover.** `ip_ttl` has been ingested since the first
+  release and read by nothing — the layout consumes it. A host's observed TTL gives its
+  hop distance from the sensor (`64 -> 0`, `63 -> 1`, ...), and measured hosts settle into
+  hop-distance rings, each circle drawn where its class actually settled (measured on the
+  demo dataset: r~75 and r~147, no overlap). Hosts whose records carry no TTL keep `hops`
+  ABSENT — 0 means NOT MEASURED, never "distance zero" — and float on links alone.
+
+Also in this pass: drag any host and the map re-settles around it; the dragged host HOLDS
+its dropped position (the pin lives in the solver — freed, the springs pull it straight
+back and the gesture reads as broken). Node and edge hover cards and the detail panels
+show the TTL evidence behind a ring (`2 hops from the sensor (ttl 62)`), the tracked-host
+path carries the same fields so a filtered graph keeps its rings, ring labels ride on top
+of the nodes with a halo (drawn underneath, "0 hops" sat behind a node and read as
+"hops"), and the settled cloud is recentred so an asymmetric link structure cannot leave
+the map visibly off to one side.
+
 ## Unreleased — 0.9.0: the TUI is gone, and the fingerprinting story is one sentence
 
 **Two surfaces were telling a story the software no longer had.**

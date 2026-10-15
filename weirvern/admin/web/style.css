@@ -265,6 +265,8 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 .legend-item { display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--muted); font-family: var(--mono); }
 .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+/* The hop-ring legend swatch is a ring, not a fill. */
+.legend-swatch.ring { background: none; border: 1px dashed var(--border); border-radius: 50%; }
 
 .bar-row { display: grid; grid-template-columns: 160px 1fr 64px;
   align-items: center; gap: 10px; margin: 5px 0; }
@@ -352,6 +354,16 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .graph .node text { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
 .graph .node.selected circle { stroke: var(--accent); stroke-width: 3; }
 .graph .node.selected text { fill: var(--fg); }
+/* The map is draggable: grab/grabbing is the affordance, and touch-action keeps a touch
+ * drag from scrolling the page instead. */
+.graph .node { cursor: grab; touch-action: none; }
+.graph .node:active { cursor: grabbing; }
+/* Hop-distance rings (drawn only when TTL gave more than one class). The label carries a
+ * panel-coloured halo and rides on top of the nodes: drawn bare underneath, a node sat on
+ * top of "0 hops" on the settled demo map and it read as "hops". */
+.graph .ring { stroke: var(--border); stroke-dasharray: 4 6; opacity: 0.7; }
+.graph .ring-label { fill: var(--muted); font-family: var(--mono); font-size: 10px;
+  paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
 
 /* A detector that is overdue gets a tint as well as a word: the table is skimmed, and a colour
  * is what a skim catches. The word is still there, so the meaning does not depend on it. */

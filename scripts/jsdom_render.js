@@ -95,7 +95,8 @@ async function main() {
                       .join("\n;\n");
   const epilogue = `
 window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
-                   loadNetwork, drawGraph, toggleTracked, loadZeekLog, loadFlowDetail, openHost,
+                   loadNetwork, drawGraph, computeLayout, settleGraph, nodeTitle, edgeTitle,
+                   toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      runSonar, stageSonarRecommendations, renderSonarNote,
@@ -163,17 +164,19 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
   const GRAPH_PAYLOAD = {
     available: true, hours: 24,
     nodes: [
-      { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
-      { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000 },
+      { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288, hops: 0, ttl: 64 },
+      { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000, hops: 1, ttl: 63 },
       { id: "203.0.113.1", name: "gateway", degree: 4, bytes: 900000 },
     ],
     edges: [
       { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900,
         ports: [443, 80], source_name: "workstation.lan", target_name: "gateway",
-        first_seen: "2026-01-01T00:00:00", last_seen: "2026-01-02T00:00:00" },
+        first_seen: "2026-01-01T00:00:00", last_seen: "2026-01-02T00:00:00",
+        ttl_min: 64, ttl_max: 64 },
       { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60,
         ports: [22], source_name: "workstation.lan", target_name: "vault",
-        first_seen: "2026-01-01T06:00:00", last_seen: "2026-01-02T06:00:00" },
+        first_seen: "2026-01-01T06:00:00", last_seen: "2026-01-02T06:00:00",
+        ttl_min: 63, ttl_max: 63 },
     ],
     total_edges: 25, truncated: true, reason: "",
   };
@@ -784,14 +787,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       services: ["conn", "dns"], anomalies: 0, last_seen: "2026-09-19T07:39:10",
       bytes_out: 900000, bytes_in: 1310000 },
   ];
+  // Two hop classes on purpose (0 and 1): the ring behaviour needs more than one class to
+  // exist at all, and the checks below assert the 0-hop node settles inside the 1-hop one.
   const NODES = [
-    { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288 },
-    { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000 },
+    { id: "203.0.113.42", name: "workstation.lan", degree: 38, bytes: 7153288, hops: 0, ttl: 64 },
+    { id: "192.0.2.40", name: "vault", degree: 6, bytes: 182400000, hops: 1, ttl: 63 },
     { id: "203.0.113.1", name: "gateway", degree: 4, bytes: 900000 },
   ];
   const EDGES = [
-    { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900 },
-    { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60 },
+    { source: "203.0.113.42", target: "203.0.113.1", bytes: 5000000, flows: 900,
+      ttl_min: 64, ttl_max: 64 },
+    { source: "203.0.113.42", target: "192.0.2.40", bytes: 400000, flows: 60,
+      ttl_min: 63, ttl_max: 63 },
   ];
 
   H.ASSETS_STATE.inventory = {
@@ -953,6 +960,45 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the chips area explains the empty selection",
         doc.getElementById("nw-selected").textContent.includes("every connection"),
         doc.getElementById("nw-selected").textContent.slice(0, 80));
+
+  // ── the force map: deterministic, TTL-ringed ──────────────────────────────────────────────
+  // The property the old fixed circle existed to protect was comparability -- two people on
+  // the same data see the same picture. The map has to keep it BY CONSTRUCTION: no randomness,
+  // one fixed tick count. Two runs, one map.
+  {
+    const box = { cx: 500, cy: 230, w: 960, h: 420 };
+    const a = H.computeLayout(NODES, EDGES, box);
+    const b = H.computeLayout(NODES, EDGES, box);
+    let same = a.end.size === b.end.size;
+    for (const [id, p] of a.end) {
+      const q = b.end.get(id);
+      if (!q || Math.abs(p.x - q.x) > 1e-9 || Math.abs(p.y - q.y) > 1e-9) same = false;
+    }
+    check("the force layout is deterministic: the same window settles to the same map", same);
+    const rad = (id) => {
+      const p = a.end.get(id);
+      return Math.hypot(p.x - box.cx, p.y - box.cy);
+    };
+    check("TTL hop classes settle into ordered rings (0-hop inside the 1-hop)",
+          rad("203.0.113.42") < rad("192.0.2.40"),
+          `r0=${rad("203.0.113.42").toFixed(1)} r1=${rad("192.0.2.40").toFixed(1)}`);
+    check("every settled position is finite and inside the frame",
+          [...a.end.values()].every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) &&
+            p.x > 0 && p.x < 1000 && p.y > 0 && p.y < 460));
+    check("a host with no TTL reading still gets a position (links alone)",
+          a.end.has("203.0.113.1"));
+    const c = H.computeLayout(NODES, EDGES, box, a.end, new Set(["203.0.113.42"]));
+    const held = c.end.get("203.0.113.42");
+    check("a dragged (pinned) host holds its dropped position through the re-settle",
+          Math.abs(held.x - a.end.get("203.0.113.42").x) < 0.5 &&
+          Math.abs(held.y - a.end.get("203.0.113.42").y) < 0.5,
+          `held=${held.x.toFixed(1)},${held.y.toFixed(1)}`);
+    check("the hop rings are drawn when TTL gives more than one class",
+          doc.querySelectorAll("#nw-graph circle.ring").length === 2,
+          `rings=${doc.querySelectorAll("#nw-graph circle.ring").length}`);
+    check("the hover card carries the TTL evidence behind a ring",
+          H.nodeTitle(NODES[0]).includes("ttl 64"), H.nodeTitle(NODES[0]));
+  }
 
   // (A bare node click no longer tracks -- see the block that drives the panel's track
   //  button, which is the path the user actually takes. These assertions moved there.)

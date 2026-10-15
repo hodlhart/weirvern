@@ -76,7 +76,7 @@ def test_the_new_controls_in_the_html_all_have_a_handler():
     # Controls this view owns; each must be wired in app.js (the DOMContentLoaded block).
     controls = [
         "as-search", "as-sort", "as-hours", "as-reload",
-        "nw-hours", "nw-reload", "nw-clear", "nw-min", "nw-labels",
+        "nw-hours", "nw-reload", "nw-clear", "nw-min", "nw-labels", "nw-settle",
     ]
     have = _ids_in_html()
     for cid in controls:
@@ -437,6 +437,100 @@ def test_clicking_an_edge_shows_that_pair_not_the_whole_host():
     assert "ports" in edge, "the edge detail does not mention the ports"
     assert "→" in edge or "&rarr;" in edge, (
         "the edge detail does not render the source→destination relationship visually"
+    )
+
+
+# ── the force map: TTL distance rings, and the property the circle existed to protect ──────
+
+
+def test_hosts_carry_the_ttl_distance_class_for_the_force_layout():
+    """The layout pulls hosts into hop rings from the TTL their OWN packets carried.
+
+    `hops` is computed server-side (one definition; two clients cannot disagree about a ring)
+    and is ABSENT -- never 0 -- for hosts whose records carry no TTL, because 0 means
+    "same segment as the sensor" and "not measured" is a different fact. The tracked-host
+    path carries the same fields, or a filtered graph would lose its rings while the full
+    graph keeps them.
+    """
+    import inspect
+
+    from weirvern.admin import assets
+
+    src = inspect.getsource(assets.connection_graph)
+    assert "ip_ttl" in src, "connection_graph no longer reads the TTL the schema carries"
+    for key in ('"ttl_min"', '"ttl_max"', '"hops"'):
+        assert key in src, f"connection_graph does not produce {key}"
+        assert key.strip('"') in ASSETS_JS, f"assets.js never reads {key.strip(chr(34))}"
+
+    tracked = inspect.getsource(assets.top_edges_for)
+    for key in ('"ttl_min"', '"ttl_max"', '"hops"'):
+        assert key in tracked, (
+            f"top_edges_for does not carry {key}: a tracked-host selection would lose its "
+            f"rings while the full graph keeps them"
+        )
+
+
+def test_hops_from_ttl_buckets_to_the_nearest_common_initial_value():
+    from weirvern.admin.assets import _hops_from_ttl
+
+    assert _hops_from_ttl(64) == 0     # stamped here, never decremented
+    assert _hops_from_ttl(63) == 1
+    assert _hops_from_ttl(61) == 3
+    assert _hops_from_ttl(128) == 0
+    assert _hops_from_ttl(127) == 1
+    assert _hops_from_ttl(255) == 0
+    assert _hops_from_ttl(1) == 8      # clamped: no real path reads that low
+
+
+def test_connection_graph_derives_hops_from_outbound_ttls_only():
+    """Behaviour, not source text: the closest reading wins; targets and TTL-less records
+    get no class at all."""
+    import datetime as _dt
+
+    from weirvern.admin import assets
+
+    class _Result:
+        def __init__(self, rows):
+            self.result_rows = rows
+
+    class _Client:
+        def __init__(self, edges, total):
+            self._edges, self._total = edges, total
+
+        def query(self, sql, parameters=None):
+            return _Result(self._edges if "GROUP BY src_addr, dst_addr" in sql else self._total)
+
+    ts = _dt.datetime(2026, 1, 1)
+    # (src, dst, bytes, flows, ports, first, last, ttl_min, ttl_max)
+    edges = [
+        ("198.51.100.10", "198.51.100.20", 1000, 5, [443], ts, ts, 63, 63),
+        ("198.51.100.10", "198.51.100.21", 500, 2, [80], ts, ts, 61, 61),
+        ("198.51.100.30", "198.51.100.10", 700, 3, [22], ts, ts, 0, 0),
+    ]
+    d = assets.connection_graph(_Client(edges, [(3,)]), hours=24, limit=100)
+    assert d["available"] is True
+    by_id = {n["id"]: n for n in d["nodes"]}
+    assert by_id["198.51.100.10"]["hops"] == 1, "the closest reading must win (63 -> 1 over 61 -> 3)"
+    assert by_id["198.51.100.10"]["ttl"] == 63
+    assert "hops" not in by_id["198.51.100.20"], "a host that never sourced has no distance"
+    assert "hops" not in by_id["198.51.100.30"], "a 0 TTL is NOT MEASURED, not distance zero"
+    e = next(e2 for e2 in d["edges"] if e2["target"] == "198.51.100.20")
+    assert (e["ttl_min"], e["ttl_max"]) == (63, 63)
+
+
+def test_the_force_layout_is_deterministic_and_draggable():
+    """The property the fixed circle existed to protect -- two people comparing the same
+    data see the same picture -- must survive the move to a force map."""
+    code = _code(ASSETS_JS)
+    assert "Math.random" not in code, (
+        "the layout must not use randomness: the same window of data has to settle to the "
+        "same map, or the comparable-view property is gone"
+    )
+    assert '"pointerdown"' in code, "the map is not draggable"
+    assert "pointerup" in code, "a drag has no release handler"
+    assert "function computeLayout" in code, "the layout solver is gone"
+    assert "settleGraph" in code and "nw-settle" in INDEX and "nw-settle" in APP_JS, (
+        "there is no way back from a hand-dragged map to the arranged one"
     )
 
 
