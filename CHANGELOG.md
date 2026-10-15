@@ -115,6 +115,22 @@ pinned by ten tests (the refusals, the identity and port contracts, observed-sta
 dead capture reading as not-running, and the module being runnable as the manifest's
 entrypoint).
 
+**A weirling installs on another box with one command.** `scripts/deploy-weirling.sh` runs where
+the operator is, reaches the hub and the target over ssh, and leaves two containers plus a small
+local helper (`weirvern-weirling status|start|stop`) behind: Zeek on one dedicated NIC and the
+heartbeat agent, reporting into the hub's database under their own identity. The management NIC
+is refused on BOTH sides of the wire — at deploy time against the target's live default route,
+and again by the helper before it starts — and registration is deliberately NOT done for you:
+the row appears in the Weirlings view as UNREGISTERED until someone declares it. Its own first
+live runs shaped it: every target now uses ONE door (`clickhouse-external`; the in-cluster
+`clickhouse` Service is headless, and the first version shipped the literal string "None" into
+the agent's config), a reachability knock with the real client runs before anything starts (the
+agent retries forever by design, so a wrong address would otherwise spin silently), and the
+NodePort is opened by changing only the service TYPE — rebuilding the ports list tripped over
+`targetPort: http`, a named port (a string), which interpolated as bare JSON. Exercised
+end-to-end: dry-runs refusing the management NIC / a missing port / a bad identity, a full
+install whose heartbeat was verified in the hub's database, and the removal path.
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three
