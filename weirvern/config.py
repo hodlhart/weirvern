@@ -365,6 +365,13 @@ class ModelConfig:
     #   (0.08 with the default MIN_AGREEMENT of 0.33 gives exactly 0.25).
     # min_agreement_floor: the subtraction can never push the bar below this, so a
     #   badly chosen MIN_AGREEMENT cannot disable the gate entirely.
+    #
+    # AND THE SOLO FLOOR, the review round of 2026-10-15: the ensemble additionally never
+    # admits ONE detector's share of the agreement (1/n) at any tier unless a lone strong
+    # specialist is corroborated by a direct structural signature -- measured, the old
+    # top-tier bar (0.25 with four detectors) sat exactly ON that share, so `agreement <
+    # min_agreement` could never fire there and one detector's word alerted alone.
+    # MIN_AGREEMENT governs ABOVE that floor; values at or below 1/n have no further effect.
     min_agreement_margin: float = 0.08
     min_agreement_floor: float = 0.20
 

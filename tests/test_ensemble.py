@@ -314,18 +314,77 @@ def test_the_signature_gate_uses_the_configured_bar_too():
     higher = dataclasses.replace(Settings(), strong_signal=0.90, base_threshold=0.30)
 
     a = ensemble.detect_flows([dict(scan)], dets, lower, ModelConfig())[0]
-    b = ensemble.detect_flows([dict(scan)], dets, higher, ModelConfig())[0]
-    assert a["strong_models"] == 1 and b["strong_models"] == 0, (
-        f"the bar did not move the strong count: {a['strong_models']} vs {b['strong_models']}"
-    )
+    # At the 0.90 bar the lone detector is no longer "strong" and carries no signature, so
+    # the window is GATED -- not merely un-escalated. (Before the 2026-10-15 review the
+    # top-tier agreement gate could never suppress a >= 0.6 window, so this case used to
+    # alert at medium; that was the leak the gate fix closed. `a` proves the configured bar
+    # is read; this proves the gate now binds.)
+    b_near: list = []
+    b = ensemble.detect_flows([dict(scan)], dets, higher, ModelConfig(), near_misses=b_near)
+    assert a["strong_models"] == 1
     assert a["signature"] is True, "the scan signature was not recognised at the lower bar"
     assert a["severity"] == "high", (
         f"the signature gate did not escalate at the 0.80 bar ({a['severity']})"
     )
-    assert b["severity"] == "medium", (
-        f"a 0.86 specialist stayed escalated at the 0.90 bar ({b['severity']}), so the "
-        f"signature gate is still reading the constant"
+    assert b == [], (
+        f"a lone specialist without a signature cleared the gate ({b[0] if b else None}) -- "
+        f"the top-tier gate must bind"
     )
+    assert b_near and b_near[0]["reason"] == "agreement-gate", (
+        "the gated window did not surface as a near miss, so the drop would be invisible"
+    )
+
+
+def _top_tier_flow():
+    """The strict-tier window paired with a 0.90 scripted score, so fusion lands in the
+    >= 0.6 tier where the top-tier agreement bar applies."""
+    return _strict_tier_flow()
+
+
+def test_the_gate_binds_at_the_TOP_tier_too():
+    """MEASURED DEFECT (review round 2026-10-15): with four detectors the smallest non-zero
+    agreement (0.25) EQUALED the top-tier bar (MIN_AGREEMENT - margin = 0.25), and max-fusion
+    guarantees some detector above the detected-by bar for any score >= 0.6 -- so
+    `agreement < min_agreement` could never fire at the top tier. One detector's word alerted
+    at medium and never appeared in near_misses."""
+    scores = {"Isolation Forest": 0.90, "Gradient Boosting": 0.05,
+              "DBSCAN": 0.05, "Adaptive Baseline": 0.05}
+    dets = [_ScriptedDetector(n, s) for n, s in scores.items()]
+    near: list = []
+    got = ensemble.detect_flows([_top_tier_flow()], dets, _settings_lite(), ModelConfig(),
+                                near_misses=near)
+    assert got == [], "a lone 0.90 detector cleared the top-tier gate"
+    assert near and near[0]["reason"] == "agreement-gate", (
+        "the gated window did not surface as a near miss, so the drop would be invisible"
+    )
+    assert near[0]["model_agreement"] == 0.25
+
+
+def test_a_lone_specialist_with_a_signature_still_clears_the_gate():
+    """The gate's ONE deliberate exemption, which must survive the fix: one strong detector
+    plus a direct structural signature is not "one detector's word" -- it is one detector
+    plus the traffic's own shape (the zero-byte port scan, measured when the signature path
+    was built)."""
+    scores = {"Isolation Forest": 0.05, "Gradient Boosting": 0.05,
+              "DBSCAN": 0.99, "Adaptive Baseline": 0.05}
+    dets = [_ScriptedDetector(n, s) for n, s in scores.items()]
+    flow = _top_tier_flow()
+    flow["_diversity"] = {"unique_dst_ports": 300, "port_entropy": 8.2}
+    near: list = []
+    got = ensemble.detect_flows([flow], dets, _settings_lite(), ModelConfig(), near_misses=near)
+    assert got, "a lone strong specialist with a scan signature was suppressed"
+    assert got[0]["severity"] in ("high", "critical")
+    assert not [m for m in near if m["reason"] == "agreement-gate"]
+
+
+def test_two_agreeing_detectors_still_clear_the_top_tier():
+    """The exclusion is 'more than ONE detector', not 'most detectors': 2 of 4 must pass."""
+    scores = {"Isolation Forest": 0.90, "Gradient Boosting": 0.90,
+              "DBSCAN": 0.05, "Adaptive Baseline": 0.05}
+    dets = [_ScriptedDetector(n, s) for n, s in scores.items()]
+    got = ensemble.detect_flows([_top_tier_flow()], dets, _settings_lite(), ModelConfig(),
+                                near_misses=[])
+    assert got, "2 of 4 detectors at 0.90 did not clear the top-tier gate"
 
 
 def test_strong_signal_threshold_reads_settings_and_falls_back():

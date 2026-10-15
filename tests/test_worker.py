@@ -159,9 +159,12 @@ def test_due_triggers_full_retrain():
 
 # --- sweep -------------------------------------------------------------------
 class StubDetector:
-    def __init__(self, score):
+    def __init__(self, score, name=""):
         self.score = score
-        self.name = f"Stub{score}"
+        # DISTINCT NAMES MATTER: scores are keyed by detector NAME in detect_flows, so two
+        # same-score stubs without names collapse into one entry -- and an agreement ratio
+        # computed from the collapsed dict reads like a lone detector.
+        self.name = name or f"Stub{score}"
 
     def predict(self, flow, features=None):  # noqa: ANN001
         return self.score
@@ -251,67 +254,77 @@ def test_min_agreement_setting_actually_gates_detections(monkeypatch):
 
     This test fails if the gate ever stops consulting settings.min_agreement.
 
-    Configuration, measured rather than assumed: 4 detectors, 1 firing at 0.5, so
-    agreement = 1/4 = 0.25 and the score (0.5) is below 0.6, i.e. this exercises
-    the LOW-score tier. Both sides have real margin: 0.25 vs the 0.33 default
-    (suppressed by 0.08), and 0.25 vs a relaxed 0.18 (passes by 0.07). An earlier
-    version of this test used a case that landed exactly ON a tier boundary --
-    agreement 0.25 against a high-score tier of 0.25 -- which asserted nothing
-    useful because the comparison is strict.
+    RAISING the setting is what this test exercises: 2 of 4 detectors agreeing (0.5)
+    passes the default and is gated by a raised 0.60. Relaxing BELOW one detector's
+    share (0.25) no longer admits a lone detector's word -- that is the solo floor
+    from the 2026-10-15 review, pinned separately in
+    `test_the_solo_share_never_passes_even_relaxed`.
     """
-    detectors = [StubDetector(0.5), StubDetector(0.01), StubDetector(0.01),
-                 StubDetector(0.01)]
+    detectors = [StubDetector(0.5, "alpha"), StubDetector(0.5, "beta"),
+                 StubDetector(0.01, "gamma"), StubDetector(0.01, "delta")]
 
-    # Default MIN_AGREEMENT (0.33): a lone-detector 0.25 agreement is suppressed.
-    # SOC-2: "suppressed" no longer means "gone" -- the window is recorded as a near
-    # miss instead. The anomaly-side assertion goes through by_table so it keeps
-    # meaning exactly what it always meant, and the near-miss side is pinned below.
+    # Default MIN_AGREEMENT (0.33): 2 of 4 agreeing (0.5) passes.
     _install_db_stubs(monkeypatch, existing_anomalies=[])
     fake_ch, rows = _capturing_client()
-    assert detection_sweep(fake_ch, detectors, Settings(), ModelConfig()) == [], \
-        "a 0.25 agreement must not pass the default 0.33 gate"
-    assert fake_ch.by_table.get("weirvern.netflow_anomalies", []) == [], \
-        "a suppressed window must not be recorded as an anomaly"
-    gate_rows = fake_ch.by_table.get("weirvern.near_misses", [])
+    verdicts = detection_sweep(fake_ch, detectors, Settings(), ModelConfig())
+    assert len(verdicts) == 1, "a 0.5 agreement must pass the default 0.33 gate"
+    assert verdicts[0]["model_agreement"] == 0.5
+
+    # Raise MIN_AGREEMENT above 0.5: the same window must now be suppressed. If the
+    # setting is inert, this assertion is what fails.
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch2, _ = _capturing_client()
+    assert detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.60),
+                           ModelConfig()) == [], \
+        "raising MIN_AGREEMENT to 0.60 did not gate a 0.5 agreement"
+    gate_rows = fake_ch2.by_table.get("weirvern.near_misses", [])
     assert len(gate_rows) == 1, (
         "the suppressed window should be recorded as a near miss (SOC-2); "
         f"near-miss rows captured: {len(gate_rows)}"
     )
 
-    # Relax MIN_AGREEMENT below 0.25: the same window must now pass. If the
-    # setting is inert, this assertion is what fails.
+
+def test_the_solo_share_never_passes_even_relaxed(monkeypatch):
+    """A lone detector's word is excluded at EVERY tier (review round 2026-10-15): with four
+    detectors the smallest non-zero agreement (0.25) used to sit exactly ON the top-tier bar,
+    and relaxing MIN_AGREEMENT below it admitted the lone detector entirely. The one
+    exemption is a lone specialist backed by a structural signature (pinned in
+    test_ensemble.py), not a relaxed setting."""
+    detectors = [StubDetector(0.5, "alpha"), StubDetector(0.01, "beta"),
+                 StubDetector(0.01, "gamma"), StubDetector(0.01, "delta")]
+
     _install_db_stubs(monkeypatch, existing_anomalies=[])
-    fake_ch2, rows2 = _capturing_client()
-    verdicts = detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.18),
-                              ModelConfig())
-    assert len(verdicts) == 1, (
-        "MIN_AGREEMENT=0.18 did not let a 0.25-agreement detection through, "
-        "which means the setting is not being read"
+    fake_ch, _ = _capturing_client()
+    assert detection_sweep(fake_ch, detectors, Settings(min_agreement=0.18),
+                           ModelConfig()) == [], \
+        "a lone detector passed with MIN_AGREEMENT relaxed below its share"
+    assert len(fake_ch.by_table.get("weirvern.near_misses", [])) == 1, (
+        "the gated window did not surface as a near miss, so the drop would be invisible"
     )
-    assert len(fake_ch2.by_table.get("weirvern.netflow_anomalies", [])) == 1
-    assert verdicts[0]["model_agreement"] == 0.25
 
 
 def test_min_agreement_also_gates_the_high_score_tier(monkeypatch):
     """The high-score tier (score >= 0.6) is MIN_AGREEMENT minus the margin. It
     must respond to MIN_AGREEMENT too, not stay pinned at its default.
 
-    Measured: 5 detectors, 1 firing at 0.92 -> agreement = 0.2. The default high
-    tier is 0.25, so 0.2 is suppressed; relaxing MIN_AGREEMENT to 0.18 moves the
-    tier to the floor (0.20) and lets it through.
+    Uses 2 of 5 detectors agreeing (0.4, score 0.92): the default high tier (0.25)
+    passes it; raising MIN_AGREEMENT to 0.60 moves the tier to 0.52, which gates it.
+    (Relaxing BELOW the solo share no longer admits a lone detector -- see
+    `test_the_solo_share_never_passes_even_relaxed`.)
     """
-    detectors = [StubDetector(0.92)] + [StubDetector(0.01)] * 4
+    detectors = ([StubDetector(0.92, "alpha"), StubDetector(0.92, "beta")]
+                 + [StubDetector(0.01, n) for n in ("gamma", "delta", "epsilon")])
 
     _install_db_stubs(monkeypatch, existing_anomalies=[])
     fake_ch, _ = _capturing_client()
-    assert detection_sweep(fake_ch, detectors, Settings(), ModelConfig()) == [], \
-        "a 0.2 agreement must not pass the default 0.25 high-score tier"
+    assert len(detection_sweep(fake_ch, detectors, Settings(), ModelConfig())) == 1, \
+        "a 0.4 agreement must pass the default 0.25 high-score tier"
 
     _install_db_stubs(monkeypatch, existing_anomalies=[])
     fake_ch2, _ = _capturing_client()
-    relaxed = detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.18),
-                              ModelConfig())
-    assert len(relaxed) == 1, "the high-score tier ignored MIN_AGREEMENT"
+    assert detection_sweep(fake_ch2, detectors, Settings(min_agreement=0.60),
+                           ModelConfig()) == [], "the high-score tier ignored MIN_AGREEMENT"
+    assert len(fake_ch2.by_table.get("weirvern.near_misses", [])) == 1
 
 
 def test_default_agreement_gate_reproduces_the_original_hardcoded_pair():

@@ -51,6 +51,11 @@ def _detector_catalog() -> tuple[str, ...]:
 # whole category of windows unalertable. See `assert_thin_floor_is_reachable`.
 MAX_FUSED_SCORE = 0.99
 
+# A detector "detected" a window at a score STRICTLY above this bar: it feeds the agreement
+# ratio, the near-miss rows' own `model_agreement`, and the human-readable
+# `detected_by_models` string. One constant because those three uses had drifted copies.
+DETECTED_BY_SCORE = 0.20
+
 
 def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = None,
                 mode: str = "max") -> float:
@@ -335,17 +340,18 @@ def detect_flows(
                     "threshold_used": round(threshold, 4),
                     "reason": "below-threshold",
                     "model_agreement": round(
-                        len([n for n, s in scores.items() if s > 0.20])
+                        len([n for n, s in scores.items() if s > DETECTED_BY_SCORE])
                         / max(1, len(detectors)), 4),
                     "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
                     "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
                     "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
                     "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
-                    "detected_by_models": ",".join(n for n, s in scores.items() if s > 0.20),
+                    "detected_by_models": ",".join(
+                        n for n, s in scores.items() if s > DETECTED_BY_SCORE),
                 })
             continue
 
-        detected_by = [n for n, s in scores.items() if s > 0.20]
+        detected_by = [n for n, s in scores.items() if s > DETECTED_BY_SCORE]
         # ── A MISSING DETECTOR MUST NOT LOOSEN THE GATE (audit F043) ─────────────────────────────
         #
         # This used to divide by the number of detectors that reported READY, so a detector that
@@ -370,27 +376,45 @@ def detect_flows(
         active = max(1, len(detectors))
         agreement = len(detected_by) / active
 
-        # The agreement gate now reads settings.min_agreement (MIN_AGREEMENT)
-        # instead of hardcoding the value.
+        # ── THE GATE MUST BIND AT EVERY TIER (review round 2026-10-15) ───────────────────────
         #
-        # THE BUG: this line used to be `min_agreement = 0.33 if final_score < 0.6
-        # else 0.25`, while config.py parsed and validated a MIN_AGREEMENT setting
-        # that NOTHING read. So the setting was documented in the README table,
-        # shipped in .env.example, and surfaced in `weirvern tune` — and changing
-        # it did nothing at all, silently. An operator tuning it would see no
-        # effect and have no way to tell whether the value was applied.
+        # The gate reads settings.min_agreement (MIN_AGREEMENT); this used to be hardcoded,
+        # and a setting nothing reads is this repo's oldest bug class -- that part stands.
+        # But the hardcoded PAIR (0.33 below 0.6, 0.25 at or above) had a second defect,
+        # measured: with four detectors the smallest non-zero agreement is exactly one
+        # detector's share, 1/4 = 0.25 == the top-tier bar -- and max-fusion means any window
+        # scoring >= 0.6 already has one detector above DETECTED_BY_SCORE. So
+        # `agreement < min_agreement` could never be true at the top tier: a lone detector's
+        # word alerted at medium, and the window never appeared in near_misses because it was
+        # never dropped. That was the false-positive control the fusion rationale says lives
+        # in the agreement gate -- and it did not run.
         #
-        # The two-tier behaviour is preserved EXACTLY rather than approximated:
-        # the original hardcoded pair was 0.33 / 0.25, a 0.08 offset, so the
-        # high-score tier is `MIN_AGREEMENT - margin` (see the config comments for
-        # why a multiplier would have shifted the default path by 0.0025). Raising
-        # MIN_AGREEMENT now raises both tiers, and the floor keeps a silly value
-        # from disabling the gate.
+        # The solo share is now excluded at every tier: a window whose agreement does not
+        # EXCEED one detector's share is gated unless the system's one deliberate exemption
+        # holds -- a lone strong specialist backed by a DIRECT structural signature (see
+        # signature_corroboration; the zero-byte port scan is the measured case that must
+        # keep alerting). The configured bar itself is untouched: below it, gating is by the
+        # operator's number; the solo exclusion is a floor underneath, so no configuration
+        # can silently disable the gate the way 0.25 did.
+        solo = 1.0 / active
         min_agreement = (
             settings.min_agreement if final_score < 0.6
             else max(cfg.min_agreement_floor, settings.min_agreement - cfg.min_agreement_margin)
         )
-        if agreement < min_agreement:
+
+        # Strong corroboration: how many detectors independently scored high. Gates escalation
+        # to high/critical (see severity_of docstring), and rescues a lone specialist from the
+        # solo exclusion. The bar is the CONFIGURED one (STRONG_SIGNAL /
+        # Settings.strong_signal), which the GUI and ConfigMap advertise as editable --
+        # reading the constant here meant an operator's edit validated and then changed
+        # nothing.
+        bar = strong_signal_threshold(settings)
+        strong_models = sum(1 for s in scores.values() if s >= bar)
+        # Or a lone specialist backed by a direct structural signature.
+        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
+                                            strong_signal=bar)
+
+        if agreement < min_agreement or (agreement <= solo and not signature):
             # NEAR MISS (agreement gate): cleared the score bar and was dropped anyway
             # because too few detectors agreed. A lone-specialist window that never got
             # corroboration is precisely what a tuning loop needs to see -- it is the
@@ -411,17 +435,6 @@ def detect_flows(
                     "detected_by_models": ",".join(detected_by),
                 })
             continue
-
-        # Strong corroboration: how many detectors independently scored high.
-        # Gates escalation to high/critical (see severity_of docstring).
-        # The bar is the CONFIGURED one (STRONG_SIGNAL / Settings.strong_signal), which the
-        # GUI and ConfigMap advertise as editable -- reading the constant here meant an
-        # operator's edit validated and then changed nothing.
-        bar = strong_signal_threshold(settings)
-        strong_models = sum(1 for s in scores.values() if s >= bar)
-        # Or a lone specialist backed by a direct structural signature.
-        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
-                                            strong_signal=bar)
 
         results.append({
             "window_start": flow["window_start"],

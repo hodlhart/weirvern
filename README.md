@@ -833,7 +833,7 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `RETRAIN_EVERY_H` | 6 | Full retrain cadence (h) |
 | `RETRAIN_WINDOW_H` | 72 | Training data window (h, 3 days) |
 | `BASE_THRESHOLD` | 0.35 | Ensemble score floor for alerting |
-| `MIN_AGREEMENT` | 0.33 | Fraction of models that must fire |
+| `MIN_AGREEMENT` | 0.33 | Fraction of models that must fire (never below a single detector's share) |
 | `PUSHOVER_ENABLED` | `0` | `1` sends real pushes; `0` logs only |
 | `PUSHOVER_USER_KEY` / `PUSHOVER_API_TOKEN` | unset | **Secret** — see step 4 |
 | `PUSHOVER_COOLDOWN_S` | 1800 | Per-source alert cooldown |
