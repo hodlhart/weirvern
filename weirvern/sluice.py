@@ -318,7 +318,8 @@ def parse_cidr(token: str, what: str) -> str:
 
 
 def refuse_reason(*, src_cidr: str, dst_cidr: str, iface: str, mgmt_iface: str,
-                  sensor_addrs: list[str], protocol: str, dst_port: int) -> str:
+                  sensor_addrs: list[str], protocol: str, dst_port: int,
+                  direction: str = "forward") -> str:
     """Why this rule must NOT be created, or empty when it is acceptable.
 
     Every refusal here is a rule that would have been a mistake an operator could plausibly make,
@@ -329,6 +330,19 @@ def refuse_reason(*, src_cidr: str, dst_cidr: str, iface: str, mgmt_iface: str,
         return (
             "a rule needs at least one address: a source, a destination, or both. "
             "A rule with neither would block everything on the segment."
+        )
+    if src_cidr and dst_cidr:
+        return (
+            "a rule names a source OR a destination, not both: a source rule installs as "
+            "\"everything from that source\" (scoped to a port if one is set), so a "
+            "combined rule would block more than it says. Block the source or the "
+            "destination; to scope one service, use the port field."
+        )
+    if direction == "in" and not src_cidr:
+        return (
+            "an inbound rule blocks traffic FROM a source arriving at this sensor; a "
+            "destination-only inbound rule would match nothing while reading as enforced. "
+            "Give it a source."
         )
     if dst_port and not protocol:
         return (
@@ -475,6 +489,26 @@ class NftBackend(Backend):
         the ruleset compiled, the table existed, the read-back passed, and the gate blocked
         NOTHING. Hence the test that every live rule appears in the output.
         """
+        # ── THE COMPILER REFUSES WHAT IT CANNOT EXPRESS (review round 2026-10-15) ────────────
+        #
+        # A rule naming BOTH a source and a destination used to take the source branch below, so
+        # "from X to Y:443" compiled to "from X, dport 443" -- an over-block, the dangerous
+        # direction for a gate, while describes() and the dry-run's matches() both described the
+        # narrower rule. Authoring refuses it now (refuse_reason + create_rule); this pass refuses
+        # it AGAIN because a hand-written row must not compile into something wider than it says.
+        # The same goes for an inbound rule without a source, which _in_split would drop silently
+        # while the rule still reads as enforced.
+        for r in rules:
+            if r.src_cidr and r.dst_cidr:
+                raise SluiceError(
+                    f"rule {r.rule_id}: a rule with both a source and a destination cannot "
+                    "be compiled by this backend; refused rather than installed as a wider block"
+                )
+            if r.direction == "in" and not r.src_cidr:
+                raise SluiceError(
+                    f"rule {r.rule_id}: an inbound rule without a source cannot be compiled; "
+                    "refused rather than dropped silently"
+                )
         v4: list[str] = []
         v6: list[str] = []
         port_v4: dict[tuple[str, int], list[str]] = {}
@@ -636,7 +670,13 @@ class NftBackend(Backend):
             # Absence is expected on a first arm, and its error is ignored for the same reason
             # disarm() ignores it.
             self._run(["nft", "delete", "table", "inet", table], capture=True)
-        text = self._base_ruleset(rules, iface)
+        # A rule the compiler refuses must fail the ARM and be reported: the same reason the
+        # rule-count check above exists -- a partial install (or a silently wider one) is worse
+        # than a refused one, because the operator cannot tell it happened.
+        try:
+            text = self._base_ruleset(rules, iface)
+        except SluiceError as exc:
+            return False, f"the ruleset was refused rather than compiled: {exc}"
         # ── THE INSTALL RESULT MUST BE READ (glm-5.3 review) ─────────────────────────────────────
         #
         # This called `self._run([...])` without unpacking, inside a try/except. `_nft_run` RETURNS

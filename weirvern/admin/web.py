@@ -833,7 +833,7 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"ok": False, "error": str(exc)}, 400)
 
             why = refuse_reason(
-                src_cidr=src, dst_cidr=dst,
+                src_cidr=src, dst_cidr=dst, direction=direction,
                 iface=str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or ""),
                 mgmt_iface=str(ctx.settings.mgmt_iface or ""),
                 sensor_addrs=self._sensor_addresses(), protocol=protocol, dst_port=dst_port,

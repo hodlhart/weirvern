@@ -232,6 +232,23 @@ def test_icmp_with_a_port_is_refused():
     assert "icmp has no ports" in _refuse(protocol="icmp", dst_port=443)
 
 
+def test_a_rule_with_both_a_source_and_a_destination_is_refused():
+    """Both fields used to compile as "everything from the source" while describes() and the
+    dry-run described the narrower rule -- an over-block, and the GUI offers both fields, so it
+    is the shape an operator reaches for."""
+    why = _refuse(src_cidr="198.51.100.7/32", dst_cidr="203.0.113.9/32")
+    assert "not both" in why
+    # The destination-only rule this is confused with is still accepted.
+    assert _refuse(src_cidr="", dst_cidr="203.0.113.9/32") == ""
+
+
+def test_a_destination_only_inbound_rule_is_refused():
+    """It would compile to nothing -- the input chain splits by source -- while still reading
+    as enforced: the "green reading over work that did not happen" shape, inside the gate."""
+    why = _refuse(src_cidr="", dst_cidr="203.0.113.9/32", direction="in")
+    assert "source" in why
+
+
 # ── the supervisor reports honestly ───────────────────────────────────────────────────────────
 
 
@@ -402,6 +419,52 @@ def test_an_unparseable_set_member_is_dropped_not_enforced_as_something_else():
     assert "not-an-ip" not in text
     # And the ruleset is still valid rather than silently missing a declaration.
     assert "table inet" in text
+
+
+def test_the_compiler_refuses_a_rule_it_cannot_express_instead_of_widening_it():
+    """The second belt: even a hand-written row must never compile into a wider block (or into
+    nothing) -- it fails the arm instead, which is reported."""
+    backend = NftBackend()
+    with pytest.raises(SluiceError):
+        backend._base_ruleset(
+            [live("both", src_cidr="198.51.100.7/32", dst_cidr="203.0.113.9/32")], "ens19")
+    with pytest.raises(SluiceError):
+        backend._base_ruleset(
+            [live("in-dst", dst_cidr="203.0.113.9/32", direction="in")], "ens19")
+
+
+def test_arm_reports_a_refused_ruleset_rather_than_claiming_armed():
+    def runner(args, **kw):
+        return (True, "")
+    ok, detail = NftBackend(runner=runner).arm(
+        [live("both", src_cidr="198.51.100.7/32", dst_cidr="203.0.113.9/32")], iface="ens19")
+    assert ok is False
+    assert "refused" in detail
+
+
+def test_every_predicate_of_a_valid_rule_appears_in_the_compiled_text():
+    """The property behind the whole class: for every rule shape the gate ACCEPTS, each of its
+    predicates must appear in the compiled text. A rule that compiles without one of its
+    predicates is over- or under-blocking, and both are silent."""
+    rules = [
+        live("src", src_cidr="198.51.100.7/32"),
+        live("dst", dst_cidr="203.0.113.9/32"),
+        live("srcport", src_cidr="198.51.100.8/32", protocol="tcp", dst_port=8443),
+        live("in", src_cidr="198.51.100.9/32", direction="in"),
+        live("inport", src_cidr="198.51.100.10/32", direction="in", protocol="udp",
+             dst_port=5353),
+    ]
+    text = NftBackend()._base_ruleset(rules, "ens19")
+    for fragment, what in (
+        ("198.51.100.7/32", "a source"),
+        ("203.0.113.9/32", "a destination"),
+        ("198.51.100.8/32", "a port-scoped source"),
+        ("8443", "its port"),
+        ("198.51.100.9/32", "an inbound source"),
+        ("198.51.100.10/32", "an inbound port-scoped source"),
+        ("5353", "its inbound port"),
+    ):
+        assert fragment in text, f"{what} ({fragment}) is missing from the compiled text"
 
 
 # ── the host firewall: the failure that takes a segment down ─────────────────────────────────

@@ -140,7 +140,25 @@ def create_rule(
     src = parse_cidr(src_cidr, "source")
     dst = parse_cidr(dst_cidr, "destination")
     if not src and not dst:
-        raise SluiceError("a rule needs a source, a destination, or both")
+        raise SluiceError("a rule needs at least one address: a source or a destination")
+    if src and dst:
+        # A SOURCE AND A DESTINATION DO NOT COMPILE TOGETHER (review round 2026-10-15). The
+        # backend installs a source rule as "everything from that source", so accepting both
+        # recorded a rule that blocked strictly more than its own description -- and the GUI
+        # offers both fields, so this is the shape an operator reaches for. Refused at
+        # authoring AND at compile; see _base_ruleset for the second belt.
+        raise SluiceError(
+            "a rule names a source OR a destination, not both: a source rule installs as "
+            "\"everything from that source\" (scoped to a port if one is set), so a combined "
+            "rule would block more than it says. Block the source or the destination; to "
+            "scope one service, use the port field."
+        )
+    if direction == "in" and not src:
+        raise SluiceError(
+            "an inbound rule blocks traffic FROM a source arriving at this sensor; a "
+            "destination-only inbound rule would match nothing while reading as enforced. "
+            "Give it a source."
+        )
     if dst_port and not protocol:
         raise SluiceError("a port needs a protocol: set protocol to tcp or udp")
     if ttl_minutes <= 0:
