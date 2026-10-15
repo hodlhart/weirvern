@@ -23,6 +23,9 @@
 #   a typo             refused, naming what exists
 #   non-TTY stdin      accepts the detected pair; never hangs
 #   --list-interfaces  decides and exits without touching anything
+#   kubectl at the console   the /usr/bin symlink + one rc line, aimed at a sandbox: fresh,
+#                            rerun, existing file, dangling link, and no kubectl at all --
+#                            the link is never allowed to clobber what is already there
 #
 # Two harness rules learned the hard way while writing this, both now enforced:
 #   * NEVER use the scenario text as a filename. It contains spaces, colons and slashes, so the
@@ -52,6 +55,15 @@ fi
 # part of the decision logic under test.
 sed -i '/^python3 - /,$d' "$WORK/block.sh"
 echo "    extracted $(wc -l < "$WORK/block.sh") lines from install.sh (by marker, not a copy)"
+
+# The console-kubectl block, extracted the same by-marker rule with its own sentinels.
+awk '/# --- operator kubectl: begin ---/,/# --- operator kubectl: end ---/' "$SRC" > "$WORK/kubectl-block.sh" || true
+if [ ! -s "$WORK/kubectl-block.sh" ]; then
+    echo "  FAIL -- could not extract the console-kubectl block from install.sh."
+    echo "          The extraction markers moved; update this harness to match."
+    exit 1
+fi
+echo "    extracted $(wc -l < "$WORK/kubectl-block.sh") lines from install.sh (the console-kubectl block)"
 
 # ── a machine ────────────────────────────────────────────────────────────────────
 # build_machine <dir> <default-route-iface-or-empty> <spec...>
@@ -197,6 +209,53 @@ HARNESS-FAILURE: the interactive driver produced no decision"
     printf '%s' "$out"
 }
 
+# run_kubectl_block <sandbox-dir>
+# Drives the console-kubectl block NON-interactively: a stub kubectl on a minimal PATH, and
+# the block's two environment seams aimed into the sandbox. The block is the shipped text
+# (extracted by marker at the top of this file). The driver ends with probe lines -- LINK-*,
+# IS-SYMLINK, RC-LINES, DECISION -- so assertions can check FILE STATE, not only printed words.
+run_kubectl_block() {
+    local dir="$1"
+    N=$((N + 1))
+    mkdir -p "$dir/bin" "$dir/usrbin" "$dir/root"
+    [ -e "$dir/root/.bashrc" ] || : > "$dir/root/.bashrc"
+    {
+        cat <<PRELUDE
+log()  { printf 'LOG %s\n' "\$*"; }
+ok()   { printf 'OK %s\n' "\$*"; }
+warn() { printf 'WARN %s\n' "\$*"; }
+die()  { printf 'DIE %s\n' "\$*"; exit 1; }
+KUBECTL_LINK_DIR="\$PWD/usrbin"
+ROOT_BASHRC="\$PWD/root/.bashrc"
+export KUBECTL_LINK_DIR ROOT_BASHRC
+_found="\$(command -v kubectl || true)"
+case "\$_found" in ""|"\$PWD/bin/kubectl") : ;; *) echo "HARNESS ERROR: real kubectl at \$_found"; exit 99 ;; esac
+PRELUDE
+        cat "$WORK/kubectl-block.sh"
+        cat <<'TAIL'
+_l="$KUBECTL_LINK_DIR/kubectl"
+if [ -e "$_l" ] || [ -L "$_l" ]; then echo "LINK-PRESENT"; else echo "LINK-ABSENT"; fi
+if [ -L "$_l" ]; then echo "IS-SYMLINK $(readlink "$_l" 2>/dev/null)"; fi
+if [ -f "$_l" ] && [ ! -L "$_l" ]; then echo "LINK-CONTENT $(cat "$_l" 2>/dev/null)"; fi
+_rc="$(grep -cxF 'export PATH="$PATH:/usr/local/bin"' "$ROOT_BASHRC" 2>/dev/null || true)"
+echo "RC-LINES ${_rc:-0}"
+echo "DECISION kubectl-block-done"
+TAIL
+    } > "$WORK/kdrive$N.sh"
+
+    local out
+    out="$(cd "$dir" && PATH="$dir/bin:/usr/bin:/bin" sh "$WORK/kdrive$N.sh" 2>&1)"
+    if ! printf '%s\n' "$out" | grep -qE '^DECISION '; then
+        out="$out
+HARNESS-FAILURE: the kubectl driver produced no decision"
+    fi
+    if printf '%s\n' "$out" | grep -q 'HARNESS ERROR\|HARNESS-FAILURE\|No such file or directory'; then
+        printf '    !! harness failure for kubectl sandbox: %s\n' "$dir"
+        printf '%s\n' "$(printf '%s\n' "$out" | sed 's/^/        /' | head -8)"
+    fi
+    printf '%s' "$out"
+}
+
 # ── assertions ───────────────────────────────────────────────────────────────────
 assert_contains() {
     local hay="$1" needle="$2" label="$3"
@@ -290,6 +349,48 @@ OUT="$(run_block eth0 yes '' '' 'eth0@if35:UP:192.0.2.34/24:1' 'eth1@if36:UP:-:1
 assert_contains "$OUT" "Detected 2 interface(s)" "an LXC's plumbed names are detected, not skipped"
 assert_contains "$OUT" "DECISION mgmt=eth0 capture=eth1" "the bare names are what reach the decision"
 assert_not_contains "$OUT" "no usable network interface found" "the LXC is not reported as having no interfaces"
+
+echo "  -- kubectl at the console: a fresh machine --"
+# MEASURED at the first end-to-end deployment: the installer's own kubectl calls worked, but
+# the OPERATOR's login shell could not find it ("... not included in the PATH") -- and every
+# documented next step (the break-glass token, watching pods) is a console command.
+K1="$WORK/kubectl1"
+mkdir -p "$K1/bin" "$K1/usrbin" "$K1/root"
+printf '#!/bin/sh\necho kubectl-stub\n' > "$K1/bin/kubectl"; chmod +x "$K1/bin/kubectl"
+OUT="$(run_kubectl_block "$K1")"
+assert_contains "$OUT" "kubectl resolves at the console" "a fresh machine gets the /usr/bin symlink"
+assert_contains "$OUT" "LINK-PRESENT" "the link exists afterwards"
+assert_contains "$OUT" "IS-SYMLINK" "and it is a symlink"
+assert_contains "$OUT" "RC-LINES 1" "the rc file gains exactly one PATH line"
+
+echo "  -- rerun: nothing stacks --"
+OUT="$(run_kubectl_block "$K1")"
+assert_contains "$OUT" "exists already" "the second run leaves the existing link alone"
+assert_contains "$OUT" "RC-LINES 1" "and still exactly one PATH line"
+
+echo "  -- an operator's own kubectl is never overwritten --"
+K2="$WORK/kubectl2"
+mkdir -p "$K2/bin" "$K2/usrbin" "$K2/root"
+printf '#!/bin/sh\necho kubectl-stub\n' > "$K2/bin/kubectl"; chmod +x "$K2/bin/kubectl"
+printf 'THE-OPERATORS-OWN-KUBECTL\n' > "$K2/usrbin/kubectl"
+OUT="$(run_kubectl_block "$K2")"
+assert_contains     "$OUT" "exists already" "an existing file is left alone"
+assert_contains     "$OUT" "LINK-CONTENT THE-OPERATORS-OWN-KUBECTL" "its content is untouched"
+assert_not_contains "$OUT" "IS-SYMLINK" "nothing was linked over it"
+
+echo "  -- a dangling symlink is reported, not trusted --"
+K3="$WORK/kubectl3"
+mkdir -p "$K3/bin" "$K3/usrbin" "$K3/root"
+printf '#!/bin/sh\necho kubectl-stub\n' > "$K3/bin/kubectl"; chmod +x "$K3/bin/kubectl"
+ln -s /nonexistent/kubectl "$K3/usrbin/kubectl"
+OUT="$(run_kubectl_block "$K3")"
+assert_contains "$OUT" "dangling symlink" "the operator is told the entry is broken"
+
+echo "  -- no kubectl anywhere: the block stays quiet --"
+K4="$WORK/kubectl4"
+OUT="$(run_kubectl_block "$K4")"
+assert_not_contains "$OUT" "kubectl resolves" "nothing is linked when there is no kubectl"
+assert_contains     "$OUT" "LINK-ABSENT" "and nothing was created"
 
 echo "  -- INTERACTIVE: a typo is refused and the prompt re-asks --"
 # Enter-Enter must never be able to produce an empty interface, and a bad name must be caught HERE

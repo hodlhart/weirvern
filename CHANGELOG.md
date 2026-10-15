@@ -66,6 +66,16 @@ under its own shebang, and runs the jsdom DOM harness (294 checks; it executes t
 shipping JavaScript and needs no server). The gate's shell check went from ONE file to
 every script, and its node check now covers all five view scripts plus the harness.
 
+**The console's `kubectl` resolves on its own.** The installer's own calls worked -- its
+PATH has `/usr/local/bin`, where k3s drops the binary -- but the operator's login shell
+did not: `Command 'kubectl' is available in '/usr/local/bin/kubectl' ... not included in
+the PATH`, measured at the first end-to-end deployment, while every documented next step
+is a console command. Install now links `/usr/bin/kubectl` (on every PATH, for every
+user) and adds one idempotent PATH line to root's rc -- never clobbering anything already
+at the link path, and saying so when the entry is a dangling symlink. Pinned in the
+installer harness against a sandbox: fresh, rerun, existing file, dangling link, and no
+kubectl at all.
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three

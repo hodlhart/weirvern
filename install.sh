@@ -160,6 +160,45 @@ until kubectl get nodes 2>/dev/null | grep -q ' Ready '; do
 done
 ok "node Ready: $(kubectl get nodes --no-headers | awk '{print $1" "$2}')"
 
+# --- operator kubectl: begin ---  (scripts/verify_installer.sh extracts this block)
+# ── the console's kubectl ────────────────────────────────────────────────────────
+# MEASURED at the first end-to-end deployment: the installer's own kubectl calls worked
+# (its PATH has /usr/local/bin, which is where k3s drops the binary), but the operator's
+# login shell on the box did not: "Command 'kubectl' is available in
+# '/usr/local/bin/kubectl' ... not included in the PATH". Every documented next step --
+# reading the break-glass token, watching pods -- is run AT THE CONSOLE, so make the
+# command resolve for every shell and every user:
+#
+#   * a symlink in /usr/bin, which is on everyone's PATH, and
+#   * one PATH line in root's login rc, which also covers a shell whose PATH lost
+#     /usr/local/bin.
+#
+# Both are idempotent, and NEITHER EVER CLOBBERS: whatever already sits at
+# $KUBECTL_LINK_DIR/kubectl -- symlink, real file or dangling link -- is left exactly as
+# found (with a note when it looks broken). KUBECTL_LINK_DIR and ROOT_BASHRC are
+# environment seams so the installer harness can aim both at a sandbox and assert all of
+# that; the defaults are the real paths.
+KUBECTL_LINK_DIR="${KUBECTL_LINK_DIR:-/usr/bin}"
+ROOT_BASHRC="${ROOT_BASHRC:-/root/.bashrc}"
+KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+if [ -n "$KUBECTL_BIN" ]; then
+    if [ -L "$KUBECTL_LINK_DIR/kubectl" ] && [ ! -e "$KUBECTL_LINK_DIR/kubectl" ]; then
+        warn "$KUBECTL_LINK_DIR/kubectl is a dangling symlink and was left alone;"
+        warn "  the console's kubectl stays broken until it is fixed or removed."
+    elif [ -e "$KUBECTL_LINK_DIR/kubectl" ]; then
+        ok "$KUBECTL_LINK_DIR/kubectl exists already; left alone"
+    elif ln -s "$KUBECTL_BIN" "$KUBECTL_LINK_DIR/kubectl" 2>/dev/null; then
+        ok "kubectl resolves at the console: $KUBECTL_LINK_DIR/kubectl -> $KUBECTL_BIN"
+    else
+        warn "could not link kubectl into $KUBECTL_LINK_DIR; call it by full path: $KUBECTL_BIN"
+    fi
+    if ! grep -qxF 'export PATH="$PATH:/usr/local/bin"' "$ROOT_BASHRC" 2>/dev/null; then
+        printf '%s\n' 'export PATH="$PATH:/usr/local/bin"' >> "$ROOT_BASHRC" \
+            || warn "could not add the PATH line to $ROOT_BASHRC"
+    fi
+fi
+# --- operator kubectl: end ---
+
 # ── kustomize ─────────────────────────────────────────────────────────────────────
 # Needed for overlays/ (kubectl's built-in kustomize cannot build them against a
 # directory that references its own base) and for the repo's own test suite.
