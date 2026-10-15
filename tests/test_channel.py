@@ -215,7 +215,7 @@ def test_a_live_channel_arms_the_gate_while_loch(tmp_path):
                               sensor_mode="loch", channel=ch)
     assert state.state == GATE_STATE_ARMED, state.detail
     assert state.enforcement == ENFORCEMENT_CHANNEL
-    assert "IN LINE" in state.detail
+    assert "in line on the channel bridge" in state.detail
     assert store.written and getattr(store.written[0], "enforcement", "") == ENFORCEMENT_CHANNEL
 
 

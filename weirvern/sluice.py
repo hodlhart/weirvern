@@ -973,11 +973,15 @@ def _resolve_enforcement_path(sensor_mode: str, channel: Any,
         passive, and a caller that did not say did not ask for a verdict about it.
     """
     if channel is not None and channel.active:
+        # The sentence describes the PATH, not a claim that packets are dropping right now:
+        # it renders even when the gate holds zero rules (state 'disarmed, open by choice'),
+        # and a detail that says "enforcing" over an empty ruleset is the overclaiming shape
+        # this project keeps removing. Whether rules are dropping is the state + counters.
         return ENFORCEMENT_CHANNEL, (
-            f"enforcing IN LINE on the channel bridge {channel.bridge} "
+            f"in line on the channel bridge {channel.bridge} "
             f"({channel.upstream} <-> {channel.downstream}): traffic between those ports "
-            f"traverses this host, so these drops are real. Capture stays passive; nothing is "
-            f"forged or redirected."
+            f"traverses this host, so block rules here drop real traffic. Capture stays "
+            f"passive; nothing is forged or redirected."
         )
     if sensor_mode == "siphon":
         if siphon_live is True:
