@@ -141,13 +141,13 @@ PRELUDE
     local out
     out="$(cd "$dir" && bash "$WORK/drive$N.sh" 2>&1)"
     # An absent decision is not evidence for anything.
-    if ! grep -qE '^DECISION |^DIE ' <<< "$out"; then
+    if ! printf '%s\n' "$out" | grep -qE '^DECISION |^DIE '; then
         out="$out
 HARNESS-FAILURE: the driver produced no decision"
     fi
-    if grep -q 'HARNESS ERROR\|HARNESS-FAILURE\|No such file or directory' <<< "$out"; then
+    if printf '%s\n' "$out" | grep -q 'HARNESS ERROR\|HARNESS-FAILURE\|No such file or directory'; then
         printf '    !! harness failure for scenario: %s\n' "$*"
-        printf '%s\n' "$(sed 's/^/        /' <<< "$out" | head -8)"
+        printf '%s\n' "$(printf '%s\n' "$out" | sed 's/^/        /' | head -8)"
     fi
     printf '%s' "$out"
 }
@@ -183,7 +183,7 @@ PRELUDE
     # `script` gives the child a pty, so the driver sees a terminal on stdin and actually prompts.
     local out
     out="$(printf '%b' "$input" | script -qec "cd $dir && bash $WORK/drive$N.sh" /dev/null 2>&1 | tr -d '\r')"
-    if ! grep -qE '^DECISION |^DIE ' <<< "$out"; then
+    if ! printf '%s\n' "$out" | grep -qE '^DECISION |^DIE '; then
         out="$out
 HARNESS-FAILURE: the interactive driver produced no decision"
     fi
@@ -193,17 +193,17 @@ HARNESS-FAILURE: the interactive driver produced no decision"
 # ── assertions ───────────────────────────────────────────────────────────────────
 assert_contains() {
     local hay="$1" needle="$2" label="$3"
-    if grep -qF -- "$needle" <<< "$hay"; then
+    if printf '%s\n' "$hay" | grep -qF -- "$needle"; then
         PASS=$((PASS + 1)); printf '    PASS  %s\n' "$label"
     else
         FAIL=$((FAIL + 1)); printf '    FAIL  %s\n' "$label"
         printf '          wanted: %s\n' "$needle"
-        printf '          got: %s\n' "$(tr '\n' '|' <<< "$hay" | cut -c1-160)"
+        printf '          got: %s\n' "$(printf '%s\n' "$hay" | tr '\n' '|' | cut -c1-160)"
     fi
 }
 assert_not_contains() {
     local hay="$1" needle="$2" label="$3"
-    if grep -qF -- "$needle" <<< "$hay"; then
+    if printf '%s\n' "$hay" | grep -qF -- "$needle"; then
         FAIL=$((FAIL + 1)); printf '    FAIL  %s  (found %s)\n' "$label" "$needle"
     else
         PASS=$((PASS + 1)); printf '    PASS  %s\n' "$label"
