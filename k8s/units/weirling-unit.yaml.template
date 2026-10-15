@@ -53,6 +53,12 @@ spec:
       # hostNetwork, same reason the DaemonSet has it: the capture port must be visible by
       # its real name, and the agent's probe must read THIS host's routing table.
       hostNetwork: true
+      # MEASURED while testing the first unit: with hostNetwork, pods resolve DNS through the
+      # NODE's resolvers, so a Service name like `clickhouse` never resolves -- the unit
+      # captured fine and reported NOTHING ("Could not connect to ClickHouse"). This is the
+      # first hostNetwork component in the project that needs to reach a Service by name;
+      # ClusterFirstWithHostNet routes the pod's queries to cluster DNS instead.
+      dnsPolicy: ClusterFirstWithHostNet
       automountServiceAccountToken: false
       containers:
         - name: capture
@@ -77,6 +83,11 @@ spec:
               # not, rather than capturing a quiet subset and looking healthy.
               if [ -r "/sys/class/net/$IFACE/flags" ]; then
                 iflags=$(cat "/sys/class/net/$IFACE/flags" 2>/dev/null || echo 0)
+                # Some kernels print the value 0x-prefixed (MEASURED on the LXC test box:
+                # "0x1103"). The hex-letter strip below would then see 'x', zero the whole
+                # value, and report a promiscuous port as not -- a false alarm in the unit's
+                # own startup log. Strip the prefix first.
+                case "$iflags" in 0x*|0X*) iflags=${iflags#?} ;; esac
                 case "$iflags" in *[!0-9a-fA-F]*) iflags=0 ;; esac
                 if [ $(( 0x$iflags & 256 )) -eq 0 ]; then
                   echo "[zeek] NOTE: '$IFACE' is not in promiscuous mode. On the node:" >&2
@@ -145,6 +156,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: weirvern-env
+            # THE PASSWORD LIVES IN THE SECRET, like every other ClickHouse reader (33-worker,
+            # 34-gui, 50-schema all carry this second envFrom). MEASURED by the first unit test
+            # without it: DNS resolved, /ping answered 200, and the heartbeat still failed with
+            # "Authentication failed: password is incorrect, or there is no user with such name".
+            - secretRef:
+                name: weirvern-secrets
           volumeMounts:
             - name: zeek-logs
               mountPath: /zeek/logs

@@ -284,8 +284,12 @@ spec:
               # 256 rather than 0x100 so no reader mistakes the base.
               if [ -r "/sys/class/net/$IFACE/flags" ]; then
                 iflags=$(cat "/sys/class/net/$IFACE/flags" 2>/dev/null || echo 0)
-                # Strip anything unusual before use so a malformed value cannot make
-                # the arithmetic error out under `set -e` and kill the sensor.
+                # Some kernels print the value 0x-prefixed (MEASURED on the LXC test box:
+                # "0x1103"). The hex-letter strip below would then see 'x', zero the whole
+                # value, and report a promiscuous port as not -- a false alarm.
+                case "$iflags" in 0x*|0X*) iflags=${iflags#?} ;; esac
+                # Strip anything unusual before use so a malformed value cannot make the
+                # arithmetic error out under `set -e` and kill the sensor.
                 case "$iflags" in
                   *[!0-9a-fA-F]*) iflags=0 ;;
                 esac
