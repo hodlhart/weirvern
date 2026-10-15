@@ -313,10 +313,21 @@ def forward_policy() -> tuple[str, str]:
     than by running iptables-save, because the policy line is the only thing needed and the full
     ruleset can be very large on a Kubernetes node.
 
+    `nft` IS TRIED LAST, AND THAT IS A MEASUREMENT, NOT DEFENSIVENESS. The deployed worker image
+    ships `nft` and NOT `iptables` (the Sluice Gate shells out to it; tests/test_image_contract
+    pins the install line). Live on the CT 111 test box both iptables attempts were absent, the
+    policy read UNKNOWN, and a real intercept refused to start -- while `nft` could read the
+    same iptables-nft ruleset perfectly. A check that cannot read its own host is a check that
+    refuses every correctly configured one.
+
     'UNKNOWN' is returned rather than assuming ACCEPT: an unreadable policy is not a permissive
     one, and treating "could not read" as "fine" is how a blackhole looks healthy.
     """
-    for cmd in (["iptables", "-S", "FORWARD"], ["ip6tables", "-S", "FORWARD"]):
+    for cmd in (
+        ["iptables", "-S", "FORWARD"],
+        ["ip6tables", "-S", "FORWARD"],
+        ["nft", "-nn", "list", "chain", "ip", "filter", "FORWARD"],
+    ):
         try:
             proc = subprocess.run(  # noqa: S603
                 cmd, capture_output=True, text=True, timeout=10, check=False
@@ -325,12 +336,84 @@ def forward_policy() -> tuple[str, str]:
             continue
         if proc.returncode != 0:
             continue
-        for line in proc.stdout.splitlines():
-            if line.startswith("-P FORWARD"):
-                parts = line.split()
-                if len(parts) >= 3:
-                    return parts[2].upper(), " ".join(cmd[:2])
+        policy = _policy_from_forward_listing(proc.stdout)
+        if policy:
+            return policy, " ".join(cmd[:2])
     return "UNKNOWN", "iptables"
+
+
+def _policy_from_forward_listing(text: str) -> str:
+    """The FORWARD policy from an `iptables -S` OR `nft list chain` listing; "" when absent.
+
+    Two shapes, one parse: iptables prints `-P FORWARD DROP`; `nft list chain ip filter
+    FORWARD` prints `type filter hook forward priority filter; policy drop;`.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("-P FORWARD"):
+            parts = stripped.split()
+            if len(parts) >= 3:
+                return parts[2].upper()
+        elif stripped.startswith("type filter hook forward") and "policy" in stripped:
+            tail = stripped.split("policy", 1)[1].strip().rstrip(";").strip()
+            if tail:
+                return tail.upper()
+    return ""
+
+
+def _accept_rule_directions(line: str, iface: str) -> tuple[bool, bool]:
+    """(in, out): a FORWARD line that ACCEPTs relayed traffic, and which direction it covers.
+
+    The relay is SAME-INTERFACE: a relayed packet arrives AND leaves on the capture port, so a
+    rule that accepts it must not require a DIFFERENT interface anywhere. `-i eth1 -o eth0 -j
+    ACCEPT` allows a different flow entirely -- relayed traffic still exits eth1 and is still
+    dropped by the policy -- so counting it would be the false pass this whole check exists to
+    prevent. Any interface named in the rule other than `iface` disqualifies the line.
+    """
+    if "-j ACCEPT" not in line and not re.search(r"(^|\s)accept(\s|$)", line):
+        return False, False
+    named = re.findall(r"-[io] (\S+)", line) + re.findall(r'[io]ifname "([^"]+)"', line)
+    if any(name != iface for name in named):
+        return False, False
+    in_ok = (f"-i {iface}" in line) or bool(re.search(rf'iifname "{re.escape(iface)}"', line))
+    out_ok = (f"-o {iface}" in line) or bool(re.search(rf'oifname "{re.escape(iface)}"', line))
+    return in_ok, out_ok
+
+
+def _iface_forward_accepts(iface: str) -> tuple[bool, bool, str]:
+    """(accept_in, accept_out, source): interface-scoped ACCEPT rules in FORWARD.
+
+    THE CHECK'S OWN PRINTED REMEDY MUST SATISFY THE CHECK, and until this function existed it
+    could not: the refusal text tells the operator to insert `-I FORWARD 1 -i <iface> -j ACCEPT`
+    and the `-o` twin, and the old check only ever read the POLICY LINE -- which still says DROP
+    afterwards -- so following the remedy left the intercept refusing forever. MEASURED on the
+    live node: both rules inserted at position 1 (visible via `nft` and `iptables` alike), check
+    still refusing. One rule suffices at runtime (every relayed packet has the capture port as
+    both iif and oif), so `in OR out` is the pass condition; the remedy prints both for symmetry.
+
+    Reads the listing from whichever tool the image has -- iptables first (the tool the remedy
+    names), `nft` as the fallback (see forward_policy() for why that fallback exists). Returns
+    (False, False, "") when the chain cannot be read at all, so the caller keeps refusing.
+    """
+    for cmd in (
+        ["iptables", "-S", "FORWARD"],
+        ["nft", "-nn", "list", "chain", "ip", "filter", "FORWARD"],
+    ):
+        try:
+            proc = subprocess.run(  # noqa: S603
+                cmd, capture_output=True, text=True, timeout=10, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0 or not proc.stdout.strip():
+            continue
+        in_ok = out_ok = False
+        for line in proc.stdout.splitlines():
+            line_in, line_out = _accept_rule_directions(line, iface)
+            in_ok = in_ok or line_in
+            out_ok = out_ok or line_out
+        return in_ok, out_ok, " ".join(cmd[:2])
+    return False, False, ""
 
 
 def forward_policy_problem(iface: str) -> str:
@@ -338,9 +421,18 @@ def forward_policy_problem(iface: str) -> str:
 
     Only consulted for a siphon intercept, and only about the FORWARD chain: a loch sensor never
     forwards anything, so a DROP policy is irrelevant to it and warning there would be noise.
+
+    POLICY DROP IS NOT AUTOMATICALLY FATAL: the interface-scoped ACCEPT rules are the measured
+    working state (this module's own tests record the iperf3 numbers), and on a k3s node they
+    are the ONLY sane fix -- setting the node-wide policy to ACCEPT would widen the host's
+    posture for every forwarded flow, not just the relayed segment. So the check passes when
+    the remedy it prints is actually in place.
     """
     policy, source = forward_policy()
     if policy == "ACCEPT":
+        return ""
+    in_ok, out_ok, rules_source = _iface_forward_accepts(iface)
+    if rules_source and (in_ok or out_ok):
         return ""
     if policy == "UNKNOWN":
         return (

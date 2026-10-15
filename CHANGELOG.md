@@ -131,6 +131,17 @@ NodePort is opened by changing only the service TYPE — rebuilding the ports li
 end-to-end: dry-runs refusing the management NIC / a missing port / a bad identity, a full
 install whose heartbeat was verified in the hub's database, and the removal path.
 
+**The firewall check could not read its own host, and its own remedy could not satisfy it.** Found
+running the first live siphon bursts on CT 111 — both defects refusing a correctly configured node:
+(1) the worker image ships `nft` and NOT `iptables` (the Sluice Gate needs nft; the image-contract
+test pins it), so `forward_policy()` read UNKNOWN and refused every intercept, while `nft` could
+read the same iptables-nft ruleset perfectly; (2) the check only ever read the policy LINE, so the
+two interface-scoped ACCEPT rules its refusal message tells the operator to insert — the measured
+working state ("59.9 Gbits/sec" in this module's own test notes) — could never satisfy it. The
+check now reads via `nft` as a last-resort fallback, passes when its printed remedy is actually in
+place, still refuses on DROP without the rules, and still refuses when nothing is readable. Five
+new tests; the two pinning the defects fail on the previous code.
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three

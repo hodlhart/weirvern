@@ -1679,3 +1679,125 @@ def test_build_plan_REFUSES_rather_than_planning_when_the_sweep_cannot_send(monk
         "every requested host read as 'did not answer' and the gateway unreadable, so the operator "
         "is told 'cannot resolve the gateway' when the real fault is the source address"
     )
+
+
+# ── the firewall check must be satisfiable by its own printed remedy ────────────────────────────
+#
+# MEASURED on the deployed worker image and the live k3s node (2026-10-15). Two stacked defects,
+# each refusing a correctly configured host:
+#
+#   1. the image ships `nft` and NOT `iptables` (the Sluice Gate needs nft; the contract test
+#      pins it), so the policy read UNKNOWN -- an unreadable policy must refuse, so the
+#      intercept could not start at all;
+#   2. even with the two interface-scoped ACCEPTs inserted ON THE NODE -- the exact remedy the
+#      refusal text prints -- the check kept refusing, because it only ever read the policy
+#      LINE, which still says DROP afterwards.
+#
+# The first live siphon burst died on both, in that order. The first two tests below pin the
+# defects and FAIL on the previous code; the rest guard the fix's parsing (a false pass for a
+# different interface pair, and the unreadable-still-refuses rule).
+
+
+class _Proc:
+    """Minimal subprocess.run() result stand-in: returncode + stdout are all the readers use."""
+
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _iptables_only(listing: str):
+    def fake_run(cmd, **_kwargs):
+        return _Proc(0, listing) if cmd[0] == "iptables" else _Proc(1, "")
+
+    return fake_run
+
+
+def test_the_scoped_accept_rules_the_remedy_prints_satisfy_the_check(monkeypatch):
+    """Policy DROP + the remedy's own two rules == the measured working state == pass.
+
+    The sibling test in test_sluice.py records the measurement: plain `-P FORWARD DROP` gives
+    "Connection timed out"; adding the two scoped ACCEPTs gives 59.9 Gbits/sec. The check
+    shipped so that it could never reach the second state: the refusal told the operator to
+    insert the rules and then ignored them.
+    """
+    from weirvern.admin import siphonnet
+
+    listing = (
+        "-P FORWARD DROP\n"
+        "-A FORWARD -i eth1 -j ACCEPT\n"
+        "-A FORWARD -o eth1 -j ACCEPT\n"
+        "-A FORWARD -j KUBE-ROUTER-FORWARD\n"
+    )
+    monkeypatch.setattr(siphonnet.subprocess, "run", _iptables_only(listing))
+    assert siphonnet.forward_policy() == ("DROP", "iptables -S")
+    assert siphonnet.forward_policy_problem("eth1") == "", (
+        "the check still refuses with the exact rules its own refusal message tells the "
+        "operator to insert"
+    )
+
+
+def test_drop_without_the_scoped_rules_still_refuses(monkeypatch):
+    """The fix must not turn the check off: DROP with no scoped ACCEPT is still a blocker."""
+    from weirvern.admin import siphonnet
+
+    monkeypatch.setattr(siphonnet.subprocess, "run",
+                        _iptables_only("-P FORWARD DROP\n-A FORWARD -j KUBE-ROUTER-FORWARD\n"))
+    problem = siphonnet.forward_policy_problem("eth1")
+    assert "DROPS" in problem and "iptables -I FORWARD 1" in problem, (
+        f"a real DROP without the remedy must still refuse, with the fix in the message: "
+        f"{problem[:200]}"
+    )
+
+
+def test_an_accept_for_a_different_interface_pair_does_not_satisfy_the_check(monkeypatch):
+    """`-i eth1 -o eth0 -j ACCEPT` allows a different flow; relayed traffic still exits eth1
+    and is still dropped. Counting it would be the false pass the check exists to prevent."""
+    from weirvern.admin import siphonnet
+
+    monkeypatch.setattr(siphonnet.subprocess, "run",
+                        _iptables_only("-P FORWARD DROP\n-A FORWARD -i eth1 -o eth0 -j ACCEPT\n"))
+    assert siphonnet.forward_policy_problem("eth1"), (
+        "an ACCEPT scoped to a different interface pair satisfied the relay check"
+    )
+
+
+def test_the_nft_fallback_reads_policy_and_rules_when_iptables_is_absent(monkeypatch):
+    """MEASURED: the worker image has `nft`, not `iptables`. Without the fallback the policy
+    read UNKNOWN and every correctly configured host was refused."""
+    from weirvern.admin import siphonnet
+
+    nft_listing = (
+        "table ip filter {\n"
+        "\tchain FORWARD {\n"
+        "\t\ttype filter hook forward priority filter; policy drop;\n"
+        '\t\tiifname "eth1" accept\n'
+        '\t\toifname "eth1" accept\n'
+        "\t\tjump KUBE-ROUTER-FORWARD\n"
+        "\t}\n"
+        "}\n"
+    )
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "nft":
+            return _Proc(0, nft_listing)
+        raise FileNotFoundError(cmd[0])  # iptables + ip6tables absent, as in the image
+
+    monkeypatch.setattr(siphonnet.subprocess, "run", fake_run)
+    assert siphonnet.forward_policy() == ("DROP", "nft -nn")
+    assert siphonnet.forward_policy_problem("eth1") == "", (
+        "the nft fallback read the policy but the scoped rules still did not satisfy the check"
+    )
+
+
+def test_an_unreadable_firewall_still_refuses(monkeypatch):
+    """'Cannot read' must never be treated as 'fine' -- the module's oldest rule, re-pinned now
+    that a second reader exists: if NOTHING can read the chain, the check still refuses."""
+    from weirvern.admin import siphonnet
+
+    def fake_run(cmd, **_kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(siphonnet.subprocess, "run", fake_run)
+    assert siphonnet.forward_policy() == ("UNKNOWN", "iptables")
+    assert "could not read" in siphonnet.forward_policy_problem("eth1")
