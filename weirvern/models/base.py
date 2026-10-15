@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from weirvern.features import FEATURE_SCHEMA_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,11 @@ class ModelMetadata:
     trained_at: datetime = field(default_factory=datetime.now)
     duration_seconds: float = 0.0
     feature_columns: list[str] = field(default_factory=list)
+    # The FEATURE SCHEMA this artifact was trained under (features.FEATURE_SCHEMA_VERSION),
+    # stamped by save(). 0 means the artifact predates the field, and load() refuses it: an
+    # artifact that cannot say what it was trained on is exactly the one that used to score
+    # 0.0 for hours after a feature-set change (review round 2026-10-15).
+    feature_schema: int = 0
     params: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     # datetimes, not strings: the schema declares these as DateTime and
@@ -93,13 +100,25 @@ class BaseDetector(ABC):
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.metadata = ModelMetadata(model_type=self.name)
+        # Failed-prediction counter (see note_predict_error). Initialised so a diagnostic
+        # surface can read it before the first failure has happened.
+        self.predict_errors = 0
 
-    # -- artifact paths (versioned filename => the on-disk version is the
-    #    running version; old versions are never silently overwritten)
+    # -- artifact paths. `<name>_v<schema>.pkl`: the on-disk version IS the running version.
+    #
+    # THE SCHEMA COMPONENT IS REAL NOW (review round 2026-10-15). It was a literal `_v1`
+    # while this comment claimed old versions were never overwritten -- in practice every
+    # retrain replaced the only artifact, and a feature-set change could keep loading the
+    # incompatible file. FEATURE_SCHEMA_VERSION bumps move to a new filename, leaving the
+    # old artifact on disk (revert the bump to roll back); WITHIN a version a retrain
+    # replaces the model, which is the intended cadence.
     def artifact_path(self) -> Path:
-        return self.model_dir / f"{self.name}_v1.pkl"
+        return self.model_dir / f"{self.name}_v{FEATURE_SCHEMA_VERSION}.pkl"
 
     def save(self) -> Path:
+        # The schema stamp is written by the CODE doing the saving, so it cannot go stale:
+        # whatever this process knows how to build vectors for is what the artifact claims.
+        self.metadata.feature_schema = FEATURE_SCHEMA_VERSION
         path = self.artifact_path()
         tmp = path.with_suffix(".tmp")
         with open(tmp, "wb") as fh:
@@ -116,8 +135,37 @@ class BaseDetector(ABC):
             with open(path, "rb") as fh:
                 payload = pickle.load(fh)  # noqa: S301 - trusted local artifact dir
             det: BaseDetector = payload["detector"]
+            meta: ModelMetadata = payload["metadata"]
+            # ── AN ARTIFACT MUST SPEAK THE RUNNING SCHEMA (review round 2026-10-15) ───────
+            #
+            # The feature lists live in CODE; an artifact's predict rebuilt its vector from
+            # whatever the code currently says, so one trained on a different feature set
+            # either raised (width mismatch) and scored 0.0 for up to a full retrain
+            # interval while is_ready() stayed True -- or, same width, silently
+            # reinterpreted every column after an edit. Both are checked BEFORE the detector
+            # adopts the artifact, so a refusal changes nothing and the caller's retrain
+            # path runs instead.
+            schema = int(getattr(meta, "feature_schema", 0) or 0)
+            if schema != FEATURE_SCHEMA_VERSION:
+                logger.warning(
+                    "Refusing %s artifact: trained under feature schema %d, the running code "
+                    "expects %d -- retraining instead of loading",
+                    self.name, schema, FEATURE_SCHEMA_VERSION,
+                )
+                return False
+            expected = self.expected_feature_columns()
+            have = list(meta.feature_columns or [])
+            if expected and have != expected:
+                logger.warning(
+                    "Refusing %s artifact: trained on %d feature column(s), the running code "
+                    "expects %d -- retraining instead of loading",
+                    self.name, len(have), len(expected),
+                )
+                return False
             self.__dict__.update(det.__dict__)
-            self.metadata = det.metadata
+            # Legacy artifacts predate the counter; a diagnostic surface must still read it.
+            self.predict_errors = int(getattr(self, "predict_errors", 0) or 0)
+            self.metadata = meta
             logger.info("📂 Loaded %s from disk (trained %s)", self.name, self.metadata.trained_at)
             return True
         except Exception as exc:  # noqa: BLE001
@@ -132,3 +180,24 @@ class BaseDetector(ABC):
 
     def is_ready(self) -> bool:
         return False
+
+    def expected_feature_columns(self) -> list[str]:
+        """The feature list this detector builds its vectors from, for artifact validation.
+
+        Empty (the default) means the detector declares no column contract; a subclass that
+        builds vectors from a named feature list overrides this, so load() can refuse an
+        artifact trained on a different set (see load)."""
+        return []
+
+    def note_predict_error(self, exc: Exception) -> float:
+        """Count a failed prediction; log it WITHOUT one line per window; return 0.0.
+
+        A detector that fails EVERY window (a stale artifact that escaped the load checks, a
+        corrupt model) used to log a warning per window while scoring 0.0 -- unreadable noise
+        at fleet scale, and never a number anyone could act on. The count is the number; it
+        rides the detector so any diagnostic surface can read it."""
+        n = int(getattr(self, "predict_errors", 0)) + 1
+        self.predict_errors = n
+        if n == 1 or n % 100 == 0:
+            logger.warning("Prediction error in %s (%d so far): %s", self.name, n, exc)
+        return 0.0

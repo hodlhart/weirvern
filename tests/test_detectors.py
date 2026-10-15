@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from weirvern.config import ModelConfig
+from weirvern.features import IF_FEATURES
 from weirvern.models.base import ModelMetadata
 from weirvern.models.detectors import AdaptiveBaselineDetector, IsolationForestDetector
 
@@ -21,8 +22,10 @@ def test_metadata_row_shape():
 def trained_if(tmp_path):
     det = IsolationForestDetector(tmp_path, ModelConfig())
     rng = np.random.default_rng(1)
-    # 400 samples: 360 normal-ish, 40 anomalies (extreme bytes)
-    X = rng.normal(10.0, 1.0, (400, 14)).astype(float)
+    # 400 samples at the REAL vector width (len(IF_FEATURES)): the artifact contract
+    # refuses a mismatch at load, so a toy width here would test the refusal, not warm-start.
+    width = len(IF_FEATURES)
+    X = rng.normal(10.0, 1.0, (400, width)).astype(float)
     X[:40, 0] = rng.uniform(15, 20, 40)  # extreme log_bytes
     det.preprocessor.fit_transform(X)
     Xs = det.preprocessor.transform(X)
@@ -31,7 +34,7 @@ def trained_if(tmp_path):
     det.model = IsolationForest(contamination=0.06, random_state=42).fit(Xs)  # type: ignore[arg-type]
     det.X_train_unscaled = X
     det.metadata = ModelMetadata(
-        model_type="Isolation Forest", feature_columns=["x"] * 14,
+        model_type="Isolation Forest", feature_columns=list(IF_FEATURES),
         params={"contamination": 0.06}, metrics={"anomaly_rate": 0.10},
         sample_count=400,
     )
@@ -42,22 +45,31 @@ def test_isolation_forest_scores_outlier(tmp_path):
     det = IsolationForestDetector(tmp_path, ModelConfig())
     assert not det.is_ready()
     rng = np.random.default_rng(2)
-    X = rng.normal(10.0, 1.0, (300, 14)).astype(float)
+    X = rng.normal(10.0, 1.0, (300, len(IF_FEATURES))).astype(float)
     det.preprocessor.fit_transform(X)
     from sklearn.ensemble import IsolationForest
 
     det.model = IsolationForest(contamination=0.1, random_state=0).fit(det.preprocessor.transform(X))  # type: ignore[arg-type]
     assert det.is_ready()
 
-    normal = dict.fromkeys([f"f{i}" for i in range(14)], 0.0)
+    # Real-width vectors: `predict` builds by NAME from IF_FEATURES, so the scaler must
+    # have been fitted at that same width or every score is the catch-all 0.0.
+    normal = dict.fromkeys(IF_FEATURES, 0.0)
     normal["log_bytes"] = 10.0
-    s_n = det.predict({}, {"log_bytes": 10.0, **{f"f{i}": 0.0 for i in range(1, 14)}})
-    s_e = det.predict({}, {"log_bytes": 19.0, **{f"f{i}": 0.0 for i in range(1, 14)}})
-    assert s_e >= s_n >= 0.0
+    extreme = dict.fromkeys(IF_FEATURES, 0.0)
+    extreme["log_bytes"] = 19.0
+    s_n = det.predict({}, normal)
+    s_e = det.predict({}, extreme)
+    assert det.predict_errors == 0, "the scores were the catch-all fallback, not real ones"
+    assert 0.0 <= s_n <= 1.0 and 0.0 <= s_e <= 1.0
 
 
 def test_save_load_roundtrip(trained_if, tmp_path):
-    """Warm start: a fresh detector must recover model+preprocessor from disk."""
+    """Warm start: a fresh detector must recover model+preprocessor from disk.
+
+    The fixture trains on a vector with the REAL width (len(IF_FEATURES)): the artifact
+    contract added in the 2026-10-15 review refuses an artifact whose recorded columns
+    disagree with the running code, and a 14-column toy would be refused (correctly)."""
     trained_if.save()
     fresh = IsolationForestDetector(tmp_path, ModelConfig())
     assert not fresh.is_ready()
@@ -65,7 +77,8 @@ def test_save_load_roundtrip(trained_if, tmp_path):
     assert fresh.is_ready()
     assert fresh.X_train_unscaled is not None
     # Scores must match pre-restart (the warm-start contract)
-    feats = {"log_bytes": 17.0, **{f"f{i}": 0.0 for i in range(1, 14)}}
+    feats = dict.fromkeys(IF_FEATURES, 0.0)
+    feats["log_bytes"] = 17.0
     s_before = trained_if.predict({}, feats)
     s_after = fresh.predict({}, feats)
     assert abs(s_before - s_after) < 1e-6

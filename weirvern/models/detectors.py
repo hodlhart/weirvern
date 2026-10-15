@@ -145,6 +145,9 @@ class IsolationForestDetector(BaseDetector):
     def is_ready(self) -> bool:
         return self.model is not None and self.preprocessor.fitted
 
+    def expected_feature_columns(self) -> list[str]:
+        return list(IF_FEATURES)
+
 
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
@@ -239,8 +242,7 @@ class IsolationForestDetector(BaseDetector):
             s = model.score_samples(X)[0]
             return calibrate_isolation_forest(float(s), self.calibration)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Prediction error %s: %s", self.name, exc)
-            return 0.0
+            return self.note_predict_error(exc)
 
 
 # ============================================================================
@@ -257,6 +259,9 @@ class GradientBoostingDetector(BaseDetector):
 
     def is_ready(self) -> bool:
         return self.model is not None and self.preprocessor.fitted
+
+    def expected_feature_columns(self) -> list[str]:
+        return list(IF_FEATURES)
 
     def train(self, teacher: IsolationForestDetector, X_unscaled: np.ndarray | None,
               start_dt: datetime, end_dt: datetime, client: Client) -> bool:
@@ -329,8 +334,7 @@ class GradientBoostingDetector(BaseDetector):
             p = model.predict_proba(X)[0]
             return calibrate_probability(float(p[1]), self.calibration)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Prediction error %s: %s", self.name, exc)
-            return 0.0
+            return self.note_predict_error(exc)
 
 
 # ============================================================================
@@ -348,6 +352,9 @@ class DBSCANDetector(BaseDetector):
 
     def is_ready(self) -> bool:
         return len(self.cluster_centers) > 0
+
+    def expected_feature_columns(self) -> list[str]:
+        return list(DBSCAN_FEATURES)
 
     def train(self, start_dt: datetime, end_dt: datetime, client: Client) -> bool:
         st = time.time()
@@ -432,8 +439,7 @@ class DBSCANDetector(BaseDetector):
             # the next retrain replaces it.
             return calibrate_distance(dist, self.calibration)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Prediction error %s: %s", self.name, exc)
-            return 0.0
+            return self.note_predict_error(exc)
 
 
 # ============================================================================
@@ -715,8 +721,7 @@ class AdaptiveBaselineDetector(BaseDetector):
 
             return max(s_b, s_p, s_u, s_z)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Prediction error %s: %s", self.name, exc)
-            return 0.0
+            return self.note_predict_error(exc)
 
     def persist_history(self, client: Client, window_hours: int) -> None:
         """Mirror baselines to ClickHouse for audit/rebuild (legacy behavior)."""

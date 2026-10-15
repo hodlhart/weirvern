@@ -59,6 +59,18 @@ DBSCAN_FEATURES = [
     "burstiness",
 ] + ZEEK_DBSCAN_FEATURES
 
+# ── THE FEATURE SCHEMA VERSION (review round 2026-10-15) ─────────────────────────────────────
+#
+# Bump when the SHAPE of any feature list above changes -- a feature added, removed or
+# reordered. Detector artifacts are versioned by this in their FILENAME
+# (models/base.artifact_path -> `<name>_v{N}.pkl`), so a bump moves to a new file and leaves
+# the previous artifacts on disk instead of overwriting the only copy; and load() refuses an
+# artifact whose recorded schema disagrees with the running code, which routes the detector
+# into its normal retrain path. Before this, `_v1` was a literal while the code comment
+# claimed versioning, and a feature-set change could keep loading an incompatible artifact
+# that scored 0.0 for hours (or, same width, silently reinterpreted every column).
+FEATURE_SCHEMA_VERSION = 1
+
 
 def _safe_log1p(v: float) -> float:
     return math.log1p(max(float(v), 0.0))
