@@ -86,8 +86,9 @@ spec:
                 # Some kernels print the value 0x-prefixed (MEASURED on the LXC test box:
                 # "0x1103"). The hex-letter strip below would then see 'x', zero the whole
                 # value, and report a promiscuous port as not -- a false alarm in the unit's
-                # own startup log. Strip the prefix first.
-                case "$iflags" in 0x*|0X*) iflags=${iflags#?} ;; esac
+                # own startup log. Strip the prefix first. NOTE: `#0[xX]` (two characters) --
+                # `#?` removes only the '0' and leaves the 'x', which is the same bug again.
+                case "$iflags" in 0[xX]*) iflags=${iflags#0[xX]} ;; esac
                 case "$iflags" in *[!0-9a-fA-F]*) iflags=0 ;; esac
                 if [ $(( 0x$iflags & 256 )) -eq 0 ]; then
                   echo "[zeek] NOTE: '$IFACE' is not in promiscuous mode. On the node:" >&2

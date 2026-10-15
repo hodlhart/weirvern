@@ -286,8 +286,10 @@ spec:
                 iflags=$(cat "/sys/class/net/$IFACE/flags" 2>/dev/null || echo 0)
                 # Some kernels print the value 0x-prefixed (MEASURED on the LXC test box:
                 # "0x1103"). The hex-letter strip below would then see 'x', zero the whole
-                # value, and report a promiscuous port as not -- a false alarm.
-                case "$iflags" in 0x*|0X*) iflags=${iflags#?} ;; esac
+                # value, and report a promiscuous port as not -- a false alarm. Strip the
+                # prefix first. NOTE: `#0[xX]` (two characters) -- `#?` removes only the '0'
+                # and leaves the 'x', which is the same bug again.
+                case "$iflags" in 0[xX]*) iflags=${iflags#0[xX]} ;; esac
                 # Strip anything unusual before use so a malformed value cannot make the
                 # arithmetic error out under `set -e` and kill the sensor.
                 case "$iflags" in
