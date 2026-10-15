@@ -103,6 +103,18 @@ the wrong machine. Settings keeps a pointer, the stage/apply queue stays the one
 and the harness drives the moved controls in their new home -- the local row offers them, a
 remote row does not, and the moved row's "?" still explains itself.
 
+**The sensor unit: a weirling you can run twice.** One capture port, one identity, reportable
+as its own fleet row — the piece both "a sensor installed elsewhere" and "two sensors on one
+host" needed, because a deployment's worker speaks for exactly one sensor identity. It reuses
+the product's own halves rather than restating them: `sensorwatch.observe()` derives the
+heartbeat from the LOGS (newest mtime = capturing; Zeek's capture_loss.log = loss and counters;
+`None` stays not-measured, never a fake 0.0), and the capture-port check runs the same probe
+`weirvern interfaces` runs, refusing outright — SystemExit, not a warning — when `ZEEK_IFACE`
+is the default-route (management) NIC. Entrypoint: `python3 -m weirvern.admin.sensor_agent`;
+pinned by ten tests (the refusals, the identity and port contracts, observed-state beats, a
+dead capture reading as not-running, and the module being runnable as the manifest's
+entrypoint).
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three

@@ -1,0 +1,176 @@
+# THE WEIRLING UNIT — one capture port, one identity, reported as its own fleet row.
+#
+# NOT part of the kustomization (k8s/kustomization.yaml lists its resources explicitly); this
+# is a TEMPLATE — render the placeholders and apply one file per unit:
+#
+#   SITE=$(kubectl -n weirvern get cm --no-headers | awk '/zeek-site/{print $1; exit}')
+#   sed -e "s/__WEIRLING_ID__/weirvern-eth2/g" \
+#       -e "s/__CAPTURE_IFACE__/eth2/g" \
+#       -e "s/__ZEEK_SITE_CONFIGMAP__/$SITE/g" \
+#       k8s/units/weirling-unit.yaml | kubectl -n weirvern apply -f -
+#
+# Then register it in the Weirlings view (the row will show as unregistered until you do).
+#
+# WHAT A UNIT IS FOR. A deployment's worker reports for exactly ONE sensor identity; a unit
+# is how a SECOND sensor — on another box, or on this one on another NIC — becomes a fleet
+# row with its own id, port and capture loss. The reporting half is
+# weirvern/admin/sensor_agent.py; this manifest is the capture half.
+#
+# v1 IS TEST-RIG SHAPED, on purpose: the capture container RESTATES the DaemonSet's essential
+# startup checks rather than sharing its full script (which stays in 32-zeek.yaml, warnings
+# and all). If units graduate from experiments, unify that block in ONE place.
+#
+# THE MANAGEMENT NIC IS NEVER A CAPTURE PORT (Samuel's standing rule). Enforced twice: here
+# against MGMT_IFACE from the ConfigMap, and again in the agent against the host's live
+# default route — a container that cannot run python should still say no.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirling-__WEIRLING_ID__
+  labels:
+    app.kubernetes.io/name: weirling-unit
+    app.kubernetes.io/part-of: weirvern
+    weirvern.io/weirling-id: __WEIRLING_ID__
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two capture processes briefly overlapping on one NIC is
+  # noise in its logs for no gain; a unit's restart is a sub-second gap either way.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weirling-unit
+      weirvern.io/weirling-id: __WEIRLING_ID__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirling-unit
+        app.kubernetes.io/part-of: weirvern
+        weirvern.io/weirling-id: __WEIRLING_ID__
+    spec:
+      nodeSelector:
+        weirvern.io/sensor-node: "true"
+      # hostNetwork, same reason the DaemonSet has it: the capture port must be visible by
+      # its real name, and the agent's probe must read THIS host's routing table.
+      hostNetwork: true
+      automountServiceAccountToken: false
+      containers:
+        - name: capture
+          image: weirvern-zeek:0.5.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              IFACE="__CAPTURE_IFACE__"
+              MGMT="${MGMT_IFACE:-}"
+              if [ -n "$MGMT" ] && [ "$IFACE" = "$MGMT" ]; then
+                echo "[zeek] FATAL: refusing to capture on '$IFACE' -- it is the management" >&2
+                echo "[zeek] FATAL: interface. Point the unit at a dedicated capture port." >&2
+                exit 1
+              fi
+              if [ ! -e "/sys/class/net/$IFACE" ]; then
+                echo "[zeek] FATAL: no such interface '$IFACE' on this node." >&2
+                exit 1
+              fi
+              echo "[zeek] unit __WEIRLING_ID__: capturing '$IFACE' (loch -- passive observer)"
+              # A SPAN port is usually set promiscuous by whoever wired it; say so when it is
+              # not, rather than capturing a quiet subset and looking healthy.
+              if [ -r "/sys/class/net/$IFACE/flags" ]; then
+                iflags=$(cat "/sys/class/net/$IFACE/flags" 2>/dev/null || echo 0)
+                case "$iflags" in *[!0-9a-fA-F]*) iflags=0 ;; esac
+                if [ $(( 0x$iflags & 256 )) -eq 0 ]; then
+                  echo "[zeek] NOTE: '$IFACE' is not in promiscuous mode. On the node:" >&2
+                  echo "[zeek] NOTE:   ip link set $IFACE promisc on" >&2
+                fi
+              fi
+              # CAP_NET_RAW must be EFFECTIVE (see 32-zeek.yaml for the measured why).
+              caps=$(grep CapEff /proc/self/status | awk '{print $2}')
+              if [ "$caps" = "0000000000000000" ] || [ -z "$caps" ]; then
+                echo "[zeek] FATAL: no effective capabilities (CapEff=$caps);" >&2
+                echo "[zeek] FATAL: NET_RAW in the effective set is required to capture." >&2
+                exit 1
+              fi
+              if ! touch /zeek/logs/.writetest 2>/dev/null; then
+                echo "[zeek] FATAL: /zeek/logs is not writable by uid $(id -u)." >&2
+                exit 1
+              fi
+              exec zeek -i "$IFACE" \
+                   -C \
+                   /zeek/site/weirvern-local.zeek \
+                   Log::default_rotation_interval=1hr \
+                   Log::default_logdir=/zeek/logs
+          env:
+            - name: MGMT_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: MGMT_IFACE
+                  optional: true
+          volumeMounts:
+            - name: zeek-logs
+              mountPath: /zeek/logs
+            - name: zeek-site
+              mountPath: /zeek/site
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # NET_RAW only, like the DaemonSet: NET_ADMIN would only be needed to set
+              # promiscuous mode, which belongs to whoever wired the port. Root because
+              # Kubernetes drops added capabilities for non-root containers (measured —
+              # see 32-zeek.yaml).
+              add: ["NET_RAW"]
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+        - name: agent
+          # The reporting half: observes the capture from OUTSIDE (log mtimes, Zeek's own
+          # capture_loss.log) and heartbeats it under this unit's own SENSOR_ID.
+          image: weirvern-worker:0.13.0
+          command: ["python3", "-m", "weirvern.admin.sensor_agent"]
+          env:
+            - name: SENSOR_ID
+              value: "__WEIRLING_ID__"
+            - name: ZEEK_IFACE
+              value: "__CAPTURE_IFACE__"
+            - name: ZEEK_LOG_DIR
+              value: /zeek/logs
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+          volumeMounts:
+            - name: zeek-logs
+              mountPath: /zeek/logs
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: zeek-logs
+          hostPath:
+            # ONE DIRECTORY PER UNIT: the main deployment's worker tails /var/lib/weirvern/zeek
+            # and must never be fed a second sensor's logs under the first one's name.
+            path: /var/lib/weirvern/units/__WEIRLING_ID__/logs
+            type: DirectoryOrCreate
+        - name: zeek-site
+          configMap:
+            # The kustomize-GENERATED name of zeek/weirvern-local.zeek — generated names carry
+            # a content hash, so re-render this file when the policy changes (the header's sed
+            # line looks it up live).
+            name: __ZEEK_SITE_CONFIGMAP__
+            defaultMode: 0444
