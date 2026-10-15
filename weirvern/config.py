@@ -157,6 +157,17 @@ class Settings:
     zeek_iface: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACE", ""))
     mgmt_iface: str = field(default_factory=lambda: os.environ.get("MGMT_IFACE", ""))
 
+    # What this sensor calls itself in sensor-keyed rows and the gate's state row
+    # (worker._sensor_name). THE DOOR EXISTS NOW (review round 2026-10-15): the worker read
+    # `getattr(settings, "sensor_name", "")` for a field this class never defined, so the
+    # documented "a deployment that wants to call itself something" switch was unreachable
+    # -- only NODE_NAME/hostname ever applied, and SENSOR_ID (which the heartbeat honors
+    # and fleet.py validates) was invisible to the gate's rows. The field reads SENSOR_ID,
+    # so every reader of the identity now agrees on it.
+    sensor_name: str = field(
+        default_factory=lambda: (os.environ.get("SENSOR_ID") or "").strip()
+    )
+
     # HOW the sensor gets its packets: "loch" (passive promisc/SPAN capture) or "siphon"
     # (in-path ARP intercept). Normalised through the mode module so a mechanism word
     # like "intercept" typed into a config file still resolves, and so an unknown value

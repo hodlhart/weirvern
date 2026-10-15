@@ -344,16 +344,27 @@ function renderNetwork() {
   }
 
   const nodes = d.nodes || [];
-  const edges = (d.edges || []).filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  const allEdges = d.edges || [];
+  const edges = allEdges.filter((e) => e.flows >= ASSETS_STATE.minEdges);
   if (!nodes.length || !edges.length) {
-    caption.textContent = ASSETS_STATE.tracked.length
-      ? `No connections among the tracked hosts in the last ${d.hours || ASSETS_STATE.hours}h.`
-      : `No host-to-host traffic in the last ${d.hours || ASSETS_STATE.hours}h.`;
+    // THREE states, not two (review round 2026-10-15). This branch used to collapse "the
+    // filter removed every edge" into "No host-to-host traffic was recorded" -- a panel
+    // HIDING data it held, while blaming the network for the absence. The filtered case
+    // now names the filter and its count; the quiet case keeps its old wording (the jsdom
+    // harness pins it, and it was correct for what it described).
+    const hidden = nodes.length ? allEdges.length : 0;
+    caption.textContent = hidden
+      ? `${hidden} connection${hidden === 1 ? "" : "s"} below the flows filter (${ASSETS_STATE.minEdges}+ flows), in the last ${d.hours || ASSETS_STATE.hours}h.`
+      : ASSETS_STATE.tracked.length
+        ? `No connections among the tracked hosts in the last ${d.hours || ASSETS_STATE.hours}h.`
+        : `No host-to-host traffic in the last ${d.hours || ASSETS_STATE.hours}h.`;
     host.appendChild(chartEmpty(
-      ASSETS_STATE.tracked.length
-        ? "These hosts did not talk to each other in this window. Widen the window or clear the selection."
-        : "No host-to-host traffic was recorded. Broadcast and self-directed traffic is excluded."));
-    emptyRow(table, 5, "No edges to show.");
+      hidden
+        ? `The flows filter is hiding ${hidden} connection${hidden === 1 ? "" : "s"} (fewer than ${ASSETS_STATE.minEdges} flows each). Lower the filter to see them.`
+        : ASSETS_STATE.tracked.length
+          ? "These hosts did not talk to each other in this window. Widen the window or clear the selection."
+          : "No host-to-host traffic was recorded. Broadcast and self-directed traffic is excluded."));
+    emptyRow(table, 5, hidden ? "No edges above the flows filter." : "No edges to show.");
     return;
   }
 

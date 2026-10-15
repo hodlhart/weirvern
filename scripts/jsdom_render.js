@@ -1111,6 +1111,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("nw-graph").textContent.includes("No host-to-host traffic"),
         doc.getElementById("nw-graph").textContent.slice(0, 90));
 
+  // FILTERED is not EMPTY (review round 2026-10-15): edges exist, but every one of them is
+  // below the flows filter -- the panel must NAME the filter and its count, not claim the
+  // network was quiet. Measured before the fix: the filter removed the edges and the panel
+  // said "No host-to-host traffic was recorded" over a window that had traffic.
+  H.ASSETS_STATE.minEdges = 5;
+  H.ASSETS_STATE.graph = {
+    available: true, hours: 24, total_edges: EDGES.length,
+    nodes: NODES, edges: EDGES.map((e) => ({ ...e, flows: 2 })),
+  };
+  H.renderNetwork();
+  check("a filtered-to-empty graph NAMES the flows filter instead of claiming no traffic",
+        doc.getElementById("nw-graph").textContent.includes("flows filter is hiding") &&
+        doc.getElementById("nw-caption").textContent.includes("below the flows filter") &&
+        !doc.getElementById("nw-caption").textContent.includes("was recorded") &&
+        !doc.getElementById("nw-graph").textContent.includes("was recorded"),
+        `caption: ${doc.getElementById("nw-caption").textContent.slice(0, 90)} | ` +
+        `graph: ${doc.getElementById("nw-graph").textContent.slice(0, 90)}`);
+  H.ASSETS_STATE.minEdges = 1;
+
   H.ASSETS_STATE.inventory = { available: false, hosts: [], reason: "cannot reach ClickHouse" };
   H.renderAssets();
   check("a failed inventory query names the reason",

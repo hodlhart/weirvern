@@ -44,8 +44,12 @@ data:
   TZ: "America/Chicago"
 
   # ── Collector ──────────────────────────────────────────────────────────────
-  NETFLOW_PORT: "2055"
-  SFLOW_PORT: "6343"
+  # The sensor listen ports are NOT ConfigMap settings (review round 2026-10-15): they
+  # are literals in 31-goflow2.yaml (the -listen string, the containerPort, and the
+  # Service's nodePort 32055/32063) and install.sh prints those same literals. These two
+  # keys used to sit here reading like switches while nothing consumed them -- changing
+  # them moved NOTHING. To move a port, edit 31-goflow2.yaml and install.sh together;
+  # there is no knob, and now there is no fake knob.
 
   # ── Sensors ────────────────────────────────────────────────────────────────
   # TWO INTERFACES, TWO JOBS. This is the shape that works:

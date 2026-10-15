@@ -59,6 +59,29 @@ def test_real_environment_wins_over_the_env_file(env_dir, monkeypatch):
     assert os.environ["CLICKHOUSE_USER"] == "from-real-env"
 
 
+def test_sensor_identity_has_a_real_settings_field(env_dir, monkeypatch):
+    """THE DOOR EXISTED ONLY IN A getattr DEFAULT (review round 2026-10-15).
+
+    worker._sensor_name read `getattr(settings, "sensor_name", "")` for a field Settings
+    never defined, so the documented way to name a sensor was unreachable: only NODE_NAME
+    and the hostname ever applied, and SENSOR_ID -- honored by the heartbeat and validated
+    by fleet.py -- never reached the gate's state rows. The field now reads SENSOR_ID, so
+    every reader of the identity resolves to the same name.
+    """
+    from weirvern.config import Settings
+    from weirvern.worker import _sensor_name
+
+    monkeypatch.delenv("SENSOR_ID", raising=False)
+    monkeypatch.delenv("NODE_NAME", raising=False)
+    assert Settings().sensor_name == ""
+
+    monkeypatch.setenv("SENSOR_ID", " edge-01 ")
+    assert Settings().sensor_name == "edge-01", "the field must read SENSOR_ID, stripped"
+    assert _sensor_name(Settings()) == "edge-01", (
+        "the worker's resolver must now agree with the heartbeat about the name"
+    )
+
+
 def test_inline_comment_is_stripped(env_dir):
     """`.env.example` ships `PUSHOVER_ENABLED=0   # 1 = real pushes`. Without
     stripping, the value becomes "0   # 1 = real pushes" and every truthiness

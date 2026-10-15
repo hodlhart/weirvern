@@ -102,7 +102,36 @@ fi
 run "schema audit" "$PY" scripts/audit_schema.py
 run "README claims vs the code" "$PY" scripts/audit_readme.py
 run "version agreement (code, kustomize, README)" sh scripts/verify_versions.sh
-run "shell syntax" sh -n scripts/siphon_stress_test.sh
+# 3. EVERY shell script, under the interpreter ITS SHEBANG NAMES (review round 2026-10-15):
+# this checked ONE file (`sh -n scripts/siphon_stress_test.sh`) while the gate and the suite
+# invoke many scripts, and the class that actually shipped -- bash-isms in a script run under
+# dash (see the installer-harness fix) -- lives in all of them. `install.sh` names bash and
+# uses arrays, so `sh -n` is not ITS check; the rule is the interpreter the file itself
+# declares, and a failure names the file.
+step "shell syntax (every script, its own shebang)"
+SH_SYNTAX_OK=1
+for f in scripts/*.sh install.sh; do
+    [ -e "$f" ] || continue
+    case "$(head -1 "$f")" in
+        *bash*) CHECKER=bash ;;
+        *) CHECKER=sh ;;
+    esac
+    if ! command -v "$CHECKER" >/dev/null 2>&1; then
+        echo "  SKIP  $f: $CHECKER is not installed, so this file was NOT syntax-checked."
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+    if ! "$CHECKER" -n "$f" 2>/tmp/weirvern_gate_sh.txt; then
+        echo "  $f: $(head -3 /tmp/weirvern_gate_sh.txt | tr '\n' ' ')"
+        SH_SYNTAX_OK=0
+    fi
+done
+if [ "$SH_SYNTAX_OK" = "1" ]; then
+    echo "  PASS"
+else
+    echo "  FAIL"
+    FAIL=1
+fi
 run "installer interface logic (simulated machines)" sh scripts/verify_installer.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
 run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
@@ -114,10 +143,11 @@ run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 run "guard proof: zeek summary (4 defects)" .venv/bin/python scripts/prove_zeek_summary_guards.py
 run "guard proof: JA4 integrity (5 defects)" .venv/bin/python scripts/prove_ja4_guards.py
 
-# The frontend only, and only the part that can be checked without a browser: `node --check`
+# The frontend, and only the part that can be checked without a browser: `node --check`
 # catches a syntax error in a view file, which otherwise shows up as a tab that does nothing.
-# The DOM-level check (scripts/jsdom_render.js) needs a server and an npm install, so it is run
-# by hand rather than in the gate -- it is documented in the README's development section.
+# The DOM-level check (scripts/jsdom_render.js) is executed by CI now (node + `npm ci`; it
+# stubs fetch and reads the files from disk, so it needs no server); the gate keeps the fast
+# parse check so every push stays cheap and a missing node is a loud SKIP, never a pass.
 step "frontend syntax (node --check)"
 # THREE STATES, NOT TWO. A check that cannot run is NOT a check that passed.
 #
@@ -129,7 +159,8 @@ step "frontend syntax (node --check)"
 #
 # SKIP now reads as SKIP, and a skip is reported in the summary line so it cannot be overlooked.
 JS_STATE=PASS
-for js in weirvern/admin/web/app.js weirvern/admin/web/soc.js weirvern/admin/web/assets.js; do
+for js in weirvern/admin/web/app.js weirvern/admin/web/soc.js weirvern/admin/web/assets.js \
+          weirvern/admin/web/sluice.js weirvern/admin/web/weirlings.js scripts/jsdom_render.js; do
     if ! command -v node >/dev/null 2>&1; then
         JS_STATE=SKIP
         echo "  SKIP  node is not installed, so the frontend was NOT syntax-checked."

@@ -1,5 +1,71 @@
 # Changelog
 
+## Unreleased — the review round: every finding fixed with the test that proves it
+
+A four-area audit (siphon/sluice, SOC/GUI, ML, core) ran against this tree; every
+CRITICAL/HIGH claim was re-derived from the code before it was trusted, and each fix
+below carries a test condition that fails on the defect it answers. The findings ledger
+(`docs/audit-findings.json`) stays the index of record.
+
+**Sluice: a rule it cannot compile is refused, not widened.** A rule naming both a
+source AND a destination used to compile as source-only — blocking more than its own
+description said, while `describe`/dry-run claimed the narrower shape. Refusal now
+happens at three layers (authoring, store validation, base-ruleset compile), so a
+hand-written row cannot bypass it either; destination-only INBOUND rows are refused
+for the same reason.
+
+**The NetFlow cap no longer re-ingests the world.** Trimming `flows.jsonl` at the size
+cap changed the inode and reset the reader's offset, re-reading (and re-inserting,
+non-dedup) the whole file every 5 minutes — ~1 GB per cycle at the cap. The trim now
+never cuts past the reader's checkpointed offset, records every rewrite in a sidecar
+chain the reader subtracts through, and a lagging reader makes the trim WAIT: the cap
+is a ceiling, not a deadline. `prune --dry-run` also stopped lying ("would free
+0.0 MB" unconditionally — it read attributes that existed on no version), and `.gz`
+rotations are pruned like plain ones.
+
+**The agreement gate binds at every tier.** With four detectors the smallest non-zero
+agreement (1/4) equalled the top-tier bar, so a lone strong detector could reach
+critical — a leak the unit tests had pinned as correct. A solo share never passes now,
+with one deliberate exemption: a lone strong specialist plus a direct structural
+signature (the zero-byte port scan case). The three drifted copies of the 0.20
+"detected by" bar are one constant.
+
+**Model artifacts carry the feature schema in name AND metadata.** The `_v1` in the
+filename was a literal under a comment claiming versioning: every retrain overwrote the
+only artifact, and a feature-schema change scored 0.0 under `is_ready() == True` until
+the next scheduled retrain. Save stamps the schema; load refuses a schema or column
+mismatch before adopting; a version bump moves to a new file and keeps the old.
+DBSCAN now WARNS when it finds no cluster centres — the state that silently disables
+the scan-family escalation (measured: 2 centres at 146 sampled rows, 0 at 124).
+
+**The seeded-attack eval no longer trains on the attacks it scores.** Attacks are
+seeded in the last third and training holds out the first two-thirds; every `train()`
+return is read (which caught DBSCAN's 100-row minimum vs a 90-minute seed — the seed
+is 300 minutes now); the benign-host set is derived from the seed and the precision
+check bounds both mass alerting and chronic per-host false positives; the determinism
+check resets the sweep's own state (cursor + recorded pairs) and compares two scoring
+passes with the same models; the scanner's verdict must sit where the scan was seeded;
+a storm ceiling bounds verdict volume. Severity bars recalibrated to measured truth.
+
+**The GUI stops claiming a quiet network when its own filter hid the data.** The
+network panel's flows filter collapsed "filtered to empty" into "no traffic was
+recorded"; the filtered case now names the filter and its count.
+
+**Sensor identity resolved through ONE door.** `worker._sensor_name` read
+`settings.sensor_name` — a field `Settings` never defined — so the documented way to
+name a sensor was unreachable and SENSOR_ID never reached the gate's rows. The field
+exists now (it reads SENSOR_ID), so the gate, the heartbeat and the fleet view agree.
+
+**Dead knobs removed.** `NETFLOW_PORT`/`SFLOW_PORT` sat in the ConfigMap and
+`.env.example` reading like switches while nothing consumed them; they are gone, with a
+pointer to the files that actually own the ports.
+
+**CI and the gate grew the checks this round needed.** CI now lints `scripts/`, runs
+the installer harness against simulated machines, syntax-checks every shell script
+under its own shebang, and runs the jsdom DOM harness (294 checks; it executes the
+shipping JavaScript and needs no server). The gate's shell check went from ONE file to
+every script, and its node check now covers all five view scripts plus the harness.
+
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 
 **The connection graph was a fixed circle; it is now a settled force map.** The three
