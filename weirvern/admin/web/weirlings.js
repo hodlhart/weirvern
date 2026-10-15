@@ -248,6 +248,12 @@ async function openWeirling(sensorId) {
   const note = document.getElementById("wl-detail-note");
   document.getElementById("wl-detail-id").textContent = sensorId;
   wlDetail = null;
+  // Both settings homes start hidden and are re-decided by the render: the sensor's config
+  // panel for the row this hub runs, the "settings live elsewhere" note for every other.
+  for (const id of ["wl-sensor-config", "wl-sensor-remote"]) {
+    const n = document.getElementById(id);
+    if (n) n.classList.add("hidden");
+  }
   body.replaceChildren(el("p", { class: "muted", text: "loading…" }));
   note.textContent = "";
   card.classList.remove("hidden");
@@ -318,6 +324,15 @@ async function openWeirling(sensorId) {
   const revokeBtn = document.getElementById("wl-detail-revoke");
   const all = [registerBtn, enableBtn, disableBtn, revokeBtn];
   for (const b of all) b.classList.add("hidden");
+
+  // WHICH SENSOR CAN BE CONFIGURED FROM HERE. A runtime lives on one box; the hub can only
+  // change the sensor running on THIS deployment -- the row the server marks `local`. Every
+  // other row gets the sentence saying where its settings are, instead of knobs that would
+  // write to the wrong machine.
+  const cfgPanel = document.getElementById("wl-sensor-config");
+  const remoteNote = document.getElementById("wl-sensor-remote");
+  if (cfgPanel) cfgPanel.classList.toggle("hidden", !r.local);
+  if (remoteNote) remoteNote.classList.toggle("hidden", !!r.local);
 
   if (!r.registered) {
     // NO ENABLE/RETIRE CONTROLS for an undeclared sensor, with the reason stated -- but REGISTER

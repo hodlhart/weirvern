@@ -846,6 +846,69 @@
     <div class="card hidden" id="wl-detail-card">
       <h2>Sensor <span id="wl-detail-id" class="muted"></span></h2>
       <div id="wl-detail-body"></div>
+
+      <!-- SENSOR SETTINGS, WITH THE SENSOR. A runtime can only be changed on the box that runs
+           it, so these controls mount on the drill-down for the sensor THIS hub runs (the row
+           the server marks `local`); every other sensor gets the note below instead of knobs
+           that would write to the wrong machine. The ids are unchanged, so the settings
+           machinery and its wiring find them wherever they live. -->
+      <div id="wl-sensor-config" class="hidden">
+        <h3>Sensor settings <span class="muted">— this sensor runs on this hub</span></h3>
+        <div id="st-sensor" class="grid-inline"></div>
+        <!--
+          SONAR: the one-click setup for siphon mode. The survey itself is read-only (ARP
+          requests only, nothing changed); its recommendations become ordinary PENDING
+          CHANGES, reviewed and applied like any other edit. The "?" explains that, because
+          a button that sweeps the network deserves the explanation up front -- and the
+          explanation is part of the button, not a separate doc.
+        -->
+        <div class="controls sonar-row">
+          <button id="st-sonar" type="button">Sonar</button>
+          <button class="setting-help-btn" id="st-sonar-help" type="button"
+                  aria-label="explain Sonar" aria-expanded="false"
+                  title="what Sonar does">?</button>
+        </div>
+        <div id="st-sonar-note" class="muted sonar-note"></div>
+        <div id="st-sonar-help-text" class="setting-help hidden">
+          Sonar surveys the network the capture interface is ON and pre-fills the siphon
+          settings for you: it reads the interface's segment, sends one ARP sweep (the same
+          "who has this address?" question every host on your LAN asks constantly) to find
+          which addresses are alive and which are free, checks the gateway, and stages the
+          result as pending changes below — segment, address, gateway, and targets. Nothing
+          is written and nothing is intercepted: the recommendations are ordinary staged
+          changes you can edit or discard, and they apply only when you press Apply.
+        </div>
+        <!--
+          TEST RUN: the siphon probe. Runs the REAL intercept for 30 seconds through the
+          worker's own supervision, then reverts the mode to loch. It needs siphon
+          capabilities (the sensor overlay), which the note area states before anything
+          happens. The "?" explains exactly what runs and exactly what it costs, because
+          this is the one button on the page that briefly puts the sensor in the path.
+        -->
+        <div class="controls">
+          <button id="st-test" type="button">Test run (30s)</button>
+          <button class="setting-help-btn" id="st-test-help" type="button"
+                  aria-label="explain the test run" aria-expanded="false"
+                  title="what the test run does">?</button>
+        </div>
+        <div id="st-test-note" class="muted sonar-note"></div>
+        <div id="st-test-help-text" class="setting-help hidden">
+          A test run switches the sensor to siphon mode for 30 seconds, lets the worker
+          run the real intercept (the same ARP-forge-and-relay your traffic would see),
+          then switches back to loch and stops it — the mappings are restored on the
+          worker's normal shutdown path. It is a probe, not a commitment: while it runs,
+          Weirvern is genuinely in the traffic path for the hosts the plan names. It
+          needs the siphon capabilities on the sensor node (the overlay), and a complete
+          plan (segment, address, gateway, targets). The result below says which hosts
+          were intercepted and that the mode was put back.
+        </div>
+        <p class="muted">Edits here stage like every settings change: review and apply them in
+          <strong>Settings</strong> → Pending changes.</p>
+      </div>
+      <div id="wl-sensor-remote" class="hidden muted">
+        <p>Runtime settings live on the box that runs this sensor — nothing here can reach it.
+          What you declare here (segment, expected mode) is the expectation this hub holds it to.</p>
+      </div>
       <div class="controls">
         <button id="wl-detail-register" class="hidden"></button>
         <button id="wl-detail-enable" class="hidden"></button>
@@ -953,30 +1016,10 @@
 
     <div class="card">
       <h2>Sensor</h2>
-      <div id="st-sensor" class="grid-inline"></div>
-      <!--
-        SONAR: the one-click setup for siphon mode. The survey itself is read-only (ARP
-        requests only, nothing changed); its recommendations become ordinary PENDING
-        CHANGES, reviewed and applied like any other edit. The "?" explains that, because
-        a button that sweeps the network deserves the explanation up front -- and the
-        explanation is part of the button, not a separate doc.
-      -->
-      <div class="controls sonar-row">
-        <button id="st-sonar" type="button">Sonar</button>
-        <button class="setting-help-btn" id="st-sonar-help" type="button"
-                aria-label="explain Sonar" aria-expanded="false"
-                title="what Sonar does">?</button>
-      </div>
-      <div id="st-sonar-note" class="muted sonar-note"></div>
-      <div id="st-sonar-help-text" class="setting-help hidden">
-        Sonar surveys the network the capture interface is ON and pre-fills the siphon
-        settings for you: it reads the interface's segment, sends one ARP sweep (the same
-        "who has this address?" question every host on your LAN asks constantly) to find
-        which addresses are alive and which are free, checks the gateway, and stages the
-        result as pending changes below — segment, address, gateway, and targets. Nothing
-        is written and nothing is intercepted: the recommendations are ordinary staged
-        changes you can edit or discard, and they apply only when you press Apply.
-      </div>
+      <p class="muted">Sensor settings — mode, the siphon plan, Sonar and the test run — now live
+        <strong>with the sensor</strong>: open the <strong>Weirlings</strong> tab and pick this
+        hub's own sensor. A sensor's runtime can only be changed on the box that runs it, and the
+        fleet view is where you find that box.</p>
     </div>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
@@ -989,28 +1032,6 @@
       <div class="controls">
         <button id="st-stage-apply" class="primary" disabled>Apply changes</button>
         <button id="st-stage-discard" disabled>Discard</button>
-        <!--
-          TEST RUN: the siphon probe. Runs the REAL intercept for 30 seconds through the
-          worker's own supervision, then reverts the mode to loch. It needs siphon
-          capabilities (the sensor overlay), which the note area states before anything
-          happens. The "?" explains exactly what runs and exactly what it costs, because
-          this is the one button on the page that briefly puts the sensor in the path.
-        -->
-        <button id="st-test" type="button">Test run (30s)</button>
-        <button class="setting-help-btn" id="st-test-help" type="button"
-                aria-label="explain the test run" aria-expanded="false"
-                title="what the test run does">?</button>
-      </div>
-      <div id="st-test-note" class="muted sonar-note"></div>
-      <div id="st-test-help-text" class="setting-help hidden">
-        A test run switches the sensor to siphon mode for 30 seconds, lets the worker
-        run the real intercept (the same ARP-forge-and-relay your traffic would see),
-        then switches back to loch and stops it — the mappings are restored on the
-        worker's normal shutdown path. It is a probe, not a commitment: while it runs,
-        Weirvern is genuinely in the traffic path for the hosts the plan names. It
-        needs the siphon capabilities on the sensor node (the overlay), and a complete
-        plan (segment, address, gateway, targets). The result below says which hosts
-        were intercepted and that the mode was put back.
       </div>
     </div>
 

@@ -279,6 +279,26 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert '"/api/settings"' in src, "there is no /api/settings route"
 
 
+def test_the_sensor_settings_live_with_the_sensor():
+    """Moved on request (2026-10-15): "configure each weirling".
+
+    The sensor's knobs belong on the sensor's row, and the honest boundary is that a runtime can
+    only be changed on the box that runs it -- so the Weirlings drill-down mounts them for the
+    local sensor only (the row the server marks `local`) and every other row says where its
+    settings live. Settings keeps a pointer, not the controls.
+    """
+    index = (WEB / "index.html").read_text()
+    settings = index.split('id="view-settings"')[1].split("</section>")[0]
+    weirlings = index.split('id="view-weirlings"')[1].split("</section>")[0]
+    for element in ("st-sensor", "st-sonar", "st-test"):
+        assert f'id="{element}"' in weirlings, f"#{element} is not in the Weirlings view"
+        assert f'id="{element}"' not in settings, (
+            f"#{element} is still in the Settings view; the sensor's controls were moved to "
+            f"the sensor's row"
+        )
+    assert "Weirlings" in settings, "Settings does not say where the sensor settings went"
+
+
 # ── the version row, which reported a version the deployment was not running ───────────────
 #
 # Found by reading the LIVE endpoint rather than the tests: the Settings page said 0.4.0 while

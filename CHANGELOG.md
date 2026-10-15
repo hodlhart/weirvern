@@ -62,7 +62,7 @@ pointer to the files that actually own the ports.
 
 **CI and the gate grew the checks this round needed.** CI now lints `scripts/`, runs
 the installer harness against simulated machines, syntax-checks every shell script
-under its own shebang, and runs the jsdom DOM harness (302 checks; it executes the
+under its own shebang, and runs the jsdom DOM harness (309 checks; it executes the
 shipping JavaScript and needs no server). The gate's shell check went from ONE file to
 every script, and its node check now covers all five view scripts plus the harness.
 
@@ -92,6 +92,16 @@ assertion ever written against this tab (the register button's POST), and the fi
 guarded bootstrap call beside `wireSluice()` that the one-place-wiring convention always
 intended. The harness now pins BOTH halves: the observed-identity POST, and two clicks proving
 the panel and the form are bound rather than decorative.
+
+**The sensor's settings live with the sensor now.** "Configure each weirling" -- the sensor's
+controls (mode, the siphon plan, Sonar, the test run) moved out of the global Settings tab and
+into the Weirlings drill-down. The honest boundary shaped it: a runtime can only be changed on
+the box that runs it, so the fleet payload marks the LOCAL row (this deployment's own sensor
+identity, the same helper the Sluice gate reads) and the panel mounts only there; every other
+sensor gets the sentence saying where its settings are, instead of knobs that would write to
+the wrong machine. Settings keeps a pointer, the stage/apply queue stays the one write surface,
+and the harness drives the moved controls in their new home -- the local row offers them, a
+remote row does not, and the moved row's "?" still explains itself.
 
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 

@@ -655,6 +655,7 @@ const WEIRLINGS_PAYLOAD = {
       sensor_id: "edge-alive", state: "alive", is_problem: false,
       address: "198.51.100.7", segment: "third floor", reported_segment: "third floor",
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
+      local: true,
       age_s: 4.0, last_seen: "2026-09-23T12:00:00+00:00",
       capture_loss_pct: 0.0, packets_recv: 900000, packets_dropped: 0, hosts: 12,
       note: "ops owns this one", stale_after_s: 45,
@@ -1441,7 +1442,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // The button must exist with its help, a click must hit the sonar route, and the
   // recommendations must land as STAGED changes (the pending-changes review step) rather
   // than being applied straight away.
-  check("the Sonar button exists in the sensor section",
+  check("the Sonar button exists with the sensor's settings",
         !!doc.getElementById("st-sonar"));
   check("the Sonar button carries its own ? explanation",
         !!doc.getElementById("st-sonar-help") &&
@@ -1478,7 +1479,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // The button must exist next to Apply with its own "?" help, a click must POST to the test
   // route, and the result must report BOTH the observation and the revert -- "the mode went
   // back" and "an intercept was seen" are different facts and the note says which happened.
-  check("the Test run button exists next to Apply", !!doc.getElementById("st-test"));
+  check("the Test run button exists with the sensor's settings", !!doc.getElementById("st-test"));
   check("the Test run button carries its own ? explanation",
         !!doc.getElementById("st-test-help")
         && /30 seconds/.test(doc.getElementById("st-test-help-text").textContent),
@@ -1710,7 +1711,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the settings view states how many settings are in effect",
         /\d+ settings in effect/.test(stSummary.textContent));
 
-  const vals = [...doc.querySelectorAll("#view-settings .setting")];
+  // SCOPED TO EVERY SETTINGS GRID, wherever it renders: the sensor's group moved into the
+  // Weirlings drill-down on request ("configure each weirling"), and a check still scoped to
+  // `#view-settings` would quietly stop covering four rows -- the same under-coverage this
+  // count was written to catch.
+  const vals = [...doc.querySelectorAll(".setting[data-key]")];
   // DERIVED from the payload, not hardcoded: a literal row count is a second copy of a fact and
   // it drifted the moment a group gained a row (rendered 9 against a hardcoded 10).
   const expectedRows = Object.values(SETTINGS_PAYLOAD.groups)
@@ -1720,7 +1725,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         `rendered ${vals.length} rows, payload has ${expectedRows}`);
 
   // Provenance must be visible, so a blank cannot be confused with a field that does not exist.
-  const srcs = [...doc.querySelectorAll("#view-settings .setting-src")].map(n => n.textContent);
+  const srcs = [...doc.querySelectorAll(".setting-src")].map(n => n.textContent);
   check("an env-only key is labelled as env", srcs.includes("env"), `srcs: ${srcs.join(",")}`);
   check("a derived value is labelled as derived", srcs.includes("derived"));
 
@@ -1760,26 +1765,42 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // SCOPED TO `.setting` ROWS, and that is the assertion's real meaning: "every setting row
   // carries a ?". An unscoped count also picked up the SONAR button's ? (a different
   // affordance, in the same view) and reported 12 for 11 rows -- a false failure that would
-  // have hidden a genuinely missing row help behind noise.
-  const helpBtns = [...doc.querySelectorAll("#view-settings .setting .setting-help-btn")];
-  const settingRows = [...doc.querySelectorAll("#view-settings .setting")];
+  // have hidden a genuinely missing row help behind noise. Document-wide now: the sensor's
+  // rows render in the weirling drill-down and must keep their help there.
+  const helpBtns = [...doc.querySelectorAll(".setting .setting-help-btn")];
+  const settingRows = [...doc.querySelectorAll(".setting")];
   check("every setting row carries a ? help button", helpBtns.length === settingRows.length,
         `${helpBtns.length} buttons for ${settingRows.length} rows`);
 
   // Clicking "?" must reveal the SERVER's explanation for THAT row, not a placeholder.
-  const firstHelp = settingRows[0].querySelector(".setting-help");
+  // ANCHORED TO A NAMED ROW now that settings rows render in more than one view: "the first row"
+  // stopped meaning the retrain row the moment the sensor group moved ahead of it in the
+  // document, and the check would have asserted against whichever group happened to go first.
+  const retrainRow = doc.querySelector(".setting[data-key='retrain_every_h']");
+  const firstHelp = retrainRow.querySelector(".setting-help");
   const hiddenBefore = firstHelp.classList.contains("hidden");
-  helpBtns[0].click();
+  retrainRow.querySelector(".setting-help-btn").click();
   check("clicking ? reveals the row's explanation",
         hiddenBefore && !firstHelp.classList.contains("hidden"),
         `hidden before=${hiddenBefore} after=${firstHelp.classList.contains("hidden")}`);
   check("the explanation is the row's own text from the server",
         firstHelp.textContent.includes("retrained"), firstHelp.textContent.slice(0, 90));
-  helpBtns[0].click();
+  retrainRow.querySelector(".setting-help-btn").click();
   check("clicking ? again hides the explanation", firstHelp.classList.contains("hidden"));
 
-  // A choice setting is a DROPDOWN carrying the server's options.
-  const modeSel = doc.querySelector('#view-settings select[data-key="sensor_mode"]');
+  // And the MOVED row's "?" works in its new home: the sensor's own explanation is still the
+  // server's text for that row, revealed by that row's button.
+  const modeRow = doc.querySelector(".setting[data-key='sensor_mode']");
+  modeRow.querySelector(".setting-help-btn").click();
+  check("the moved sensor row's ? still explains THAT row from its new home",
+        modeRow.querySelector(".setting-help").textContent.includes("loch watches"),
+        modeRow.querySelector(".setting-help").textContent.slice(0, 90));
+  modeRow.querySelector(".setting-help-btn").click();
+
+  // A choice setting is a DROPDOWN carrying the server's options. sensor_mode's row now lives
+  // with the sensor (the weirling drill-down), so the query is document-wide: the control must
+  // be the same control wherever its row renders.
+  const modeSel = doc.querySelector('select[data-key="sensor_mode"]');
   check("a choice setting renders as a dropdown", !!modeSel);
   const modeOpts = modeSel ? [...modeSel.options].map((o) => o.value) : [];
   check("the dropdown carries the server's option list",
@@ -2473,6 +2494,57 @@ check("high capture loss is called out in the fleet",
           !!saveBtn && (saveNote.textContent || "").includes("required"),
           "an empty id is refused client-side; silence here would mean the form's button is "
           + "decorative for the same reason");
+  }
+}
+
+// ── the sensor's settings live WITH the sensor, not in the global Settings tab ───────────────
+// Moved on request (2026-10-15): "configure each weirling" -- and the honest boundary is that a
+// runtime can only be changed on the box that runs it. The server marks the LOCAL row; the
+// drill-down mounts the settings there and gives every other row the sentence saying where its
+// settings actually are, instead of knobs that would write to the wrong machine.
+{
+  const cfgHost = doc.getElementById("st-sensor");
+  check("the sensor settings grid lives inside the weirling drill-down",
+        !!(cfgHost && cfgHost.closest("#wl-detail-card")),
+        "moving the panel without moving the element would leave loadSettings rendering into a "
+        + "node no operator ever opens");
+  check("the Settings tab points at the new home instead of holding the controls",
+        /Weirlings/.test(doc.getElementById("view-settings").textContent)
+        && !(cfgHost && cfgHost.closest("#view-settings")),
+        "an operator looking in Settings must be told where the sensor settings went");
+  check("Sonar and the test run moved with it",
+        !!(doc.getElementById("st-sonar") || {}).closest
+        && !!doc.getElementById("st-sonar").closest("#wl-detail-card")
+        && !!doc.getElementById("st-test").closest("#wl-detail-card"),
+        "half a sensor section in each view is the two-surfaces defect");
+  const aliveRow = [...doc.querySelectorAll("#wl-table button")]
+    .find((b) => (b.textContent || "") === "edge-alive");
+  if (aliveRow) {
+    aliveRow.click();
+    for (let i = 0; i < 40 && !(doc.getElementById("wl-detail-body").textContent || "")
+         .includes("reporting normally"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("a LOCAL sensor's drill-down offers its settings",
+          !doc.getElementById("wl-sensor-config").classList.contains("hidden")
+          && (doc.getElementById("st-sensor").textContent || "").includes("mode"),
+          "the sensor on this hub is the one this hub can actually configure");
+    check("and no 'settings live elsewhere' note on it",
+          doc.getElementById("wl-sensor-remote").classList.contains("hidden"));
+  }
+  const stoppedRow = [...doc.querySelectorAll("#wl-table button")]
+    .find((b) => (b.textContent || "") === "edge-stopped");
+  if (stoppedRow) {
+    stoppedRow.click();
+    for (let i = 0; i < 40 && !(doc.getElementById("wl-detail-body").textContent || "")
+         .includes("why it died"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("a sensor elsewhere does NOT get knobs that would write to the wrong machine",
+          doc.getElementById("wl-sensor-config").classList.contains("hidden")
+          && !doc.getElementById("wl-sensor-remote").classList.contains("hidden"),
+          "the hub cannot reach a remote runtime; the panel must say where those settings live");
+    doc.getElementById("wl-detail-close").click();
   }
 }
 

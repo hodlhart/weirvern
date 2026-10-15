@@ -742,6 +742,17 @@ def _build_handler(ctx: GuiContext):
                 })
                 return
 
+            # WHICH OF THESE SENSORS RUNS ON THIS HUB. A sensor's runtime can only be changed on
+            # the box that runs it -- the hub cannot reach a remote one -- so the fleet payload
+            # marks the row whose id is this deployment's own sensor (read through the same
+            # helper the Sluice gate uses, so the two cannot drift). The Weirlings drill-down
+            # mounts the sensor settings on exactly that row, and says where the settings live
+            # for every other one.
+            local_name = _gate_sensor_name()
+            payload["local_sensor"] = local_name
+            for row in payload.get("sensors") or []:
+                row["local"] = (row.get("sensor_id") == local_name)
+
             if include_revoked:
                 # Revoked rows are shown on request, for the audit question ("was this ever
                 # covered?"). Fetched separately and appended, so the normal view cannot
@@ -791,6 +802,9 @@ def _build_handler(ctx: GuiContext):
                     "note": (f"no sensor named {sensor_id!r} is registered or reporting. It may "
                              f"have been revoked, or the spelling may differ."),
                 })
+            # Same local marker as the list, from the same source: the drill-down decides from
+            # it whether to mount the sensor's settings or the note saying where they are.
+            row["local"] = (row.get("sensor_id") == _gate_sensor_name())
             self._json({"available": True, "reason": None, "sensor": row})
 
         def _sluice_block(self) -> None:
