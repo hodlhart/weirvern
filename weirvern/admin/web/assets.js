@@ -415,8 +415,13 @@ function renderNetwork() {
  *      old degree-ordered circle, every step is deterministic arithmetic, so one window of
  *      data always settles to the same map -- what animates is the path to it, never the map.
  *   2. "It has no fixed cost: hundreds of iterations per frame." The solve runs ONCE per
- *      render, bounded by a fixed tick count, and then the picture is frozen; a drag re-runs
- *      a bounded warm start. Nothing iterates per frame once the map has settled.
+ *      render, and then the picture is frozen; a drag re-runs a bounded warm start, and
+ *      nothing iterates per frame once the map has settled. The bound is per RENDER, not
+ *      per node count: the repulsion loop visits every pair, so cost scales with
+ *      nodes² × ticks. The measured 12 ms is the demo graph (20 nodes / 63 edges); the
+ *      payload's 400-edge cap puts the worst case (~800 nodes) at roughly 800x the demo's
+ *      pair evaluations -- seconds, not milliseconds. That class is fine to accept (the
+ *      solve still completes and freezes), but it is NOT covered by the 12 ms number.
  *   3. "There is no structure for a force layout to uncover." That was true of edges alone --
  *      and it stopped being true when the ingest started carrying IP TTL. A host's observed
  *      TTL is its hop distance from the sensor, and the radial pull below turns that into
@@ -426,7 +431,8 @@ function renderNetwork() {
 const FORCE = {
   ticks: 320,       // fixed: the final map must not depend on how long a browser waited
   repel: 5000,      // pairwise push, 1/d^2 falloff
-  repelCut: 360,    // beyond this two nodes do not feel each other (the cost bound, per above)
+  repelCut: 360,    // beyond this two nodes do not feel each other -- bounds the FORCE, not
+                    // the loop: the pairwise distance test still runs for every pair (above)
   linkDist: 112,    // the spring length an edge wants
   linkK: 0.045,     // spring stiffness
   centerK: 0.005,   // gently pulls islands back toward the middle
@@ -590,14 +596,17 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
   const rings = [];
   if (ring.classes.length > 1) {
     for (const h of ring.classes) {
-      let sum = 0, cnt = 0;
+      let sum = 0, cnt = 0, capped = false;
       ordered.forEach((nd, i) => {
         if (classOf[i] !== h) return;
         const p = end.get(nd.id);
         sum += Math.hypot(p.x - cx, p.y - cy);
         cnt += 1;
+        // The geometry caps at class 3; a member further out than that must make the LABEL
+        // say so, or the ring prints a capped class as if it were a measured hop count.
+        if (Number(nd.hops) > h) capped = true;
       });
-      if (cnt) rings.push({ hops: h, radius: sum / cnt });
+      if (cnt) rings.push({ hops: h, radius: sum / cnt, capped: capped });
     }
   }
   return { start: start, end: end, rings: rings };
@@ -650,7 +659,8 @@ function drawGraph(host, nodes, edges, truncated) {
       cx: cx, cy: cy, r: ring.radius.toFixed(1), class: "ring", fill: "none",
     }));
     ringLabels.push({ x: cx, y: (cy - ring.radius + 11).toFixed(1),
-                      text: ring.hops + (ring.hops === 1 ? " hop" : " hops") });
+                      text: (ring.capped ? "3+" : ring.hops) +
+                            (ring.hops === 1 ? " hop" : " hops") });
   }
 
   // Position writers: one list applied to a Map of id -> {x, y}, so "draw at start", "draw
@@ -708,6 +718,10 @@ function drawGraph(host, nodes, edges, truncated) {
         const p0 = from.get(id) || p1;
         cur.set(id, { x: p0.x + (p1.x - p0.x) * e, y: p0.y + (p1.y - p0.y) * e });
       }
+      // `pos` tracks the animation, not just the final state: a pointer that grabs a host
+      // mid-flight must drag from where the host VISIBLY is, and a warm re-settle after an
+      // interrupted animation must start from the picture on screen, not the start circle.
+      for (const [id2, p2] of cur) pos.set(id2, p2);
       applyPositions(cur);
       if (t < 1) {
         raf(frame);
@@ -727,7 +741,12 @@ function drawGraph(host, nodes, edges, truncated) {
       if (ev.button !== undefined && ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
-      animSeq++;  // the drag owns the map now; any in-flight settle animation stops
+      // The in-flight settle animation is NOT cancelled here. A plain click mid-settle is a
+      // selection, not an interruption -- and cancelling at PRESS left the map frozen at
+      // whatever frame the click caught, for good: measured on the demo map, a click 250 ms
+      // into the 750 ms settle froze it 185 px short of the settled picture, and only a
+      // re-render ever moved it again. The drag cancels the animation on its first real
+      // move instead (see `onMove`), where the gesture has actually taken the map over.
       state.moved = false;
       const rect = typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null;
       const scaleX = rect && rect.width > 0 ? W / rect.width : 1;
@@ -742,13 +761,17 @@ function drawGraph(host, nodes, edges, truncated) {
         if (!cur) return;
         const nx = Math.min(cx + box.w / 2 - 8, Math.max(cx - box.w / 2 + 8, p.x));
         const ny = Math.min(cy + box.h / 2 - 8, Math.max(cy - box.h / 2 + 8, p.y));
-        if (Math.abs(nx - cur.x) + Math.abs(ny - cur.y) > 2) state.moved = true;
+        if (!state.moved && Math.abs(nx - cur.x) + Math.abs(ny - cur.y) > 2) {
+          state.moved = true;
+          animSeq++;  // the drag owns the map now; any in-flight settle animation stops
+        }
         cur.x = nx; cur.y = ny;
         applyPositions(pos);
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
         if (!state.moved) return;
         pinned.add(id);
         const re = computeLayout(nodes, edges, box, pos, pinned);
@@ -756,6 +779,10 @@ function drawGraph(host, nodes, edges, truncated) {
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      // A cancelled pointer (OS gesture takeover, a browser action) must end the gesture HERE.
+      // Without this listener the move handler stayed armed: after a cancel, the host kept
+      // following bare mouse motion and pinned itself wherever the next stray press landed.
+      window.addEventListener("pointercancel", onUp);
     });
     return state;
   }

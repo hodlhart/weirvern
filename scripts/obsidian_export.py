@@ -211,8 +211,12 @@ def _yaml_str(value: object) -> str:
     return json.dumps(str(value))
 
 
-def render_frontmatter(addr: str, name: str, inv: dict, anomaly_count: int) -> str:
-    """The note's frontmatter: only fields that carry a value are written."""
+def render_frontmatter(addr: str, name: str, inv: dict, anomaly_count: int | None) -> str:
+    """The note's frontmatter: only fields that carry a value are written.
+
+    `anomaly_count=None` means the anomaly read failed and nothing else stated a count --
+    the field is then OMITTED rather than written as 0: a frontmatter `anomalies: 0` from an
+    unread source is the read claiming an absence it never established."""
     fields: list[tuple[str, str]] = [("address", _yaml_str(addr))]
     if name:
         fields.append(("name", _yaml_str(name)))
@@ -224,7 +228,8 @@ def render_frontmatter(addr: str, name: str, inv: dict, anomaly_count: int) -> s
                        ("bytes_in", "bytes_in"), ("dst_count", "destinations")):
         if key in inv and inv.get(key) is not None and inv.get(key) != "":
             fields.append((label, str(int(inv[key] or 0))))
-    fields.append(("anomalies", str(int(anomaly_count or 0))))
+    if anomaly_count is not None:
+        fields.append(("anomalies", str(int(anomaly_count or 0))))
     if inv.get("services"):
         fields.append(("services", "[" + ", ".join(_yaml_str(s) for s in inv["services"]) + "]"))
     tags = ["host"] + (["anomaly"] if anomaly_count else [])
@@ -385,7 +390,8 @@ def render_readme(out: Path, stats: dict) -> str:
         f"    python scripts/obsidian_export.py --out {out} --hours {stats['hours']} "
         f"--limit {stats['limit']}",
         "",
-        "Re-running replaces the managed files and removes notes for hosts no longer seen. "
+        "Re-running replaces the files it manages -- recorded in `.weirvern-manifest.json`, so "
+        "it can tell its own notes from yours -- and removes notes for hosts no longer seen. "
         "Anything else you add to this folder is left alone.",
         "",
     ]
@@ -525,13 +531,29 @@ def _export(client, assets, out: Path, args: argparse.Namespace, anomaly_hours: 
     topo_rows: list[dict] = []
     flagged_total = 0
 
+    # What the PREVIOUS run created, so this run only ever replaces its own files. The README
+    # promises "anything else you add to this folder is left alone" -- without this record the
+    # cleanup below could not tell a note it wrote from one the operator wrote, and deleted the
+    # operator's. A missing manifest means "nothing is known to be ours": the run still writes
+    # every note it can derive, and cleans nothing.
+    manifest_path = out / ".weirvern-manifest.json"
+    try:
+        old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(old_manifest, dict):
+            old_manifest = {}
+    except (OSError, ValueError):
+        old_manifest = {}
+    old_notes = {str(n) for n in (old_manifest.get("hosts") or [])}
+
     for addr in sorted(addrs):
         inv_h = inv_hosts.get(addr, {})
         host_anomalies = (anomalies or {}).get(addr, []) if anomalies_ok else []
         anomaly_count = len(host_anomalies) if anomalies_ok else int(inv_h.get("anomalies") or 0)
+        anomaly_known = anomalies_ok or inv_h.get("anomalies") is not None
         flagged_total += 1 if anomaly_count else 0
         peers = merge_peers(addr, edges)
-        note = (render_frontmatter(addr, names.get(addr, ""), inv_h, anomaly_count)
+        note = (render_frontmatter(addr, names.get(addr, ""), inv_h,
+                                   anomaly_count if anomaly_known else None)
                 + "\n"
                 + render_host_note(addr, names.get(addr, ""), inv_h, peers,
                                    host_anomalies if anomalies_ok else None,
@@ -544,7 +566,8 @@ def _export(client, assets, out: Path, args: argparse.Namespace, anomaly_hours: 
             "bytes": sum(p["bytes"] for p in peers), "anomalies": anomaly_count,
         })
 
-    stale = sorted(p.stem for p in vault_hosts.glob("*.md") if p.stem not in written)
+    stale = sorted(n for n in old_notes if n not in written
+                   and (vault_hosts / f"{n}.md").exists())
     for stem in stale:
         (vault_hosts / f"{stem}.md").unlink()
 
@@ -561,8 +584,20 @@ def _export(client, assets, out: Path, args: argparse.Namespace, anomaly_hours: 
         "unreadable": list(inv.get("unreadable") or []),
     }
 
-    (out / "Topology.md").write_text(render_topology(topo_rows, args.hours, now), encoding="utf-8")
-    (out / "README.md").write_text(render_readme(out, stats), encoding="utf-8")
+    readme_path = out / "README.md"
+    topo_path = out / "Topology.md"
+    # Same rule as the notes: a file this exporter never wrote is not its file to replace.
+    # An existing README/Topology from a pre-manifest run is left alone (and said so on stdout);
+    # delete it once if you want the exporter to take the name over.
+    wrote_readme = (not readme_path.exists()) or bool(old_manifest.get("readme"))
+    wrote_topo = (not topo_path.exists()) or bool(old_manifest.get("topology"))
+    if wrote_topo:
+        topo_path.write_text(render_topology(topo_rows, args.hours, now), encoding="utf-8")
+    if wrote_readme:
+        readme_path.write_text(render_readme(out, stats), encoding="utf-8")
+    manifest_path.write_text(json.dumps(
+        {"hosts": sorted(written), "readme": wrote_readme, "topology": wrote_topo},
+        indent=2) + "\n", encoding="utf-8")
     graph_json = out / ".obsidian" / "graph.json"
     if not graph_json.exists():
         graph_json.parent.mkdir(parents=True, exist_ok=True)
@@ -575,6 +610,10 @@ def _export(client, assets, out: Path, args: argparse.Namespace, anomaly_hours: 
           + (f" (capped; {stats['total_edges']} total observed pairs)" if stats["truncated"] else ""))
     if stale:
         print(f"    removed {len(stale)} stale note(s) no longer seen")
+    if not wrote_readme:
+        print("    README.md exists and was not written by this exporter -- left alone")
+    if not wrote_topo:
+        print("    Topology.md exists and was not written by this exporter -- left alone")
     if dangling:
         print(f"  ! {len(dangling)} link(s) do not resolve: {', '.join(dangling[:10])}")
         return 1

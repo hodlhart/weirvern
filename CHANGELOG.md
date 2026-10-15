@@ -23,12 +23,30 @@ objections that made the circle the right call are answered in code, not waived:
 
 Also in this pass: drag any host and the map re-settles around it; the dragged host HOLDS
 its dropped position (the pin lives in the solver — freed, the springs pull it straight
-back and the gesture reads as broken). Node and edge hover cards and the detail panels
+back and the gesture reads as broken). A plain click during the settle is a selection,
+not an interruption — the settle completes behind it (cancelling it at press froze the
+map mid-flight, measured at 185 px short); a cancelled pointer ends the drag rather than
+leaving the host following the cursor; and a capped hop ring prints "3+" so a capped
+class can never read as a measured three. Node and edge hover cards and the detail panels
 show the TTL evidence behind a ring (`2 hops from the sensor (ttl 62)`), the tracked-host
 path carries the same fields so a filtered graph keeps its rings, ring labels ride on top
 of the nodes with a halo (drawn underneath, "0 hops" sat behind a node and read as
 "hops"), and the settled cloud is recentred so an asymmetric link structure cannot leave
 the map visibly off to one side.
+
+## Unreleased — export the observed topology as an Obsidian vault
+
+`scripts/obsidian_export.py` writes one note per host — named by address, reverse-DNS name
+alongside — with observed peers as `[[wikilinks]]` carrying measured bytes, flows and ports;
+flagged hosts get an `anomaly` tag and an Anomalies section. Verified against the sandbox
+vault: 20 hosts, 63 connections, 27 anomalies, every link resolves.
+
+Re-runs are strictly self-replacing: a `.weirvern-manifest.json` records what the run
+created, so only its own notes are refreshed or removed — a note the operator adds to
+`Hosts/`, a `README.md`/`Topology.md` the operator wrote, are left alone exactly as the
+vault README promises (before the manifest, the cleanup deleted anything it did not
+recognise). And a note's frontmatter omits `anomalies` when the anomaly source could not be
+read, instead of claiming a measured zero.
 
 ## Unreleased — 0.9.0: the TUI is gone, and the fingerprinting story is one sentence
 
