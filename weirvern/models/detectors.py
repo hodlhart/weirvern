@@ -422,6 +422,20 @@ class DBSCANDetector(BaseDetector):
             metrics={"clusters": n_clusters, "outliers": n_outliers},
             window_start=start_dt, window_end=end_dt, sample_count=len(Xs),
         )
+        if not self.cluster_centers:
+            # A detector that will answer "no opinion" to every window must SAY SO here.
+            # This spot used to be an INFO line reading "trained: 0 clusters", so the
+            # degradation -- the scan-family specialist is OFF until a retrain finds
+            # dense structure -- was invisible outside the metrics dict. Measured,
+            # review round 2026-10-15: 2 centres at 146 sampled training rows, 0 at 124
+            # on the same seed, so this is a live state, not a corner case.
+            logger.warning(
+                "%s trained on %d rows but found NO CLUSTER CENTRES (eps=%s, "
+                "min_samples=%s): every score will be 'no opinion' (0.0) and is_ready() "
+                "stays False until a retrain finds dense structure -- the scan-family "
+                "specialist is OFF.",
+                self.name, len(Xs), self.cfg.dbscan_eps, self.cfg.dbscan_min_samples,
+            )
         logger.info("✅ %s trained: %d clusters, %d outliers", self.name, n_clusters, n_outliers)
         self.save()
         return True

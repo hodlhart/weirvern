@@ -1,12 +1,33 @@
 """Detector tests: training metadata, artifact persistence roundtrip (the
 warm-start guarantee) — no ClickHouse needed (train paths are mocked)."""
+from datetime import datetime
+
 import numpy as np
 import pytest
 
 from weirvern.config import ModelConfig
-from weirvern.features import IF_FEATURES
+from weirvern.features import DBSCAN_FEATURES, IF_FEATURES
 from weirvern.models.base import ModelMetadata
-from weirvern.models.detectors import AdaptiveBaselineDetector, IsolationForestDetector
+from weirvern.models.detectors import (
+    AdaptiveBaselineDetector,
+    DBSCANDetector,
+    IsolationForestDetector,
+)
+
+
+class _TrainRows:
+    def __init__(self, rows):
+        self.result_rows = rows
+
+
+class _TrainClient:
+    """Just enough Client for DBSCANDetector.train: .query(...).result_rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, _q, settings=None):  # noqa: ARG002 - signature parity
+        return _TrainRows(self._rows)
 
 
 def test_metadata_row_shape():
@@ -105,3 +126,27 @@ def test_adaptive_baseline_predict():
          "total_packets": 100, "unique_dst_ips": 5}
     )
     assert unknown == 0.0
+
+
+def test_dbscan_says_so_when_it_finds_no_clusters(tmp_path, caplog):
+    """A trained-but-centreless DBSCAN must be LOUD, not a silent zero-scorer.
+
+    Measured, review round 2026-10-15: on the eval seed, DBSCAN formed 2 cluster
+    centres at 146 sampled training rows and 0 at 124 -- same code, same seed shape,
+    different volume. With no centres every score is the "no opinion" 0.0 and
+    is_ready() is False, so the scan-family specialist is effectively off -- and the
+    old log line ("trained: 0 clusters") said nothing about any of that."""
+    rng = np.random.default_rng(0)
+    rows = [tuple(rng.normal(10.0, 1.0, len(DBSCAN_FEATURES))) for _ in range(120)]
+    det = DBSCANDetector(tmp_path, ModelConfig())
+
+    with caplog.at_level("WARNING"):
+        assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
+
+    assert not det.cluster_centers, "uniform noise should not form 0.6-eps clusters"
+    assert det.metadata.metrics["clusters"] == 0
+    assert not det.is_ready(), "a detector that can never score must not claim readiness"
+    assert det.predict({}, dict.fromkeys(DBSCAN_FEATURES, 0.0)) == 0.0
+    assert any("NO CLUSTER CENTRES" in m for m in caplog.messages), (
+        "the centreless state must be a WARNING -- it disables the scan-family escalation"
+    )
