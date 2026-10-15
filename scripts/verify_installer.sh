@@ -67,11 +67,18 @@ build_machine() {
         state="${spec%%:*}"; spec="${spec#*:}"
         addr="${spec%%:*}"; type="${spec##*:}"
         idx=$((idx + 1))
+        # LXC SHAPE, MODELED FAITHFULLY: `ip -brief link` prints a veth's name with its peer
+        # index ("eth0@if35") while sysfs holds the BARE name, and the tools that take a name
+        # ARGUMENT (`ip addr show <name>`) accept the bare name only. So: interfaces.txt (the
+        # listing) keeps the suffix; sysfs and the address lookups use the bare name. This is
+        # what the first real container deployment looked like -- and the block skipped every
+        # NIC until it learned to strip the suffix.
+        local bare="${name%%@*}"
         echo "$name" >> "$dir/interfaces.txt"
-        echo "$name $state $addr" >> "$dir/addrs.txt"
-        mkdir -p "$dir/sys/$name"
-        echo "$type" > "$dir/sys/$name/type"
-        printf '00:00:5e:00:53:%02x\n' "$idx" > "$dir/sys/$name/address"
+        echo "$bare $state $addr" >> "$dir/addrs.txt"
+        mkdir -p "$dir/sys/$bare"
+        echo "$type" > "$dir/sys/$bare/type"
+        printf '00:00:5e:00:53:%02x\n' "$idx" > "$dir/sys/$bare/address"
     done
 
     cat > "$dir/bin/ip" <<STUB
@@ -275,6 +282,14 @@ assert_not_contains "$OUT" "DECISION" "does not proceed to deploy"
 echo "  -- only loopback, i.e. a container --"
 OUT="$(run_block '' yes '' '' 'lo:UNKNOWN:127.0.0.1/8:772')"
 assert_contains "$OUT" "no usable network interface found" "refuses rather than guessing"
+
+echo "  -- an LXC: veth names carry their peer index in ip output --"
+# The first real container deployment failed HERE: `ip` prints "eth0@if35", sysfs knows only
+# "eth0", and the block skipped both NICs and died with "no usable network interface found".
+OUT="$(run_block eth0 yes '' '' 'eth0@if35:UP:192.0.2.34/24:1' 'eth1@if36:UP:-:1')"
+assert_contains "$OUT" "Detected 2 interface(s)" "an LXC's plumbed names are detected, not skipped"
+assert_contains "$OUT" "DECISION mgmt=eth0 capture=eth1" "the bare names are what reach the decision"
+assert_not_contains "$OUT" "no usable network interface found" "the LXC is not reported as having no interfaces"
 
 echo "  -- INTERACTIVE: a typo is refused and the prompt re-asks --"
 # Enter-Enter must never be able to produce an empty interface, and a bad name must be caught HERE

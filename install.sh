@@ -266,6 +266,16 @@ DEFROUTE_IFACE=$(ip route show default | awk '/default/ {print $5; exit}' || tru
 # plausibly carry traffic: no loopback, and nothing that is obviously Kubernetes plumbing.
 candidate_ifaces() {
     ip -brief link 2>/dev/null | while read -r name state rest; do
+        # INSIDE AN LXC, `ip` PRINTS VETH NAMES WITH THEIR PEER INDEX -- "eth0@if35". Sysfs,
+        # `ip addr show <name>` and the ConfigMap all use the BARE name, so the old code asked
+        # /sys/class/net/eth0@if35/type for a type, found nothing, and skipped EVERY NIC:
+        # measured on the first container deployment, "no usable network interface found" on a
+        # host with two perfectly good interfaces. Strip the peer suffix FIRST, so the sysfs
+        # lookups and the exclusion patterns below both see the real name ("docker0@if9" is
+        # still the docker0 the exclusions mean to skip).
+        case "$name" in
+            *@if[0-9]*) name="${name%@if*}" ;;
+        esac
         # VIRTUAL AND TUNNEL INTERFACES ARE NOT SEGMENTS.
         #
         # `docker*`, `flannel*`, `cni*`, `veth*` and `br-*` are Kubernetes plumbing: a veth is
