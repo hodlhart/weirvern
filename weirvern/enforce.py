@@ -7,10 +7,13 @@ is the enforcement half: the CronJob and `weirvern prune` both call `enforce()`,
 scheduled path and the manual path cannot diverge.
 
 WHY THREE COMPONENTS HAVE DIFFERENT MECHANISMS:
-  * zeek    -- rotated files `conn.2026-01-01-13-00-00.log.gz`. Deleted by age, under a
-               byte cap. Zeek itself cannot cap by SIZE, only by rotation COUNT.
+  * zeek    -- rotated files `conn.2026-01-01-13-00-00.log`, or `.log.gz` if the sensor
+               compresses a rotation. Deleted by age, under a byte cap. Zeek itself
+               cannot cap by SIZE, only by rotation COUNT.
   * netflow -- the goflow2 JSONL sink, written continuously. Trimmed by rewriting, since
-               there is no rotation boundary to delete at.
+               there is no rotation boundary to delete at -- never past the reader's
+               checkpoint, and recorded in a trim hint beside the file so the ingester
+               SHIFTS its cursor instead of re-reading everything (see enforce_netflow).
   * ml      -- model artefacts from each 6-hourly retrain. Kept as a rolling set, because
                deleting the model the worker is currently serving is an outage.
 
@@ -18,9 +21,11 @@ Each is idempotent and safe to run repeatedly.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -92,6 +97,66 @@ def enforce_zeek(cap_mb: float, grace_s: int = 3600) -> ComponentResult:
     return r
 
 
+def _reader_boundary(p: Path, size: int) -> int | None:
+    """The tail reader's checkpointed cursor for `p`, when it belongs to THIS file instance.
+
+    None means "no reader is bound": no checkpoint yet (first run, or a deployment without
+    the shared state volume) or one from a previous instance. The trim then proceeds
+    unguarded -- the cap exists precisely for when nothing else bounds the disk -- and the
+    reader falls back to its own detection.
+    """
+    try:
+        from weirvern.ingester import load_tail_state
+        state = load_tail_state(str(p))
+    except Exception:  # noqa: BLE001 - a guard that can crash the pruner is worse than none
+        log.warning("prune: could not read the tail cursor for %s; trimming unguarded", p)
+        return None
+    if not state.offset or state.offset > size:
+        return None
+    if state.inode:
+        try:
+            if int(p.stat().st_ino) != int(state.inode):
+                return None
+        except OSError:
+            return None
+    return int(state.offset)
+
+
+def _append_trim_hint(p: Path, old_inode: int, new_inode: int, removed: int) -> None:
+    """Record one rewrite of `p` so the reader can SHIFT its cursor instead of re-reading.
+
+    The chain is ordered oldest-first and only extended while contiguous: an entry whose
+    `from` does not match the previous entry's `to` starts a NEW chain. The reader walks it
+    from ITS inode; a chain it cannot follow exactly falls back to the old re-read, which
+    duplicates but never loses. Bounded length: a reader that far behind is not the case
+    this protocol exists for, and the full reset recovers it.
+
+    Best-effort on purpose: a read-only flows directory must not fail the trim (the space
+    was already freed), and without the hint the reader degrades to the old behaviour.
+    """
+    from weirvern.ingester import TRIM_HINT_CHAIN_MAX, TRIM_HINT_SUFFIX
+    hint_path = p.with_name(p.name + TRIM_HINT_SUFFIX)
+    try:
+        existing = json.loads(hint_path.read_text(encoding="utf-8"))
+        chain = existing.get("chain") if isinstance(existing, dict) else None
+        if not isinstance(chain, list):
+            chain = []
+    except (OSError, ValueError):
+        chain = []
+    if not chain or chain[-1].get("to") != old_inode:
+        chain = []
+    chain.append({"from": int(old_inode), "to": int(new_inode), "removed": int(removed)})
+    if len(chain) > TRIM_HINT_CHAIN_MAX:
+        chain = chain[-TRIM_HINT_CHAIN_MAX:]
+    payload = {"chain": chain, "updated": datetime.now(UTC).isoformat()}
+    try:
+        tmp = str(hint_path) + ".tmp"
+        Path(tmp).write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, hint_path)
+    except OSError as exc:
+        log.warning("prune: could not record the trim hint for %s: %s", p, exc)
+
+
 def enforce_netflow(cap_mb: float) -> ComponentResult:
     """Trim the goflow2 JSONL sink to a byte cap, oldest lines first.
 
@@ -99,6 +164,22 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
     there is no rotation boundary to delete at. It has to be rewritten from a byte offset.
     That offset MUST land on a line boundary -- resuming mid-line would leave a truncated
     JSON object that the ingester reports as a parse error on every pass forever.
+
+    ── TWO PROTOCOLS THE TRIM OWES THE READER (review round 2026-10-15) ─────────────────────
+
+    1. NEVER REMOVE WHAT HAS NOT BEEN READ. The reader checkpoints its cursor in
+       TAIL_STATE_DIR, which this pod mounts; when the checkpoint belongs to the file being
+       trimmed, the cut is capped at that offset. Removing unread bytes destroys records
+       before anything saw them, and the cap is a ceiling, not a deadline -- waiting one
+       cycle is always the better trade.
+
+    2. RECORD THE REWRITE SO THE READER CAN SHIFT, NOT RE-READ. replace() changes the
+       inode, which is exactly what the reader's reset detection fires on -- and its naive
+       response re-read the whole file from zero. While over cap that happened EVERY FIVE
+       MINUTES, re-inserting up to the full cap into `flows`, a MergeTree with no
+       deduplication: duplicate rows feeding the aggregates and models, at real cost. A
+       trim-hint file beside the sink lists each rewrite (from-inode, to-inode, bytes
+       removed); the reader walks that chain and subtracts, which is exact.
     """
     before = _total_bytes(NETFLOW_DIR)
     r = ComponentResult(component="netflow", cap_mb=cap_mb, before_mb=_mb(before),
@@ -122,25 +203,38 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
             break
         try:
             size = p.stat().st_size
-            if size <= excess:
-                # The whole file goes; it is entirely older than the cut.
+            old_inode = p.stat().st_ino
+            guard = _reader_boundary(p, size)  # the reader's cursor, when it is for THIS file
+            if size <= excess and guard is None:
+                # The whole file goes; it is entirely older than the cut, and no reader is
+                # bound to this instance.
                 p.unlink()
                 excess -= size
                 r.actions += 1
                 continue
             # Partial trim: drop the OLDEST bytes, then discard the remainder of the line
             # the cut landed in so the file still starts at a record boundary.
-            keep_from = int(excess)
             with open(p, "rb") as fh:
-                fh.seek(keep_from)
+                fh.seek(min(int(excess), size))
                 _ = fh.readline()  # partial line -- discarded on purpose
+                cut = fh.tell()
+                if guard is not None and cut > guard:
+                    # The reader's offset is itself a record start: cut EXACTLY there, and
+                    # discard nothing -- the readline above would otherwise have eaten an
+                    # unread record. Fewer bytes are freed; the next pass frees the rest.
+                    cut = guard
+                    fh.seek(cut)
                 rest = fh.read()
             tmp = p.with_suffix(p.suffix + ".trim")
             with open(tmp, "wb") as fh:
                 fh.write(rest)
             tmp.replace(p)
+            # AFTER the replace, deliberately: in the millisecond between the two, a reader
+            # pass falls back to the old re-read behaviour -- the known degraded path --
+            # rather than applying a shift for a rewrite that has not happened yet.
+            _append_trim_hint(p, old_inode, p.stat().st_ino, cut)
             r.actions += 1
-            excess = 0
+            excess -= cut
         except OSError as exc:
             r.errors.append(f"{p.name}: {exc}")
 

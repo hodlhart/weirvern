@@ -310,6 +310,88 @@ def test_a_reused_filename_is_detected(tmp_path):
     )
 
 
+# ── the cap-trim protocol: a rewrite must SHIFT the cursor, never reset it ────────────────────
+#
+# MEASURED DEFECT (review round 2026-10-15): over cap, `enforce_netflow` rewrites the sink
+# every five minutes (a new inode), the reset detection above fires, and the naive response
+# re-read the WHOLE file from zero -- inserting up to the full cap of duplicate rows into
+# `flows`, a MergeTree with no deduplication, once per cycle, forever. The trim now records
+# each rewrite in a hint beside the file and the reader subtracts instead of re-reading.
+
+
+def test_a_cap_trim_does_not_re_ingest_the_same_records(monkeypatch, tmp_path):
+    from weirvern import enforce
+
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    monkeypatch.setattr(enforce, "NETFLOW_DIR", flows)
+    path = str(flows / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(60):
+            fh.write(json.dumps(_flow_record(i + 1, pad=60)) + "\n")
+
+    fake = FakeCH()
+    st = TailState()
+    assert tail_and_insert(fake, path, state=st)[0] == 60
+    save_tail_state(path, st)
+    size_before = os.path.getsize(path)
+
+    r = enforce.enforce_netflow(0.002)  # a cap far below the file: a real trim
+    assert r.actions == 1
+    assert os.path.getsize(path) < size_before
+
+    # The reader keeps its in-memory state; the trim must SHIFT it, not reset it.
+    assert tail_and_insert(fake, path, state=st)[0] == 0, "the trim caused a re-ingest"
+    assert fake.inserted == 60, "duplicate rows reached the inserter"
+
+    # A restart is the other half: the checkpoint, shifted at load, must not re-read either.
+    st2 = load_tail_state(path)
+    assert st2.offset > 0
+    assert tail_and_insert(fake, path, state=st2)[0] == 0
+    assert fake.inserted == 60
+
+    # And nothing is LOST: records appended after the trim are still ingested.
+    _append(path, [_flow_record(101, pad=60), _flow_record(102, pad=60)])
+    assert tail_and_insert(fake, path, state=st)[0] == 2
+
+
+def test_a_trim_that_removed_unread_records_says_so_and_recovers(monkeypatch, tmp_path, caplog):
+    """The guard normally prevents this; when a trim got past it anyway (an older build, or a
+    trimmer without the shared state volume), the reader must SAY what was lost and recover by
+    re-reading what remains -- never guess a shift."""
+    monkeypatch.setenv("TAIL_STATE_DIR", str(tmp_path / "state"))
+    path = str(tmp_path / "flows.jsonl")
+    with open(path, "w") as fh:
+        for i in range(60):
+            fh.write(json.dumps(_flow_record(i + 1, pad=60)) + "\n")
+    with open(path) as fh:
+        offsets, acc = [], 0
+        lines = fh.readlines()
+        for line in lines:
+            acc += len(line.encode())
+            offsets.append(acc)
+
+    old_ino = os.stat(path).st_ino
+    state = TailState(offset=offsets[44], inode=old_ino, identity=(1234567, 0, 0))
+    cut = offsets[49]  # records 46..50 were never read -- and are about to vanish
+
+    tmp = path + ".new"
+    with open(tmp, "wb") as fh:
+        fh.write("".join(lines[50:]).encode())
+    os.replace(tmp, path)
+    with open(path + ".trimhint", "w") as fh:
+        json.dump({"chain": [{"from": old_ino, "to": os.stat(path).st_ino, "removed": cut}]}, fh)
+
+    fake = FakeCH()
+    with caplog.at_level("WARNING", logger="weirvern.ingester"):
+        inserted, _, _ = tail_and_insert(fake, path, state=state)
+    assert inserted == 10, "the reader did not recover the surviving records"
+    assert any("removed before they were read" in m for m in caplog.messages), (
+        "the loss was not reported"
+    )
+
+
 # ── the exporter allow-list: unauthenticated UDP is the reason it exists ───────────────────────
 #
 # THE EXPOSURE, measured on the live deployment. The goflow2 collector runs with hostNetwork so it

@@ -32,13 +32,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# A rotated Zeek log is `<type>.<YYYY-MM-DD-HH-MM-SS>.log`. The CURRENT file is
-# `<type>.log` with no timestamp, and must never be deleted — it is being written to.
+# A rotated Zeek log is `<type>.<YYYY-MM-DD-HH-MM-SS>.log`, optionally gzipped
+# (`....log.gz`) -- the shipped sensor writes uncompressed, but a deployment that turns on
+# compression must not silently escape the cap, so both shapes are pruned. The CURRENT file
+# is `<type>.log` with no timestamp, and must never be deleted — it is being written to.
 #
 # The timestamp is parsed rather than trusting mtime, for the same reason the tailer
 # sorts by the embedded timestamp: a directory copy or restore preserves names and not
 # mtimes, so mtime-based ordering silently becomes wrong after a backup round trip.
-ROTATED_RE = re.compile(r"^(?P<type>[A-Za-z_]+)\.(?P<ts>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.log$")
+ROTATED_RE = re.compile(
+    r"^(?P<type>[A-Za-z_]+)\.(?P<ts>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.log(?:\.gz)?$")
 
 # Never prune these, whatever the cap says:
 #   * loaded_scripts / reporter / stats are tiny and diagnostically useful

@@ -267,6 +267,11 @@ def test_parses_the_real_zeek_rotation_names():
     ]
     for name in real:
         assert prune.ROTATED_RE.match(name), f"does not parse: {name}"
+    # A COMPRESSED rotation parses too: the shipped sensor writes uncompressed, but a
+    # deployment that turns on gzip must not silently escape the cap (the two modules
+    # previously disagreed on the shape -- `.log` matched, `.log.gz` only documented).
+    for name in ("conn.2026-09-18-01-00-00.log.gz", "http.2026-09-18-00-00-00.log.gz"):
+        assert prune.ROTATED_RE.match(name), f"does not parse: {name}"
     # And the live files must NOT match.
     for name in ("dns.log", "conn.log", "http.log"):
         assert not prune.ROTATED_RE.match(name), f"live file parsed as rotated: {name}"
@@ -405,3 +410,44 @@ def test_the_loop_WOULD_call_prune_when_a_real_cap_is_exceeded(tmp_path, monkeyp
         "disabled and the zero-cap test above proves nothing"
     )
     assert list(d.glob("*.log")), "the whole directory was removed rather than trimmed"
+
+
+def test_gzipped_rotations_are_pruned_like_plain_ones(tmp_path):
+    """The sensor ships uncompressed today, but a deployment that turns on compression must
+    not silently escape the cap -- the review found `enforce.py` documenting `.log.gz` while
+    this module matched only `.log`."""
+    f = tmp_path / f"conn.{old_ts(60)}.log.gz"
+    f.write_bytes(b"x" * 1_500_000)
+    cands = prune.rotated_files(tmp_path)
+    assert [c.path.name for c in cands] == [f.name]
+    r = prune.prune(tmp_path, cap_mb=1, grace_s=1)
+    assert r.deleted_files == 1
+    assert not f.exists()
+
+
+def test_the_cli_dry_run_reports_the_real_plan(tmp_path, monkeypatch, capsys):
+    """`weirvern prune --dry-run` is the operator's ONLY preview. It used to read
+    `planned_freed_mb`/`to_delete` attributes off a value that is a plain list, so it
+    reported "would free 0.0 MB (0 file(s))" unconditionally -- including over a directory
+    about to lose files."""
+    from argparse import Namespace
+
+    from weirvern import enforce
+    from weirvern.admin import cli as wcli
+
+    z = tmp_path / "zeek"
+    z.mkdir()
+    for hours in (72, 48, 24):
+        f = z / f"conn.{old_ts(hours)}.log"
+        f.write_bytes(b"x" * 400_000)
+    monkeypatch.setattr(enforce, "ZEEK_DIR", z)
+    monkeypatch.setenv("ZEEK_MAX_MB", "1")
+    monkeypatch.delenv("NETFLOW_MAX_MB", raising=False)
+    monkeypatch.delenv("ML_MAX_MB", raising=False)
+
+    rc = wcli.cmd_prune(Namespace(dry_run=True, cap=None, component="zeek", grace=1))
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The regression: a non-empty plan must never read as "0.0 MB (0 file(s))".
+    assert "would free 0.0 MB (0 file(s))" not in out
+    assert "would free 0.4 MB (1 file(s))" in out, out

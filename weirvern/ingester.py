@@ -1938,8 +1938,21 @@ def tail_and_insert(client: Inserter, path: str, once: bool = False,
             why = "content replaced (offset is not on a record boundary)"
 
     if why:
-        logger.info("Re-reading %s from start (%s)", path, why)
-        start_offset = 0
+        shifted = None
+        if state is not None:
+            shifted = _apply_trim_chain(path, st, state.offset, state.inode)
+        if shifted is not None:
+            # A cap trim explains the change: subtract instead of re-reading. Exact, because
+            # both offsets sit on record boundaries (the trim cuts at one; the tailer stops
+            # at one) -- see the trim-protocol note above `_apply_trim_chain`.
+            logger.info(
+                "Cursor shifted by a cap trim on %s (%s): resuming at %d -- no re-ingest",
+                path, why, shifted,
+            )
+            start_offset = shifted
+        else:
+            logger.info("Re-reading %s from start (%s)", path, why)
+            start_offset = 0
 
     allowed = _exporter_networks(allow)
     rejected = 0
@@ -2148,6 +2161,67 @@ def _tail_state_path(path: str) -> str:
     return os.path.join(state_dir, f"{safe}.tailstate")
 
 
+# ── THE CAP-TRIM PROTOCOL (review round 2026-10-15) ──────────────────────────────────────────
+#
+# `enforce_netflow` rewrites the goflow2 sink (new inode, content shifted down) and records
+# each rewrite in a hint file beside it: {"chain": [{"from": inode, "to": inode, "removed":
+# bytes}]}. Without this, every five-minute trim over cap reset the cursor and re-read the
+# whole file -- duplicate rows into `flows`, a MergeTree with no deduplication. With it, the
+# reader SUBTRACTS: its offset maps exactly, because both the cut and the cursor sit on
+# record boundaries.
+TRIM_HINT_SUFFIX = ".trimhint"
+TRIM_HINT_CHAIN_MAX = 64
+
+
+def _apply_trim_chain(path: str, st: os.stat_result, offset: int, inode: int) -> int | None:
+    """The offset that resumes `path` after cap trims, or None when they cannot explain it.
+
+    Walks the hint chain from the caller's (offset, inode) and returns the equivalent offset
+    in the CURRENT file -- valid only when the walk lands on this file's inode at a record
+    boundary. None means "fall back to the re-read", never "guess": a wrong shift loses
+    data, a re-read merely duplicates, and only one of those is recoverable.
+    """
+    if offset <= 0 or not inode:
+        return None
+    try:
+        raw = pathlib.Path(path + TRIM_HINT_SUFFIX).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    chain = data.get("chain") if isinstance(data, dict) else None
+    if not isinstance(chain, list):
+        return None
+    cur = int(offset)
+    cur_inode = int(inode)
+    moved = False
+    for entry in chain[:TRIM_HINT_CHAIN_MAX]:
+        if not isinstance(entry, dict):
+            return None
+        try:
+            frm = int(entry.get("from") or 0)
+            to = int(entry.get("to") or 0)
+            removed = int(entry.get("removed") or 0)
+        except (TypeError, ValueError):
+            return None
+        if cur_inode != frm:
+            continue
+        if removed > cur:
+            logger.warning(
+                "cap trim on %s removed %d byte(s) but the cursor was only %d in: %d "
+                "byte(s) of records were removed before they were read -- re-reading what "
+                "remains", path, removed, cur, removed - cur,
+            )
+            return None
+        cur -= removed
+        cur_inode = to
+        moved = True
+    if not moved or cur <= 0 or cur_inode != st.st_ino:
+        return None
+    if not _offset_is_on_boundary(path, cur):
+        return None
+    return cur
+
+
 def load_tail_state(path: str) -> TailState:
     """The checkpointed cursor for `path`, or a fresh one.
 
@@ -2190,6 +2264,21 @@ def load_tail_state(path: str) -> TailState:
     if not pathlib.Path(path).exists():
         return TailState()
     if not _offset_is_on_boundary(path, offset):
+        # A cap trim explains this shape: the boundary moved because bytes were removed from
+        # the front. When the hint chain confirms it, the checkpoint is SHIFTED instead of
+        # discarded -- a discard re-reads the file, duplicating every retained row.
+        try:
+            st_now = os.stat(path)
+        except OSError:
+            return TailState()
+        shifted = _apply_trim_chain(path, st_now, offset, inode)
+        if shifted:
+            logger.info(
+                "Tail cursor for %s shifted by a cap trim: %d -> %d (no re-read)",
+                path, offset, shifted,
+            )
+            return TailState(offset=shifted, inode=int(st_now.st_ino),
+                             identity=_file_identity(st_now))
         logger.info(
             "Tail cursor for %s discarded: byte before offset %d is not a line boundary, so the "
             "checkpoint belongs to a previous file instance",

@@ -1513,9 +1513,14 @@ def cmd_prune(args: argparse.Namespace) -> int:
             if comp == "zeek":
                 from weirvern import prune as _prune
                 before = _prune.total_bytes(enforce.ZEEK_DIR)
-                res = _prune.plan_prune(enforce.ZEEK_DIR, cap)
-                freed = getattr(res, "planned_freed_mb", 0.0) or 0.0
-                n = len(getattr(res, "to_delete", []) or [])
+                # plan_prune returns the doomed-file LIST; the preview sums it. (It used to
+                # getattr `planned_freed_mb`/`to_delete` -- attributes that exist on no
+                # version of the return value -- so the operator's only preview read
+                # "would free 0.0 MB (0 file(s))" unconditionally, on any directory.)
+                # grace_s matches the real pass below, so preview and enforcement agree.
+                res = _prune.plan_prune(enforce.ZEEK_DIR, cap, grace_s=args.grace)
+                freed = sum(c.size_bytes for c in res) / 1048576.0
+                n = len(res)
                 print(f"  {comp:<8} {enforce._mb(before):8.1f} MB / cap {cap:<6} MB"
                       f"  would free {freed:.1f} MB ({n} file(s))")
             else:

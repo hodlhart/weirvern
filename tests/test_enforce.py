@@ -151,7 +151,88 @@ def test_netflow_whole_files_are_removed_when_older(_isolated_dirs):
     assert r.after_mb <= 0.26
 
 
-# ── ml: the floor that overrides the cap ────────────────────────────────────────
+# ── the reader protocol: a trim must never strand or destroy the tail cursor ─────────────────
+#
+# MEASURED DEFECT (review round 2026-10-15): the trim REPLACES the file (new inode), the
+# ingester's reset detection fires, and its naive response re-read the whole file from zero.
+# While over cap that happened EVERY FIVE MINUTES, re-inserting up to the full cap into
+# `flows` -- a MergeTree with no deduplication. Two protocols fix it: never cut past the
+# reader's checkpointed offset, and record each rewrite so the reader can SHIFT instead of
+# re-reading. The trim-side is exercised here; the reader-side loop lives in test_ingester.py.
+
+
+def _jsonl_bytes(count: int, pad: int = 80) -> bytes:
+    out = b""
+    for i in range(count):
+        out += (json.dumps({"i": i, "pad": "p" * pad}) + "\n").encode()
+    return out
+
+
+def _cursor_at(path: Path, offset: int, inode: int) -> None:
+    from weirvern.ingester import TailState, save_tail_state
+    save_tail_state(str(path), TailState(offset=offset, inode=inode, identity=None))
+
+
+def test_the_guard_reads_a_checkpoint_only_for_the_current_instance(_isolated_dirs,
+                                                                    monkeypatch):
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    f.write_bytes(b'{"a": 1}\n{"b": 2}\n')
+    monkeypatch.setenv("TAIL_STATE_DIR", str(d / "state"))
+    _cursor_at(f, 9, f.stat().st_ino)
+    assert enforce._reader_boundary(f, 18) == 9
+    # A checkpoint from a PREVIOUS instance must not bound the trim: the reader is not
+    # positioned in this file at all, so its offset says nothing about what is unread here.
+    _cursor_at(f, 9, f.stat().st_ino + 1)
+    assert enforce._reader_boundary(f, 18) is None
+
+
+def test_a_trim_never_removes_bytes_the_reader_has_not_read(_isolated_dirs, monkeypatch):
+    """The cut is capped at the reader's checkpoint: removing unread bytes would destroy
+    records before anything saw them, and the cap is a ceiling, not a deadline -- waiting a
+    cycle is always the better trade."""
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    data = _jsonl_bytes(200)
+    f.write_bytes(data)
+    reader_at = data.index(b"\n", len(data) // 4) + 1  # a real record boundary, ~25% in
+    monkeypatch.setenv("TAIL_STATE_DIR", str(d / "state"))
+    _cursor_at(f, reader_at, f.stat().st_ino)
+
+    r = enforce.enforce_netflow(0.004)  # the cap demands a cut far past the reader's offset
+    assert r.actions == 1
+    # Nothing at or beyond the reader's offset was touched: the file now starts EXACTLY there.
+    assert f.read_bytes() == data[reader_at:]
+    # And the rewrite is recorded so the reader can shift by exactly that much.
+    hint = json.loads((d / "flows.jsonl.trimhint").read_text())
+    assert hint["chain"][-1]["removed"] == reader_at
+
+
+def test_a_trim_below_the_cursor_frees_normally_and_chains(_isolated_dirs, monkeypatch):
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    data = _jsonl_bytes(200)
+    f.write_bytes(data)
+    monkeypatch.setenv("TAIL_STATE_DIR", str(d / "state"))
+    _cursor_at(f, len(data), f.stat().st_ino)  # the reader is fully caught up
+    old_inode = f.stat().st_ino
+
+    r = enforce.enforce_netflow(0.004)
+    assert r.actions == 1
+    hint = json.loads((d / "flows.jsonl.trimhint").read_text())
+    removed = hint["chain"][-1]["removed"]
+    assert 0 < removed < len(data)
+    assert f.read_bytes() == data[removed:]
+    assert hint["chain"][-1]["from"] == old_inode
+
+    # A second trim extends the chain (contiguous: from == previous to), so a reader that
+    # was behind for TWO cycles can still follow it.
+    _cursor_at(f, f.stat().st_size, f.stat().st_ino)
+    r2 = enforce.enforce_netflow(0.001)
+    assert r2.actions == 1
+    chain = json.loads((d / "flows.jsonl.trimhint").read_text())["chain"]
+    assert len(chain) == 2
+    assert chain[1]["from"] == chain[0]["to"]
 
 
 def test_ml_keeps_the_newest_sets_even_under_pressure(_isolated_dirs):
