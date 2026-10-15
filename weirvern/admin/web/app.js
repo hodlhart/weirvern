@@ -1746,6 +1746,18 @@ document.addEventListener("DOMContentLoaded", () => {
   // tab, not the dashboard.
   if (typeof wireSluice === "function") wireSluice();
 
+  // ── Weirlings controls ──────────────────────────────────────────────────────
+  // The detail panel's buttons -- close, enable / switch off / revoke, and the
+  // register-from-observation action -- plus the register form's own Save. Same one-place
+  // convention and the same guard as sluice above.
+  //
+  // MEASURED at the first deployment: this call was MISSING, so every one of those buttons
+  // rendered and did nothing. The harness never noticed because it asserted on labels, not on
+  // clicks -- the first click assertion ("registering the undeclared sensor posts its observed
+  // id") failed on a button that looked perfect. A control that renders and does nothing is the
+  // project's most-repeated defect class wearing its most convincing costume.
+  if (typeof wireWeirlings === "function") wireWeirlings();
+
   // ── accounts: the gates and their forms ────────────────────────────────────
   const gateForm = document.getElementById("gate-form");
   if (gateForm) gateForm.addEventListener("submit", async (ev) => {

@@ -235,11 +235,19 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
 // ── the drill-down ────────────────────────────────────────────────────────────────────────────
 
+// The sensor the detail card is showing RIGHT NOW. The action buttons read the DOM at click time
+// (the wiring runs once, at startup), and the register action files a declaration from the
+// sensor's OWN reports -- never from anything an operator would have to retype -- so it needs the
+// sensor object, not a re-parse of the rendered text. One place to set, so a click can never act
+// on the PREVIOUS sensor's row.
+let wlDetail = null;
+
 async function openWeirling(sensorId) {
   const card = document.getElementById("wl-detail-card");
   const body = document.getElementById("wl-detail-body");
   const note = document.getElementById("wl-detail-note");
   document.getElementById("wl-detail-id").textContent = sensorId;
+  wlDetail = null;
   body.replaceChildren(el("p", { class: "muted", text: "loading…" }));
   note.textContent = "";
   card.classList.remove("hidden");
@@ -264,6 +272,7 @@ async function openWeirling(sensorId) {
   }
 
   const r = d.sensor;
+  wlDetail = r;
   body.replaceChildren();
 
   // The findings FIRST, because they are the reason the operator opened this. A state word alone
@@ -303,19 +312,24 @@ async function openWeirling(sensorId) {
   body.appendChild(dl);
 
   // ── the controls, only where they MEAN something.
+  const registerBtn = document.getElementById("wl-detail-register");
   const enableBtn = document.getElementById("wl-detail-enable");
   const disableBtn = document.getElementById("wl-detail-disable");
   const revokeBtn = document.getElementById("wl-detail-revoke");
-  const all = [enableBtn, disableBtn, revokeBtn];
+  const all = [registerBtn, enableBtn, disableBtn, revokeBtn];
   for (const b of all) b.classList.add("hidden");
 
   if (!r.registered) {
-    // NO CONTROLS AT ALL for an undeclared sensor, with the reason stated. Offering "enable" for
-    // something nobody registered would be a button whose effect nobody can predict -- the
-    // registry is where an operator declares what they expect, so the action is register-or-ignore.
+    // NO ENABLE/RETIRE CONTROLS for an undeclared sensor, with the reason stated -- but REGISTER
+    // is exactly the repair this row exists for, and it must not require retyping the id the hub
+    // is already hearing. Measured at the first deployment, where the first question the view
+    // produced was "where do i get the sensor id". One click files the declaration from the
+    // sensor's own reports; the button is offered ONLY here, while the sensor reads as undeclared.
+    registerBtn.classList.remove("hidden");
+    registerBtn.textContent = "Register this sensor";
     note.textContent = "This sensor is not registered, so there is nothing to enable or retire. "
-      + "Register it above to record who it belongs to, or add its address to the flow exporter "
-      + "allow-list if it should be ignored.";
+      + "Register it here — one click, from its own reports — or add its address to the flow "
+      + "exporter allow-list if it should be ignored.";
   } else if (!r.enabled) {
     enableBtn.classList.remove("hidden");
     enableBtn.textContent = "Enable";
@@ -359,6 +373,8 @@ function wireWeirlings() {
   if (disableBtn) disableBtn.addEventListener("click", () => setWeirlingEnabled(false));
   const revokeBtn = document.getElementById("wl-detail-revoke");
   if (revokeBtn) revokeBtn.addEventListener("click", () => revokeWeirling());
+  const registerBtn = document.getElementById("wl-detail-register");
+  if (registerBtn) registerBtn.addEventListener("click", () => registerWeirling());
 }
 
 function clearWeirlingForm() {
@@ -406,6 +422,40 @@ async function saveWeirling() {
   }
   note.textContent = `Registered ${body.sensor_id}.`;
   clearWeirlingForm();
+  await loadWeirlings();
+}
+
+async function registerWeirling() {
+  // One click, from the sensor's OWN reports: the id is what the hub is already hearing (that is
+  // why the row exists at all), the mode is what the sensor says it is running, and the address --
+  // when the heartbeat carried one -- is where it is reporting from. The DECLARED segment stays
+  // empty ON PURPOSE: that field is the operator's word, and copying the reported one into it
+  // would manufacture a declaration nobody made. This view exists to keep those two apart.
+  const note = document.getElementById("wl-detail-note");
+  const sensor = wlDetail;
+  if (!sensor) return;
+  const body = {
+    sensor_id: sensor.sensor_id,
+    address: sensor.address || "",
+    segment: "",
+    expected_mode: sensor.reported_mode || "loch",
+    note: "registered from the fleet view while it was feeding unregistered",
+  };
+  note.textContent = "registering…";
+  let d;
+  try {
+    d = await postJSON("/api/weirlings/register", body);
+  } catch (err) {
+    note.textContent = `Could not register: ${err && err.message ? err.message : err}`;
+    return;
+  }
+  if (!d || d.ok !== true) {
+    // The server's own refusal, verbatim, for the same reason as the form's: it names the fix.
+    note.textContent = `Refused: ${(d && d.error) || "the server did not accept this registration"}`;
+    return;
+  }
+  await openWeirling(sensor.sensor_id);
+  note.textContent = `Registered ${sensor.sensor_id}.`;
   await loadWeirlings();
 }
 

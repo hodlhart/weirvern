@@ -62,7 +62,7 @@ pointer to the files that actually own the ports.
 
 **CI and the gate grew the checks this round needed.** CI now lints `scripts/`, runs
 the installer harness against simulated machines, syntax-checks every shell script
-under its own shebang, and runs the jsdom DOM harness (294 checks; it executes the
+under its own shebang, and runs the jsdom DOM harness (302 checks; it executes the
 shipping JavaScript and needs no server). The gate's shell check went from ONE file to
 every script, and its node check now covers all five view scripts plus the harness.
 
@@ -75,6 +75,23 @@ user) and adds one idempotent PATH line to root's rc -- never clobbering anythin
 at the link path, and saying so when the entry is a dangling symlink. Pinned in the
 installer harness against a sandbox: fresh, rerun, existing file, dangling link, and no
 kubectl at all.
+
+**The fleet view registers what it can see, in one click.** The undeclared sensor's guidance
+said "Register it above" while the id sat in the row in front of the operator; the first
+question the view produced at the first deployment was "where do i get the sensor id". An
+undeclared sensor's drill-down now carries a **Register this sensor** button that files the
+declaration from the sensor's OWN reports -- its id, its reported mode, its observed address --
+and leaves the declared segment empty on purpose, because copying the reported one in would
+manufacture a declaration nobody made.
+
+**And the Weirlings controls had never been wired at all.** `wireWeirlings()` existed and
+nothing called it: the detail panel's Close / Enable / Switch off / Revoke and the register
+form's own button all RENDERED and did nothing -- a dead panel that looked perfect, this
+project's most-repeated defect class in its best costume yet. It was found by the first click
+assertion ever written against this tab (the register button's POST), and the fix is the
+guarded bootstrap call beside `wireSluice()` that the one-place-wiring convention always
+intended. The harness now pins BOTH halves: the observed-identity POST, and two clicks proving
+the panel and the form are bound rather than decorative.
 
 ## Unreleased — the Network view becomes a map: deterministic forces, TTL hop rings
 

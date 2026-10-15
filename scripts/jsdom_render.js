@@ -559,6 +559,25 @@ const IDENTITY_PAYLOAD = {
                         notes: [], error: "" }
                   : u.includes("/api/review")
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
+                  : u.includes("/api/weirlings/register")
+                    ? (() => {
+                        // STATEFUL, like the real store: a registration PERSISTS, so the
+                        // re-read after the click shows the sensor as declared. A stub that
+                        // forgets would let a "registered" check pass while the view still
+                        // renders the sensor as undeclared.
+                        const row = WEIRLINGS_PAYLOAD.sensors
+                          .find((s) => s.sensor_id === sent.sensor_id);
+                        if (row) {
+                          row.registered = true;
+                          row.enabled = true;
+                          row.state = "alive";
+                          row.address = sent.address || row.address;
+                          row.expected_mode = sent.expected_mode || row.expected_mode;
+                          row.note = sent.note || row.note;
+                          row.findings = ["reporting normally, last heard just now."];
+                        }
+                        return { ok: true, sensor_id: sent.sensor_id || "" };
+                      })()
                   : { ok: false, error: "no write route at " + u };
       // `__http` lets one reply carry a real status code: the failed sign-in and the dead-session
       // password refusal are 401s on the real server, and the client decides whether to throw by
@@ -568,6 +587,18 @@ const IDENTITY_PAYLOAD = {
       return Promise.resolve({ ok: httpStatus === 200, status: httpStatus,
                                statusText: httpStatus === 200 ? "OK" : "Refused",
                                json: async () => reply });
+    }
+    // /api/weirlings/detail is REQUEST-AWARE, like the real server: it answers for the sensor
+    // asked about. A static payload serves one sensor's row under EVERY name -- a check on
+    // registering the undeclared "ghost-box" would silently act on a registered sensor's data,
+    // passing while proving the opposite of what it claims.
+    if (u.includes("/api/weirlings/detail")) {
+      const m = /[?&]sensor=([^&]+)/.exec(u);
+      const sid = m ? decodeURIComponent(m[1]) : "";
+      const row = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === sid);
+      const payload = row ? { available: true, reason: null, sensor: row } : WEIRLINGS_DETAIL_PAYLOAD;
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                               json: async () => payload });
     }
     for (const [match, payload] of ROUTES) {
       if (u.includes(match)) {
@@ -736,12 +767,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/identity", IDENTITY_PAYLOAD],
     ["/api/sluice", SLUICE_PAYLOAD],
 
-    // WEIRLINGS. The DETAIL route is registered BEFORE the list route on purpose: the
-    // dispatcher takes the FIRST prefix match, and /api/weirlings/detail begins with
-    // /api/weirlings -- registered the other way round, every drill-down would be served the
-    // whole fleet and the detail panel would render the wrong sensor's data under the right
-    // sensor's name, which is worse than rendering nothing.
-    ["/api/weirlings/detail", WEIRLINGS_DETAIL_PAYLOAD],
+    // WEIRLINGS. The DETAIL route is handled ABOVE this table because it must be
+    // REQUEST-AWARE: it answers for the sensor asked about, like the real server. A static
+    // payload served one sensor's row under every name, which would let a check on registering
+    // an undeclared sensor act on a registered one's data.
     ["/api/weirlings", WEIRLINGS_PAYLOAD],
 
 
@@ -2374,6 +2403,76 @@ check("high capture loss is called out in the fleet",
           body.includes("declared") && body.includes("reported"),
           "one is a claim somebody made and the other is a fact the sensor produced");
     H.document.getElementById("wl-detail-close").click();
+  }
+}
+
+// ── REGISTERING from the row's own reports, in one click ───────────────────────────────────────
+// The undeclared row's guidance said "Register it above" while the id sat in the row in front of
+// the operator -- at the first deployment the view's first question was "where do i get the
+// sensor id". The drill-down for an undeclared sensor must offer REGISTER, and the click must
+// file the declaration from the OBSERVED identity rather than leaving an empty form.
+{
+  const btn = [...H.document.querySelectorAll("#wl-table button")]
+    .find((b) => (b.textContent || "") === "ghost-box");
+  check("the undeclared sensor is drill-down-able, to register from", !!btn);
+  if (btn) {
+    btn.click();
+    for (let i = 0; i < 40 && !(H.document.getElementById("wl-detail-body").textContent || "")
+         .includes("undeclared"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const regBtn = H.document.getElementById("wl-detail-register");
+    check("an undeclared sensor offers a REGISTER button, not only prose",
+          !!regBtn && !regBtn.classList.contains("hidden")
+          && (regBtn.textContent || "").includes("Register"),
+          "the id the hub is already hearing should not have to be retyped from the row into the "
+          + "form below");
+    const before = POSTED.length;
+    if (regBtn) regBtn.click();
+    for (let i = 0; i < 60 && POSTED.length === before; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const post = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/register"));
+    let sentBody = {};
+    try { sentBody = JSON.parse((post || {}).body || "{}"); } catch (_e) { sentBody = {}; }
+    check("the click registers the OBSERVED identity, not a blank form",
+          !!post && sentBody.sensor_id === "ghost-box",
+          "registering the wrong id -- or leaving the form for the operator to fill -- leaves the "
+          + "sensor undeclared while looking like it worked");
+    check("the observed mode rides along as the expectation",
+          !!post && sentBody.expected_mode === "loch",
+          "the declaration should start from what the sensor reports, not from a default nobody "
+          + "chose");
+    for (let i = 0; i < 60 && !(H.document.getElementById("wl-detail-note").textContent || "")
+         .includes("Registered"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("the outcome is stated on the detail, not silently swallowed",
+          (H.document.getElementById("wl-detail-note").textContent || "")
+            .includes("Registered ghost-box"));
+    check("a registered sensor does not offer REGISTER",
+          !!regBtn && regBtn.classList.contains("hidden"),
+          "the button is offered only while the sensor reads as undeclared; anything else "
+          + "invites a click that cannot mean anything");
+    // ── and the panel's controls are BOUND, not merely rendered ──────────────────
+    // wireWeirlings() was defined but never called from the app's bootstrap, so every button in
+    // this panel and the register form rendered and did NOTHING. Labels all looked right; only a
+    // click assertion can tell "wired" from "decorative". These two clicks are that assertion for
+    // the panel and for the form.
+    H.document.getElementById("wl-detail-close").click();
+    check("the detail's Close is WIRED, not decorative",
+          H.document.getElementById("wl-detail-card").classList.contains("hidden"),
+          "a control that renders and does nothing is this project's most-repeated defect class");
+    const saveBtn = H.document.getElementById("wl-save");
+    const saveNote = H.document.getElementById("wl-save-note");
+    if (saveBtn) saveBtn.click();
+    for (let i = 0; i < 40 && !(saveNote.textContent || "").includes("required"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("the register form's own Register button is WIRED too",
+          !!saveBtn && (saveNote.textContent || "").includes("required"),
+          "an empty id is refused client-side; silence here would mean the form's button is "
+          + "decorative for the same reason");
   }
 }
 
