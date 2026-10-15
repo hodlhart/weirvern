@@ -89,7 +89,35 @@ def test_the_seeded_attacks_and_benign_hosts_are_named_constants():
     assert "SCANNER" in src and "BEACON" in src and "EXFIL" in src, (
         "the harness no longer names its seeded attackers"
     )
-    assert "BENIGN" in src, (
-        "the harness lost its benign-host set, so it cannot check the other direction -- "
-        "that ordinary traffic is NOT all alerted on"
+    assert "benign_hosts" in src, (
+        "the harness lost its benign-host derivation, so it cannot check the other "
+        "direction -- that ordinary traffic is NOT all alerted on"
+    )
+    # The derivation comes from the seed's device count, not a literal that can silently
+    # shrink under it (the review found one benign host the old literal .13-.20 missed).
+    assert "range(3, devices)" in src, (
+        "the benign set is no longer derived from the device count the seed actually used"
+    )
+
+
+def test_the_harness_holds_the_attack_period_out_of_training():
+    """Review round 2026-10-15: training and scoring covered the SAME span, attacks
+    included, so overfitting/drift -- the failure modes that matter most for an anomaly
+    detector -- were invisible to the only quality gate in CI."""
+    src = HARNESS.read_text()
+    assert "attack_start_minute" in src, "the harness no longer delays the seeded attacks"
+    assert "train_end_dt" in src, (
+        "the harness no longer separates the training window from the scoring span, so a "
+        "detector is again scored on attacks it trained on"
+    )
+
+
+def test_the_harness_asserts_a_storm_ceiling_and_determinism():
+    """The two checks that bound what a green run MEANS: a host flagged in most windows is
+    a storm no matter which other assertions pass, and two identical sweeps must agree."""
+    src = HARNESS.read_text()
+    assert "storm" in src, "the harness no longer bounds verdict volume per host"
+    assert "deterministic" in src.lower(), (
+        "the harness no longer re-runs the sweep and compares -- ordering/clock leaks "
+        "would pass again"
     )

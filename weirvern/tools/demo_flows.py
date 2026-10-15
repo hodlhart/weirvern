@@ -4,6 +4,8 @@ Produces JSONL in goflow2's output shape (so the ingester needs zero changes
 to consume it) with:
   * N "normal" devices doing routine traffic (Web/DNS/SMB/games)
   * 1-2 seeded attack devices per run: port scanner and/or beacon (C2-style)
+  * `--attack-start-minute N` delays ALL seeded attacks to start at minute N -- used by
+    scripts/eval_detection.py so the training window can HOLD OUT the attack period.
 
 Usage:
   python -m weirvern.tools.demo_flows --minutes 60 --devices 8 --output /tmp/demo.jsonl
@@ -56,6 +58,12 @@ def generate(args) -> int:
     servers = ["198.51.100.53", "203.0.113.53", "192.0.2.53", "198.51.100.54", "203.0.113.54"]
     start = int(time.time())
     total = 0
+    # The minute the seeded attacks begin. Default 0 (attacks from the start -- the shape
+    # every pre-review caller relied on). The eval harness passes the last-third mark so
+    # training can HOLD OUT the attack period: scoring a detector on attacks it trained on
+    # measures memorisation, not detection.
+    attack_from = max(0, min(int(getattr(args, "attack_start_minute", 0) or 0),
+                             args.minutes - 1))
 
     def realistic_bytes(rng: random.Random) -> int:
         """Heavy-tailed: ~80% small web/DNS flows, occasional large transfers."""
@@ -83,22 +91,22 @@ def generate(args) -> int:
                     fh.write(json.dumps(f) + "\n")
                     total += 1
             # Attack device 1: port scanner (many dst ports on one host)
-            if args.scanner and minute == 0:
+            if args.scanner and minute == attack_from:
                 scanner = devices[0]
                 for dport in range(1, min(1024, args.scan_ports + 1)):
                     f = _flow(t0 * 1_000_000_000, scanner, "198.51.100.99", 40000 + dport, dport, 6, 0, 1, flags=2)
                     fh.write(json.dumps(f) + "\n")
                     total += 1
-            # Attack device 2: beacon (regular callbacks every 15 min)
-            if args.beacon and minute % 15 == 0:
+            # Attack device 2: beacon (regular callbacks every 15 min, from the attack start)
+            if args.beacon and minute >= attack_from and minute % 15 == 0:
                 f = _flow(
                     (t0 + 7) * 1_000_000_000, devices[1], "203.0.113.66",
                     4444, 443, 6, rng.randint(200, 900), rng.randint(1, 3),
                 )
                 fh.write(json.dumps(f) + "\n")
                 total += 1
-            # Attack device 3: exfil spike (huge outbound volume once)
-            if args.exfil and minute == args.minutes // 2:
+            # Attack device 3: exfil spike (huge outbound volume once, mid-attack-period)
+            if args.exfil and minute == attack_from + (args.minutes - attack_from) // 2:
                 f = _flow(
                     t0 * 1_000_000_000, devices[2], "198.51.100.7",
                     50000, 8443, 6, 450_000_000, 400_000,
@@ -120,6 +128,10 @@ def main() -> None:
     p.add_argument("--scan-ports", type=int, default=100)
     p.add_argument("--beacon", action="store_true", default=True)
     p.add_argument("--exfil", action="store_true", default=True)
+    p.add_argument("--attack-start-minute", type=int, default=0,
+                   help="minute the seeded attacks begin (default 0 = from the start); "
+                        "used by scripts/eval_detection.py to hold the attack period out "
+                        "of the training window")
     generate(p.parse_args())
 
 

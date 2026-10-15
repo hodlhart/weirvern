@@ -63,7 +63,7 @@ jobs:
           CLICKHOUSE_HOST: 127.0.0.1
           CLICKHOUSE_PORT: "8123"
           MODEL_DIR: /tmp/models
-        run: python scripts/eval_detection.py --minutes 90 --devices 12
+        run: python scripts/eval_detection.py --minutes 300 --devices 12
 
   # The manifests are a deployment artifact, so validate them like one: schema
   # correctness AND assembly. kustomize build catches a class of error that
