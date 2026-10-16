@@ -1815,7 +1815,11 @@ def attach_group_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | 
                             "exist without being shown here")
             if state == "":
                 unreviewed += 1
-            wins.append({"window": stamp, "review_state": state, "review_note": note})
+            # reviewed_at rides along so the per-occurrence chip can say WHEN, the same
+            # sentence the row-level chip shows; without it every restored occurrence
+            # would read "not reviewed yet" while it plainly was (issue #20).
+            wins.append({"window": stamp, "review_state": state, "review_note": note,
+                         "reviewed_at": (entry.get("reviewed_at") if entry else None)})
         row["windows"] = wins
         row["unreviewed_n"] = int(unreviewed)
         newest = wins[-1] if wins else {}

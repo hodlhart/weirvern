@@ -460,3 +460,60 @@ def test_anomalies_payload_is_an_object_carrying_rows_and_tiles():
     p2 = web_api.anomalies_payload([])
     assert p2["severity_counts"]["available"] is False, (
         "an unread counts query is a state, never zeros that read as a calm page")
+
+
+
+# ── issue #20: one definition of reviewed, and per-occurrence actions ─────────────────────────
+#
+# The chip, the count tooltip and the unreviewed-only filter described "reviewed" differently:
+# the chip echoed the NEWEST occurrence while `unreviewed_n` counted every one, so acking the
+# newest of a group read as done while the filter still (correctly) listed the row; and the
+# unfolded occurrence list carried no actions, so older occurrences could not be dispositioned
+# from the UI at all. The chip now carries the remainder from the SAME helper the tooltip reads,
+# and each unfolded occurrence posts its own window through the same review path.
+
+
+def test_group_windows_carry_the_reviewed_at_the_per_occurrence_chip_shows():
+    """The unfold's chip states WHEN an occurrence was reviewed; without reviewed_at on the
+    window entry every restored occurrence would read "not reviewed yet" -- an occurrence
+    that was plainly dispositioned presenting as untouched."""
+    old = datetime.datetime(2026, 1, 2, 6, 45)
+    rows = [{"windows": ["2026-01-02T06:45:00", "2026-01-02T07:25:00"],
+             "src_addr": "198.51.100.9"}]
+    idx = {(old, "198.51.100.9"): {"state": "resolved", "note": "", "reviewed_at": old}}
+    status.attach_group_reviews(rows, idx, None, None)
+    assert rows[0]["windows"][0]["reviewed_at"] == old
+    assert rows[0]["windows"][1]["reviewed_at"] is None
+    assert rows[0]["unreviewed_n"] == 1, (
+        "the newest window is unreviewed, so the row must say one is left"
+    )
+
+
+def test_the_row_chip_the_tooltip_and_the_filter_read_one_definition():
+    """The chip's remainder and the count tooltip must come from ONE helper -- two formulas
+    for the same number is how the three surfaces drifted apart in the first place."""
+    app = (WEB / "app.js").read_text()
+    assert "function anReviewSummary" in app
+    chip = app[app.index("function reviewCell"):app.index("async function postReview")]
+    assert "anReviewSummary(a)" in chip and "review-remain" in chip, (
+        "the chip no longer states how many occurrences are still unreviewed"
+    )
+    table = app[app.index("async function loadAnomalies"):]
+    table = table[:table.index("/* ── host drill-down")]
+    assert "anReviewSummary(a).title" in table, (
+        "the count tooltip no longer reads the same summary the chip does"
+    )
+
+
+def test_each_occurrence_in_the_unfold_carries_its_own_review_actions():
+    app = (WEB / "app.js").read_text()
+    body = app[app.index("function anToggleOccurrences"):]
+    body = body[:body.index("THE DASHBOARD-WIDE FILTER")]
+    assert "window_start: w.window" in body and "reviewActs(" in body, (
+        "an older occurrence cannot be dispositioned: the unfold no longer posts ITS window "
+        "through the shared review path"
+    )
+    # And the unreadable-store rule survives the refactor, in the shared builder.
+    assert 'if (state === "unavailable") return null;' in app, (
+        "the unavailable path lost its no-controls rule"
+    )

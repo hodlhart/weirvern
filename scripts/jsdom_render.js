@@ -349,9 +349,10 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
 
   // ── the anomalies/review stub (SOC-1) ────────────────────────────────────────────────────
   //
-  // Two rows deliberately: one UNREVIEWED and one already acked with a note. A single-row stub
-  // cannot catch a renderer that draws every row with the same chip, and the states are what the
-  // column exists to distinguish.
+  // Three rows deliberately: one UNREVIEWED, one already acked with a note, and one
+  // THREE-OCCURRENCE GROUP whose occurrences carry their own states (issue #20). Fewer rows
+  // cannot catch a renderer that draws every row with the same chip, nor the chip/tooltip/
+  // filter disagreement about what "reviewed" means for a group.
   const ANOMALIES_PAYLOAD = [
     { detected_at: "2026-01-02T09:12:00", window_start: "2026-01-02T09:10:00",
       window_end: "2026-01-02T09:15:00", src_addr: "203.0.113.42", hostname: "workstation.lan",
@@ -373,7 +374,49 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       feature_contributions: {}, baseline_comparison: "total_bytes is 3.4 sigma above baseline",
       review_state: "ack", review_note: "nightly backup job",
       reviewed_at: "2026-01-02T08:05:00" },
+
+    // THE THREE-OCCURRENCE GROUP (issue #20): one anomaly detected in three windows, one row
+    // in the queue. Its chip, its count tooltip and the unreviewed-only filter must tell ONE
+    // story about its review state while the check below dispositions it -- occurrence by
+    // occurrence, then the row. Nothing is acked up front: the check acks the newest itself.
+    { detected_at: "2026-01-02T07:30:00", window_start: "2026-01-02T07:25:00",
+      window_end: "2026-01-02T07:30:00", src_addr: "198.51.100.77", hostname: "build-agent.lan",
+      anomaly_score: 0.85, confidence: 0.7, severity: "high",
+      detected_by_models: "Isolation Forest, Gradient Boosting, DBSCAN", model_agreement: 0.6,
+      isolation_forest_score: 0.8, gradient_boosting_score: 0.6, dbscan_score: 0.7,
+      baseline_score: 0.3, primary_deviation_feature: "unique_dst_ports",
+      primary_deviation_zscore: 4.4, deviation_magnitude: 2.6,
+      feature_contributions: { unique_dst_ports: { z: 4.4 } },
+      baseline_comparison: "unique_dst_ports is 4.4 sigma above this host's baseline",
+      n: 3, review_state: "", review_note: "", reviewed_at: null,
+      windows: [
+        { window: "2026-01-02T06:45:00", review_state: "", review_note: "", reviewed_at: null },
+        { window: "2026-01-02T07:05:00", review_state: "", review_note: "", reviewed_at: null },
+        { window: "2026-01-02T07:25:00", review_state: "", review_note: "", reviewed_at: null },
+      ] },
   ];
+
+  // THE REVIEW STORE IS STATEFUL, like the real one (the /api/weirlings/register precedent):
+  // a write PERSISTS, so the reload after a click shows the server's answer. The merge it
+  // applies mirrors status.attach_group_reviews: the newest window headlines the row and
+  // unreviewed_n counts the occurrences with no state (an "unavailable" one is NOT counted --
+  // a state we cannot read is not work left undone). A stub that forgets would let the
+  // agreement checks below pass while the view still rendered the pre-write state.
+  const ANOMALIES_STATE = JSON.parse(JSON.stringify(ANOMALIES_PAYLOAD));
+  function anRecompute() {
+    for (const row of ANOMALIES_STATE) {
+      if (!row.windows) {
+        row.unreviewed_n = row.review_state ? 0 : 1;
+        continue;
+      }
+      row.unreviewed_n = row.windows.filter((w) => !w.review_state).length;
+      const newest = row.windows[row.windows.length - 1];
+      row.review_state = newest.review_state || "";
+      row.review_note = newest.review_note || "";
+      row.reviewed_at = newest.reviewed_at || null;
+    }
+  }
+  anRecompute();
 
   // ── ONE FETCH DISPATCHER, INSTALLED ONCE ────────────────────────────────────────────────
   //
@@ -635,7 +678,30 @@ const IDENTITY_PAYLOAD = {
                                 targets: "*" },
                         notes: [], error: "" }
                   : u.includes("/api/review")
-                    ? { ok: true, state: sent.state || "", note: sent.note || "" }
+                    ? (() => {
+                        // STATEFUL, like the real store (issue #20): a write PERSISTS, so the
+                        // reload after a click shows the server's answer. The merge mirrors
+                        // status.attach_group_reviews: each window keeps its own state, the
+                        // newest window headlines the row, and unreviewed_n counts the
+                        // occurrences with no state -- an "unavailable" one is NOT counted,
+                        // because a state we cannot read is not work left undone.
+                        for (const row of ANOMALIES_STATE) {
+                          if (row.src_addr !== sent.src_addr) continue;
+                          const wins = row.windows || [{ window: row.window_start,
+                            review_state: row.review_state, review_note: row.review_note,
+                            reviewed_at: row.reviewed_at }];
+                          const w = wins.find((x) => x.window === sent.window_start);
+                          if (w) {
+                            w.review_state = sent.state || "";
+                            w.review_note = sent.note || "";
+                            w.reviewed_at = sent.state ? "2026-01-02T09:30:00" : null;
+                          }
+                          row.windows = wins;
+                          anRecompute();
+                          break;
+                        }
+                        return { ok: true, state: sent.state || "", note: sent.note || "" };
+                      })()
                   : u.includes("/api/sluice/block")
                     ? { ok: true, note: "the rule is filed; the gate re-checks within a minute" }
                   : u.includes("/api/models/retrain")
@@ -683,8 +749,10 @@ const IDENTITY_PAYLOAD = {
       return Promise.resolve({ ok: true, status: 200, statusText: "OK",
                                json: async () => payload });
     }
-    for (const [match, payload] of ROUTES) {
+    for (const [match, rawPayload] of ROUTES) {
       if (u.includes(match)) {
+        // A FUNCTION entry is resolved per REQUEST (the anomalies filter; issue #20).
+        const payload = (typeof rawPayload === "function") ? rawPayload(u) : rawPayload;
         // /api/session is TOKEN-AWARE, like the real server, and SESSION FIRST: a valid
         // session reports the account; only when there is none does a presented operator
         // token report the break-glass admin (`via: "token"`). This is what the break-glass
@@ -952,13 +1020,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/weirlings", WEIRLINGS_PAYLOAD],
 
 
-    // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
-    // cannot shadow the others; the dispatcher takes the first hit and /api/anomalies shares
-    // no prefix with any of the above.
-    ["/api/anomalies", { rows: ANOMALIES_PAYLOAD,
-                         severity_counts: { available: true, reason: "",
-                           counts: [{ severity: "high", count: 1 },
-                                    { severity: "medium", count: 1 }] } }],
+    // The anomalies list, for the SOC-1 review-column checks and the #20 agreement checks.
+    // Registered LAST so its match cannot shadow the others; the dispatcher takes the first
+    // hit and /api/anomalies shares no prefix with any of the above. REQUEST-AWARE (issue
+    // #20): the unreviewed-only filter keeps a row while ANY occurrence is unreviewed -- the
+    // rule web.py applies -- because the filter is one of the three surfaces the agreement
+    // check compares, so the stub must apply it too.
+    ["/api/anomalies", (u) => ({ rows: ANOMALIES_STATE.filter(
+                                 (r) => !String(u).includes("unreviewed=1")
+                                        || (r.unreviewed_n || 0) > 0),
+                               severity_counts: { available: true, reason: "",
+                                 counts: [{ severity: "high", count: 1 },
+                                          { severity: "medium", count: 1 }] } })],
   );
 
   const H = window.__H;
@@ -2216,7 +2289,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadAnomalies();
 
   const anomRows = doc.querySelectorAll("#anomalies-table tbody tr");
-  check("the anomalies table renders a row per payload entry", anomRows.length === 2,
+  check("the anomalies table renders a row per payload entry", anomRows.length === 3,
         `${anomRows.length} rows`);
 
   const chips = [...doc.querySelectorAll("#anomalies-table .review-chip")];
@@ -2259,6 +2332,123 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             !!body.window_start, String(body.window_start));
     }
   }
+
+  // ── ONE definition of reviewed (#20) ───────────────────────────────────────────────────────
+  //
+  // A grouped row holds several occurrences, each with its own review state. Three surfaces
+  // describe the row -- the chip, the count tooltip, and the unreviewed-only filter -- and
+  // they used to disagree: the chip echoed only the NEWEST occurrence, so acking the newest
+  // read as "done" while the filter (rightly) still listed the row, and the older occurrences
+  // could not be dispositioned from the UI at all. This check performs real writes, reloads,
+  // and asserts all three surfaces tell the SAME story at every step -- including the end,
+  // where every occurrence is dispositioned and all three say so.
+  const findGroupRow = () => [...doc.querySelectorAll("#anomalies-table tbody tr")]
+    .find((tr) => !tr.classList.contains("an-exp")
+                  && tr.querySelector("td.num") && tr.querySelector("td.num").textContent === "3");
+  const openOccurrences = async (row) => {
+    row.querySelector("td.num").click();
+    await new Promise((r) => setTimeout(r, 60));
+    return [...doc.querySelectorAll("#anomalies-table tr.an-exp .occ")];
+  };
+
+  const gRow0 = findGroupRow();
+  const rem0 = gRow0 && gRow0.querySelector(".review-remain");
+  check("the 3-occurrence group renders as one row, with the remaining count beside the state",
+        !!rem0 && rem0.textContent === "3 unreviewed",
+        rem0 ? rem0.textContent : "no remainder chip");
+
+  // 1) ack the newest occurrence FROM THE ROW; the reload must show one acked, two left.
+  gRow0.querySelector(".review-act[title*='as ack']").click();
+  await new Promise((r) => setTimeout(r, 120));
+  const gRow1 = findGroupRow();
+  const chip1 = gRow1.querySelector(".review-chip");
+  const rem1 = gRow1.querySelector(".review-remain");
+  const tip1 = gRow1.querySelector("td.num").getAttribute("title");
+  check("after acking the newest of three, the chip states the state AND the remainder",
+        chip1.textContent === "ack" && !!rem1 && rem1.textContent === "2 unreviewed",
+        `chip=${chip1.textContent} remain=${rem1 ? rem1.textContent : "none"}`);
+  check("the count tooltip states the same K",
+        tip1 === "3 occurrence(s), 2 unreviewed \u2014 click to list them"
+        && !!rem1 && tip1.includes(rem1.textContent),
+        tip1);
+
+  // 2) the unreviewed-only filter must keep the row: every surface reads the same fields.
+  doc.getElementById("f-unreviewed").checked = true;
+  await H.loadAnomalies();
+  const filteredRows = [...doc.querySelectorAll("#anomalies-table tbody tr")];
+  check("under unreviewed-only the row stays -- chip, tooltip and filter agree",
+        filteredRows.length === 1 && !!findGroupRow(),
+        `${filteredRows.length} row(s)`);
+
+  // 3) each unfolded occurrence is dispositioned ON ITS OWN.
+  doc.getElementById("f-unreviewed").checked = false;
+  await H.loadAnomalies();
+  let occ = await openOccurrences(findGroupRow());
+  check("the unfold lists every occurrence with its own controls",
+        occ.length === 3 && occ.every((o) => o.querySelector(".review-chip")
+                                              && o.querySelector(".review-act")),
+        `${occ.length} occurrence(s)`);
+  check("the acked newest occurrence offers the OTHER dispositions, not ack",
+        !occ[2].querySelector(".review-act[title*='as ack']")
+        && [...occ[2].querySelectorAll(".review-act")].some((b) => b.textContent === "clear"));
+  const oldResolve = occ[0].querySelector(".review-act[title*='resolved']");
+  check("an older occurrence offers its own resolve", !!oldResolve);
+
+  const postedBefore = POSTED.length;
+  oldResolve.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const occReq = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/review"));
+  let occBody = {};
+  try { occBody = JSON.parse((occReq || {}).body || "{}"); } catch (_e) { occBody = {}; }
+  check("resolving an older occurrence posts THAT occurrence's window",
+        !!occReq && occBody.window_start === "2026-01-02T06:45:00"
+        && occBody.src_addr === "198.51.100.77" && occBody.state === "resolved",
+        JSON.stringify(occBody));
+
+  const gRow2 = findGroupRow();
+  const rem2 = gRow2.querySelector(".review-remain");
+  const tip2 = gRow2.querySelector("td.num").getAttribute("title");
+  check("after that write the row reads one fewer unreviewed, and the tooltip says so",
+        !!rem2 && rem2.textContent === "1 unreviewed"
+        && tip2 === "3 occurrence(s), 1 unreviewed \u2014 click to list them",
+        tip2);
+  occ = await openOccurrences(gRow2);
+  check("and the occurrence itself now reads resolved",
+        occ[0].querySelector(".review-chip").textContent === "resolved");
+
+  // 4) finish the row: with every occurrence dispositioned, all three surfaces say "done".
+  occ[1].querySelector(".review-act[title*='as ack']").click();
+  await new Promise((r) => setTimeout(r, 120));
+  const gRow3 = findGroupRow();
+  check("a fully dispositioned group drops the remainder chip",
+        gRow3 && !gRow3.querySelector(".review-remain")
+        && gRow3.querySelector(".review-chip").textContent === "ack");
+  check("its tooltip no longer claims any unreviewed",
+        gRow3.querySelector("td.num").getAttribute("title")
+        === "3 occurrence(s) \u2014 click to list them");
+  doc.getElementById("f-unreviewed").checked = true;
+  await H.loadAnomalies();
+  check("and the unreviewed-only filter hides it -- the same story, three times",
+        !findGroupRow(),
+        doc.querySelector("#anomalies-table tbody").textContent.slice(0, 90));
+  doc.getElementById("f-unreviewed").checked = false;
+  await H.loadAnomalies();
+
+  // 5) the unavailable path is unchanged: a distinct label, no controls.
+  const midWin = ANOMALIES_STATE.find((r) => r.src_addr === "198.51.100.77").windows[1];
+  const midState = midWin.review_state;
+  midWin.review_state = "unavailable";
+  anRecompute();
+  await H.loadAnomalies();
+  occ = await openOccurrences(findGroupRow());
+  check("an unavailable occurrence keeps its distinct label",
+        occ[1].querySelector(".review-chip").textContent === "review unavailable",
+        occ[1].querySelector(".review-chip").textContent);
+  check("...and offers no write at all",
+        occ[1].querySelectorAll(".review-act").length === 0);
+  midWin.review_state = midState;
+  anRecompute();
+  await H.loadAnomalies();
 
   // ── the gate pivot: an alert → a block on the Sluice Gate ──────────────────────────────────
   //

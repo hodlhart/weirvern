@@ -1154,38 +1154,76 @@ function reviewClass(state) {
   return "review-none";
 }
 
-/** One review cell: the state chip, then the actions that are not the current state. */
-function reviewCell(a) {
-  const state = a.review_state || "";
-  const wrap = el("div", {});
+/**
+ * ONE definition of "reviewed" for a row (issue #20).
+ *
+ * A grouped row holds several occurrences, each with its own review state. Three surfaces
+ * describe it -- the chip, the count tooltip and the unreviewed-only filter -- and they used
+ * to disagree: the chip echoed only the NEWEST occurrence, so acking the newest read as done
+ * while the filter (correctly) still listed the row, and the older occurrences could not be
+ * dispositioned at all. The tooltip's "N occurrence(s), K unreviewed" was the honest sentence;
+ * this helper is now its single source, read by BOTH the tooltip and the chip, so they cannot
+ * drift apart: a row is reviewed when EVERY occurrence is (left === 0), and while any are
+ * left the chip carries "K unreviewed" -- literally the tooltip's words.
+ */
+function anReviewSummary(a) {
+  const n = Number(a.n || 1);
+  const left = Number(a.unreviewed_n || 0);
+  return {
+    n, left,
+    title: `${n} occurrence(s)` + (left > 0 ? `, ${left} unreviewed` : ""),
+    remaining: left > 0 ? `${left} unreviewed` : "",
+  };
+}
 
-  wrap.appendChild(el("span", {
+/** The state chip for one occurrence (or a whole row): the state, its label, and WHEN. */
+function reviewChip(state, reviewedAt) {
+  return el("span", {
     class: "review-chip " + reviewClass(state),
     text: REVIEW_LABELS[state] !== undefined ? REVIEW_LABELS[state] : state,
-    title: a.reviewed_at ? "reviewed " + fmtTime(a.reviewed_at) : "not reviewed yet",
-  }));
+    title: reviewedAt ? "reviewed " + fmtTime(reviewedAt) : "not reviewed yet",
+  });
+}
 
-  // No actions while the review store is unreadable: a write against a store we cannot
-  // read would fail after the click, and offering it anyway would advertise a control
-  // that cannot work.
-  if (state === "unavailable") return wrap;
-
-  wrap.appendChild(el("div", { class: "review-acts" }, [
+/** The dispositions a target can be moved to, minus the one it already has.
+ *  No actions while the review store is unreadable: a write against a store we cannot read
+ *  would fail after the click, and offering it anyway would advertise a control that cannot
+ *  work. */
+function reviewActs(target, state) {
+  if (state === "unavailable") return null;
+  return el("div", { class: "review-acts" }, [
     ...[["ack", "ack"], ["resolved", "resolve"], ["false_positive", "FP"]]
       .filter(([st]) => st !== state)
       .map(([st, label]) => el("button", {
         class: "review-act", text: label, attrs: { type: "button" },
         title: `mark this anomaly as ${st.replace("_", " ")}`,
-        on: { click: (e) => { e.stopPropagation(); postReview(a, st); } },
+        on: { click: (e) => { e.stopPropagation(); postReview(target, st); } },
       })),
     state
       ? el("button", {
           class: "review-act", text: "clear", attrs: { type: "button" },
           title: "back to unreviewed",
-          on: { click: (e) => { e.stopPropagation(); postReview(a, ""); } },
+          on: { click: (e) => { e.stopPropagation(); postReview(target, ""); } },
         })
       : null,
-  ]));
+  ]);
+}
+
+/** One review cell: the state chip, the row's remaining count while any occurrence is
+ *  unreviewed, then the actions that are not the current state. */
+function reviewCell(a) {
+  const state = a.review_state || "";
+  const summary = anReviewSummary(a);
+  const wrap = el("div", {});
+  wrap.appendChild(reviewChip(state, a.reviewed_at));
+  if (summary.remaining) {
+    wrap.appendChild(el("span", {
+      class: "review-remain", text: summary.remaining,
+      title: `${summary.remaining} of ${summary.n} occurrences \u2014 the count cell lists them`,
+    }));
+  }
+  const acts = reviewActs(a, state);
+  if (acts) wrap.appendChild(acts);
   return wrap;
 }
 
@@ -1204,29 +1242,26 @@ async function postReview(a, state) {
   await loadAnomalies();
 }
 
-/**
- * THE COUNT COLUMN (the operator, 2026-10-16: "These are identical in anomalies. Add a count
- * column instead of showing both. then when you click it it shows each time it happened"). One
- * row per DISTINCT anomaly; this cell says how many times it fired, and clicking it unfolds the
- * occurrences -- each window with ITS OWN review state, because reviews are per occurrence.
- */
-function anReviewLabel(state) {
-  const s = String(state == null ? "" : state);
-  return { "": "unreviewed", ack: "ack", resolved: "resolved", false_positive: "false positive",
-           unavailable: "state unavailable" }[s] || s;
-}
-
 function anToggleOccurrences(tr, a) {
   const next = tr.nextElementSibling;
   if (next && next.classList && next.classList.contains("an-exp")) { next.remove(); return; }
   const occ = (a.windows && a.windows.length) ? a.windows
-    : [{ window: a.window_start, review_state: a.review_state, review_note: a.review_note }];
+    : [{ window: a.window_start, review_state: a.review_state, review_note: a.review_note,
+         reviewed_at: a.reviewed_at }];
   const box = el("div", { class: "occ-list" });
   for (const w of occ) {
+    // EACH OCCURRENCE IS DISPOSITIONED ON ITS OWN (issue #20). The collapsed row can only
+    // post its newest window, so a group whose older occurrences still said "unreviewed"
+    // was untriageable from the UI. This cell reuses the same chip and action builders and
+    // the same postReview path, so every write still lands as the server's answer.
+    const target = { window_start: w.window, src_addr: a.src_addr,
+                     review_state: w.review_state, review_note: w.review_note,
+                     reviewed_at: w.reviewed_at };
     box.appendChild(el("div", { class: "occ" }, [
-      el("span", { class: "mono", text: w.window ? fmtTime(new Date(w.window)) : "—" }),
-      el("span", { class: "muted", text: "\u00a0\u00a0" + anReviewLabel(w.review_state) }),
-      w.review_note ? el("span", { class: "muted", text: " \u2014 " + w.review_note }) : null,
+      el("span", { class: "mono", text: w.window ? fmtTime(new Date(w.window)) : "\u2014" }),
+      reviewChip(target.review_state || "", target.reviewed_at),
+      reviewActs(target, target.review_state || ""),
+      w.review_note ? el("span", { class: "muted", text: "\u2014 " + w.review_note }) : null,
     ].filter(Boolean)));
   }
   if (Number(a.n || 1) > occ.length) {
@@ -1352,9 +1387,7 @@ async function loadAnomalies() {
       el("td", { class: "mono", text: fmtTime(a.window_start) }),
       el("td", { class: Number(a.n || 1) > 1 ? "num dcell" : "num", text: String(a.n || 1),
                  attrs: Number(a.n || 1) > 1
-                   ? { title: `${Number(a.n)} occurrence(s)`
-                       + (Number(a.unreviewed_n || 0) ? `, ${Number(a.unreviewed_n)} unreviewed` : "")
-                       + " \u2014 click to list them" } : {},
+                   ? { title: anReviewSummary(a).title + " \u2014 click to list them" } : {},
                  on: { click: (e) => {
                    if (Number(a.n || 1) > 1) {
                      e.stopPropagation();

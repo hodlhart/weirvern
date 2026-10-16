@@ -145,6 +145,10 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .review-resolved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
 .review-fp { color: var(--muted); text-decoration: line-through; }
 .review-unavailable { color: var(--danger, #e05c5c); border-style: dashed; }
+.review-remain {
+  display: inline-block; border-radius: 999px; padding: 2px 8px; margin-left: 4px;
+  font-size: 11px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap;
+}
 .review-acts { display: flex; gap: 4px; margin-top: 4px; }
 .review-act {
   background: none; border: 1px solid var(--border); color: var(--muted);
@@ -321,7 +325,8 @@ tr.sl-picked { background: var(--panel2); }
 .zk-bar-fill { height: 10px; background: var(--accent, #58a6ff); border-radius: 2px; }
 .zk-name { text-align: right; }
 .occ-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
-.occ { font-size: 12px; }
+.occ { font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.occ .review-acts { margin-top: 0; }
 tr.an-exp td { background: var(--panel2); }
 .sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 84px;
   padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border);
