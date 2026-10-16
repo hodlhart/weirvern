@@ -419,6 +419,13 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
 // rendered all three identically -- which is exactly the bug this project treats as its worst.
 const SLUICE_PAYLOAD = {
   available: true, reason: "",
+  // The imported lists and the recent domain hits (the operator's hagezi ask, 2026-10-16):
+  // alert-first means these record without blocking, and the panel has to say so.
+  blocklists: [{ source_id: "hagezi-light", name: "HaGeZi Multi LIGHT",
+                 url: "https://example.invalid/light.txt", format: "dnsmasq", enabled: true,
+                 fetched_at: "2026-10-16 06:00:00", domain_count: 123456, last_error: "" }],
+  hits: [{ ts: "2026-10-16 06:01:00", rule_id: "", domain: "ads.example.com",
+           query: "ads.example.com", client: "198.51.100.20" }],
   enabled: true, iface: "eth1", live: 2,
   criticality: "high",
   gate: {
@@ -2163,6 +2170,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         }
       }
     }
+  }
+
+  // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
+  {
+    H.showView("sluice");
+    await H.loadSluice();
+    const bl = doc.getElementById("sl-bl-rows").textContent;
+    check("the blocklist panel renders the imported source", /HaGeZi/.test(bl) && /123456/.test(bl),
+          bl.slice(0, 110));
+    const hits = doc.getElementById("sl-hit-rows").textContent;
+    check("recent domain hits are listed", /ads\.example\.com/.test(hits), hits.slice(0, 120));
   }
 
   // The gate OFF: the same rows must state the reason instead of offering the button.

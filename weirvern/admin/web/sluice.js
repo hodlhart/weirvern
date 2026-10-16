@@ -72,6 +72,9 @@ async function loadSluice() {
     return;
   }
 
+  // What has been imported and what it caught: same payload, same load, one place to read.
+  renderBlocklists(d);
+
   // ── the gate's own state ────────────────────────────────────────────────────────────────────
   const stateBox = document.getElementById("sl-state");
   const noteBox = document.getElementById("sl-state-note");
@@ -309,3 +312,84 @@ function wireSluice() {
     }
   });
 }
+
+
+/* ── Blocklists: what has been imported, and what it has caught ──────────────────────────────── */
+function renderBlocklists(d) {
+  const body = document.getElementById("sl-bl-rows");
+  if (!body) return;
+  body.replaceChildren();
+  const sources = d.blocklists || [];
+  if (!sources.length) {
+    const tr = el("tr", {});
+    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "5" },
+      text: "No sources yet — Sync now seeds the defaults (HaGeZi LIGHT on, PRO listed and off)." }));
+    body.appendChild(tr);
+  }
+  for (const s of sources) {
+    const state = s.last_error
+      ? el("span", { class: "chip bad", text: "last sync failed" })
+      : (s.fetched_at ? el("span", { class: "chip ok", text: "ok" })
+                      : el("span", { class: "chip muted", text: "never fetched" }));
+    const tr = el("tr", {}, [
+      el("td", { text: s.name + (s.enabled ? "" : " (off)") }),
+      el("td", {}, [state]),
+      el("td", { class: "mono", text: String(s.domain_count || 0) }),
+      el("td", { class: "muted", text: s.fetched_at ? fmtTime(new Date(s.fetched_at)) : "—" }),
+      el("td", { class: "muted", text: s.last_error ? s.last_error.slice(0, 90) : "—" }),
+    ]);
+    body.appendChild(tr);
+  }
+  const hitBody = document.getElementById("sl-hit-rows");
+  if (!hitBody) return;
+  hitBody.replaceChildren();
+  const hits = d.hits || [];
+  if (!hits.length) {
+    const tr = el("tr", {});
+    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "4" },
+      text: "No domain hits recorded. A hit appears when a device asks for a listed name or a " +
+            "domain rule's name — recording blocks nothing." }));
+    hitBody.appendChild(tr);
+    return;
+  }
+  for (const h of hits) {
+    const tr = el("tr", {}, [
+      el("td", { class: "muted", text: fmtTime(new Date(h.ts)) }),
+      el("td", { class: "mono", text: h.domain }),
+      el("td", { text: h.query }),
+      el("td", { class: "muted", text: h.client }),
+    ]);
+    hitBody.appendChild(tr);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const sync = document.getElementById("sl-bl-sync");
+  if (sync) sync.addEventListener("click", async () => {
+    const note = document.getElementById("sl-bl-note");
+    if (note) note.textContent = "syncing… (fetches the lists; a few seconds)";
+    try {
+      const r = await postJSON("/api/blocklists/sync", {});
+      const ok = (r.results || []).filter((x) => x.ok).length;
+      if (note) note.textContent = `synced ${ok} source(s)`;
+    } catch (err) {
+      if (note) note.textContent = `sync failed: ${(err && err.message) || err}`;
+    }
+    loadSluice().then(clearError).catch(showError);
+  });
+  const add = document.getElementById("sl-bl-add");
+  if (add) add.addEventListener("click", async () => {
+    const note = document.getElementById("sl-bl-note");
+    const field = document.getElementById("sl-bl-custom");
+    const domain = field ? field.value.trim() : "";
+    if (!domain) { if (note) note.textContent = "give a domain first"; return; }
+    try {
+      await postJSON("/api/blocklists/custom", { action: "add", domain });
+      if (field) field.value = "";
+      if (note) note.textContent = `added ${domain}`;
+    } catch (err) {
+      if (note) note.textContent = (err && err.message) || String(err);
+    }
+    loadSluice().then(clearError).catch(showError);
+  });
+});

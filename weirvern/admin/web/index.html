@@ -959,6 +959,31 @@
     </div>
 
     <div class="card">
+      <h2>Domain blocklists <button class="info-btn" data-info="sl-bl-info" aria-label="what the blocklists do" aria-expanded="false" title="what the blocklists do">i</button></h2>
+      <div class="info-text hidden" id="sl-bl-info">
+        Lists imported from the internet, plus your own names. A hit is recorded when a device
+        asks for a listed name &mdash; importing and recording block nothing; a domain rule is
+        what blocks what a name resolves to. Each row says when it was fetched and, if the last
+        sync failed, why.
+      </div>
+      <table>
+        <thead><tr><th>source</th><th>state</th><th>domains</th><th>fetched</th><th>error</th></tr></thead>
+        <tbody id="sl-bl-rows"></tbody>
+      </table>
+      <div class="controls">
+        <button id="sl-bl-sync">Sync now</button>
+        <label>custom domain <input id="sl-bl-custom" type="text" placeholder="ads.example.com" /></label>
+        <button id="sl-bl-add">Add</button>
+        <span id="sl-bl-note" class="muted"></span>
+      </div>
+      <h3>Recent domain hits</h3>
+      <table>
+        <thead><tr><th>time</th><th>domain</th><th>query</th><th>client</th></tr></thead>
+        <tbody id="sl-hit-rows"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2>Rules <span id="sl-count" class="muted"></span></h2>
       <div class="controls">
         

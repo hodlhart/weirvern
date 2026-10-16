@@ -78,6 +78,34 @@ def _is_gate_only(settings) -> bool:
 # cursor for a path whose whole job is watching, not enforcing.
 _SLUICE_DNS: dict = {"cursor": None, "last": 0.0}
 
+# The blocklist sync's own interval. The real cadence is per SOURCE (fetched_at older than
+# SYNC_EVERY_H), so this pass runs every 30 minutes and usually finds nothing due -- cheap.
+_BLOCKLIST: dict = {"last": 0.0}
+
+
+def _blocklist_maybe(settings, client) -> None:
+    """Seed the default sources and sync whatever is stale. Failures are recorded states on
+    the source rows; this pass never raises into the cycle."""
+    import time as _time  # noqa: PLC0415
+
+    from weirvern import blocklists  # noqa: PLC0415
+
+    now = _time.monotonic()
+    if now - float(_BLOCKLIST["last"]) < 1800:
+        return
+    _BLOCKLIST["last"] = now
+    try:
+        added = blocklists.ensure_default_sources(client)
+        if added:
+            logger.info("blocklists: seeded %d default source(s)", added)
+        due = blocklists.sync_due(client)
+        if due:
+            logger.info("blocklists: %d source(s) due for sync", len(due))
+        for src in due:
+            blocklists.sync_source(client, src)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("blocklist pass failed (detection continues): %s", exc)
+
 
 def _sluice_dns_maybe(settings, client) -> None:
     """Record DNS queries that hit an ACTIVE domain rule -- the alert-first half.
@@ -103,6 +131,18 @@ def _sluice_dns_maybe(settings, client) -> None:
         return
     if not rules:
         return
+    # THE LIST IS THE SECOND MATCHER: rule hits first (specific), then the blocklist set -- the
+    # "small cache" in the operator's ask, held in-process and refreshed on its own clock. A
+    # list hit names the MATCHED list entry in `domain` and carries no rule_id; it records the
+    # same way a rule hit does, because alert-first does not care which table said the name.
+    try:
+        from weirvern import blocklists  # noqa: PLC0415
+
+        listed = blocklists.load_domains(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sluice dns: could not load the blocklist: %s", exc)
+        listed = {}
+
     cursor = _SLUICE_DNS["cursor"]
     if cursor is None:
         # Naive local time, like every other clock read in this file: the rows zeek writes are
@@ -135,6 +175,7 @@ def _sluice_dns_maybe(settings, client) -> None:
         if tsn and tsn > newest:
             newest = tsn
         q = str(query or "").lower().rstrip(".")
+        hit = False
         for rule in rules:
             d = rule.domain.lower()
             if q == d or q.endswith("." + d):
@@ -143,7 +184,17 @@ def _sluice_dns_maybe(settings, client) -> None:
                     "query": str(query), "src_addr": str(src_addr), "dst_addr": "",
                     "protocol": "dns", "rule_snapshot": rule.snapshot(), "direction": "forward",
                 })
+                hit = True
                 break
+        if hit or not listed:
+            continue
+        matched = blocklists.domain_in_set(q, listed)
+        if matched:
+            events.append({
+                "ts": ts, "rule_id": "", "kind": "dns", "domain": matched,
+                "query": str(query), "src_addr": str(src_addr), "dst_addr": "",
+                "protocol": "dns", "rule_snapshot": "", "direction": "forward",
+            })
     _SLUICE_DNS["cursor"] = newest
     if events:
         try:
@@ -2083,6 +2134,10 @@ def main() -> None:
                 _sluice_dns_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice dns pass failed (detection continues): %s", exc)
+            try:
+                _blocklist_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist pass failed (detection continues): %s", exc)
 
             # The in-line flow probe, on the same rhythm (see its section above). Separate from
             # the gate on purpose: collecting flows from the channel does not require blocking
@@ -2126,6 +2181,10 @@ def main() -> None:
                 _sluice_dns_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice dns pass failed (detection continues): %s", exc)
+            try:
+                _blocklist_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist pass failed (detection continues): %s", exc)
             try:
                 _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001

@@ -818,6 +818,10 @@ def test_a_failed_gate_query_reports_rather_than_rendering_empty():
     const src = fs.readFileSync(process.argv[2], "utf8");
     const made = [];
     global.document = {
+      // The shipping file wires controls at the top level (the blocklist panel, 2026-10-16); a
+      // real DOM always has this, so the mock must too -- the previous mock predated top-level
+      // wiring and the loader check failed on the MOCK's gap, not on the file.
+      addEventListener() {},
       getElementById: (id) => (id === "data-banner" ? (made.find((b) => b.id === id) || null)
                                                     : { replaceChildren(){}, appendChild(){},
                                                         textContent: "", checked: false,

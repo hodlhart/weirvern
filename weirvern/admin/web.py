@@ -939,11 +939,31 @@ def _build_handler(ctx: GuiContext):
             except Exception:  # noqa: BLE001
                 pass
 
+            payload["blocklists"] = []
+            payload["hits"] = []
             try:
-                from weirvern import sluice_store  # noqa: PLC0415
+                from weirvern import blocklists, sluice_store  # noqa: PLC0415
                 with self._with_client() as client:
                     rules = sluice_store.load_all_rules(client)
                     gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+                    # The imported lists and the recent domain hits ride the same payload: the
+                    # operator reads "what would be caught" and "what was caught" in one place.
+                    try:
+                        payload["blocklists"] = blocklists.load_sources(client)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("blocklist sources unavailable: %s", exc)
+                    try:
+                        hit_rows = client.query(
+                            "SELECT ts, rule_id, domain, query, src_addr "
+                            "FROM weirvern.sluice_events WHERE kind = 'dns' "
+                            "ORDER BY ts DESC LIMIT 50").result_rows
+                        payload["hits"] = [
+                            {"ts": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                             "rule_id": str(r[1]), "domain": str(r[2]), "query": str(r[3]),
+                             "client": str(r[4])}
+                            for r in hit_rows]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("domain hits unavailable: %s", exc)
                     # ONE RULE STORE, MANY GATES: every box that can enforce reports its own row,
                     # and the operator sees who is actually filtering (and who has stopped).
                     fleet_gates = sluice_store.load_gate_states(client)
@@ -1183,6 +1203,54 @@ def _build_handler(ctx: GuiContext):
                          + (" — ALERT mode: hits are recorded, nothing is blocked"
                             if rule.mode == "alert" else "")),
             })
+
+        def _blocklists_sync(self) -> None:
+            """Sync every enabled source NOW. Slow on purpose: it fetches megabytes."""
+            if not self._authorize():
+                return
+            from weirvern import blocklists  # noqa: PLC0415
+            try:
+                with self._with_client() as client:
+                    blocklists.ensure_default_sources(client)
+                    results = []
+                    for src in blocklists.load_sources(client):
+                        if not src["enabled"] or src["source_id"] == "custom":
+                            continue
+                        results.append({"source_id": src["source_id"],
+                                        **blocklists.sync_source(client, src)})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist sync failed: %s", exc)
+                return self._error(502, f"the sync failed: {type(exc).__name__}")
+            self._json({"ok": True, "results": results})
+
+        def _blocklists_custom(self) -> None:
+            """Add or remove one operator-entered name. Validated like a domain rule."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            from weirvern import blocklists  # noqa: PLC0415
+            from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+            action = str(body.get("action") or "add").strip().lower()
+            domain = str(body.get("domain") or "").strip()
+            if action not in ("add", "remove"):
+                return self._error(400, f"action must be add or remove, not {action!r}")
+            try:
+                with self._with_client() as client:
+                    if action == "remove":
+                        blocklists.remove_custom_domain(client, domain)
+                        name = domain.lower().rstrip(".")
+                    else:
+                        name = blocklists.add_custom_domain(client, domain)
+            except SluiceError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist custom change failed: %s", exc)
+                return self._error(502, f"the change failed: {type(exc).__name__}")
+            self._json({"ok": True, "action": action, "domain": name})
 
         def _sluice_revoke(self) -> None:
             """Stop enforcing a rule, keeping the RECORD.
@@ -1666,6 +1734,13 @@ def _build_handler(ctx: GuiContext):
                 return self._model_retrain_write()
             if path == "/api/sluice/revoke":
                 return self._sluice_revoke()
+            # ── BLOCKLISTS ──────────────────────────────────────────────────────────────────
+            # Both admin-gated: importing a list decides what this deployment WATCHES (and,
+            # once a rule blocks, what it stops), which is a change to the configuration.
+            if path == "/api/blocklists/sync":
+                return self._blocklists_sync()
+            if path == "/api/blocklists/custom":
+                return self._blocklists_custom()
             # ── WEIRLINGS writes ─────────────────────────────────────────────────────────
             # Admin-gated like every other mutation. Registering a sensor decides what this hub
             # will EXPECT and therefore what it raises as missing, so it is a write even though
