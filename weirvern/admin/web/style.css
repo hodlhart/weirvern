@@ -702,3 +702,15 @@ nav::-webkit-scrollbar-track { background: transparent; }
   .card { padding: 10px; }
 }
 
+
+/* ── the global time range (the header control every tab answers to) ─────────────────────── */
+.timerange { position: relative; display: inline-block; }
+#tr-open { }
+.tr-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; width: 460px;
+  background: var(--panel, #1b1f24); border: 1px solid var(--line, #2c333b); border-radius: 8px;
+  padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.45); text-align: left; }
+.tr-panel .tr-sec { margin: 6px 0; }
+.tr-panel .tr-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.tr-panel input[type="text"] { flex: 1 1 220px; min-width: 180px; }
+.tr-panel button { cursor: pointer; }
+#tr-note { margin: 8px 0 0; font-size: 12px; }

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from weirvern import addressing
+from weirvern.admin import timewindow
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +66,9 @@ def flow_volume_series(client, hours: int = 24) -> dict:
             "SELECT toStartOfInterval(window_start, INTERVAL %(w)s SECOND) AS bucket, "
             "sum(total_bytes) AS bytes, sum(flow_count) AS flows "
             "FROM weirvern.flows_aggregated "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             "GROUP BY bucket ORDER BY bucket",
-            parameters={"w": width, "h": hours},
+            parameters={"w": width, **timewindow.w(hours)},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("flow_volume_series failed: %s", exc)
@@ -106,9 +107,9 @@ def protocol_mix(client, hours: int = 24, limit: int = 12) -> dict:
         rows = client.query(
             "SELECT proto, sum(bytes) AS bytes, count() AS flows "
             "FROM weirvern.flows "
-            "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
             "GROUP BY proto ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("protocol_mix failed: %s", exc)
@@ -137,9 +138,9 @@ def top_ports(client, hours: int = 24, limit: int = 12) -> dict:
         rows = client.query(
             "SELECT dst_port, proto, sum(bytes) AS bytes, count() AS flows "
             "FROM weirvern.flows "
-            "WHERE timestamp >= now() - INTERVAL %(h)s HOUR AND dst_port > 0 "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s AND dst_port > 0 "
             "GROUP BY dst_port, proto ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("top_ports failed: %s", exc)
@@ -166,12 +167,12 @@ def destination_spread(client, hours: int = 24, limit: int = 12) -> dict:
         rows = client.query(
             "SELECT src_addr, max(unique_dst_ips) AS dsts, sum(flow_count) AS flows "
             "FROM weirvern.flows_aggregated "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             # Hosts only -- see weirvern/addressing.py. A fan-out chart for ff02::fb is a chart
             # about nothing.
             "  AND " + addressing.sql_host("src_addr") + " "
             "GROUP BY src_addr ORDER BY dsts DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("destination_spread failed: %s", exc)
@@ -246,9 +247,9 @@ def zeek_counts(client, hours: int = 24) -> dict:
             # leaving the reader to guess. Same principle as everywhere else here: state what is
             # absent and why.
             rows = client.query(
-                f"SELECT countIf(ts >= now() - INTERVAL %(h)s HOUR) AS in_window, "  # noqa: S608
+                f"SELECT countIf(ts >= %(since)s AND ts <= %(until)s) AS in_window, "  # noqa: S608
                 f"count() AS total, max(ts) AS last_ts FROM weirvern.{table}",
-                parameters={"h": hours},
+                parameters={**timewindow.w(hours)},
             ).result_rows
             in_window = int(rows[0][0] or 0)
             total = int(rows[0][1] or 0)
@@ -292,8 +293,8 @@ def zeek_timeline(client, hours: int = 24) -> dict:
             rows = client.query(
                 f"SELECT toStartOfInterval(ts, INTERVAL %(w)s SECOND) AS bucket, count() "  # noqa: S608
                 f"FROM weirvern.{table} "
-                "WHERE ts >= now() - INTERVAL %(h)s HOUR GROUP BY bucket ORDER BY bucket",
-                parameters={"w": width, "h": hours},
+                "WHERE ts >= %(since)s AND ts <= %(until)s GROUP BY bucket ORDER BY bucket",
+                parameters={"w": width, **timewindow.w(hours)},
             ).result_rows
             series[label] = [
                 {"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
@@ -319,9 +320,9 @@ def zeek_services(client, hours: int = 24, limit: int = 15) -> dict:
         rows = client.query(
             "SELECT arrayJoin(splitByChar(',', service)) AS svc, count() AS n "
             "FROM weirvern.zeek_conn "
-            "WHERE ts >= now() - INTERVAL %(h)s HOUR AND service != '' "
+            "WHERE ts >= %(since)s AND ts <= %(until)s AND service != '' "
             "GROUP BY svc ORDER BY n DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("zeek_services failed: %s", exc)
@@ -341,9 +342,9 @@ def zeek_dns_names(client, hours: int = 24, limit: int = 20) -> dict:
         rows = client.query(
             "SELECT query, count() AS n, uniqExact(src_addr) AS askers "
             "FROM weirvern.zeek_dns "
-            "WHERE ts >= now() - INTERVAL %(h)s HOUR AND position(query, '.') > 0 "
+            "WHERE ts >= %(since)s AND ts <= %(until)s AND position(query, '.') > 0 "
             "GROUP BY query ORDER BY n DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("zeek_dns_names failed: %s", exc)
@@ -377,8 +378,9 @@ def ingestion_series(client, hours: int = 24) -> dict:
             rows = client.query(
                 f"SELECT toStartOfInterval({tscol}, INTERVAL %(w)s SECOND) AS bucket, count() "  # noqa: S608
                 f"FROM {table} "
-                f"WHERE {tscol} >= now() - INTERVAL %(h)s HOUR GROUP BY bucket ORDER BY bucket",
-                parameters={"w": width, "h": hours},
+                f"WHERE {tscol} >= %(since)s AND {tscol} <= %(until)s "
+                "GROUP BY bucket ORDER BY bucket",
+                parameters={"w": width, **timewindow.w(hours)},
             ).result_rows
             stages[label] = [
                 {"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
@@ -416,8 +418,8 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
     if port is None and proto is None:
         return _unavailable("give a port or a protocol to drill into")
 
-    where = ["timestamp >= now() - INTERVAL %(h)s HOUR"]
-    params: dict = {"h": hours, "n": limit}
+    where = ["timestamp >= %(since)s AND timestamp <= %(until)s"]
+    params: dict = {**timewindow.w(hours), "n": limit}
     if port is not None:
         where.append("dst_port = %(port)s")
         params["port"] = int(port)
@@ -494,10 +496,10 @@ def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int =
         rows = client.query(
             f"SELECT toString({addrcol}) AS addr, count() AS n "  # noqa: S608 - table from ZEEK_LOGS, not input
             f"FROM weirvern.{table} "
-            "WHERE ts >= now() - INTERVAL %(h)s HOUR "
+            "WHERE ts >= %(since)s AND ts <= %(until)s "
             f"AND toString({addrcol}) != '' AND toString({addrcol}) != '-' "
             "GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         _logging.getLogger(__name__).warning("zeek_log_hosts failed for %s: %s", table, exc)
@@ -579,21 +581,21 @@ def alert_audit(client, hours: int = 24, limit: int = 500) -> dict:
         by_reason = client.query(
             "SELECT reason, sent, count() AS n, max(sent_at) AS last_at "
             "FROM weirvern.alert_events "
-            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR "
+            "WHERE sent_at >= %(since)s AND sent_at <= %(until)s "
             "GROUP BY reason, sent ORDER BY n DESC",
-            parameters={"h": hours},
+            parameters={**timewindow.w(hours)},
         ).result_rows
         total = int(client.query(
             "SELECT count() FROM weirvern.alert_events "
-            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR",
-            parameters={"h": hours},
+            "WHERE sent_at >= %(since)s AND sent_at <= %(until)s",
+            parameters={**timewindow.w(hours)},
         ).result_rows[0][0] or 0)
         recent = client.query(
             "SELECT sent_at, src_addr, severity, score, sent, reason, message "
             "FROM weirvern.alert_events "
-            "WHERE sent_at >= now() - INTERVAL %(h)s HOUR "
+            "WHERE sent_at >= %(since)s AND sent_at <= %(until)s "
             "ORDER BY sent_at DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("alert_audit failed: %s", exc)

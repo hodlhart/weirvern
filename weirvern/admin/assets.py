@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 
 from weirvern import addressing
+from weirvern.admin import timewindow
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +152,9 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         "SELECT src_addr, sum(total_bytes) AS bytes, sum(flow_count) AS flows, "
         "       max(unique_dst_ips) AS dsts, min(window_start) AS first, max(window_end) AS last "
         "FROM weirvern.flows_aggregated "
-        "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+        "WHERE window_start >= %(since)s AND window_start <= %(until)s "
         "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
-        {"h": hours, "n": limit},
+        {**timewindow.w(hours), "n": limit},
         "asset inventory (aggregate)",
     )
     read_ok = {"aggregate": agg is not None}
@@ -172,12 +173,12 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         client,
         "SELECT addr, sum(outbound) AS out_b, sum(inbound) AS in_b FROM ("
         "  SELECT src_addr AS addr, bytes AS outbound, 0 AS inbound FROM weirvern.flows "
-        "  WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+        "  WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  UNION ALL "
         "  SELECT dst_addr AS addr, 0 AS outbound, bytes AS inbound FROM weirvern.flows "
-        "  WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+        "  WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         ") GROUP BY addr ORDER BY out_b DESC LIMIT %(n)s",
-        {"h": hours, "n": limit},
+        {**timewindow.w(hours), "n": limit},
         "asset inventory (direction split)",
     )
     read_ok["direction"] = direction is not None
@@ -196,10 +197,10 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
             # the IPv4 ones. The '-' sentinel is Zeek's "unset" and is excluded rather than
             # counted as a host, which would create a host literally named "-".
             f"SELECT {addrcol} AS addr, count() AS n FROM weirvern.{table} "  # noqa: S608
-            "WHERE ts >= now() - INTERVAL %(h)s HOUR "
+            "WHERE ts >= %(since)s AND ts <= %(until)s "
             f"AND toString({addrcol}) != '' AND toString({addrcol}) != '-' "
             "GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
-            {"h": hours, "n": limit},
+            {**timewindow.w(hours), "n": limit},
             f"asset inventory ({table})",
         )
         if rows is None:
@@ -217,9 +218,9 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     anom = _rows(
         client,
         "SELECT src_addr, count() AS n FROM weirvern.netflow_anomalies "
-        "WHERE detected_at >= now() - INTERVAL %(h)s HOUR "
+        "WHERE detected_at >= %(since)s AND detected_at <= %(until)s "
         "GROUP BY src_addr ORDER BY n DESC LIMIT %(n)s",
-        {"h": hours, "n": limit},
+        {**timewindow.w(hours), "n": limit},
         "asset inventory (anomalies)",
     )
     read_ok["anomalies"] = anom is not None
@@ -291,7 +292,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "       max(timestamp) AS last_seen, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
-        "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+        "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  AND src_addr != '' AND dst_addr != '' "
         "  AND src_addr != dst_addr "
         # BOTH ENDPOINTS MUST BE HOSTS. The self-edge rule below already admitted that a LAN
@@ -300,7 +301,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
-        {"h": hours, "n": limit},
+        {**timewindow.w(hours), "n": limit},
         "connection graph",
     )
     if edges is None:
@@ -311,9 +312,9 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     total_rows = _rows(
         client,
         "SELECT uniqExact((src_addr, dst_addr)) FROM weirvern.flows "
-        "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+        "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr",
-        {"h": hours},
+        {**timewindow.w(hours)},
         "connection graph (total)",
     )
     total = int(total_rows[0][0] or 0) if total_rows else len(edges)
@@ -454,8 +455,8 @@ def host_zeek_activity(client, addr: str, hours: int = 24) -> dict:
         rows = _rows(
             client,
             f"SELECT count() AS n FROM weirvern.{table} "  # noqa: S608
-            "WHERE ts >= now() - INTERVAL %(h)s HOUR AND toString(" + addrcol + ") = %(a)s",
-            {"h": hours, "a": addr},
+            "WHERE ts >= %(since)s AND ts <= %(until)s AND toString(" + addrcol + ") = %(a)s",
+            {**timewindow.w(hours), "a": addr},
             f"host zeek activity ({table})",
         )
         if rows is None:
@@ -495,13 +496,13 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
         "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
-        "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
+        "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  AND src_addr != dst_addr "
         "  AND (src_addr IN %(a)s OR dst_addr IN %(a)s) "
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
-        {"h": hours, "n": limit, "a": tuple(addrs)},
+        {**timewindow.w(hours), "n": limit, "a": tuple(addrs)},
         "tracked-host edges",
     )
     if edges is None:

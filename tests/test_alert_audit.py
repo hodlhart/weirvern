@@ -76,7 +76,10 @@ def test_the_breakdown_and_the_events_are_both_read():
     # All three statements asked, and all bounded by the window.
     assert len(c.queries) == 3, f"expected breakdown+count+events, got {len(c.queries)}"
     for q in c.queries:
-        assert "INTERVAL %(h)s HOUR" in q
+        # The window moved from "the last N hours" to an explicit since/until pair when the
+        # console grew a global time range (2026-10-16, weirvern/admin/timewindow.py). The
+        # test's intent is unchanged: the query must be BOUNDED in time.
+        assert "%(since)s" in q and "%(until)s" in q
     assert "weirvern.alert_events" in c.queries[0]
 
 

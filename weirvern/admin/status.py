@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from weirvern import addressing
+from weirvern.admin import timewindow
 
 logger = logging.getLogger(__name__)
 from weirvern.admin.mode import MODE_SIPHON  # noqa: E402
@@ -1303,9 +1304,9 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         rows = client.query(
             "SELECT model_type, trained_at, training_sample_count, current_weight, "
             "metrics FROM weirvern.ml_models "
-            "WHERE trained_at >= now() - INTERVAL %(h)s HOUR "
+            "WHERE trained_at >= %(since)s AND trained_at <= %(until)s "
             "ORDER BY trained_at",
-            parameters={"h": hours},
+            parameters={**timewindow.w(hours)},
         ).result_rows
     except Exception as exc:  # noqa: BLE001 - a panel must not break the page
         return {"available": False, "reason": f"training history query failed: {exc}"}
@@ -1363,9 +1364,9 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
             "severity, primary_deviation_feature, deviation_magnitude, "
             "window_start, src_addr, feature_contributions "
             "FROM weirvern.netflow_anomalies "
-            "WHERE detected_at >= now() - INTERVAL %(h)s HOUR "
+            "WHERE detected_at >= %(since)s AND detected_at <= %(until)s "
             "ORDER BY detected_at DESC LIMIT 500",
-            parameters={"h": hours},
+            parameters={**timewindow.w(hours)},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         out["available"] = False
@@ -1444,9 +1445,9 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
             "reason, model_agreement, isolation_forest_score, gradient_boosting_score, "
             "dbscan_score, baseline_score, detected_by_models "
             "FROM weirvern.near_misses FINAL "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             "ORDER BY anomaly_score DESC LIMIT 100",
-            parameters={"h": hours},
+            parameters={**timewindow.w(hours)},
         ).result_rows
         out["near_misses"] = [
             {"window_start": _iso(r[0]), "window_end": _iso(r[1]), "src_addr": r[2],
@@ -1600,14 +1601,14 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
             # destination in every window. max() is the honest "how wide did this
             # host's fan-out get", which is the question the column answers.
             "max(unique_dst_ips) AS dsts FROM weirvern.flows_aggregated "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             # NOT EVERY ADDRESS THAT APPEARS IS A HOST (weirvern/addressing.py has the
             # measurement): ranking fe80::/ff02::/224.0.0.251 as talkers made the panel read
             # as broken on the first live segment. The count of what was left out is
             # reported separately by `noise_flows`, so the filter is stated, not silent.
             "  AND " + addressing.sql_host("src_addr") + " "
             "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={"h": hours, "n": limit},
+            parameters={**timewindow.w(hours), "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         # WARNING rather than debug: an empty talkers panel is indistinguishable
@@ -1626,9 +1627,9 @@ def noise_flows(client, hours: int = 24) -> dict:
     try:
         rows = client.query(
             "SELECT count(), sum(total_bytes) FROM weirvern.flows_aggregated "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR AND "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s AND "
             + addressing.noise_sql("src_addr"),
-            parameters={"h": hours},
+            parameters={**timewindow.w(hours)},
         ).result_rows
         n, b = (rows[0] if rows else (0, 0))
         return {"available": True, "reason": "", "flows": int(n or 0), "bytes": int(b or 0)}
@@ -1710,26 +1711,26 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
             logger.warning("host_detail %s failed: %s", key, exc)
             out.setdefault("_errors", {})[key] = str(exc)[:200]
 
-    base = {"a": src_addr, "h": hours}
+    base = {"a": src_addr, **timewindow.w(hours)}
 
     _q(
         "SELECT sum(bytes), sum(packets), count(), uniqExact(dst_addr), "
         "uniqExact(dst_port), min(time_flow_start), max(time_flow_start) "
         "FROM weirvern.flows WHERE src_addr = %(a)s "
-        "AND time_flow_start >= now() - INTERVAL %(h)s HOUR",
+        "AND time_flow_start >= %(since)s AND time_flow_start <= %(until)s",
         base, "totals", lambda rows: rows[0] if rows else None,
     )
     _q(
         "SELECT dst_addr, sum(bytes) AS bytes, count() AS flows, uniqExact(dst_port) AS ports "
         "FROM weirvern.flows WHERE src_addr = %(a)s "
-        "AND time_flow_start >= now() - INTERVAL %(h)s HOUR "
+        "AND time_flow_start >= %(since)s AND time_flow_start <= %(until)s "
         "GROUP BY dst_addr ORDER BY bytes DESC LIMIT 15",
         base, "top_destinations",
     )
     _q(
         "SELECT dst_port, proto, sum(bytes) AS bytes, count() AS flows "
         "FROM weirvern.flows WHERE src_addr = %(a)s "
-        "AND time_flow_start >= now() - INTERVAL %(h)s HOUR "
+        "AND time_flow_start >= %(since)s AND time_flow_start <= %(until)s "
         "GROUP BY dst_port, proto ORDER BY flows DESC LIMIT 15",
         base, "top_ports",
     )
@@ -1739,14 +1740,14 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
     _q(
         "SELECT toStartOfHour(time_flow_start) AS hr, sum(bytes) AS bytes, count() AS flows "
         "FROM weirvern.flows WHERE src_addr = %(a)s "
-        "AND time_flow_start >= now() - INTERVAL %(h)s HOUR GROUP BY hr ORDER BY hr",
+        "AND time_flow_start >= %(since)s AND time_flow_start <= %(until)s GROUP BY hr ORDER BY hr",
         base, "timeline",
     )
     _q(
         "SELECT detected_at, window_start, anomaly_score, severity, detected_by_models, "
         "primary_deviation_feature, baseline_comparison "
         "FROM weirvern.netflow_anomalies WHERE src_addr = %(a)s "
-        "AND detected_at >= now() - INTERVAL %(h)s HOUR "
+        "AND detected_at >= %(since)s AND detected_at <= %(until)s "
         "ORDER BY detected_at DESC LIMIT 50",
         base, "anomalies",
     )
@@ -1762,7 +1763,7 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
         # connections. Verified against the live database: src_addr returns 483
         # rows for one host where id_orig_h raises.
         "FROM weirvern.zeek_conn WHERE src_addr = %(a)s "
-        "AND ts >= now() - INTERVAL %(h)s HOUR AND service IS NOT NULL AND service != '' "
+        "AND ts >= %(since)s AND ts <= %(until)s AND service IS NOT NULL AND service != '' "
         "GROUP BY service ORDER BY conns DESC LIMIT 12",
         base, "zeek_services",
     )
@@ -2468,8 +2469,8 @@ def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None
         res = client.query(
             "SELECT window_start, src_addr, state, note, reviewed_at "
             "FROM weirvern.alert_reviews FINAL "
-            "WHERE window_start >= now() - INTERVAL %(h)s HOUR",
-            parameters={"h": hours},
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s",
+            parameters={**timewindow.w(hours)},
         )
         idx: dict[tuple, dict] = {}
         for row in res.result_rows:

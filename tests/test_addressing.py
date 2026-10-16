@@ -20,15 +20,15 @@ LIVE_NOISE = (
     "ff02::2",                     # all-routers; the graph drew this as a host
     "224.0.0.251",                 # mDNS, IPv4
     "255.255.255.255",             # limited broadcast
-    "192.168.3.255",               # subnet-directed broadcast
+    "198.51.100.255",               # subnet-directed broadcast
     "169.254.10.1",                # APIPA
     "127.0.0.1",
     "::1",
 )
 LIVE_HOSTS = (
-    "192.168.3.194",               # the intercepted host
-    "192.168.3.254",               # the sensor's own address on the segment
-    "192.168.2.176", "192.168.3.1", "192.168.3.128",
+    "198.51.100.194",               # the intercepted host
+    "198.51.100.254",               # the sensor's own address on the segment
+    "203.0.113.176", "198.51.100.1", "198.51.100.128",
     "10.42.0.1",
     "2606:4700::1111",
     # A documentation address is a HOST address by class. The test rows carrying 198.51.100.x
@@ -100,7 +100,7 @@ def test_every_panel_that_ranks_a_HOST_filters_by_the_same_rule():
                for s in client.sql), client.sql
 
     client = _FakeClient()
-    assets.top_edges_for(client, ["192.168.3.194"], hours=6)
+    assets.top_edges_for(client, ["198.51.100.194"], hours=6)
     assert any(addressing.sql_host("dst_addr") in s for s in client.sql), client.sql
 
 

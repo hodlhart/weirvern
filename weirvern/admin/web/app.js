@@ -142,6 +142,12 @@ function emptyRow(tbody, cols, message) {
  * by script order, which nothing would have caught if the order changed. Kept here because
  * this file loads first and the other shared helpers live here too. */
 async function getJSON(url) {
+  // ── THE GLOBAL TIME RANGE RIDES EVERY WINDOWED READ ─────────────────────────────────────────
+  // In absolute mode the console appends from/to to any read that carries `hours=`: the server
+  // honours the exact range, so the per-view `hours` box can never silently widen it.
+  if (TIME_RANGE.mode === "absolute" && url.indexOf("hours=") !== -1 && url.indexOf("from=") === -1) {
+    url += "&" + trWindowSuffix();
+  }
   const res = await fetch(url, { headers: requestHeaders() });
   // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
   // "undefined", and a 200 with a bad body must not throw here with a parse error where the
@@ -2778,4 +2784,173 @@ function showIdentityDetail(h) {
     for (const v of values) ul.appendChild(el("li", { class: "mono", text: String(v) }));
     box.appendChild(ul);
   }
+}
+
+// ── THE GLOBAL TIME RANGE ─────────────────────────────────────────────────────────────────────
+// THE OPERATOR'S ASK (2026-10-16): "a better time search like kibana uses throughout the
+// project". Kibana's time filter is GLOBAL -- presets, free text, a custom absolute range --
+// and every panel answers to it. This is that shape: one control, every tab.
+//
+// A relative range travels as `hours`. An ABSOLUTE range additionally travels as `from`/`to`,
+// which the server honours exactly (weirvern/admin/timewindow.py). In absolute mode each
+// panel's little `hours` box is a DISPLAY fallback only -- the window itself comes from
+// from/to, so no panel can silently widen what was asked for.
+const TIME_RANGE = { mode: "relative", hours: 24, from: "", to: "" };
+const TR_VIEW_CONTROLS = ["nf-hours", "zk-hours", "hp-hours", "h-hours", "nw-hours", "id-hours", "as-hours", "m-hours"];
+
+function trInit() {
+  try {
+    const held = JSON.parse(sessionStorage.getItem("weirvern-timerange") || "null");
+    if (held && (held.mode === "relative" || held.mode === "absolute")) Object.assign(TIME_RANGE, held);
+  } catch (e) { /* a corrupt record must not break the console */ }
+}
+function trPersist() {
+  try { sessionStorage.setItem("weirvern-timerange", JSON.stringify(TIME_RANGE)); } catch (e) {}
+}
+function trLabel() {
+  if (TIME_RANGE.mode === "absolute") return TIME_RANGE.from + " → " + (TIME_RANGE.to || "now");
+  const h = TIME_RANGE.hours;
+  if (h < 1) return "Last " + Math.round(h * 60) + " minutes";
+  if (h === 1) return "Last 1 hour";
+  if (h < 48) return "Last " + h + " hours";
+  return "Last " + Math.round(h / 24) + " days";
+}
+function trWindowSuffix() {
+  return "from=" + encodeURIComponent(TIME_RANGE.from) + "&to=" + encodeURIComponent(TIME_RANGE.to || "");
+}
+function trNote(text, isError) {
+  const el = document.getElementById("tr-note");
+  if (el) { el.textContent = text; el.style.color = isError ? "#e66" : ""; }
+}
+function trApply(range) {
+  TIME_RANGE.mode = range.mode || "relative";
+  TIME_RANGE.hours = Number(range.hours) > 0 ? Number(range.hours) : 24;
+  TIME_RANGE.from = range.from || "";
+  TIME_RANGE.to = range.to || "";
+  trPersist();
+  const btn = document.getElementById("tr-open");
+  if (btn) btn.textContent = trLabel();
+  trPushRecent();
+  const hours = Math.max(1, Math.ceil(TIME_RANGE.hours));
+  TR_VIEW_CONTROLS.forEach((id) => trSetControl(id, hours));
+}
+function trSetControl(id, hours) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.tagName === "SELECT") {
+    const values = [...el.options].map((o) => Number(o.value)).filter((v) => Number.isFinite(v));
+    if (!values.length) return;
+    const under = values.filter((v) => v <= hours);
+    el.value = String(under.length ? under[under.length - 1] : values[0]);
+  } else {
+    el.value = String(hours);
+  }
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+function trFormat(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function trMoment(text, nowMs) {
+  const raw = String(text || "").trim().toLowerCase();
+  if (raw === "now") return new Date(nowMs);
+  const rel = raw.match(/^-(\d+(?:\.\d+)?)\s*(m|h|d|w)?$/);
+  if (rel) {
+    const n = parseFloat(rel[1]); const unit = rel[2] || "h";
+    const ms = n * (unit === "m" ? 60e3 : unit === "h" ? 3600e3 : unit === "d" ? 864e5 : 6048e5);
+    return new Date(nowMs - ms);
+  }
+  const iso = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[ t](\d{2}:\d{2}(?::\d{2})?))?$/);
+  if (iso) return new Date(iso[1] + "T" + (iso[2] || "00:00") + ":00");
+  throw new Error("cannot read the time " + JSON.stringify(text) + " (want 2026-10-16 or 2026-10-16 05:00)");
+}
+function trParseText(text) {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) throw new Error("type a range first");
+  const quick = raw.match(/^(?:last|past)\s+(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$/);
+  if (quick) {
+    const n = parseFloat(quick[1]); const unit = quick[2][0];
+    return { mode: "relative", hours: unit === "m" ? n / 60 : unit === "h" ? n : unit === "d" ? n * 24 : n * 168 };
+  }
+  const short = raw.match(/^-(\d+(?:\.\d+)?)\s*(m|h|d|w)$/);
+  if (short) {
+    const n = parseFloat(short[1]); const u = short[2];
+    return { mode: "relative", hours: u === "m" ? n / 60 : u === "h" ? n : u === "d" ? n * 24 : n * 168 };
+  }
+  const pair = raw.split(/\s+(?:to|until)\s+/);
+  if (pair.length === 2) {
+    const nowMs = Date.now();
+    const fromD = trMoment(pair[0], nowMs);
+    if (pair[1] === "now") return { mode: "relative", hours: Math.max(1 / 60, (nowMs - fromD.getTime()) / 36e5) };
+    const toD = trMoment(pair[1], nowMs);
+    if (fromD.getTime() >= toD.getTime()) throw new Error("the start must be before the end");
+    return { mode: "absolute", from: trFormat(fromD), to: trFormat(toD), hours: (toD - fromD) / 36e5 };
+  }
+  throw new Error('cannot read that range — try "last 1 hour", "-12h to now", or two times');
+}
+function trPushRecent() {
+  try {
+    const list = JSON.parse(sessionStorage.getItem("weirvern-timerange-recent") || "[]");
+    const label = trLabel();
+    const next = [{ label, range: { mode: TIME_RANGE.mode, hours: TIME_RANGE.hours, from: TIME_RANGE.from, to: TIME_RANGE.to } }]
+      .concat(list.filter((r) => r.label !== label)).slice(0, 5);
+    sessionStorage.setItem("weirvern-timerange-recent", JSON.stringify(next));
+    trRenderRecent(next);
+  } catch (e) {}
+}
+function trRenderRecent(list) {
+  const box = document.getElementById("tr-recent");
+  const sec = document.getElementById("tr-recent-sec");
+  if (!box || !sec) return;
+  box.innerHTML = "";
+  if (!list || !list.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  list.forEach((r) => {
+    const b = document.createElement("button");
+    b.textContent = r.label;
+    b.addEventListener("click", () => trApply(r.range));
+    box.appendChild(b);
+  });
+}
+function trBoot() {
+  trInit();
+  const btn = document.getElementById("tr-open");
+  const panel = document.getElementById("tr-panel");
+  if (!btn || !panel) return;
+  btn.textContent = trLabel();
+  btn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    btn.setAttribute("aria-expanded", String(!panel.hidden));
+  });
+  const presets = document.getElementById("tr-presets");
+  if (presets) presets.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("button[data-hours]");
+    if (b) trApply({ mode: "relative", hours: Number(b.dataset.hours) });
+  });
+  const input = document.getElementById("tr-text");
+  const applyText = () => {
+    if (!input) return;
+    try { trApply(trParseText(input.value)); trNote("applied: " + trLabel()); }
+    catch (err) { trNote(String((err && err.message) || err), true); }
+  };
+  const ta = document.getElementById("tr-text-apply");
+  if (ta) ta.addEventListener("click", applyText);
+  if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") applyText(); });
+  const abs = document.getElementById("tr-abs-apply");
+  if (abs) abs.addEventListener("click", () => {
+    const fEl = document.getElementById("tr-from");
+    const tEl = document.getElementById("tr-to");
+    const f = fEl ? fEl.value : "";
+    if (!f) return trNote("pick a start time first", true);
+    const toS = tEl && tEl.value ? String(tEl.value).replace("T", " ").slice(0, 16) : "now";
+    try { trApply(trParseText(String(f).replace("T", " ").slice(0, 16) + " to " + toS)); trNote("applied: " + trLabel()); }
+    catch (err) { trNote(String((err && err.message) || err), true); }
+  });
+  try { trRenderRecent(JSON.parse(sessionStorage.getItem("weirvern-timerange-recent") || "[]")); } catch (e) {}
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", trBoot);
+} else {
+  trBoot();
 }

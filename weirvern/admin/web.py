@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlparse
 
 from weirvern import fleet_store
 from weirvern.admin import assets as assets_mod
-from weirvern.admin import gui_auth, web_api
+from weirvern.admin import gui_auth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import users as users_mod
@@ -231,6 +231,11 @@ def _build_handler(ctx: GuiContext):
 
         # -- routing -------------------------------------------------------
         def do_GET(self) -> None:  # noqa: N802
+            # The time window a request sets (from/to, absolute) lives in a ContextVar that
+            # query builders read. A thread serves many requests, so a window left over from
+            # the previous one would answer this request against the wrong stretch of time:
+            # cleared here, set again by `_window_arg` only when the request asks for one.
+            timewindow.clear_window()
             try:
                 self._route()
             except BrokenPipeError:
@@ -439,7 +444,9 @@ def _build_handler(ctx: GuiContext):
             read, rather than 503. A missing panel should say why it is missing; an
             error page for one panel would take down the views around it.
             """
-            hours = _int_arg(query, "hours", 72, 1, 24 * 30)
+            hours = self._window_arg(query, 72, 1, 24 * 30)
+            if hours is None:
+                return
             try:
                 with self._with_client() as client:
                     data = status_mod.model_overview(client, hours=hours, settings=ctx.settings)
@@ -519,6 +526,30 @@ def _build_handler(ctx: GuiContext):
                 return self._error(502, f"could not record the request: {type(exc).__name__}")
             self._json({"ok": True, "action": action, "action_id": action_id, "note": note})
 
+        def _window_arg(self, query: dict, default: int, lo: int, hi: int) -> int | None:
+            """The request's time window: `hours` (relative) or `from`/`to` (absolute).
+
+            The console's global time control sends BOTH: `hours` so every view still has a
+            number to print, and `from`/`to` when the operator chose an absolute range. The
+            absolute pair wins and is installed for the whole request (weirvern/admin/
+            timewindow.py), so every windowed query answers the same stretch of time. A bad
+            range is a 400 with the reason -- silently falling back to `hours` would answer a
+            different question than the one that was asked.
+            """
+            hours = _int_arg(query, "hours", default, lo, hi)
+            frm = (query.get("from") or [None])[0]
+            to = (query.get("to") or [None])[0]
+            if not frm and not to:
+                return hours
+            try:
+                since, until = timewindow.parse_range(frm, to)
+            except ValueError as exc:
+                self._error(400, f"bad time range: {exc}")
+                return None
+            timewindow.set_window(since, until)
+            span = (until - since).total_seconds() / 3600.0
+            return max(1, min(hi, int(span) + (1 if span % 1 else 0)))
+
         def _netflow(self, query: dict) -> None:
             """Netflow shape: volume trend, protocols, ports, fan-out, talkers.
 
@@ -528,7 +559,9 @@ def _build_handler(ctx: GuiContext):
             when ClickHouse is unreachable, for the same reason `_models` does: an error
             page for one panel would blank the views around it.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
             try:
                 with self._with_client() as client:
@@ -555,7 +588,9 @@ def _build_handler(ctx: GuiContext):
             with no rows, because those are different facts and conflating them is how an
             empty panel comes to look like a quiet network.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
             try:
                 with self._with_client() as client:
@@ -577,7 +612,9 @@ def _build_handler(ctx: GuiContext):
             unfiltered request, because "every flow" is not a drill-down and would make a chart
             click into a slow full-table scan.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             # -1 means "not supplied". Declared as Optional because the sentinel is replaced by
             # None before use, and leaving the variable typed `int` while assigning None is the
             # mismatch mypy flags.
@@ -607,7 +644,9 @@ def _build_handler(ctx: GuiContext):
             because "is data still arriving" cannot be answered otherwise. The two are
             different questions and this endpoint is the second.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
             report = None
             sensor: dict = {}
@@ -643,7 +682,9 @@ def _build_handler(ctx: GuiContext):
             appears with zeroed counters rather than being dropped, and the payload reports
             which sources were readable so the panel can explain the zeros.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             try:
                 with self._with_client() as client:
                     payload = assets_mod.asset_inventory(client, hours=hours)
@@ -668,7 +709,9 @@ def _build_handler(ctx: GuiContext):
             set is capped: an unbounded IN list is a way to make the database do arbitrary
             work from an HTTP request.
             """
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             tracked = [h.strip() for h in (query.get("host") or []) if h.strip()]
             for addr in tracked:
                 if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
@@ -1095,7 +1138,9 @@ def _build_handler(ctx: GuiContext):
                 return self._error(
                     400, f"unknown log {label!r}; expected one of: {', '.join(sorted(allowed))}"
                 )
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             try:
                 with self._with_client() as client:
                     payload = soc_mod.zeek_log_hosts(client, table=table, label=label, hours=hours)
@@ -2291,7 +2336,9 @@ def _build_handler(ctx: GuiContext):
             # obviously-wrong address should not become a database round trip.
             if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
                 return self._error(400, "addr does not look like an IP address or hostname")
-            hours = _int_arg(query, "hours", 24, 1, 24 * 14)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             try:
                 with self._with_client() as client:
                     detail = status_mod.host_detail(client, addr, hours=hours)

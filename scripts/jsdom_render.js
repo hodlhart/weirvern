@@ -2991,6 +2991,37 @@ check("high capture loss is called out in the fleet",
             probeBtn.getAttribute("aria-expanded") === "false", "");
   }
 
+  // ── THE GLOBAL TIME RANGE (the operator's ask: "a time search like kibana, throughout") ────
+  const trBtn = doc.getElementById("tr-open");
+  check("the header carries the global time control", !!trBtn && !!doc.getElementById("tr-panel"));
+  check("it names the default range", !!(trBtn && /24 hours/.test(trBtn.textContent)),
+        trBtn ? trBtn.textContent : "missing");
+  const trPreset = doc.querySelector('#tr-presets button[data-hours="1"]');
+  if (trPreset) {
+    trPreset.click();
+    const nfEl = doc.getElementById("nf-hours");
+    check("a preset retargets every view's window control", !!(nfEl && nfEl.value === "1"),
+          "nf-hours=" + (nfEl ? nfEl.value : "?"));
+    check("and the control names the range that is applied", /1 hour/.test(trBtn.textContent),
+          trBtn.textContent);
+  } else {
+    check("the presets exist", false, "no #tr-presets button[data-hours]");
+  }
+  const trText = doc.getElementById("tr-text");
+  const trApply = doc.getElementById("tr-text-apply");
+  if (trText && trApply) {
+    trText.value = "last 15 minutes";
+    trApply.click();
+    const nf2 = doc.getElementById("nf-hours");
+    check("free text is read the way Kibana reads it ('last 15 minutes')",
+          !!(nf2 && nf2.value === "1"), "nf-hours=" + (nf2 ? nf2.value : "?"));
+    trText.value = "banana";
+    trApply.click();
+    const note = doc.getElementById("tr-note");
+    check("an unreadable range is refused with a sentence, not a silent fallback",
+          !!(note && /cannot read|type a range/.test(note.textContent)),
+          note ? note.textContent : "no note element");
+  }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));
 

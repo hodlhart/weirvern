@@ -93,6 +93,29 @@
     <span class="muted" id="fetched"></span>
     <span class="muted" id="user-chip" title=""></span>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
+    <div class="timerange">
+      <button id="tr-open" aria-expanded="false" title="The time range every tab answers to">Last 24 hours</button>
+      <div id="tr-panel" class="tr-panel" hidden>
+        <div class="tr-sec"><span class="muted">Presets</span>
+          <div id="tr-presets" class="tr-row">
+            <button data-hours="0.25">15m</button><button data-hours="1">1h</button><button data-hours="4">4h</button><button data-hours="12">12h</button><button data-hours="24">24h</button><button data-hours="168">7d</button><button data-hours="336">14d</button>
+          </div>
+        </div>
+        <div class="tr-sec"><span class="muted">Range text</span>
+          <div class="tr-row">
+            <input id="tr-text" type="text" size="34" placeholder="last 5 minutes  ·  -12h to now  ·  2026-10-16 05:00 to 09:00">
+            <button id="tr-text-apply">Apply</button>
+          </div>
+        </div>
+        <div class="tr-sec"><span class="muted">Absolute</span>
+          <div class="tr-row">
+            <input id="tr-from" type="datetime-local"><span class="muted">to</span><input id="tr-to" type="datetime-local"><button id="tr-abs-apply">Apply</button>
+          </div>
+        </div>
+        <div class="tr-sec" id="tr-recent-sec" hidden><span class="muted">Recent</span><div id="tr-recent" class="tr-row"></div></div>
+        <p class="muted" id="tr-note">Applies to every tab. An absolute range is sent to the server as from/to and honoured exactly; each panel prints the rounded span.</p>
+      </div>
+    </div>
     <button id="refresh" title="Reload now">Refresh</button>
     <label class="auto"><input type="checkbox" id="autorefresh" checked> auto (15s)</label>
   </div>

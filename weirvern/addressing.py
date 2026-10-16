@@ -2,7 +2,7 @@
 
 MEASURED ON A LIVE SEGMENT (2026-10-16, the first real siphon session). The Netflow tab's
 top talkers were, in order: `fe80::aa9c:6cff:fe96:b62d` (the gateway's link-local, NDP),
-`ff02::fb` (mDNS), `224.0.0.251` (mDNS again, v4), and `192.168.3.255` (subnet broadcast).
+`ff02::fb` (mDNS), `224.0.0.251` (mDNS again, v4), and `198.51.100.255` (subnet broadcast).
 The connection graph drew the all-routers group `ff02::2` as a node with three peers. Every
 one of those frames is real -- and none of it is a HOST. A view that ranks them as talkers is
 unreadable, and worse, a model that treats them as hosts learns about multicast groups.
@@ -54,7 +54,7 @@ def is_noise(addr: str | None) -> bool:
     if isinstance(ip, ipaddress.IPv4Address):
         if int(ip) == 0xFFFFFFFF:
             return True
-        # The subnet-directed broadcast, e.g. 192.168.3.255 -- same stated /24 assumption as
+        # The subnet-directed broadcast, e.g. 198.51.100.255 -- same stated /24 assumption as
         # `sql_host`, and the same cost if a host is ever numbered x.x.x.255.
         if str(ip).endswith(".255"):
             return True
@@ -67,7 +67,7 @@ def sql_host(column: str) -> str:
     One fragment per COLUMN, so a query can ask the question of `src_addr`, `dst_addr`, or
     both endpoints of an edge, and the same rows answer to the same rule everywhere.
 
-    A SUBNET-DIRECTED BROADCAST (`192.168.3.255` on a /24) carries no marker that separates
+    A SUBNET-DIRECTED BROADCAST (`198.51.100.255` on a /24) carries no marker that separates
     it from a host address without the segment's mask -- but LAN segments are /24 in every
     deployment this has been run on, and a tech reading `x.x.x.255` as "a machine" is the
     exact confusion this module exists to prevent. So the last-octet rule is included, and
