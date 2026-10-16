@@ -215,8 +215,14 @@ CHANNEL_NETFLOW_TIMEOUTS = ("-t", "tcp=120", "-t", "udp=60", "-t", "icmp=60",
                             "-t", "general=180", "-t", "maxlife=600")
 CHANNEL_NETFLOW_FILTER = "ip or ip6 or arp"
 # The segment ring: rotate every 30s or 16 MB, keep at most 240 files (a bounded disk -- the
-# sweeper normally deletes each segment within a tick of its completion).
-CHANNEL_NETFLOW_DIR = "/data/channel-netflow"
+# sweeper normally deletes each segment within a tick of its completion). THE DIRECTORY IS
+# POD-LOCAL, /tmp, ON PURPOSE: /data (goflow2's flow-data mount) is READ-ONLY in the worker --
+# measured, the first version died on "Read-only file system: '/data/channel-netflow'" -- and
+# that read-only mount is deliberate (the worker reads the collector's output and must not be
+# able to corrupt it). Segments are a TRANSIENT buffer: each one is summarised and deleted within
+# a tick of completion, and a pod restart losing the tail of the capture is the same class of gap
+# as the restart itself.
+CHANNEL_NETFLOW_DIR = "/tmp/channel-netflow"
 CHANNEL_NETFLOW_SEGMENT_S = 30
 CHANNEL_NETFLOW_SEGMENT_MB = 16
 CHANNEL_NETFLOW_KEEP_SEGMENTS = 240
