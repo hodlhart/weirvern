@@ -44,6 +44,13 @@ DESIGN CHOICES, and why they are these:
 4. IT DEGRADES HONESTLY. With no baseline for a host, there is nothing to compare
    against, and the result says so rather than inventing a number. A missing
    explanation must not look like a zero deviation.
+
+5. IT SPEAKS ABOUT THE ZEEK SIDE WHEN THERE IS SOMETHING TO SAY. The measurements above are
+   volumetric, and an alert driven by a brand-new TLS stack used to say "bytes normal" --
+   true, and useless. The window's fingerprints ride on the `_zeek` row the worker attaches
+   and the host's history on the baseline, so when the window holds fingerprints the host
+   has not used before, the comparison sentence names it with the same exact-membership
+   arithmetic the feature uses. Absent inputs produce no clause, per point 4.
 """
 from __future__ import annotations
 
@@ -109,6 +116,51 @@ def _humanise(n: float) -> str:
     return f"{n:.0f}"
 
 
+def _string_list(value: Any) -> list[str] | None:
+    """A ClickHouse array or a hand-written repr as a list of strings, else None.
+
+    The same contract as `zeek_features._as_list`: None means "no value at all", which must
+    stay distinguishable from an EMPTY list -- a missing history and an empty one read
+    differently, and collapsing them would turn "we did not look" into "we looked and saw
+    nothing".
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().strip("[]")
+        return [part.strip().strip("\'\"") for part in text.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    return None
+
+
+def _ja4_note(flow: dict[str, Any], baseline: dict[str, Any]) -> str:
+    """One clause naming TLS fingerprints this host has not used before, or "".
+
+    WHY THIS LIVES IN THE EXPLANATION. The models score the JA4 features; the explanation
+    spoke only about volume, so an alert whose score came from a never-before-seen TLS stack
+    said "bytes normal" -- a true sentence that hides the finding. The clause is computed with
+    the SAME arithmetic as `extract_zeek_features` (exact membership against the host's
+    history, or the conservative count-based lower bound when only the count is available),
+    so the sentence and the numbers the model acted on cannot disagree.
+    """
+    zeek = flow.get("_zeek") or {}
+    seen = _string_list(zeek.get("ja4_set")) or []
+    if not seen:
+        return ""
+    history = _string_list(baseline.get("baseline_ja4_set"))
+    if history is None:
+        familiar = min(len(seen), int(_as_float(baseline.get("baseline_ja4_count")) or 0))
+    else:
+        known = set(history)
+        familiar = sum(1 for fingerprint in seen if fingerprint in known)
+    novel = len(seen) - familiar
+    if novel <= 0:
+        return ""
+    verb = "is" if novel == 1 else "are"
+    return f"{novel} of {len(seen)} TLS fingerprints in this window {verb} new for this host"
+
+
 def explain(features_or_flow: dict[str, Any],
             baseline: dict[str, float] | None) -> dict[str, Any]:
     """Build the five explainability fields for one anomaly row.
@@ -133,8 +185,13 @@ def explain(features_or_flow: dict[str, Any],
         # Honest absence. A host with no baseline (too few observations) has
         # nothing to deviate FROM, and a fabricated number here would be read as
         # a measurement. The worker is expected to say so rather than show 0.0.
+        # There is no history to compare fingerprints against either, so no clause.
         empty["baseline_comparison"] = "no baseline for this host"
         return empty
+
+    # The Zeek side of the why, computed even when every volumetric measurement is
+    # unremarkable -- a pure TLS-stack anomaly moves no unusual bytes.
+    ja4_note = _ja4_note(features_or_flow, baseline)
 
     contributions: dict[str, dict[str, Any]] = {}
     for name in EXPLAINED_MEASUREMENTS:
@@ -177,7 +234,10 @@ def explain(features_or_flow: dict[str, Any],
         }
 
     if not contributions:
-        empty["baseline_comparison"] = "baseline present but no comparable measurements"
+        # No volumetric deviation to name. If the window still carries new fingerprints, say
+        # THAT -- it is the measurement the models saw -- rather than reporting nothing.
+        empty["baseline_comparison"] = (ja4_note
+                                        or "baseline present but no comparable measurements")
         return empty
 
     # The primary deviation is the largest |z|. Ties break on the order of
@@ -197,6 +257,8 @@ def explain(features_or_flow: dict[str, Any],
     meaningful = magnitude >= MIN_ABS_Z
 
     comparison = _comparison_sentence(p_name, p)
+    if ja4_note:
+        comparison = f"{comparison}; {ja4_note}"
 
     return {
         "primary_deviation_feature": p_name if meaningful else "",

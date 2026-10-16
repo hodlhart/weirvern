@@ -104,6 +104,68 @@ def test_zero_variance_baseline_is_flagged_rather_than_divided_by():
     assert e["deviation_magnitude"] < float("inf")
 
 
+# ── the Zeek side of the why: JA4 novelty reaches the comparison sentence ─────────────────────
+
+
+def _ja4_flow(fingerprints):
+    """The exfil flow plus the Zeek window row the worker attaches at scoring time."""
+    return {**EXFIL_FLOW, "_zeek": {"ja4_set": fingerprints}}
+
+
+def test_a_new_tls_stack_is_named_in_the_comparison_sentence():
+    """MEASURED GAP: an alert driven by a never-before-used TLS stack said "bytes normal".
+
+    The models score `zeek_ja4_novelty`; this explanation spoke only about volume, so the one
+    page an analyst reads for the WHY could not see the finding. The window's fingerprints ride
+    on the `_zeek` row and the host's history on the baseline (both supplied by the worker since
+    the JA4 wiring was completed), so the sentence can say what actually fired."""
+    baseline = {**EXFIL_BASELINE, "baseline_ja4_set": ["fp_old"], "baseline_ja4_count": 1}
+    e = explain(_ja4_flow("['fp_old', 'fp_new']"), baseline)
+    assert "1 of 2 TLS fingerprints in this window is new for this host" in e["baseline_comparison"]
+
+
+def test_a_familiar_stack_adds_no_clause():
+    """Nothing new means nothing to say -- the sentence stays as it was."""
+    baseline = {**EXFIL_BASELINE, "baseline_ja4_set": ["fp_old", "fp_new"],
+                "baseline_ja4_count": 2}
+    e = explain(_ja4_flow("['fp_old', 'fp_new']"), baseline)
+    assert "TLS fingerprints" not in e["baseline_comparison"]
+    # And a window with no TLS at all says nothing about TLS, on a baseline that has history.
+    e = explain(EXFIL_FLOW, baseline)
+    assert "TLS fingerprints" not in e["baseline_comparison"]
+
+
+def test_a_count_only_baseline_never_overstates_novelty():
+    """The same conservative rule as `extract_zeek_features`: with only the count, at most
+    len(seen) - count fingerprints can be new. Claiming more invents alerts on ordinary hosts."""
+    baseline = {**EXFIL_BASELINE, "baseline_ja4_count": 1}  # the set is absent, count only
+    e = explain(_ja4_flow("['a', 'b', 'c']"), baseline)
+    assert "2 of 3 TLS fingerprints in this window are new for this host" in e["baseline_comparison"]
+
+
+def test_the_clause_matches_the_value_the_models_saw_when_no_history_exists():
+    """An older caller ships no JA4 keys at all; the extractor treats that as "nothing known",
+    novelty computes as 1.0, and the clause says the SAME thing rather than staying silent or
+    claiming less than the model acted on. Consistency between sentence and vector is the
+    point -- an alert that explains less than it saw is how a finding disappears."""
+    e = explain(_ja4_flow("['a']"), EXFIL_BASELINE)  # no baseline_ja4_* keys
+    assert "1 of 1 TLS fingerprints in this window is new for this host" in e["baseline_comparison"]
+
+
+def test_a_tls_only_anomaly_still_gets_its_sentence():
+    """Every volumetric measurement unremarkable, so there are no contributions -- but the
+    window carries new fingerprints. The comparison must carry the real reason instead of
+    "baseline present but no comparable measurements"."""
+    flat = {"total_bytes": EXFIL_FLOW["total_bytes"], "total_packets": EXFIL_FLOW["total_packets"],
+            "unique_dst_ips": EXFIL_FLOW["unique_dst_ips"], "flow_count": EXFIL_FLOW["flow_count"]}
+    baseline = {"avg_bytes": flat["total_bytes"], "stddev_bytes": 0.0,
+                "avg_packets": flat["total_packets"], "stddev_packets": 0.0,
+                "avg_unique_dsts": flat["unique_dst_ips"], "stddev_unique_dsts": 0.0,
+                "baseline_ja4_set": ["fp_old"]}
+    e = explain({**flat, "_zeek": {"ja4_set": "['fp_new']"}}, baseline)
+    assert "1 of 1 TLS fingerprints in this window is new for this host" in e["baseline_comparison"]
+
+
 def test_a_below_normal_deviation_reports_its_direction():
     """'55x above normal' and '55x below normal' are different findings
     (exfiltration vs a service that went silent). A magnitude alone cannot say

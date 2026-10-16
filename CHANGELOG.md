@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — the alert's why-line can see a new TLS stack
+
+The models score the JA4 features; the explanation spoke only about volume, so an alert whose
+score came from a never-before-used TLS stack said "bytes normal" -- true, and useless, on the
+one page an analyst reads for the WHY. The comparison sentence now carries the clause when the
+window holds fingerprints the host has not used before: "1 of 2 TLS fingerprints in this window
+is new for this host", computed with the same exact-membership arithmetic the feature uses (and
+the same conservative count-based lower bound when only a count is available -- it never claims
+more novelty than the model saw). A TLS-only anomaly, where every volumetric measurement is
+unremarkable, gets its sentence instead of "no comparable measurements"; a familiar stack adds
+nothing; and with no baseline there is no history to compare against, so no clause is invented.
+
 ## Unreleased — DBSCAN gets the JA4 pair
 
 The clustering specialist\'s Zeek subset gains `zeek_ja4_count` and `zeek_ja4_novelty`
