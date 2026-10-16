@@ -46,9 +46,15 @@ def _caps(ds: dict) -> list[str]:
 
 @pytest.mark.parametrize("target", ["k8s/", "overlays/siphon/"])
 def test_the_overlay_does_not_break_the_base(target):
-    """Both must render 21 resources and keep the sensor's real arguments."""
+    """Both must render 22 resources and keep the sensor's real arguments.
+
+    22 since issue #16: the backup engine's allow-list ConfigMap joined the base (ClickHouse
+    refuses BACKUP ... TO Disk without it). The overlay builds on that same base, so both
+    render it -- the count is pinned to catch a resource disappearing or the overlay silently
+    dropping one, and it must be updated in the same commit that adds one.
+    """
     docs = _render(target)
-    assert len(docs) == 21, f"{target} rendered {len(docs)} resources"
+    assert len(docs) == 22, f"{target} rendered {len(docs)} resources"
     ds = _zeek(docs)
     c = ds["spec"]["template"]["spec"]["containers"][0]
     assert c.get("args"), "the startup script was lost"
