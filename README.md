@@ -880,7 +880,7 @@ Four detectors, each contributing a normalised 0–1 score:
 |---|---|---|
 | Isolation Forest | Multivariate outliers across the full feature vector | Calibrated against its own training distribution |
 | Gradient Boosting | Non-linear patterns, trained on IF's labels (a distillation) | Probability calibrated; class-imbalanced weighting |
-| DBSCAN | Dense clusters vs. outliers — port diversity, fan-out | Score calibrated against the measured distance distribution |
+| DBSCAN | Dense clusters vs. outliers — port diversity, fan-out, TLS fingerprints | Score calibrated against the measured distance distribution |
 | Adaptive Baseline | Per-host percentile deviation (p95/p99/p999) | Learns each host's normal; needs ≥10 observations |
 
 Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.

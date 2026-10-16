@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — DBSCAN gets the JA4 pair
+
+The clustering specialist\'s Zeek subset gains `zeek_ja4_count` and `zeek_ja4_novelty`
+(appended, never inserted), so a host presenting a TLS stack it has never used before is
+visible to every model that scores, not only the two wide ones. The cost is stated rather than
+hidden: two more dimensions on a feature space kept small on purpose, and most host-windows
+carry a zero there (a host with no TLS is 0 for both, exactly as it is for the logs it never
+speaks). DBSCAN\'s answer to sparse density is unchanged and honest -- "no opinion" rather than
+a fabricated one -- so a wider vector cannot make it lie, only quieter.
+
+This changes the DBSCAN vector\'s SHAPE, so `FEATURE_SCHEMA_VERSION` moves to 2: v1 artifacts
+are refused at load and the detectors retrain into `_v2.pkl`; the v1 files stay on disk for
+rollback. The source-coverage proof pins the new membership in the same direction as every
+other claim: removing the pair again fails the proof.
+
 ## Unreleased — JA4 novelty learns to see history: the two links that were never connected
 
 "Verify that JA4 is being assessed by all the models." The verification found that the feature

@@ -4,7 +4,8 @@
    extremes sampling retained (trains on normal traffic AND extreme outliers).
 2. GradientBoostingDetector — semi-supervised student of the Isolation Forest,
    class-imbalance weighted, F1-evaluated on a held-out split.
-3. DBSCANDetector — 8-feature clustering; score = distance to nearest centroid.
+3. DBSCANDetector — 8 flow features + the Zeek subset (incl. the JA4 pair); score = distance
+   to nearest centroid.
 4. AdaptiveBaselineDetector — per-host percentile/σ baselines from ClickHouse.
 
 Changes vs legacy: SQL is parameterized and lives close to the models; all

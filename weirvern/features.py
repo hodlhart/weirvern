@@ -69,7 +69,11 @@ DBSCAN_FEATURES = [
 # into its normal retrain path. Before this, `_v1` was a literal while the code comment
 # claimed versioning, and a feature-set change could keep loading an incompatible artifact
 # that scored 0.0 for hours (or, same width, silently reinterpreted every column).
-FEATURE_SCHEMA_VERSION = 1
+# BUMPED TO 2 (2026-10-16): DBSCAN\'s Zeek subset gained the JA4 pair (zeek_ja4_count,
+# zeek_ja4_novelty), so the DBSCAN vector changed SHAPE from 14 to 16 columns. v1 artifacts are
+# refused at load and the detectors retrain into `_v2.pkl` files; the v1 files stay on disk, and
+# a rollback reverts this bump rather than deleting them.
+FEATURE_SCHEMA_VERSION = 2
 
 
 def _safe_log1p(v: float) -> float:

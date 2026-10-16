@@ -19,14 +19,17 @@ The four models, and what each one actually assesses (each pinned by a test belo
   * Adaptive Baseline   -- trains on every Zeek feature (its query aggregates each of
                           ZEEK_FEATURES) but SCORES three of them: zeek_conn_count,
                           zeek_s0_ratio, zeek_notice_count.
-  * DBSCAN              -- a deliberate six-feature Zeek SUBSET (clustering degrades with
-                          dimensionality on few samples), touching three logs: conn, notice,
-                          weird.
+  * DBSCAN              -- a deliberately SMALL Zeek subset (clustering degrades with
+                          dimensionality on few samples): eight features covering conn, notice,
+                          weird, the join flag, and -- appended at the operator\'s direction --
+                          the JA4 pair, so a brand-new TLS stack is visible to the clustering
+                          specialist too.
 
-So "every log is assessed by every model" is TRUE for the two wide models, TRUE for the
-baseline only within its three named signals, and DELIBERATELY NARROW for DBSCAN. The tests pin
-each fact so none of them can quietly change -- in either direction: a shrunken wide model
-fails just as an overstated claim would.
+So "every log is assessed by every model" is TRUE for the two wide models and, since the JA4
+pair was added to it, TRUE for DBSCAN as well. The Adaptive Baseline remains the one model that
+SCORES three named signals rather than the whole block (its training index still covers all
+fifty). The tests pin each fact so none of them can quietly change -- in either direction: a
+shrunken wide model fails just as an overstated claim would.
 
 The five protocol logs (kerberos, dce_rpc, ntlm, smb_mapping, smb_files) and x509 have no
 host-attributable features BY DESIGN -- their rows feed the ATT&CK mapping and hunting instead.
@@ -209,11 +212,13 @@ def test_every_feature_bearing_log_reaches_both_wide_models(tmp_path):
         assert not missing, f"{log}.log's features are not in the wide models' matrix: {missing}"
 
 
-def test_ja4_is_assessed_by_both_wide_models_and_by_neither_of_the_narrow_ones(tmp_path):
+def test_ja4_reaches_every_model_including_the_dbscan_subset(tmp_path):
     """THE FINGERPRINT QUESTION, answered per model. JA4 reaches the wide pair through BOTH
-    features -- the count AND the novelty ratio -- at training and at scoring time; DBSCAN's
-    documented subset and the baseline's three named signals do not carry it, which is the
-    honest reading of "assessed by all models" on this deployment."""
+    features -- the count AND the novelty ratio -- at training and at scoring time, and since
+    the operator asked for it the DBSCAN subset carries the pair too, so the clustering
+    specialist can see a TLS stack a host has never presented. The Adaptive Baseline is the one
+    that still does not SCORE it: its vocabulary is three named signals, pinned in its own test
+    below."""
     for feature in JA4_FEATURES:
         assert feature in ZEEK_FEATURES, f"{feature} is not a feature at all"
         assert feature in IF_FEATURES
@@ -249,16 +254,21 @@ def test_ja4_is_assessed_by_both_wide_models_and_by_neither_of_the_narrow_ones(t
     assert 'f["_zeek"]' in WORKER_SRC, "the worker stopped attaching the Zeek window row"
     assert 'flow.get("_zeek")' in ENSEMBLE_SRC
     assert "baselines.get(src)" in ENSEMBLE_SRC, "scoring no longer supplies the host baseline"
-    # Neither narrow model assesses JA4, and that is asserted in the same direction as the
-    # positive claims: a silent addition would change behaviour without changing this proof.
-    # The check is on the SCORING READS (`features.get("<name>")`), not on any mention: the
-    # baseline's warning strings may name the features, but no detector may read one.
+    # The DBSCAN subset carries the pair too -- added on purpose, and pinned in the same
+    # direction as every other claim here: removing it again fails this proof.
+    db_cols = _detector(tmp_path, DBSCANDetector).expected_feature_columns()
     for feature in JA4_FEATURES:
-        assert feature not in ZEEK_DBSCAN_FEATURES and feature not in DBSCAN_FEATURES
+        assert feature in ZEEK_DBSCAN_FEATURES and feature in db_cols, (
+            f"{feature} is not in DBSCAN's declared subset -- it was added on purpose; if it "
+            f"was removed on purpose, this proof and the docs change with it"
+        )
+    # The Adaptive Baseline is the remaining model that does not SCORE JA4: its scoring path
+    # reads three Zeek names by hand, asserted exactly in its own test below. This keeps that
+    # boundary visible from here too.
     scoring_reads = set(re.findall(r'features\.get\("(zeek_\w+)"', _code_only(DETECTORS_SRC)))
     assert not (scoring_reads & set(JA4_FEATURES)), (
-        f"a detector now reads {sorted(scoring_reads & set(JA4_FEATURES))} for scoring -- if a "
-        f"narrow model started to score JA4, update this file's matrix and its docstring"
+        f"the baseline's scoring vocabulary changed to include "
+        f"{sorted(scoring_reads & set(JA4_FEATURES))} -- update its test, this proof and the docs"
     )
     assert "clustering degrades with" in ZEEK_FEATURES_SRC, (
         "the DBSCAN subset's justification comment is gone -- the narrowing is now unexplained"
@@ -326,10 +336,11 @@ def test_the_adaptive_baseline_trains_on_every_feature_and_scores_three():
     )
 
 
-def test_dbscan_touches_conn_notice_and_weird_by_design(tmp_path):
-    """The smallest model's coverage, derived rather than assumed: six Zeek features spanning
-    three logs. The presence flag spans five logs and is a join flag, not a signal, so it is
-    counted separately."""
+def test_dbscan_covers_the_logs_its_subset_names(tmp_path):
+    """The small model's coverage, derived rather than assumed: eight Zeek features spanning
+    conn, notice, weird and -- appended at the operator\'s direction -- the TLS fingerprints
+    from the ssl log. The presence flag spans five logs and is a join flag, not a signal, so it
+    is counted separately."""
     cols = _detector(tmp_path, DBSCANDetector).expected_feature_columns()
     assert cols == list(DBSCAN_FEATURES)
     assert set(ZEEK_DBSCAN_FEATURES) <= set(ZEEK_FEATURES)
@@ -340,9 +351,10 @@ def test_dbscan_touches_conn_notice_and_weird_by_design(tmp_path):
             continue
         assert mapping[feature], f"{feature} no longer resolves to an aggregate"
         signal_aggs.update(mapping[feature])
-    assert signal_aggs == {"conn_agg", "notice_agg", "weird_agg"}, (
+    assert signal_aggs == {"conn_agg", "notice_agg", "weird_agg", "ssl_agg"}, (
         f"DBSCAN's signal coverage moved to {sorted(signal_aggs)} -- it is documented as "
-        f"conn/notice/weird; a widened or shrunken subset needs the docs updated with it"
+        f"conn/notice/weird plus the JA4 pair from ssl; a widened or shrunken subset needs the "
+        f"docs updated with it"
     )
 
 

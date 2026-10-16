@@ -182,6 +182,14 @@ ZEEK_PRESENCE_FEATURE = "zeek_present"
 # Subset for DBSCAN, which uses a smaller set by design (clustering degrades with
 # dimensionality on few samples). These are the ones that separate clusters most: how much
 # the host talked, how varied it was, and how wrong the traffic looked.
+#
+# AND THE JA4 PAIR, at the operator\'s direction: a host presenting a TLS stack it has never
+# used before is worth seeing, and a model that cannot see it cannot say so. The cost is stated
+# rather than hidden -- two more dimensions on a space kept small on purpose, and most
+# host-windows carry a zero there (a host with no TLS is 0 for both, exactly as it is for the
+# logs it never speaks). DBSCAN already answers sparse density honestly -- "no opinion", not a
+# fabricated one -- so a wider vector cannot make it lie; it can only make it quieter, and its
+# own warning says when that happened.
 ZEEK_DBSCAN_FEATURES = [
     "zeek_conn_count",
     "zeek_service_count",
@@ -189,6 +197,10 @@ ZEEK_DBSCAN_FEATURES = [
     "zeek_notice_count",
     "zeek_weird_count",
     "zeek_present",
+    # APPENDED, never inserted: appending keeps every prefix of a pre-existing artifact valid,
+    # so a rollback can still read the old file it kept.
+    "zeek_ja4_count",
+    "zeek_ja4_novelty",
 ]
 
 # THE JA4 SENTINELS, AND WHY THERE ARE THREE. Zeek writes `-` for "unset_field" and
