@@ -297,11 +297,16 @@ def _channel_netflow_sweep(*, run=None, probe=None, now=None, directory=None) ->
                 continue  # young enough that rotation may not have closed it yet
         except OSError:
             continue
+        # NO -p / NO -c: a one-shot summariser has no use for a pidfile or a control socket, and
+        # measured on the box, the same invocation WITH them hung for the runner's whole timeout
+        # while the same file summarised cleanly (82/82 packets, flows flushed) without them.
+        # stdin is DEVNULL: this child reads a FILE; it has no business inheriting the worker's
+        # stdin.
         argv = [binary, "-r", path, "-n", CHANNEL_NETFLOW_COLLECTOR, "-v", "10", "-d",
-                "-p", "/tmp/softflowd-channel.pid", "-c", "/tmp/softflowd-channel.ctl",
                 *CHANNEL_NETFLOW_TIMEOUTS]
         try:
-            result = runner(argv, timeout=120, capture_output=True)
+            result = runner(argv, timeout=120, capture_output=True,
+                            stdin=_subprocess.DEVNULL)
         except Exception as exc:  # noqa: BLE001
             logger.warning("channel netflow: summarising %s failed: %s", name, exc)
             continue

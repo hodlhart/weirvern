@@ -462,7 +462,7 @@ def test_the_sweep_summarises_only_completed_segments_and_deletes_them(tmp_path)
     os.utime(new, (past, past))
     calls = []
 
-    def run(argv, timeout=None, capture_output=False):
+    def run(argv, timeout=None, capture_output=False, **kwargs):
         calls.append(list(argv))
         return _Result(0)
 
@@ -477,6 +477,10 @@ def test_the_sweep_summarises_only_completed_segments_and_deletes_them(tmp_path)
     assert argv[argv.index("-r") + 1] == str(old)
     assert argv[argv.index("-v") + 1] == "10", "v9 is dropped by the collector; measured"
     assert argv[argv.index("-n") + 1] == worker_mod.CHANNEL_NETFLOW_COLLECTOR
+    assert "-p" not in argv and "-c" not in argv, (
+        "a one-shot summariser must not open a pidfile or control socket; measured: the same "
+        "invocation with them hung for the runner's whole timeout"
+    )
 
 
 def test_the_sweep_keeps_a_segment_it_could_not_summarise(tmp_path):
@@ -489,7 +493,7 @@ def test_the_sweep_keeps_a_segment_it_could_not_summarise(tmp_path):
         os.utime(f, (time.time() - 100.0,) * 2)
     calls = []
 
-    def run(argv, timeout=None, capture_output=False):
+    def run(argv, timeout=None, capture_output=False, **kwargs):
         calls.append(list(argv))
         return _Result(1, b"boom")
 
