@@ -111,7 +111,8 @@ def test_evidence_bounds_every_table_to_the_same_window():
     from weirvern.admin import status
 
     sql = _sql(status.alert_evidence)
-    for table in ("weirvern.zeek_conn", "weirvern.zeek_dns", "weirvern.zeek_notice"):
+    for table in ("weirvern.zeek_conn", "weirvern.zeek_ssl", "weirvern.zeek_dns",
+                  "weirvern.zeek_notice"):
         seg = [q for q in sql.split("SELECT") if table in q]
         assert seg, f"no query against {table}"
         for q in seg:
@@ -131,6 +132,8 @@ def test_evidence_queries_columns_that_exist():
         "weirvern.zeek_conn": ["ts", "dst_addr", "dst_port", "proto", "service",
                                "duration", "orig_bytes", "resp_bytes", "conn_state",
                                "src_addr"],
+        "weirvern.zeek_ssl": ["ts", "dst_addr", "dst_port", "version", "server_name",
+                              "ja4", "ja4_orig", "validation_status", "src_addr"],
         "weirvern.zeek_dns": ["ts", "query", "qtype", "rcode", "answers",
                               "query_entropy", "src_addr"],
         "weirvern.zeek_notice": ["ts", "note", "msg", "actions", "src_addr"],

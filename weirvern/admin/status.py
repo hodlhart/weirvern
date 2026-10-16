@@ -832,6 +832,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("sluice_enabled", "enforcement"),
         ("sluice_iface", "enforcement interface"),
         ("sluice_criticality", "block on detections"),
+        ("sluice_auto_score", "auto-block threshold"),
         ("sluice_max_block_s", "longest block (s)"),
         ("sluice_interval_s", "re-check interval (s)"),
     ]),
@@ -941,6 +942,14 @@ _SETTINGS_HELP: dict[str, str] = {
         "blocks medium severity, for 15 minutes; 'strict' is the widest net. The policy's own "
         "severity and confidence floors still apply, every block lapses on its own, and the "
         "policy only acts while the gate is enabled."),
+    "sluice_auto_score": (
+        "The operator's own auto-block line, on the fused 0-1 score the ensemble produces. "
+        "0 (the default) is off. Set it to 0.9 and any detection scoring 0.9 or above is "
+        "blocked on the gate's next pass, for up to the longest-block ceiling; lower it and "
+        "more is blocked. It works independently of the severity policy above -- a detection "
+        "that clears either one is blocked -- and it only acts while the gate is enabled and "
+        "a verified enforcement path is live, so watch the rules the gate files before "
+        "lowering it."),
     "sluice_max_block_s": (
         "The ceiling on how long a single block may last, in seconds. Default 3600 (one "
         "hour), maximum 604800 (a week -- the same ceiling the Sluice tab's rule form "
@@ -1722,7 +1731,7 @@ def alert_evidence(client, src_addr: str, window_start: str,
     out: dict = {
         "src_addr": src_addr,
         "window_start": None, "window_end": None,
-        "flows": [], "zeek_conn": [], "zeek_dns": [], "notice": [],
+        "flows": [], "zeek_conn": [], "zeek_dns": [], "notice": [], "zeek_ssl": [],
         "flow_summary": None,
     }
 
@@ -1801,6 +1810,16 @@ def alert_evidence(client, src_addr: str, window_start: str,
         "AND ts >= %(ws)s AND ts <= %(we)s ORDER BY ts LIMIT 200",
         params, "zeek_conn",
     )
+    # TLS sessions WITH THEIR FINGERPRINTS -- the records a JA4-driven detection is ABOUT.
+    # The models score `zeek_ja4_novelty` and the page used to show only flows, conn, DNS and
+    # notices, so an alert that fired on a brand-new TLS stack had no pivot to the sessions
+    # that carried it. `ja4_orig` rides along for the rare comparison against a pre-sort value.
+    _q(
+        "SELECT ts, dst_addr, dst_port, version, server_name, ja4, ja4_orig, "
+        "validation_status FROM weirvern.zeek_ssl WHERE src_addr = %(a)s "
+        "AND ts >= %(ws)s AND ts <= %(we)s ORDER BY ts LIMIT 100",
+        params, "zeek_ssl",
+    )
     # DNS is the highest-signal evidence for exfil and C2, so it is included here
     # rather than left in a table nothing reads.
     _q(
@@ -1816,6 +1835,44 @@ def alert_evidence(client, src_addr: str, window_start: str,
         params, "notice",
     )
     return out
+
+
+def fingerprint_hosts(client, ja4: str, days: int = 7) -> dict:
+    """Which hosts have presented this JA4 fingerprint, and when.
+
+    THE HUNTING QUESTION THE IDENTITY CARD CANNOT ANSWER. The card shows ONE host's
+    fingerprints; the question an analyst arrives with points the other way -- "who else uses
+    this stack?" -- and it is the pivot from a fingerprint seen in one alert to every other host
+    that presents it. Reads the RAW ssl records, not the identity verdicts, because a fleet
+    still being identified must still be searchable, and a fingerprint seen twice on one host
+    and once on another counts as two and one here.
+    """
+    token = (ja4 or "").strip()
+    if not token:
+        return {"ja4": "", "hosts": [], "count": 0, "reason": "no fingerprint given"}
+    try:
+        rows = client.query(
+            """
+            SELECT src_addr, count() AS sessions, min(ts) AS first_seen,
+                   max(ts) AS last_seen, uniqExact(dst_addr) AS peers
+            FROM weirvern.zeek_ssl
+            WHERE ja4 = %(f)s AND ts >= now() - INTERVAL %(d)s DAY
+            GROUP BY src_addr ORDER BY sessions DESC LIMIT 200
+            """,
+            parameters={"f": token, "d": int(days)},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fingerprint lookup failed: %s", exc)
+        return {"ja4": token, "hosts": [], "count": 0,
+                "reason": f"could not read the ssl records: {type(exc).__name__}"}
+    return {
+        "ja4": token, "count": len(rows),
+        "hosts": [
+            {"src_addr": str(r[0]), "sessions": int(r[1] or 0),
+             "first_seen": _iso(r[2]), "last_seen": _iso(r[3]), "peers": int(r[4] or 0)}
+            for r in rows
+        ],
+    }
 
 
 def _human_age(seconds: float) -> str:

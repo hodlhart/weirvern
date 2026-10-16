@@ -90,6 +90,7 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "SLUICE_ENABLED",
     "SLUICE_IFACE",
     "SLUICE_CRITICALITY",
+    "SLUICE_AUTO_SCORE",
     "SLUICE_MAX_BLOCK_S",
     "SLUICE_INTERVAL_S",
     "SENSOR_MODE",
@@ -168,6 +169,7 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
                        "or compiles the gate immediately"),
     "SLUICE_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SLUICE_CRITICALITY": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "SLUICE_AUTO_SCORE": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SLUICE_MAX_BLOCK_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SLUICE_INTERVAL_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "BASE_THRESHOLD": (("deploy/weirvern-worker",), "restarts the detection worker"),
@@ -273,6 +275,10 @@ NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
     # would hammer the rule store) nor above an hour (rules would expire unnoticed for that long).
     "SLUICE_MAX_BLOCK_S": (60, 604800, "seconds", 60),
     "SLUICE_INTERVAL_S": (5, 3600, "seconds", 5),
+    # 0 disables the threshold entirely (the default); anything above it blocks detections at
+    # or above that fused score. The step is 0.05 -- finer than the ensemble's own confidence
+    # granularity, and coarse enough that the control does not invite false precision.
+    "SLUICE_AUTO_SCORE": (0.0, 1.0, "a score fraction (0 disables)", 0.05),
 }
 
 # HOW THE SETTINGS TAB RENDERS EACH EDITABLE KEY: its natural control, so an operator CHOOSES a
@@ -303,6 +309,10 @@ SETTING_CONTROLS: dict[str, dict] = {
     "SLUICE_IFACE": {"control": "text"},
     "SLUICE_CRITICALITY": {"control": "select",
                            "options": ["off", "high", "medium", "strict"]},
+    # NOTE: SLUICE_AUTO_SCORE has no entry here ON PURPOSE. It is in NUMERIC_RANGES, and that
+    # table is expanded into `{control: number, min, max, step, unit}` just below -- an explicit
+    # `{"control": "number"}` would OVERRIDE the generated spec and drop the step (floats then
+    # round to integers in some browsers) and the bounds the UI relies on.
     "WEIRVERN_EXCLUDE_CIDRS": {"control": "text"},
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": {"control": "text"},
 }
@@ -393,6 +403,11 @@ def validate(key: str, value: str) -> str:
         if key == "SLUICE_INTERVAL_S" and number < 15:
             return ("a re-check interval under 15s reads the rule store that often; 30-60s is "
                     "usually enough to make a filed block feel immediate")
+        if key == "SLUICE_AUTO_SCORE" and number > 0:
+            return ("any detection scoring at or above this value is BLOCKED on the sensor's "
+                    "gate for up to SLUICE_MAX_BLOCK_S, while the gate is enabled and a "
+                    "verified enforcement path is live. Start high (0.9) and watch the rules "
+                    "the gate files before lowering it; 0 turns it off.")
         return ""
 
     if key in ("PUSHOVER_ENABLED", "SLUICE_ENABLED"):

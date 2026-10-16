@@ -410,8 +410,15 @@ def derived_rules_for_detections(
     *,
     policy: str,
     max_ttl_minutes: int,
+    auto_score: float = 0.0,
 ) -> list[dict]:
-    """Turn detections into the rules they justify, under the operator's criticality policy.
+    """Turn detections into the rules they justify, under the operator's two instruments.
+
+    TWO WAYS IN, deliberately: the SEVERITY POLICY (`SLUICE_CRITICALITY` -- a class with its own
+    confidence floor and TTL) and the SCORE THRESHOLD (`SLUICE_AUTO_SCORE` -- "any detection at
+    or above this number is blocked"). A detection qualifies through EITHER; when both are set
+    the policy is a finer net and the threshold is a hard floor under it. That is the operator's
+    own instruction: "any alert over a certain custom threshold is blocked".
 
     Pure: no database, no kernel. That makes the POLICY testable, which matters because this is the
     part an operator is trusting when they let a model block traffic on their network.
@@ -423,19 +430,24 @@ def derived_rules_for_detections(
     Two refusals worth naming:
       * A detection with no SOURCE ADDRESS is skipped. There is nothing to block that is not "the
         whole segment", and blocking that is an outage.
-      * The TTL is the policy's, CAPPED by the operator's ceiling. A policy change must never be
-        able to produce a longer block than the operator allowed.
+      * The TTL is the policy's when a policy applies, else a fixed 30 minutes for a
+        score-triggered block -- ALWAYS capped by the operator's ceiling, so no policy change and
+        no threshold change can produce a longer block than the operator allowed.
     """
     from weirvern.sluice import CRITICALITY_POLICIES, policy_allows  # noqa: PLC0415
 
     spec = CRITICALITY_POLICIES.get(policy)
-    if spec is None or spec["min_severity"] is None:
+    policy_on = spec is not None and spec["min_severity"] is not None
+    if not policy_on and float(auto_score) <= 0.0:
         return []
     # BOTH ARE MINUTES. Naming the parameter after its unit and then dividing by 60 was a units
     # bug: an operator capping blocks at 5 minutes got a 1-minute block (5 // 60 == 0, then the
     # floor of 1 took over). Nothing raised -- the block was simply five times shorter than asked,
     # which is the kind of wrongness only a test on the VALUE can catch.
-    ttl = max(1, min(int(spec["ttl_minutes"]), int(max_ttl_minutes)))
+    if policy_on and spec is not None:
+        ttl = max(1, min(int(spec["ttl_minutes"]), int(max_ttl_minutes)))
+    else:
+        ttl = max(1, min(30, int(max_ttl_minutes)))
 
     out = []
     for d in detections:
@@ -445,9 +457,14 @@ def derived_rules_for_detections(
             continue
         severity = str(d.get("severity") or "")
         confidence = float(d.get("anomaly_score") or 0.0)
-        allowed, why = policy_allows(policy, severity=severity, confidence=confidence)
+        allowed, why = (policy_allows(policy, severity=severity, confidence=confidence)
+                        if policy_on else (False, ""))
+        if not allowed and float(auto_score) > 0.0 and confidence >= float(auto_score):
+            allowed = True
+            why = (f"score {confidence:.2f} is at or above the operator's auto-block threshold "
+                   f"{float(auto_score):.2f}")
         if not allowed:
-            logger.debug("sluice: not blocking %s: %s", src, why)
+            logger.debug("sluice: not blocking %s: %s", src, why or "below every policy")
             continue
         out.append({
             "src_cidr": src if "/" in src else f"{src}/32",

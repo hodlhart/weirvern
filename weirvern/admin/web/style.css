@@ -149,6 +149,35 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 }
 .review-act:hover { color: var(--fg); border-color: var(--accent); }
 
+/* ── the gate pivot: alert → Sluice Gate ─────────────────────────────────── */
+
+/* The block control inside an alert row. It is a BUTTON only when the gate can actually stop
+   traffic; otherwise it renders the REASON as text, because a disabled button still reads as
+   "this is possible" to an operator skimming a table of alerts. */
+.gate-act { margin-top: 6px; }
+/* The live action reads as an ACTION, not as one more muted review verb: same shape as the
+   review buttons, but in the foreground colour. */
+.gate-open { color: var(--fg); border-color: var(--accent); }
+.gate-off { font-size: 11px; color: var(--muted); }
+.gate-form {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 6px; padding: 8px 9px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
+}
+.gate-form .gate-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.gate-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.gate-form input, .gate-form select {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--fg);
+  border-radius: 6px; padding: 4px 8px; font-size: 12px; font-family: var(--mono);
+}
+.gate-form .gate-why { width: 100%; }
+.gate-note { font-size: 11px; }
+
+/* Fingerprint lookup on the identity view: the question pointing the OTHER way -- which hosts
+   present this one stack. */
+.fp-search { margin: 0 0 12px; }
+.fp-search input { font-family: var(--mono); min-width: 280px; }
+.fp-table { width: 100%; }
+
 /* `.hidden` MUST WIN UNCONDITIONALLY. It is applied alongside component classes that set
    their own `display` (.gate sets flex), and with equal specificity the cascade decides by
    SOURCE ORDER -- .gate came after .hidden here, so the "hidden" forced-password gate stayed

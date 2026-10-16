@@ -23,6 +23,11 @@ const API = {
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
     (end ? `&end=${encodeURIComponent(end)}` : ""),
+  // The operator's pivot from an alert to a block on the gate, and the fingerprint lookup that
+  // answers the OTHER direction from the identity card (which hosts present this one stack).
+  sluice: "/api/sluice",
+  sluiceBlock: "/api/sluice/block",
+  fingerprints: (ja4) => `/api/fingerprints?ja4=${encodeURIComponent(ja4)}`,
   // The SOC views. `health` is the DEEP check (reads ClickHouse), NOT /api/healthz, which
   // is the Kubernetes liveness probe and answers a bare {"ok":true} without touching the
   // database so a slow database cannot restart the GUI.
@@ -1187,6 +1192,10 @@ async function postReview(a, state) {
 }
 
 async function loadAnomalies() {
+  // The gate's state rides along with the list, so every row's block control can say whether it
+  // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
+  // shape is worse than one that appears a beat late.
+  await loadGateState();
   const min = document.getElementById("f-min-score").value || "0";
   const limit = document.getElementById("f-limit").value || "100";
   const unrev = document.getElementById("f-unreviewed");
@@ -1225,6 +1234,7 @@ async function loadAnomalies() {
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
+        gateAction(a),
       ]),
       el("td", {}, [reviewCell(a)]),
     ]));
@@ -1350,6 +1360,184 @@ function openHost(addr) {
   loadHost(addr, 24).catch(showError);
 }
 
+/* ── sending an alert to the Sluice Gate ─────────────────────────────────── */
+
+/*
+ * THE OPERATOR'S OWN PIVOT: from an alert they are reading to a block on the gate. Two rules
+ * shape it, and both come from this project's own failures:
+ *
+ *  - The action is OFFERED only when it would DO something. A block stops traffic only when the
+ *    box is actually in the path (a verified channel, or a live siphon intercept); filing one in
+ *    plain loch compiles, counts its own drops and changes nothing. So the control reads the
+ *    gate's own state and, when it is not active, STATES WHY instead of offering a button. A
+ *    disabled button still reads as "this is possible" to someone skimming a table.
+ *  - A block without a reason is unanswerable three weeks later. The reason is PRE-FILLED from
+ *    the alert (score, host, window) and stays editable; the server refuses an empty one.
+ *
+ * The vocabulary is the Gate view's own manual form (src_cidr / protocol / dst_port / direction
+ * / ttl_minutes / reason), so a rule filed from an alert is indistinguishable from one filed by
+ * hand -- same store, same ledger, same revoke path.
+ */
+let GATE_STATE = null;
+
+async function loadGateState() {
+  try {
+    GATE_STATE = await getJSON(API.sluice);
+  } catch (err) {
+    // "Unavailable" is a state this UI must render AS unavailable, never as "off" -- the same
+    // distinction the status views make between a dead query and a quiet network.
+    GATE_STATE = null;
+  }
+  return GATE_STATE;
+}
+
+/** Why a block from here would not stop traffic, or "" when the gate is active. */
+function gateBlockableReason() {
+  if (!GATE_STATE || !GATE_STATE.available) return "the gate's state is unavailable";
+  if (!GATE_STATE.enabled) return "the Sluice Gate is off";
+  const enforcement = (GATE_STATE.gate && GATE_STATE.gate.enforcement) || "";
+  if (enforcement === "channel" || enforcement === "siphon") return "";
+  return "nothing is enforcing: loch with no verified channel or live intercept means a block " +
+         "would compile and stop nothing";
+}
+
+/** The block control for one alert: a button, or the reason there is none. */
+function gateAction(a) {
+  const wrap = el("div", { class: "gate-act" });
+  const reason = gateBlockableReason();
+  if (reason) {
+    wrap.appendChild(el("span", { class: "gate-off", title: reason,
+                                  text: `Block unavailable \u2014 ${reason}` }));
+    return wrap;
+  }
+  wrap.appendChild(el("button", {
+    class: "review-act gate-open", text: "Block\u2026", attrs: { type: "button" },
+    title: "send this host to the Sluice Gate",
+    on: { click: (e) => { e.stopPropagation(); toggleGateForm(wrap, a); } },
+  }));
+  return wrap;
+}
+
+function toggleGateForm(wrap, a) {
+  // The reference is held on the wrapper instead of being found with a selector: the bundle is
+  // checked by a test that every querySelector target exists in the MARKUP, and a form built at
+  // runtime is not in the markup. A selector here would be a false positive that check would
+  // have to be taught to except -- a held reference says the same thing without widening it.
+  if (wrap._gateForm) { wrap._gateForm.remove(); wrap._gateForm = null; return; }
+  wrap._gateForm = gateForm(a);
+  wrap.appendChild(wrap._gateForm);
+}
+
+/** The form: all traffic from the host, or one service (port + protocol). */
+function gateForm(a) {
+  const form = el("div", { class: "gate-form" });
+  const scope = el("select", { attrs: { "aria-label": "what to block" } }, [
+    el("option", { value: "all", text: "all traffic from this host", selected: true }),
+    el("option", { value: "port", text: "only one service" }),
+  ]);
+  const port = el("input", { attrs: { type: "number", min: "1", max: "65535",
+                                      placeholder: "port", "aria-label": "port" } });
+  const proto = el("select", { attrs: { "aria-label": "protocol" } },
+    ["tcp", "udp"].map((p) => el("option", { value: p, text: p })));
+  const ttl = el("select", { attrs: { "aria-label": "how long to block" } },
+    [5, 15, 30, 60, 240].map((m) => el("option", { value: String(m), text: `${m} min`,
+                                                    selected: m === 60 })));
+  const why = el("input", { class: "gate-why", attrs: { type: "text", "aria-label": "reason" },
+    value: `alert score ${(a.anomaly_score ?? 0).toFixed(3)} on ${a.src_addr}, ` +
+           `window ${fmtTime(a.window_start)}` });
+  const note = el("span", { class: "muted gate-note" });
+  const submit = el("button", {
+    class: "review-act", text: "File block", attrs: { type: "button" },
+    on: { click: async (e) => {
+      e.stopPropagation();
+      const portMode = scope.value === "port";
+      if (portMode && !Number(port.value)) {
+        note.textContent = "enter a port, or switch to all traffic";
+        return;
+      }
+      if (!why.value.trim()) {
+        note.textContent = "a reason is required";
+        return;
+      }
+      const body = {
+        src_cidr: a.src_addr, dst_cidr: "",
+        protocol: portMode ? proto.value : "",
+        dst_port: portMode ? Number(port.value) : 0,
+        direction: "forward", ttl_minutes: Number(ttl.value), reason: why.value.trim(),
+      };
+      submit.disabled = true;
+      note.textContent = "recording\u2026";
+      try {
+        const out = await postJSON(API.sluiceBlock, body);
+        // The server's refusal text is the deliverable: it names the fix (the management
+        // interface, a port with no protocol, a missing reason, an unknown host).
+        note.textContent = (out && (out.ok ? (out.note || "recorded") : out.error))
+          || "the rule was refused";
+      } catch (err) {
+        note.textContent = String(err.message || err);
+      } finally {
+        submit.disabled = false;
+      }
+    } },
+  });
+  form.appendChild(el("div", { class: "gate-line" }, [
+    el("span", { class: "muted", text: "block" }), scope, port, proto,
+  ]));
+  form.appendChild(el("div", { class: "gate-line" }, [
+    el("span", { class: "muted", text: "for" }), ttl,
+  ]));
+  form.appendChild(el("div", { class: "gate-line" }, [why]));
+  form.appendChild(el("div", { class: "gate-line" }, [submit, note]));
+  // Show the port fields only in "one service" mode: a control that can never be used is the
+  // dead-control defect this project keeps refusing to ship.
+  const sync = () => {
+    const on = scope.value === "port";
+    port.style.display = on ? "" : "none";
+    proto.style.display = on ? "" : "none";
+  };
+  scope.addEventListener("change", sync);
+  sync();
+  return form;
+}
+
+/* ── the fingerprint lookup (identity view) ───────────────────────────────── */
+
+/* The OTHER direction from the identity card. The card shows one host's fingerprints; the
+ * question an analyst arrives with is "who else presents this stack?", and this is that lookup.
+ * A lookup that found nothing says nothing FOUND in the window -- not "no such fingerprint":
+ * the records only cover what the sensor retained. */
+async function lookupFingerprint(ja4) {
+  const note = document.getElementById("fp-note");
+  const out = document.getElementById("fp-results");
+  const token = (ja4 || "").trim();
+  out.replaceChildren();
+  if (!token) { note.textContent = "paste a JA4 fingerprint first"; return; }
+  note.textContent = "looking up\u2026";
+  const d = await getJSON(API.fingerprints(token));
+  if (d.reason) { note.textContent = d.reason; return; }
+  note.textContent = d.count
+    ? `${d.count} host(s) presented this fingerprint in the last 7 days`
+    : "no host presented this fingerprint in the last 7 days";
+  if (!d.count) return;
+  const tb = el("tbody", {});
+  for (const h of d.hosts) {
+    const tr = el("tr", { class: "clickable", attrs: { title: "open this host" },
+                          on: { click: () => openHost(h.src_addr) } }, [
+      el("td", { class: "mono", text: h.src_addr }),
+      el("td", { class: "mono", text: String(h.sessions) }),
+      el("td", { class: "mono", text: fmtTime(h.first_seen) }),
+      el("td", { class: "mono", text: fmtTime(h.last_seen) }),
+      el("td", { class: "mono", text: String(h.peers) }),
+    ]);
+    tb.appendChild(tr);
+  }
+  out.appendChild(el("table", { class: "fp-table" }, [
+    el("thead", {}, [el("tr", {}, ["Host", "Sessions", "First seen", "Last seen", "Peers"]
+      .map((h) => el("th", { text: h })))]),
+    tb,
+  ]));
+}
+
 /* ── alert evidence (the pivot) ─────────────────────────────────────────── */
 
 /* Show the RAW records inside one alert's detection window. This is the answer to
@@ -1385,6 +1573,12 @@ async function loadEvidence(addr, start, end) {
     if (d.anomaly.baseline_comparison) {
       verdict.appendChild(el("p", { text: d.anomaly.baseline_comparison }));
     }
+    // The operator's pivot, on the page where the alert is actually read. Same gate-state check
+    // as the anomalies row: offered only when a block would DO something, with the reason stated
+    // when it would not.
+    await loadGateState();
+    verdict.appendChild(gateAction(Object.assign({}, d.anomaly,
+      { src_addr: d.src_addr, window_start: d.window_start })));
     // ── ATT&CK techniques ────────────────────────────────────────────────────
     //
     // Rendered with the evidence and the confidence, never as a bare ID. "T1046" alone
@@ -1467,6 +1661,25 @@ async function loadEvidence(addr, start, end) {
         el("td", {}, [hostCell(z.dst_addr, z.hostname, d.src_addr)]),
         el("td", { text: z.service || z.dst_port || "—" }),
         el("td", { class: "mono", text: fmtBytes((z.orig_bytes ?? 0) + (z.resp_bytes ?? 0)) }),
+      ]));
+    }
+  }
+
+  // TLS sessions WITH THEIR FINGERPRINTS. The models score zeek_ja4_novelty, so without this
+  // table a JA4-driven alert had no pivot to the sessions that carried the new stack -- the
+  // analyst could read the score and not the evidence.
+  const tl = document.querySelector("#ev-tls tbody");
+  tl.replaceChildren();
+  if (!(d.zeek_ssl || []).length) {
+    emptyRow(tl, 5, "No TLS sessions in this window.");
+  } else {
+    for (const s of d.zeek_ssl) {
+      tl.appendChild(el("tr", {}, [
+        el("td", { class: "mono", text: fmtTime(s.ts) }),
+        el("td", {}, [hostCell(s.dst_addr, s.hostname, d.src_addr)]),
+        el("td", { class: "mono", text: String(s.dst_port ?? "—") }),
+        el("td", { text: s.server_name || "—" }),
+        el("td", { class: "mono", text: s.ja4 || "—" }),
       ]));
     }
   }
@@ -1785,6 +1998,17 @@ document.addEventListener("DOMContentLoaded", () => {
   // the way back to the comparable view without a reload.
   const nwSettle = document.getElementById("nw-settle");
   if (nwSettle) nwSettle.addEventListener("click", () => settleGraph());
+
+  // ── fingerprint lookup (identity view) ─────────────────────────────────────
+  // Guarded like the module wirings below: if the markup is absent the page should lose one
+  // lookup, not every listener registered after this point.
+  const fpGo = document.getElementById("fp-go");
+  const fpInput = document.getElementById("fp-input");
+  if (fpGo && fpInput) {
+    const run = () => lookupFingerprint(fpInput.value).catch(showError);
+    fpGo.addEventListener("click", run);
+    fpInput.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+  }
 
   // ── Sluice Gate controls ───────────────────────────────────────────────────
   // Wired from HERE rather than from sluice.js so that every listener in this application is

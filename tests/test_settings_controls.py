@@ -245,8 +245,8 @@ def test_the_sluice_keys_are_editable_from_the_settings_tab():
     must be a real row, with a control, an explanation and a stated restart, or the feature
     whose whole point is deciding what traffic lives is the one you need kubectl for."""
     rows = _rows()
-    for key in ("SLUICE_ENABLED", "SLUICE_IFACE", "SLUICE_CRITICALITY", "SLUICE_MAX_BLOCK_S",
-                "SLUICE_INTERVAL_S"):
+    for key in ("SLUICE_ENABLED", "SLUICE_IFACE", "SLUICE_CRITICALITY", "SLUICE_AUTO_SCORE",
+                "SLUICE_MAX_BLOCK_S", "SLUICE_INTERVAL_S"):
         assert key in cc.EDITABLE_KEYS, f"{key} is not editable"
         assert key in cc.SETTING_CONTROLS, f"{key} has no control spec"
         row = cc.to_row_key(key)
@@ -281,6 +281,22 @@ def test_the_gate_cannot_be_pointed_at_the_management_interface(monkeypatch):
     assert "management" in str(err.value).lower()
     cc.validate("SLUICE_IFACE", "eth1")   # a real port passes
     cc.validate("SLUICE_IFACE", "")       # empty = resolve automatically (the default)
+
+
+def test_the_auto_block_threshold_is_bounded_and_states_its_cost():
+    """The operator's threshold is a 0-1 score fraction. 0 is off and says nothing (there is no
+    cost to warn about); any positive value must state what it will do, because it is the one
+    setting on this tab that can stop traffic without anyone looking at the detection first."""
+    assert cc.validate("SLUICE_AUTO_SCORE", "0") == ""
+    warning = cc.validate("SLUICE_AUTO_SCORE", "0.9")
+    assert "BLOCK" in warning and "0.9" in warning
+    # Out of range values are rejected outright; the bound is the score's own range.
+    with pytest.raises(cc.ConfigError):
+        cc.validate("SLUICE_AUTO_SCORE", "1.5")
+    with pytest.raises(cc.ConfigError):
+        cc.validate("SLUICE_AUTO_SCORE", "-0.1")
+    with pytest.raises(cc.ConfigError):
+        cc.validate("SLUICE_AUTO_SCORE", "high")
 
 
 def test_the_sluice_toggle_accepts_booleans_only():

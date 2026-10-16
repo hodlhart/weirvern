@@ -359,6 +359,20 @@
         Confidence reflects how many <em>independent</em> sources agree, so a hostname
         alone is never presented as an answer.
       </p>
+      <!--
+        THE OTHER DIRECTION. The table below answers "what does this host run?"; this row answers
+        "who else presents this stack?" -- the pivot from a fingerprint seen in one alert to
+        every other host that presents it. It reads the raw TLS records, so it works while a
+        fleet is still being identified.
+      -->
+      <div class="controls fp-search">
+        <label>find by JA4 fingerprint
+          <input id="fp-input" type="text" placeholder="t13d1516h2_8daaf6152771_02713d6af862" />
+        </label>
+        <button id="fp-go" type="button">Look up</button>
+        <span class="muted" id="fp-note"></span>
+      </div>
+      <div id="fp-results"></div>
       <div class="info-text hidden" id="id-info">
         Nothing is probed and nothing is sent — every identity here was derived from traffic the
         sensor already saw. Confidence counts how many INDEPENDENT sources agree (a banner, a DHCP
@@ -552,6 +566,10 @@
       <div class="card">
         <h2>Zeek sessions</h2>
         <table id="ev-zeek"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>TLS sessions <span class="muted">— the JA4 fingerprints behind a TLS-stack alert</span></h2>
+        <table id="ev-tls"><tbody></tbody></table>
       </div>
       <div class="card">
         <h2>DNS queries</h2>

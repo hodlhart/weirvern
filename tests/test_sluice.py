@@ -564,7 +564,8 @@ class FakeStore:
         self.events.extend(events)
         return len(events)
 
-    def derived_rules_for_detections(self, detections, *, policy, max_ttl_minutes):
+    def derived_rules_for_detections(self, detections, *, policy, max_ttl_minutes,
+                                      auto_score=0.0):
         from weirvern.sluice_store import derived_rules_for_detections as real
         return real(detections, policy=policy, max_ttl_minutes=max_ttl_minutes)
 
@@ -668,6 +669,62 @@ def test_the_operators_ceiling_caps_the_policys_ttl():
     # The 'high' policy says 30 minutes; the operator has capped blocks at 5.
     out = derived_rules_for_detections(det, policy="high", max_ttl_minutes=5)
     assert out and out[0]["ttl_minutes"] == 5, f"the ceiling was not applied: {out}"
+
+
+# ── the operator's own threshold (SLUICE_AUTO_SCORE) ─────────────────────────────────────────
+
+
+def test_the_operators_threshold_blocks_without_any_policy():
+    """TWO WAYS IN. With the severity policy OFF -- which alone blocks nothing -- a detection at
+    or above the operator's threshold still yields a rule, and one below it still yields nothing.
+    The reason string names the threshold, because the question asked about a block three weeks
+    later is always "why is this blocked"."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    strong = [{"src_addr": "198.51.100.9", "severity": "medium", "anomaly_score": 0.95}]
+    out = derived_rules_for_detections(strong, policy="off", max_ttl_minutes=60, auto_score=0.9)
+    assert len(out) == 1, "a detection above the operator's threshold was not blocked"
+    assert "auto-block threshold 0.90" in out[0]["reason"]
+    assert out[0]["src_cidr"] == "198.51.100.9/32"
+    # The score-triggered default TTL is 30 minutes, under the operator's 60-minute ceiling.
+    assert out[0]["ttl_minutes"] == 30
+
+    weak = [{"src_addr": "198.51.100.9", "severity": "high", "anomaly_score": 0.40}]
+    assert derived_rules_for_detections(weak, policy="off", max_ttl_minutes=60,
+                                         auto_score=0.9) == []
+
+    # With the threshold off, policy=off still blocks nothing -- the default is unchanged.
+    assert derived_rules_for_detections(strong, policy="off", max_ttl_minutes=60) == []
+
+
+def test_the_two_instruments_are_independent():
+    """A low-severity detection the policy refuses is blocked by the threshold; a high-severity
+    one below the threshold is blocked by the policy; one clearing neither is not blocked."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    by_policy = [{"src_addr": "198.51.100.1", "severity": "high", "anomaly_score": 0.90}]
+    out = derived_rules_for_detections(by_policy, policy="high", max_ttl_minutes=60, auto_score=0.99)
+    assert len(out) == 1 and "auto-block threshold" not in out[0]["reason"]
+
+    by_score = [{"src_addr": "198.51.100.2", "severity": "low", "anomaly_score": 0.95}]
+    out = derived_rules_for_detections(by_score, policy="high", max_ttl_minutes=60, auto_score=0.9)
+    assert len(out) == 1 and "auto-block threshold 0.90" in out[0]["reason"]
+
+    neither = [{"src_addr": "198.51.100.3", "severity": "low", "anomaly_score": 0.50}]
+    assert derived_rules_for_detections(neither, policy="high", max_ttl_minutes=60,
+                                         auto_score=0.9) == []
+
+
+def test_a_score_triggered_block_respects_the_operators_ceiling():
+    """The new path is capped by the SAME ceiling as the policy path, and an empty source is
+    skipped exactly as before."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    det = [{"src_addr": "198.51.100.9", "severity": "low", "anomaly_score": 0.99}]
+    out = derived_rules_for_detections(det, policy="off", max_ttl_minutes=5, auto_score=0.9)
+    assert out and out[0]["ttl_minutes"] == 5
+    assert derived_rules_for_detections([{"src_addr": "", "anomaly_score": 1.0}], policy="off",
+                                         max_ttl_minutes=60, auto_score=0.9) == []
 
 
 # ── the GUI loader's failure contract, proved behaviourally ──────────────────────────────────

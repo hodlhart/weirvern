@@ -1042,6 +1042,7 @@ def enforcement_pass(
     sensor: str,
     policy: str = "off",
     max_block_s: int = 3600,
+    auto_score: float = 0.0,
     detections: list[dict] | None = None,
     sensor_mode: str = "",
     channel: Any = None,
@@ -1092,12 +1093,13 @@ def enforcement_pass(
             backend=supervisor.backend.name, backend_expected="nft",
         )
 
-    if policy != "off" and detections:
+    if (policy != "off" or float(auto_score) > 0.0) and detections:
         for spec in store.derived_rules_for_detections(
             # max_block_s is SECONDS (a config knob an operator reads); the function takes
             # MINUTES. Named conversion rather than a bare //60, because that is the line a
             # unit-change breaks silently.
-            detections, policy=policy, max_ttl_minutes=max(1, int(max_block_s) // 60)
+            detections, policy=policy, max_ttl_minutes=max(1, int(max_block_s) // 60),
+            auto_score=auto_score,
         ):
             try:
                 rules.append(store.create_rule(client, **spec))

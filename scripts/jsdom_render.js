@@ -418,6 +418,10 @@ const SLUICE_PAYLOAD = {
   criticality: "high",
   gate: {
     available: true, state: "armed", iface: "eth1", mgmt_iface: "eth0",
+    // The real payload carries this (load_gate_state reads it from the state table). The stub
+    // predated it, and without it the alert-side block control could only ever be tested in its
+    // "nothing is enforcing" state.
+    enforcement: "channel",
     rules_active: 2, rules_total: 3, packets_blocked: 1234, bytes_blocked: 987654,
     detail: "2 rule(s) enforced on eth1; 1 lapsed and are no longer enforced",
     backend: "nft", backend_expected: "nft",
@@ -507,6 +511,19 @@ const IDENTITY_PAYLOAD = {
     ],
   };
 
+  // The fingerprint lookup: the OTHER direction from the identity card -- which hosts present
+  // this one stack. Two hosts with different session counts, so a renderer that repeats one row
+  // (or reads the wrong field) has something to get wrong.
+  const FP_PAYLOAD = {
+    ja4: "t13d1516h2_8daaf6152771_02713d6af862", count: 2, reason: "",
+    hosts: [
+      { src_addr: "203.0.113.42", sessions: 18, first_seen: "2026-01-01T10:00:00",
+        last_seen: "2026-01-02T09:00:00", peers: 4 },
+      { src_addr: "198.51.100.7", sessions: 3, first_seen: "2026-01-02T08:00:00",
+        last_seen: "2026-01-02T08:30:00", peers: 1 },
+    ],
+  };
+
   const ROUTES = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
@@ -560,6 +577,8 @@ const IDENTITY_PAYLOAD = {
                         notes: [], error: "" }
                   : u.includes("/api/review")
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
+                  : u.includes("/api/sluice/block")
+                    ? { ok: true, note: "the rule is filed; the gate re-checks within a minute" }
                   : u.includes("/api/weirlings/register")
                     ? (() => {
                         // STATEFUL, like the real store: a registration PERSISTS, so the
@@ -768,6 +787,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/users", USERS_PAYLOAD],
     ["/api/identity", IDENTITY_PAYLOAD],
     ["/api/sluice", SLUICE_PAYLOAD],
+    ["/api/fingerprints", FP_PAYLOAD],
 
     // WEIRLINGS. The DETAIL route is handled ABOVE this table because it must be
     // REQUEST-AWARE: it answers for the sensor asked about, like the real server. A static
@@ -1908,6 +1928,117 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("the POST carries the window_start the server keyed the row by",
             !!body.window_start, String(body.window_start));
     }
+  }
+
+  // ── the gate pivot: an alert → a block on the Sluice Gate ──────────────────────────────────
+  //
+  // Three outcomes matter here, and the reasons they do:
+  //  1. With the gate ACTIVE (the stub says armed, enforcement channel) every alert row offers
+  //     the control -- a button on the page where the operator is actually reading the alert.
+  //  2. Clicking it opens a form whose reason is PRE-FILLED from the alert, and filing POSTs the
+  //     alert's host with the scope the operator chose. The reason is the part that is
+  //     unanswerable three weeks later if it is empty.
+  //  3. With the gate OFF the button is GONE and the reason is stated instead. A block that
+  //     cannot stop traffic must not be offered as if it could, and it must not be hidden in
+  //     silence either.
+  const gpRows = [...doc.querySelectorAll("#anomalies-table tbody tr")];
+  const gpBtns = [...doc.querySelectorAll("#anomalies-table .gate-open")];
+  check("an active gate offers a Block control on every alert row",
+        gpRows.length > 0 && gpBtns.length === gpRows.length,
+        `${gpBtns.length} control(s) for ${gpRows.length} row(s)`);
+
+  if (gpBtns.length) {
+    gpBtns[0].click();
+    await new Promise((r) => setTimeout(r, 60));
+    const gf = gpRows[0].querySelector(".gate-form");
+    check("clicking Block opens the form IN PLACE", !!gf);
+    check("and does not fall through to the row's own click (which opens the evidence view)",
+          doc.getElementById("view-anomalies").classList.contains("active"));
+    if (gf) {
+      const whyIn = gf.querySelector(".gate-why");
+      check("the reason is PRE-FILLED from the alert -- host and score",
+            !!whyIn && whyIn.value.includes("203.0.113.42") && whyIn.value.includes("0.910"),
+            whyIn ? whyIn.value.slice(0, 120) : "no reason field");
+      const portIn = gf.querySelector("input[type=number]");
+      check("the port field is hidden until 'one service' is chosen",
+            !!portIn && portIn.style.display === "none");
+      if (portIn) {
+        const scopeSel = gf.querySelector("select");
+        scopeSel.value = "port";
+        scopeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+        check("choosing 'one service' reveals the port fields", portIn.style.display !== "none");
+        portIn.value = "3389";
+        const postedBefore = POSTED.length;
+        gf.querySelector("button.review-act:not(.gate-open)").click();
+        await new Promise((r) => setTimeout(r, 80));
+        const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/sluice/block"));
+        check("filing the block POSTs to /api/sluice/block", !!req,
+              POSTED.slice(postedBefore).map((r) => r.url).join(","));
+        if (req) {
+          let body = {};
+          try { body = JSON.parse(req.body || "{}"); } catch (_e) { body = {}; }
+          check("the POST names the alert's host, the chosen service and protocol, and a reason",
+                body.src_cidr === "203.0.113.42" && body.protocol === "tcp"
+                && body.dst_port === 3389 && !!body.reason && body.direction === "forward",
+                JSON.stringify(body).slice(0, 160));
+        }
+      }
+    }
+  }
+
+  // The gate OFF: the same rows must state the reason instead of offering the button.
+  fetchOverride = (u, opts) => (String(u).split("?")[0].endsWith("/api/sluice")
+    ? { ok: true, status: 200,
+        json: async () => (Object.assign({}, SLUICE_PAYLOAD, { enabled: false })) }
+    : null);
+  await H.loadAnomalies();
+  const offBtns = [...doc.querySelectorAll("#anomalies-table .gate-open")];
+  const offNotes = [...doc.querySelectorAll("#anomalies-table .gate-off")];
+  check("with the gate off, no row offers the button", offBtns.length === 0,
+        `${offBtns.length} button(s)`);
+  check("and every row STATES why the block is unavailable",
+        offNotes.length > 0 && /Sluice Gate is off/.test(offNotes[0].textContent),
+        offNotes[0] ? offNotes[0].textContent.slice(0, 160) : "no reason rendered");
+  fetchOverride = null;
+  await H.loadAnomalies();
+
+  check("the evidence view carries a TLS-sessions section for the JA4 pivot",
+        !!doc.getElementById("ev-tls"));
+
+  // ── the fingerprint lookup, on the identity view ────────────────────────────────────────────
+  //
+  // The question pointing the other way: not "what does this host run" but "who else presents
+  // this stack". The empty case is checked too, because a lookup that finds nothing must SAY it
+  // found nothing rather than render an empty box.
+  H.showView("identity");
+  await H.loadIdentity();
+  const fpIn = doc.getElementById("fp-input");
+  const fpGo = doc.getElementById("fp-go");
+  check("the identity view carries the fingerprint lookup", !!fpIn && !!fpGo);
+  if (fpIn && fpGo) {
+    fpIn.value = "t13d1516h2_8daaf6152771_02713d6af862";
+    fpGo.click();
+    await new Promise((r) => setTimeout(r, 80));
+    const hits = [...doc.querySelectorAll("#fp-results tbody tr")];
+    check("the lookup renders one row per host that presented the fingerprint",
+          hits.length === 2, `${hits.length} row(s)`);
+    check("the note states how many hosts, and over what window",
+          /2 host/.test(doc.getElementById("fp-note").textContent),
+          doc.getElementById("fp-note").textContent);
+
+    fetchOverride = (u, opts) => (String(u).split("?")[0].endsWith("/api/fingerprints")
+      ? { ok: true, status: 200,
+          json: async () => ({ ja4: "deadbeef", count: 0, hosts: [], reason: "" }) }
+      : null);
+    fpIn.value = "deadbeef";
+    fpGo.click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("a lookup that found nothing SAYS so",
+          /no host/.test(doc.getElementById("fp-note").textContent),
+          doc.getElementById("fp-note").textContent);
+    check("and renders no table for it",
+          doc.querySelectorAll("#fp-results tbody tr").length === 0);
+    fetchOverride = null;
   }
 
   // ── accounts: the sign-in gate, roles, and the Users panel ────────────────────────────────

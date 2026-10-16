@@ -139,10 +139,12 @@ def _sluice_maybe(settings, client) -> None:
         return
     _SLUICE["last_pass"] = now
 
-    # Detections are read only when the policy is not Off, so an operator who has not enabled
-    # auto-blocking pays no query for it.
+    # Detections are read only when SOMETHING may block on them -- a policy above Off, or the
+    # operator's numeric auto-block threshold -- so a deployment that blocks nothing pays no
+    # query for it.
     detections: list[dict] = []
-    if settings.sluice_criticality != "off":
+    auto_score = float(getattr(settings, "sluice_auto_score", 0.0) or 0.0)
+    if settings.sluice_criticality != "off" or auto_score > 0.0:
         detections = current_detections_for_blocking(client)
 
     # WHETHER A CONFIGURED SIPHON IS ACTUALLY INTERCEPTING, checked only when it matters. A
@@ -161,6 +163,7 @@ def _sluice_maybe(settings, client) -> None:
     state = enforcement_pass(
         sluice_store, sup, client=client, sensor=_sensor_name(settings),
         policy=settings.sluice_criticality, max_block_s=settings.sluice_max_block_s,
+        auto_score=auto_score,
         detections=detections,
         # So the pass can say plainly WHICH enforcement path is live -- channel, siphon, or none.
         sensor_mode=settings.sensor_mode,

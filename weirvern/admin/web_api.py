@@ -250,6 +250,12 @@ def evidence_payload(d: dict) -> dict:
         "zeek_conn": evidence_rows(d.get("zeek_conn"), [
             "ts", "dst_addr", "dst_port", "proto", "service", "duration",
             "orig_bytes", "resp_bytes", "conn_state"]),
+        # The TLS sessions, with the fingerprints the models score. A JA4-driven alert has to
+        # pivot to the records that carried the new stack; before this section existed the page
+        # showed every signal EXCEPT the one the verdict was about.
+        "zeek_ssl": evidence_rows(d.get("zeek_ssl"), [
+            "ts", "dst_addr", "dst_port", "version", "server_name", "ja4", "ja4_orig",
+            "validation_status"]),
         "zeek_dns": rows(d.get("zeek_dns"), [
             "ts", "query", "qtype", "rcode", "answers", "query_entropy"]),
         "notice": rows(d.get("notice"), ["ts", "note", "msg", "actions"]),

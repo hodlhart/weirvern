@@ -234,6 +234,13 @@ class Settings:
     # within which a lapsed rule stops being enforced. Short is cheap: compiling a ruleset is
     # milliseconds.
     sluice_interval_s: int = field(default_factory=lambda: _env_int("SLUICE_INTERVAL_S", 60))
+    # THE OPERATOR'S OWN AUTO-BLOCK THRESHOLD. When > 0, ANY detection whose fused score is at
+    # or above this value is blocked on the gate's own pass -- "if it scores this high, stop it"
+    # -- independent of the severity policy above (which stays the finer instrument: severity
+    # AND confidence floors). 0.0 disables it, so the default deployment blocks nothing unless
+    # the operator asks. A NUMBER rather than another severity level, because a fleet's notion
+    # of "high" moves with its own thresholds while a score the operator picked does not.
+    sluice_auto_score: float = field(default_factory=lambda: _env_float("SLUICE_AUTO_SCORE", 0.0))
     # CHANNEL NETFLOW: whether the IN-LINE channel's crossing traffic is summarised into flow
     # records -- 'off' (default), 'upstream' or 'downstream' naming WHICH PORT the probe samples.
     # Either port sees every frame crossing the box, so one is enough; sampling both would count

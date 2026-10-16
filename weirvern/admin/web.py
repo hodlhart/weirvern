@@ -280,6 +280,8 @@ def _build_handler(ctx: GuiContext):
                 return self._host(query)
             if path == "/api/evidence":
                 return self._evidence(query)
+            if path == "/api/fingerprints":
+                return self._fingerprints(query)
             if path == "/api/models":
                 return self._models(query)
             if path == "/api/netflow":
@@ -2226,6 +2228,28 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.evidence_payload(data))
+
+        def _fingerprints(self, query: dict) -> None:
+            """Which hosts have presented a given JA4 fingerprint -- the hunting pivot.
+
+            The identity card answers "what does this host use?"; this answers "who else uses
+            this stack?", which is the direction an analyst actually arrives from: a fingerprint
+            seen in one alert, then every other host that presents it. The token is shape-checked
+            before it becomes a query parameter, and a database failure is a 503 with the reason
+            rather than an empty list that would read as "nobody uses this".
+            """
+            ja4 = (query.get("ja4") or [""])[0].strip()
+            if not ja4:
+                return self._error(
+                    400, "ja4 is required, e.g. /api/fingerprints?ja4=t13d1516h2_...")
+            if len(ja4) > 128 or not all(c.isalnum() or c in "._-:" for c in ja4):
+                return self._error(400, "ja4 does not look like a fingerprint")
+            try:
+                with self._with_client() as client:
+                    payload = status_mod.fingerprint_hosts(client, ja4)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"cannot reach ClickHouse: {exc}")
+            self._json(payload)
 
     return Handler
 

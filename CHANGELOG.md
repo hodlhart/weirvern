@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — the operator's hand on the gate: block from an alert, and a threshold that blocks for you
+
+Two instruments for the operator, plus the two JA4 gaps the audit left open.
+
+THE ALERT CAN BE SENT TO THE GATE DIRECTLY. Every row on the anomalies list (and the verdict on
+the evidence page) now carries the action, so an operator reading an alert does not have to
+remember the host, walk to the gate view and retype it. The control is OFFERED ONLY WHEN IT WOULD
+DO SOMETHING: it reads the gate's own state, and when the gate is off -- or on, but with no
+verified enforcement path, which is loch with no channel and no live intercept, where a block
+compiles, counts its own drops and stops nothing -- it states that reason in the row instead of
+offering a button. A disabled button still reads as "this is possible" to someone skimming. The
+form is the Gate view's own vocabulary (src_cidr / protocol / dst_port / direction / ttl_minutes /
+reason), so a rule filed from an alert is the same object in the same store with the same revoke
+path; the reason is PRE-FILLED from the alert (score, host, window) because a block whose reason
+is empty is unanswerable three weeks later, and the server still refuses an empty one.
+
+AUTO-BLOCK OVER A CUSTOM THRESHOLD. `SLUICE_AUTO_SCORE` (Settings → Sluice Gate, or the
+ConfigMap) is the operator's own line on the fused 0-1 score: any detection at or above it is
+blocked on the gate's next pass, independent of the severity policy -- two ways in, and a
+detection clearing either is blocked. It defaults to 0, which means off, so the shipped behaviour
+is unchanged; a score-triggered block takes a 30-minute TTL, always capped by
+`SLUICE_MAX_BLOCK_S`, and the reason string names the threshold, because "why is this blocked" is
+asked weeks later. The worker reads detections when EITHER instrument is set -- reading them only
+for a policy above Off would have made the threshold silently inert, the exact defect the JA4
+novelty audit found elsewhere.
+
+THE EVIDENCE PAGE CAN SHOW THE TLS RECORDS. `/api/evidence` now carries a `zeek_ssl` section
+(timestamp, destination, port, version, server name, ja4, ja4_orig), so a JA4-driven alert pivots
+to the sessions that carried the new stack -- before this, the page showed every signal except
+the one the verdict was about.
+
+AND THE LOOKUP THAT POINTS THE OTHER WAY: the identity view takes a JA4 fingerprint and lists
+every host that presented it in the last seven days, with session counts and first/last sighting,
+each row opening the host's drill-down. The card answered "what does this host run?"; this
+answers "who else presents this stack?", which is the direction an analyst arrives from. It reads
+the raw session records, so it works while a fleet is still being identified, and a lookup with
+no hits SAYS it found nothing in the window rather than implying the fingerprint is unused.
+
 ## Unreleased — the alert's why-line can see a new TLS stack
 
 The models score the JA4 features; the explanation spoke only about volume, so an alert whose
