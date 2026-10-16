@@ -3046,6 +3046,25 @@ check("high capture loss is called out in the fleet",
           !!(note && /cannot read|type a range/.test(note.textContent)),
           note ? note.textContent : "no note element");
   }
+  // ── THE FLOW-DETAIL DRILL FOLLOWS THE RANGE ────────────────────────────────────────────────
+  // Measured by the operator: "last 15 minutes still shows <old addresses>". The table fetched
+  // a STALE fixed 24h and was only re-fetched on a bar click, so a range change left it
+  // rendering the previous window's rows. Both halves are pinned here.
+  {
+    H.trApply({ mode: "relative", hours: 1 });
+    H.showView("netflow");
+    await H.loadNetflow();
+    // (the detail table is EMPTY until a drill runs -- that is its honest initial state)
+    const note = doc.getElementById("nf-detail-note");
+    H.loadFlowDetail({ port: 443, name: "port 443" });
+    await new Promise((r) => setTimeout(r, 80));
+    check("the flow-detail table names the window it is showing",
+          !!(note && /last 1 hour/.test(note.textContent)), note ? note.textContent : "no note");
+    H.trApply({ mode: "relative", hours: 24 });
+    await new Promise((r) => setTimeout(r, 80));
+    check("and a range change re-runs the drill instead of leaving stale rows",
+          /last 24 hours/.test(note.textContent), note.textContent);
+  }
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
   {
     H.showView("discover");

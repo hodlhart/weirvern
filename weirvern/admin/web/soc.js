@@ -234,8 +234,16 @@ async function loadNetflow() {
              { label: (r) => r.src_addr, value: (r) => r.destinations,
                format: (v) => `${v} dst`,
                onClick: (r) => openHost(r.src_addr),
-               title: (r) => `${r.hostname ? r.hostname + " · " : ""}${r.src_addr} talked to ${r.destinations} distinct destinations`,
+               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} talked to ${r.destinations} distinct destinations`,
                emptyText: "No fan-out recorded in this window." });
+
+  // THE DRILL FOLLOWS THE RANGE. The flow-detail table is only re-fetched on a bar click, so
+  // before this a range change left it showing rows from the PREVIOUS window -- stale data
+  // under a fresh heading, which is the worst kind of wrong. Re-running the remembered drill
+  // is what makes the table a view of the current window instead of a leftover.
+  if (typeof ASSETS_STATE !== "undefined" && ASSETS_STATE.detailParams) {
+    loadFlowDetail(ASSETS_STATE.detailParams).catch(() => { /* the panel says why */ });
+  }
 }
 
 /* ── Zeek ───────────────────────────────────────────────────────────────────────────── */

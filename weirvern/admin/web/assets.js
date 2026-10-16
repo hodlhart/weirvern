@@ -1098,13 +1098,19 @@ function loadFlowDetail(params) {
   const note = document.getElementById("nf-detail-note");
   if (!host) return Promise.resolve();
   title.textContent = params.name || "flow detail";
-  note.textContent = "Host-to-host pairs behind this bar, busiest first.";
+  // THE WINDOW IS SAID OUT LOUD, and it is the GLOBAL one. This table used to read
+  // ASSETS_STATE.hours, which nothing updated after the per-view time boxes were removed --
+  // so the drill fetched a stale fixed 24h, ignored the operator's range, and (because it is
+  // only re-fetched on a bar click) kept rendering whatever it last loaded. Measured by the
+  // operator: with "last 15 minutes" selected the table still showed rows from hours earlier.
+  ASSETS_STATE.detailParams = params;
+  note.textContent = `Host-to-host pairs behind this bar, busiest first \u00b7 ${trLabel().toLowerCase()}.`;
   host.replaceChildren();
   table.replaceChildren();
 
   const url = (typeof ASSET_API !== "undefined" && ASSET_API.flows)
-    ? ASSET_API.flows(params, ASSETS_STATE.hours)
-    : `/api/flows?hours=${ASSETS_STATE.hours}` +
+    ? ASSET_API.flows(params, trHours())
+    : `/api/flows?hours=${trHours()}` +
       (params.port !== undefined ? `&port=${params.port}` : "") +
       (params.proto !== undefined ? `&proto=${params.proto}` : "");
 
@@ -1122,12 +1128,15 @@ function loadFlowDetail(params) {
         return;
       }
       // Say when the list is capped: a truncated list that does not mention it looks complete.
+      // AND SAY WHICH WINDOW: this line is what an operator reads to know whether the table
+      // follows the range in the header -- the question that exposed a stale-window bug.
+      const windowLabel = ` \u00b7 ${trLabel().toLowerCase()}`;
       if (d.truncated) {
         note.textContent =
           `Showing the ${rows.length} busiest of ${d.total_pairs} host pairs ` +
-          `(${d.total_flows} flows total).`;
+          `(${d.total_flows} flows total)${windowLabel}.`;
       } else {
-        note.textContent = `${rows.length} host pair(s), ${d.total_flows} flows.`;
+        note.textContent = `${rows.length} host pair(s), ${d.total_flows} flows${windowLabel}.`;
       }
       renderBars("nf-detail", {
         available: true,
