@@ -119,11 +119,21 @@ def _sluice_dns_maybe(settings, client) -> None:
         return
     if not rows:
         return
+    # THE CLOCK TYPES DO NOT MATCH BY DEFAULT, and the pass DIED on it (measured live
+    # 2026-10-16): ClickHouse hands back tz-AWARE datetimes for DateTime columns (the reverse
+    # read shows -05:00), while the cursor is naive local -- so `ts > newest` raised "can't
+    # compare offset-naive and offset-aware datetimes" and the whole pass wrote nothing while
+    # looking scheduled. Normalize to the naive local wall clock (the DB's own convention):
+    # strip the zone rather than converting, because the stored values ARE local wall time.
+    def _naive(dt):
+        return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) is not None else dt
+
     events: list[dict] = []
     newest = cursor
     for ts, src_addr, query in rows:
-        if ts and ts > newest:
-            newest = ts
+        tsn = _naive(ts) if ts else None
+        if tsn and tsn > newest:
+            newest = tsn
         q = str(query or "").lower().rstrip(".")
         for rule in rules:
             d = rule.domain.lower()
