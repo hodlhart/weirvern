@@ -75,8 +75,10 @@ def test_the_new_controls_in_the_html_all_have_a_handler():
     """The reverse direction: a control with no listener is a control that does nothing."""
     # Controls this view owns; each must be wired in app.js (the DOMContentLoaded block).
     controls = [
-        "as-search", "as-sort", "as-hours", "as-reload",
-        "nw-hours", "nw-reload", "nw-clear", "nw-min", "nw-labels", "nw-settle",
+        # `as-hours`/`nw-hours` are deliberately ABSENT: the per-view time boxes were removed
+        # when the header grew the global time control (one range, every tab -- 2026-10-16).
+        "as-search", "as-sort", "as-reload",
+        "nw-reload", "nw-clear", "nw-min", "nw-labels", "nw-settle",
     ]
     have = _ids_in_html()
     for cid in controls:

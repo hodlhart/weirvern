@@ -159,7 +159,7 @@ function renderTimeline(hostId, res, opts = {}) {
 /* ── Netflow ────────────────────────────────────────────────────────────────────────── */
 
 async function loadNetflow() {
-  const hours = document.getElementById("nf-hours").value || "24";
+  const hours = String(trHours());
   const d = await getJSON(`${API.netflow}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
@@ -208,7 +208,7 @@ async function loadNetflow() {
 /* ── Zeek ───────────────────────────────────────────────────────────────────────────── */
 
 async function loadZeek() {
-  const hours = document.getElementById("zk-hours").value || "24";
+  const hours = String(trHours());
   const d = await getJSON(`${API.zeek}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
@@ -320,7 +320,7 @@ function probeText(c) {
 }
 
 async function loadHealthDeep() {
-  const hours = document.getElementById("hp-hours").value || "24";
+  const hours = String(trHours());
   const d = await getJSON(`${API.health}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 

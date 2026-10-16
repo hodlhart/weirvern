@@ -102,6 +102,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSonar, stageSonarRecommendations, renderSonarNote,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
+                   trApply, trHours, TIME_RANGE,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
@@ -1405,10 +1406,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // the server had sent all along. An operator cannot act on "FAIL" alone, and a datum rendered as
   // "[object Object]" is worse than nothing.
   {
-    const hoursEl = doc.getElementById("hp-hours");
-    const was = hoursEl.value;
-    hoursEl.value = "6";  // a NUMBER input, not a select: "6h" lands as an empty value and the
-                          // route never matches, which is exactly how this check failed first.
+    // The health view answers the GLOBAL range now (the per-view hours box is gone): set the
+    // range itself, exactly as the header control does.
+    H.trApply({ mode: "relative", hours: 6 });
     await H.loadHealthDeep();
     const hp = doc.querySelector("#hp-checks tbody");
     const text = hp ? hp.textContent : "";
@@ -1421,8 +1421,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a healthy check still shows its own sentence, not its datum",
           /9\/9 present/.test(text),
           "the healthy row lost its detail line");
-    // Put the view back the way the rest of the harness expects to find it.
-    hoursEl.value = was;
+    // Put the range back the way the rest of the harness expects to find it (24h, the default).
+    H.trApply({ mode: "relative", hours: 24 });
     await H.loadHealthDeep();
   }
 
@@ -2999,24 +2999,26 @@ check("high capture loss is called out in the fleet",
   const trPreset = doc.querySelector('#tr-presets button[data-hours="1"]');
   if (trPreset) {
     trPreset.click();
-    const nfEl = doc.getElementById("nf-hours");
-    check("a preset retargets every view's window control", !!(nfEl && nfEl.value === "1"),
-          "nf-hours=" + (nfEl ? nfEl.value : "?"));
+    check("a preset re-ranges the whole console (the global range is what loaders read)",
+          H.trHours() === 1, "trHours()=" + H.trHours());
     check("and the control names the range that is applied", /1 hour/.test(trBtn.textContent),
           trBtn.textContent);
   } else {
     check("the presets exist", false, "no #tr-presets button[data-hours]");
   }
+  check("no per-view time controls remain (one control, every tab)",
+        ["nf-hours", "zk-hours", "hp-hours", "h-hours", "nw-hours", "id-hours", "as-hours", "m-hours"]
+          .every((id) => !doc.getElementById(id)),
+        "a redundant per-view hours control is still in the page");
   const trText = doc.getElementById("tr-text");
-  const trApply = doc.getElementById("tr-text-apply");
-  if (trText && trApply) {
+  const trApplyBtn = doc.getElementById("tr-text-apply");
+  if (trText && trApplyBtn) {
     trText.value = "last 15 minutes";
-    trApply.click();
-    const nf2 = doc.getElementById("nf-hours");
+    trApplyBtn.click();
     check("free text is read the way Kibana reads it ('last 15 minutes')",
-          !!(nf2 && nf2.value === "1"), "nf-hours=" + (nf2 ? nf2.value : "?"));
+          H.trHours() === 1, "trHours()=" + H.trHours());
     trText.value = "banana";
-    trApply.click();
+    trApplyBtn.click();
     const note = doc.getElementById("tr-note");
     check("an unreadable range is refused with a sentence, not a silent fallback",
           !!(note && /cannot read|type a range/.test(note.textContent)),

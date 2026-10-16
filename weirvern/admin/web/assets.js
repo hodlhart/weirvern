@@ -52,7 +52,7 @@ const ASSETS_STATE = {
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 
 function loadAssets() {
-  const hours = ASSETS_STATE.hours;
+  const hours = trHours();  // the global time control is the range (one control, every view)
   return getJSON(ASSET_API.assets(hours))
     .then((d) => {
       ASSETS_STATE.inventory = d;
@@ -276,7 +276,7 @@ function renderPager(hostId, total, page, pages, onGo, size = ASSETS_STATE.pageS
 
 function loadNetwork() {
   const hosts = ASSETS_STATE.tracked;
-  return getJSON(ASSET_API.graph(ASSETS_STATE.hours, hosts))
+  return getJSON(ASSET_API.graph(trHours(), hosts))
     .then((d) => {
       ASSETS_STATE.graph = d;
       renderNetwork();
@@ -920,11 +920,10 @@ function settleGraph() {
   renderNetwork();
 }
 
-/* The window the Zeek view is currently showing, from its own control. */
+/* The window the Zeek view is showing. The GLOBAL time control is the range -- the per-view
+   hours boxes were removed on the operator's instruction (2026-10-16): one control, every tab. */
 function zeekWindow() {
-  const sel = document.getElementById("zk-hours");
-  const n = sel ? Number(sel.value) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : ASSETS_STATE.hours;
+  return trHours();
 }
 
 /* ── Network: what a click on the graph actually means ─────────────────────── */

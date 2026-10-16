@@ -1362,7 +1362,6 @@ function openHost(addr) {
   if (!addr) return;
   showView("host");
   document.getElementById("h-addr").value = addr;
-  document.getElementById("h-hours").value = "24";
   loadHost(addr, 24).catch(showError);
 }
 
@@ -1862,10 +1861,6 @@ document.addEventListener("DOMContentLoaded", () => {
     t.addEventListener("click", () => showView(t.dataset.view));
   }
   document.getElementById("refresh").addEventListener("click", refreshAll);
-  // Onchange rather than a Reload click for a <select>: an operator who picks 24h and
-  // then has to press a button has been given a two-step control for a one-step intent.
-  const mHours = document.getElementById("m-hours");
-  if (mHours) mHours.addEventListener("change", () => loadModels().then(clearError).catch(showError));
   const mReload = document.getElementById("m-reload");
   if (mReload) mReload.addEventListener("click", () => loadModels().then(clearError).catch(showError));
   document.getElementById("autorefresh").addEventListener("change", (e) => {
@@ -1873,8 +1868,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("h-go").addEventListener("click", () => {
     const a = document.getElementById("h-addr").value.trim();
-    const h = document.getElementById("h-hours").value || "24";
-    if (a) loadHost(a, h).then(clearError).catch(showError);
+    if (a) loadHost(a, String(trHours())).then(clearError).catch(showError);
   });
   document.getElementById("h-addr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("h-go").click();
@@ -1940,14 +1934,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const b = document.getElementById(id);
     if (b) b.addEventListener("click", () => fn().then(clearError).catch(showError));
   }
-  for (const [id, fn] of [
-    ["nf-hours", loadNetflow], ["zk-hours", loadZeek], ["hp-hours", loadHealthDeep], ["id-hours", loadIdentity],
-  ]) {
-    const i = document.getElementById(id);
-    // onchange rather than a button: picking 24h and then pressing Reload is a two-step
-    // control for a one-step intent, which the Models view already settled for this codebase.
-    if (i) i.addEventListener("change", () => fn().then(clearError).catch(showError));
-  }
 
   // ── Assets inventory controls ──────────────────────────────────────────────
   // The search filters the CACHED payload rather than refetching: a ClickHouse aggregate
@@ -1969,21 +1955,10 @@ document.addEventListener("DOMContentLoaded", () => {
     ASSETS_STATE.page = 1;
     renderAssets();
   });
-  const asHours = document.getElementById("as-hours");
-  if (asHours) asHours.addEventListener("change", (e) => {
-    ASSETS_STATE.hours = Number(e.target.value) || 24;
-    ASSETS_STATE.page = 1;
-    loadAssets().then(clearError).catch(showError);
-  });
   const asReload = document.getElementById("as-reload");
   if (asReload) asReload.addEventListener("click", () => loadAssets().then(clearError).catch(showError));
 
   // ── Network graph controls ─────────────────────────────────────────────────
-  const nwHours = document.getElementById("nw-hours");
-  if (nwHours) nwHours.addEventListener("change", (e) => {
-    ASSETS_STATE.hours = Number(e.target.value) || 24;
-    loadNetwork().then(clearError).catch(showError);
-  });
   const nwReload = document.getElementById("nw-reload");
   if (nwReload) nwReload.addEventListener("click", () => loadNetwork().then(clearError).catch(showError));
   const nwClear = document.getElementById("nw-clear");
@@ -2509,7 +2484,7 @@ function renderNearMisses(data) {
 }
 
 async function loadModels() {
-  const hours = (document.getElementById("m-hours") || {}).value || "72";
+  const hours = String(trHours());
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");
@@ -2649,7 +2624,7 @@ async function retrainAction(action) {
 
 /* ── Passive host identification ────────────────────────────────────────────────────────── */
 async function loadIdentity() {
-  const hours = document.getElementById("id-hours").value;
+  const hours = String(trHours());
   const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
 
   // AN EMPTY LIST AND A FAILED QUERY MUST NOT LOOK ALIKE. A read failure names its cause; an
@@ -2796,7 +2771,23 @@ function showIdentityDetail(h) {
 // panel's little `hours` box is a DISPLAY fallback only -- the window itself comes from
 // from/to, so no panel can silently widen what was asked for.
 const TIME_RANGE = { mode: "relative", hours: 24, from: "", to: "" };
-const TR_VIEW_CONTROLS = ["nf-hours", "zk-hours", "hp-hours", "h-hours", "nw-hours", "id-hours", "as-hours", "m-hours"];
+// The per-view time boxes are GONE (the operator's instruction, 2026-10-16): "remove any
+// redundant time controls" -- one control is the range, everywhere. `trHours()` is what every
+// loader reads, and `trReloadViews()` re-fetches through the views' OWN reload buttons, so
+// there is still exactly one way to trigger a load of each view.
+const TR_RELOAD_BUTTONS = ["an-reload", "as-reload", "hp-reload", "id-reload", "m-reload",
+                           "nf-reload", "nw-reload", "sl-reload", "st-reload", "wl-reload", "zk-reload"];
+
+function trHours() {
+  const h = Number(TIME_RANGE.hours);
+  return Math.max(1, Math.ceil(Number.isFinite(h) && h > 0 ? h : 24));
+}
+function trReloadViews() {
+  TR_RELOAD_BUTTONS.forEach((id) => {
+    const b = document.getElementById(id);
+    if (b) b.click();
+  });
+}
 
 function trInit() {
   try {
@@ -2831,22 +2822,7 @@ function trApply(range) {
   const btn = document.getElementById("tr-open");
   if (btn) btn.textContent = trLabel();
   trPushRecent();
-  const hours = Math.max(1, Math.ceil(TIME_RANGE.hours));
-  TR_VIEW_CONTROLS.forEach((id) => trSetControl(id, hours));
-}
-function trSetControl(id, hours) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (el.tagName === "SELECT") {
-    const values = [...el.options].map((o) => Number(o.value)).filter((v) => Number.isFinite(v));
-    if (!values.length) return;
-    const under = values.filter((v) => v <= hours);
-    el.value = String(under.length ? under[under.length - 1] : values[0]);
-  } else {
-    el.value = String(hours);
-  }
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
+  trReloadViews();
 }
 function trFormat(d) {
   const p = (n) => String(n).padStart(2, "0");
