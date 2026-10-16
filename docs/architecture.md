@@ -193,9 +193,10 @@ and unremarkable in conn logs. Zeek's own `notice.log` (e.g. `Scan::Port_Scan`)
 is ingested as independent corroboration for the ML ensemble, not as an alert
 source of its own.
 
-**NetFlow only?** Scale the Zeek sensor to zero before it ever runs, or skip it
-entirely by removing `32-zeek.yaml` from `k8s/kustomization.yaml`. Nothing else
-depends on it.
+**NetFlow only?** Skip the sensor entirely by removing `32-zeek.yaml` from
+`k8s/kustomization.yaml`. Nothing else depends on it, and there is no separate off
+switch to flip: the sensor is a DaemonSet, and a DaemonSet cannot be scaled to zero —
+dropping the manifest is the one way not to run it.
 
 ---
 

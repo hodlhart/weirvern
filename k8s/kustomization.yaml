@@ -13,7 +13,7 @@
 #
 # IMAGE TAGS: set them here rather than editing every manifest.
 #     kubectl apply -k k8s/                      # uses the tags below
-#     kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:v0.4.0
+#     kustomize edit set image weirvern-worker=registry.example.com/weirvern-worker:v0.13.0
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -107,6 +107,6 @@ images:
   # with the only symptom being "unrecognized arguments: --all" from inside the container.
   #
   # A roll-forward must change THIS value, not the live object:
-  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.4.3
+  #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.13.0
   - name: weirvern-worker
     newTag: "0.13.0"

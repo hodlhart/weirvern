@@ -15,10 +15,14 @@
 #   * BSD 3-Clause ONLY. The module's copyright and license text travel with it
 #     (vendor/ja4-zeek-scripts/LICENSE-JA4), as the license requires.
 #
-#     podman build -t registry.example.com/weirvern-zeek:0.4.0 -f zeek/Containerfile zeek/
-#     podman push registry.example.com/weirvern-zeek:0.4.0
+#     podman build -t registry.example.com/weirvern-zeek:0.5.0 -f zeek/Containerfile zeek/
+#     podman push registry.example.com/weirvern-zeek:0.5.0
 #
-#     cd k8s && kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.4.0
+#     cd k8s && kustomize edit set image weirvern-zeek=registry.example.com/weirvern-zeek:0.5.0
+#
+# (0.5.0 is the derived image's OWN version line -- it moves when the vendored tree moves, not
+# with the application's release; `scripts/verify_versions.sh` keeps these examples, the
+# manifest and docs/deployment.md from drifting apart.)
 #
 # Do NOT set ZEEKPATH in this image. The upstream zeek/zeek image deliberately leaves it
 # unset; pinning it to share/zeek hides the builtin plugins under lib/zeek/plugins and

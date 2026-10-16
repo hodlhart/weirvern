@@ -9,7 +9,7 @@ is pushed.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[admin,dev]"
+pip install -e ".[dev]"      # `admin` was retired with the TUI; the extras are real in pyproject.toml
 pytest                                          # no cluster or database needed
 ruff check weirvern tests
 mypy weirvern --ignore-missing-imports
@@ -41,13 +41,12 @@ nothing. It cannot catch a *silent* failure — an element id that does not exis
 read under the wrong name, a click handler that never fires — because none of those raise.
 
 For that, `scripts/jsdom_render.js` executes the shipping JavaScript against the shipping HTML
-in a DOM and asserts what appears. It needs a served GUI and one npm package:
+in a DOM and asserts what appears. It stubs `fetch` and reads the files from disk, so it runs
+fully offline — no server, no database, no cluster:
 
 ```bash
-# 1. serve the GUI (any reachable instance)
-# 2. then:
-npm install jsdom
-node scripts/jsdom_render.js http://127.0.0.1:30088
+npm ci                       # the tracked lockfile; jsdom is the only dependency
+node scripts/jsdom_render.js
 ```
 
 It renders the inventory and the graph from real-shaped payloads and checks the behaviours that

@@ -16,9 +16,14 @@ refuse to proceed, and how to upgrade or remove it.
 | Python | 3.11+ | Only for the optional CLI — the deployment itself needs none |
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
-**Cluster sizing.** Measured from the rendered manifests (not estimated), the
-shipped workloads total **1.63 CPU / 3.09 GiB of requests** and **8.40 CPU /
-12.25 GiB of limits**.
+**Cluster sizing.** Measured from the rendered manifests (not estimated): the
+shipped workloads total **1.70 CPU / 3.31 GiB of requests** and **9.20 CPU /
+13.06 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
+its header states the inclusion rule (every container -- init containers included
+-- of every rendered workload: worker, GUI, ClickHouse, goflow2, the Zeek
+DaemonSet, the schema Job and the prune CronJob). The earlier totals here were
+unreproducible because no method was stated; rerun the script after any manifest
+change.
 
 Sizing rule: **a node must satisfy the limits**, not the requests, because the
 scheduler admits on requests but the kernel enforces limits. So the practical

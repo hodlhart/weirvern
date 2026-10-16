@@ -31,7 +31,7 @@ sketches and look for somewhere else to start.
 **There is deliberately no Secret manifest.** A committed Secret is overwritten
 with empty strings on every `kubectl apply -k`, which silently disables alerting
 and database auth. The Secret is created imperatively, once, out of band — see the
-main README, "Deploy", step 4. Do not re-add a `secretGenerator` or a
+main README's Quick start ("The deployment Secret"). Do not re-add a `secretGenerator` or a
 `21-secrets.yaml`; the trap is the reason this file says so explicitly.
 
 ## Applying it
@@ -50,7 +50,7 @@ one throwaway probe pod to test cluster DNS — it applies nothing.)
 
 ## Scaling and limits
 
-Read the "Scaling and limitations" section of the main README first. The short
+Read "Scaling and limitations" in `docs/architecture.md` first. The short
 version: **the worker must run as a single replica.** Alert state lives in the
 worker process, and the ingest path tails node-local files, so a second replica
 would double-alert and fight over the same hostPath.

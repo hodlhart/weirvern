@@ -23,8 +23,9 @@ public or production-deployed.
 ## Deployment hardening notes (for the operator)
 
 - The worker runs with **no inbound network exposure** by design (outbound
-  only to ClickHouse, Pushover). Do not publish port 8080 of the worker to
-  the internet.
+  only to ClickHouse, Pushover). It has no listening port at all, so there is
+  nothing of the worker's to publish. (Port 8080 is the flow collector's metrics
+  endpoint -- `k8s/31-goflow2.yaml` -- not the worker's; do not publish that either.)
 - **The flow collector is reachable on EVERY interface of the sensor node, on
   2055/6343 UDP and on the NodePorts 32055/32063.** This was previously described
   here as "cluster-internal and not reachable from outside", which is WRONG and was

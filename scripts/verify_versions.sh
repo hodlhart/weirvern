@@ -43,6 +43,27 @@ if [ "$STALE" != "$MATCH" ]; then
     FAIL=1
 fi
 
+# THE ZEEK IMAGE VERSIONS ON ITS OWN LINE (issue #21, item 6). It is not compared to the code
+# version -- the derived zeek image changes only when the vendored JA4 tree changes (0.5.0
+# while the app is 0.13.x), so comparing them would be wrong. What CAN drift, and did (the
+# Containerfile examples sat at 0.4.0 after the image moved to 0.5.0), is the tag across the
+# places an operator copies from. Compared against ITSELF:
+#   k8s/32-zeek.yaml (what the deployment runs) == zeek/Containerfile examples == docs/deployment.md
+ZEEK_TAG=$(grep -m1 -oE 'weirvern-zeek:[0-9]+\.[0-9]+\.[0-9]+' k8s/32-zeek.yaml | cut -d: -f2)
+if [ -z "$ZEEK_TAG" ]; then
+    echo "    FAIL -- no weirvern-zeek:<version> tag found in k8s/32-zeek.yaml"
+    FAIL=1
+else
+    ZEEK_DRIFT=$(grep -hoE 'weirvern-zeek:[0-9]+\.[0-9]+\.[0-9]+' zeek/Containerfile docs/deployment.md \
+                 | grep -v ":$ZEEK_TAG$" | sort -u | head -3)
+    if [ -n "$ZEEK_DRIFT" ]; then
+        echo "    FAIL -- zeek examples drifted from the deployment's $ZEEK_TAG: $ZEEK_DRIFT"
+        FAIL=1
+    else
+        echo "    zeek=$ZEEK_TAG (its own line; consistent across the manifest, the Containerfile and docs/deployment.md)"
+    fi
+fi
+
 if [ "$FAIL" = "0" ]; then
     echo "    PASS"
 else
