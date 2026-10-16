@@ -799,10 +799,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const DISCOVER_PAYLOAD = {
     available: true, reason: "", total: 42, limit: 100, offset: 0, bucket_s: 60,
     rows: [
-      { timestamp: "2026-10-16 06:00:00", sensor: "sensor-1", src_addr: "198.51.100.20",
+      { timestamp: "2026-10-16 06:00:00", sensor: "127.0.0.1", weirling: "weirvern",
+        src_addr: "198.51.100.20",
         src_port: 4444, dst_addr: "198.51.100.10", dst_port: 443, proto: 6, proto_label: "tcp",
         bytes: 1234, packets: 12, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
-      { timestamp: "2026-10-16 06:01:00", sensor: "sensor-1", src_addr: "198.51.100.20",
+      { timestamp: "2026-10-16 06:01:00", sensor: "127.0.0.1", weirling: "weirvern",
+        src_addr: "198.51.100.20",
         src_port: 4445, dst_addr: "198.51.100.10", dst_port: 53, proto: 17, proto_label: "udp",
         bytes: 300, packets: 4, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
     ],
@@ -811,7 +813,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       { t: "2026-10-16 06:01:00", n: 12, bytes: 4000 },
     ],
     facets: { protos: [{ value: 6, label: "tcp", count: 30 }, { value: 17, label: "udp", count: 12 }],
-              sensors: [{ value: "sensor-1", count: 42 }] },
+              weirlings: [{ value: "127.0.0.1", count: 42, label: "weirvern" }] },
   };
 
   // The routes, each registered with the payload it serves. One list, so a payload cannot be
@@ -1720,6 +1722,22 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("the pill excludes the not-applicable probe from its ratio",
             /1\/2 checks passing/.test(pill),
             pill.slice(0, 140));
+      // ── CLICK IT (the operator, 2026-10-16): the ratio must open the per-check list ──────────
+      {
+        const pid = doc.getElementById("pill-pop");
+        doc.getElementById("health-pill").click();
+        await new Promise((r) => setTimeout(r, 30));
+        const lines = pid ? pid.querySelectorAll(".pill-line").length : 0;
+        check("clicking the health pill lists every check", !!pid && !pid.hidden && lines >= 2,
+              "lines=" + lines + " hidden=" + (pid ? pid.hidden : "?"));
+        check("with its states, not-applicable included",
+              !!pid && /PASS/.test(pid.textContent) && /N\/A/.test(pid.textContent),
+              pid ? pid.textContent.slice(0, 100) : "");
+        check("and a way into the full health view", !!pid && /health view/i.test(pid.textContent), "");
+        doc.getElementById("health-pill").click();
+        await new Promise((r) => setTimeout(r, 30));
+        check("clicking the pill again closes it", !!pid && pid.hidden, "still open");
+      }
     }
 
   check("the alert audit panels are on the Health tab (SOC-8)",
@@ -3132,6 +3150,18 @@ check("high capture loss is called out in the fleet",
               doc.getElementById("dc-chips").textContent.slice(0, 60));
       }
     }
+    // ── A WEIRLING IS NAMED, NOT AN IP (the operator, 2026-10-16) ─────────────────────────────
+    const wCell = doc.querySelector("#dc-rows tr.dc-row td.dcell[title*='weirling =']");
+    check("the discover row names the weirling, not the exporter address",
+          !!wCell && /weirvern/.test(wCell.textContent) && !/127\.0\.0\.1/.test(wCell.textContent),
+          wCell ? wCell.textContent : "no weirling cell");
+    const wSel = doc.getElementById("dc-sensor");
+    const wOpt = wSel ? [...wSel.options].find((o) => o.value === "127.0.0.1") : null;
+    check("the weirling filter shows the name but filters on the address",
+          !!wOpt && /weirvern/.test(wOpt.textContent), wOpt ? wOpt.textContent : "no option");
+    check("and its default option reads 'all weirlings'",
+          !!wSel && /all weirlings/.test(wSel.options[0].textContent),
+          wSel ? wSel.options[0].textContent : "");
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

@@ -270,11 +270,11 @@ async function loadZeek() {
   const total = (counts.points || []).reduce((a, p) => a + p.rows, 0);
   const written = (counts.points || []).filter((p) => p.rows > 0).length;
   document.getElementById("zk-summary").textContent = counts.available === false
-    ? "Zeek counts are unavailable — the sensor may not be running."
+    ? "Zeek counts are unavailable — the weirling may not be running."
     : `${total.toLocaleString()} rows from ${written} of ${(counts.points || []).length} configured logs in the last ${hours}h.`;
 
   renderTimeline("zk-timeline", d.timeline,
-                 { emptyText: "No Zeek records in this window — is the sensor capturing?" });
+                 { emptyText: "No Zeek records in this window — is the weirling capturing?" });
 
   // Log volume: which logs are actually arriving. Bars rather than a table so "one log has
   // stopped" is visible at a glance.
@@ -424,6 +424,11 @@ async function loadHealthDeep() {
       pill.title = named + "\n\nN/A = the probe had nothing to measure in this window (it is " +
                    "not a failure). The count is passing / measurable: e.g. \"3/6\" plus three " +
                    "FAIL rows means three checks are broken.";
+      // CLICK IT (the operator's ask, 2026-10-16): the ratio alone cannot be acted on -- the
+      // click opens the per-check list, states included, so "8/8 passing, 1 not applicable"
+      // answers "which ones?" without leaving the view.
+      window.__lastHealth = h;
+      pillPopoverInit();
     }
   }
   const fetched = document.getElementById("fetched");
@@ -479,7 +484,7 @@ async function loadHealthDeep() {
     host.replaceChildren(el("p", { class: "muted", text: sensorLine(d.sensor) }));
   } else {
     document.getElementById("hp-sensor").replaceChildren(
-      el("p", { class: "muted", text: "The sensor has not reported." }));
+      el("p", { class: "muted", text: "The weirling has not reported." }));
   }
 
   // SOC-8: the alert audit. "Nothing fired" and "it fired and was withheld" look identical
@@ -608,6 +613,50 @@ function renderAlertAudit(a) {
   renderPager("hp-alerts-recent-pager", recent.length, ALERTS_STATE.recentPage, pages,
     (next) => { ALERTS_STATE.recentPage = next; renderAlertAudit(ALERTS_STATE.audit); },
     ALERTS_PAGE_SIZE);
+}
+
+/** The pill's popover: every check, its state, and the way to the full view.
+ *
+ * One wiring per element (dataset flag), content rebuilt on every open from the payload of the
+ * last health render; positioned under the pill with page coordinates so it cannot be clipped
+ * by the header's layout. Clicks inside it do not close it; anywhere else does.
+ */
+function pillPopoverInit() {
+  const pill = document.getElementById("health-pill");
+  const pop = document.getElementById("pill-pop");
+  if (!pill || !pop || pill.dataset.wired) return;
+  pill.dataset.wired = "1";
+  pill.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!pop.hidden) { pop.hidden = true; return; }
+    const h = window.__lastHealth || {};
+    pop.replaceChildren();
+    const checks = h.checks || [];
+    if (!checks.length) {
+      pop.appendChild(el("p", { class: "muted", text: "No checks were reported." }));
+    }
+    for (const c of checks) {
+      const state = c.ok === true ? "PASS" : c.ok === false ? "FAIL" : "N/A";
+      const cls = c.ok === true ? "ok" : c.ok === false ? "bad" : "na";
+      pop.appendChild(el("div", { class: "pill-line" }, [
+        el("span", { class: "pill-state " + cls, text: state }),
+        el("span", { text: c.name + (c.ok === false && c.detail ? " \u2014 " + c.detail : "") }),
+      ]));
+    }
+    pop.appendChild(el("p", { class: "muted",
+      text: "N/A = the probe had nothing to measure (it is not a failure)." }));
+    const go = el("button", { text: "Open the health view" });
+    go.addEventListener("click", () => { pop.hidden = true; showView("health"); });
+    pop.appendChild(go);
+    const r = pill.getBoundingClientRect();
+    pop.style.left = Math.round(r.left) + "px";
+    pop.style.top = Math.round(r.bottom + 6) + "px";
+    pop.hidden = false;
+  });
+  document.addEventListener("click", (e) => {
+    if (!pop.hidden && e.target !== pill && !pop.contains(e.target)) pop.hidden = true;
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") pop.hidden = true; });
 }
 
 /** One sentence of sensor state, from the fields the heartbeat actually carries.

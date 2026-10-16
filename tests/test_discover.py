@@ -24,10 +24,16 @@ class _Client:
     def __init__(self):
         self.sql: list[str] = []
         self.params: list[dict] = []
+        self.registry = [("weirvern", ""), ("weirvern-eth2", "")]
+        self.heartbeat = [("Weirvern",)]
 
     def query(self, sql, parameters=None, **_kw):
         self.sql.append(sql)
         self.params.append(dict(parameters or {}))
+        if "FROM weirvern.weirlings" in sql:
+            return _Result(self.registry)
+        if "FROM weirvern.sensor_status" in sql:
+            return _Result(self.heartbeat)
         # Order matters: the HISTOGRAM query also selects count(), so it must be matched first
         # or the histogram gets the scalar count's shape and the row builder indexes past it.
         if "toStartOfInterval" in sql:
@@ -124,6 +130,27 @@ def test_chips_apply_to_the_facets_too_so_the_counts_follow_the_filter():
     soc.discover(c, hours=6, src=["198.51.100.1"])
     proto_sql = next(s for s in c.sql if "GROUP BY proto" in s)
     assert "%(src)s" in proto_sql, "the facets ignored the chip filters"
+
+
+def test_a_loopback_sampler_borrows_the_hubs_registered_name():
+    """The operator: "its name, not its IP." The collector writes 127.0.0.1; the registry says
+    "weirvern" -- and the two agree case aside (the heartbeat says "Weirvern")."""
+    c = _Client()
+    d = soc.discover(c, hours=6)
+    assert d["rows"][0]["weirling"] == "weirvern"
+    assert d["rows"][0]["sensor"] == "127.0.0.1", "the raw sampler must survive for filtering"
+    facet = d["facets"]["weirlings"][0]
+    assert facet["label"] == "weirvern" and facet["value"] == "127.0.0.1", (
+        "the facet must show the name while still filtering on the address")
+
+
+def test_an_unregistered_sampler_keeps_its_raw_value():
+    """A guessed name is worse than an address: with nothing registered, show what we have."""
+    c = _Client()
+    c.registry = []
+    c.heartbeat = []
+    d = soc.discover(c, hours=6)
+    assert d["rows"][0]["weirling"] == "127.0.0.1"
 
 
 def test_a_window_is_still_a_window():

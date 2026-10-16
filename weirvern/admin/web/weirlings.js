@@ -100,7 +100,7 @@ async function loadWeirlings() {
   // ── the fleet's own state, first and largest
   const s = d.summary || {};
   const items = [
-    ["sensors", String(s.total ?? "—")],
+    ["weirlings", String(s.total ?? "—")],
     ["reporting", String(s.alive ?? "—")],
     ["problems", String(s.problems ?? "—")],
     ["never seen", String(s.never_seen ?? "—")],
@@ -119,13 +119,13 @@ async function loadWeirlings() {
   const bits = [];
   if (d.heartbeats_available === false) {
     bits.push(`Heartbeats are unavailable (${d.heartbeat_reason || "the read did not run"}), so every `
-      + `registered sensor below reads as NEVER SEEN. That is a gap in this view, not evidence about `
-      + `the sensors.`);
+      + `registered weirling below reads as NEVER SEEN. That is a gap in this view, not evidence about `
+      + `the weirlings.`);
   }
   if (d.filtered) bits.push("Showing problems only.");
   if ((s.total ?? 0) === 0 && d.heartbeats_available !== false) {
-    bits.push("No sensors are registered and none are reporting. Register one below to record the "
-      + "expectation, so a sensor that never comes up is reported rather than invisible.");
+    bits.push("No weirlings are registered and none are reporting. Register one below to record the "
+      + "expectation, so a weirling that never comes up is reported rather than invisible.");
   }
   noteBox.textContent = bits.join(" ");
 
@@ -146,7 +146,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
   if (!rows.length) {
     emptyRow(tbody, 7, (document.getElementById("wl-problems-only").checked
-      ? "No sensor has a problem."
+      ? "No weirling has a problem."
       : "No sensors yet. Register one above, or point a sensor's exporter at this hub."));
   }
 

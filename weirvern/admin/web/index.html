@@ -89,7 +89,8 @@
     <h1>Weirvern</h1>
   </div>
   <div class="status" id="statusline">
-    <span class="pill" id="health-pill">loading…</span>
+    <button class="pill" id="health-pill" type="button" title="click for every check">loading…</button>
+      <div id="pill-pop" class="pill-pop" hidden></div>
     <span class="muted" id="fetched"></span>
     <span class="muted" id="user-chip" title=""></span>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
@@ -141,7 +142,7 @@
   <!-- ── Network (connection graph) ────────────────────────────────────── -->
   <!--
     EVERY HOST CONNECTION, VISUALLY, WITH MULTI-SELECT TRACKING. The graph is drawn as
-    hand-rolled SVG (same reason as every other chart here: no CDN on an isolated sensor
+    hand-rolled SVG (same reason as every other chart here: no CDN on an isolated weirling
     network). Selecting hosts is a FILTER, and the filtering happens in ClickHouse -- sending
     every edge so the browser can discard most of them is the pattern that makes a graph view
     slower the more useful it becomes.
@@ -153,7 +154,7 @@
     THE LAYOUT IS A DETERMINISTIC FORCE MAP (the full rationale lives in assets.js): it
     settles once on load with a short animation, hosts can be dragged and the map re-settles
     around them, and where the export carries IP TTL the hosts arrange in hop-distance rings
-    from the sensor -- the one piece of real topology a plain link graph cannot show. There is
+    from the weirling -- the one piece of real topology a plain link graph cannot show. There is
     no randomness and the tick count is fixed, so the same window of data settles to the same
     map and the comparable-view property survives the layout change.
   -->
@@ -170,8 +171,8 @@
         <button id="nw-settle">Re-settle</button>
       </div>
       <div class="info-text hidden" id="nw-info">
-        A dot is a host both sensors saw traffic for; a line is a conversation between two hosts,
-        thickness by bytes. The dashed rings are hop distance from the sensor, drawn from the
+        A dot is a host both weirlings saw traffic for; a line is a conversation between two hosts,
+        thickness by bytes. The dashed rings are hop distance from the weirling, drawn from the
         reported IP TTL — no ring means the TTL was not measured, never that a host sits outside
         the network. A central dot with many thin lines is a host talking to everything: a scanner,
         a backup server, or something worth clicking. Click a dot to focus that host's
@@ -183,7 +184,7 @@
         select it; click more to widen the selection. Only the selected hosts' connections are
         drawn — clear the selection to see everything again. The map is force-directed: it
         settles on its own, drag a dot to pull it around (Re-settle puts it back), and where
-        IP TTL is reported the hosts sit in hop-distance rings from the sensor.</div>
+        IP TTL is reported the hosts sit in hop-distance rings from the weirling.</div>
 
       <p class="muted" id="nw-caption">loading…</p>
       <div id="nw-selected" class="chips"></div>
@@ -242,14 +243,14 @@
       <h2>Discover <button class="info-btn" data-info="dc-info" aria-label="what Discover is and how to filter it" aria-expanded="false" title="what Discover is and how to filter it">i</button> <span class="muted" id="dc-window"></span></h2>
       <p class="muted" id="dc-summary">loading…</p>
       <div class="info-text hidden" id="dc-info">
-        The flows themselves, not a summary of them. Pick a sensor or a flow type, type an
+        The flows themselves, not a summary of them. Pick a weirling or a flow type, type an
         address or a port, and read the rows; click any row to see every field it carries and to
         filter the view down to that host, port or flow type. The histogram is the same filter
         over time — click a bucket to narrow the window to it. Everything here answers the
         global time control in the header.
       </div>
       <div class="controls">
-        <label>sensor <select id="dc-sensor"><option value="">all sensors</option></select></label>
+        <label>weirling <select id="dc-sensor"><option value="">all weirlings</option></select></label>
         <label>flow type <select id="dc-proto"><option value="">any flow type</option></select></label>
         <label>address <input type="text" id="dc-addr" size="18" placeholder="198.51.100.194"></label>
         <label>port <input type="number" id="dc-port" min="0" max="65535" style="width:6em"></label>
@@ -259,7 +260,7 @@
       <div id="dc-chips" class="dc-chips"></div>
       <div id="dc-volume" class="chart"></div>
       <table class="table">
-        <thead><tr><th>time</th><th>sensor</th><th>source</th><th>sport</th><th></th><th>destination</th><th>dport</th><th>type</th><th>bytes</th><th>packets</th></tr></thead>
+        <thead><tr><th>time</th><th>weirling</th><th>source</th><th>sport</th><th></th><th>destination</th><th>dport</th><th>type</th><th>bytes</th><th>packets</th></tr></thead>
         <tbody id="dc-rows"></tbody>
       </table>
       <div class="controls">
@@ -414,14 +415,14 @@
       <div id="fp-results"></div>
       <div class="info-text hidden" id="id-info">
         Nothing is probed and nothing is sent — every identity here was derived from traffic the
-        sensor already saw. Confidence counts how many INDEPENDENT sources agree (a banner, a DHCP
+        weirling already saw. Confidence counts how many INDEPENDENT sources agree (a banner, a DHCP
         lease, a NIC vendor, a TLS fingerprint); one weak signal is never presented as an answer.
         Click any host for each signal with its source and weight, and note that contradicting
         signals are shown rather than averaged — a host with two operating systems is a finding
         (dual-boot, a renamed machine, or a spoof), not a rounding error.
       
 
-        Every host's operating-system family, derived from traffic the sensor already saw.
+        Every host's operating-system family, derived from traffic the weirling already saw.
         Nothing is probed and nothing is sent: the evidence is application banners
         (software.log), DHCP leases, NIC vendors and TLS ClientHello fingerprints.
         Confidence reflects how many <em>independent</em> sources agree, so a hostname
@@ -677,13 +678,13 @@
         
       </div>
       <div class="info-text hidden" id="as-info">
-        Every host either sensor saw in the window. Sort by anomalies to start with the
+        Every host either weirling saw in the window. Sort by anomalies to start with the
         interesting ones, or search an address, a name, or a service. Click any row to drill down:
         volume over time, Zeek services, top destinations and ports, and every anomaly that host
         ever raised — usually the fastest route from "what is this box" to "what did it do".
       
 
-        Every host seen in the window, from both sensors. Click any row to drill
+        Every host seen in the window, from both weirlings. Click any row to drill
         down. A host with zero bytes was seen by Zeek but moved no volume in this window — it is
         still an asset, so it is listed rather than hidden.</div>
 
@@ -721,7 +722,7 @@
           <div id="h-spark" class="spark"></div>
         </div>
         <div class="card">
-          <h2>Zeek services <span class="muted">if the packet sensor is on</span></h2>
+          <h2>Zeek services <span class="muted">if packet capture is on</span></h2>
           <table id="h-zeek"><tbody></tbody></table>
         </div>
       </div>
@@ -755,7 +756,7 @@
         lists EVERY decision the worker made — sent, suppressed by cooldown, capped, or log-only —
         because "nothing fired" and "it fired and was withheld" must never look alike; if an alert
         you expected is missing, this is where it went. Checks is each probe with its state and
-        latency; Table sizes shows which store is growing; and the sensor panel reports the last
+        latency; Table sizes shows which store is growing; and the weirling panel reports the last
         heartbeat per weirling, so a dead capture is visible before the data gap is.
       
 
@@ -801,7 +802,7 @@
       </div>
     </div>
     <div class="card">
-      <h2>Sensor <button class="info-btn" data-info="st-sensor-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Weirling <button class="info-btn" data-info="st-sensor-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <div id="hp-sensor"><p class="muted">loading…</p></div>
     </div>
   </section>
@@ -842,7 +843,7 @@
 
         Block traffic by address, port or direction. Every rule is bounded -- this system does not
         create permanent blocks, so a rule that has lapsed shows here as lapsed rather than silently
-        continuing to enforce. Blocking runs in the kernel on the sensor, so it does not slow the
+        continuing to enforce. Blocking runs in the kernel on the weirling, so it does not slow the
         traffic it inspects.</div>
 
       <!-- THE GATE'S OWN STATE, FIRST AND LARGEST. An operator's first question is "is this
@@ -861,7 +862,7 @@
       <h2>Enforcing gates</h2>
       <p class="muted" id="sl-gates-note"></p>
       <table id="sl-gates">
-        <thead><tr><th>Sensor</th><th>State</th><th>Interface</th><th>Rules active / total</th>
+        <thead><tr><th>Weirling</th><th>State</th><th>Interface</th><th>Rules active / total</th>
           <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
         <tbody></tbody>
       </table>
@@ -890,7 +891,7 @@
         <label>direction
           <select id="sl-direction">
             <option value="forward" selected>forwarded (traffic passing through)</option>
-            <option value="in">inbound (traffic to this sensor)</option>
+            <option value="in">inbound (traffic to this weirling)</option>
           </select>
         </label>
         <label>duration in minutes (0 = until revoked)
@@ -910,7 +911,7 @@
       </div>
 <div class="info-text hidden" id="sl-refuse-info">
         Refused on purpose: a rule with no address, a port without a protocol, the management
-        interface, this sensor's own address, and anything covering the whole internet. Each refusal
+        interface, this weirling's own address, and anything covering the whole internet. Each refusal
         names the fix.
       </div>
     </div>
@@ -959,11 +960,11 @@
         configured on the box that runs it.
       
 
-        The fleet: every sensor this hub expects to hear from, compared against what it has
-        actually heard. A weirling is any additional sensor elsewhere in the network feeding this
-        hub &mdash; a Zeek sensor on another segment, or a box exporting flows to the collector.
+        The fleet: every weirling this hub expects to hear from, compared against what it has
+        actually heard. A weirling is any additional capture point elsewhere in the network feeding this
+        hub &mdash; a Zeek capture on another segment, or a box exporting flows to the collector.
         This view exists to tell <strong>you registered one and it never said anything</strong>
-        apart from <strong>you have no sensors</strong>, which are opposite facts that look
+        apart from <strong>you have no weirlings</strong>, which are opposite facts that look
         identical everywhere else.</div>
 
       <!-- THE FLEET'S OWN STATE, FIRST. An operator's first question is "is anything broken", and
@@ -973,15 +974,15 @@
     </div>
 
     <div class="card">
-      <h2>Register a sensor <span id="wl-form-mode" class="muted"></span> <button class="info-btn" data-info="wl-register-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button> <button class="info-btn" data-info="wl-address-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Register a weirling <span id="wl-form-mode" class="muted"></span> <button class="info-btn" data-info="wl-register-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button> <button class="info-btn" data-info="wl-address-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="wl-register-info">
-        Registering records the <strong>expectation</strong>, so a sensor that never comes up can
+        Registering records the <strong>expectation</strong>, so a weirling that never comes up can
         be reported as missing rather than being invisible. It does not configure the remote box:
-        nothing here can reach it, and a sensor begins reporting when its own exporter or Zeek
+        nothing here can reach it, and a weirling begins reporting when its own exporter or Zeek
         instance points at this hub.
       </div>
       <div class="grid2">
-        <label>sensor id (required)
+        <label>weirling id (required)
           <input id="wl-id" type="text" placeholder="floor3-idf">
         </label>
         <label>segment (optional)
@@ -1007,7 +1008,7 @@
       </div>
 <div class="info-text hidden" id="wl-address-info">
         An address is refused rather than guessed: registering a network instead of one box would
-        put a sensor at an address it does not have. Empty means <em>not known yet</em>, and the
+        put a weirling at an address it does not have. Empty means <em>not known yet</em>, and the
         first heartbeat fills it in for display.
       </div>
     </div>
@@ -1022,7 +1023,7 @@
       <table id="wl-table">
         <thead>
           <tr>
-            <th>sensor</th><th>state</th><th>address</th><th>segment</th>
+            <th>weirling</th><th>state</th><th>address</th><th>segment</th>
             <th>last heard</th><th>loss</th><th></th>
           </tr>
         </thead>
@@ -1034,7 +1035,7 @@
     <!-- DRILL-DOWN. The finding text is the whole point of this panel: a state word alone does
          not say whether "stale" means the box is powered off or its capture died. -->
     <div class="card hidden" id="wl-detail-card">
-      <h2>Sensor <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="st-stage-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="st-stage-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <div id="wl-detail-body"></div>
 
       <!-- SENSOR SETTINGS, WITH THE SENSOR. A runtime can only be changed on the box that runs

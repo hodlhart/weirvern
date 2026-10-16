@@ -319,7 +319,7 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
                 report.add(Probe(
                     "zeek_freshness", ok=None, latency_ms=ms,
                     detail=(
-                        "no capture sensor is deployed in this cluster (no heartbeat in the last "
+                        "no capturing weirling is deployed in this cluster (no heartbeat in the last "
                         "24h), so there is no Zeek freshness to measure. This row is present so "
                         "that a MISSING row always means a fault rather than 'not applicable'."
                     ),
@@ -329,10 +329,10 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
                 report.add(Probe(
                     "zeek_freshness", ok=False, latency_ms=ms,
                     detail=(
-                        "a capture sensor IS deployed but no Zeek records have EVER been written -- "
+                        "a capturing weirling IS deployed but no Zeek records have EVER been written -- "
                         "zeek_conn is empty, so it has captured nothing. Check that the capture "
                         "DaemonSet is running, that ZEEK_IFACE names a real interface on the node, "
-                        "and that the sensor holds NET_RAW."
+                        "and that the weirling holds NET_RAW."
                     ),
                     value=None,
                 ))
@@ -821,7 +821,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         # edit validated and changed nothing. A row exists only while a field exists behind it.
         ("strong_signal", "strong signal bar"),
     ]),
-    ("sensor", "Sensor", [
+    ("sensor", "Weirling", [
         ("sensor_mode", "mode"),
         ("zeek_iface", "Zeek interface"),
         ("mgmt_iface", "management interface"),
@@ -920,22 +920,22 @@ _SETTINGS_HELP: dict[str, str] = {
         "cannot affect your network. 'siphon' puts this host in the traffic path by ARP-forging "
         "the gateway mapping, so it can see traffic a mirror cannot AND must never fail closed. "
         "Switching to siphon requires the siphon overlay to be applied first (it grants the "
-        "sensor and the worker their capabilities; the mode gate checks it) and it starts the "
+        "weirling and the worker their capabilities; the mode gate checks it) and it starts the "
         "supervised intercept. Changing this restarts the capture sensor and the worker."),
     "zeek_iface": (
-        "The network interface the sensor CAPTURES from -- the dedicated NIC connected to a "
+        "The network interface the weirling CAPTURES from -- the dedicated NIC connected to a "
         "switch mirror/SPAN port or a passive TAP. It must not be the same interface as the "
-        "management port, and should not be a bridge member: a sensor pointed at the wrong NIC "
+        "management port, and should not be a bridge member: a weirling pointed at the wrong NIC "
         "captures mostly broadcast noise and looks healthy while seeing almost nothing."),
     "mgmt_iface": (
-        "The interface carrying the default route, SSH and the cluster API. The sensor never "
+        "The interface carrying the default route, SSH and the cluster API. The weirling never "
         "captures from it; it is used to DETECT when the capture interface is pointed at the "
-        "wrong NIC. Changing it restarts the capture sensor briefly."),
+        "wrong NIC. Changing it restarts the weirling briefly."),
     "channel_upstream": (
         "The port of an IN-LINE weirling that faces the NETWORK (toward the router/switch), for "
         "when this box sits physically between a device and the network instead of on a mirror "
         "port. With CHANNEL_DOWNSTREAM it forms one bridge, and the Sluice Gate's blocks then "
-        "drop real traffic while the sensor stays in passive 'loch' mode -- nothing is forged. "
+        "drop real traffic while the weirling stays in passive 'loch' mode -- nothing is forged. "
         "Leave both empty for a normal passive sensor."),
     "channel_downstream": (
         "The port that faces the PROTECTED DEVICE or segment. Both channel ports must be "
@@ -993,7 +993,7 @@ _SETTINGS_HELP: dict[str, str] = {
         "the promise holds. Lower is fresher at the cost of more frequent rule-store reads."),
     "zeek_log_dir": (
         "Where the worker reads Zeek's logs from inside the pod. Default /zeek/logs, shared "
-        "between the Zeek sensor and the worker via a host directory. Change only if you moved "
+        "between the Zeek capture and the worker via a host directory. Change only if you moved "
         "that mount in the manifests."),
     "tail_file": (
         "The file goflow2 writes NetFlow/sFlow records to as JSONL, which the worker tails. "
@@ -1027,7 +1027,7 @@ _SETTINGS_HELP: dict[str, str] = {
         "disables lookups entirely; addresses display without names."),
     "exclude_cidrs": (
         "Networks excluded from LEARNING, comma-separated (e.g. 192.0.2.0/24). Traffic from "
-        "these networks still reaches the sensor and is counted, but the models are not trained "
+        "these networks still reaches the weirling and is counted, but the models are not trained "
         "on it, so known-busy scanners do not become each host's 'normal'. Use this for hosts "
         "whose traffic would drown out real anomalies."),
     "capture_exclude_cidrs": (

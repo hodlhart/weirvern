@@ -121,10 +121,12 @@ function dcRenderFacets(d) {
   const sensorSel = document.getElementById("dc-sensor");
   if (sensorSel) {
     const keep = sensorSel.value;
-    sensorSel.replaceChildren(el("option", { value: "", text: "all sensors" }));
-    ((facets.sensors) || []).forEach((s) => {
+    sensorSel.replaceChildren(el("option", { value: "", text: "all weirlings" }));
+    // The VALUE stays the raw exporter address (that is what the server filters on); the LABEL
+    // is the registered weirling's name -- the operator's rule: a weirling is named, not an IP.
+    ((facets.weirlings) || []).forEach((s) => {
       sensorSel.appendChild(el("option", {
-        value: s.value, text: s.value + " \u00b7 " + Number(s.count).toLocaleString() }));
+        value: s.value, text: (s.label || s.value) + " \u00b7 " + Number(s.count).toLocaleString() }));
     });
     sensorSel.value = keep;
   }
@@ -159,7 +161,8 @@ function dcRenderRows(d) {
       }
       return td;
     };
-    tr.appendChild(cell(r.sensor, "sensor", "sensor = " + r.sensor, "muted"));
+    tr.appendChild(cell((r.weirling || r.sensor), "sensor",
+                        "weirling = " + (r.weirling || r.sensor), "muted"));
     tr.appendChild(cell(r.src_addr, "src", "src = " + r.src_addr));
     tr.appendChild(cell(r.src_port || "\u00b7", r.src_port ? "sport" : "", r.src_port ? "sport = " + r.src_port : ""));
     tr.appendChild(dcCell("\u2192"));

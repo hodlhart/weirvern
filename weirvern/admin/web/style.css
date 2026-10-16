@@ -725,3 +725,16 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .dc-chip-x:hover { color: #e66; }
 td.dcell { cursor: pointer; }
 td.dcell:hover { text-decoration: underline dotted; }
+
+/* ── the health pill: click it for every check's state ────────────────────────────────────── */
+.pill { cursor: pointer; }
+.pill-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: 13px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.pill-pop .pill-line { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.pill-pop .pill-state { font-family: monospace; font-size: 11px; min-width: 34px;
+  flex: 0 0 auto; }
+.pill-pop .pill-state.ok { color: var(--ok); }
+.pill-pop .pill-state.bad { color: var(--crit); }
+.pill-pop .pill-state.na { color: var(--muted, #999); }
+.pill-pop p { margin: 6px 0 2px; }

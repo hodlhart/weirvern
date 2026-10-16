@@ -703,6 +703,57 @@ def proto_number(token: object) -> int | None:
     raise ValueError(f"not a flow type: {token!r} (try tcp, udp, icmp, or a protocol number)")
 
 
+# Sampler values that mean "this hub's own collector". The flows table carries the exporter's
+# transport address; the NAME a human uses is the registered weirling.
+_LOOPBACK_SAMPLERS = ("127.0.0.1", "::1", "localhost", "0.0.0.0")
+
+
+def weirling_labels(client) -> dict:
+    """sampler_address -> the weirling's NAME, from the fleet registry.
+
+    WHY THE REGISTRY AND NOT THE ROW (the operator, 2026-10-16): "if you reference a sensor it
+    should be referenced as weirling not sensor and its name, not its IP." An exporter's
+    transport address is an implementation detail; the registered name is what a human uses and
+    what the fleet view already shows. Explicit registry addresses win; a loopback sampler is
+    the weirling this hub runs (matched to the registry through the sensor's own reported id,
+    case aside -- the heartbeat says "Weirvern", the registry says "weirvern"); anything
+    unregistered keeps its raw value, because a guessed name is worse than an address.
+    """
+    names: dict[str, str] = {}
+    try:
+        rows = client.query(
+            "SELECT sensor_id, address FROM weirvern.weirlings "
+            "WHERE revoked_at IS NULL AND enabled ORDER BY added_at",
+            parameters={},
+        ).result_rows
+    except Exception:  # noqa: BLE001 -- a name lookup must never break the flow list
+        rows = []
+    try:
+        status = client.query(
+            "SELECT sensor_id FROM weirvern.sensor_status ORDER BY ts DESC LIMIT 1",
+            parameters={},
+        ).result_rows
+        local_name = str(status[0][0]) if status else ""
+    except Exception:  # noqa: BLE001
+        local_name = ""
+    known = {str(r[0]): str(r[0]) for r in rows}
+    if local_name:
+        for sensor_id in known:
+            if sensor_id.lower() == local_name.lower():
+                local_name = sensor_id
+                break
+        else:
+            local_name = ""  # not registered: do not invent a name for the hub either
+    for r in rows:
+        address = str(r[1] or "").strip()
+        if address:
+            names[address] = str(r[0])
+    if local_name:
+        for sampler in _LOOPBACK_SAMPLERS:
+            names[sampler] = local_name
+    return names
+
+
 def _discover_bucket_s(hours: float) -> int:
     """About sixty buckets whatever the window, clamped so a minute never crowds and an hour
     never dominates."""
@@ -758,6 +809,7 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
         params["sensor"] = str(sensor)
     clause = " AND ".join(where)
     facet_clause = " AND ".join(facet_where)
+    labels = weirling_labels(client)
 
     cols = ("timestamp, sampler_address, src_addr, src_port, dst_addr, dst_port, proto, "
             "bytes, packets, tcp_flags, ip_ttl, next_hop, src_as, dst_as")
@@ -790,7 +842,7 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
     except Exception as exc:  # noqa: BLE001
         logger.warning("discover failed: %s", exc)
         return {"available": False, "reason": f"the flow query failed: {type(exc).__name__}",
-                "rows": [], "total": 0, "histogram": [], "facets": {"protos": [], "sensors": []},
+                "rows": [], "total": 0, "histogram": [], "facets": {"protos": [], "weirlings": []},
                 "data_error": str(exc)}
 
     return {
@@ -800,6 +852,7 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
             {
                 "timestamp": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
                 "sensor": str(r[1]),
+                "weirling": labels.get(str(r[1]), str(r[1])),
                 "src_addr": str(r[2]), "src_port": int(r[3] or 0),
                 "dst_addr": str(r[4]), "dst_port": int(r[5] or 0),
                 "proto": int(r[6] or 0), "proto_label": proto_label(r[6]),
@@ -818,6 +871,7 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
         "facets": {
             "protos": [{"value": int(r[0] or 0), "label": proto_label(r[0]),
                         "count": int(r[1] or 0)} for r in by_proto],
-            "sensors": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_sensor],
+            "weirlings": [{"value": str(r[0]), "count": int(r[1] or 0),
+                           "label": labels.get(str(r[0]), str(r[0]))} for r in by_sensor],
         },
     }
