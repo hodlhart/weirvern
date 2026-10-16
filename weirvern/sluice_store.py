@@ -25,6 +25,7 @@ minute. Two things are deliberate:
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import uuid
 from collections.abc import Sequence
@@ -46,7 +47,7 @@ from weirvern.sluice import (
 logger = logging.getLogger(__name__)
 
 LIVE_RULE_SQL = """
-SELECT rule_id, src_cidr, dst_cidr, protocol, dst_port, direction, expires_at,
+SELECT rule_id, src_cidr, dst_cidr, domain, mode, protocol, dst_port, direction, expires_at,
        created_by, reason, origin, origin_ref, severity, revoked_at
 FROM weirvern.sluice_rules FINAL
 WHERE revoked_at IS NULL
@@ -69,12 +70,14 @@ def new_rule_id() -> str:
 
 
 def _row_to_rule(row: Sequence[Any]) -> Rule:
-    (rule_id, src, dst, proto, port, direction, expires, created_by, reason,
+    (rule_id, src, dst, domain, mode, proto, port, direction, expires, created_by, reason,
      origin, origin_ref, severity, revoked) = row
     return Rule(
         rule_id=str(rule_id),
         src_cidr=str(src or ""),
         dst_cidr=str(dst or ""),
+        domain=str(domain or ""),
+        mode=str(mode or "block"),
         protocol=str(proto or ""),
         dst_port=int(port or 0),
         direction=str(direction or "forward"),
@@ -106,8 +109,8 @@ def load_all_rules(client: Client, limit: int = 500) -> list[Rule]:
     """
     result = client.query(
         """
-        SELECT rule_id, src_cidr, dst_cidr, protocol, dst_port, direction, expires_at,
-               created_by, reason, origin, origin_ref, severity, revoked_at
+        SELECT rule_id, src_cidr, dst_cidr, domain, mode, protocol, dst_port, direction,
+               expires_at, created_by, reason, origin, origin_ref, severity, revoked_at
         FROM weirvern.sluice_rules FINAL
         ORDER BY created_at DESC
         LIMIT %(lim)s
@@ -117,11 +120,45 @@ def load_all_rules(client: Client, limit: int = 500) -> list[Rule]:
     return [_row_to_rule(r) for r in result.result_rows]
 
 
+def validate_domain(raw: str) -> str:
+    """Normalize and check a domain-rule name. Returns the normalized form or raises.
+
+    ONE PLACE, like the CIDR refusals: the form, the API and any future list importer all come
+    through here, so "what is a blockable name" cannot drift into three opinions. Lowercase, no
+    trailing dot, at least one dot, labels of [a-z0-9-] (no leading/trailing hyphen), 253 chars
+    max. An IP literal is refused politely: a domain rule is for names; addresses have their own
+    rule shape and a name-shaped IP would silently match nothing.
+    """
+    name = str(raw or "").strip().lower().rstrip(".")
+    if not name:
+        raise SluiceError("a domain rule needs a name")
+    if len(name) > 253:
+        raise SluiceError("that domain is longer than 253 characters; it cannot be a real name")
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        pass
+    else:
+        raise SluiceError(
+            "that is an IP address, not a domain: block addresses with the source/destination "
+            "fields, which the kernel enforces directly")
+    if "." not in name:
+        raise SluiceError(f"{name!r} has no dot: a domain rule matches names like example.com")
+    for label in name.split("."):
+        if not label or len(label) > 63 or label.startswith("-") or label.endswith("-"):
+            raise SluiceError(f"{name!r} has a label that cannot be a domain label: {label!r}")
+        if not all(c.isalnum() or c == "-" for c in label):
+            raise SluiceError(f"{name!r} contains characters a domain cannot have")
+    return name
+
+
 def create_rule(
     client: Client,
     *,
     src_cidr: str = "",
     dst_cidr: str = "",
+    domain: str = "",
+    mode: str = "block",
     protocol: str = "",
     dst_port: int = 0,
     direction: str = "forward",
@@ -142,10 +179,30 @@ def create_rule(
     not an intention, and there is nothing it could mean.
     """
     now = now or datetime.now(UTC)
-    src = parse_cidr(src_cidr, "source")
-    dst = parse_cidr(dst_cidr, "destination")
-    if not src and not dst:
-        raise SluiceError("a rule needs at least one address: a source or a destination")
+    mode = str(mode or "block").strip().lower()
+    if mode not in ("alert", "block"):
+        raise SluiceError(f"mode must be alert or block, not {mode!r}")
+    dom = validate_domain(domain) if str(domain or "").strip() else ""
+    if dom:
+        # A DOMAIN RULE NAMES A NAME, NOT ADDRESSES. Same reasoning as the source+destination
+        # refusal below: a combined predicate would enforce something wider or narrower than it
+        # describes, so it is refused at authoring rather than compiled by guess.
+        if str(src_cidr or "").strip() or str(dst_cidr or "").strip():
+            raise SluiceError(
+                "a domain rule names a domain, not addresses: block the domain, or block the "
+                "addresses, not both in one rule")
+        if str(direction or "forward").strip().lower() != "forward":
+            raise SluiceError("a domain rule is a forward rule; inbound domain rules are not supported yet")
+        if int(dst_port or 0):
+            raise SluiceError(
+                "a port-scoped domain rule is not supported yet: the kernel set matches "
+                "addresses, so the port would be silently ignored")
+        src = dst = ""
+    else:
+        src = parse_cidr(src_cidr, "source")
+        dst = parse_cidr(dst_cidr, "destination")
+    if not src and not dst and not dom:
+        raise SluiceError("a rule needs at least one address, or a domain")
     if src and dst:
         # A SOURCE AND A DESTINATION DO NOT COMPILE TOGETHER (review round 2026-10-15). The
         # backend installs a source rule as "everything from that source", so accepting both
@@ -176,6 +233,8 @@ def create_rule(
         rule_id=new_rule_id(),
         src_cidr=src,
         dst_cidr=dst,
+        domain=dom,
+        mode=mode,
         protocol=protocol,
         dst_port=int(dst_port),
         direction=direction,
@@ -192,11 +251,13 @@ def create_rule(
         "weirvern.sluice_rules",
         [[
             rule.rule_id, now, rule.created_by, rule.reason, rule.src_cidr, rule.dst_cidr,
+            rule.domain, rule.mode,
             rule.protocol, rule.dst_port, rule.direction, rule.expires_at, rule.origin,
             rule.origin_ref, rule.severity, None, "", "",
         ]],
         column_names=[
             "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr",
+            "domain", "mode",
             "protocol", "dst_port", "direction", "expires_at", "origin", "origin_ref",
             "severity", "revoked_at", "revoked_by", "note",
         ],
@@ -435,7 +496,9 @@ def write_events(client: Client, events: list[dict], now: datetime | None = None
     rows = []
     for e in events:
         rows.append([
-            e.get("ts", now), str(e.get("rule_id", "")), str(e.get("src_addr", "")),
+            e.get("ts", now), str(e.get("rule_id", "")),
+            str(e.get("kind", "flow")), str(e.get("domain", "")), str(e.get("query", "")),
+            str(e.get("src_addr", "")),
             str(e.get("dst_addr", "")), int(e.get("src_port", 0)), int(e.get("dst_port", 0)),
             str(e.get("protocol", "")), int(e.get("packets", 0)), int(e.get("bytes", 0)),
             e.get("rule_snapshot", "{}"), str(e.get("direction", "forward")),
@@ -443,12 +506,54 @@ def write_events(client: Client, events: list[dict], now: datetime | None = None
     client.insert(
         "weirvern.sluice_events", rows,
         column_names=[
-            "ts", "rule_id", "src_addr", "dst_addr", "src_port", "dst_port", "protocol",
-            "packets", "bytes", "rule_snapshot", "direction",
+            "ts", "rule_id", "kind", "domain", "query", "src_addr", "dst_addr", "src_port",
+            "dst_port", "protocol", "packets", "bytes", "rule_snapshot", "direction",
         ],
     )
     logger.info("sluice: recorded %d blocked flow(s)", len(rows))
     return len(rows)
+
+
+def resolve_domain_ips(client: Client, domain: str, *, window_h: int = 6,
+                       cap: int = 512) -> list[str]:
+    """The addresses a name currently owns, from the reverse map (schema/016).
+
+    WHAT "CURRENTLY" MEANS: answers seen inside `window_h`, so a domain rule enforces what DNS
+    actually resolved the name to recently -- not what it resolved to last month. A name that has
+    more addresses than `cap` (a CDN, usually) contributes its most recently seen ones first;
+    the cap keeps a single rule from making the kernel set enormous.
+    """
+    name = str(domain or "").strip().lower().rstrip(".")
+    if not name:
+        return []
+    since = datetime.now(UTC) - timedelta(hours=max(1, int(window_h)))
+    rows = client.query(
+        """
+        SELECT ip, max(last_seen) AS ls
+        FROM weirvern.dns_reverse_map
+        WHERE (domain = %(d)s OR endsWith(domain, %(suf)s)) AND last_seen >= %(since)s
+        GROUP BY ip ORDER BY ls DESC LIMIT %(cap)s
+        """,
+        parameters={"d": name, "suf": "." + name, "since": since, "cap": int(cap)},
+    ).result_rows
+    return [str(r[0]) for r in rows]
+
+
+def attach_resolved_ips(client: Client, rules: list[Rule], *, window_h: int = 6,
+                        cap: int = 512) -> tuple[list[Rule], list[str]]:
+    """Fill each domain rule's `resolved_ips`. Returns (rules, problems) -- problems are NOTES
+    for the gate's detail, not exceptions: one unresolvable name must not disarm the rest."""
+    problems: list[str] = []
+    for r in rules:
+        if not r.domain:
+            continue
+        try:
+            r.resolved_ips = resolve_domain_ips(client, r.domain, window_h=window_h, cap=cap)
+        except Exception as exc:  # noqa: BLE001
+            problems.append(
+                f"domain {r.domain}: resolution failed ({type(exc).__name__}); not armed")
+            r.resolved_ips = []
+    return rules, problems
 
 
 def derived_rules_for_detections(

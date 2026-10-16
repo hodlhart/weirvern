@@ -1110,6 +1110,8 @@ def _build_handler(ctx: GuiContext):
 
             src_raw = str(body.get("src_cidr") or "").strip()
             dst_raw = str(body.get("dst_cidr") or "").strip()
+            domain_raw = str(body.get("domain") or "").strip()
+            mode_raw = str(body.get("mode") or "block").strip().lower()
             protocol = str(body.get("protocol") or "").strip().lower()
             direction = str(body.get("direction") or "forward").strip().lower()
             try:
@@ -1125,20 +1127,27 @@ def _build_handler(ctx: GuiContext):
             except (TypeError, ValueError):
                 return self._error(400, "ttl_minutes must be a number")
 
-            try:
-                src = parse_cidr(src_raw, "source")
-                dst = parse_cidr(dst_raw, "destination")
-            except SluiceError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+            if domain_raw:
+                # A DOMAIN RULE NAMES A NAME, NOT ADDRESSES. The address refusals below guard
+                # address predicates and do not apply; validate_domain (called by create_rule)
+                # owns the name's checks -- one place for the form, this route and any importer.
+                src = dst = ""
+                why = ""
+            else:
+                try:
+                    src = parse_cidr(src_raw, "source")
+                    dst = parse_cidr(dst_raw, "destination")
+                except SluiceError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 400)
 
-            why = refuse_reason(
-                src_cidr=src, dst_cidr=dst, direction=direction,
-                iface=str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or ""),
-                mgmt_iface=str(ctx.settings.mgmt_iface or ""),
-                sensor_addrs=self._sensor_addresses(), protocol=protocol, dst_port=dst_port,
-            )
-            if why:
-                return self._json({"ok": False, "error": why}, 400)
+                why = refuse_reason(
+                    src_cidr=src, dst_cidr=dst, direction=direction,
+                    iface=str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or ""),
+                    mgmt_iface=str(ctx.settings.mgmt_iface or ""),
+                    sensor_addrs=self._sensor_addresses(), protocol=protocol, dst_port=dst_port,
+                )
+                if why:
+                    return self._json({"ok": False, "error": why}, 400)
 
             # OPTIONAL, by the operator's own instruction (2026-10-16). A reason is still the only
             # record of WHY, so a DERIVED block always writes one (derived_rules_for_detections)
@@ -1151,9 +1160,10 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     ident = self._identity()
                     rule = sluice_store.create_rule(
-                        client, src_cidr=src, dst_cidr=dst, protocol=protocol,
-                        dst_port=dst_port, direction=direction, ttl_minutes=ttl,
-                        created_by=(ident.username if ident else "operator"), reason=reason,
+                        client, src_cidr=src, dst_cidr=dst, domain=domain_raw, mode=mode_raw,
+                        protocol=protocol, dst_port=dst_port, direction=direction,
+                        ttl_minutes=ttl, created_by=(ident.username if ident else "operator"),
+                        reason=reason,
                     )
             except SluiceError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
@@ -1169,7 +1179,9 @@ def _build_handler(ctx: GuiContext):
                 # its own would read as a bounded block like every other one.
                 "note": (f"recorded; enforcement picks it up within "
                          f"{int(ctx.settings.sluice_interval_s)}s"
-                         + ("" if rule.expires_at else "; it stays until it is revoked")),
+                         + ("" if rule.expires_at else "; it stays until it is revoked")
+                         + (" — ALERT mode: hits are recorded, nothing is blocked"
+                            if rule.mode == "alert" else "")),
             })
 
         def _sluice_revoke(self) -> None:

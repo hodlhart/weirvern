@@ -86,6 +86,10 @@ GATE_STATE_DEGRADED = "degraded"
 NFT_TABLE = "weirvern_sluice"
 NFT_SET_V4 = "sluice_block_v4"
 NFT_SET_V6 = "sluice_block_v6"
+# The resolved addresses of block-mode DOMAIN rules, one set per family (schema/017): the kernel
+# matches addresses, so a domain is enforced through what its name currently resolves to.
+NFT_SET_DOMAINS_V4 = "sluice_domains_v4"
+NFT_SET_DOMAINS_V6 = "sluice_domains_v6"
 # Direction 'in' rules hook INPUT rather than FORWARD, so they live in a second table. Keeping them
 # apart is what stops a relay rule from blocking the operator's own session.
 NFT_TABLE_IN = f"{NFT_TABLE}_in"
@@ -179,6 +183,14 @@ class Rule:
     rule_id: str
     src_cidr: str = ""
     dst_cidr: str = ""
+    # A DOMAIN RULE (2026-10-16): the predicate is a NAME, resolved through the reverse map
+    # (schema/016) into the addresses it currently owns -- the kernel matches addresses, so the
+    # resolution is what makes a domain enforceable. `mode` decides whether it blocks or only
+    # records; `resolved_ips` is filled at enforcement time and deliberately never stored on
+    # the rule, because the addresses a name owns are exactly the thing that changes.
+    domain: str = ""
+    mode: str = "block"
+    resolved_ips: list[str] | None = None
     protocol: str = ""
     dst_port: int = 0
     direction: str = "forward"
@@ -217,16 +229,31 @@ class Rule:
             exp = exp.replace(tzinfo=UTC)
         return exp > now
 
+    @property
+    def enforcing(self) -> bool:
+        """Whether this rule goes to the KERNEL. Alert-mode rules record and block nothing --
+        they live in the event pass, and a rule that reached the kernel as an empty shell would
+        read as enforced while changing nothing, this project's named failure."""
+        return self.mode != "alert"
+
     def describes(self) -> str:
         """A one-line human summary, for the audit row and the GUI table."""
         parts = []
+        if self.domain:
+            parts.append(f"domain {self.domain}")
+            if self.mode == "alert":
+                parts.append("(alert)")
         if self.src_cidr:
             parts.append(f"from {self.src_cidr}")
         if self.dst_cidr:
             parts.append(f"to {self.dst_cidr}")
         if self.dst_port:
             parts.append(f"{self.protocol or 'tcp'}/{self.dst_port}")
-        return " ".join(parts) or "(no predicate)"
+        if not parts:
+            return "(no predicate)"
+        if self.domain and self.resolved_ips is not None:
+            parts.append(f"({len(self.resolved_ips)} address(es) resolved)")
+        return " ".join(parts)
 
     def snapshot(self) -> str:
         """What this rule WAS, copied into an event row at enforcement time.
@@ -238,6 +265,8 @@ class Rule:
             "rule_id": self.rule_id,
             "src_cidr": self.src_cidr,
             "dst_cidr": self.dst_cidr,
+            "domain": self.domain,
+            "mode": self.mode,
             "protocol": self.protocol,
             "dst_port": self.dst_port,
             "direction": self.direction,
@@ -252,6 +281,13 @@ class Rule:
         so the semantics are testable without a kernel, and it must agree with the compiler -- a
         dry-run that predicts a block the ruleset would not perform is worse than no dry-run.
         """
+        if self.domain:
+            # A domain rule matches the RESOLVED addresses (the same list the compiler installs),
+            # so a dry-run predicts exactly what the kernel would do, no name magic in between.
+            ips = self.resolved_ips or []
+            if self.direction == "in":
+                return str(src) in ips
+            return str(dst) in ips
         if not self._addr_in(self.src_cidr, src):
             return False
         if not self._addr_in(self.dst_cidr, dst):
@@ -522,10 +558,33 @@ class NftBackend(Backend):
                     f"rule {r.rule_id}: a rule with both a source and a destination cannot "
                     "be compiled by this backend; refused rather than installed as a wider block"
                 )
-            if r.direction == "in" and not r.src_cidr:
+            if r.direction == "in" and not r.src_cidr and not r.domain:
                 raise SluiceError(
                     f"rule {r.rule_id}: an inbound rule without a source cannot be compiled; "
                     "refused rather than dropped silently"
+                )
+            if r.domain and (r.src_cidr or r.dst_cidr):
+                raise SluiceError(
+                    f"rule {r.rule_id}: a domain rule names a name, not addresses; refused "
+                    "rather than compiled as something wider than it says"
+                )
+            if r.domain and r.direction == "in":
+                raise SluiceError(
+                    f"rule {r.rule_id}: an inbound domain rule is not expressible yet; refused "
+                    "rather than dropped silently"
+                )
+            if r.domain and r.dst_port:
+                raise SluiceError(
+                    f"rule {r.rule_id}: a port-scoped domain rule is not expressible yet; the "
+                    "kernel set matches addresses, so the port would be silently ignored"
+                )
+            if r.domain and not r.resolved_ips and r.mode != "alert":
+                # An empty domain rule would install a set with no members and a drop line that
+                # never fires: ARMED while blocking nothing. The resolution step keeps these out
+                # of the kernel list; this is the second belt.
+                raise SluiceError(
+                    f"rule {r.rule_id}: domain {r.domain!r} resolved to no addresses; not armed "
+                    "(a rule that blocks nothing must not read as enforced)"
                 )
         v4: list[str] = []
         v6: list[str] = []
@@ -566,11 +625,24 @@ class NftBackend(Backend):
             # rejects a reference to a set that does not exist.
             return body + "; }"
 
+        # DOMAIN RULES: the resolved addresses of every block-mode domain rule, merged into ONE
+        # set per family. One set regardless of rule count keeps the lookup a hash and the
+        # ruleset small; the per-rule accounting lives in the event log, not the kernel.
+        dom_v4: list[str] = []
+        dom_v6: list[str] = []
+        for r in rules:
+            if not r.domain or not r.enforcing:
+                continue
+            for ip in (r.resolved_ips or []):
+                (dom_v6 if ":" in ip else dom_v4).append(ip)
+
         lines: list[str] = [
             f"# weirvern sluice gate, armed on {iface} at {datetime.now(UTC):%FT%TZ}",
             f"table inet {NFT_TABLE} {{",
             _set(NFT_SET_V4, "ipv4_addr", v4),
             _set(NFT_SET_V6, "ipv6_addr", v6),
+            _set(NFT_SET_DOMAINS_V4, "ipv4_addr", dom_v4),
+            _set(NFT_SET_DOMAINS_V6, "ipv6_addr", dom_v6),
         ]
         for (proto, port), members in sorted(port_v4.items()):
             lines.append(_set(f"port_{proto}_{port}", "ipv4_addr", members))
@@ -585,6 +657,9 @@ class NftBackend(Backend):
             "    type filter hook forward priority -50; policy accept;",
             f"    ip saddr @{NFT_SET_V4} counter drop",
             f"    ip6 saddr @{NFT_SET_V6} counter drop",
+            # A domain rule blocks traffic TO the addresses the name currently owns.
+            f"    ip daddr @{NFT_SET_DOMAINS_V4} counter drop",
+            f"    ip6 daddr @{NFT_SET_DOMAINS_V6} counter drop",
         ]
         for r in dst_rules:
             fam = "ip6" if ":" in r.dst_cidr else "ip"
@@ -1050,6 +1125,7 @@ def enforcement_pass(
     sensor_mode: str = "",
     channel: Any = None,
     siphon_live: bool | None = None,
+    domain_window_h: int = 6,
 ) -> GateState:
     """One cycle: load rules, let detections add more, arm, and RECORD what happened.
 
@@ -1096,6 +1172,28 @@ def enforcement_pass(
             backend=supervisor.backend.name, backend_expected="nft",
         )
 
+    # ── DOMAIN RULES RESOLVE THROUGH THE REVERSE MAP, AND ALERT RULES STAY OUT OF THE KERNEL ──
+    #
+    # A block-mode domain rule's predicate is only meaningful once its name has addresses: the
+    # resolution step fills `resolved_ips` from what DNS actually answered (schema/016). A rule
+    # whose name resolves to NOTHING is dropped from the kernel list WITH A NOTE -- arming it
+    # would install an empty set and a drop line that never fires, which reads as enforced while
+    # blocking nothing. Alert-mode rules never reach the kernel at all; they live in the event
+    # pass, which is the point of alert-first.
+    kernel_rules = [r for r in rules if r.enforcing]
+    domain_notes: list[str] = []
+    if any(r.domain for r in kernel_rules):
+        try:
+            kernel_rules, problems = store.attach_resolved_ips(
+                client, kernel_rules, window_h=domain_window_h)
+            if problems:
+                kernel_rules = [r for r in kernel_rules if not (r.domain and not r.resolved_ips)]
+                domain_notes.extend(problems)
+        except Exception as exc:  # noqa: BLE001
+            kernel_rules = [r for r in kernel_rules if not r.domain]
+            domain_notes.append(
+                f"domain resolution failed ({type(exc).__name__}); domain rules were not armed")
+
     if (policy != "off" or float(auto_score) > 0.0) and detections:
         for spec in store.derived_rules_for_detections(
             # max_block_s is SECONDS (a config knob an operator reads); the function takes
@@ -1110,7 +1208,9 @@ def enforcement_pass(
                 # One bad detection must not stop the pass: the manual rules still need arming.
                 logger.warning("sluice: could not record a derived rule: %s", exc)
 
-    state = supervisor.arm(rules)
+    state = supervisor.arm(kernel_rules)
+    if domain_notes:
+        state = replace(state, detail=("; ".join(domain_notes) + " " + (state.detail or "")).strip())
 
     # ── CAN THIS DEPLOYMENT ENFORCE AT ALL, AND BY WHICH VERIFIED PATH? ───────────────────────
     #

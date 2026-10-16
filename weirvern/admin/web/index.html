@@ -910,6 +910,15 @@
         <label>destination (if no source is set)
           <input id="sl-dst" type="text" placeholder="block traffic to this address">
         </label>
+        <label>or block a domain
+          <input id="sl-domain" type="text" placeholder="ads.example.com — blocks what it resolves to">
+        </label>
+        <label>mode
+          <select id="sl-mode">
+            <option value="alert">alert: record hits, block nothing</option>
+            <option value="block" selected>block</option>
+          </select>
+        </label>
         <label>protocol
           <select id="sl-proto">
             <option value="">any</option>

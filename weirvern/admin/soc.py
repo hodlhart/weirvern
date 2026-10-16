@@ -894,10 +894,10 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
 # answered, which is the cache domain rules resolve through.
 #
 # THE ADDRESS TOKENS IN `answers` ARE MESSY: the column is a comma-joined string that mixes real
-# addresses with NSEC/TXT chatter from mDNS (measured on the box: "203.0.113.21,fd42:...,
-# NSEC 70-35-60-63.1 living room._sleep-proxy._udp.local ,..."). Parsing happens HERE, once, and
-# only tokens that parse as addresses survive -- a display that shows "NSEC 70-35..." as if it
-# were an answer would be worse than showing nothing.
+# addresses with NSEC/TXT chatter from mDNS (measured on the box; documentation-range example:
+# "198.51.100.10,fd42::1,NSEC 70-35-60-63.1 living room._sleep-proxy._udp.local ,..."). Parsing
+# happens HERE, once, and only tokens that parse as addresses survive -- a display that shows
+# "NSEC 70-35..." as if it were an answer would be worse than showing nothing.
 
 QTYPE_LABELS = {0: "other", 1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX",
                 16: "TXT", 28: "AAAA", 33: "SRV", 65: "HTTPS", 255: "ANY"}

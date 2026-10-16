@@ -43,8 +43,8 @@ class _Client:
 
 def test_answer_tokens_are_only_addresses():
     """The zeek answers column mixes addresses with NSEC/TXT chatter; only addresses survive."""
-    assert soc.answer_ips("192.168.2.21,NSEC 70-35-60-63.1 living room.local ,fd42::1,") == [
-        "192.168.2.21", "fd42::1"]
+    assert soc.answer_ips("198.51.100.10,NSEC 70-35-60-63.1 living room.local ,fd42::1,") == [
+        "198.51.100.10", "fd42::1"]
 
 
 def test_filters_land_as_bound_parameters():

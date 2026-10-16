@@ -190,8 +190,11 @@ def test_zero_ttl_records_an_unbounded_rule_and_a_negative_one_is_refused():
     rule = create_rule(client, src_cidr="198.51.100.7", ttl_minutes=0)
     assert rule.expires_at is None, "a zero ttl produced an expiry"
     assert client.inserts, "nothing was written"
-    # Column order: rule_id, created_at, created_by, reason, src_cidr, ..., expires_at at index 9.
-    assert client.inserts[0][1][0][9] is None, "the stored row carries a date, not NULL"
+    # BY NAME, not by index: the insert grew domain/mode columns (schema/017) and a positional
+    # assertion broke for the wrong reason -- the intent is "the stored row carries NULL".
+    columns = client.inserts[0][2]
+    assert client.inserts[0][1][0][columns.index("expires_at")] is None, (
+        "the stored row carries a date, not NULL")
 
     bounded = create_rule(client, src_cidr="198.51.100.8", ttl_minutes=15)
     assert bounded.expires_at is not None

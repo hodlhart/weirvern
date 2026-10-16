@@ -279,6 +279,8 @@ function wireSluice() {
     const body = {
       src_cidr: document.getElementById("sl-src").value.trim(),
       dst_cidr: document.getElementById("sl-dst").value.trim(),
+      domain: (document.getElementById("sl-domain") || {}).value ? document.getElementById("sl-domain").value.trim() : "",
+      mode: document.getElementById("sl-mode") ? document.getElementById("sl-mode").value : "block",
       protocol: document.getElementById("sl-proto").value,
       dst_port: Number(document.getElementById("sl-port").value || 0),
       direction: document.getElementById("sl-direction").value,

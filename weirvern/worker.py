@@ -73,6 +73,75 @@ def _is_gate_only(settings) -> bool:
     return str(getattr(settings, "role", "full") or "full") == "gate"
 
 
+# The DNS-hit pass's own cursor and interval. In-process by design: a restart re-reads the last
+# minute of DNS (bounded duplicate events, noted in the module's spirit) rather than persisting a
+# cursor for a path whose whole job is watching, not enforcing.
+_SLUICE_DNS: dict = {"cursor": None, "last": 0.0}
+
+
+def _sluice_dns_maybe(settings, client) -> None:
+    """Record DNS queries that hit an ACTIVE domain rule -- the alert-first half.
+
+    WHY THIS RUNS EVEN WHEN THE GATE IS DISABLED (SLUICE_ENABLED=0): alert mode's entire promise
+    is "see what a rule would catch before it blocks". The pass writes sluice_events rows and
+    touches no kernel, so it is visibility, not enforcement -- the thing a monitoring appliance
+    is FOR. Only rules whose domain is set are consulted; a deployment without domain rules pays
+    one cheap query per interval at most.
+    """
+    import time as _time  # noqa: PLC0415
+
+    from weirvern import sluice_store  # noqa: PLC0415
+
+    now = _time.monotonic()
+    if now - float(_SLUICE_DNS["last"]) < max(15, int(settings.sluice_interval_s)):
+        return
+    _SLUICE_DNS["last"] = now
+    try:
+        rules = [r for r in sluice_store.load_live_rules(client) if r.domain]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sluice dns: could not read rules: %s", exc)
+        return
+    if not rules:
+        return
+    cursor = _SLUICE_DNS["cursor"]
+    if cursor is None:
+        # Naive local time, like every other clock read in this file: the rows zeek writes are
+        # stamped in the box's local time, and comparing aware to naive would skip every row.
+        cursor = datetime.now() - timedelta(seconds=60)
+    try:
+        rows = client.query(
+            "SELECT ts, src_addr, query FROM weirvern.zeek_dns "
+            "WHERE ts > %(after)s ORDER BY ts LIMIT 500",
+            parameters={"after": cursor},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sluice dns: could not read zeek_dns: %s", exc)
+        return
+    if not rows:
+        return
+    events: list[dict] = []
+    newest = cursor
+    for ts, src_addr, query in rows:
+        if ts and ts > newest:
+            newest = ts
+        q = str(query or "").lower().rstrip(".")
+        for rule in rules:
+            d = rule.domain.lower()
+            if q == d or q.endswith("." + d):
+                events.append({
+                    "ts": ts, "rule_id": rule.rule_id, "kind": "dns", "domain": rule.domain,
+                    "query": str(query), "src_addr": str(src_addr), "dst_addr": "",
+                    "protocol": "dns", "rule_snapshot": rule.snapshot(), "direction": "forward",
+                })
+                break
+    _SLUICE_DNS["cursor"] = newest
+    if events:
+        try:
+            sluice_store.write_events(client, events)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sluice dns: could not record hits: %s", exc)
+
+
 def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
     """Run one Sluice Gate pass if it is enabled and its interval has elapsed.
 
@@ -2000,6 +2069,10 @@ def main() -> None:
                 _sluice_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice gate pass failed (detection continues): %s", exc)
+            try:
+                _sluice_dns_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice dns pass failed (detection continues): %s", exc)
 
             # The in-line flow probe, on the same rhythm (see its section above). Separate from
             # the gate on purpose: collecting flows from the channel does not require blocking
@@ -2039,6 +2112,10 @@ def main() -> None:
                 _sluice_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice gate pass failed (detection continues): %s", exc)
+            try:
+                _sluice_dns_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice dns pass failed (detection continues): %s", exc)
             try:
                 _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001
