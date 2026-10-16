@@ -147,9 +147,17 @@ function renderTimeline(hostId, res, opts = {}) {
     ).join(" ");
     svg.appendChild(svgEl("path", { d, fill: "none", stroke: colour, "stroke-width": 1.7 }));
     const total = pts.reduce((a, p) => a + (Number(p.n) || 0), 0);
+    // THE LEGEND STATES THE UNIT THE CALLER PLOTS. It hard-coded "row(s)", so the netflow
+    // volume chart (bytes per bucket, series even NAMED "flows" while plotting p.bytes)
+    // printed a byte total wearing the row-count unit. Callers that plot anything but row
+    // counts pass `legendUnit` (and `legendFormat` when the raw total needs a unit-aware
+    // formatter); the default stays "row(s)" for the row-count timelines that were the
+    // original callers.
+    const fmtTotal = opts.legendFormat || ((v) => v.toLocaleString());
+    const unit = opts.legendUnit || "row(s)";
     legend.appendChild(el("span", { class: "legend-item" }, [
       el("span", { class: "legend-swatch", attrs: { style: `background:${colour}` } }),
-      el("span", { text: `${name} — ${total.toLocaleString()} row(s) in window` }),
+      el("span", { text: `${name} — ${fmtTotal(total)} ${unit} in window` }),
     ]));
   });
   // THE CLICKABLE RULE: with `onPoint`, every bucket is a hit target that says "show me the
@@ -248,12 +256,15 @@ async function loadNetflow() {
     ? `${fmtBytes(totalBytes)} across ${totalFlows.toLocaleString()} flows.`
     : "Flow volume is unavailable — see the panel below.";
 
-  // Volume as a line: bytes per bucket.
-  const volSeries = { flows: (((d.volume || {}).points) || []).map((p) => ({ t: p.t, n: p.bytes })) };
+  // Volume as a line: bytes per bucket. The series is NAMED bytes, not flows: the legend
+  // prints the series name beside the summed total, and calling a byte plot "flows" made
+  // the legend describe a different chart than the one drawn.
+  const volSeries = { bytes: (((d.volume || {}).points) || []).map((p) => ({ t: p.t, n: p.bytes })) };
   renderTimeline("nf-volume", { available: (d.volume || {}).available !== false,
                                 reason: (d.volume || {}).reason, series: volSeries },
                  { emptyText: "No flow windows recorded — NetFlow may not be arriving.",
                    pointUnit: " bytes",
+                   legendUnit: "bytes", legendFormat: fmtBytes,
                    // A bucket is a window: the click lands on Discover, filtered to exactly the
                    // traffic that bucket drew. The chart stops being a picture and becomes a door.
                    onPoint: (pt) => {
