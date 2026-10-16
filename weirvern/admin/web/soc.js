@@ -298,6 +298,27 @@ async function loadZeek() {
 
 /* ── Health (deep) ──────────────────────────────────────────────────────────────────── */
 
+/** A probe's readable line: its detail, or a compact rendering of its value as a fallback.
+ *
+ * The server sends both -- `detail` is the sentence ("9/9 present"), `value` is the datum
+ * ({"flows": 20, ...}). The panel exists so a person can answer "why is this red"; a cell that
+ * shows the datum instead of the sentence cannot, and it was rendering `String(c.value ?? "")`,
+ * so the reasons for every failure were dropped on the floor and object values printed as the
+ * literal string "[object Object]". Objects and arrays are COUNTED, never stringified.
+ */
+function probeText(c) {
+  const detail = c.detail == null ? "" : String(c.detail);
+  if (detail) return detail;
+  const v = c.value;
+  if (v == null || v === "") return "";
+  if (Array.isArray(v)) return `${v.length} item(s)`;
+  if (typeof v === "object") {
+    const keys = Object.keys(v);
+    return keys.length ? `${keys.length} field(s): ${keys.slice(0, 4).join(", ")}` : "{}";
+  }
+  return String(v);
+}
+
 async function loadHealthDeep() {
   const hours = document.getElementById("hp-hours").value || "24";
   const d = await getJSON(`${API.health}?hours=${hours}`);
@@ -359,7 +380,11 @@ async function loadHealthDeep() {
     tbody.appendChild(el("tr", {}, [
       el("td", { text: c.name }),
       el("td", {}, [state]),
-      el("td", { class: "mono", text: String(c.value ?? "") }),
+      // THE REASON, NOT THE RAW VALUE. This cell used to render `c.value`, which meant every
+      // failure explanation the server sends was thrown away -- the panel said "see below" and
+      // then showed an empty cell -- while object values rendered as the literal string
+      // "[object Object]". The detail is the sentence an operator reads; the value is a fallback.
+      el("td", { class: "mono", text: probeText(c), attrs: { title: probeText(c) } }),
       el("td", { text: c.latency_ms != null ? `${c.latency_ms} ms` : "" }),
     ]));
   }

@@ -829,7 +829,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               total: 0, truncated: false, names: {} },
   };
 
+  // TWO EXTRA PROBES, and they are the point of the panel's contract: a FAILING probe whose reason
+  // must be readable, and a value that is an OBJECT (the old renderer printed String(value) and the
+  // operator read "[object Object]" where the sentence should have been). Both live under `health`,
+  // which is where the server puts them.
+  const HEALTH_WITH_FAILURE = Object.assign({}, HEALTH_PAYLOAD, {
+    health: Object.assign({}, HEALTH_PAYLOAD.health, {
+      ok: false,
+      checks: [
+        { name: "models", ok: false, detail: "no training runs recorded; the last 24h hold 20 flow row(s) from 3 host(s); training needs more than that before a detector is stored", value: [], latency_ms: 1.7 },
+        { name: "tables", ok: true, detail: "9/9 present", value: { flows: 20, flows_aggregated: 17 }, latency_ms: 11.1 },
+      ].concat(HEALTH_PAYLOAD.health.checks || []),
+    }),
+  });
+
   ROUTES.push(
+    // The 6h window answers with the two extra probes (a FAILING one with a reason, one whose value
+    // is an object). The 24h window is untouched: the harness's own checks count that payload's
+    // probes, and weakening them to make room for this would trade one blind spot for another.
+    ["/api/health?hours=6", HEALTH_WITH_FAILURE],
     ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
@@ -1380,6 +1398,34 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   //
   // A tab with no coverage is a tab whose bugs reach the user. Every view now gets exercised.
   H.showView("zeek");
+  // ── THE HEALTH PANEL SHOWS THE REASON A CHECK FAILED ─────────────────────────────────────────
+  //
+  // MEASURED ON THE LIVE CONSOLE: the panel said "2 of 8 checks FAILING -- see below" and the cell
+  // below was EMPTY, because the renderer printed `String(c.value ?? "")` and dropped the `detail`
+  // the server had sent all along. An operator cannot act on "FAIL" alone, and a datum rendered as
+  // "[object Object]" is worse than nothing.
+  {
+    const hoursEl = doc.getElementById("hp-hours");
+    const was = hoursEl.value;
+    hoursEl.value = "6";  // a NUMBER input, not a select: "6h" lands as an empty value and the
+                          // route never matches, which is exactly how this check failed first.
+    await H.loadHealthDeep();
+    const hp = doc.querySelector("#hp-checks tbody");
+    const text = hp ? hp.textContent : "";
+    check("the health panel renders the REASON a check failed",
+          /no training runs recorded; the last 24h hold 20 flow row\(s\)/.test(text),
+          "the failing check's detail sentence is not in the table");
+    check("the health panel never stringifies an object value",
+          !/\[object Object\]/.test(text),
+          "a probe value was rendered with String(): the operator sees [object Object]");
+    check("a healthy check still shows its own sentence, not its datum",
+          /9\/9 present/.test(text),
+          "the healthy row lost its detail line");
+    // Put the view back the way the rest of the harness expects to find it.
+    hoursEl.value = was;
+    await H.loadHealthDeep();
+  }
+
   await H.loadZeek();
 
   const zkSummary = doc.getElementById("zk-summary").textContent;

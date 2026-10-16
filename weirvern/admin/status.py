@@ -412,7 +412,26 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
                 value=mrows, latency_ms=ms,
             ))
     elif err is None:
-        report.add(Probe("models", ok=False, detail="no training runs recorded", value=[], latency_ms=ms))
+        # WHAT IS MISSING, AND WHY -- MEASURED ON THE LIVE BOX: this read "no training runs recorded",
+        # which is true and useless next to a green `ingest_freshness` ("newest flow 2m ago"). The two
+        # together look like a broken trainer; the operator's actual question is "will it ever train
+        # here?", and answering it needs the input VOLUME, not the absence of an output.
+        volume = ""
+        try:
+            rows = client.query(
+                f"SELECT count(), uniqExact(src_addr) FROM weirvern.flows "
+                f"WHERE ts >= now() - INTERVAL {int(getattr(settings, 'detect_window_h', 24))} HOUR"
+            ).result_rows
+            if rows and rows[0]:
+                vol_rows, vol_hosts = int(rows[0][0] or 0), int(rows[0][1] or 0)
+                volume = (f" the last {int(getattr(settings, 'detect_window_h', 24))}h hold "
+                          f"{vol_rows} flow row(s) from {vol_hosts} host(s); training needs "
+                          f"more than that before a detector is stored")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("model input volume could not be read: %s", exc)
+        report.add(Probe("models", ok=False,
+                         detail="no training runs recorded;" + volume if volume
+                         else "no training runs recorded", value=[], latency_ms=ms))
     else:
         _probe_failed(report, "models", err, ms)
 
