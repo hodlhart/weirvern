@@ -90,3 +90,28 @@ def test_a_lapsed_rule_is_not_in_either_list(monkeypatch):
                                         expires_at=gone)])
     d = soc.blocked_view(_Client(), hours=6)
     assert d["blocks"] == [] and d["alerts"] == []
+
+
+def test_the_dashboard_filter_binds_into_the_hits_query():
+    """The operator, 2026-10-16: a click on a hit's client cell narrows the tab. The filter must
+    land as a BOUND parameter in BOTH the hits and the count queries -- a count that ignored the
+    filter would read as if nothing had been filtered at all."""
+    from weirvern.admin.soc import blocked_view
+
+    seen = []
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            seen.append((sql, dict(parameters or {})))
+            class R:
+                result_rows = [] if "SELECT ts," in sql else [(0,)]
+            return R()
+
+    blocked_view(_C(), hours=6, client_ip="198.51.100.7")
+    hits_sql, hits_params = seen[0]
+    assert "src_addr = %(client)s" in hits_sql, "the client filter must reach the hits query"
+    assert hits_params["client"] == "198.51.100.7"
+    count_sql, count_params = seen[1]
+    assert "src_addr = %(client)s" in count_sql, "and the count, or the total lies"
+    assert count_params["client"] == "198.51.100.7"
+    assert "198.51.100.7" not in hits_sql, "bound, never interpolated"

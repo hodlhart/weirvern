@@ -13,10 +13,24 @@ function blParams() {
   const q = ["hours=" + trHours(), "limit=" + BLOCKED_STATE.limit, "offset=" + BLOCKED_STATE.offset];
   const d = document.getElementById("bl-domain");
   if (d && d.value.trim()) q.push("domain=" + encodeURIComponent(d.value.trim()));
+  const c = document.getElementById("bl-client");
+  if (c && c.value.trim()) q.push("client=" + encodeURIComponent(c.value.trim()));
   return q.join("&");
 }
 
 function blCell(text, cls) { return el("td", { class: cls || "", text: String(text) }); }
+
+/**
+ * CLICK-TO-FILTER (the operator, 2026-10-16): a value clicked anywhere in this tab becomes the
+ * tab's filter and the WHOLE tab re-reads with it -- server-side, so the count in the summary is
+ * the filtered truth, not a number the browser worked out by hiding rows.
+ */
+function blFilterTo(field, value) {
+  const input = document.getElementById("bl-" + field);
+  if (input) input.value = value;
+  BLOCKED_STATE.offset = 0;
+  loadBlocked().then(clearError).catch(showError);
+}
 
 function blEmptyRow(body, span, text) {
   const tr = el("tr", {});
@@ -53,9 +67,15 @@ function blRenderHits(d) {
       blCell(fmtTime(new Date(h.ts)), "muted"),
       el("td", {}, [el("span", { class: "chip " + (h.rule_id ? "ok" : "muted"),
                                 text: h.rule_id ? "rule" : "list" })]),
-      blCell(h.domain, "mono"),
+      (() => { const td = blCell(h.domain, "mono dcell");
+        td.title = "filter the hits to this domain: " + h.domain;
+        td.addEventListener("click", () => blFilterTo("domain", h.domain));
+        return td; })(),
       blCell(h.query),
-      blCell(h.client, "muted"),
+      (() => { const td = blCell(h.client, "muted dcell");
+        td.title = "filter the hits to this client: " + h.client;
+        td.addEventListener("click", () => blFilterTo("client", h.client));
+        return td; })(),
     ]);
     body.appendChild(tr);
   }
@@ -113,8 +133,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   const clear = document.getElementById("bl-clear");
   if (clear) clear.addEventListener("click", () => {
-    const f = document.getElementById("bl-domain");
-    if (f) f.value = "";
+    for (const id of ["bl-domain", "bl-client"]) {
+      const f = document.getElementById(id);
+      if (f) f.value = "";
+    }
     BLOCKED_STATE.offset = 0;
     loadBlocked().then(clearError).catch(showError);
   });

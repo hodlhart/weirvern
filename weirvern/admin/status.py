@@ -1662,7 +1662,8 @@ def noise_flows(client, hours: int = 24) -> dict:
                 "flows": 0, "bytes": 0}
 
 
-def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0) -> list[dict]:
+def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
+                       host: str = "", severity: str = "") -> list[dict]:
     """Anomalies WITH the explainability columns, as dicts.
 
     The GUI needs the WHY: which feature deviated, by how much,
@@ -1696,8 +1697,14 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0) -> list
         "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
         "feature_contributions, baseline_comparison "
         "FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s "
-        "ORDER BY detected_at DESC LIMIT %(n)s",
-        parameters={"s": min_score, "n": limit},
+        # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16): a clicked host or severity is
+        # answered BY THIS QUERY -- never by hiding rows the browser already received, which
+        # would silently mis-report the total.
+        + ("AND src_addr = %(host)s " if host else "")
+        + ("AND severity = %(sev)s " if severity else "")
+        + "ORDER BY detected_at DESC LIMIT %(n)s",
+        parameters={"s": min_score, "n": limit, **({"host": host} if host else {}),
+                    **({"sev": severity} if severity else {})},
     )
     cols = list(res.column_names)
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]

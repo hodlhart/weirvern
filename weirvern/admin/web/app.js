@@ -1201,6 +1201,45 @@ async function postReview(a, state) {
   await loadAnomalies();
 }
 
+/**
+ * THE DASHBOARD-WIDE FILTER for the triage queue (the operator, 2026-10-16: "if i click in any
+ * dashboard it should filter that entire dashboard"). A click on a row's host or severity
+ * becomes the queue's filter; the chips remove themselves. SERVER-SIDE on purpose: the handler
+ * binds both into the anomalies query, so the list and its counts are the filtered truth --
+ * never a smaller list the browser worked out by hiding rows it had already received.
+ */
+const AN_FILTERS = { host: "", severity: "" };
+
+function anQuery() {
+  let q = "";
+  if (AN_FILTERS.host) q += "&host=" + encodeURIComponent(AN_FILTERS.host);
+  if (AN_FILTERS.severity) q += "&severity=" + encodeURIComponent(AN_FILTERS.severity);
+  return q;
+}
+
+function anRenderChips() {
+  const box = document.getElementById("an-filters");
+  if (!box) return;
+  box.replaceChildren();
+  for (const field of ["host", "severity"]) {
+    if (!AN_FILTERS[field]) continue;
+    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+      text: `${field} = ${AN_FILTERS[field]} \u00d7` });
+    chip.addEventListener("click", () => {
+      AN_FILTERS[field] = "";
+      anRenderChips();
+      loadAnomalies().catch(showError);
+    });
+    box.appendChild(chip);
+  }
+}
+
+function anSetFilter(field, value) {
+  AN_FILTERS[field] = String(value || "");
+  anRenderChips();
+  loadAnomalies().catch(showError);
+}
+
 async function loadAnomalies() {
   // The gate's state rides along with the list, so every row's block control can say whether it
   // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
@@ -1210,7 +1249,8 @@ async function loadAnomalies() {
   const limit = document.getElementById("f-limit").value || "100";
   const unrev = document.getElementById("f-unreviewed");
   const unreviewedOnly = !!(unrev && unrev.checked);
-  const rows = await getJSON(API.anomalies(min, limit, unreviewedOnly));
+  anRenderChips();
+  const rows = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery());
 
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
@@ -1237,9 +1277,13 @@ async function loadAnomalies() {
                                  on: { click: () => openEvidence(a) } }, [
       el("td", { class: "mono", text: fmtTime(a.detected_at) }),
       el("td", { class: "mono", text: fmtTime(a.window_start) }),
-      el("td", {}, [hostCell(a.src_addr, a.hostname)]),
+      el("td", { class: "dcell", attrs: { title: "filter the queue to this host" },
+                 on: { click: (e) => { e.stopPropagation(); anSetFilter("host", a.src_addr); } } },
+         [hostCell(a.src_addr, a.hostname)]),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
-      el("td", {}, [sevCell(a.severity)]),
+      el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
+                 on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
+         [sevCell(a.severity)]),
       el("td", { class: "mono", text: a.detected_by_models || "—" }),
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),

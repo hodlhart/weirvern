@@ -1108,7 +1108,8 @@ def dns_rows(client, *, hours: int = 24, domain: str = "", client_ip: str = "",
     }
 
 
-def blocked_view(client, *, hours: int = 24, domain: str = "", limit: int = 200,
+def blocked_view(client, *, hours: int = 24, domain: str = "", client_ip: str = "",
+                 limit: int = 200,
                  offset: int = 0, gate: dict | None = None) -> dict:
     """The Blocked ledger: what has been stopped or caught, and by what.
 
@@ -1128,6 +1129,13 @@ def blocked_view(client, *, hours: int = 24, domain: str = "", limit: int = 200,
     if domain:
         where.append("positionCaseInsensitive(domain, %(domain)s) > 0")
         params["domain"] = str(domain)
+    if client_ip:
+        # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16): clicking a hit's client cell
+        # narrows the whole tab to that device. Bound like every other filter; an unreadable
+        # value is refused by the caller, never silently dropped (which would show MORE than
+        # was asked for).
+        where.append("src_addr = %(client)s")
+        params["client"] = str(client_ip)
     clause = " AND ".join(where)
     hits: list[dict] = []
     total = 0

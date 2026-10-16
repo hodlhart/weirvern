@@ -397,3 +397,30 @@ def test_the_index_reports_its_own_lower_bound():
     assert covered_since is not None, "review_index returned no bound for its own window"
     age_h = (_dt.datetime.now(_dt.UTC) - covered_since).total_seconds() / 3600
     assert 23 < age_h < 25, f"the reported bound is {age_h:.1f}h old, expected ~24h"
+
+
+def test_anomalies_filters_bind_server_side():
+    """The dashboard-wide filter on the triage queue: a clicked host or severity must be answered
+    BY THE QUERY. Filtering in the browser after a LIMIT would quietly drop matches that were
+    never fetched."""
+    from weirvern.admin import status
+
+    seen = {}
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            seen["sql"], seen["params"] = sql, dict(parameters or {})
+            class R:
+                result_rows = []
+                column_names = []  # the builder zips rows against these; empty rows, empty zip
+            return R()
+
+    status.anomalies_detailed(_C(), limit=50, min_score=0.2, host="198.51.100.20",
+                              severity="high")
+    assert "AND src_addr = %(host)s" in seen["sql"]
+    assert "AND severity = %(sev)s" in seen["sql"]
+    assert seen["params"]["host"] == "198.51.100.20" and seen["params"]["sev"] == "high"
+    assert seen["params"]["s"] == 0.2 and seen["params"]["n"] == 50
+    status.anomalies_detailed(_C(), limit=50, min_score=0.0)
+    assert "src_addr = %(host)s" not in seen["sql"], "no filter, no clause"
+    assert "severity" not in seen["sql"].split("WHERE")[1].split("ORDER")[0]

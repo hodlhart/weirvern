@@ -210,16 +210,28 @@ function dnRenderRows(d) {
   for (const r of rows) {
     const tr = el("tr", { class: "dc-row" });
     tr.appendChild(dnCell(fmtTime(new Date(r.ts)), "muted"));
-    tr.appendChild(dnCell(r.client, "muted"));
+    const cl = dnCell(r.client, "muted");
+    cl.classList.add("dcell");
+    cl.title = "filter to this client: " + r.client;
+    cl.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-client", r.client]]); });
+    tr.appendChild(cl);
     const q = dnCell(r.query);
     q.classList.add("dcell");
     q.title = "add to the filter: domain = " + r.query;
     q.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-domain", r.query]]); });
     tr.appendChild(q);
-    tr.appendChild(dnCell(r.qtype_label));
+    const qt = dnCell(r.qtype_label, "dcell");
+    if (r.qtype != null) {
+      qt.title = "filter to this record type";
+      qt.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-qtype", String(r.qtype)]]); });
+    }
+    tr.appendChild(qt);
     const rc = dnCell(r.rcode_label);
     if (r.rcode === 3) rc.classList.add("sev-high");
     else if (r.rcode !== 0) rc.classList.add("sev-medium");
+    rc.classList.add("dcell");
+    rc.title = "filter to this response code";
+    rc.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-rcode", String(r.rcode)]]); });
     tr.appendChild(rc);
     const ans = (r.answer_ips || []);
     const ax = dnCell(ans.length ? `${ans[0]}${ans.length > 1 ? " +" + (ans.length - 1) : ""}`

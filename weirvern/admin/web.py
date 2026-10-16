@@ -436,7 +436,9 @@ def _build_handler(ctx: GuiContext):
             try:
                 with self._with_client() as client:
                     rows = status_mod.anomalies_detailed(
-                        client, limit=limit, min_score=min_score)
+                        client, limit=limit, min_score=min_score,
+                        host=(query.get("host") or [""])[0].strip()[:64],
+                        severity=(query.get("severity") or [""])[0].strip()[:24])
                     # SOC-1: merge review state. Read separately (one small query) rather
                     # than joined in SQL because the reviews table may not exist yet on a
                     # deployment whose schema job has not re-run -- a join would make the
@@ -789,6 +791,9 @@ def _build_handler(ctx: GuiContext):
             domain = (query.get("domain") or [""])[0].strip()
             if len(domain) > 200:
                 return self._error(400, "the domain filter is implausibly long")
+            bl_client = (query.get("client") or [""])[0].strip()
+            if len(bl_client) > 64:
+                return self._error(400, "the client filter is implausibly long")
             offset = _int_arg(query, "offset", 0, 0, 1000000)
             limit = _int_arg(query, "limit", 200, 1, 500)
             try:
@@ -796,8 +801,8 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
                     payload = soc_mod.blocked_view(
-                        client, hours=hours, domain=domain, limit=limit, offset=offset,
-                        gate=gate,
+                        client, hours=hours, domain=domain, client_ip=bl_client,
+                        limit=limit, offset=offset, gate=gate,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("blocked view unavailable: %s", exc)

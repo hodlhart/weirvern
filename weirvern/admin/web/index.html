@@ -505,6 +505,7 @@
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
         <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
+        <span id="an-filters"></span>
       </div>
       <div class="info-text hidden" id="an-info">
         Each row is a host-window the ensemble flagged: the score that crossed the line, and
@@ -1030,6 +1031,7 @@
       <p class="muted" id="bl-summary">loading&hellip;</p>
       <div class="controls">
         <label>domain <input id="bl-domain" type="text" placeholder="filter the hits" /></label>
+        <label>client <input id="bl-client" type="text" placeholder="filter by device" /></label>
         <button id="bl-go">Filter</button>
         <button id="bl-clear">Clear</button>
         <button id="bl-newer">&larr; newer</button>
