@@ -42,7 +42,7 @@ jobs:
             if ! "$checker" -n "$f"; then echo "::error file=$f::does not parse under $checker"; rc=1; fi
           done
           exit $rc
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
