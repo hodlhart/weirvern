@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 
+from weirvern import addressing
+
 logger = logging.getLogger(__name__)
 
 # The Zeek tables that carry an observed HOST identity, and which column holds the address.
@@ -292,6 +294,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
         "  AND src_addr != '' AND dst_addr != '' "
         "  AND src_addr != dst_addr "
+        # BOTH ENDPOINTS MUST BE HOSTS. The self-edge rule below already admitted that a LAN
+        # emits multicast constantly; it just did not follow the thought through to the NODES.
+        # Measured: the graph drew ff02::2 (the all-routers group) as a host with three peers.
+        "  AND " + addressing.sql_host("src_addr") + " "
+        "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
         {"h": hours, "n": limit},
         "connection graph",
@@ -491,6 +498,8 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
         "WHERE timestamp >= now() - INTERVAL %(h)s HOUR "
         "  AND src_addr != dst_addr "
         "  AND (src_addr IN %(a)s OR dst_addr IN %(a)s) "
+        "  AND " + addressing.sql_host("src_addr") + " "
+        "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
         {"h": hours, "n": limit, "a": tuple(addrs)},
         "tracked-host edges",

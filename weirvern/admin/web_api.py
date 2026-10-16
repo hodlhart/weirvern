@@ -451,7 +451,7 @@ def models_payload(data: dict) -> dict:
 
 
 def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
-                    talkers: list[tuple]) -> dict:
+                    talkers: list[tuple], noise: dict | None = None) -> dict:
     """Netflow view payload.
 
     NAMES RIDE WITH EVERY ROW THAT CARRIES AN ADDRESS. The talkers list has had
@@ -471,6 +471,9 @@ def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
         "protocols": proto,
         "ports": ports,
         "spread": spread_out,
+        # The STATED omission: rows the host-only lists left out because their address cannot
+        # be a host (multicast/link-local/broadcast -- weirvern/addressing.py).
+        "noise": noise or {"available": False, "reason": "not counted", "flows": 0, "bytes": 0},
         "talkers": [
             {"src_addr": r[0], "hostname": _hostname(r[0]),
              "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),

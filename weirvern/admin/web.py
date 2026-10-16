@@ -537,12 +537,16 @@ def _build_handler(ctx: GuiContext):
                     ports = soc_mod.top_ports(client, hours=hours)
                     spread = soc_mod.destination_spread(client, hours=hours)
                     talkers = status_mod.top_talkers(client, hours=hours, limit=12)
+                    # The host lists are filtered; this says by how much, so a reader can tell
+                    # "a quiet segment" from "a noisy one with the noise hidden".
+                    noise = status_mod.noise_flows(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("netflow view unavailable: %s", exc)
                 return self._json({"volume": empty, "protocols": empty, "ports": empty,
-                                   "spread": empty, "talkers": [],
+                                   "spread": empty, "talkers": [], "noise": {},
                                    "data_error": f"cannot reach ClickHouse: {exc}"})
-            self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers))
+            self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers,
+                                              noise=noise))
 
         def _zeek(self, query: dict) -> None:
             """Zeek shape: per-log counts, protocol timeline, services, DNS names.

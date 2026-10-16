@@ -23,7 +23,7 @@ from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import attack, db, ensemble
+from weirvern import addressing, attack, db, ensemble
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain
@@ -1296,7 +1296,10 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # DBSCAN 0.7178 in one and 0.6487 in the other for the same host -- a detection flipped out
         # by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
         # below still does the arithmetic.
-        "SELECT * FROM weirvern.flows_aggregated WHERE window_start >= %(since)s "
+        "SELECT * FROM weirvern.flows_aggregated WHERE window_start >= %(since)s AND "
+        # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
+        # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
+        + addressing.sql_host("src_addr") + " "
         "ORDER BY window_start, src_addr",
         since=since,
     )
@@ -1308,13 +1311,19 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     div_cols, div_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s "
+        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s AND "
+        # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
+        # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
+        + addressing.sql_host("src_addr") + " "
         "ORDER BY window_start, src_addr",
         since=since,
     )
     tmp_cols, tmp_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s "
+        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s AND "
+        # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
+        # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
+        + addressing.sql_host("src_addr") + " "
         "ORDER BY window_start, src_addr",
         since=since,
     )

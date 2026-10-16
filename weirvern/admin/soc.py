@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 
+from weirvern import addressing
+
 logger = logging.getLogger(__name__)
 
 # Bucket widths in seconds, chosen so a bucket count stays readable on a chart. toStartOfInterval
@@ -165,6 +167,9 @@ def destination_spread(client, hours: int = 24, limit: int = 12) -> dict:
             "SELECT src_addr, max(unique_dst_ips) AS dsts, sum(flow_count) AS flows "
             "FROM weirvern.flows_aggregated "
             "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            # Hosts only -- see weirvern/addressing.py. A fan-out chart for ff02::fb is a chart
+            # about nothing.
+            "  AND " + addressing.sql_host("src_addr") + " "
             "GROUP BY src_addr ORDER BY dsts DESC LIMIT %(n)s",
             parameters={"h": hours, "n": limit},
         ).result_rows

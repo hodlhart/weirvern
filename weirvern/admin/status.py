@@ -19,6 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from weirvern import addressing
+
 logger = logging.getLogger(__name__)
 from weirvern.admin.mode import MODE_SIPHON  # noqa: E402
 
@@ -1599,6 +1601,11 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
             # host's fan-out get", which is the question the column answers.
             "max(unique_dst_ips) AS dsts FROM weirvern.flows_aggregated "
             "WHERE window_start >= now() - INTERVAL %(h)s HOUR "
+            # NOT EVERY ADDRESS THAT APPEARS IS A HOST (weirvern/addressing.py has the
+            # measurement): ranking fe80::/ff02::/224.0.0.251 as talkers made the panel read
+            # as broken on the first live segment. The count of what was left out is
+            # reported separately by `noise_flows`, so the filter is stated, not silent.
+            "  AND " + addressing.sql_host("src_addr") + " "
             "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
             parameters={"h": hours, "n": limit},
         ).result_rows
@@ -1607,6 +1614,29 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
         # from a silent network, so this failure needs to be visible.
         logger.warning("top_talkers failed: %s", exc)
         return []
+
+
+def noise_flows(client, hours: int = 24) -> dict:
+    """How much recent traffic the host-only panels leave OUT, counted so it can be stated.
+
+    Every panel that ranks hosts now filters non-host addresses (weirvern/addressing.py).
+    A filter nobody can see is indistinguishable from data that was never there -- this
+    project's named failure mode -- so the count rides in the payload beside the list.
+    """
+    try:
+        rows = client.query(
+            "SELECT count(), sum(total_bytes) FROM weirvern.flows_aggregated "
+            "WHERE window_start >= now() - INTERVAL %(h)s HOUR AND "
+            + addressing.noise_sql("src_addr"),
+            parameters={"h": hours},
+        ).result_rows
+        n, b = (rows[0] if rows else (0, 0))
+        return {"available": True, "reason": "", "flows": int(n or 0), "bytes": int(b or 0)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("noise_flows failed: %s", exc)
+        return {"available": False,
+                "reason": f"noise count query failed: {type(exc).__name__}",
+                "flows": 0, "bytes": 0}
 
 
 def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0) -> list[dict]:

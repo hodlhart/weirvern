@@ -1008,7 +1008,7 @@ def test_the_sweeps_aggregate_reads_are_ORDERED():
     for table in ("flows_aggregated", "flows_aggregated_diversity", "flows_aggregated_temporal"):
         needle = f"FROM weirvern.{table} WHERE window_start >= %(since)s"
         i = src.index(needle)
-        assert "ORDER BY window_start, src_addr" in src[i:i + 160], (
+        assert "ORDER BY window_start, src_addr" in src[i:i + 520], (
             f"the read of {table} lost its ORDER BY: a duplicated key again resolves by arbitrary "
             "row order, and the same host-window can score differently between two runs")
 
