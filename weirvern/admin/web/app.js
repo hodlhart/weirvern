@@ -1785,6 +1785,27 @@ function wireInfoButtons() {
  * every live update replaces <tbody> content, never the table element itself. Idempotent,
  * because boot may run more than once (the harness re-boots by design).
  */
+/**
+ * LOCK THE TAB BAR TO THE TOP (the operator, 2026-10-16: "this bar should stay locked at the
+ * top"). The CSS makes #tabs sticky at --header-h; this measures the header's LIVE height into
+ * that variable, because it wraps to two or three rows at narrow widths and a stale offset
+ * would leave the strip floating mid-page or hidden behind the header. Measured, not guessed --
+ * and re-measured on resize and whenever the header itself changes size.
+ */
+function lockTabsToTop() {
+  const header = document.querySelector("header");
+  if (!header) return;
+  const set = () => {
+    document.documentElement.style.setProperty(
+      "--header-h", Math.round(header.getBoundingClientRect().height) + "px");
+  };
+  set();
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(set).observe(header);
+  }
+  window.addEventListener("resize", set);
+}
+
 function wrapTables() {
   for (const table of document.querySelectorAll("main table")) {
     const parent = table.parentElement;
@@ -2129,6 +2150,7 @@ async function boot() {
   // THE RESPONSIVE PASS, before anything renders: a table wider than the screen must scroll
   // inside its own box rather than widen the page (see wrapTables and style.css).
   wrapTables();
+  lockTabsToTop();
   // The "i" affordances: every view's explainer is one click from the header it explains.
   wireInfoButtons();
   try {

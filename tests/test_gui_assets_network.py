@@ -611,3 +611,16 @@ def test_every_renderBars_caller_declares_a_value_accessor():
             assert "value:" in wider, (
                 f"a renderBars call at line {i+1} has a formatter but no value accessor:\n{wider}"
             )
+
+
+def test_the_tab_bar_is_locked_to_the_top():
+    """The operator, 2026-10-16: "this bar should stay locked at the top". Sticky at the
+    header's MEASURED height (--header-h, set in app.js): the header wraps at narrow widths, and
+    a hard-coded offset would float the strip mid-page or hide it behind the header."""
+    css = (WEB / "style.css").read_text()
+    assert "#tabs { position: sticky;" in css, "the tab bar no longer sticks"
+    assert "top: var(--header-h" in css, (
+        "the sticky offset must follow the header's measured height, not a constant")
+    app = (WEB / "app.js").read_text()
+    assert "function lockTabsToTop()" in app and "lockTabsToTop();" in app, (
+        "nothing measures the header height into --header-h")

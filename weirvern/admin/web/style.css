@@ -616,6 +616,14 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 /* The nav strip scrolls instead of squashing its tabs. Eleven tabs stopped fitting around
  * 1100px -- true on a laptop half-screen before a phone ever opened the page -- and a squashed
  * strip is not a layout. */
+/* THE NAV STAYS AT THE TOP (the operator, 2026-10-16: "this bar should stay locked at the
+ * top"). The header above it already sticks; the nav follows it, offset by the header's OWN
+ * height -- measured into --header-h in app.js, because the header wraps to two or three rows
+ * at narrow widths and a hard-coded offset would leave the strip floating mid-page or hidden
+ * behind the header. z-index sits one below the header's 10 so the header keeps its edge over
+ * it; the opaque background is required, or page content scrolls visibly THROUGH the strip. */
+#tabs { position: sticky; top: var(--header-h, 64px); z-index: 9; background: var(--bg);
+  border-bottom: 1px solid var(--border); }
 nav { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 nav::-webkit-scrollbar { height: 6px; }
 nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

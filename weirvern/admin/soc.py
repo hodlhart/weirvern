@@ -104,7 +104,7 @@ def protocol_mix(client, hours: int = 24, limit: int = 12) -> dict:
     `proto` is stored as the numeric IP protocol; the label is applied here so every
     consumer shows the same names.
     """
-    names = {6: "TCP", 17: "UDP", 1: "ICMP", 47: "GRE", 50: "ESP", 51: "AH", 132: "SCTP"}
+    names = PROTO_DISPLAY
     try:
         rows = client.query(
             "SELECT proto, sum(bytes) AS bytes, count() AS flows "
@@ -674,10 +674,21 @@ def alert_audit(client, hours: int = 24, limit: int = 500) -> dict:
 # raw index -- a filter bar, facets, and the rows themselves. This is that, over `flows`.
 
 PROTO_NAMES: dict[int, str] = {
-    1: "icmp", 6: "tcp", 17: "udp", 47: "gre", 50: "esp", 51: "ah", 58: "icmp6",
-    89: "ospf", 132: "sctp",
+    1: "icmp", 2: "igmp", 6: "tcp", 17: "udp", 41: "ipv6", 47: "gre", 50: "esp", 51: "ah",
+    58: "icmp6", 89: "ospf", 132: "sctp",
 }
 PROTO_NUMBERS: dict[str, int] = {v: k for k, v in PROTO_NAMES.items()}
+
+# DISPLAY names for the reader-facing cards. PROTO_NAMES above is the FILTER vocabulary
+# (lowercase, and the reverse map is keyed on it), so the caps live separately -- with a test
+# pinning that every number here exists in PROTO_NAMES, so the two cannot drift into disagreeing
+# about what protocol 58 IS. 0 is labelled for what it means IN FLOW EXPORTS: measured on this
+# box, proto-0 rows were ICMPv6 neighbour-discovery traffic the exporter failed to number --
+# IANA calls 0 HOPOPT, and a flow exporter's blank is not that.
+PROTO_DISPLAY: dict[int, str] = {
+    0: "unlabelled (0)", 1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP", 41: "IPv6", 47: "GRE",
+    50: "ESP", 51: "AH", 58: "ICMPv6", 89: "OSPF", 132: "SCTP",
+}
 
 
 def proto_label(number: object) -> str:

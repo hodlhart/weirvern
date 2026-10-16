@@ -117,3 +117,33 @@ def test_the_aggregate_table_really_lacks_proto_and_dst_port():
     assert "proto" in raw and "dst_port" in raw, (
         "flows must carry proto and dst_port -- protocol_mix and top_ports read them from here."
     )
+
+
+def test_every_protocol_display_name_exists_in_the_filter_vocabulary():
+    """The mix card and the Discover filter must never disagree about what a number IS. The
+    display table is the only place caps are written; 0 is the exception because it is not a
+    protocol name at all -- it is what a flow exporter sends when it could not read one
+    (measured: proto-0 rows on this box were ICMPv6 neighbour discovery)."""
+    from weirvern.admin.soc import PROTO_DISPLAY, PROTO_NAMES
+
+    assert set(PROTO_DISPLAY) - {0} <= set(PROTO_NAMES), (
+        f"numbers labelled in the mix but unknown to the filter vocabulary: "
+        f"{sorted(set(PROTO_DISPLAY) - {0} - set(PROTO_NAMES))}")
+    assert PROTO_DISPLAY[58] == "ICMPv6", "58 is ICMPv6, never ICMP (that is 1)"
+    assert PROTO_DISPLAY[0] == "unlabelled (0)"
+
+
+def test_the_mix_labels_icmpv6_and_an_unlabelled_zero(monkeypatch):
+    from weirvern.admin import soc as soc_mod
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            class _R:
+                result_rows = [(58, 500, 2), (0, 48, 1), (6, 127000, 9)]
+            return _R()
+
+    mix = soc_mod.protocol_mix(_C(), hours=6)
+    labels = {p["proto"]: p["label"] for p in mix["points"]}
+    assert labels[58] == "ICMPv6"
+    assert labels[0] == "unlabelled (0)"
+    assert labels[6] == "TCP"
