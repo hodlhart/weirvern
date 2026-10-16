@@ -1744,6 +1744,16 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     if not rows:
         # Nothing new: return nothing so the alert pass does not re-push
         # detections that were already alerted in an earlier sweep.
+        #
+        # AND RECORD WHAT WAS COVERED (issue #34). This state -- verdicts produced, every one
+        # already recorded -- fell between the two older save sites: the sweep READ the
+        # aggregates, FOLDED and SCORED them, and accounted for every verdict; the
+        # examination happened, so `_new_cursor` is a truth about this sweep exactly as in the
+        # no-verdicts branch above. Without this save the cursor stays pinned at the last
+        # FRESH write, and every later sweep re-reads, re-folds, re-scores and re-skips the
+        # whole span from that pin -- work growing without bound on a quiet network, logged
+        # only as "Skipped N already-recorded host-windows".
+        _save_detect_cursor(settings, _new_cursor)
         return []
 
     client.insert("weirvern.netflow_anomalies", rows, column_names=list(_ANOMALY_COLUMNS))

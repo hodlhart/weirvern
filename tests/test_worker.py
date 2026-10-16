@@ -246,6 +246,44 @@ def test_sweep_skips_already_recorded_windows(monkeypatch):
     assert verdicts == [], "already-recorded window must not be re-returned for alerting"
 
 
+def test_an_ALL_SKIPPED_sweep_records_coverage_too(monkeypatch, tmp_path):
+    """Issue #34: verdicts produced but every one already recorded fell BETWEEN the two cursor
+    save sites -- the sweep read, folded, scored and deduped, then returned before the save.
+    The cursor stayed pinned at the last FRESH write, so every later sweep re-read and
+    re-scored the whole span from that pin (unbounded work on a quiet network), logging only
+    the skip. Coverage is a truth about the EXAMINATION, and the examination happened."""
+    from weirvern.worker import _load_detect_cursor
+
+    settings = Settings(model_dir=str(tmp_path))
+    detectors = [StubDetector(0.9), StubDetector(0.88)]
+
+    # Sweep 1: a fresh verdict is written and the cursor advances (existing behaviour).
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, inserted = _capturing_client()
+    assert len(detection_sweep(fake_ch, detectors, settings, ModelConfig())) == 1
+    assert inserted, "the fresh sweep must write"
+
+    # Pin the cursor backward, as the defect leaves it: stuck at the last fresh write.
+    stale = datetime.now() - timedelta(minutes=5)
+    _save_detect_cursor(settings, stale)
+
+    # Sweep 2: the same window re-verdicts, and EVERY verdict is already recorded.
+    _install_db_stubs(
+        monkeypatch,
+        existing_anomalies=[(datetime(2026, 9, 14, 10, 30), "198.51.100.10")],
+    )
+    fake_ch2, inserted2 = _capturing_client()
+    assert detection_sweep(fake_ch2, detectors, settings, ModelConfig()) == [], (
+        "an all-skipped sweep must still return [] so the alert pass does not re-push"
+    )
+    assert inserted2 == [], "nothing new was inserted, so nothing should have been"
+    moved = _load_detect_cursor(settings)
+    assert moved is not None and moved >= datetime.now() - timedelta(seconds=10), (
+        f"an all-skipped sweep did not record coverage (cursor={moved}); it stays pinned at "
+        "the last fresh write and every later sweep re-reads and re-scores from there"
+    )
+
+
 def test_min_agreement_setting_actually_gates_detections(monkeypatch):
     """MIN_AGREEMENT was documented, validated, and surfaced in `weirvern tune`,
     but NOTHING read it: ensemble.py hardcoded `0.33 if score < 0.6 else 0.25`.
