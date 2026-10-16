@@ -27,7 +27,9 @@ jobs:
       - name: Lint
         run: ruff check weirvern tests scripts
       - name: Installer interface logic (simulated machines)
-        run: sh scripts/verify_installer.sh
+        # bash, not sh: the script's shebang names bash (gate.sh calls it the same way), and
+        # dash rejects its `set -o pipefail` before the first assertion runs.
+        run: bash scripts/verify_installer.sh
       - name: Shell syntax (every script, its own shebang)
         run: |
           rc=0
