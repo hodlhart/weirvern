@@ -25,15 +25,12 @@ class _Client:
         self.sql: list[str] = []
         self.params: list[dict] = []
         self.registry = [("weirvern", ""), ("weirvern-eth2", "")]
-        self.heartbeat = [("Weirvern",)]
 
     def query(self, sql, parameters=None, **_kw):
         self.sql.append(sql)
         self.params.append(dict(parameters or {}))
         if "FROM weirvern.weirlings" in sql:
             return _Result(self.registry)
-        if "FROM weirvern.sensor_status" in sql:
-            return _Result(self.heartbeat)
         # Order matters: the HISTOGRAM query also selects count(), so it must be matched first
         # or the histogram gets the scalar count's shape and the row builder indexes past it.
         if "toStartOfInterval" in sql:
@@ -132,9 +129,10 @@ def test_chips_apply_to_the_facets_too_so_the_counts_follow_the_filter():
     assert "%(src)s" in proto_sql, "the facets ignored the chip filters"
 
 
-def test_a_loopback_sampler_borrows_the_hubs_registered_name():
-    """The operator: "its name, not its IP." The collector writes 127.0.0.1; the registry says
-    "weirvern" -- and the two agree case aside (the heartbeat says "Weirvern")."""
+def test_a_loopback_sampler_borrows_the_hubs_registered_name(monkeypatch):
+    """The operator: "its name, not its IP." The collector writes 127.0.0.1; the hub's own id
+    (SENSOR_ID, the same variable its heartbeat honours) says "weirvern"."""
+    monkeypatch.setenv("SENSOR_ID", "weirvern")
     c = _Client()
     d = soc.discover(c, hours=6)
     assert d["rows"][0]["weirling"] == "weirvern"
@@ -144,11 +142,23 @@ def test_a_loopback_sampler_borrows_the_hubs_registered_name():
         "the facet must show the name while still filtering on the address")
 
 
-def test_an_unregistered_sampler_keeps_its_raw_value():
+def test_the_local_name_never_comes_from_the_newest_heartbeat(monkeypatch):
+    """REGRESSION, measured 2026-10-16: the first cut read the freshest sensor_status row, and
+    on the live fleet that row belonged to a UNIT -- the local sampler showed "weirvern-dual".
+    Every unit beats into that table; the resolver must not consult it at all."""
+    monkeypatch.setenv("SENSOR_ID", "weirvern")
+    c = _Client()
+    soc.discover(c, hours=6)
+    assert not any("sensor_status" in s for s in c.sql), (
+        "the local weirling's name is being read from sensor_status -- whichever unit beat "
+        "last would rename the hub")
+
+
+def test_an_unregistered_sampler_keeps_its_raw_value(monkeypatch):
     """A guessed name is worse than an address: with nothing registered, show what we have."""
+    monkeypatch.setenv("SENSOR_ID", "weirvern")
     c = _Client()
     c.registry = []
-    c.heartbeat = []
     d = soc.discover(c, hours=6)
     assert d["rows"][0]["weirling"] == "127.0.0.1"
 

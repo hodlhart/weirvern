@@ -20,6 +20,7 @@ transfer is bounded by the requested bucket count rather than by traffic volume.
 from __future__ import annotations
 
 import logging
+import os
 
 from weirvern import addressing
 from weirvern.admin import timewindow
@@ -728,14 +729,20 @@ def weirling_labels(client) -> dict:
         ).result_rows
     except Exception:  # noqa: BLE001 -- a name lookup must never break the flow list
         rows = []
-    try:
-        status = client.query(
-            "SELECT sensor_id FROM weirvern.sensor_status ORDER BY ts DESC LIMIT 1",
-            parameters={},
-        ).result_rows
-        local_name = str(status[0][0]) if status else ""
-    except Exception:  # noqa: BLE001
-        local_name = ""
+    # THE LOCAL IDENTITY IS DERIVED, NOT READ FROM THE NEWEST HEARTBEAT. Every unit beats into
+    # the same sensor_status table, so "the freshest row" is whichever unit beat last --
+    # MEASURED 2026-10-16: the local sampler borrowed the name "weirvern-dual", a unit's. The
+    # hub's own id comes from the same expression its heartbeat uses: SENSOR_ID, else the
+    # shared _sensor_name helper (settings, then NODE_NAME, then hostname).
+    local_name = (os.environ.get("SENSOR_ID") or "").strip()
+    if not local_name:
+        try:
+            from weirvern.config import get_settings
+            from weirvern.worker import _sensor_name
+
+            local_name = _sensor_name(get_settings())
+        except Exception:  # noqa: BLE001
+            local_name = ""
     known = {str(r[0]): str(r[0]) for r in rows}
     if local_name:
         for sensor_id in known:
