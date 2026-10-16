@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — the GUI fits a pocket: the same console on a phone and on a desk
+
+The console assumed a wall display, and it read that way on a phone: eleven tabs in a fixed
+row, tables wider than the screen dragging the whole page sideways, and settings rows whose
+controls sat at the far edge of a label. Nothing about the desktop layout changed -- the
+breakpoints only describe what happens below it:
+
+- **The grid track cap.** `minmax(380px, 1fr)` overflowed every viewport narrower than the
+  track's own minimum -- a phone in portrait, a split window -- before any table was involved;
+  the minimum is now `min(380px, 100%)`.
+- **The nav strip scrolls.** Eleven tabs stopped fitting around 1100px, which was already true
+  on a laptop half-screen. Tabs keep their intrinsic width; the strip scrolls.
+- **Every table gets its own horizontal scroll box** (`wrapTables()` in app.js, boxes styled as
+  `.tablewrap`): a wide table must scroll ITSELF, not widen the page. The DOM harness checks
+  the wrapping, that boot calls it, and that a second call cannot nest the boxes.
+- **Phone breakpoints (720px / 420px):** 16px form controls (iOS Safari zooms the whole page
+  under that on focus and every tap after that lands slightly wrong), settings rows stacked
+  with full-width controls, a shorter force-map canvas, larger tap targets, and the active tab
+  kept in view when a row click changes views.
+- **The harness cannot see @media rules** -- jsdom ignores them in getComputedStyle, measured --
+  so the breakpoint behaviour was verified in a real browser at phone and desktop widths. The
+  harness holds the base rules and the JS half; `tests/test_gui_responsive.py` holds the source
+  contract, so deleting the responsive section fails a machine rather than a phone.
+
 ## Unreleased — the review round: every finding fixed with the test that proves it
 
 A four-area audit (siphon/sluice, SOC/GUI, ML, core) ran against this tree; every

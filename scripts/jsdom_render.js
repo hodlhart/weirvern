@@ -104,6 +104,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
+                   wrapTables,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
@@ -2583,7 +2584,43 @@ check("high capture loss is called out in the fleet",
   fetchOverride = null;
 }
 
-check("no JavaScript errors during any of the above", errors.length === 0,
+// ── responsive layout: the same console on a desk and in a pocket ────────────────────────
+  // WHAT CANNOT BE CHECKED HERE: jsdom has no layout engine, and its getComputedStyle ignores
+  // @media rules entirely (measured: a declaration under (max-width: 720px) computes as if the
+  // query did not exist). The BREAKPOINT behaviour is therefore verified in a real browser;
+  // what CI holds here is the other half -- the JS that runs at every width, and the base rules
+  // whose absence would silently re-break narrow screens.
+  const appjs = fs.readFileSync(path.join(WEB, "app.js"), "utf8");
+  check("boot() wraps every table in a scroll box before the first render",
+        /async function boot\(\)\s*\{[^}]*?wrapTables\(\);/.test(appjs),
+        "without this call, a wide table widens the page on a phone");
+  H.wrapTables();  // idempotent -- boot may already have run it; a second call must change nothing
+  const mainTables = Array.from(doc.querySelectorAll("main table"));
+  check("every table in main sits in its own scroll box",
+        mainTables.length >= 10 &&
+          mainTables.every((t) => t.parentElement && t.parentElement.classList.contains("tablewrap")),
+        `${mainTables.length} tables; unwrapped: ` +
+          mainTables.filter((t) => !(t.parentElement && t.parentElement.classList.contains("tablewrap")))
+                    .map((t) => t.id || t.tagName).slice(0, 3).join(", "));
+  const wrapBoxes = Array.from(doc.querySelectorAll(".tablewrap"));
+  check("wrapping twice cannot nest or duplicate scroll boxes",
+        wrapBoxes.every((b) => b.parentElement && !b.parentElement.classList.contains("tablewrap")) &&
+          doc.querySelectorAll("main table").length === mainTables.length,
+        "a second boot must not wrap the wrappers");
+  check("the nav strip scrolls horizontally rather than overflowing the page",
+        window.getComputedStyle(doc.getElementById("tabs")).overflowX === "auto",
+        "eleven tabs never fit a phone, and a squashed strip is not a layout");
+  check("tabs keep their intrinsic width inside the scrolling strip",
+        window.getComputedStyle(doc.querySelector(".tab")).flexShrink === "0",
+        "flex-shrink squashes eleven labels into a smear instead of letting the strip scroll");
+  check("the stylesheet carries the responsive section (both breakpoints, the grid cap, the scroll box)",
+        /@media\s*\(max-width:\s*720px\)/.test(css) &&
+          /@media\s*\(max-width:\s*420px\)/.test(css) &&
+          /minmax\(min\(380px, 100%\), 1fr\)/.test(css) &&
+          /\.tablewrap\s*\{[^}]*overflow-x:\s*auto/.test(css),
+        "the media rules themselves are browser-verified; their absence must still fail a machine");
+
+  check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));
 
 

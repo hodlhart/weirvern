@@ -1535,12 +1535,39 @@ function clearError() {
   }
 }
 
+/**
+ * Give every table in <main> its own horizontal scroll box (the responsive section in
+ * style.css explains why). The table elements are static markup, so once at boot is enough:
+ * every live update replaces <tbody> content, never the table element itself. Idempotent,
+ * because boot may run more than once (the harness re-boots by design).
+ */
+function wrapTables() {
+  for (const table of document.querySelectorAll("main table")) {
+    const parent = table.parentElement;
+    if (!parent || parent.classList.contains("tablewrap")) continue;
+    const box = document.createElement("div");
+    box.className = "tablewrap";
+    parent.insertBefore(box, table);
+    box.appendChild(table);
+  }
+}
+
 function showView(name) {
   for (const t of document.querySelectorAll(".tab")) {
     t.classList.toggle("active", t.dataset.view === name);
   }
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === "view-" + name);
+  }
+  // On a narrow screen the tab strip is a scrolling strip, and a view change that came from
+  // clicking a row (Evidence, a drill-down) can leave the active tab scrolled out of view.
+  // Desktop is untouched: the strip only scrolls below the 720px breakpoint.
+  const activeTab = document.querySelector(".tab.active");
+  if (activeTab && typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 720px)").matches &&
+      typeof activeTab.scrollIntoView === "function") {
+    try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+    catch (_e) { /* older browsers: the tab stays wherever it is */ }
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") loadModels().then(clearError).catch(showError);
@@ -1855,6 +1882,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
 /** Sign in / gate resolution at page load. Renders the right gate or boots the dashboard. */
 async function boot() {
+  // THE RESPONSIVE PASS, before anything renders: a table wider than the screen must scroll
+  // inside its own box rather than widen the page (see wrapTables and style.css).
+  wrapTables();
   try {
     await loadSession();
   } catch (_e) {
