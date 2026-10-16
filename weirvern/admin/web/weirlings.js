@@ -45,9 +45,13 @@ function wlAge(seconds) {
 // a long table reads the colour first -- but the WORD is always present, so the meaning survives
 // colourblindness and a screenshot pasted into a ticket.
 function wlStateChip(state) {
+  // STALE IS AMBER, NOT RED (the operator, 2026-10-16: "Fleet needs to be color coded by stale,
+  // alive, unregistered etc"). A stale sensor reported and went quiet -- that deserves the eye,
+  // but it is not the same fact as never-seen, which is a registration whose expectation FAILED.
+  // Red is kept for exactly that, so the two do not blur into "something is wrong".
   const cls = (state === "alive") ? "ok"
     : (state === "disabled") ? "muted"
-    : (state === "unregistered") ? "warn"
+    : (state === "unregistered" || state === "stale") ? "warn"
     : "bad";
   const label = {
     alive: "alive",
@@ -153,7 +157,10 @@ function renderWeirlings(rows, revoked, revokedReason) {
   }
 
   for (const r of rows) {
-    const tr = el("tr", { class: r.is_problem ? "row-problem" : "" });
+    // The state on the ROW, not only in the chip: a scanning eye reads the row's edge before it
+    // reads any word (see the .wl-state-* rules in style.css).
+    const tr = el("tr", { class: `wl-state-${r.state || "unknown"}` +
+                                 (r.is_problem ? " row-problem" : "") });
 
     // The sensor id is the drill-down affordance AND stays a plain text label -- a button inside
     // a table cell is the accessible form of "the row is clickable".
