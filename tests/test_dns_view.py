@@ -72,6 +72,9 @@ def test_the_reverse_read_path_is_windowed_by_last_seen():
     sql = c.sql[-1]
     assert "ip = %(ip)s" in sql and "last_seen >= %(since)s" in sql, (
         "an address reassigned by DHCP must not keep naming a domain nobody uses")
+    assert "AS last_seen" not in sql, (
+        "REGRESSION: the aggregate alias collided with the WHERE column and ClickHouse refused "
+        "the whole query (ILLEGAL_AGGREGATION) -- the endpoint 500'd while the SQL read fine")
     assert c.params[-1]["ip"] == "198.51.100.10"
     assert d["domains"][0]["domain"] == "ads.example.com"
 

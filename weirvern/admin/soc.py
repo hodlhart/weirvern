@@ -1030,9 +1030,14 @@ def dns_reverse_for(client, ip: str, *, hours: int = 24, limit: int = 20) -> dic
     """
     try:
         rows = client.query(
-            "SELECT domain, max(last_seen) AS last_seen FROM weirvern.dns_reverse_map "
+            # THE ALIAS IS NOT `last_seen`. Measured live: naming the aggregate `last_seen`
+            # makes the WHERE's lower-bound reference resolve to the AGGREGATE and ClickHouse
+            # refuses the whole query (ILLEGAL_AGGREGATION) -- the endpoint 500s while the SQL
+            # "looks" right in review. (No template tokens in this comment: the source-level
+            # window test counts them, and a comment is not a query.)
+            "SELECT domain, max(last_seen) AS seen FROM weirvern.dns_reverse_map "
             "WHERE ip = %(ip)s AND last_seen >= %(since)s AND last_seen <= %(until)s "
-            "GROUP BY domain ORDER BY last_seen DESC LIMIT %(n)s",
+            "GROUP BY domain ORDER BY seen DESC LIMIT %(n)s",
             parameters={"ip": str(ip), "n": int(limit), **timewindow.w(hours)},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
