@@ -21,7 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9",
-    "pytest-cov>=5.0,<7",
+    "pytest-cov>=5.0,<8",
     # PINNED EXACTLY, not a range. `ruff>=0.6,<1` let CI resolve a newer ruff than the one used
     # locally, and the two disagreed: F601 (duplicate dictionary key) fires in ruff 0.16 but the
     # rule was not reported by the version a developer here was running. The result was a green
