@@ -511,6 +511,37 @@ def test_the_sweep_does_nothing_below_two_segments(tmp_path):
     assert (tmp_path / "ch-only.pcap").exists()
 
 
+def test_the_tick_sweeps_a_completed_segment_even_though_its_clock_is_monotonic(
+        monkeypatch, tmp_path):
+    """MEASURED regression: the tick's clock is monotonic while file mtimes are wall clock;
+    passing the tick's clock into the sweep made `monotonic - epoch` a huge negative, every
+    segment read as 'too young', and two completed segments sat unconsumed. The tick must let
+    the sweep use wall time for its mtime comparison."""
+    worker_mod = _reset_probe()
+    monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
+    old = tmp_path / "ch-20260101-000000.pcap000"
+    new = tmp_path / "ch-20260101-000030.pcap000"
+    for f in (old, new):
+        f.write_bytes(b"seg")
+        os.utime(f, (time.time() - 100.0,) * 2)
+    run_calls = []
+
+    def run(argv, timeout=None, capture_output=False, **kwargs):
+        run_calls.append(list(argv))
+        return _Result(0)
+
+    # Tick 1 starts the tap; tick 2 (tap alive) sweeps -- and must do so with wall time.
+    worker_mod._channel_netflow_maybe(
+        _nf_settings("upstream"), channel_state=_NFChannel(True),
+        spawn=_recorder([], [_FakeProc()]), which=lambda n: "x", now=time.monotonic)
+    worker_mod._channel_netflow_maybe(
+        _nf_settings("upstream"), channel_state=_NFChannel(True),
+        spawn=_recorder([]), which=lambda n: "x", now=time.monotonic, run=run)
+    assert run_calls and run_calls[0][run_calls[0].index("-r") + 1] == str(old), (
+        "the tick's monotonic clock leaked into the sweep's wall-clock age check"
+    )
+
+
 def test_the_probe_backs_off_after_a_death_or_a_missing_binary(monkeypatch, tmp_path):
     """A crash loop that writes a log line and doomed children every tick is worse than a probe
     that is visibly not running: one warning, then a five-minute cooldown, then a retry."""

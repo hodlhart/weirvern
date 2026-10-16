@@ -362,8 +362,12 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
         return
     if running:
         # Every tick, fold the completed segments into records -- the batch path is the one
-        # this kernel supports (see the block comment above).
-        _channel_netflow_sweep(run=run, probe=(which or _shutil.which)("softflowd"), now=clock)
+        # this kernel supports (see the block comment above). NOTE: the sweep gets NO `now`
+        # from here. Its age check compares against file MTIME, which is WALL clock; this
+        # function's clock is monotonic, and `monotonic - epoch` is a huge negative number --
+        # every segment then reads as "too young" and is silently skipped. Measured on the box:
+        # two completed segments sat unconsumed while the sweep ran on schedule.
+        _channel_netflow_sweep(run=run, probe=(which or _shutil.which)("softflowd"))
         return
     if clock() < float(holder["retry_after"]):
         return
