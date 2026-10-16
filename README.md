@@ -14,52 +14,91 @@ via [Pushover](https://pushover.net), or log-only.
 
 ## What it does
 
-**Watches without touching the network — `loch`.** A Zeek sensor on a dedicated capture port (a
-switch mirror), feeding per-host baselines. Nothing is in the path, nothing can drop a packet, and
-no payload is ever inspected. This is the default and it is enough for everything except stopping
-traffic.
+Weirvern reads traffic and turns it into per-host behaviour, alerts with evidence, and — where you
+allow it — kernel-level blocks. There are three ways to put it on a network, and choosing between
+them is a question about your topology rather than about the software: a copy of the traffic is
+safe and can stop nothing, standing in line is what makes blocking possible, and how you get in
+line decides which NICs you need. The table after the three placements says it in one screen, for
+the person holding the cables.
 
-**Steps into the path when you choose to — `siphon`.** Opt-in interception with a watchdog and a
-measured recovery story, for the times you want the box between two segments (a lab, a choke
-point). It is a deliberate, reversible act rather than a mode the deployment drifts into.
+**`channel` — be the wire.** The box is plugged *in line*: one NIC faces upstream toward the
+network, one faces downstream toward the device or segment being protected, and the two are joined
+into a bridge. Traffic now passes **through** the box, and by default everything is forwarded
+exactly as before — nothing is redirected, no address is forged, and the sensor keeps observing
+(`SENSOR_MODE` stays `loch`). What the placement buys is a point where the **Sluice Gate** can drop
+a packet: the kernel enforces the rules and forwards everything else. Put it anywhere you are
+willing to have a box in the middle — between a segment and its uplink, between two switches, in
+front of a lab — as long as you can re-route the cable run through it. It also does not need
+anything exotic from the hardware: two ordinary NICs and the kernel's own bridge.
 
-**Stays in the path and keeps enforcing — `channel`.** A bridge that forwards everything it does
-not have a rule about — so it stays `loch` for visibility while the Sluice Gate drops exactly what
-the rules name. The path it holds is read from the kernel, never inferred from configuration.
+**`siphon` — redirect, without rewiring.** When you cannot (or will not) move cables, the sensor
+can put itself in the path at layer 2: it answers ARP for the addresses it is told to intercept, so
+the hosts (and the gateway) send their traffic to it, and it relays each packet onward in the
+kernel. That is the same mechanism a man-in-the-middle uses, employed deliberately and briefly —
+hence the gates: it is opt-in, it needs `NET_ADMIN` (which a passive sensor deliberately does not
+have), a preflight refuses to start if the box cannot actually relay, and a **fail-open watchdog**
+restores every forged mapping on stop, crash, or a stalled forward, with a hard self-destruct
+deadline as the last resort. Nothing is decrypted: TLS sessions still authenticate end to end, and
+this is a redirect, not an interception of content. Place it on a single flat segment you want to
+watch in-line for a bounded time — a lab, a VLAN under investigation — with the sensor on that
+broadcast domain.
 
-**Stops the traffic you decide to stop — the Sluice Gate.** Kernel-level blocks by address, port
-and direction, bounded in time: a duration of `0` means *until revoked*, anything else is minutes,
-and every rule is visible as live, lapsed or revoked because those are three different facts. The
-operator's own auto-block threshold turns "this scored high" into "stop it" without anyone watching,
-and a derived block always writes its reason — the one asked weeks later. Every alert row also
-sends straight to the gate, with "all traffic from this host" or one service, pre-filled reason
-included. One rule store, many gates: **any sensor that can enforce, does** — the hub and every
-weirling with an in-line path install the same rules on their own segment, with the same verified
-path checks, and a gate that has stopped reporting is shown as stopped.
+**`loch` — watch a copy.** The default, and the one that cannot hurt anything: Zeek listens on a
+promiscuous NIC fed by a switch SPAN/mirror port or a passive TAP. It only ever receives. Nothing
+is in the path, nothing can drop or delay a frame, no payload is inspected — and that is also why
+the Sluice Gate cannot enforce here: a rule compiled on this box would match traffic that never
+crosses it. The gate says `degraded` and blocks nothing rather than pretending, which is the honest
+behaviour for a mirror port.
 
-**Sees what the models see — the console.** Overview (health, workloads, freshest anomalies, top
-talkers) · Assets (a real inventory: names, vendors, OS families, per-host anomalies) · Network (a
+**The hub** — the database, detection and the console — sits wherever you run Kubernetes, and its
+management NIC is never a capture port. It needs no capture NIC of its own; it needs the sensors
+and exporters to reach it.
+
+### Placement, NICs, and what can enforce
+
+| Placed as | NICs to dedicate | In the path? | Sluice Gate enforces? | Where the flow records come from |
+|---|---|---|---|---|
+| `loch` — mirror / SPAN / TAP | 1 capture NIC, promiscuous, `NET_RAW`. Never the management NIC. | No | **No.** Reports `degraded`; nothing it drops would have crossed it. | An **exporter** must send NetFlow/sFlow/IPFIX to the hub (router, switch, hypervisor vSwitch). See below. |
+| `siphon` — ARP redirect | 1 NIC on the segment, promiscuous, plus `NET_ADMIN` | Yes, **while a supervised intercept is live** | **Yes, while it is live** — recorded as `enforcement: siphon`. When the intercept ends, the gate says so instead of holding. | Same as `loch`: an exporter, unless one is fed from the intercept. |
+| `channel` — in-line bridge | **2 NICs** (upstream + downstream) joined into one bridge, plus `NET_ADMIN` | Yes, continuously — it *is* the wire | **Yes** — the intended enforcement placement, recorded as `enforcement: channel` once verified from the kernel (both ports on one bridge, forwarding, carrier up, bridge-nf in effect, and the node's FORWARD path admitting the bridge). | **Weirvern extracts its own**: `CHANNEL_NETFLOW` samples one port of the bridge and summarises it into IPFIX locally. No external exporter needed for the traffic it carries. |
+| hub only | none (its management NIC is never a sensor) | No | No | From the exporters and sensors above. |
+
+A box can play more than one of these roles, and the placement is a **setting**, not an install:
+the same image runs the hub, and a sensor can move from `loch` to `channel` without being rebuilt.
+A channel is still a `loch` sensor in the sense that matters — it observes, and it only stops what
+a rule names.
+
+**Flow records: who exports them.** The volume features and the per-host baselines are built from
+flow records, so a deployment needs a flow source. Either an exporter already on the network sends
+NetFlow/sFlow/IPFIX to the hub, **or** — when the box stands in line as a `channel` — Weirvern taps
+its own bridge and summarises the crossing traffic into IPFIX itself (`CHANNEL_NETFLOW`), so an
+in-line deployment needs no exporter for what it carries. Zeek's behavioural features work in every
+placement; only the flow model depends on one of those two, and the console states which is missing
+rather than drawing an empty chart that reads as a quiet network.
+
+**The console — what you look at.** Overview (health, workloads, freshest anomalies, top talkers) ·
+Assets (a real inventory: names, vendors, OS families, per-host anomalies) · Network (a
 deterministic force map of who talks to whom) · Anomalies with a **raw-evidence pivot** per alert
 (flows, Zeek sessions, TLS records with their JA4 fingerprints, DNS, notices) · Models, including
-**force a retrain** — it trains a candidate on the last window, tells you what it found (and
-whether the window already held detections, which a retrain would learn as normal), and waits for
-you to keep or trash it · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes ·
-Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this
-stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed) ·
-Sluice (gates, rules, and the fleet's own gate states) · Settings (every knob with bounds, help
-and the restart it costs).
+**force a retrain** — it trains a candidate on the last window, reports what it found (and whether
+the window already held detections, which a retrain would learn as normal) and waits for you to keep
+or trash it · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes · Identity (passive OS
+identification, and a lookup by TLS fingerprint for "who else presents this stack") · Weirlings
+(the fleet: registered-but-silent is a different fact from never installed) · Sluice (rules, and
+every gate that is enforcing, including the ones on other sensors) · Settings (every knob with
+bounds, help, and the restart it costs).
 
-**Knows what the models think — detection.** Four independently trained detectors — Isolation
-Forest, Gradient Boosting, DBSCAN, and a per-host Adaptive Baseline — fused into one score with a
-corroboration gate for severity, over features from NetFlow *and* twelve Zeek logs including JA4
-TLS fingerprints. ATT&CK techniques are presented as hypotheses with their measurements, never as
-bare conclusions. Quality is *measured*: a seeded-attack harness runs the real pipeline in CI and
-asserts the final verdicts.
+**Detection — what the models conclude.** Four independently trained detectors — Isolation Forest,
+Gradient Boosting, DBSCAN and a per-host Adaptive Baseline — fused into one score with a
+corroboration gate for severity, over features from NetFlow *and* twelve Zeek logs including JA4 TLS
+fingerprints. ATT&CK techniques are presented as hypotheses with their measurements, never as bare
+conclusions. Quality is *measured*: a seeded-attack harness runs the real pipeline in CI and asserts
+the final verdicts.
 
-**Identifies hosts passively.** Operating-system family from application banners, DHCP leases, NIC
-vendors and TLS ClientHello fingerprints — nothing is probed and nothing is sent. Confidence counts
-how many independent sources agree, and contradicting sources are flagged rather than smoothed
-over.
+**Identity — what the hosts are.** Operating-system family from application banners, DHCP leases,
+NIC vendors and TLS ClientHello fingerprints, derived passively: nothing is probed and nothing is
+sent. Confidence counts how many independent sources agree, and contradicting sources are flagged
+rather than smoothed over.
 
 ## Screenshots
 

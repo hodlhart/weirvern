@@ -52,7 +52,11 @@ SKIP_FILES = {"CHANGELOG.md", "test_references.py"}
 # Extensions that mean "this is a file path worth resolving".
 PATH_RE = re.compile(
     # Directory-prefixed paths: k8s/foo.yaml, weirvern/worker.py
-    r"(?<![\w/.-])(?:k8s|weirvern|tests|docs|\.github)/[\w./-]+\.(?:ya?ml|py|md|sql|toml|sh|json)"
+    # `(?:\.template)?` because the tree has REAL files like
+    # k8s/units/weirling-unit.yaml.template: without it the pattern stopped at `.yaml`, so a
+    # reference to the template was checked against a name that does not exist -- a false
+    # positive that would train a reader to ignore this guard.
+    r"(?<![\w/.-])(?:k8s|weirvern|tests|docs|\.github)/[\w./-]+\.(?:ya?ml|py|md|sql|toml|sh|json)(?:\.template)?"
     r"|"
     # Bare root-level names, but ONLY with an extension or a known extensionless
     # filename. Matching the bare word "README" flagged prose like "see the README"

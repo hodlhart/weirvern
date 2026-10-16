@@ -213,6 +213,26 @@ def test_the_payload_offers_keep_only_when_something_trained():
     assert bad["available"] is False and "47" in bad["reason"]
 
 
+def test_the_operators_requests_are_processed_on_EVERY_cycle():
+    """MEASURED ON THE DEPLOYMENT, minutes after this shipped: the call was inside the branch that
+    runs only once the detectors have trained, so on a box with no training data a forced retrain
+    sat at `requested` forever. That is the precise state the feature exists to prevent -- a
+    request that never moves reads as a worker that is busy. It is a CYCLE-LEVEL call now, and this
+    pins the indentation so a later edit cannot quietly nest it again."""
+    lines = (ROOT / "weirvern/worker.py").read_text().split("\n")
+    call = next(i for i, ln in enumerate(lines) if ln.strip().startswith("process_model_actions("))
+    sweep = next(i for i, ln in enumerate(lines) if ln.strip().startswith("verdicts = detection_sweep("))
+    call_indent = len(lines[call]) - len(lines[call].lstrip())
+    sweep_indent = len(lines[sweep]) - len(lines[sweep].lstrip())
+    assert call_indent == sweep_indent, (
+        f"process_model_actions is nested deeper ({call_indent}) than the cycle body "
+        f"({sweep_indent}): a request filed before the models have trained would never be picked up"
+    )
+    # And it must come BEFORE the sweep, so a retrain filed while the hub is busy is acted on in
+    # the cycle the operator is watching rather than the one after it.
+    assert call < sweep
+
+
 def test_the_gui_pod_does_not_need_the_model_directory():
     """The request/decision channel is ClickHouse, so the panel must read everything it shows from
     the ROW. A payload that listed files from disk would render an empty candidate on a GUI pod

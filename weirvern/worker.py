@@ -1843,9 +1843,17 @@ def main() -> None:
                                 "(this clears automatically once flows arrive)")
             else:
                 last_full_train = train_if_due(client, detectors, settings, cfg, last_full_train)
-                # The operator's own requests, carried out on this cycle: a forced retrain
-                # (candidate only), and the keep-or-trash decision on a finished candidate.
-                process_model_actions(client, detectors, settings, cfg)
+
+            # ── THE OPERATOR'S OWN REQUESTS, ON EVERY CYCLE ───────────────────────────────────────
+            #
+            # HERE, not inside the branch above. It was written inside it first and the deployment
+            # proved the mistake within minutes: that branch runs only once the detectors have
+            # trained, and a box with no training data never reaches it -- so a forced retrain sat
+            # at `requested` forever, which is exactly the state this feature exists to make
+            # impossible ("a row that sits there looks like a worker that is busy"). A forced
+            # retrain on a box with no data is a legitimate request whose ANSWER is "nothing
+            # trained", and it must get that answer.
+            process_model_actions(client, detectors, settings, cfg)
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
             for v in verdicts:
