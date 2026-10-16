@@ -256,6 +256,34 @@ def test_an_action_orphaned_by_a_restart_is_not_left_running():
     assert "restarted" in finished[0][2].get("note", ""), finished
 
 
+def test_a_restart_cannot_leave_a_running_row_behind_a_RACE():
+    """A one-shot reap at startup RACES the previous pod's last write -- measured on the deployment:
+    a retrain filed from the console seconds before a rollout sat in `running` forever, because the
+    old pod had not committed its row when the new pod looked. The race-free line is the process
+    start time: anything stamped `running` before THIS process began cannot be live, whenever the
+    query runs."""
+    from weirvern.models import actions
+
+    seen: dict = {}
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            seen["sql"], seen["params"] = sql, parameters
+
+            class R:
+                result_rows = []
+
+            return R()
+
+    actions.reap_running(_C())
+    assert "ts <" not in seen["sql"], "the startup form must reap every running row"
+    actions.reap_running(_C(), before="2026-10-16 10:00:00")
+    assert "ts < %(before)s" in seen["sql"], (
+        "the cycle form must only reap rows older than this process: reaping newer ones would kill "
+        "the retrain that is legitimately running right now")
+    assert seen["params"]["before"] == "2026-10-16 10:00:00"
+
+
 def test_the_gui_pod_does_not_need_the_model_directory():
     """The request/decision channel is ClickHouse, so the panel must read everything it shows from
     the ROW. A payload that listed files from disk would render an empty candidate on a GUI pod

@@ -110,7 +110,7 @@ def finish(client: Client, action_id: str, state: str, *, report: dict | None = 
     return True
 
 
-def reap_running(client: Client, *, note: str = "") -> int:
+def reap_running(client: Client, *, note: str = "", before=None) -> int:
     """Mark every `running` action as FAILED -- on STARTUP, by the only process that runs them.
 
     WHY THIS IS SAFE AND NECESSARY. Exactly one process executes these actions (the worker), so a
@@ -124,10 +124,18 @@ def reap_running(client: Client, *, note: str = "") -> int:
     legitimately running action.
     """
     reaped = 0
+    # `before` -- MEASURED ON THE DEPLOYMENT (2026-10-16): a retrain filed from the console seconds
+    # before a rollout survived the startup reap and sat in `running` forever, because the old pod's
+    # write had not been committed when the new pod ran its one-shot query. A one-shot reap RACES
+    # ITS OWN PREDECESSOR. The process start time is the race-free line: exactly one process runs
+    # these actions, so any `running` row stamped before THIS process began cannot be live -- no
+    # matter when the query happens to run. The startup call passes nothing (everything running is
+    # orphaned then); the cycle passes the worker's start time, so a race can only delay the verdict.
+    where = "state = %(s)s" if before is None else "state = %(s)s AND ts < %(before)s"
     for state in (RUNNING,):
         rows = client.query(
-            f"SELECT action_id FROM {ACTIONS_TABLE} FINAL WHERE state = %(s)s LIMIT 50",
-            parameters={"s": state},
+            f"SELECT action_id FROM {ACTIONS_TABLE} FINAL WHERE {where} LIMIT 50",
+            parameters={"s": state, "before": before} if before is not None else {"s": state},
         ).result_rows
         for (action_id,) in rows:
             finish(client, str(action_id), FAILED,

@@ -223,6 +223,10 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
 # selection and a verified-active channel agree, stopped the moment either changes (pending
 # segments are removed with it -- "off" must mean nothing is being collected), retried on a
 # five-minute cooldown after a crash.
+# When THIS process began. The line for the orphan sweep: an action row stamped before it cannot be
+# running now, because exactly one process executes model actions (see actions.reap_running).
+_PROCESS_STARTED = datetime.now()
+
 CHANNEL_NETFLOW_COLLECTOR = "127.0.0.1:2055"  # goflow2, hostNetwork on this node
 # Timeouts chosen for a monitoring pipeline that re-evaluates five-minute buckets: idle flows
 # export within a minute or two and long flows at least every ten, rather than the half-hour-to-
@@ -1942,6 +1946,16 @@ def main() -> None:
             # retrain on a box with no data is a legitimate request whose ANSWER is "nothing
             # trained", and it must get that answer.
             process_model_actions(client, detectors, settings, cfg)
+            # ... and the race-free sweep for anything a RESTART left behind: a one-shot reap at
+            # startup missed a request filed seconds before the rollout (measured), because the
+            # previous pod's write had not landed yet. Anything stamped `running` before THIS
+            # process started cannot be running -- this is the only executor.
+            try:
+                from weirvern.models import actions as _act  # noqa: PLC0415
+
+                _act.reap_running(client, before=_PROCESS_STARTED)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("orphan sweep failed (harmless, retried next cycle): %s", exc)
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
             for v in verdicts:
