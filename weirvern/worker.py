@@ -279,7 +279,10 @@ def _channel_netflow_sweep(*, run=None, probe=None, now=None, directory=None) ->
     clock = now or _time.time
     root = directory or CHANNEL_NETFLOW_DIR
     try:
-        names = sorted(n for n in _os.listdir(root) if n.endswith(".pcap"))
+        # `.pcap` IN the name, not a suffix match: tcpdump's -W rotation numbers the files it
+        # writes ("ch-20261015-200648.pcap000"), so a `.endswith(".pcap")` filter matched nothing
+        # and the sweep silently found no work -- measured on the first v3 deploy.
+        names = sorted(n for n in _os.listdir(root) if ".pcap" in n)
     except OSError:
         return
     if len(names) < 2:

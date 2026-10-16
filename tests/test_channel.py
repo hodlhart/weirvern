@@ -451,8 +451,10 @@ def test_the_sweep_summarises_only_completed_segments_and_deletes_them(tmp_path)
     perfectly (measured 30/30) while a live stream blocks it forever. The newest segment is
     still being written; a summarised one is deleted; the one-shot argv is the proven shape."""
     worker_mod = _reset_probe()
-    old = tmp_path / "ch-20260101-000000.pcap"
-    new = tmp_path / "ch-20260101-000030.pcap"
+    # THE REAL NAME SHAPE, suffix included: tcpdump's -W rotation writes ...pcap000, and the
+    # first sweep matched only *.pcap, found nothing and said nothing (measured on the box).
+    old = tmp_path / "ch-20260101-000000.pcap000"
+    new = tmp_path / "ch-20260101-000030.pcap000"
     old.write_bytes(b"seg")
     new.write_bytes(b"seg")
     past = time.time() - 100.0
