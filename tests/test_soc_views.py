@@ -135,7 +135,9 @@ def test_soc_js_only_calls_helpers_that_exist():
           * strings: ' " ` -- contents blanked, because "3 decision(s) recorded" is not a
             call to `decision`;
           * template interpolations (`${fmt(x)}`) ARE code and are kept, so real calls
-            inside them are still checked;
+            inside them are still checked; they are emitted with a space on each side so
+            two adjacent interpolations cannot fuse into a token neither of them wrote
+            (`${name} — ${fmtTotal(x)}` once produced a call to `namefmtTotal`);
           * regex literals: emitted intact rather than parsed. They contain `(` and quotes
             and would otherwise derail the walk; a regex can never CALL a helper, so
             leaving its text in place cannot create a false positive for this test. The
@@ -192,7 +194,14 @@ def test_soc_js_only_calls_helpers_that_exist():
                             elif src[j] == "}":
                                 depth -= 1
                             j += 1
+                        # A SPACE ON EACH SIDE, OR ADJACENT INTERPOLATIONS FUSE. The template's
+                        # literal text is dropped here, so `${name} — ${fmtTotal(total)}` used to
+                        # emit `namefmtTotal(total)` as ONE token, and the test reported a missing
+                        # helper called `namefmtTotal` -- a false positive about a line that is
+                        # fine, which is how a guard gets switched off instead of fixed.
+                        out.append(" ")
                         out.append(strip_noise(src[i + 2:j - 1]))
+                        out.append(" ")
                         i = j
                         continue
                     if src[i] == quote:
