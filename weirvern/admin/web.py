@@ -1408,8 +1408,7 @@ def _build_handler(ctx: GuiContext):
             try:
                 with self._with_client() as client:
                     if action == "remove":
-                        blocklists.remove_custom_domain(client, domain)
-                        name = domain.lower().rstrip(".")
+                        name = blocklists.remove_custom_domain(client, domain)
                     else:
                         name = blocklists.add_custom_domain(client, domain)
             except SluiceError as exc:

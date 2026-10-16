@@ -289,13 +289,22 @@ def add_custom_domain(client, domain: str, *, now: datetime | None = None) -> st
     return name
 
 
-def remove_custom_domain(client, domain: str) -> None:
-    name = str(domain or "").strip().lower().rstrip(".")
-    if not name:
-        return
+def remove_custom_domain(client, domain: str) -> str:
+    """One operator-entered name goes away. Validated by the SAME rules as a domain rule.
+
+    THE VALIDATOR IS ALSO THE GUARD (issue #11, 2026-10-16). This used to lowercase the input
+    and CONCATENATE it into `ALTER ... DELETE WHERE domain = '<name>'`: a name carrying a quote
+    widened the predicate and a value that could not be ADDED could still be removed, because
+    only one of the two paths checked -- and one path checking is neither path checking. Both
+    now come through `validate_domain`, and the name rides as a BOUND parameter, so a widened
+    predicate is not expressible at all. Returns the normalized name, exactly as `add` does,
+    so the route can report the name that was actually used.
+    """
+    name = validate_domain(domain)
     client.command(
-        "ALTER TABLE weirvern.blocklist_domains DELETE WHERE source_id = 'custom' AND domain = "
-        + "'" + name + "'"
+        "ALTER TABLE weirvern.blocklist_domains DELETE WHERE source_id = 'custom' AND domain = %(name)s",
+        parameters={"name": name},
     )
     _DOMAINS_CACHE["by_domain"] = {}
     logger.info("blocklists: custom domain removed: %s", name)
+    return name
