@@ -1574,12 +1574,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("m-near-note").textContent.includes("Raising the threshold"),
         doc.getElementById("m-near-note").textContent.slice(0, 120));
 
-  // ── the score distribution scales stacks, and the chart clips (issue #6) ───────────────────
+  // ── the score distribution scales stacks, and the chart clips (issues #6, #35) ─────────────
   // ONE BAND, SEVERAL DETECTORS, EACH NEAR WHAT THE OLD GLOBAL MAX WOULD HAVE BEEN: in the old
   // code every segment drew against that max, the band stacked to three times the plot height
   // and painted over the card above. Geometry is read from the rect ATTRIBUTES the renderer
   // writes -- jsdom does no layout, so the attributes are the measurable truth here. PLOT_TOP
-  // mirrors PAD.t in renderScoreDistribution.
+  // mirrors PAD.t in renderScoreDistribution. The SAME fixture doubles as #35's discriminator
+  // (band stacks 10 vs 1), which is why the band-touching check below can tell the two scales
+  // apart at all.
   H.renderScoreDistribution({
     "Isolation Forest": [0.95, 0.95, 0.95, 0.95],
     "Gradient Boosting": [0.95, 0.95, 0.95, 0.95],
@@ -1597,6 +1599,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the tallest stack touches the plot top, never above it",
         distTops.length > 0 && Math.abs(Math.min(...distTops) - PLOT_TOP) < 0.001,
         `closest top=${distTops.length ? Math.min(...distTops) : "n/a"}`);
+  // THE #35 DISCRIMINATOR: band 9 stacks to 10 while band 2 holds a SINGLE score. Under the
+  // retired per-band scaling both bands drew full height (2 touching); under the global max
+  // stack only band 9 reaches the top and band 2 tops out at a tenth of the plot.
+  const bandTop = {};
+  for (const r of distRects) {
+    const x = r.getAttribute("x");
+    bandTop[x] = Math.min(bandTop[x] ?? Infinity, Number(r.getAttribute("y")));
+  }
+  const touching = Object.values(bandTop).filter((y) => Math.abs(y - PLOT_TOP) < 0.001).length;
+  check("only the tallest band touches the plot top", touching === 1, `bands touching the top=${touching}`);
   check("the chart clips as a belt", /\.svg-chart\s*\{[^}]*overflow:\s*hidden/.test(css),
         "style.css no longer clips the chart");
 

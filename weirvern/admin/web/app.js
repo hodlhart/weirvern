@@ -2610,11 +2610,14 @@ function renderScoreDistribution(scores) {
       counts[n][b] += 1;
     }
   }
-  // THE SCALE IS THE STACK, NOT THE TALLEST SINGLE SEGMENT (issue #6, 2026-10-16). Every segment
-  // used to be drawn against the global per-detector max, so a band where several detectors each
-  // scored near that max stacked to k x the plot height -- and the chart painted over the card
-  // above it. Each band scales against its OWN stack total: the tallest stack exactly fills the
-  // plot, and the axis reads the largest stack, which is the number the chart actually draws.
+  // THE SCALE IS THE GLOBAL MAX STACK, THE SAME FOR EVERY BAND (issue #6 landed stack scaling;
+  // issue #35 resolved the ambiguity it left). Every segment used to draw against the global
+  // per-detector max, so a band where several detectors each scored near that max stacked to
+  // k x the plot height and painted over the card above. The #6 fix scaled each band against its
+  // OWN stack total -- which drew EVERY non-empty band full height: a one-score band rendered
+  // identically to a ten-score band, and the count axis over-read the short one. Under the
+  // global max stack the tallest band exactly fills the plot, every other non-empty band tops
+  // out proportionally, and the axis (the largest stack) reads honestly for all of them.
   const stackTotal = new Array(BANDS).fill(0);
   for (let i = 0; i < BANDS; i++) {
     for (const n of names) stackTotal[i] += counts[n][i];
@@ -2633,7 +2636,7 @@ function renderScoreDistribution(scores) {
     for (const n of names) {
       const c = counts[n][i];
       if (!c) continue;
-      const h = (c / stackTotal[i]) * (plot.b - plot.t);
+      const h = (c / max) * (plot.b - plot.t);
       svg.appendChild(svgEl("rect", {
         x: plot.l + i * bw + 0.5, y: y - h, width: Math.max(1, bw - 1), height: h,
         fill: MODEL_COLORS[n] || "#888", opacity: 0.85,
