@@ -75,6 +75,12 @@ MAPPING: list[tuple[str, str]] = [
     # `ipaddress.is_private`, so mapping it there inverted the meaning of tests about public
     # addresses. 1.2.3.4 is public, invented, and universally understood as a placeholder.
     (r"162\.248\.221\.(\d+)", "1.2.3.4"),
+    # A second observed public endpoint (2026-10-16), same convention as the rule above. It
+    # reached GitHub inside a COMMIT MESSAGE before this rule existed: the file scrubber and the
+    # history scan cannot see a message that is written after the gate has already run, and the
+    # gate was run before the commit. Both halves of that lesson are recorded here -- the rule,
+    # and (in push_gated.sh's usage) commit first, publish second.
+    (r"23\.82\.14\.(\d+)", "1.2.3.4"),
     # Invented private fixtures in the tests. Not the lab's ranges, but a private address in a
     # committed fixture is indistinguishable from an observed one -- nothing marks it synthetic
     # to a reader.
