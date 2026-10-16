@@ -19,7 +19,7 @@ import json
 import logging
 import random
 import string
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from clickhouse_connect.driver.client import Client
@@ -86,6 +86,17 @@ def _get(client: Client, action_id: str) -> dict[str, Any] | None:
             "report": str(report)}
 
 
+def _json_default(value):
+    """The last resort for `json.dumps(report)` at the state-write boundary. A datetime is the
+    known case (detector metadata windows, issue #5). ANYTHING ELSE STAYS LOUD: the default
+    converts the one type the report is known to carry and re-raises for the rest, because a
+    report that cannot be serialized should fail visibly rather than silently become a string
+    that no reader expects."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"the action report carries {type(value).__name__}, which json cannot hold")
+
+
 def finish(client: Client, action_id: str, state: str, *, report: dict | None = None,
            note: str = "", now: datetime | None = None) -> bool:
     """Move a row to a new state, keeping every other field.
@@ -102,7 +113,8 @@ def finish(client: Client, action_id: str, state: str, *, report: dict | None = 
     client.insert(
         ACTIONS_TABLE,
         [[now, action_id, row["action"], state, row["target_id"], row["requested_by"],
-          note or row["note"], json.dumps(report) if report is not None else row["report"]]],
+          note or row["note"],
+          json.dumps(report, default=_json_default) if report is not None else row["report"]]],
         column_names=["ts", "action_id", "action", "state", "target_id",
                       "requested_by", "note", "report"],
     )

@@ -12,6 +12,7 @@ Each test here is one way this feature could quietly do the wrong thing:
     `requested` that reads as a worker which is busy.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -291,3 +292,56 @@ def test_the_gui_pod_does_not_need_the_model_directory():
     web = (ROOT / "weirvern/admin/web.py").read_text()
     assert "candidate_files" not in web, (
         "the GUI is reading the model directory; it does not have one -- the worker owns it")
+
+
+class _FinishClient:
+    """Serves `actions.finish`'s read one existing row and RECORDS the state write: the report
+    column's exact value is what must survive as valid JSON."""
+
+    def __init__(self):
+        self.inserts: list[tuple[str, str]] = []
+
+    def query(self, sql, parameters=None, **_kw):
+        return SimpleNamespace(result_rows=[(
+            datetime(2026, 1, 1, tzinfo=UTC), "act-1", "retrain", "running",
+            "candidate", "sam", "", "{}")])
+
+    def insert(self, table, rows, column_names=None, **_kw):
+        row, cols = rows[0], list(column_names or [])
+        self.inserts.append((row[cols.index("state")], row[cols.index("report")]))
+
+
+def test_the_done_write_survives_real_datetimes_from_the_detector_metadata(tmp_path):
+    """Issue #5: `_detector_report` copied the metadata's window straight into the report, and
+    that metadata is a datetime (`models/base.py`); `actions.finish` writes `json.dumps(report)`
+    for the DONE state, so the write raised TypeError, the RUNNING write stayed the last one
+    that landed, and the row was stuck forever -- a retrain that trained fine never finished.
+    This drives the REAL path with genuine datetimes (no None stub, which serializes fine) all
+    the way to the recorded INSERT, and asserts the stored column is valid JSON."""
+    from weirvern.models import actions, retrain
+
+    det = _Det("Isolation Forest", tmp_path, is_teacher=True)
+    det.metadata.window_start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    det.metadata.window_end = datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
+
+    def build(model_dir):
+        # run_candidate expects the four detectors in their slots: IF, GB, DBSCAN, baseline.
+        return [det,
+                _Det("Gradient Boosting", Path(model_dir)),
+                _Det("DBSCAN", Path(model_dir), trains=False),
+                _Det("Adaptive Baseline", Path(model_dir))]
+
+    settings = SimpleNamespace(retrain_window_h=6, model_dir=str(tmp_path))
+    report = retrain.run_candidate(_Client(), settings, object(), build=build)
+
+    row = report["detectors"][0]
+    assert isinstance(row["window_start"], str), (
+        "the report still carries a raw datetime; the DONE write will raise TypeError again")
+    assert row["window_start"].startswith("2026-01-01T00:00")
+
+    rec = _FinishClient()
+    assert actions.finish(rec, "act-1", actions.DONE, report=report) is True
+    state, stored = rec.inserts[-1]
+    assert state == actions.DONE
+    loaded = json.loads(stored)  # the column must hold valid JSON
+    assert loaded["detectors"][0]["window_start"] == row["window_start"]

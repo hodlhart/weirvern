@@ -53,6 +53,16 @@ def candidate_files(model_dir: str | Path) -> list[str]:
     return sorted(p.name for p in path.glob("*.pkl"))
 
 
+def _json_window(value):
+    """A detector's window comes off its metadata as a DATETIME; the report must be JSON by
+    construction (issue #5, 2026-10-16): `actions.finish` writes `json.dumps(report)` for the
+    DONE state, and a raw datetime made that write raise TypeError -- the row stayed in
+    RUNNING forever, a retrain that trained fine never finished. ISO strings are what this
+    same report already uses for `built_at`/`window_start`, so the stored column stays valid
+    JSON and `report_summary` keeps reading it. None passes through untouched."""
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
 def _detector_report(det, *, trained: bool) -> dict[str, Any]:
     meta = getattr(det, "metadata", None)
     return {
@@ -63,8 +73,8 @@ def _detector_report(det, *, trained: bool) -> dict[str, Any]:
         # trained on 12 windows and one trained on 12000 score very differently, and
         # "trained: true" alone hides which one this is.
         "sample_count": int(getattr(meta, "sample_count", 0) or 0),
-        "window_start": getattr(meta, "window_start", None),
-        "window_end": getattr(meta, "window_end", None),
+        "window_start": _json_window(getattr(meta, "window_start", None)),
+        "window_end": _json_window(getattr(meta, "window_end", None)),
         "metrics": getattr(meta, "metrics", {}) or {},
     }
 
