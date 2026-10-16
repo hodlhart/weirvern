@@ -73,6 +73,98 @@ def _rows(client, sql: str, params: dict, what: str) -> list | None:
         return None
 
 
+_EPHEMERAL_PORT = 32768  # the IANA user-port boundary: services below, clients above
+
+
+def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
+    """ONE CONNECTION FROM ITS TWO HALVES (the operator, 2026-10-16: "I think you have this
+    directionally backwards, and that the source port of overseerr going outbound").
+
+    Every conversation appears TWICE in the flows -- once per direction -- and each half shown
+    alone tells a misleading story: the reply half of an outbound HTTPS call renders as "the
+    internet connected TO us on port 51334". Measured on this deployment: 198.51.100.194:51334 ->
+    203.0.113.46:443 (the request) plus 203.0.113.46:443 -> 198.51.100.194:51334 (the reply), and the
+    panel presented the REPLY, ports and all, as the connection.
+
+    THE INITIATOR IS DECIDED BY THE PORTS, never by which row came back first and never by size:
+    the direction whose destination ports are ALL below 32768 dialled a service; that side is the
+    edge's source, its destination ports are the edge's `ports`, and the other half's destination
+    ports are the initiator's ephemeral source ports (`source_ports`). When neither direction
+    qualifies alone, the pair is NOT merged: two honest per-direction edges beat one edge claiming
+    a direction it cannot prove. A single captured half keeps its own direction and says which
+    kind of half it reads as, because "we saw the request" and "we saw a reply to something we
+    did not capture" are different facts.
+    """
+    by_pair: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    for e in raw_edges:
+        key = (min(e["source"], e["target"]), max(e["source"], e["target"]))
+        if key not in by_pair:
+            by_pair[key] = []
+            order.append(key)
+        by_pair[key].append(e)
+
+    merged: list[dict] = []
+    for key in order:
+        halves = by_pair[key]
+        if len(halves) == 1:
+            e = dict(halves[0])
+            ports = e.get("ports") or []
+            if ports and all(p >= _EPHEMERAL_PORT for p in ports):
+                e["direction"] = ("seen in one direction only; its destination ports are "
+                                  "ephemeral, so this reads as the reply half of a connection "
+                                  "opened from the other side, whose request was not captured")
+            elif ports:
+                e["direction"] = ("seen in one direction only; this side dialled a service port, "
+                                  "so the reply was not captured")
+            else:
+                e["direction"] = "seen in one direction only"
+            e["reply_seen"] = False
+            e["source_ports"] = []
+            e["bytes_source"], e["bytes_target"] = e["bytes"], 0
+            e["flows_source"], e["flows_target"] = e["flows"], 0
+            e["source_ttl_min"], e["source_ttl_max"] = e.get("ttl_min", 0), e.get("ttl_max", 0)
+            e["target_ttl_min"], e["target_ttl_max"] = 0, 0
+            merged.append(e)
+            continue
+        a, b = halves[0], halves[1]
+        a_req = bool(a.get("ports")) and all(p < _EPHEMERAL_PORT for p in a["ports"])
+        b_req = bool(b.get("ports")) and all(p < _EPHEMERAL_PORT for p in b["ports"])
+        if a_req == b_req:
+            # BOTH OR NEITHER: no safe call. Keep both halves, each labeled, rather than
+            # guessing which arrow to draw across an operator's screen.
+            for half in (a, b):
+                h = dict(half)
+                h["direction"] = ("both directions sit in the same port range; the direction "
+                                  "is not claimed")
+                h["reply_seen"] = False
+                h["source_ports"] = []
+                h["bytes_source"], h["bytes_target"] = h["bytes"], 0
+                h["flows_source"], h["flows_target"] = h["flows"], 0
+                h["source_ttl_min"], h["source_ttl_max"] = h.get("ttl_min", 0), h.get("ttl_max", 0)
+                h["target_ttl_min"], h["target_ttl_max"] = 0, 0
+                merged.append(h)
+            continue
+        req, rep = (a, b) if a_req else (b, a)
+        merged.append({
+            "source": req["source"], "target": req["target"],
+            "ports": list(req.get("ports") or []),
+            "source_ports": list(rep.get("ports") or []),
+            "bytes": int(req["bytes"]) + int(rep["bytes"]),
+            "flows": int(req["flows"]) + int(rep["flows"]),
+            "bytes_source": int(req["bytes"]), "bytes_target": int(rep["bytes"]),
+            "flows_source": int(req["flows"]), "flows_target": int(rep["flows"]),
+            "first_seen": min(req["first_seen"], rep["first_seen"]),
+            "last_seen": max(req["last_seen"], rep["last_seen"]),
+            "source_ttl_min": req.get("ttl_min", 0), "source_ttl_max": req.get("ttl_max", 0),
+            "target_ttl_min": rep.get("ttl_min", 0), "target_ttl_max": rep.get("ttl_max", 0),
+            "ttl_min": req.get("ttl_min", 0), "ttl_max": req.get("ttl_max", 0),
+            "direction": "request/reply",
+            "reply_seen": True,
+        })
+    return merged
+
+
 def _as_ports(value) -> list[int]:
     """A ClickHouse array of ports as a list of ints, tolerant of how the driver returns it.
 
@@ -311,7 +403,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     # usual trick, but a count of DISTINCT pairs is cheap here and exact.
     total_rows = _rows(
         client,
-        "SELECT uniqExact((src_addr, dst_addr)) FROM weirvern.flows "
+        # UNORDERED pairs: the edge list is merged, so the total it is compared against must
+        # count conversations, not directions -- otherwise "showing 20 of 40 pairs" would
+        # describe a list the operator can no longer see.
+        "SELECT uniqExact(tuple(least(src_addr, dst_addr), greatest(src_addr, dst_addr))) "
+        "FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr",
         {**timewindow.w(hours)},
@@ -350,6 +446,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         _n(src)["bytes"] += b
         _n(dst)["bytes"] += b
 
+    # The two halves of every conversation become ONE edge, initiator first (the helper's
+    # docstring carries the rule and the incident that demanded it). Degrees and byte totals
+    # above are unchanged by the merge -- both ends were bumped on both halves either way.
+    out_edges = _merge_direction_pairs(out_edges)
+
     if not nodes:
         return _unavailable("no host-to-host traffic in this window",
                             nodes=[], edges=[], total_edges=total)
@@ -372,16 +473,22 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     # SOURCE-side records count (a target's TTL describes whoever sent TO it), only records
     # with ttl > 0 count (0 is NOT MEASURED), and when a host's flows disagree the smallest
     # hop reading wins: decrements can only be ADDED by multi-path noise, never removed.
+    # BOTH ENDS, EACH FROM ITS OWN PACKETS. Before the halves were merged this loop could only
+    # read the source side of each raw row; a merged edge now carries a TTL pair per END (the
+    # initiator's from its packets, the responder's from the reply), so each host is placed by
+    # evidence that is actually its own.
     for e in out_edges:
-        if e["ttl_max"] <= 0:
-            continue
-        hops = _hops_from_ttl(e["ttl_max"])
-        src_node = nodes.get(e["source"])
-        if src_node is None:
-            continue
-        if src_node.get("hops") is None or hops < src_node["hops"]:
-            src_node["hops"] = hops
-            src_node["ttl"] = e["ttl_max"]
+        for side, key in (("source", "source_ttl_max"), ("target", "target_ttl_max")):
+            ttl = int(e.get(key) or 0)
+            if ttl <= 0:
+                continue
+            end_node = nodes.get(e[side])
+            if end_node is None:
+                continue
+            hops = _hops_from_ttl(ttl)
+            if end_node.get("hops") is None or hops < end_node["hops"]:
+                end_node["hops"] = hops
+                end_node["ttl"] = ttl
 
     max_degree = max(n["degree"] for n in nodes.values())
     max_bytes = max((n["bytes"] for n in nodes.values()), default=1) or 1

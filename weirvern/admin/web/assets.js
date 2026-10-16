@@ -638,6 +638,9 @@ function nodeTitle(n) {
 /** The hover card for one connection: the pair, the volume, and the TTL range when carried. */
 function edgeTitle(e) {
   const out = [`${e.source} → ${e.target}`, fmtBytes(e.bytes)];
+  if ((e.ports || []).length) {
+    out.push(`port${e.ports.length === 1 ? "" : "s"} ${e.ports.join(", ")}`);
+  }
   if (e.ttl_max > 0) {
     out.push(e.ttl_min === e.ttl_max ? `ttl ${e.ttl_max}` : `ttl ${e.ttl_min}–${e.ttl_max}`);
   }
@@ -948,20 +951,34 @@ function showEdgeDetail(edge) {
 
   title.textContent = "one connection";
   const ports = (edge.ports || []).length ? edge.ports.join(", ") : "—";
+  const srcPorts = (edge.source_ports || []).length ? edge.source_ports.join(", ") : "";
   // The TTL range is the evidence a ring position rests on, so it shows when the records
   // carried the field -- and says nothing when they did not.
   const ttl = edge.ttl_max > 0
     ? ` Observed TTL ${edge.ttl_min === edge.ttl_max ? edge.ttl_max : `${edge.ttl_min}–${edge.ttl_max}`}.`
     : "";
+  // THE DIRECTION IS THE DATA'S OWN CLAIM (2026-10-16, after the operator caught this panel
+  // showing an outbound HTTPS call backwards: "the source port of overseerr going outbound").
+  // `direction` comes from the server's port-based determination -- the initiator is the side
+  // whose destination ports are services -- and the note says WHICH CASE this edge is instead
+  // of drawing an arrow the flows do not support. The initiator's ephemeral source ports ride
+  // the source card, where they belong.
+  const dirText = edge.direction === "request/reply"
+    ? `opened by the source; ${fmtBytes(edge.bytes_target || 0)} came back`
+    : (edge.direction || "");
   note.textContent =
     `${label(edge.source_name, edge.source)} → ${label(edge.target_name, edge.target)}` +
-    ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.${ttl}`;
+    ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.` +
+    (dirText ? ` ${dirText}.` : "") + ttl;
 
   // The pair, as a single prominent row, because "source and destination" is the question.
   host.appendChild(el("div", { class: "pair" }, [
     el("div", { class: "pair-side" }, [
       el("div", { class: "pair-label", text: "source" }),
       el("div", { class: "pair-addr", text: edge.source }),
+      // THE INITIATOR'S EPHEMERAL PORTS BELONG ON THE INITIATOR'S CARD: "overseerr :51334" is
+      // the fact the operator was reading for when this panel showed it backwards.
+      srcPorts ? el("div", { class: "muted", text: `source ports ${srcPorts}` }) : null,
       edge.source_name ? el("div", { class: "muted", text: edge.source_name }) : null,
     ]),
     el("div", { class: "pair-arrow", text: "→" }),
@@ -981,6 +998,9 @@ function showEdgeDetail(edge) {
   ]));
   host.appendChild(el("div", { class: "muted", text:
     `${fmtBytes(edge.bytes)} across ${edge.flows} flow${edge.flows === 1 ? "" : "s"}` +
+    (edge.reply_seen
+      ? ` (${fmtBytes(edge.bytes_source || 0)} opened it, ${fmtBytes(edge.bytes_target || 0)} came back)`
+      : "") +
     (edge.first_seen ? ` · first seen ${fmtTime(edge.first_seen)}` : "") +
     (edge.last_seen ? ` · last seen ${fmtTime(edge.last_seen)}` : "") }));
 
