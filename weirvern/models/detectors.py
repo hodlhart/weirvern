@@ -42,6 +42,8 @@ from weirvern.zeek_features import (
     ZEEK_DBSCAN_FEATURES,
     ZEEK_FEATURES,
     ZEEK_JOIN_ON,
+    zeek_baseline_ja4_sql,
+    zeek_baseline_sql,
     zeek_join_cte,
 )
 
@@ -470,7 +472,10 @@ class AdaptiveBaselineDetector(BaseDetector):
     def __init__(self, model_dir, cfg: ModelConfig | None = None):
         super().__init__(model_dir)
         self.cfg = cfg or ModelConfig()
-        self.baselines: dict[str, dict[str, float]] = {}
+        # `Any` rather than `float`: the per-host dict carries the volumetric and behavioural
+        # statistics AND, since the JA4 history was wired in, the fingerprint history SET
+        # (`baseline_ja4_set`, a list of strings) the novelty ratio is computed against.
+        self.baselines: dict[str, dict[str, Any]] = {}
 
     def is_ready(self) -> bool:
         return len(self.baselines) > 0
@@ -661,11 +666,54 @@ class AdaptiveBaselineDetector(BaseDetector):
             }
             if self.baselines[r[0]]["zeek_seen"]:
                 zeek_seen_hosts += 1
+        # ── THE HISTORIES THE TWO DERIVED FEATURES READ ─────────────────────────────────────────
+        #
+        # `zeek_ja4_novelty` and `zeek_service_rarity` are computed AT SCORING TIME from the
+        # host's longer-window history: "is this TLS fingerprint one this host has used before?"
+        # and "how much of its service variety is new?". That history arrives on the baseline
+        # dict as `baseline_ja4_set`, `baseline_ja4_count` and `baseline_service_count` -- and
+        # NOTHING WAS PUTTING IT THERE. Both queries were written, tested, and never called
+        # from production; the extractor found no history, took its conservative floor, and
+        # reported "entirely novel" (1.0) for every host-window that used TLS at all. The
+        # feature exists to notice a NEW TLS stack on an internal host, which is how malware is
+        # introduced and how a rogue device announces itself. In this state it noticed nothing
+        # and said so everywhere.
+        #
+        # Same window as the baseline itself, so "the host's history" means one thing across the
+        # whole pipeline. Wrapped on purpose: a missing history must degrade the two derived
+        # features to their honest "nothing to compare against" values, never fail the baseline
+        # that every volume decision depends on.
+        hist_hosts = 0
+        try:
+            for row in client.query(zeek_baseline_ja4_sql(s, e),
+                                    settings=QUERY_SETTINGS).result_rows:
+                b = self.baselines.get(str(row[0]))
+                if b is None:
+                    continue
+                b["baseline_ja4_count"] = float(row[1] or 0)
+                raw_set = row[2]
+                b["baseline_ja4_set"] = list(raw_set) if isinstance(raw_set, (list, tuple)) else []
+                if b["baseline_ja4_set"]:
+                    hist_hosts += 1
+            for row in client.query(zeek_baseline_sql(s, e),
+                                    settings=QUERY_SETTINGS).result_rows:
+                b = self.baselines.get(str(row[0]))
+                if b is None:
+                    continue
+                b["baseline_service_count"] = float(row[1] or 0)
+                b["baseline_conn_count"] = float(row[2] or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not load the JA4/service histories, so zeek_ja4_novelty and "
+                "zeek_service_rarity will read 0.0 (there is nothing to compare against): %s",
+                exc,
+            )
         self.metadata = ModelMetadata(
             model_type=self.name, duration_seconds=time.time() - st,
             params={"min_obs": self.cfg.baseline_min_obs},
             metrics={"baseline_count": len(self.baselines),
-                     "zeek_baselined_hosts": zeek_seen_hosts},
+                     "zeek_baselined_hosts": zeek_seen_hosts,
+                     "hosts_with_fp_history": hist_hosts},
             window_start=start_dt, window_end=end_dt, sample_count=len(self.baselines),
         )
         logger.info(

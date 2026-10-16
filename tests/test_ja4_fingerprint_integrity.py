@@ -223,6 +223,94 @@ def test_novelty_is_an_exact_membership_test_when_the_set_is_available():
     assert vec["zeek_ja4_novelty"] == 0.0
 
 
+# ── 4. the two links that were never connected ───────────────────────────────────────────────
+
+
+def test_the_summary_computes_novelty_and_rarity_from_history(summary: str):
+    """TRAINING SEES REAL VALUES. Both comparison features shipped as the constant `0` in
+    every training matrix -- "the caller that holds the baseline computes the real value", and
+    the caller that TRAINS never had one -- while the scoring path computed real values from
+    the baseline dict. A model cannot use a column it never saw vary, so the JA4 work's whole
+    point (spotting a TLS stack this host has never presented) was invisible to every detector.
+    """
+    for feature in ("zeek_ja4_novelty", "zeek_service_rarity"):
+        line = next((ln for ln in summary.splitlines() if f"AS {feature}" in ln), "")
+        assert line, f"{feature} lost its alias -- every training query breaks outright"
+        assert not re.match(rf"\s*0\s+AS {feature}", line), (
+            f"{feature} is a constant 0 again: training would see nothing while scoring "
+            f"computes real values"
+        )
+    # The history window ENDS where the feature range begins -- no row may treat its own
+    # window as history -- and looks back DERIVED_HISTORY_HOURS from there.
+    m = re.search(r"hist_ja4 AS \(.*?ts >= '([^']+)' AND ts < '([^']+)'", summary, re.S)
+    assert m, "the fingerprint-history CTE lost its bounds"
+    assert m.group(2) == S, "the history must END at the feature range's start"
+    assert m.group(1) < S, "the history window must look BACK from the range, not forward"
+    assert "arrayCount(x -> has(" in summary, (
+        "novelty is no longer an exact membership test against the history set"
+    )
+    assert "hist_service_count" in summary, "rarity lost its history half"
+
+
+def test_the_adaptive_baseline_carries_the_fingerprint_history_to_scoring(tmp_path):
+    """THE LINK THAT WAS NEVER CONNECTED. `zeek_baseline_ja4_sql` existed, was tested, and had
+    NO production caller: the scoring path handed the extractor a baseline dict without
+    `baseline_ja4_set`, so novelty degraded to its conservative floor -- which, with no count
+    either, is "entirely novel" (1.0) on every host-window that used TLS at all. This runs the
+    REAL train() against a fake client and then the REAL extractor, and requires the exact
+    membership result to come out the other end.
+    """
+    from datetime import datetime
+
+    from weirvern.config import ModelConfig
+    from weirvern.models.detectors import AdaptiveBaselineDetector
+    from weirvern.zeek_features import extract_zeek_features
+
+    class _Rows:
+        def __init__(self, rows):
+            self.result_rows = rows
+
+    class _Client:
+        """Enough Client for the three queries train() runs, dispatching on the SQL."""
+
+        def query(self, sql, settings=None):  # noqa: ARG002 - signature parity
+            if "baseline_ja4_set" in sql:
+                return _Rows([("192.0.2.10", 2, ["fp_a", "fp_b"], 3)])
+            if "baseline_service_count" in sql:
+                return _Rows([("192.0.2.10", 4, 100)])
+            rows = []
+            for i in range(12):
+                row = [None] * (9 + len(ZEEK_FEATURES) + 1 + 4)
+                row[0] = f"192.0.2.{i + 10}"
+                row[1], row[2], row[3] = 1000.0, 100.0, 50.0
+                row[4], row[5], row[6] = 5.0, 3.0, 1.0
+                row[7], row[8] = (900.0, 950.0, 990.0), (40.0, 45.0, 49.0)
+                for j in range(len(ZEEK_FEATURES)):
+                    row[9 + j] = 0.0
+                row[9 + len(ZEEK_FEATURES)] = 1  # zeek_seen
+                row[10 + len(ZEEK_FEATURES):] = [1.0, 1.0, 1.0, 1.0]  # measured sigmas
+                rows.append(row)
+            return _Rows(rows)
+
+    det = AdaptiveBaselineDetector(tmp_path, ModelConfig())
+    assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _Client())
+    b = det.baselines["192.0.2.10"]
+    assert b["baseline_ja4_set"] == ["fp_a", "fp_b"], (
+        "the baseline dict lost the fingerprint history -- scoring reads 'entirely novel' on "
+        "every TLS window, which is the defect this test exists for"
+    )
+    assert b["baseline_ja4_count"] == 2.0
+    assert b["baseline_service_count"] == 4.0
+    assert det.metadata.metrics["hosts_with_fp_history"] == 1
+
+    vec = extract_zeek_features({"ja4_set": "['fp_b', 'fp_new']", "zeek_conn_count": 1},
+                                baseline=b)
+    assert vec["zeek_ja4_novelty"] == pytest.approx(0.5), (
+        f"one of the two fingerprints is familiar, so novelty is exactly 0.5; got "
+        f"{vec['zeek_ja4_novelty']}"
+    )
+
+
 def test_a_baseline_without_the_set_degrades_rather_than_manufacturing_novelty():
     """An older caller supplies only the count; the fallback must never OVERSTATE novelty."""
     from weirvern.zeek_features import extract_zeek_features

@@ -238,6 +238,16 @@ def _f(v: Any, default: float = 0.0) -> float:
 # still produces a row -- with the presence flag false. An INNER JOIN would silently drop
 # those hosts from training, which would bias the model toward the hosts Zeek happens to
 # see and make the absent case unlearnable.
+
+# HOW FAR BACK THE TWO DERIVED FEATURES LOOK. `zeek_service_rarity` and `zeek_ja4_novelty` are
+# comparisons against what the host did BEFORE the window, not properties of the window. The
+# history is a span of its own, ending where the feature range begins -- the same shape as the
+# Adaptive Baseline's own window (RETRAIN_WINDOW_H, 72h by default), because that baseline is
+# what the scoring path hands over as the history. Train and score must use the same span and
+# the same formula, or the model is fitted on one question and asked another.
+DERIVED_HISTORY_HOURS = 72
+
+
 def zeek_window_summary_sql(start: str, end: str) -> str:
     """The per-(window, host) Zeek summary for a time range.
 
@@ -268,6 +278,10 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
     would compare misaligned periods, making a burst look like it fell inside the current
     window when it did not.
     """
+    from datetime import datetime, timedelta
+
+    hist_start = (datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+                  - timedelta(hours=DERIVED_HISTORY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     return f"""
         WITH
         conn_agg AS (
@@ -532,6 +546,31 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             WHERE ts BETWEEN '{start}' AND '{end}'
             GROUP BY w, src_addr
         ),
+        -- ── THE HISTORY WINDOWS FOR THE TWO DERIVED FEATURES ──────────────────────────────────
+        --
+        -- They end where the feature range begins, so no feature row can treat its own window
+        -- as history, and they are capped exactly like the scoring side's baseline set (64
+        -- fingerprints) so the two paths cannot disagree about membership. One difference from
+        -- the scoring path, stated because it is real: scoring compares against the baseline the
+        -- detector actually trained on, while training compares against the 72h before the
+        -- range. Same formula, same span, same semantics.
+        hist_ja4 AS (
+            SELECT
+                src_addr,
+                arraySlice(arrayDistinct(arrayFilter(x -> {JA4_REAL_ARRAY},
+                                                     groupArray(ja4))), 1, 64) AS hist_set
+            FROM weirvern.zeek_ssl
+            WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+            GROUP BY src_addr
+        ),
+        hist_svc AS (
+            SELECT
+                src_addr,
+                uniqExactIf(service, service != '')      AS hist_service_count
+            FROM weirvern.zeek_conn
+            WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+            GROUP BY src_addr
+        ),
         keys AS (
             SELECT w, src_addr FROM conn_agg
             UNION DISTINCT SELECT w, src_addr FROM dns_agg
@@ -554,20 +593,30 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             -- than a silently-zero feature. An earlier version exposed raw names
             -- (conn_count, s0_count) while the features were zeek_conn_count and
             -- zeek_s0_ratio, so every training query named a column that did not exist.
-            coalesce(c.conn_count, 0)                              AS zeek_conn_count,
-            coalesce(c.uniq_dst, 0)                                AS zeek_unique_dst_ips,
-            coalesce(c.svc_count, 0)                               AS zeek_service_count,
-            coalesce(d.dns_count, 0)                               AS zeek_dns_count,
+            -- ── LOG-SCALED, MATCHING THE SCORING PATH EXACTLY ─────────────────────────────────
+            --
+            -- `extract_zeek_features` log1p's these seven counts at scoring time, with the
+            -- right rationale (a host with 10,000 connections must not dominate a distance
+            -- metric -- DBSCAN's most of all) -- and THE TRAINING MATRIX CARRIED THEM RAW.
+            -- The same host-window therefore meant different numbers on the two sides of the
+            -- pipeline: fitted on one distribution, scored on another, and nothing raised
+            -- because every number stayed a valid number. One transform, applied in both
+            -- places. The ratios below still divide by the RAW counts, which is what the
+            -- scoring path does too -- it scales these columns after the ratios are taken.
+            log1p(coalesce(c.conn_count, 0))                      AS zeek_conn_count,
+            log1p(coalesce(c.uniq_dst, 0))                        AS zeek_unique_dst_ips,
+            log1p(coalesce(c.svc_count, 0))                       AS zeek_service_count,
+            log1p(coalesce(d.dns_count, 0))                       AS zeek_dns_count,
             coalesce(d.mean_entropy, 0)                            AS zeek_dns_mean_query_entropy,
             coalesce(d.mean_len, 0)                                AS zeek_dns_mean_query_len,
-            coalesce(s.ja4_count, 0)                               AS zeek_ja4_count,
+            log1p(coalesce(s.ja4_count, 0))                      AS zeek_ja4_count,
             -- The window's fingerprint set, passed through for the novelty measure. It is NOT a
             -- feature itself: a fingerprint is an IDENTIFIER, and this codebase's rule is that
             -- identifiers are join keys, never model inputs. What enters the model is the
             -- DERIVED novelty ratio, which is a number about the host, not a name for a client.
             ifNull(s.ja4_set, [])                                  AS ja4_set,
-            coalesce(n.notice_count, 0)                            AS zeek_notice_count,
-            coalesce(ww.weird_count, 0)                            AS zeek_weird_count,
+            log1p(coalesce(n.notice_count, 0))                    AS zeek_notice_count,
+            log1p(coalesce(ww.weird_count, 0))                    AS zeek_weird_count,
             -- Tier 3. Counts, ratios and bounded categoricals only -- no identifier becomes a
             -- feature (fingerprints, MACs and uids are join keys, never inputs).
             coalesce(dh.dhcp_events, 0)                            AS zeek_dhcp_events,
@@ -642,21 +691,39 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
                coalesce(d.no_answer, 0) / d.dns_count, 0)          AS zeek_dns_failed_ratio,
             if(coalesce(s.ssl_count, 0) > 0,
                coalesce(s.modern_count, 0) / s.ssl_count, 0)       AS zeek_ssl_modern_ratio,
-            -- Rarity needs the host's longer-window baseline, which is a separate query;
-            -- left at 0 here and filled by the caller that has it.
-            0                                                      AS zeek_service_rarity,
-            -- Same contract as rarity: the comparison needs the BASELINE, which this query does
-            -- not have, so the column exists with a 0 placeholder and the caller that holds the
-            -- baseline computes the real value.
+            -- ── THE HISTORY COMPARISONS, COMPUTED HERE SO TRAINING AND SCORING AGREE ──────────
             --
-            -- THE PLACEHOLDER IS NOT OPTIONAL. `detectors._zeek_clause` builds its training
-            -- SELECT list by mapping over ZEEK_FEATURES and emitting `z.<name>`, so a feature
-            -- that appears in that list but not as a column here makes every one of the four
-            -- detectors' training queries reference a column that does not exist -- training
-            -- fails outright. Measured while adding this feature: 51 names in ZEEK_FEATURES
-            -- against 49 SQL aliases. The two lists must stay in step, and
-            -- tests/test_zeek_summary_runnable.py now asserts it.
-            0                                                      AS zeek_ja4_novelty,
+            -- These two were 0 placeholders -- "filled by the caller that holds the baseline" --
+            -- and the caller that TRAINS never had one. So both features were CONSTANT ZERO in
+            -- every training matrix while the scoring path computed real values from the
+            -- baseline dict: a model cannot use a column it never saw vary, and the JA4 work's
+            -- entire point -- noticing a TLS stack this host has never presented -- was
+            -- invisible to all four detectors. The comparisons now happen here, against the
+            -- `hist_*` windows above, in the same arithmetic `extract_zeek_features` uses at
+            -- scoring time.
+            --
+            -- (The columns must exist either way: `detectors._zeek_clause` maps over
+            -- ZEEK_FEATURES, so a name without a column here breaks every training query
+            -- outright -- the 51-names-against-49-aliases failure that once shipped.)
+            --
+            -- Rarity: how much of this window's service variety is NEW, as a share of what the
+            -- host normally speaks. Clamped at 0 -- using fewer services than usual is not
+            -- novelty -- and a missing history reads as one known service, the scoring side's
+            -- own floor, so no comparison is invented from nothing.
+            if(coalesce(c.svc_count, 0) = 0, 0,
+               greatest(0, coalesce(c.svc_count, 0)
+                           - greatest(ifNull(hsvc.hist_service_count, 0), 1))
+               / greatest(ifNull(hsvc.hist_service_count, 0), 1))
+                                                                   AS zeek_service_rarity,
+            -- JA4 novelty: the share of the window's fingerprints the host has not presented
+            -- in the history window -- EXACT MEMBERSHIP, matching the extractor line for line.
+            -- An empty window is 0.0 (no fingerprints is not novelty); a missing history reads
+            -- as an empty one, "we have never seen this host's TLS", rather than inventing one.
+            if(empty(ifNull(s.ja4_set, [])), 0,
+               (length(ifNull(s.ja4_set, []))
+                - arrayCount(x -> has(ifNull(hj.hist_set, []), x), ifNull(s.ja4_set, [])))
+               / length(ifNull(s.ja4_set, [])))
+                                                                   AS zeek_ja4_novelty,
             -- PRESENCE as a real column, so ZEEK_FEATURES works verbatim as a SELECT list.
             if(coalesce(c.conn_count, 0) + coalesce(d.dns_count, 0) + coalesce(s.ssl_count, 0)
                + coalesce(n.notice_count, 0) + coalesce(ww.weird_count, 0) > 0, 1, 0)
@@ -674,6 +741,8 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         LEFT JOIN ssh_agg    ss ON ss.w = k.w AND ss.src_addr = k.src_addr
         LEFT JOIN http_agg   hh ON hh.w = k.w AND hh.src_addr = k.src_addr
         LEFT JOIN files_agg  ff ON ff.w = k.w AND ff.src_addr = k.src_addr
+        LEFT JOIN hist_ja4   hj ON hj.src_addr = k.src_addr
+        LEFT JOIN hist_svc  hsvc ON hsvc.src_addr = k.src_addr
         WHERE k.src_addr != ''
         ORDER BY window_start, src_addr
     """

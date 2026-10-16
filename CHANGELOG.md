@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — JA4 novelty learns to see history: the two links that were never connected
+
+"Verify that JA4 is being assessed by all the models." The verification found that the feature
+built for exactly that — `zeek_ja4_novelty`, the share of a window's TLS fingerprints the host
+has never presented before — was not live anywhere, in three separate ways:
+
+  * `zeek_baseline_ja4_sql`, the query that computes the host's fingerprint HISTORY, had no
+    production caller. Scoring handed the extractor a baseline with no `baseline_ja4_set`, the
+    extractor took its conservative floor, and novelty reported "entirely novel" (1.0) for
+    every host-window that used TLS at all.
+  * In every TRAINING matrix, `zeek_ja4_novelty` and `zeek_service_rarity` were constant `0`
+    placeholders — "filled by the caller that holds the baseline", and the caller that trains
+    never had one. A model cannot use a column it never saw vary.
+  * The seven Zeek counts were log-scaled at scoring and RAW in training: the same window meant
+    different numbers on the two sides of the pipeline.
+
+All three are fixed and pinned by tests. The summary now computes both comparison features from
+`hist_ja4` / `hist_svc` windows — 72h, ending exactly where the feature range begins, the same
+span the Adaptive Baseline holds — the baseline detector carries `baseline_ja4_set`,
+`baseline_ja4_count` and `baseline_service_count` into every host baseline (with a
+`hosts_with_fp_history` metric), and the counts are log1p'd in SQL exactly as the scoring path
+does them. Verified against a live ClickHouse with seeded fingerprints — two familiar, one new
+means novelty is exactly 0.5; service rarity exactly 1/3; SQL and Python parity — and that run
+caught a bug only a server can find: ClickHouse has no `size()`, it is `length()`.
+
 ## Unreleased — the source-coverage proof, and a README that says what ships
 
 "Verify with proof that JA4 and every Zeek log are assessed by every model." The answer is a

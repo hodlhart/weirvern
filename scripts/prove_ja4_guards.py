@@ -11,8 +11,12 @@ The three defects, all of which produced a plausible number for something never 
      as a TLS fingerprint and `zeek_ja4_count` reported 1 on hosts with no fingerprint at all.
   2. The baseline query LEFT JOINing zeek_ssl onto zeek_conn, so `baseline_conn_count` counted
      conn x ssl pairs (measured: 64,319 rows -> 93,048) instead of connections.
-  3. A feature in ZEEK_FEATURES with no matching column in the summary query, which makes all
-     four detectors' training queries reference a nonexistent column.
+  3. A feature in ZEEK_FEATURES whose summary column is a CONSTANT rather than a measurement.
+     It shipped first as a missing column (51 names against 49 aliases, which breaks every
+     training query outright); its quieter successor is a column that exists, holds `0` for
+     every row, and teaches the models nothing -- the shape the JA4 novelty feature wore until
+     it was wired to a real history window. The mutation below reintroduces THAT: novelty stops
+     comparing against the host's history and reports `1.0` for every TLS window.
 
 Offline: reads the generated SQL, needs no database. Restores every file it touches.
 """
@@ -111,12 +115,13 @@ def zeek_baseline_ja4_sql""",
     "the connection baseline joins zeek_ssl again (defect 2)",
 ))
 
-# 3. The missing column: drop the placeholder so ZEEK_FEATURES lists a name the SQL lacks.
+# 3. The inert constant: novelty stops comparing against the history -- "entirely novel" for
+#    every TLS window, which is what the placeholder era actually produced at scoring time.
 results.append(mutate(
     FEATURES,
-    "            0                                                      AS zeek_ja4_novelty,",
-    "            -- placeholder removed",
-    "zeek_ja4_novelty loses its SQL column (defect 3)",
+    "                - arrayCount(x -> has(ifNull(hj.hist_set, []), x), ifNull(s.ja4_set, [])))",
+    "                - 0)",
+    "zeek_ja4_novelty stops comparing against its history (defect 3)",
 ))
 
 # 4. The predicate: accept `(empty)` as a real fingerprint again.

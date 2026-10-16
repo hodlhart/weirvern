@@ -64,9 +64,12 @@ SIBLING_TEST = (ROOT / "tests" / "test_ml_table_coverage.py").read_text()
 # The fingerprint pair under test. JA4 only -- see the module docstring.
 JA4_FEATURES = ("zeek_ja4_count", "zeek_ja4_novelty")
 
-# Features that are DERIVED in Python from the per-window row plus the host's baseline rather
-# than aliased in the summary query. They resolve to no aggregate by construction.
-DERIVED_FEATURES = {"zeek_ja4_novelty", "zeek_service_rarity"}
+# Features with no window aggregate of their own. EMPTY TODAY, and that is the point: the two
+# comparison features that used to be Python-only (`zeek_ja4_novelty`, `zeek_service_rarity`)
+# are now computed by the SQL as well, from the `hist_*` windows, so the TRAINING matrix sees
+# the same values the scoring path computes. A future feature of that kind belongs here, with
+# its reason written next to it.
+DERIVED_FEATURES: set[str] = set()
 
 # Aggregates in `zeek_window_summary_sql`, mapped to the ZEEK_MAPPERS log type they aggregate.
 # Every one of these must be joined into the summary and must contribute at least one feature;
@@ -226,7 +229,18 @@ def test_ja4_is_assessed_by_both_wide_models_and_by_neither_of_the_narrow_ones(t
     assert mapping["zeek_ja4_count"] == ["ssl_agg"], (
         f"zeek_ja4_count now comes from {mapping['zeek_ja4_count']} -- update this proof"
     )
-    assert not mapping["zeek_ja4_novelty"], "novelty is derived, not aliased"
+    # Novelty has TWO halves and both must exist: the window's fingerprints from the ssl
+    # aggregate, and the host's history from the `hist_ja4` CTE. It used to be a constant 0 in
+    # the summary ("the caller that holds the baseline computes it") while the caller that
+    # TRAINS never had a baseline -- so every detector was fitted on a column that never varied.
+    assert mapping["zeek_ja4_novelty"] == ["ssl_agg"], (
+        f"novelty lost its window half: {mapping['zeek_ja4_novelty']}"
+    )
+    sql = _summary_sql()
+    assert "hist_ja4 AS (" in sql and "arrayCount(x -> has(" in sql, (
+        "the summary no longer computes novelty from a history window -- training would read a "
+        "constant 0 while scoring computes real values"
+    )
     assert 'out["zeek_ja4_novelty"]' in ZEEK_FEATURES_SRC
     assert "baseline_ja4_set" in ZEEK_FEATURES_SRC, "the novelty ratio lost its history half"
     # And it all arrives live: the worker attaches the window row and the ensemble hands the
@@ -237,12 +251,15 @@ def test_ja4_is_assessed_by_both_wide_models_and_by_neither_of_the_narrow_ones(t
     assert "baselines.get(src)" in ENSEMBLE_SRC, "scoring no longer supplies the host baseline"
     # Neither narrow model assesses JA4, and that is asserted in the same direction as the
     # positive claims: a silent addition would change behaviour without changing this proof.
+    # The check is on the SCORING READS (`features.get("<name>")`), not on any mention: the
+    # baseline's warning strings may name the features, but no detector may read one.
     for feature in JA4_FEATURES:
         assert feature not in ZEEK_DBSCAN_FEATURES and feature not in DBSCAN_FEATURES
-        assert feature not in _code_only(DETECTORS_SRC), (
-            f"{feature} now appears in the detector code -- if a narrow model started to score "
-            f"JA4, update this file's matrix and its docstring"
-        )
+    scoring_reads = set(re.findall(r'features\.get\("(zeek_\w+)"', _code_only(DETECTORS_SRC)))
+    assert not (scoring_reads & set(JA4_FEATURES)), (
+        f"a detector now reads {sorted(scoring_reads & set(JA4_FEATURES))} for scoring -- if a "
+        f"narrow model started to score JA4, update this file's matrix and its docstring"
+    )
     assert "clustering degrades with" in ZEEK_FEATURES_SRC, (
         "the DBSCAN subset's justification comment is gone -- the narrowing is now unexplained"
     )
