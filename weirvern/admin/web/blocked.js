@@ -127,7 +127,6 @@ function blOpenRule(r) {
           + "both be new decisions. Create a new rule if you want one."
         : "");
   els.apply.textContent = "Apply mode";
-  els.apply.textContent = "Apply mode";
   delete els.apply.dataset.armed;
 
   els.apply.onclick = async () => {

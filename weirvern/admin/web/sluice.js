@@ -100,8 +100,13 @@ async function loadSluice() {
       ["interface", gate.iface || d.iface || "—"],
       ["rules enforced", String(gate.rules_active ?? "—")],
       ["rules total", String(gate.rules_total ?? "—")],
-      ["packets blocked", String(gate.packets_blocked ?? "—")],
-      ["bytes blocked", String(gate.bytes_blocked ?? "—")],
+      // THE CONSOLE'S OWN FORMATTERS (issue #23): raw integers read as foreign next to every
+      // other panel -- no digit grouping, and a byte total with no scale. Missing still renders
+      // the placeholder and a real zero still renders 0, never hidden.
+      ["packets blocked",
+       gate.packets_blocked == null ? "—" : Number(gate.packets_blocked).toLocaleString()],
+      ["bytes blocked",
+       gate.bytes_blocked == null ? "—" : fmtBytes(gate.bytes_blocked)],
     ];
     for (const [k, v] of items) {
       stateBox.appendChild(el("div", { class: "stat" }, [
@@ -153,7 +158,8 @@ async function loadSluice() {
           el("td", {}, [sluiceStateChip(g.state)]),
           el("td", { class: "mono", text: g.iface || "—" }),
           el("td", { class: "mono", text: `${g.rules_active ?? 0} / ${g.rules_total ?? 0}` }),
-          el("td", { class: "mono", text: String(g.packets_blocked ?? 0) }),
+          el("td", { class: "mono",
+                     text: Number(g.packets_blocked ?? 0).toLocaleString() }),
           el("td", { class: "muted", text: g.age_s == null ? "—" : fmtAge(g.age_s) }),
           el("td", { class: "muted", text: g.enforcement || "none" }),
         ]));

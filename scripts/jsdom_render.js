@@ -3027,6 +3027,25 @@ check("the server's own state sentence reaches the screen",
       slText().includes("lapsed and are no longer enforced"),
       "gate.detail was not rendered, so the operator cannot see WHY");
 
+// ── the blocking statistics use the console's formatters (#23) ──────────────────────────────
+// Raw integers read as foreign beside every other panel: no digit grouping, no byte scale.
+// The fixture's gate carries 1234 packets / 987654 bytes, so both formatters have work to do;
+// the stopped gate further down (0 packets) must still render a real 0, never a blank.
+const slState = doc.getElementById("sl-state") ? doc.getElementById("sl-state").textContent : "";
+check("the gate tiles group packet counts and scale byte totals",
+      slState.includes((1234).toLocaleString()) && !slState.includes("1234")
+      && slState.includes(H.fmtBytes(987654)),
+      slState.slice(0, 170));
+const slGateRows = [...doc.querySelectorAll("#sl-gates tbody tr")];
+const dualRow = slGateRows.find((r) => r.textContent.includes("weirvern-dual"));
+check("the gates table groups its packet counts too",
+      !!dualRow && [...dualRow.querySelectorAll("td")][4].textContent === (1234).toLocaleString(),
+      dualRow ? [...dualRow.querySelectorAll("td")][4].textContent : "no weirvern-dual row");
+const zeroRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
+check("a stopped gate's real zero still renders as 0",
+      !!zeroRow && [...zeroRow.querySelectorAll("td")][4].textContent === "0",
+      zeroRow ? [...zeroRow.querySelectorAll("td")][4].textContent : "no lab-west row");
+
 check("a LIVE rule is distinguishable from a LAPSED one",
       slText().includes("live") && slText().includes("lapsed"),
       "a lapsed rule must not look like a live one, nor like a deleted one");
