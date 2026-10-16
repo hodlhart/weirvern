@@ -250,6 +250,41 @@ def test_ja4_is_assessed_by_both_wide_models_and_by_neither_of_the_narrow_ones(t
     assert not [f for f in ZEEK_FEATURES if "ja3" in f], "a ja3 feature reappeared in ZEEK_FEATURES"
 
 
+def test_ja4_computes_real_values_and_they_reach_the_vector():
+    """THE DERIVATION COMPUTES, not merely wires. A window with three fingerprints of which
+    one is in the host's history is two-thirds novel; the count is log-scaled like the other
+    counts; both land at their named slots in the ordered vector the wide models consume. And
+    WITHOUT a history there is no novelty to claim, so the ratio stays 0.0 -- the feature must
+    not guess a denominator into existence."""
+    import math
+
+    from weirvern.features import extract_features, feature_vector
+
+    zeek_row = {
+        "zeek_present": 1, "zeek_conn_count": 3, "zeek_notice_count": 1,
+        "zeek_ja4_count": 3, "ja4_set": ["ja4_a", "ja4_b", "ja4_c"],
+        "zeek_service_count": 2,
+    }
+    history = {"baseline_ja4_set": ["ja4_a"], "baseline_ja4_count": 1,
+               "baseline_service_count": 2}
+    f = extract_features({"window_start": None, "total_bytes": 0, "total_packets": 0},
+                         None, None, zeek_row, history)
+    assert f["zeek_ja4_count"] == math.log1p(3)
+    assert f["zeek_ja4_novelty"] == 2 / 3
+    vec = feature_vector(f, IF_FEATURES)
+    assert vec[IF_FEATURES.index("zeek_ja4_count")] == math.log1p(3)
+    assert vec[IF_FEATURES.index("zeek_ja4_novelty")] == 2 / 3
+    # No history, no claim: novelty is 0.0 rather than assumed.
+    g = extract_features({"window_start": None, "total_bytes": 0, "total_packets": 0},
+                         None, None, zeek_row, None)
+    assert g["zeek_ja4_novelty"] == 0.0
+    assert g["zeek_ja4_count"] == math.log1p(3)
+    # And a host with no TLS is not "novel": an empty set produces no ratio at all.
+    h = extract_features({"window_start": None, "total_bytes": 0, "total_packets": 0},
+                         None, None, {"zeek_present": 1, "zeek_conn_count": 1}, history)
+    assert h["zeek_ja4_novelty"] == 0.0
+
+
 def test_the_adaptive_baseline_trains_on_every_feature_and_scores_three():
     """IT READS THE WHOLE BLOCK AND SCORES A NAMED FEW. The training query aggregates every
     name in ZEEK_FEATURES (so the baseline INDEX covers all fifty), while predict() weighs
