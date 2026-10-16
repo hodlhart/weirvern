@@ -41,6 +41,32 @@ def test_the_wiring_is_in_boot_and_idempotent_by_construction():
     assert "btn.dataset.wired" in js, "a second boot would double-toggle every panel"
 
 
+def test_no_tab_leads_with_a_wall_of_prose():
+    """THE OPERATOR'S RULE (2026-10-16): "debloat the tabs more by using i with circles more".
+
+    A tab should open on data. The reading guidance belongs behind the circle beside the heading --
+    which is what the circle is FOR. This pins the shape rather than the wording: a static
+    paragraph (no id, so nothing rewrites it) longer than a couple of lines is prose that belongs in
+    a panel, not in the flow of the page. Paragraphs WITH an id are exempt on purpose: those are the
+    notes the JS fills in ("click any bar..."), which change with the operator's selection and must
+    stay where the selection happens.
+    """
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    walls = []
+    for m in re.finditer(r'<p class="muted">(.*?)</p>', html, re.S):
+        text = " ".join(m.group(1).split())
+        if len(text) > 220:
+            walls.append(text[:70] + "...")
+    assert not walls, (
+        "these paragraphs are still standing in the tab instead of behind an 'i': " + str(walls)
+    )
+    buttons = re.findall(r'class="info-btn" data-info="([^"]+)"', html)
+    assert len(buttons) >= 20, (
+        f"only {len(buttons)} explainers carry the circle; the tabs were debloated to put the "
+        "reading guidance behind it, and a rebuild that drops them puts the prose back"
+    )
+
+
 def test_the_old_question_mark_glyph_is_gone():
     """Two glyphs for one habit means readers learn it twice; the operator asked for the circle-i."""
     html = (WEB / "index.html").read_text(encoding="utf-8")
