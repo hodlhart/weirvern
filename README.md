@@ -138,6 +138,30 @@ curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh |
 The full procedure — requirements, the checks that refuse to run, the sensor node's capture port
 and the ConfigMap — is in [docs/deployment.md](docs/deployment.md).
 
+### The deployment Secret
+
+The installer creates it for you; by hand it is one command. `weirvern-secrets` holds the
+ClickHouse password, the break-glass operator token, and the Pushover credentials (left empty
+by default, which selects log-only alerting):
+
+```sh
+kubectl -n weirvern create secret generic weirvern-secrets \
+  --from-literal=CLICKHOUSE_PASSWORD="$(openssl rand -base64 24)" \
+  --from-literal=WEIRVERN_GUI_TOKEN="$(openssl rand -base64 24)" \
+  --from-literal=PUSHOVER_USER_KEY='' \
+  --from-literal=PUSHOVER_API_TOKEN=''
+```
+
+To read the break-glass token again later:
+
+```sh
+kubectl -n weirvern get secret weirvern-secrets \
+  -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d
+```
+
+The worker and the schema Job read the Secret at start; see
+[docs/deployment.md](docs/deployment.md) for the full procedure.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — workloads, the two sensor modes, the channel, TLS
