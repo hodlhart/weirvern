@@ -10,6 +10,7 @@ Run as:  python -m weirvern.worker
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -173,41 +174,63 @@ def _sluice_maybe(settings, client) -> None:
 # ── CHANNEL NETFLOW: the in-line path feeds the flow pipeline ───────────────────────────────────
 #
 # WHEN THE BOX IS IN LINE the channel carries traffic no mirror can give away -- and until now
-# that visibility stopped at Zeek's logs. This runs `softflowd` on the chosen channel port and
-# exports NetFlow to the deployment's OWN collector (goflow2 listens on the node's 2055 and
-# writes flows.jsonl, which the ingester tails into `weirvern.flows`): one pipeline, no new
-# storage, and the Netflow tab plus the models see what crossed the box.
+# that visibility stopped at Zeek's logs. This runs `tcpdump` on the chosen channel port, pipes
+# the capture into `softflowd`, and exports IPFIX to the deployment's OWN collector (goflow2
+# listens on the node's 2055 and writes flows.jsonl, which the ingester tails into
+# `weirvern.flows`): one pipeline, no new storage, and the Netflow tab plus the models see what
+# crossed the box.
 #
-# THE CHILD IS SUPERVISED, NOT FIRE-AND-FORGET: started when the selection and a verified-active
-# channel agree, stopped the moment either changes (including on worker shutdown, so softflowd
-# flushes its pending flows), retried on a five-minute cooldown after a crash -- a missing
-# capability or binary would otherwise respawn it every tick and write a log line per minute.
+# WHY THE CAPTURE IS TCPDUMP FED INTO SOFTFLOWD, all of it MEASURED on the test box (2026-10-16):
+#
+#   * softflowd's OWN live-capture loop is broken on this kernel: its libpcap counter grows with
+#     every packet (105 -> 115 across a burst) while "Packets processed" stays 0 -- for EVERY
+#     interface, a bridge port and a plain NIC alike. strace shows it polling the packet-ring
+#     socket and never receiving a readable event, while tcpdump's blocking read from the same
+#     socket on the same kernel captures fine.
+#   * softflowd READS A PCAP STREAM perfectly: given a capture file it processed 30/30 packets
+#     and flushed its flows on EOF.
+#   * goflow2 ingests softflowd's IPFIX (v10) but NOT its v9: -v 10 landed as "type":"IPFIX" in
+#     flows.jsonl; -v 9 produced nothing, silently. (The production gateway exports IPFIX too.)
+#
+# So tcpdump taps the port and softflowd summarises the stream. THE PIPELINE IS SUPERVISED LIKE
+# EVERY OTHER CHILD HERE: started only when the selection and a verified-active channel agree,
+# stopped the moment either changes (softflowd first, so it flushes; the pipe close then ends
+# tcpdump), stopped on worker shutdown, retried on a five-minute cooldown after a crash.
 CHANNEL_NETFLOW_COLLECTOR = "127.0.0.1:2055"  # goflow2, hostNetwork on this node
 # Timeouts chosen for a monitoring pipeline that re-evaluates five-minute buckets: idle flows
 # export within a minute or two and long flows at least every ten, rather than the half-hour-to-
-# hour defaults of a router exporting for billing.
+# hour defaults of a router exporting for billing. The `arp` term in the tap filter is not
+# recorded (softflowd counts it as ignored) -- it keeps the stream ticking on quiet segments so
+# flow expiries are still evaluated promptly.
 CHANNEL_NETFLOW_TIMEOUTS = ("-t", "tcp=120", "-t", "udp=60", "-t", "icmp=60",
                             "-t", "general=180", "-t", "maxlife=600")
-_CHANNEL_NETFLOW: dict = {"proc": None, "iface": "", "retry_after": 0.0}
+CHANNEL_NETFLOW_FILTER = "ip or ip6 or arp"
+_CHANNEL_NETFLOW: dict = {"proc": None, "tap": None, "iface": "", "retry_after": 0.0}
 
 
 def _stop_channel_netflow(reason: str = "") -> None:
-    """Stop the flow probe if it is running, and say why. Best-effort: never raises."""
+    """Stop the probe -- softflowd FIRST (it flushes its pending flows on SIGTERM), then the
+    capture tap. Best-effort: never raises."""
     holder = _CHANNEL_NETFLOW
-    proc = holder["proc"]
+    children = (("softflowd", holder["proc"]), ("tcpdump", holder["tap"]))
     holder["proc"] = None
+    holder["tap"] = None
     holder["iface"] = ""
-    if proc is None:
-        return
-    try:
-        proc.terminate()
+    stopped = False
+    for name, child in children:
+        if child is None:
+            continue
+        stopped = True
         try:
-            proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001 -- TimeoutExpired without importing it
-            proc.kill()
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except Exception:  # noqa: BLE001 -- TimeoutExpired without importing it
+                child.kill()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("channel netflow: could not stop %s: %s", name, exc)
+    if stopped:
         logger.info("channel netflow: probe stopped%s", f" ({reason})" if reason else "")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("channel netflow: could not stop the probe: %s", exc)
 
 
 def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=None,
@@ -252,24 +275,47 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
     if clock() < float(holder["retry_after"]):
         return
 
-    probe = (which or _shutil.which)("softflowd")
-    if not probe:
+    look = which or _shutil.which
+    probe, tap = look("softflowd"), look("tcpdump")
+    if not probe or not tap:
         holder["retry_after"] = clock() + 300.0
-        logger.warning("channel netflow: softflowd is not in this image, so the selection "
-                       "cannot collect flows (the image contract test pins this)")
+        logger.warning("channel netflow: %s is not in this image, so the selection cannot "
+                       "collect flows (the image contract test pins both)",
+                       "softflowd" if not probe else "tcpdump")
         return
-    argv = [probe, "-i", iface, "-n", CHANNEL_NETFLOW_COLLECTOR, "-v", "9", "-d",
-            "-p", "/tmp/softflowd-channel.pid", "-c", "/tmp/softflowd-channel.ctl",
-            *CHANNEL_NETFLOW_TIMEOUTS]
+    # The tap runs in the foreground writing raw pcap to its stdout; softflowd reads that stream
+    # from its stdin. `-s 160` keeps only headers -- softflowd summarises, it does not inspect
+    # payloads. The children are spawned by ONE injectable factory so the tests can drive the
+    # whole start/stop matrix without a kernel.
+    spawn_child = spawn or _subprocess.Popen
     try:
-        holder["proc"] = (spawn or _subprocess.Popen)(argv)
+        tap_proc = spawn_child(
+            [tap, "-i", iface, "-U", "-s", "160", "-w", "-", CHANNEL_NETFLOW_FILTER],
+            stdout=_subprocess.PIPE, stderr=_subprocess.DEVNULL)
+        try:
+            proc = spawn_child(
+                [probe, "-r", "/dev/stdin", "-n", CHANNEL_NETFLOW_COLLECTOR, "-v", "10", "-d",
+                 "-p", "/tmp/softflowd-channel.pid", "-c", "/tmp/softflowd-channel.ctl",
+                 *CHANNEL_NETFLOW_TIMEOUTS],
+                stdin=tap_proc.stdout)
+        except Exception:
+            tap_proc.terminate()
+            raise
+        # Our copy of the write end is not needed: softflowd holds the read end, tcpdump the
+        # write end, and closing ours is what lets tcpdump's death propagate as EOF to softflowd.
+        tap_out = tap_proc.stdout
+        if tap_out is not None:
+            with contextlib.suppress(Exception):
+                tap_out.close()
+        holder["tap"] = tap_proc
+        holder["proc"] = proc
         holder["iface"] = iface
-        logger.info("channel netflow: sampling %s -> %s (selection: %s)", iface,
-                    CHANNEL_NETFLOW_COLLECTOR, mode)
+        logger.info("channel netflow: sampling %s via tcpdump -> softflowd -> %s IPFIX "
+                    "(selection: %s)", iface, CHANNEL_NETFLOW_COLLECTOR, mode)
     except Exception as exc:  # noqa: BLE001
         _stop_channel_netflow()
         holder["retry_after"] = clock() + 300.0
-        logger.warning("channel netflow: could not start softflowd: %s", exc)
+        logger.warning("channel netflow: could not start the probe: %s", exc)
 
 
 def _sensor_name(settings) -> str:

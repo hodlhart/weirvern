@@ -76,18 +76,19 @@ def test_softflowd_is_installed_because_the_channel_probe_shells_out_to_it(
     five-minute cooldown and collects nothing. That is the exact silent-inert class the
     nftables clause above exists for, so it gets the same treatment.
     """
-    assert "softflowd" in containerfile_text, (
-        "the Containerfile no longer installs softflowd; the channel flow probe shells out to "
-        "it and the selection would collect nothing on every deployment"
-    )
-    install_lines = [
-        line for line in containerfile_text.splitlines()
-        if "apt-get install" in line and "softflowd" in line
-    ]
-    assert install_lines, (
-        "softflowd appears in the Containerfile but not on an apt-get install line -- a comment "
-        "is not a package"
-    )
+    for pkg in ("softflowd", "tcpdump"):
+        assert pkg in containerfile_text, (
+            f"the Containerfile no longer installs {pkg}; the channel flow probe shells out to "
+            f"it and the selection would collect nothing on every deployment"
+        )
+        install_lines = [
+            line for line in containerfile_text.splitlines()
+            if "apt-get install" in line and pkg in line
+        ]
+        assert install_lines, (
+            f"{pkg} appears in the Containerfile but not on an apt-get install line -- a "
+            f"comment is not a package"
+        )
 
 
 def test_the_channel_probe_actually_shells_out_to_softflowd() -> None:
@@ -95,6 +96,7 @@ def test_the_channel_probe_actually_shells_out_to_softflowd() -> None:
     softflowd, the image contract above becomes a stale requirement that blocks nothing."""
     source_text = (ROOT / "weirvern" / "worker.py").read_text()
     assert "softflowd" in source_text, "the worker no longer references softflowd at all"
+    assert "tcpdump" in source_text, "the worker no longer references tcpdump at all"
     assert "CHANNEL_NETFLOW_COLLECTOR" in source_text
 
 

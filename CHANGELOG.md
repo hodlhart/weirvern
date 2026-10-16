@@ -16,6 +16,16 @@ on a five-minute cooldown after a crash — a missing capability cannot produce 
 doomed child every minute. The image contract gains a `softflowd` clause: without the binary the
 selection would be silently inert, the same class the nftables clause exists for.
 
+**The capture is a tcpdump tap piped into softflowd — every part of that choice measured.** The
+first live run produced the probe running, the channel verified, and zero records: softflowd's
+own live-capture loop is broken on this kernel (its libpcap counter grew with every packet while
+"Packets processed" stayed 0, on a bridge port and a plain NIC alike; strace shows its poll on
+the packet-ring socket never firing, while tcpdump's blocking read from the same socket captures
+fine). softflowd reading a pcap STREAM processes perfectly, and goflow2 ingests its IPFIX (v10)
+but silently DROPS its v9. So the probe runs tcpdump → softflowd → IPFIX on 127.0.0.1:2055, and
+the records land in the same `flows` table the Netflow tab and the models read. The image
+contract pins both binaries; the supervision matrix runs against fake processes.
+
 ## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
 
 Two requests, one theme: nothing important should require kubectl or a manual.

@@ -324,6 +324,11 @@ def test_an_unspecified_mode_takes_no_verdict():
 # ── the channel flow probe: start / stop / back off, without a kernel ───────────────────────────
 
 
+class _DummyPipe:
+    def close(self):
+        pass
+
+
 class _FakeProc:
     """A child-process stand-in: alive until terminated/killed, or born exited."""
 
@@ -331,6 +336,7 @@ class _FakeProc:
         self.returncode = None if alive else rc
         self.terminated = False
         self.killed = False
+        self.stdout = _DummyPipe()
 
     def poll(self):
         return self.returncode
@@ -364,99 +370,110 @@ def _nf_settings(mode: str):
 def _reset_probe():
     from weirvern import worker as worker_mod
 
-    worker_mod._CHANNEL_NETFLOW.update({"proc": None, "iface": "", "retry_after": 0.0})
+    worker_mod._CHANNEL_NETFLOW.update(
+        {"proc": None, "tap": None, "iface": "", "retry_after": 0.0})
     return worker_mod
 
 
-def test_the_flow_probe_starts_on_the_selected_port_and_only_once():
-    """The whole feature in one tick: the probe runs on the CHOSEN port, exports to the
-    deployment's own collector, in the foreground (or supervision could not see it die) --
-    and a second tick with nothing changed starts nothing."""
+def _recorder(spawns, procs=None):
+    """A spawn factory that records (argv, kwargs) and hands out fakes, in order."""
+    seq = iter(procs) if procs else None
+
+    def spawn(argv, **kwargs):
+        spawns.append((list(argv), kwargs))
+        if seq is not None:
+            return next(seq)
+        return _FakeProc()
+
+    return spawn
+
+
+def test_the_flow_probe_pipes_a_tcpdump_tap_into_softflowd_once():
+    """The MEASURED architecture in one tick: tcpdump taps the chosen port (headers only,
+    packet-buffered) and softflowd summarises that stream, exporting IPFIX to the deployment's
+    own collector -- and a second tick with nothing changed starts nothing."""
     worker_mod = _reset_probe()
-    spawns = []
+    spawns: list = []
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(),
-        which=lambda n: "/usr/sbin/softflowd", now=lambda: 1000.0)
-    assert len(spawns) == 1
-    argv = spawns[0]
-    assert argv[argv.index("-i") + 1] == "wv-a"
-    assert argv[argv.index("-n") + 1] == worker_mod.CHANNEL_NETFLOW_COLLECTOR
-    assert "-d" in argv, "the child must run in the foreground, or supervision cannot see it die"
+        spawn=_recorder(spawns), which=lambda n: f"/usr/sbin/{n}", now=lambda: 1000.0)
+    assert len(spawns) == 2, "expected a capture tap and a summariser, not one process"
+    tap_argv, _tap_kw = spawns[0]
+    sf_argv, _sf_kw = spawns[1]
+    assert "tcpdump" in tap_argv[0]
+    assert tap_argv[tap_argv.index("-i") + 1] == "wv-a"
+    assert "-U" in tap_argv and "-w" in tap_argv
+    assert "softflowd" in sf_argv[0]
+    assert sf_argv[sf_argv.index("-r") + 1] == "/dev/stdin"
+    assert sf_argv[sf_argv.index("-v") + 1] == "10", "v9 is dropped by the collector; measured"
+    assert sf_argv[sf_argv.index("-n") + 1] == worker_mod.CHANNEL_NETFLOW_COLLECTOR
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(),
-        which=lambda n: "x", now=lambda: 1001.0)
-    assert len(spawns) == 1, "an unchanged tick spawned a second probe"
+        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 1001.0)
+    assert len(spawns) == 2, "an unchanged tick spawned another probe"
 
 
-def test_the_flow_probe_stops_when_the_selection_is_off_or_the_channel_dies():
-    """'Off' must mean stopped, and a channel that went down must stop it too -- the probe
-    samples a port that may no longer be carrying anything the operator asked about."""
+def test_the_flow_probe_stops_both_children_when_off_or_channel_down():
     for mode, active in (("off", True), ("upstream", False)):
         worker_mod = _reset_probe()
-        proc = _FakeProc()
-        worker_mod._CHANNEL_NETFLOW.update({"proc": proc, "iface": "wv-a"})
-        spawned = []
+        tap, sf = _FakeProc(), _FakeProc()
+        worker_mod._CHANNEL_NETFLOW.update({"proc": sf, "tap": tap, "iface": "wv-a"})
+        spawns = []
         worker_mod._channel_netflow_maybe(
             _nf_settings(mode), channel_state=_NFChannel(active),
-            spawn=lambda argv, out=spawned: out.append(argv) or _FakeProc(),
-            which=lambda n: "x", now=lambda: 2000.0)
-        assert proc.terminated is True, f"probe kept running with mode={mode}, active={active}"
-        assert spawned == [], "a stopped probe must not be replaced while it is not wanted"
+            spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 2000.0)
+        assert sf.terminated and tap.terminated, (
+            f"probe kept running with mode={mode}, active={active}"
+        )
+        assert spawns == [], "a stopped probe must not be replaced while it is not wanted"
 
 
 def test_the_flow_probe_moves_port_when_the_selection_moves():
     worker_mod = _reset_probe()
-    first, second = _FakeProc(), _FakeProc()
-    seq = iter([first, second])
+    tap1, sf1, tap2, sf2 = (_FakeProc() for _ in range(4))
     spawns = []
+    spawn = _recorder(spawns, [tap1, sf1, tap2, sf2])
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or next(seq), which=lambda n: "x",
-        now=lambda: 10.0)
+        spawn=spawn, which=lambda n: "x", now=lambda: 10.0)
     worker_mod._channel_netflow_maybe(
         _nf_settings("downstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or next(seq), which=lambda n: "x",
-        now=lambda: 11.0)
-    assert first.terminated is True, "the probe on the old port was left running"
-    assert len(spawns) == 2 and spawns[1][spawns[1].index("-i") + 1] == "wv-b"
+        spawn=spawn, which=lambda n: "x", now=lambda: 11.0)
+    assert tap1.terminated and sf1.terminated, "the probe on the old port was left running"
+    assert len(spawns) == 4
+    assert spawns[2][0][spawns[2][0].index("-i") + 1] == "wv-b"
 
 
 def test_the_flow_probe_backs_off_after_a_death_or_a_missing_binary():
-    """A crash loop that writes a log line and a doomed child every tick is worse than a probe
+    """A crash loop that writes a log line and doomed children every tick is worse than a probe
     that is visibly not running: one warning, then a five-minute cooldown, then a retry."""
-    # a dead child: one warning, no immediate respawn
+    # a dead summariser: one warning, no immediate respawn
     worker_mod = _reset_probe()
-    dead = _FakeProc(alive=False, rc=1)
-    worker_mod._CHANNEL_NETFLOW.update({"proc": dead, "iface": "wv-a"})
+    worker_mod._CHANNEL_NETFLOW.update(
+        {"proc": _FakeProc(alive=False, rc=1), "tap": _FakeProc(), "iface": "wv-a"})
     spawns = []
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(), which=lambda n: "x",
-        now=lambda: 100.0)
+        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 100.0)
     assert spawns == [], "respawned immediately after a crash"
     assert worker_mod._CHANNEL_NETFLOW["retry_after"] == 400.0
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(), which=lambda n: "x",
-        now=lambda: 200.0)
+        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 200.0)
     assert spawns == [], "retried inside the cooldown"
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(), which=lambda n: "x",
-        now=lambda: 401.0)
-    assert len(spawns) == 1, "the probe was never retried after the cooldown"
+        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 401.0)
+    assert len(spawns) == 2, "the probe was never retried after the cooldown"
 
     # a missing binary: warned once on the cooldown, not once per tick
     worker_mod = _reset_probe()
     spawns.clear()
+    missing = lambda n: None if n == "tcpdump" else "x"  # noqa: E731
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(), which=lambda n: None,
-        now=lambda: 500.0)
+        spawn=_recorder(spawns), which=missing, now=lambda: 500.0)
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=lambda argv: spawns.append(argv) or _FakeProc(), which=lambda n: None,
-        now=lambda: 501.0)
+        spawn=_recorder(spawns), which=missing, now=lambda: 501.0)
     assert spawns == [] and worker_mod._CHANNEL_NETFLOW["retry_after"] == 800.0
