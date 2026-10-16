@@ -139,3 +139,44 @@ def test_the_domain_cache_serves_repeat_reads():
     before = len(c.sql)
     blocklists.load_domains(c)   # within the TTL: no new query
     assert len(c.sql) == before, "the small cache must actually cache"
+
+
+def test_set_source_enabled_flips_the_flag_and_keeps_the_numbers():
+    """Off means off everywhere, and the numbers on the row still describe the last real fetch --
+    an enable is not a resync."""
+    import pytest
+
+    from weirvern import blocklists
+
+    class _C:
+        def __init__(self):
+            self.inserts = []
+        def query(self, sql, parameters=None, **_kw):
+            class R:
+                result_rows = [("hagezi-light", "HaGeZi Multi LIGHT", "https://x/l.txt", "domains",
+                                1, None, 61701, "")]
+            return R()
+        def insert(self, table, data, column_names=None, **_kw):
+            self.inserts.append((table, data, column_names))
+
+    c = _C()
+    out = blocklists.set_source_enabled(c, "hagezi-light", False)
+    assert out["enabled"] is False
+    row = c.inserts[0][1][0]
+    assert row[0] == "hagezi-light" and row[4] == 0 and row[8] == 61701, "count survives"
+    with pytest.raises(ValueError):
+        blocklists.set_source_enabled(_C(), "nope", True)
+
+
+def test_sync_due_honours_the_configured_cadence():
+    """BLOCKLIST_SYNC_HOURS (2026-10-16): the lists' cadence is a setting like every other
+    cadence here. The default stays 24h; an operator who sets 1h gets 1h."""
+    from datetime import datetime, timedelta
+
+    from weirvern import blocklists
+
+    now = datetime.now(UTC)
+    c = _Client(rows=[("s1", "a", "", "dnsmasq", True, now - timedelta(hours=2), 1, "")])
+    assert {s["source_id"] for s in blocklists.sync_due(c, now=now)} == set(), "24h default: not due"
+    due = blocklists.sync_due(c, now=now, every_h=1)
+    assert {s["source_id"] for s in due} == {"s1"}, "1h cadence: due"

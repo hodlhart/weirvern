@@ -253,7 +253,8 @@ def test_the_anomalies_route_merges_reviews_and_filters_only_when_readable():
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     body = src[src.index("def _anomalies(self,"):]
     body = body[:body.index("\n        def _models")]
-    assert "review_index" in body and "attach_reviews" in body
+    # The merge is the GROUPED one since 2026-10-16 (the count column); the intent is unchanged.
+    assert "review_index" in body and "attach_group_reviews" in body
     # THE SUBTLE ONE: the unreviewed filter must not run on a FAILED read.
     assert "rev_err is None" in body or "rev_err is not None" in body, (
         "the filter no longer guards on the review read; filtering a failed read "

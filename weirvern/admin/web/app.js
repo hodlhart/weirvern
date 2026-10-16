@@ -870,6 +870,9 @@ async function loadSettings() {
   for (const rows of Object.values(groups)) {
     for (const r of rows || []) SETTINGS_ROWS[r.key] = r;
   }
+  // The blocklist pane lives on this tab now (moved 2026-10-16); keep it fresh whenever
+  // Settings loads. A no-op on builds where the card is absent.
+  if (typeof loadBlocklistPane === "function") loadBlocklistPane().catch(() => {});
   // SONAR is a write-gated action (it creates a job on the sensor node), so for a viewer
   // or a signed-out browser it is disabled with the same honesty as the other controls:
   // present and explainable, not vanished. THE TEST RUN is write-gated for the same reason
@@ -1202,6 +1205,42 @@ async function postReview(a, state) {
 }
 
 /**
+ * THE COUNT COLUMN (the operator, 2026-10-16: "These are identical in anomalies. Add a count
+ * column instead of showing both. then when you click it it shows each time it happened"). One
+ * row per DISTINCT anomaly; this cell says how many times it fired, and clicking it unfolds the
+ * occurrences -- each window with ITS OWN review state, because reviews are per occurrence.
+ */
+function anReviewLabel(state) {
+  const s = String(state == null ? "" : state);
+  return { "": "unreviewed", ack: "ack", resolved: "resolved", false_positive: "false positive",
+           unavailable: "state unavailable" }[s] || s;
+}
+
+function anToggleOccurrences(tr, a) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList && next.classList.contains("an-exp")) { next.remove(); return; }
+  const occ = (a.windows && a.windows.length) ? a.windows
+    : [{ window: a.window_start, review_state: a.review_state, review_note: a.review_note }];
+  const box = el("div", { class: "occ-list" });
+  for (const w of occ) {
+    box.appendChild(el("div", { class: "occ" }, [
+      el("span", { class: "mono", text: w.window ? fmtTime(new Date(w.window)) : "—" }),
+      el("span", { class: "muted", text: "\u00a0\u00a0" + anReviewLabel(w.review_state) }),
+      w.review_note ? el("span", { class: "muted", text: " \u2014 " + w.review_note }) : null,
+    ].filter(Boolean)));
+  }
+  if (Number(a.n || 1) > occ.length) {
+    box.appendChild(el("div", { class: "muted",
+      text: `\u2026and ${Number(a.n) - occ.length} more; the newest ${occ.length} are listed.` }));
+  }
+  const exp = el("tr", { class: "an-exp" }, [
+    el("td", { class: "muted", text: "occurrences" }),
+    el("td", { attrs: { colspan: "8" } }, [box]),
+  ]);
+  tr.parentNode.insertBefore(exp, tr.nextSibling);
+}
+
+/**
  * THE DASHBOARD-WIDE FILTER for the triage queue (the operator, 2026-10-16: "if i click in any
  * dashboard it should filter that entire dashboard"). A click on a row's host or severity
  * becomes the queue's filter; the chips remove themselves. SERVER-SIDE on purpose: the handler
@@ -1296,7 +1335,7 @@ async function loadAnomalies() {
       : (Number(min) > 0
           ? `No anomalies at or above score ${min}.`
           : "No anomalies recorded yet.");
-    emptyRow(tbody, 8, note);
+    emptyRow(tbody, 9, note);
     return;
   }
   for (const a of rows) {
@@ -1311,6 +1350,17 @@ async function loadAnomalies() {
                                  on: { click: () => openEvidence(a) } }, [
       el("td", { class: "mono", text: fmtTime(a.detected_at) }),
       el("td", { class: "mono", text: fmtTime(a.window_start) }),
+      el("td", { class: Number(a.n || 1) > 1 ? "num dcell" : "num", text: String(a.n || 1),
+                 attrs: Number(a.n || 1) > 1
+                   ? { title: `${Number(a.n)} occurrence(s)`
+                       + (Number(a.unreviewed_n || 0) ? `, ${Number(a.unreviewed_n)} unreviewed` : "")
+                       + " \u2014 click to list them" } : {},
+                 on: { click: (e) => {
+                   if (Number(a.n || 1) > 1) {
+                     e.stopPropagation();
+                     anToggleOccurrences(e.target.closest("tr"), a);
+                   }
+                 } } }),
       el("td", { class: "dcell", attrs: { title: "filter the queue to this host" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("host", a.src_addr); } } },
          [hostCell(a.src_addr, a.hostname)]),
@@ -1870,6 +1920,30 @@ function wireInfoButtons() {
  * would leave the strip floating mid-page or hidden behind the header. Measured, not guessed --
  * and re-measured on resize and whenever the header itself changes size.
  */
+/**
+ * SETTINGS SECTIONS OPEN ON DEMAND (the operator, 2026-10-16: "make the sections expandable so
+ * you just open what you want to edit"). Every card in the Settings view collapses to its
+ * heading; the heading toggles it. THE PENDING-CHANGES CARD IS EXEMPT: it holds the Apply
+ * button, and a surface that can be accidentally collapsed is a new way to lose it. The info
+ * button inside a heading is not a toggle target.
+ */
+function settingsAccordion() {
+  const view = document.getElementById("view-settings");
+  if (!view) return;
+  for (const card of view.querySelectorAll(":scope > .card")) {
+    if (card.dataset.acc === "1" || card.id === "st-stage-card") continue;
+    const h2 = card.querySelector(":scope > h2");
+    if (!h2) continue;
+    card.dataset.acc = "1";
+    card.classList.add("collapsed");
+    h2.classList.add("acc");
+    h2.addEventListener("click", (e) => {
+      if (e.target.closest("button, a, input, select")) return;
+      card.classList.toggle("collapsed");
+    });
+  }
+}
+
 function lockTabsToTop() {
   const header = document.querySelector("header");
   if (!header) return;
@@ -2229,6 +2303,7 @@ async function boot() {
   // inside its own box rather than widen the page (see wrapTables and style.css).
   wrapTables();
   lockTabsToTop();
+  settingsAccordion();
   // The "i" affordances: every view's explainer is one click from the header it explains.
   wireInfoButtons();
   try {
@@ -2753,6 +2828,14 @@ async function loadRetrain() {
           + "or trash. File it again once traffic has accumulated.",
       failed: `Failed: ${d.note || "no reason recorded"} \u2014 file it again to retry.`,
     }[st] || st;
+    if ((st === "requested" || st === "running") && d.requested_at) {
+      // HOW LONG IT HAS BEEN WAITING, said out loud: a request that sits there must be able to
+      // say since when, or "waiting" and "stuck" look alike.
+      const t = new Date(d.requested_at);
+      if (!Number.isNaN(t.getTime())) {
+        stand.textContent += ` Filed ${fmtAge(Math.max(0, (Date.now() - t.getTime()) / 1000))}.`;
+      }
+    }
   }
   force.disabled = d.state === "requested" || d.state === "running";
 
@@ -2789,7 +2872,11 @@ async function loadRetrain() {
     })]));
   }
   if (d.decision && d.decision.state) {
-    note.textContent += ` — decision: ${d.decision.state}`;
+    // AN EARLIER CANDIDATE'S FATE, LABELLED AS SUCH (the operator, 2026-10-16: "Retraining
+    // requested (operator) \u2014 decision: discarded ... this doesnt make sense"). The decision on
+    // record judges the candidate that produced it; without the label, "requested" beside
+    // "discarded" read as this request being discarded.
+    note.textContent += ` \u2014 last decision on record (an earlier candidate): ${d.decision.state}`;
   }
 }
 

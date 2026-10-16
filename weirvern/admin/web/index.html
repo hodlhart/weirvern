@@ -352,6 +352,7 @@
         <label>rcode <select id="dn-rcode"><option value="">any rcode</option><option value="0">NOERROR</option><option value="2">SERVFAIL</option><option value="3">NXDOMAIN</option><option value="5">REFUSED</option></select></label>
         <button id="dn-go">Search</button>
         <button id="dn-clear">Clear</button>
+        <button id="dn-block" title="turn the name in the domain box into a rule">Block…</button>
       </div>
       <div id="dn-volume" class="chart"></div>
       <div id="dn-facets" class="dc-chips"></div>
@@ -500,13 +501,18 @@
 
   <section id="view-anomalies" class="view">
     <div class="card">
-      <h2>All anomalies <button class="info-btn" data-info="an-info" aria-label="how a row is scored and what the chips do" aria-expanded="false" title="how a row is scored and what the chips do">i</button></h2>
+      <!-- The criticality tiles ride the TITLE ROW, top right (the operator, 2026-10-16: "move ...
+           to the top right of the chart, not under the min score"). They are the page's summary,
+           so they sit with the page's heading, not inside the filter controls. -->
+      <div class="view-head">
+        <h2>All anomalies <button class="info-btn" data-info="an-info" aria-label="how a row is scored and what the chips do" aria-expanded="false" title="how a row is scored and what the chips do">i</button></h2>
+        <div id="an-sev" class="sev-tiles"></div>
+      </div>
       <div class="controls">
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
         <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
         <span id="an-filters"></span>
-        <div id="an-sev" class="sev-tiles"></div>
       </div>
       <div class="info-text hidden" id="an-info">
         Each row is a host-window the ensemble flagged: the score that crossed the line, and
@@ -521,7 +527,7 @@
         Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window. Mark a row with ack / resolve / FP to record what you did about it — a recurring benign alert stays cleared that way. Reviews need the operator token (same write gate as Settings).</div>
 
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Review</th></tr></thead>
+        <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Review</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -965,29 +971,25 @@
       </div>
     </div>
 
+    <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
+
+    <!-- ALL THE BLOCKING CONTROLS, ONE PLACE (the operator, 2026-10-16: "All blocking controls
+         should live in sluice gate. example i should be able to click high in High only to swap
+         to it"). The policy strip is click-to-swap; the gate and domain switches and the
+         auto-block score sit under it. Every one applies through the same plan/apply path as
+         Settings -- and says so, because applying restarts the worker. -->
     <div class="card">
-      <h2>Domain blocklists <button class="info-btn" data-info="sl-bl-info" aria-label="what the blocklists do" aria-expanded="false" title="what the blocklists do">i</button></h2>
-      <div class="info-text hidden" id="sl-bl-info">
-        Lists imported from the internet, plus your own names. A hit is recorded when a device
-        asks for a listed name &mdash; importing and recording block nothing; a domain rule is
-        what blocks what a name resolves to. Each row says when it was fetched and, if the last
-        sync failed, why.
-      </div>
-      <table>
-        <thead><tr><th>source</th><th>state</th><th>domains</th><th>fetched</th><th>error</th></tr></thead>
-        <tbody id="sl-bl-rows"></tbody>
-      </table>
+      <h2>Blocking controls <span class="muted" id="sl-bc-note"></span></h2>
+      <p class="muted">What decides whether &mdash; and how much &mdash; the gate blocks. Click a
+        policy to swap to it.</p>
+      <div id="sl-criticality" class="sev-tiles"></div>
       <div class="controls">
-        <button id="sl-bl-sync">Sync now</button>
-        <label>custom domain <input id="sl-bl-custom" type="text" placeholder="ads.example.com" /></label>
-        <button id="sl-bl-add">Add</button>
-        <span id="sl-bl-note" class="muted"></span>
+        <button id="sl-bc-gate">…</button>
+        <button id="sl-bc-dom">…</button>
+        <label>auto-block at score <input id="sl-bc-auto" type="number" min="0" max="1" step="0.05"></label>
+        <button id="sl-bc-autosave">Save score</button>
       </div>
-      <h3>Recent domain hits</h3>
-      <table>
-        <thead><tr><th>time</th><th>domain</th><th>query</th><th>client</th></tr></thead>
-        <tbody id="sl-hit-rows"></tbody>
-      </table>
+      <p class="muted" id="sl-bc-help"></p>
     </div>
 
     <div class="card">
@@ -1049,6 +1051,8 @@
         <h3>Rule <span class="mono" id="bl-rule-id"></span></h3>
         <div id="bl-rule-body"></div>
         <div class="controls">
+          <label>name <input id="bl-rule-domain" type="text" size="26" placeholder="example.com or *.example.com"></label>
+          <button id="bl-rule-save-domain">Save name</button>
           <label>mode <select id="bl-rule-mode">
             <option value="alert">alert (record only)</option>
             <option value="block">block (enforce)</option>
@@ -1070,14 +1074,14 @@
     <div class="card">
       <h2>Blocking now <span class="muted">these rules stop traffic</span></h2>
       <table>
-        <thead><tr><th>rule</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
+        <thead><tr><th>rule</th><th>reason</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
         <tbody id="bl-block-rows"></tbody>
       </table>
     </div>
     <div class="card">
       <h2>Alerting <span class="muted">these rules record only</span></h2>
       <table>
-        <thead><tr><th>rule</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
+        <thead><tr><th>rule</th><th>reason</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
         <tbody id="bl-alert-rows"></tbody>
       </table>
     </div>
@@ -1390,8 +1394,44 @@
       <div id="st-runtime" class="grid-inline"></div>
       <div id="st-note"></div>
     </div>
-  </section>
+      <div class="card">
+      <h2>Domain blocklists <button class="info-btn" data-info="sl-bl-info" aria-label="what the blocklists do" aria-expanded="false" title="what the blocklists do">i</button></h2>
+      <div class="info-text hidden" id="sl-bl-info">
+        Lists imported from the internet, plus your own names. A hit is recorded when a device
+        asks for a listed name &mdash; importing and recording block nothing; a domain rule is
+        what blocks what a name resolves to. Each row says when it was fetched and, if the last
+        sync failed, why.
+      </div>
+      <table>
+        <thead><tr><th>source</th><th>state</th><th>domains</th><th>fetched</th><th>error</th></tr></thead>
+        <tbody id="sl-bl-rows"></tbody>
+      </table>
+      <div class="controls">
+        <button id="sl-bl-sync">Sync now</button>
+        <label>custom domain <input id="sl-bl-custom" type="text" placeholder="ads.example.com" /></label>
+        <button id="sl-bl-add">Add</button>
+        <span id="sl-bl-note" class="muted"></span>
+      </div>
+    </div>
+</section>
 </main>
+
+<!-- THE RULE COMPOSER (the operator, 2026-10-16: "from dns tab i should be able to push a
+     domain to a block rule and modify it like adding a *"). Opens prefilled from a DNS row or
+     the domain box; the `*.` checkbox is how you say "this name AND its subdomains" -- which a
+     rule already covers, so the marker is stored as typed and shown back to you. -->
+<div id="rule-composer" class="card hidden">
+  <h3>Create a domain rule</h3>
+  <div class="controls">
+    <label>domain <input id="rc-domain" type="text" placeholder="example.com" size="30"></label>
+    <label class="check"><input type="checkbox" id="rc-wild"> include subdomains (*.)</label>
+    <label>mode <select id="rc-mode"><option value="alert">alert — record only</option><option value="block">block — enforce</option></select></label>
+    <label>reason <input id="rc-reason" type="text" placeholder="optional" size="24"></label>
+    <button id="rc-create">Create</button>
+    <button id="rc-cancel">Cancel</button>
+  </div>
+  <p class="muted" id="rc-note"></p>
+</div>
 
 <script src="/app.js"></script>
 <script src="/soc.js"></script>

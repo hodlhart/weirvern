@@ -98,7 +98,7 @@ def _blocklist_maybe(settings, client) -> None:
         added = blocklists.ensure_default_sources(client)
         if added:
             logger.info("blocklists: seeded %d default source(s)", added)
-        due = blocklists.sync_due(client)
+        due = blocklists.sync_due(client, every_h=settings.blocklist_sync_hours)
         if due:
             logger.info("blocklists: %d source(s) due for sync", len(due))
         for src in due:
@@ -177,7 +177,9 @@ def _sluice_dns_maybe(settings, client) -> None:
         q = str(query or "").lower().rstrip(".")
         hit = False
         for rule in rules:
-            d = rule.domain.lower()
+            # The `*.` marker is for humans (validate_domain stores it as typed, 2026-10-16);
+            # the suffix test below already means "this name and its subdomains".
+            d = rule.domain.lower().rstrip(".").removeprefix("*.")
             if q == d or q.endswith("." + d):
                 events.append({
                     "ts": ts, "rule_id": rule.rule_id, "kind": "dns", "domain": rule.domain,
@@ -314,6 +316,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         sensor_mode=settings.sensor_mode,
         channel=channel_state,
         siphon_live=siphon_live,
+        block_domains=settings.sluice_block_domains,
     )
     _SLUICE["armed"] = state.holding
     logger.info("sluice gate: %s -- %s", state.state, state.detail)
@@ -2052,6 +2055,13 @@ def main() -> None:
     while not _stop.is_set():
         cycle_start = time.time()
         try:
+            # THE OPERATOR'S REQUESTS COME FIRST (measured 2026-10-16: a request filed at 12:23
+            # sat "requested" for hours while the box's cold training ran across every worker
+            # restart -- this call used to sit AFTER the training branch, so a request was
+            # hostage to training that had not finished). process_model_actions is cheap when
+            # idle, and the retrain path builds its OWN detectors, so it never needed this
+            # cycle's trained ones. The keep/trash paths reload from the installed artifacts.
+            process_model_actions(client, detectors, settings, cfg)
             if not trained_once:
                 # Only latch `trained_once` when training actually produced
                 # usable detectors. On a fresh deployment the worker starts
@@ -2084,7 +2094,8 @@ def main() -> None:
             # impossible ("a row that sits there looks like a worker that is busy"). A forced
             # retrain on a box with no data is a legitimate request whose ANSWER is "nothing
             # trained", and it must get that answer.
-            process_model_actions(client, detectors, settings, cfg)
+            # (The requests themselves were carried out at the TOP of this cycle -- see the note
+            # there. Only the orphan sweep stays here, with the rest of the model bookkeeping.)
             # ... and the race-free sweep for anything a RESTART left behind: a one-shot reap at
             # startup missed a request filed seconds before the rollout (measured), because the
             # previous pod's write had not landed yet. Anything stamped `running` before THIS

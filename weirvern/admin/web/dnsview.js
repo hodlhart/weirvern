@@ -219,6 +219,13 @@ function dnRenderRows(d) {
     q.classList.add("dcell");
     q.title = "add to the filter: domain = " + r.query;
     q.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-domain", r.query]]); });
+    // PUSH THE NAME TO A RULE (the operator, 2026-10-16: "from dns tab i should be able to push a
+    // domain to a block rule and modify it like adding a *"). The composer opens prefilled; the
+    // filter-click on the cell itself is unchanged.
+    const blk = el("button", { class: "link", text: " block\u2026",
+      attrs: { title: "turn this name into a rule" } });
+    blk.addEventListener("click", (e) => { e.stopPropagation(); openRuleComposer(r.query); });
+    q.appendChild(blk);
     tr.appendChild(q);
     const qt = dnCell(r.qtype_label, "dcell");
     if (r.qtype != null) {

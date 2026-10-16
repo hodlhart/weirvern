@@ -70,3 +70,19 @@ def test_a_name_that_does_not_match_writes_nothing(wired):
     aware = datetime(2026, 10, 16, 8, 55, 44, tzinfo=timezone(timedelta(hours=-5)))
     worker._sluice_dns_maybe(_Settings(), _Client([(aware, "203.0.113.20", "example.net")]))
     assert wired == []
+
+
+def test_a_wildcard_marker_matches_like_its_base(monkeypatch):
+    """`*.name` is stored as typed (the operator, 2026-10-16: "modify it like adding a *"); the
+    matcher strips the marker because a name already covers its subdomains."""
+    captured: list[dict] = []
+    rule = Rule("r2", domain="*.ads.example.com", mode="alert")
+    monkeypatch.setattr(sluice_store, "load_live_rules", lambda client: [rule])
+    monkeypatch.setattr(sluice_store, "write_events",
+                        lambda client, events, now=None: captured.extend(events) or len(events))
+    monkeypatch.setattr(worker, "_SLUICE_DNS",
+                        {"cursor": datetime(2026, 10, 16, 8, 0, 0), "last": 0.0})
+    aware = datetime(2026, 10, 16, 8, 55, 44, tzinfo=timezone(timedelta(hours=-5)))
+    worker._sluice_dns_maybe(_Settings(),
+                             _Client([(aware, "203.0.113.20", "tracker.ads.example.com")]))
+    assert len(captured) == 1 and captured[0]["rule_id"] == "r2"

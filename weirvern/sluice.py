@@ -1126,6 +1126,7 @@ def enforcement_pass(
     channel: Any = None,
     siphon_live: bool | None = None,
     domain_window_h: int = 6,
+    block_domains: bool = True,
 ) -> GateState:
     """One cycle: load rules, let detections add more, arm, and RECORD what happened.
 
@@ -1208,6 +1209,18 @@ def enforcement_pass(
                 # One bad detection must not stop the pass: the manual rules still need arming.
                 logger.warning("sluice: could not record a derived rule: %s", exc)
 
+    # THE DOMAIN-BLOCKING SWITCH (the operator, 2026-10-16). Off, blocking domain rules are
+    # WITHHELD from the kernel -- they keep recording and alerting through the hit pass, and
+    # address rules keep enforcing -- and the gate's detail SAYS so, because a rule that reads
+    # "block" in every table while the kernel has nothing is exactly the confident-wrong-answer
+    # this module refuses to install.
+    if not block_domains:
+        withheld = [r for r in kernel_rules if r.domain]
+        if withheld:
+            kernel_rules = [r for r in kernel_rules if not r.domain]
+            domain_notes = list(domain_notes) + [
+                f"domain blocking is OFF (SLUICE_BLOCK_DOMAINS=0): {len(withheld)} blocking "
+                f"domain rule(s) are recording only"]
     state = supervisor.arm(kernel_rules)
     if domain_notes:
         state = replace(state, detail=("; ".join(domain_notes) + " " + (state.detail or "")).strip())

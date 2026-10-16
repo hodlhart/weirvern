@@ -341,6 +341,8 @@ def _build_handler(ctx: GuiContext):
             # Reads stay open: looking at what is blocked never requires a password.
             if path == "/api/sluice":
                 return self._sluice()
+            if path == "/api/blocklists":
+                return self._blocklists_get()
             if path == "/api/sluice/state":
                 return self._sluice_state()
             # ── WEIRLINGS (the fleet) ───────────────────────────────────────────────────────
@@ -442,7 +444,10 @@ def _build_handler(ctx: GuiContext):
                     sev_f = (query.get("severity") or [""])[0].strip()
                     if len(host_f) > 64 or len(sev_f) > 24:
                         return self._error(400, "host or severity filter is implausibly long")
-                    rows = status_mod.anomalies_detailed(
+                    # GROUPED (the operator, 2026-10-16): identical anomalies fold into one row
+                    # carrying a count, with each occurrence's window behind the click. A
+                    # duplicate-consuming list would quietly shrink the queue's coverage.
+                    rows = status_mod.anomalies_grouped(
                         client, limit=limit, min_score=min_score, host=host_f, severity=sev_f)
                     # The header tiles: counts per severity under min-score + host, NOT under the
                     # severity filter itself (see status.anomaly_severity_counts for why).
@@ -457,13 +462,14 @@ def _build_handler(ctx: GuiContext):
                     # covered_since is the index's OWN lower bound, so a row older than the
                     # review window is marked unknowable rather than reading as "unreviewed".
                     # Without it, an analyst re-triages an alert that was already dispositioned.
-                    status_mod.attach_reviews(rows, idx, rev_err, covered_since)
+                    status_mod.attach_group_reviews(rows, idx, rev_err, covered_since)
                     # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
                     # state we could not read would answer "nothing is unreviewed" -- a
                     # confident claim built from a failed query. Better to return the rows
                     # unfiltered, carrying the unavailable marker, and let the UI say why.
                     if unreviewed_only and rev_err is None:
-                        rows = [r for r in rows if r.get("review_state") == ""]
+                        # A group counts as unreviewed when ANY of its occurrences is.
+                        rows = [r for r in rows if r.get("unreviewed_n", 0) > 0]
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.anomalies_payload(rows, severity_counts=severity_counts))
@@ -1232,6 +1238,12 @@ def _build_handler(ctx: GuiContext):
             # EMPTY reason rather than a placeholder, because a placeholder in an audit row reads
             # like a fact.
             reason = str(body.get("reason") or "").strip()
+            # WHERE THE RULE CAME FROM (the operator, 2026-10-16: the Blocked page lists blocks
+            # "with the reason in the table, like ML, custom, dns"). "dns" is a rule pushed from
+            # the DNS tab; "manual" is the Sluice form. Detection-derived rules are stamped by
+            # the derivation path itself, never by a caller.
+            origin_raw = str(body.get("origin") or "manual").strip().lower()
+            origin = origin_raw if origin_raw in ("manual", "dns") else "manual"
 
             try:
                 with self._with_client() as client:
@@ -1240,7 +1252,7 @@ def _build_handler(ctx: GuiContext):
                         client, src_cidr=src, dst_cidr=dst, domain=domain_raw, mode=mode_raw,
                         protocol=protocol, dst_port=dst_port, direction=direction,
                         ttl_minutes=ttl, created_by=(ident.username if ident else "operator"),
-                        reason=reason,
+                        reason=reason, origin=origin,
                     )
             except SluiceError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
@@ -1279,6 +1291,82 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("blocklist sync failed: %s", exc)
                 return self._error(502, f"the sync failed: {type(exc).__name__}")
             self._json({"ok": True, "results": results})
+
+        def _blocklists_get(self) -> None:
+            """The blocklist pane: every source with its state, plus the custom names.
+
+            A read; the toggle is the only write. Custom names ride along so the pane shows the
+            whole watch set in one place, wherever it lives in the page."""
+            try:
+                from weirvern import blocklists  # noqa: PLC0415
+                with self._with_client() as client:
+                    sources = blocklists.load_sources(client)
+                    custom_rows = client.query(
+                        "SELECT domain FROM weirvern.blocklist_domains "
+                        "WHERE source_id = 'custom' GROUP BY domain ORDER BY domain "
+                        "LIMIT 500").result_rows
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False, "sources": [], "custom": [],
+                                   "reason": f"cannot reach ClickHouse: {exc}"})
+            self._json({"available": True, "reason": "", "sources": sources,
+                        "custom": [str(r[0]) for r in custom_rows]})
+
+        def _blocklists_enable(self) -> None:
+            """Click a list on or off (the operator, 2026-10-16). A WRITE: what the deployment
+            watches changes, and off drops the list's names from the watch set at the next load."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            from weirvern import blocklists  # noqa: PLC0415
+
+            source_id = str(body.get("source_id") or "").strip()
+            enabled = body.get("enabled")
+            if not source_id or not isinstance(enabled, bool):
+                return self._error(400, "source_id and a boolean enabled are required")
+            try:
+                with self._with_client() as client:
+                    src = blocklists.set_source_enabled(client, source_id, enabled)
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+            self._json({"ok": True, "source": src,
+                        "note": ("on \u2014 its names join the watch set at the next load"
+                                 if enabled else
+                                 "off \u2014 its names leave the watch set at the next load")})
+
+        def _sluice_rule_domain(self) -> None:
+            """Rename a rule -- including adding a `*.` marker (the operator, 2026-10-16:
+            "modify it like adding a *"). Stored as typed; subdomains were always covered."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            from weirvern import sluice_store  # noqa: PLC0415
+            from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+            rule_id = str(body.get("rule_id") or "").strip()
+            domain = str(body.get("domain") or "").strip()
+            if not domain:
+                return self._error(400, "a domain is required")
+            try:
+                with self._with_client() as client:
+                    ident = self._identity()
+                    rule = sluice_store.update_rule(
+                        client, rule_id, domain=domain,
+                        by=(ident.username if ident else "operator"))
+            except SluiceError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+            self._json({"ok": True, "rule": {"rule_id": rule.rule_id,
+                                             "describes": rule.describes(),
+                                             "domain": rule.domain}})
 
         def _blocklists_custom(self) -> None:
             """Add or remove one operator-entered name. Validated like a domain rule."""
@@ -1829,6 +1917,10 @@ def _build_handler(ctx: GuiContext):
             # history (see sluice_store.update_rule_mode).
             if path == "/api/sluice/rule/mode":
                 return self._sluice_rule_mode()
+            # A rule's NAME is editable too -- "modify it like adding a *" (the operator,
+            # 2026-10-16). Same in-place semantics as the mode edit.
+            if path == "/api/sluice/rule/domain":
+                return self._sluice_rule_domain()
             # ── BLOCKLISTS ──────────────────────────────────────────────────────────────────
             # Both admin-gated: importing a list decides what this deployment WATCHES (and,
             # once a rule blocks, what it stops), which is a change to the configuration.
@@ -1836,6 +1928,10 @@ def _build_handler(ctx: GuiContext):
                 return self._blocklists_sync()
             if path == "/api/blocklists/custom":
                 return self._blocklists_custom()
+            # Clicking a list to turn it on or off (the operator, 2026-10-16). A write: what the
+            # deployment WATCHES changes, and off drops the list's names from the watch set.
+            if path == "/api/blocklists/enable":
+                return self._blocklists_enable()
             # ── WEIRLINGS writes ─────────────────────────────────────────────────────────
             # Admin-gated like every other mutation. Registering a sensor decides what this hub
             # will EXPECT and therefore what it raises as missing, so it is a write even though

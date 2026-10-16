@@ -66,8 +66,9 @@ function blOpenRule(r) {
       ((r.resolved || []).length ? `: ${r.resolved.slice(0, 6).join(", ")}` +
         (r.resolved.length > 6 ? " …" : "") : "");
   const rows = [
-    ["mode", r.mode ? (r.mode === "alert" ? "alert — records hits, does not block"
-                                          : "block — enforced in the kernel") : "unknown"],
+    ["name", r.domain || "(addresses, not a name)"],
+    ["mode", r.mode ? (r.mode === "alert" ? "alert \u2014 records hits, does not block"
+                                          : "block \u2014 enforced in the kernel") : "unknown"],
     ["origin", r.origin || "manual"],
     ["expires", r.expires_at ? fmtTime(new Date(r.expires_at)) : "until revoked"],
     ["covers", covers],
@@ -79,6 +80,15 @@ function blOpenRule(r) {
     ]));
   }
   const editable = !r.not_live && !!r.mode;
+  // The NAME is editable too ("modify it like adding a *"): a `*.` marker is accepted and stored
+  // as typed; a name already covers its subdomains, the marker is how operators say it.
+  const domInput = document.getElementById("bl-rule-domain");
+  const domSave = document.getElementById("bl-rule-save-domain");
+  if (domInput) {
+    domInput.value = r.domain || "";
+    domInput.disabled = !editable || !r.domain;
+    if (domSave) domSave.disabled = !editable || !r.domain;
+  }
   els.mode.value = r.mode === "block" ? "block" : "alert";
   els.mode.disabled = !editable;
   els.apply.disabled = !editable;
@@ -130,8 +140,40 @@ function blOpenRule(r) {
       els.revoke.disabled = false;
     }
   };
+  const domSave2 = document.getElementById("bl-rule-save-domain");
+  if (domSave2) domSave2.onclick = async () => {
+    const domInput2 = document.getElementById("bl-rule-domain");
+    const want = String((domInput2 && domInput2.value) || "").trim();
+    if (!want) { els.note.textContent = "a name is required."; return; }
+    domSave2.disabled = true;
+    try {
+      const out = await postJSON("/api/sluice/rule/domain", { rule_id: r.rule_id, domain: want });
+      els.note.textContent = (out && out.ok)
+        ? `name saved as ${(out.rule && out.rule.domain) || want}.`
+        : ((out && out.error) || "the edit was refused");
+      await loadBlocked();
+    } catch (err) {
+      els.note.textContent = String((err && err.message) || err);
+    } finally {
+      domSave2.disabled = false;
+    }
+  };
   els.close.onclick = () => els.card.classList.add("hidden");
   els.card.classList.remove("hidden");
+}
+
+/** The block's REASON, in the reader's words (the operator, 2026-10-16: "the reason in the
+ * table, like ML, custom, dns"). Detection-derived rules are stamped by the derivation path;
+ * "dns" is a rule pushed from the DNS tab; anything else is an operator's own rule, with their
+ * note when one was written. */
+function blReason(r) {
+  const origin = String(r.origin || "manual");
+  let label;
+  if (origin === "detection") label = "ML" + (r.severity ? ` (${r.severity})` : "");
+  else if (origin === "dns") label = "dns";
+  else if (origin === "installer") label = "installer";
+  else label = "custom";
+  return r.reason ? `${label} \u2014 ${String(r.reason).slice(0, 60)}` : label;
 }
 
 function blFilterTo(field, value) {
@@ -226,6 +268,7 @@ function blRenderRules(d) {
       nameCell.addEventListener("click", () => blOpenRule(r));
       body.appendChild(el("tr", {}, [
         nameCell,
+        blCell(blReason(r), "muted"),
         el("td", {}, [addr]),
         blCell(r.origin || "manual", "muted"),
         blCell(r.expires_at ? fmtTime(new Date(r.expires_at)) : "until revoked", "muted"),

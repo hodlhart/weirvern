@@ -851,6 +851,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("capture_exclude_cidrs", "exclude at capture"),
     ]),
     ("sluice", "Sluice Gate", [
+        ("sluice_block_domains", "domain blocking"),
         # THE GATE, WHERE ITS SWITCHES LIVE. These five were ConfigMap-only until now: operating
         # the gate meant a patch and a worker restart. Read by the worker, verified from the
         # kernel, and bounded by the same rules the validator enforces (see SETTING_CONTROLS).
@@ -860,6 +861,9 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("sluice_auto_score", "auto-block threshold"),
         ("sluice_max_block_s", "longest block (s)"),
         ("sluice_interval_s", "re-check interval (s)"),
+    ]),
+    ("blocklists", "Blocklists", [
+        ("blocklist_sync_hours", "sync every (h)"),
     ]),
     ("runtime", "Storage and runtime", [
         ("clickhouse_host", "ClickHouse host"),
@@ -885,6 +889,16 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
 # beside the row list so a new row cannot ship without someone having to write one -- a test
 # asserts every rendered row has help text.
 _SETTINGS_HELP: dict[str, str] = {
+    # -- the gate's domain switch and the lists' cadence (2026-10-16)
+    "sluice_block_domains": (
+        "Whether block-mode DOMAIN rules reach the kernel. On (default), a domain rule in block "
+        "mode compiles into the gate's sets and drops what its name resolves to. Off, those "
+        "rules keep recording and alerting while address rules keep enforcing -- the switch for "
+        "'watch the names first, arm later'. Applying it restarts the worker."),
+    "blocklist_sync_hours": (
+        "How often imported DNS lists are re-fetched, in hours. Default 24. Lists change between "
+        "fetches; a shorter cadence brings new names in sooner at the cost of more downloads. "
+        "Disabled lists are skipped either way; custom names are never fetched -- they are yours."),
     # -- detection
     "retrain_every_h": (
         "How often the detectors are retrained on the last training window. Default 6 hours. "
@@ -1708,6 +1722,96 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
     )
     cols = list(res.column_names)
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
+
+
+def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
+                      host: str = "", severity: str = "") -> list[dict]:
+    """One row per DISTINCT anomaly, with its occurrence count and its windows.
+
+    The operator, 2026-10-16: "These are identical in anomalies. Add a count column instead of
+    showing both. then when you click it it shows each time it happened." WHAT IDENTICAL MEANS,
+    exactly: the same detection pass, host, score, severity, models and why. The WINDOW is what
+    separates occurrences -- which is why the duplicated rows differed only there -- so the
+    windows ride along, CAPPED at 50 per row while the count keeps the true total. Raises on
+    failure, like anomalies_detailed: an empty list must mean "nothing", never "the query broke".
+    """
+    where = ["anomaly_score >= %(s)s"]
+    params: dict = {"s": float(min_score), "n": int(limit)}
+    if host:
+        where.append("src_addr = %(host)s")
+        params["host"] = str(host)
+    if severity:
+        where.append("severity = %(sev)s")
+        params["sev"] = str(severity)
+    result = client.query(
+        "SELECT detected_at, src_addr, anomaly_score, confidence, severity, "
+        "detected_by_models, model_agreement, isolation_forest_score, gradient_boosting_score, "
+        "dbscan_score, baseline_score, primary_deviation_feature, primary_deviation_zscore, "
+        "deviation_magnitude, feature_contributions, baseline_comparison, "
+        "count() AS n, arraySlice(arraySort(groupArray(window_start)), 1, 50) AS windows "
+        "FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where) + " "
+        "GROUP BY detected_at, src_addr, anomaly_score, confidence, severity, "
+        "detected_by_models, model_agreement, isolation_forest_score, "
+        "gradient_boosting_score, dbscan_score, baseline_score, primary_deviation_feature, "
+        "primary_deviation_zscore, deviation_magnitude, feature_contributions, "
+        "baseline_comparison "
+        "ORDER BY detected_at DESC LIMIT %(n)s",
+        parameters=params,
+    )
+    names = list(result.column_names)
+    rows: list[dict] = []
+    for r in result.result_rows:
+        row = dict(zip(names, r, strict=False))
+        row["windows"] = [w.isoformat() if hasattr(w, "isoformat") else str(w)
+                          for w in (row.get("windows") or [])]
+        # The newest window headlines the row; the rest live in the expansion.
+        row["window_start"] = row["windows"][-1] if row["windows"] else None
+        row["n"] = int(row.get("n") or 1)
+        rows.append(row)
+    return rows
+
+
+def attach_group_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None,
+                         covered_since=None) -> list[dict]:
+    """Per-window review state for grouped anomalies, plus the group's own summary.
+
+    The review index is keyed (window_start, host) -- per OCCURRENCE -- so a group is reviewed
+    when every window in it is, and `unreviewed_n` counts the ones that are not. The same
+    window-coverage rule as attach_reviews: a window older than the index is UNKNOWABLE, not
+    unreviewed. On a read failure every window is marked REVIEW_UNAVAILABLE -- a state we could
+    not read must not masquerade as work not done.
+    """
+    for row in rows:
+        wins: list[dict] = []
+        unreviewed = 0
+        for stamp in row.get("windows") or []:
+            when = _parse_stamp(stamp)
+            entry = None if error else (idx.get((when, row.get("src_addr"))) if when else None)
+            state, note = "", ""
+            if error:
+                state = REVIEW_UNAVAILABLE
+                note = "review state is unavailable (has the schema job run since this feature deployed?)"
+            elif entry:
+                state = str(entry.get("state") or "")
+                note = str(entry.get("note") or "")
+            else:
+                bound = covered_since
+                if bound is not None and bound.tzinfo is not None:
+                    bound = bound.replace(tzinfo=None)   # naive-to-naive; see attach_reviews
+                if bound is not None and when is not None and when < bound:
+                    # Unknowable, not unreviewed -- the same sentence attach_reviews uses.
+                    state = REVIEW_UNAVAILABLE
+                    note = ("older than the review history this view reads, so a review may "
+                            "exist without being shown here")
+            if state == "":
+                unreviewed += 1
+            wins.append({"window": stamp, "review_state": state, "review_note": note})
+        row["windows"] = wins
+        row["unreviewed_n"] = int(unreviewed)
+        newest = wins[-1] if wins else {}
+        row["review_state"] = str(newest.get("review_state") or "")
+        row["review_note"] = str(newest.get("review_note") or "")
+    return rows
 
 
 def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "") -> dict:

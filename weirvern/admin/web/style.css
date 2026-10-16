@@ -276,7 +276,25 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 #wl-summary .stat.bad .v { color: var(--bad); }
 #wl-summary .stat.muted .v { color: var(--muted); }
 
-.sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; width: 100%; }
+/* SETTINGS, SECTION BY SECTION (the operator, 2026-10-16): each card collapses to its heading,
+   and the heading is the toggle. The chevron is a GLYPH, not an emoji, and the collapsed state
+   hides everything but the heading -- including anything a loader injects later, because the
+   rule is a child selector, not a snapshot. */
+#view-settings > .card.collapsed > *:not(h2) { display: none; }
+#view-settings > .card > h2.acc { cursor: pointer; }
+#view-settings > .card > h2.acc::after { content: "\25B8"; float: right; color: var(--muted);
+  font-weight: 400; }
+#view-settings > .card:not(.collapsed) > h2.acc::after { content: "\25BE"; }
+
+/* The title row: heading left, the tile strip right. */
+.view-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; }
+.view-head h2 { margin: 0; }
+.sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+/* The occurrence expansion under a counted anomaly row (2026-10-16). */
+.occ-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.occ { font-size: 12px; }
+tr.an-exp td { background: var(--panel2); }
 .sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 84px;
   padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border);
   border-radius: 10px; cursor: pointer; text-align: left; color: var(--fg); }

@@ -219,6 +219,17 @@ class Settings:
     # WHICH INTERFACE enforcement attaches to. Empty means "use the capture interface", which is the
     # right answer for an in-path deployment; it can never be the management interface (the gate
     # refuses at authoring time), because blocking there locks the operator out of the appliance.
+    # THE DOMAIN-BLOCKING SWITCH (the operator, 2026-10-16: "in sluice gate add a section to
+    # enable or disable Domain Blocking"). ON by default: it gates only the domain-rule half of
+    # enforcement, and an operator who made a domain rule in block mode asked for it. Off, those
+    # rules stay recorded and alerting while address rules keep working -- see
+    # sluice.enforcement_pass.
+    # How often imported DNS lists are re-fetched (hours). Exposed 2026-10-16 with the
+    # blocklist work: the lists moved into the operator's hands, and the cadence moved with them.
+    blocklist_sync_hours: int = field(
+        default_factory=lambda: _env_int("BLOCKLIST_SYNC_HOURS", 24))
+    sluice_block_domains: bool = field(
+        default_factory=lambda: _env_bool("SLUICE_BLOCK_DOMAINS", True))
     sluice_iface: str = field(default_factory=lambda: os.environ.get("SLUICE_IFACE", ""))
     # The criticality policy: whether detections may block on their own, and how aggressively. The
     # default is OFF even when the gate is enabled -- auto-blocking on ML output is a decision an

@@ -88,7 +88,9 @@ EDITABLE_KEYS: tuple[str, ...] = (
     # operator's standing request that everything be clickable. All five are read by the WORKER,
     # so each restarts it (see _RESTART_FOR), and the two numeric ones carry bounds here so the
     # control and the validator cannot disagree.
+    "BLOCKLIST_SYNC_HOURS",
     "SLUICE_ENABLED",
+    "SLUICE_BLOCK_DOMAINS",
     "SLUICE_IFACE",
     "SLUICE_CRITICALITY",
     "SLUICE_AUTO_SCORE",
@@ -170,6 +172,10 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     # rather than waiting for the gate's own interval.
     "SLUICE_ENABLED": (("deploy/weirvern-worker",), "restarts the detection worker, which disarms "
                        "or compiles the gate immediately"),
+    "SLUICE_BLOCK_DOMAINS": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                             "recompiles the gate without (or with) its domain sets"),
+    "BLOCKLIST_SYNC_HOURS": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                             "re-reads the blocklist sync cadence"),
     "SLUICE_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SLUICE_CRITICALITY": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SLUICE_AUTO_SCORE": (("deploy/weirvern-worker",), "restarts the detection worker"),
@@ -276,6 +282,7 @@ NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
     # A block may last an hour by default and a week at most -- the same ceiling the Sluice tab's
     # own rule form offers (10080 minutes). The re-check interval may not go below 5s (the pass
     # would hammer the rule store) nor above an hour (rules would expire unnoticed for that long).
+    "BLOCKLIST_SYNC_HOURS": (1, 168, "hours", 1),
     "SLUICE_MAX_BLOCK_S": (60, 604800, "seconds", 60),
     "SLUICE_INTERVAL_S": (5, 3600, "seconds", 5),
     # 0 disables the threshold entirely (the default); anything above it blocks detections at
@@ -307,6 +314,12 @@ SETTING_CONTROLS: dict[str, dict] = {
     "CHANNEL_DOWNSTREAM": {"control": "text"},
     "CHANNEL_NETFLOW": {"control": "select", "options": ["off", "upstream", "downstream"]},
     "SLUICE_ENABLED": {"control": "toggle"},
+    # Step is part of the spec (browsers round float inputs without one); bounds mirror
+    # NUMERIC_RANGES, which the validator enforces -- a control that can offer a value the
+    # server refuses is a trap.
+    "BLOCKLIST_SYNC_HOURS": {"control": "number", "step": 1, "min": 1, "max": 168},
+    # The domain-rule half of the gate: off, blocking domain rules record and alert only.
+    "SLUICE_BLOCK_DOMAINS": {"control": "toggle"},
     # A switch, and only meaningful in siphon mode: it turns the intercept itself into a flow
     # source (see the tooltip for the one-path rule).
     "SIPHON_NETFLOW": {"control": "toggle"},

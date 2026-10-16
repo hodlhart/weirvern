@@ -206,3 +206,63 @@ def test_update_rule_mode_refuses_revoked_unchanged_and_bad_modes():
         sluice_store.update_rule_mode(_C(None), "r1", "alert")
     with pytest.raises(SluiceError, match="alert or block"):
         sluice_store.update_rule_mode(_C(None), "r1", "snooze")
+
+
+def test_a_wildcard_is_stored_as_typed_and_validated_on_the_base():
+    import pytest
+
+    from weirvern.sluice import SluiceError
+    from weirvern.sluice_store import validate_domain
+
+    assert validate_domain("*.EXAMPLE.com.") == "*.example.com"
+    assert validate_domain("example.com") == "example.com"
+    with pytest.raises(SluiceError):
+        validate_domain("*.")
+    with pytest.raises(SluiceError):
+        validate_domain("*.localhost")
+
+
+def test_update_rule_edits_the_name_in_place():
+    """The card's "Save name": same rule_id, name rewritten, mode and reason untouched, and the
+    note records the edit."""
+    from datetime import datetime
+
+    from weirvern import sluice_store
+
+    row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "", "", "d.local", "alert",
+           "", 0, "forward", None, "manual", "", "", None)
+    inserts = []
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            class R:
+                result_rows = [row]
+            return R()
+        def insert(self, table, data, column_names=None, **_kw):
+            inserts.append((table, data, column_names))
+
+    out = sluice_store.update_rule(_C(), "r1", domain="*.d.local", by="operator")
+    assert out.domain == "*.d.local" and out.rule_id == "r1" and out.mode == "alert"
+    assert inserts[0][1][0][6] == "*.d.local" and inserts[0][1][0][7] == "alert"
+    assert "domain d.local->*.d.local" in inserts[0][1][0][17]
+
+
+def test_update_rule_refuses_a_domain_edit_on_an_address_rule():
+    from datetime import datetime
+
+    import pytest
+
+    from weirvern import sluice_store
+    from weirvern.sluice import SluiceError
+
+    row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "198.51.100.0/8", "", "", "block",
+           "", 0, "forward", None, "manual", "", "", None)
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            class R:
+                result_rows = [row]
+            return R()
+
+    with pytest.raises(SluiceError, match="matches addresses"):
+        sluice_store.update_rule(_C(), "r1", domain="x.local")

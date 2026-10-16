@@ -2206,8 +2206,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const bl = doc.getElementById("sl-bl-rows").textContent;
     check("the blocklist panel renders the imported source", /HaGeZi/.test(bl) && /123456/.test(bl),
           bl.slice(0, 110));
-    const hits = doc.getElementById("sl-hit-rows").textContent;
-    check("recent domain hits are listed", /ads\.example\.com/.test(hits), hits.slice(0, 120));
+    // The card moved to Settings (2026-10-16) and its Recent domain hits panel was removed --
+    // hits are read on the Blocked page now. What must stay checkable here: each row is
+    // CLICKABLE to toggle the list, and the on/off state is on the row.
+    const row0 = doc.querySelector("#sl-bl-rows tr");
+    check("a blocklist row is clickable to turn the list on or off",
+          row0 && row0.classList.contains("clickable") && /on|off/.test(row0.textContent),
+          row0 ? row0.textContent.slice(0, 110) : "(no row)");
   }
 
   // The gate OFF: the same rows must state the reason instead of offering the button.
@@ -3252,9 +3257,12 @@ check("high capture loss is called out in the fleet",
     check("the blocked summary counts hits and blocking rules", /3 recorded hits/.test(sum) &&
           /1 blocking rule/.test(sum), sum.slice(0, 130));
     const hitRows = doc.querySelectorAll("#bl-hit-rows tr");
+    // The old escape hatch here (`|| hitRows.length === 2`) was written against the sluice
+    // hits panel, which is gone (the hits are read HERE now). The label check is the real one:
+    // the first row must carry its rule/list chip.
     check("the hits table renders with rule/list labels",
-          hitRows.length === 2 && /rule/.test(doc.getElementById("sl-hit-rows") ? "rule" : "") ||
-          hitRows.length === 2,
+          hitRows.length === 2 &&
+          /rule|list/.test((doc.querySelector("#bl-hit-rows tr .chip") || {}).textContent || ""),
           "rows=" + hitRows.length);
     check("a rule hit and a list hit are distinguishable in the row",
           /rule/.test(doc.querySelector("#bl-hit-rows tr td:nth-child(2)").textContent) &&

@@ -161,6 +161,33 @@ def _write_source_state(client, src: dict, *, count: int, error: str) -> None:
     )
 
 
+def set_source_enabled(client, source_id: str, enabled: bool) -> dict:
+    """Turn one imported list on or off (the operator, 2026-10-16: "allow me to click them to
+    enable or disable them").
+
+    Re-inserts the source row with the flipped flag -- the table is ReplacingMergeTree keyed on
+    source_id -- PRESERVING count/fetch/error, because an enable is not a resync: the numbers on
+    the row still describe the last real fetch. Off means off everywhere: `sync_due` skips
+    disabled sources and `load_domains` leaves their names out, so the next gate pass drops them
+    from the watch set. A source that does not exist is a refusal, never a silent no-op.
+    """
+    sid = str(source_id or "").strip()
+    src = next((s for s in load_sources(client) if s["source_id"] == sid), None)
+    if src is None:
+        raise ValueError(f"no such blocklist source: {sid!r}")
+    now = datetime.now(UTC)
+    client.insert(
+        "weirvern.blocklist_sources",
+        [[src["source_id"], src["name"], src["url"], src["format"], int(bool(enabled)),
+          now, now, src.get("fetched_at") or None,
+          int(src.get("domain_count") or 0), str(src.get("last_error") or "")]],
+        column_names=["source_id", "name", "url", "format", "enabled", "added_at",
+                      "updated", "fetched_at", "domain_count", "last_error"],
+    )
+    logger.info("blocklists: source %s %s", sid, "enabled" if enabled else "disabled")
+    return {**src, "enabled": bool(enabled)}
+
+
 def sync_source(client, src: dict, *, fetch=fetch_text, now: datetime | None = None) -> dict:
     """Fetch + parse + store one source. The source row records the outcome either way."""
     now = now or datetime.now(UTC)
@@ -190,10 +217,15 @@ def sync_source(client, src: dict, *, fetch=fetch_text, now: datetime | None = N
         return {"ok": False, "domains": 0, "error": str(exc)}
 
 
-def sync_due(client, *, now: datetime | None = None) -> list[dict]:
-    """Enabled sources whose last SUCCESSFUL fetch is older than SYNC_EVERY_H (or never)."""
+def sync_due(client, *, now: datetime | None = None, every_h: int = SYNC_EVERY_H) -> list[dict]:
+    """Enabled sources whose last SUCCESSFUL fetch is older than `every_h` hours (or never).
+
+    The cadence is a SETTING now (BLOCKLIST_SYNC_HOURS, 2026-10-16): every other cadence in this
+    codebase is configurable, and the lists are the one the operator manages by hand -- the
+    default stays 24h, so nothing changes until somebody says so.
+    """
     now = now or datetime.now(UTC)
-    cutoff = now - timedelta(hours=SYNC_EVERY_H)
+    cutoff = now - timedelta(hours=max(1, int(every_h)))
     due = []
     for src in load_sources(client):
         if not src["enabled"] or src["source_id"] == "custom":

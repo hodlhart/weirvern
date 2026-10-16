@@ -132,6 +132,17 @@ def validate_domain(raw: str) -> str:
     name = str(raw or "").strip().lower().rstrip(".")
     if not name:
         raise SluiceError("a domain rule needs a name")
+    # A LEADING `*.` IS HOW AN OPERATOR SAYS "this name AND its subdomains" (the operator,
+    # 2026-10-16: "modify it like adding a *"). It is STORED AS TYPED -- what the operator wrote
+    # is what every table shows -- and stripped where matching happens (the worker's DNS pass,
+    # resolve_domain_ips), because the matcher already treats a name as covering its subdomains.
+    # Validated on the name underneath, so `*.example.com` passes exactly the checks example.com
+    # does.
+    wildcard = name.startswith("*.")
+    if wildcard:
+        name = name[2:]
+        if not name:
+            raise SluiceError("`*.` alone is not a name: write `*.example.com`")
     if len(name) > 253:
         raise SluiceError("that domain is longer than 253 characters; it cannot be a real name")
     try:
@@ -149,7 +160,7 @@ def validate_domain(raw: str) -> str:
             raise SluiceError(f"{name!r} has a label that cannot be a domain label: {label!r}")
         if not all(c.isalnum() or c == "-" for c in label):
             raise SluiceError(f"{name!r} contains characters a domain cannot have")
-    return name
+    return ("*." + name) if wildcard else name
 
 
 def create_rule(
@@ -272,23 +283,32 @@ def create_rule(
 
 def update_rule_mode(client: Client, rule_id: str, mode: str, *, by: str = "",
                      now: datetime | None = None) -> Rule:
-    """Change a rule's mode in place.
+    """Change only the mode -- a thin wrapper over update_rule, kept because callers and tests
+    name this operation."""
+    return update_rule(client, rule_id, mode=mode, by=by, now=now)
 
-    THE SAME RULE, A NEW MODE. The row is re-inserted under the SAME rule_id (the table is read
-    with FINAL, so the newest version wins); the rule's identity, its creation time and its
-    reason survive the edit. A delete-and-recreate would make the audit trail read as two
-    unrelated rules, and the one thing an incident review needs is that a block and its later
-    loosening are the same decision, revised.
 
-    A REVOKED RULE IS REFUSED: re-arming one resurrects a decision somebody ended on purpose.
-    That call is a NEW rule, with a new reason, and the refusal says so.
+def update_rule(client: Client, rule_id: str, *, mode: str | None = None,
+                domain: str | None = None, by: str = "", now: datetime | None = None) -> Rule:
+    """Edit a rule in place: its mode and/or its name.
+
+    THE SAME RULE, EDITED. Re-inserted under the SAME rule_id (the table is read with FINAL), so
+    the rule's identity, its creation time and its reason survive; the note column records what
+    changed. A delete-and-recreate would make the audit trail read as two unrelated rules.
+
+    A DOMAIN MAY ONLY BE EDITED ON A DOMAIN RULE: an address rule's name field is empty on
+    purpose, and giving it a name would silently widen what it matches. Refused with a sentence.
+    `validate_domain` accepts the `*.` marker, so "adding a *" is a valid edit.
     """
     rid = str(rule_id or "").strip()
     if not rid:
         raise SluiceError("no rule id given")
-    want = str(mode or "").strip().lower()
-    if want not in ("alert", "block"):
-        raise SluiceError(f"mode must be alert or block, not {want!r}")
+    want_mode = None if mode is None else str(mode).strip().lower()
+    if want_mode is not None and want_mode not in ("alert", "block"):
+        raise SluiceError(f"mode must be alert or block, not {want_mode!r}")
+    want_domain = validate_domain(domain) if domain is not None else None
+    if want_mode is None and want_domain is None:
+        raise SluiceError("an edit needs a mode or a domain")
     when = now or datetime.now(UTC)
     rows = client.query(
         "SELECT rule_id, created_at, created_by, reason, src_cidr, dst_cidr, domain, mode, "
@@ -303,13 +323,25 @@ def update_rule_mode(client: Client, rule_id: str, mode: str, *, by: str = "",
     if revoked is not None:
         raise SluiceError("this rule was revoked; re-arming a revoked rule is a new rule with a "
                            "new reason, not an edit")
-    if str(cur or "block") == want:
-        raise SluiceError(f"this rule is already in {want} mode")
+    cur_mode, cur_dom = str(cur or "block"), str(dom or "")
+    if want_mode is not None and want_mode == cur_mode and want_domain is None:
+        raise SluiceError(f"this rule is already in {want_mode} mode")
+    if want_domain is not None and not cur_dom:
+        raise SluiceError("this rule matches addresses, not a name; there is no domain to edit")
+    new_mode = want_mode if want_mode is not None else cur_mode
+    new_dom = want_domain if want_domain is not None else cur_dom
+    if new_mode == cur_mode and new_dom == cur_dom:
+        raise SluiceError("nothing would change")
+    changes = []
+    if new_mode != cur_mode:
+        changes.append(f"mode {cur_mode}->{new_mode}")
+    if new_dom != cur_dom:
+        changes.append(f"domain {cur_dom or '(none)'}->{new_dom}")
     client.insert(
         "weirvern.sluice_rules",
-        [[rid, created_at, created_by, reason, src, dst, dom, want, proto, port, direction,
-          expires, origin, origin_ref, severity, None, "",
-          f"mode {cur}->{want} by {by or 'operator'} at {when:%Y-%m-%d %H:%M}"]],
+        [[rid, created_at, created_by, reason, src, dst, new_dom, new_mode, proto, port,
+          direction, expires, origin, origin_ref, severity, None, "",
+          ("; ".join(changes) + f" by {by or 'operator'} at {when:%Y-%m-%d %H:%M}")]],
         column_names=[
             "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr",
             "domain", "mode",
@@ -317,8 +349,8 @@ def update_rule_mode(client: Client, rule_id: str, mode: str, *, by: str = "",
             "severity", "revoked_at", "revoked_by", "note",
         ],
     )
-    logger.info("sluice: rule %s mode %s -> %s by %s", rid, cur, want, by or "unknown")
-    return _row_to_rule((rid, src, dst, dom, want, proto, port, direction, expires,
+    logger.info("sluice: rule %s edited: %s by %s", rid, "; ".join(changes), by or "unknown")
+    return _row_to_rule((rid, src, dst, new_dom, new_mode, proto, port, direction, expires,
                          created_by, reason, origin, origin_ref, severity, None))
 
 
@@ -575,7 +607,9 @@ def resolve_domain_ips(client: Client, domain: str, *, window_h: int = 6,
     more addresses than `cap` (a CDN, usually) contributes its most recently seen ones first;
     the cap keeps a single rule from making the kernel set enormous.
     """
-    name = str(domain or "").strip().lower().rstrip(".")
+    # The `*.` marker is for humans; the suffix clause below already covers subdomains, so it is
+    # stripped here rather than special-cased into the SQL.
+    name = str(domain or "").strip().lower().rstrip(".").removeprefix("*.")
     if not name:
         return []
     since = datetime.now(UTC) - timedelta(hours=max(1, int(window_h)))

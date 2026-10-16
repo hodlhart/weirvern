@@ -74,6 +74,7 @@ async function loadSluice() {
 
   // What has been imported and what it caught: same payload, same load, one place to read.
   renderBlocklists(d);
+  loadBlockingControls().catch(showError);
 
   // ── the gate's own state ────────────────────────────────────────────────────────────────────
   const stateBox = document.getElementById("sl-state");
@@ -331,35 +332,24 @@ function renderBlocklists(d) {
       ? el("span", { class: "chip bad", text: "last sync failed" })
       : (s.fetched_at ? el("span", { class: "chip ok", text: "ok" })
                       : el("span", { class: "chip muted", text: "never fetched" }));
-    const tr = el("tr", {}, [
-      el("td", { text: s.name + (s.enabled ? "" : " (off)") }),
+    // CLICK A ROW TO TURN THE LIST ON OR OFF (the operator, 2026-10-16: "allow me to click them
+    // to enable or disable them"). The on/off chip is separate from the sync-state chip: what
+    // the list IS and how its last fetch went are different facts.
+    const tr = el("tr", { class: "clickable", attrs: { title: s.enabled
+      ? "click to turn this list off \u2014 its names leave the watch set"
+      : "click to turn this list on \u2014 its names join the watch set" } }, [
+      el("td", {}, [
+        el("span", { class: "chip " + (s.enabled ? "ok" : "muted"),
+                     text: s.enabled ? "on" : "off" }),
+        el("span", { text: " " + s.name }),
+      ]),
       el("td", {}, [state]),
       el("td", { class: "mono", text: String(s.domain_count || 0) }),
       el("td", { class: "muted", text: s.fetched_at ? fmtTime(new Date(s.fetched_at)) : "—" }),
       el("td", { class: "muted", text: s.last_error ? s.last_error.slice(0, 90) : "—" }),
     ]);
+    tr.addEventListener("click", () => slToggleSource(s));
     body.appendChild(tr);
-  }
-  const hitBody = document.getElementById("sl-hit-rows");
-  if (!hitBody) return;
-  hitBody.replaceChildren();
-  const hits = d.hits || [];
-  if (!hits.length) {
-    const tr = el("tr", {});
-    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "4" },
-      text: "No domain hits recorded. A hit appears when a device asks for a listed name or a " +
-            "domain rule's name — recording blocks nothing." }));
-    hitBody.appendChild(tr);
-    return;
-  }
-  for (const h of hits) {
-    const tr = el("tr", {}, [
-      el("td", { class: "muted", text: fmtTime(new Date(h.ts)) }),
-      el("td", { class: "mono", text: h.domain }),
-      el("td", { text: h.query }),
-      el("td", { class: "muted", text: h.client }),
-    ]);
-    hitBody.appendChild(tr);
   }
 }
 
@@ -391,5 +381,220 @@ document.addEventListener("DOMContentLoaded", () => {
       if (note) note.textContent = (err && err.message) || String(err);
     }
     loadSluice().then(clearError).catch(showError);
+  });
+});
+
+
+/**
+ * THE BLOCKLIST PANE + THE DOMAIN-BLOCKING SWITCH + THE RULE COMPOSER (the operator,
+ * 2026-10-16). The pane moved to Settings; this loader is called from BOTH views' loaders, and
+ * is a no-op where the ids are absent -- the card exists in exactly one place at a time.
+ */
+async function loadBlocklistPane() {
+  if (!document.getElementById("sl-bl-rows")) return;
+  let d;
+  try {
+    d = await getJSON("/api/blocklists");
+  } catch (err) {
+    const note = document.getElementById("sl-bl-note");
+    if (note) note.textContent = "the blocklist read failed: " + ((err && err.message) || err);
+    return;
+  }
+  const note = document.getElementById("sl-bl-note");
+  if (d && d.available === false) {
+    if (note) note.textContent = "the blocklists could not be read: " + (d.reason || "no reason given");
+    return;
+  }
+  if (note && !note.textContent) note.textContent = "";
+  renderBlocklists({ blocklists: (d && d.sources) || [] });
+}
+
+async function slToggleSource(s) {
+  const note = document.getElementById("sl-bl-note");
+  const want = !s.enabled;
+  if (note) note.textContent = `${want ? "enabling" : "disabling"} ${s.name}\u2026`;
+  try {
+    const out = await postJSON("/api/blocklists/enable",
+                               { source_id: s.source_id, enabled: want });
+    if (note) note.textContent = (out && (out.note || out.error)) || "done";
+  } catch (err) {
+    if (note) note.textContent = String((err && err.message) || err);
+  }
+  loadBlocklistPane().catch(showError);
+}
+
+/**
+ * ALL THE BLOCKING CONTROLS (the operator, 2026-10-16: "All blocking controls should live in
+ * sluice gate. example i should be able to click high in High only to swap to it"). One reader
+ * for /api/settings + /api/sluice: the policy tiles come from the gate's OWN policy registry
+ * (labels and descriptions the enforcement path uses), the switches and the auto-block score
+ * from the settings rows. Every change applies through the same plan/apply path as Settings --
+ * with the confirm click, because applying restarts the worker, and the note SAYS so.
+ */
+async function slApplyChange(key, value, btn, note) {
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = "1";
+    const prev = btn.textContent;
+    btn.textContent = "Confirm: apply";
+    note.textContent = `Applying ${key} = ${value} restarts the worker so it takes effect. `
+      + "Click again to confirm.";
+    setTimeout(() => {
+      if (document.body.contains(btn) && btn.textContent === "Confirm: apply") {
+        delete btn.dataset.armed;
+        btn.textContent = prev;
+      }
+    }, 6000);
+    return;
+  }
+  delete btn.dataset.armed;
+  btn.disabled = true;
+  try {
+    const out = await postJSON("/api/settings/apply",
+      { changes: { [key]: String(value) }, confirmed: true });
+    note.textContent = (out && (out.ok === false ? out.error
+      : (out.note || `applied ${key} = ${value}; the worker restarts and the gate recompiles`)))
+      || "applied.";
+    loadBlockingControls().catch(() => {});
+  } catch (err) {
+    note.textContent = String((err && err.message) || err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadBlockingControls() {
+  const note = document.getElementById("sl-bc-note");
+  const strip = document.getElementById("sl-criticality");
+  const gateBtn = document.getElementById("sl-bc-gate");
+  const domBtn = document.getElementById("sl-bc-dom");
+  const autoInput = document.getElementById("sl-bc-auto");
+  const autoSave = document.getElementById("sl-bc-autosave");
+  const help = document.getElementById("sl-bc-help");
+  if (!note || !strip || !gateBtn || !domBtn) return;
+  let settings;
+  let gate;
+  try {
+    settings = await getJSON("/api/settings");
+  } catch (err) {
+    note.textContent = "the controls could not be read: " + ((err && err.message) || err);
+    return;
+  }
+  try {
+    gate = await getJSON("/api/sluice");
+  } catch (err) {
+    gate = null;   // the policy strip still renders from the settings row's options below
+  }
+  const rows = {};
+  for (const rs of Object.values((settings && settings.groups) || {})) {
+    for (const r of rs || []) if (r && r.key) rows[r.key] = r;
+  }
+  const val = (k) => {
+    const r = rows[k];
+    const v = r ? String(r.value != null ? r.value : (r.current != null ? r.current : "")) : "";
+    return v;
+  };
+  const policies = (gate && gate.policies) || null;
+  const current = val("SLUICE_CRITICALITY") || (gate && gate.criticality) || "";
+  strip.replaceChildren();
+  if (policies) {
+    for (const [key, p] of Object.entries(policies)) {
+      const active = key === current;
+      const tile = el("button", { class: "tile" + (active ? " active" : ""),
+        attrs: { title: (p.description || "") + (active ? " (current)" : " — click to switch") } }, [
+        el("div", { class: "v", text: p.label || key }),
+        el("div", { class: "k", text: p.ttl_minutes ? `${Math.round(p.ttl_minutes / 60)}h blocks`
+                                                     : "no auto-blocks" }),
+      ]);
+      if (!active) {
+        tile.addEventListener("click", () => slApplyChange("SLUICE_CRITICALITY", key, tile, note));
+      }
+      strip.appendChild(tile);
+    }
+  } else {
+    strip.appendChild(el("span", { class: "muted",
+      text: "The policy list could not be read; set it on the Settings tab instead." }));
+  }
+  const gateOn = /^(1|true|on|yes|armed)$/i.test(val("SLUICE_ENABLED"));
+  gateBtn.textContent = gateOn ? "Take the gate off (disarm)" : "Turn the gate on (arm)";
+  gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
+  const domOn = /^(1|true|on|yes)$/i.test(val("SLUICE_BLOCK_DOMAINS"));
+  domBtn.textContent = domOn ? "Domain blocking: on — turn off" : "Domain blocking: off — turn on";
+  domBtn.onclick = () => slApplyChange("SLUICE_BLOCK_DOMAINS", domOn ? "0" : "1", domBtn, note);
+  if (autoInput) autoInput.value = val("SLUICE_AUTO_SCORE") || "0";
+  if (autoSave) autoSave.onclick = () => {
+    const v = String((autoInput && autoInput.value) || "0").trim();
+    slApplyChange("SLUICE_AUTO_SCORE", v, autoSave, note);
+  };
+  if (help) {
+    help.textContent = current
+      ? `Policy ${current}: ${(policies && policies[current] && policies[current].description) || ""}`
+      : "";
+  }
+  note.textContent = gateOn
+    ? "The gate is armed; block-mode rules and the policy above decide what drops."
+    : "The gate is off; every rule records and alerts but nothing drops until it is armed.";
+}
+
+function openRuleComposer(domain) {
+  const card = document.getElementById("rule-composer");
+  if (!card) return;
+  const dom = document.getElementById("rc-domain");
+  const note = document.getElementById("rc-note");
+  const create = document.getElementById("rc-create");
+  if (dom) dom.value = String(domain || "");
+  if (note) note.textContent = "";
+  if (create) { create.textContent = "Create"; delete create.dataset.armed; }
+  card.classList.remove("hidden");
+  if (dom) dom.focus();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const create = document.getElementById("rc-create");
+  const cancel = document.getElementById("rc-cancel");
+  if (cancel) cancel.addEventListener("click", () =>
+    document.getElementById("rule-composer").classList.add("hidden"));
+  if (create) create.addEventListener("click", async () => {
+    const dom = document.getElementById("rc-domain");
+    const wild = document.getElementById("rc-wild");
+    const mode = document.getElementById("rc-mode");
+    const reason = document.getElementById("rc-reason");
+    const note = document.getElementById("rc-note");
+    let name = String((dom && dom.value) || "").trim().toLowerCase().replace(/\.$/, "");
+    if (!name) { note.textContent = "a name is required."; return; }
+    if (wild && wild.checked && !name.startsWith("*.")) name = "*." + name;
+    const wantMode = (mode && mode.value) || "alert";
+    if (wantMode === "block" && !create.dataset.armed) {
+      create.dataset.armed = "1";
+      create.textContent = "Confirm: enforce in kernel";
+      note.textContent = "Block mode makes the kernel drop what this name resolves to. "
+        + "Click again to confirm.";
+      return;
+    }
+    delete create.dataset.armed;
+    create.disabled = true;
+    try {
+      const out = await postJSON("/api/sluice/block", {
+        domain: name, mode: wantMode, reason: String((reason && reason.value) || "").trim(),
+        origin: "dns", ttl_minutes: 0,
+      });
+      if (out && out.ok) {
+        note.textContent = `created ${name} (${wantMode}); it appears under Rules and on the `
+          + "Blocked page. A rule with no expiry lasts until revoked.";
+        if (typeof loadSluice === "function") loadSluice().catch(() => {});
+        if (typeof loadBlocked === "function") loadBlocked().catch(() => {});
+      } else {
+        note.textContent = (out && out.error) || "the rule was refused.";
+      }
+    } catch (err) {
+      note.textContent = String((err && err.message) || err);
+    } finally {
+      create.disabled = false;
+      create.textContent = "Create";
+    }
+  });
+  const blk = document.getElementById("dn-block");
+  if (blk) blk.addEventListener("click", () => {
+    const field = document.getElementById("dn-domain");
+    openRuleComposer(String((field && field.value) || "").trim());
   });
 });
