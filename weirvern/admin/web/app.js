@@ -904,19 +904,21 @@ async function loadSettings() {
               : "",
           });
 
-      // THE "?" IS ON EVERY ROW, editable or not. A value whose meaning has to be guessed is a
-      // value that gets misconfigured, and the explanation is where an operator new to the
-      // product learns what a setting does without reading the source.
+      // THE "i" IN A CIRCLE IS ON EVERY ROW, editable or not — one glyph for ONE habit, across
+      // the whole console ("use i in a circle ... users can click and get more information").
+      // A value whose meaning has to be guessed is a value that gets misconfigured, and the
+      // explanation is where an operator new to the product learns what a setting does without
+      // reading the source.
       const help = el("div", {
         class: "setting-help hidden",
         text: r.help || "No explanation is recorded for this setting.",
       });
       const helpBtn = el("button", {
-        class: "setting-help-btn", text: "?",
+        class: "setting-help-btn", text: "i",
         attrs: { type: "button", "aria-label": `explain ${r.label}`,
                  "aria-expanded": "false", title: "what this setting does" },
         on: { click: (ev) => {
-          // stopPropagation so a click on "?" can never be read as a click on the row.
+          // stopPropagation so a click on the "i" can never be read as a click on the row.
           ev.stopPropagation();
           const nowHidden = help.classList.toggle("hidden");
           helpBtn.setAttribute("aria-expanded", nowHidden ? "false" : "true");
@@ -1536,6 +1538,27 @@ function clearError() {
 }
 
 /**
+ * Wire every "i" button that is NOT a settings-row control: the view-level explainers, whose
+ * text lives in the markup beside them (`.info-text`, hidden by default). One click opens the
+ * panel, the glyph marks itself open, and aria-expanded follows -- the same interaction the
+ * settings rows use, so "click the circle for more" is one habit everywhere. Idempotent (a
+ * second boot must not double-toggle the panels).
+ */
+function wireInfoButtons() {
+  for (const btn of document.querySelectorAll(".info-btn")) {
+    if (btn.dataset.wired) continue;
+    btn.dataset.wired = "1";
+    const panel = document.getElementById(btn.dataset.info || "");
+    if (!panel) continue;
+    btn.addEventListener("click", () => {
+      const stillHidden = panel.classList.toggle("hidden");
+      btn.classList.toggle("open", !stillHidden);
+      btn.setAttribute("aria-expanded", stillHidden ? "false" : "true");
+    });
+  }
+}
+
+/**
  * Give every table in <main> its own horizontal scroll box (the responsive section in
  * style.css explains why). The table elements are static markup, so once at boot is enough:
  * every live update replaces <tbody> content, never the table element itself. Idempotent,
@@ -1885,6 +1908,8 @@ async function boot() {
   // THE RESPONSIVE PASS, before anything renders: a table wider than the screen must scroll
   // inside its own box rather than widen the page (see wrapTables and style.css).
   wrapTables();
+  // The "i" affordances: every view's explainer is one click from the header it explains.
+  wireInfoButtons();
   try {
     await loadSession();
   } catch (_e) {

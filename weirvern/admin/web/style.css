@@ -437,6 +437,28 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .setting-help { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--muted);
   padding: 6px 0 4px 0; max-width: 720px; }
 
+/* ── the info button, and the panels it opens ──────────────────────────────
+ * THE ONE AFFORDANCE FOR "what is this / how do I use it": an "i" in a circle, beside the title
+ * of whatever it explains. Deliberately the SAME look as the settings rows' help button (a
+ * quiet, round, monospace circle) -- the operator asked for this pattern everywhere, and a
+ * second visual idiom would just make readers learn it twice. Colour changes only to mark the
+ * panel OPEN, never decoratively.
+ */
+.info-btn {
+  width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%;
+  font-size: 11px; line-height: 1; color: var(--muted); background: none;
+  border: 1px solid var(--border); cursor: pointer; font-family: var(--mono);
+  margin-left: 8px; vertical-align: -2px;
+}
+.info-btn:hover { color: var(--fg); border-color: var(--accent); }
+.info-btn.open { color: var(--accent); border-color: var(--accent); }
+/* The explanation: prose, readable width, visually distinct from data (the same contract as the
+ * settings help). Closed by default -- the console stays a scan surface; depth opens on click. */
+.info-text {
+  font-size: 12px; line-height: 1.6; color: var(--muted); max-width: 760px;
+  padding: 2px 0 6px;
+}
+
 /* ── SONAR ──────────────────────────────────────────────────────────────────
  * The survey button sits on its own row under the sensor settings, with the same quiet
  * "?" the setting rows use. The note area states what was measured; it is prose, so it

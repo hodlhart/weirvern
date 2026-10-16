@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
+
+Two requests, one theme: nothing important should require kubectl or a manual.
+
+**The Sluice Gate is operator-clickable.** All five of its switches — enabled, enforcement
+interface, block-on-detections policy, longest block, re-check interval — were ConfigMap-only:
+operating the gate meant patching the cluster and restarting the worker. They are now settings
+rows like every other control, with the same contract as the rest of the tab: a natural control
+(toggle / dropdown / bounded number), a plain-language explanation of what each does and what it
+costs, a stated restart target, and server-side validation that refuses a dangerous value before
+it is written (`SLUICE_IFACE` pointing at the management interface is refused at author time,
+with the same reasoning the gate itself uses at arm time; the criticality dropdown offers exactly
+the policies the validator accepts — asserted against the policy table itself).
+
+**The re-check promise is now kept.** The worker claimed the gate ran on its own cadence, and
+the panel promised rule changes land "within 60s" — but the pass ran inside the 300-second
+detection loop, so the real cadence was five minutes (measured live: 301s between passes). The
+loop now sleeps in slices no longer than the gate's interval, so a filed block enforces and a
+lapsed one lifts on the stated timescale. Shutdown responsiveness is unchanged: a stop still
+interrupts a slice immediately.
+
+**"Disabled" now means gone, even across restarts.** Measured on the test box: a worker starting
+with `SLUICE_ENABLED=0` left the (inert, empty-sets) `table inet weirvern_sluice` behind, because
+the in-memory "armed" flag cannot see a table armed by a *previous* process. The disabled path
+now asks the kernel once per process (`installed()`) and removes any leftover, naming it in the
+log. Both behaviours carry tests that fail on the old code.
+
+**One "i" in a circle, everywhere.** The operator asked for it by name: circle-i buttons that
+open more information, throughout the console. Every view's explainer is now that button beside
+the panel title — Network, Netflow, Zeek, Anomalies, Identity, Models, Sluice, Weirlings, Health
+and Assets — with the old "?" glyph retired; one glyph for one habit. The settings rows keep
+their per-row server-driven help, same glyph, same interaction. The jsdom harness clicks one and
+asserts the panel opens and `aria-expanded` follows; `tests/test_gui_info.py` holds the contract
+that a button never points at a panel that does not exist.
+
 ## Unreleased — the GUI fits a pocket: the same console on a phone and on a desk
 
 The console assumed a wall display, and it read that way on a phone: eleven tabs in a fixed

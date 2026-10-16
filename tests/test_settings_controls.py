@@ -231,3 +231,58 @@ def test_the_settings_route_emits_controls_under_row_keys():
     row_keys = set(_rows())
     for key in controls:
         assert key in row_keys, f"control shipped for {key!r}, which is not a rendered row"
+
+
+# ── 6. the Sluice Gate's own switches ──────────────────────────────────────────────────────────
+
+
+def test_the_sluice_keys_are_editable_from_the_settings_tab():
+    """The gate used to be ConfigMap-only: operating it meant a patch and a worker restart --
+    the opposite of the standing request that everything be clickable. Each of its switches
+    must be a real row, with a control, an explanation and a stated restart, or the feature
+    whose whole point is deciding what traffic lives is the one you need kubectl for."""
+    rows = _rows()
+    for key in ("SLUICE_ENABLED", "SLUICE_IFACE", "SLUICE_CRITICALITY", "SLUICE_MAX_BLOCK_S",
+                "SLUICE_INTERVAL_S"):
+        assert key in cc.EDITABLE_KEYS, f"{key} is not editable"
+        assert key in cc.SETTING_CONTROLS, f"{key} has no control spec"
+        row = cc.to_row_key(key)
+        assert row in rows, f"{key} has no rendered settings row"
+        assert len((rows[row].get("help") or "").strip()) >= 40, f"{key} has no real explanation"
+        assert key in cc._RESTART_FOR, f"{key} is read by the worker; the restart must be stated"
+    assert cc.SETTING_CONTROLS["SLUICE_ENABLED"]["control"] == "toggle"
+
+
+def test_the_criticality_dropdown_offers_exactly_the_policies_the_validator_accepts():
+    from weirvern.sluice import CRITICALITY_POLICIES
+
+    opts = cc.SETTING_CONTROLS["SLUICE_CRITICALITY"]["options"]
+    assert set(opts) == set(CRITICALITY_POLICIES), (
+        "the dropdown and the policy table have drifted apart; one of them is lying to the operator"
+    )
+    for option in opts:
+        cc.validate("SLUICE_CRITICALITY", option)
+    with pytest.raises(cc.ConfigError):
+        cc.validate("SLUICE_CRITICALITY", "nonsense-policy")
+    # Turning it on states the cost; 'off' states nothing because there is nothing to warn about.
+    assert "BLOCK" in cc.validate("SLUICE_CRITICALITY", "high")
+    assert cc.validate("SLUICE_CRITICALITY", "off") == ""
+
+
+def test_the_gate_cannot_be_pointed_at_the_management_interface(monkeypatch):
+    """The supervisor refuses this at arm time; the write path must refuse it at AUTHOR time,
+    because an arm-time refusal happens where nobody is looking (inside the worker's pass)."""
+    monkeypatch.setenv("MGMT_IFACE", "eth0")
+    with pytest.raises(cc.ConfigError) as err:
+        cc.validate("SLUICE_IFACE", "eth0")
+    assert "management" in str(err.value).lower()
+    cc.validate("SLUICE_IFACE", "eth1")   # a real port passes
+    cc.validate("SLUICE_IFACE", "")       # empty = resolve automatically (the default)
+
+
+def test_the_sluice_toggle_accepts_booleans_only():
+    cc.validate("SLUICE_ENABLED", "true")
+    cc.validate("SLUICE_ENABLED", "0")
+    with pytest.raises(cc.ConfigError):
+        cc.validate("SLUICE_ENABLED", "sure-why-not")
+    assert "OPEN" in cc.validate("SLUICE_ENABLED", "true")

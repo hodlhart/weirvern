@@ -415,6 +415,16 @@ class Backend:
         """(packets, bytes) blocked, as the kernel counts them. (0, 0) when unknown."""
         return 0, 0
 
+    def installed(self) -> bool:
+        """Does a gate table exist in the kernel RIGHT NOW, regardless of who wrote it?
+
+        The disabled-at-restart case needs this: a process that never armed anything has nothing
+        in memory to disarm, so the only way to know whether a PREVIOUS run left its table behind
+        is to ask the kernel -- which is also the only source this project trusts for "is it
+        there". A backend with no kernel presence answers False.
+        """
+        return False
+
 
 class NftBackend(Backend):
     """nftables, compiled into sets.
@@ -701,6 +711,15 @@ class NftBackend(Backend):
         if not ok or NFT_TABLE not in (present or ""):
             return False, "nft reported success but the table is not present on read-back"
         return True, f"{len(rules)} rule(s) compiled into sets on {iface}"
+
+    def installed(self) -> bool:
+        # BOTH TABLES, like disarm: a gate that armed an 'in' rule owns that table too, and a
+        # leftover there is exactly as live as one in the forward table.
+        for table in (NFT_TABLE, NFT_TABLE_IN):
+            ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
+            if present and table in present:
+                return True
+        return False
 
     def disarm(self) -> tuple[bool, str]:
         # BOTH TABLES. Direction 'in' rules live in a second table, and deleting only the forward

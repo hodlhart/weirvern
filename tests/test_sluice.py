@@ -1443,3 +1443,97 @@ def test_arm_REPORTS_FAILURE_when_the_install_left_no_table():
         "ARMED while blocking nothing"
     )
     assert "not present" in reason, reason
+
+
+# ── the disabled-at-restart sweep ──────────────────────────────────────────────────────────────
+
+
+class _SweepBackend(Backend):
+    """A kernel with a table in it (or not), counting how often anyone looked."""
+
+    name = "sweep-fake"
+
+    def __init__(self, present: bool) -> None:
+        self.present = present
+        self.disarms = 0
+        self.checks = 0
+
+    def available(self) -> bool:
+        return True
+
+    def arm(self, rules, *, iface):
+        return True, "simulated"
+
+    def disarm(self):
+        self.disarms += 1
+        self.present = False
+        return True, "simulated"
+
+    def counters(self):
+        return 0, 0
+
+    def installed(self) -> bool:
+        self.checks += 1
+        return self.present
+
+
+def _disabled_settings():
+    class _S:
+        sluice_enabled = False
+        sluice_iface = "eth9"
+        channel_upstream = ""
+        channel_downstream = ""
+        zeek_iface = "eth9"
+        mgmt_iface = "eth8"
+        sensor_name = "unit-test"
+        sluice_criticality = "off"
+        sluice_max_block_s = 3600
+        sluice_interval_s = 60
+
+    return _S()
+
+
+def _wire_disabled_sweep(monkeypatch, backend):
+    import weirvern.worker as worker
+    from weirvern import sluice_store
+    from weirvern.admin import channel
+
+    monkeypatch.setattr("weirvern.sluice.choose_backend", lambda *a, **k: backend)
+    monkeypatch.setattr(channel, "detect",
+                        lambda u, d: type("_C", (), {"bridge": "", "active": False})())
+    writes: list = []
+    monkeypatch.setattr(sluice_store, "write_gate_state",
+                        lambda client, sensor, state: writes.append(state))
+    worker._SLUICE.update({"supervisor": None, "last_pass": 0.0, "armed": False, "swept": False})
+    return worker, writes
+
+
+def test_a_disabled_worker_sweeps_a_table_a_previous_run_left_behind(monkeypatch):
+    """MEASURED on the test box: SLUICE_ENABLED=0 across a worker restart left the (now inert)
+    `table inet weirvern_sluice` in the kernel. The in-memory 'armed' flag cannot see it -- THIS
+    process never armed anything -- so 'disabled' quietly meant 'disarmed in the last process'.
+    Only the kernel can answer the question, and it now gets asked once per process."""
+    backend = _SweepBackend(present=True)
+    worker, writes = _wire_disabled_sweep(monkeypatch, backend)
+
+    worker._sluice_maybe(_disabled_settings(), client=object())
+    assert backend.disarms == 1, "the leftover table was not removed"
+    assert writes, "the swept state was not recorded for the panel"
+    assert backend.checks == 1
+
+    # ONE sweep per process: a second pass must not shell out to nft again.
+    worker._sluice_maybe(_disabled_settings(), client=object())
+    assert backend.disarms == 1, "the sweep repeated on every pass"
+    assert backend.checks == 1, "installed() ran again after the sweep decision was made"
+
+
+def test_a_disabled_worker_with_no_leftovers_never_touches_the_backend(monkeypatch):
+    """The common case must stay free: with nothing present, one check and no disarm at all."""
+    backend = _SweepBackend(present=False)
+    worker, writes = _wire_disabled_sweep(monkeypatch, backend)
+
+    worker._sluice_maybe(_disabled_settings(), client=object())
+    worker._sluice_maybe(_disabled_settings(), client=object())
+    assert backend.disarms == 0
+    assert backend.checks == 1, "the kernel is asked once per process, not once per pass"
+    assert writes == [], "a clean disabled start writes nothing"

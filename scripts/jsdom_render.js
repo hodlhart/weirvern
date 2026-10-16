@@ -104,7 +104,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
-                   wrapTables,
+                   wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
@@ -2619,6 +2619,35 @@ check("high capture loss is called out in the fleet",
           /minmax\(min\(380px, 100%\), 1fr\)/.test(css) &&
           /\.tablewrap\s*\{[^}]*overflow-x:\s*auto/.test(css),
         "the media rules themselves are browser-verified; their absence must still fail a machine");
+
+  // ── the "i" in a circle (one affordance, everywhere) ──────────────────────────────────────
+  // The operator asked for it by name: one click on a circle-i and the reader gets more about
+  // whatever it sits beside. What a machine can hold: every button names a panel that exists,
+  // a click REALLY opens it (and flips aria-expanded), a second click closes it, and the old
+  // "?" glyph is gone -- two glyphs for one habit means readers learn it twice.
+  const infoBtns = Array.from(doc.querySelectorAll(".info-btn"));
+  check("every explainer in the console is an 'i' button with a panel behind it",
+        infoBtns.length >= 8 && infoBtns.every((b) => doc.getElementById(b.dataset.info || "")),
+        `${infoBtns.length} info buttons; missing panels: ` +
+          infoBtns.filter((b) => !doc.getElementById(b.dataset.info || ""))
+                  .map((b) => b.dataset.info).slice(0, 3).join(", "));
+  check("no '?' glyph survives on any button",
+        !Array.from(doc.querySelectorAll("button")).some((b) => (b.textContent || "").trim() === "?"),
+        "one glyph for one habit");
+  const probeBtn = infoBtns[0];
+  const probePanel = probeBtn ? doc.getElementById(probeBtn.dataset.info) : null;
+  if (probeBtn && probePanel) {
+    const wasHidden = probePanel.classList.contains("hidden");
+    probeBtn.click();
+    check("clicking an 'i' opens its explanation and says so in aria-expanded",
+          wasHidden && !probePanel.classList.contains("hidden") &&
+            probeBtn.getAttribute("aria-expanded") === "true",
+          "the affordance must open the panel it names");
+    probeBtn.click();
+    check("clicking it again closes the panel",
+          probePanel.classList.contains("hidden") &&
+            probeBtn.getAttribute("aria-expanded") === "false", "");
+  }
 
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

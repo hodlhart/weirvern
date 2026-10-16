@@ -80,6 +80,16 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "INTERCEPT_GATEWAY",
     "CHANNEL_UPSTREAM",
     "CHANNEL_DOWNSTREAM",
+    # THE GATE'S OWN KEYS. The Sluice Gate is a product surface (its own tab, its own proof), and
+    # operating it previously meant a ConfigMap patch and a worker restart -- the opposite of the
+    # operator's standing request that everything be clickable. All five are read by the WORKER,
+    # so each restarts it (see _RESTART_FOR), and the two numeric ones carry bounds here so the
+    # control and the validator cannot disagree.
+    "SLUICE_ENABLED",
+    "SLUICE_IFACE",
+    "SLUICE_CRITICALITY",
+    "SLUICE_MAX_BLOCK_S",
+    "SLUICE_INTERVAL_S",
     "SENSOR_MODE",
     "WEIRVERN_EXCLUDE_CIDRS",
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS",
@@ -147,6 +157,15 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
     "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    # The sluice keys are read by the WORKER: it resolves the enforcement interface, compiles the
+    # rules and runs the pass. Restarting it also re-establishes the kernel state immediately
+    # rather than waiting for the gate's own interval.
+    "SLUICE_ENABLED": (("deploy/weirvern-worker",), "restarts the detection worker, which disarms "
+                       "or compiles the gate immediately"),
+    "SLUICE_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "SLUICE_CRITICALITY": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "SLUICE_MAX_BLOCK_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "SLUICE_INTERVAL_S": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "BASE_THRESHOLD": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "MIN_AGREEMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "STRONG_SIGNAL": (("deploy/weirvern-worker",), "restarts the detection worker"),
@@ -245,6 +264,11 @@ NUMERIC_RANGES: dict[str, tuple[float, float, str, float]] = {
     "RETRAIN_WINDOW_H": (1, 8760, "hours", 1),
     "PUSHOVER_COOLDOWN_S": (0, 86400, "seconds", 1),
     "PUSHOVER_MAX_PER_HOUR": (0, 1000, "alerts per hour", 1),
+    # A block may last an hour by default and a week at most -- the same ceiling the Sluice tab's
+    # own rule form offers (10080 minutes). The re-check interval may not go below 5s (the pass
+    # would hammer the rule store) nor above an hour (rules would expire unnoticed for that long).
+    "SLUICE_MAX_BLOCK_S": (60, 604800, "seconds", 60),
+    "SLUICE_INTERVAL_S": (5, 3600, "seconds", 5),
 }
 
 # HOW THE SETTINGS TAB RENDERS EACH EDITABLE KEY: its natural control, so an operator CHOOSES a
@@ -268,6 +292,12 @@ SETTING_CONTROLS: dict[str, dict] = {
     "INTERCEPT_GATEWAY": {"control": "text"},
     "CHANNEL_UPSTREAM": {"control": "text"},
     "CHANNEL_DOWNSTREAM": {"control": "text"},
+    "SLUICE_ENABLED": {"control": "toggle"},
+    # Empty resolves automatically (channel bridge, else capture port), so it stays free text --
+    # a closed set of interface names does not exist across deployments.
+    "SLUICE_IFACE": {"control": "text"},
+    "SLUICE_CRITICALITY": {"control": "select",
+                           "options": ["off", "high", "medium", "strict"]},
     "WEIRVERN_EXCLUDE_CIDRS": {"control": "text"},
     "WEIRVERN_CAPTURE_EXCLUDE_CIDRS": {"control": "text"},
 }
@@ -342,11 +372,44 @@ def validate(key: str, value: str) -> str:
             raise ConfigError(f"{key} must be between {lo} and {hi} ({what}); got {raw}")
         if key in ("RETRAIN_EVERY_H", "RETRAIN_WINDOW_H") and number < 1:
             return "a sub-hour retrain interval will keep the detectors permanently busy"
+        if key == "SLUICE_INTERVAL_S" and number < 15:
+            return ("a re-check interval under 15s reads the rule store that often; 30-60s is "
+                    "usually enough to make a filed block feel immediate")
         return ""
 
-    if key == "PUSHOVER_ENABLED":
+    if key in ("PUSHOVER_ENABLED", "SLUICE_ENABLED"):
         if raw.lower() not in ("true", "false", "1", "0", "yes", "no", ""):
             raise ConfigError(f"{key} must be true or false, not '{raw}'")
+        if key == "SLUICE_ENABLED" and raw.lower() in ("true", "1", "yes"):
+            return ("while this is on, live block rules are compiled into the kernel on the "
+                    "sensor. Every rule is TTL-bounded and the gate fails OPEN; turning this off "
+                    "disarms it and removes any table a previous run left behind.")
+        return ""
+
+    if key == "SLUICE_IFACE":
+        import os as _os  # noqa: PLC0415
+
+        if raw and raw == (_os.environ.get("MGMT_IFACE") or "").strip():
+            raise ConfigError(
+                f"{key}={raw} is the management interface. The gate refuses to arm there -- "
+                f"blocking on the management path would cut off SSH and the cluster API -- so "
+                f"this would be accepted, restarted for, and then refused where nobody sees it."
+            )
+        return ("empty (the default) resolves automatically: the channel's bridge when one is "
+                "verified active, otherwise the capture interface.")
+
+    if key == "SLUICE_CRITICALITY":
+        from weirvern.sluice import CRITICALITY_POLICIES  # noqa: PLC0415
+
+        if raw.lower() not in CRITICALITY_POLICIES:
+            raise ConfigError(
+                f"{key} must be one of {', '.join(sorted(CRITICALITY_POLICIES))}; got '{raw}'. "
+                f"The policy decides which of the ensemble's own detections may block."
+            )
+        if raw.lower() != "off":
+            return ("detections matching this policy will BLOCK the offending address on the "
+                    "sensor for the policy's own TTL (15-30 minutes), only while the gate is "
+                    "enabled. Weaker detections are refused by the policy's own floors.")
         return ""
 
     if key in ("WEIRVERN_EXCLUDE_CIDRS", "WEIRVERN_CAPTURE_EXCLUDE_CIDRS"):

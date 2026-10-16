@@ -59,7 +59,7 @@ AGG_BUCKET_S = 300  # toStartOfFiveMinute in weirvern/schema/001_weirvern.sql
 # The gate's supervisor lives at module scope so its `last_ok` SURVIVES BETWEEN PASSES. Rebuilding
 # it each time would reset the age that `healthy()` uses to distinguish "holding" from "held the
 # last time anyone asked" -- so a supervisor that had stopped would look fresh forever.
-_SLUICE: dict = {"supervisor": None, "last_pass": 0.0, "armed": False}
+_SLUICE: dict = {"supervisor": None, "last_pass": 0.0, "armed": False, "swept": False}
 
 
 def _sluice_maybe(settings, client) -> None:
@@ -111,14 +111,26 @@ def _sluice_maybe(settings, client) -> None:
     if not settings.sluice_enabled:
         # DISARM ONCE, not every pass: re-disarming 1440 times a day would shell out to nft for
         # nothing. But it MUST happen, because `SLUICE_ENABLED=0` has to mean the rules are gone.
-        if _SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED:
+        #
+        # AND THE KERNEL IS SWEPT, ONCE PER PROCESS. A worker that STARTS with SLUICE_ENABLED=0
+        # has `armed=False` and a fresh DISARMED state, so the in-memory check alone would leave a
+        # table a PREVIOUS process armed sitting in the kernel -- inert (its sets empty once the
+        # rules lapsed) but present, and "disabled" must mean gone. The kernel is the only source
+        # that can tell. Measured on the test box: a disabled restart left `table inet
+        # weirvern_sluice` behind, and nothing in the cluster would ever have removed it.
+        first_sweep = not _SLUICE.get("swept")
+        if first_sweep:
+            _SLUICE["swept"] = True
+        leftover = bool(first_sweep and sup.backend.installed())
+        if _SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED or leftover:
             sup.disarm()
             _SLUICE["armed"] = False
             try:
                 sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice: could not record the disarmed state: %s", exc)
-            logger.info("sluice gate is DISABLED (SLUICE_ENABLED=0); rules are not enforced")
+            logger.info("sluice gate is DISABLED (SLUICE_ENABLED=0); rules are not enforced%s",
+                        ": removed a table a previous run left behind" if leftover else "")
         return
 
     now = _time.monotonic()
@@ -1511,9 +1523,24 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.error("Worker loop error: %s", exc, exc_info=True)
             time.sleep(30)
-        # Sleep the remainder of the detection interval
+        # Sleep the remainder of the detection interval -- IN SLICES, because the Sluice Gate
+        # has its own cadence (see its section above): it must re-evaluate rules within
+        # `sluice_interval_s`, so a filed block ENFORCES and a lapsed one LIFTS on that timescale.
+        # One long sleep made the REAL cadence the detection interval (300s default) while the
+        # panel promised "within 60s" -- measured live at 301s between passes. A slice never
+        # exceeds the gate's own interval, so the promise holds by construction; each slice costs
+        # one cheap gated check that returns immediately until the interval elapses.
         elapsed = time.time() - cycle_start
-        _stop.wait(max(1, settings.detect_interval_s - int(elapsed)))
+        remaining = max(1, settings.detect_interval_s - int(elapsed))
+        slice_s = max(5, min(60, int(settings.sluice_interval_s)))
+        while remaining > 0 and not _stop.is_set():
+            step = min(remaining, slice_s)
+            _stop.wait(step)
+            remaining -= step
+            try:
+                _sluice_maybe(settings, client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice gate pass failed (detection continues): %s", exc)
 
     # ── LET THE INGEST LOOP FINISH ITS PASS (audit F079) ──────────────────────────────────────────
     #

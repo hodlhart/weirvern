@@ -823,6 +823,16 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("exclude_cidrs", "exclude from learning"),
         ("capture_exclude_cidrs", "exclude at capture"),
     ]),
+    ("sluice", "Sluice Gate", [
+        # THE GATE, WHERE ITS SWITCHES LIVE. These five were ConfigMap-only until now: operating
+        # the gate meant a patch and a worker restart. Read by the worker, verified from the
+        # kernel, and bounded by the same rules the validator enforces (see SETTING_CONTROLS).
+        ("sluice_enabled", "enforcement"),
+        ("sluice_iface", "enforcement interface"),
+        ("sluice_criticality", "block on detections"),
+        ("sluice_max_block_s", "longest block (s)"),
+        ("sluice_interval_s", "re-check interval (s)"),
+    ]),
     ("runtime", "Storage and runtime", [
         ("clickhouse_host", "ClickHouse host"),
         ("clickhouse_port", "ClickHouse port"),
@@ -905,6 +915,33 @@ _SETTINGS_HELP: dict[str, str] = {
         "that from the kernel -- ports on one forwarding bridge, link up, bridge-nf enabled -- "
         "before it will claim the channel is active, and names exactly what is missing when "
         "it is not."),
+    "sluice_enabled": (
+        "Whether the Sluice Gate enforces block rules at all. Default off, on purpose: "
+        "installing Weirvern must not start blocking traffic before anyone has looked at what "
+        "it sees. While off, the gate is disarmed and any table left behind by a previous run "
+        "is removed; while on, live rules are compiled into the kernel and every block is "
+        "TTL-bounded. Turning it off is the one-click way to stop all blocking."),
+    "sluice_iface": (
+        "The interface the gate enforces on. Empty (the default) resolves automatically: the "
+        "channel's bridge when one is verified active, otherwise the capture interface -- "
+        "which is what you want on a normal deployment. The management interface is refused: "
+        "blocking on the management path would cut off SSH and the cluster API."),
+    "sluice_criticality": (
+        "'off' (default) means the ensemble's detections alert but never block. 'high' blocks "
+        "only high-severity detections with strong agreement, for 30 minutes; 'medium' also "
+        "blocks medium severity, for 15 minutes; 'strict' is the widest net. The policy's own "
+        "severity and confidence floors still apply, every block lapses on its own, and the "
+        "policy only acts while the gate is enabled."),
+    "sluice_max_block_s": (
+        "The ceiling on how long a single block may last, in seconds. Default 3600 (one "
+        "hour), maximum 604800 (a week -- the same ceiling the Sluice tab's rule form "
+        "offers). The criticality policy's own TTL (15-30 minutes) is usually shorter; this "
+        "bound exists so no rule can outlive the operator's intent."),
+    "sluice_interval_s": (
+        "How often the gate re-evaluates its rules, in seconds. Default 60. This is the "
+        "maximum delay between filing a block and it being enforced, and between a rule "
+        "lapsing and it being lifted -- the worker sleeps in slices no longer than this so "
+        "the promise holds. Lower is fresher at the cost of more frequent rule-store reads."),
     "zeek_log_dir": (
         "Where the worker reads Zeek's logs from inside the pod. Default /zeek/logs, shared "
         "between the Zeek sensor and the worker via a host directory. Change only if you moved "

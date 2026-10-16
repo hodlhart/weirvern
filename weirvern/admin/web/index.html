@@ -135,7 +135,7 @@
   -->
   <section id="view-network" class="view">
     <div class="card">
-      <h2>Connection graph <span class="muted" id="nw-window"></span></h2>
+      <h2>Connection graph <button class="info-btn" data-info="nw-info" aria-label="how to read and use this map" aria-expanded="false" title="how to read and use this map">i</button> <span class="muted" id="nw-window"></span></h2>
       <div class="controls">
         <label>window
           <select id="nw-hours">
@@ -158,6 +158,16 @@
         drawn — clear the selection to see everything again. The map is force-directed: it
         settles on its own, drag a dot to pull it around (Re-settle puts it back), and where
         IP TTL is reported the hosts sit in hop-distance rings from the sensor.</p>
+      <div class="info-text hidden" id="nw-info">
+        A dot is a host both sensors saw traffic for; a line is a conversation between two hosts,
+        thickness by bytes. The dashed rings are hop distance from the sensor, drawn from the
+        reported IP TTL — no ring means the TTL was not measured, never that a host sits outside
+        the network. A central dot with many thin lines is a host talking to everything: a scanner,
+        a backup server, or something worth clicking. Click a dot to focus that host's
+        conversations, a line for its exact source → destination, and use the tables below when the
+        answer needs to go into a ticket.
+      </div>
+
       <p class="muted" id="nw-caption">loading…</p>
       <div id="nw-selected" class="chips"></div>
       <div id="nw-graph" class="graph"></div>
@@ -208,8 +218,17 @@
 
   <section id="view-netflow" class="view">
     <div class="card">
-      <h2>Netflow <span class="muted" id="nf-window"></span></h2>
+      <h2>Netflow <button class="info-btn" data-info="nf-info" aria-label="what NetFlow shows and how to drill in" aria-expanded="false" title="what NetFlow shows and how to drill in">i</button> <span class="muted" id="nf-window"></span></h2>
       <p class="muted" id="nf-summary">loading…</p>
+      <div class="info-text hidden" id="nf-info">
+        NetFlow is the router's own summary of every conversation — who talked to whom, how many
+        bytes, how many packets. It is sampled, so read the volumes as a strong estimate rather
+        than an audit. This tab is the raw ground truth: click any bar in Talkers, Protocol mix or
+        Top ports and the Flow detail table below fills with the exact host-to-host pairs behind
+        it. For what a host was DOING, the Zeek tab knows services and names; for what looked
+        WRONG, the Anomalies tab has the scores.
+      </div>
+
       <div class="controls">
         <label>hours <input type="number" id="nf-hours" value="24" min="1" max="336"></label>
         <button id="nf-reload">Reload</button>
@@ -259,7 +278,7 @@
   <!-- ── Zeek ─────────────────────────────────────────────────────────── -->
   <section id="view-zeek" class="view">
     <div class="card">
-      <h2>Zeek <span class="muted" id="zk-window"></span></h2>
+      <h2>Zeek <button class="info-btn" data-info="zk-info" aria-label="what the Zeek logs show and how to drill in" aria-expanded="false" title="what the Zeek logs show and how to drill in">i</button> <span class="muted" id="zk-window"></span></h2>
       <p class="muted" id="zk-summary">loading…</p>
       <div class="controls">
         <label>hours <input type="number" id="zk-hours" value="24" min="1" max="336"></label>
@@ -269,6 +288,16 @@
         transfers, authentication. A table that is empty here is a log nothing has written
         yet — which is a different state from a query that failed, and they are stated
         differently below.</p>
+      <div class="info-text hidden" id="zk-info">
+        Zeek records what flows cannot: the services hosts offer, TLS handshakes (with JA4
+        fingerprints), DNS answers, file transfers, authentication. Log volume shows which of
+        those streams is carrying traffic — click a bar to see every host that appears in that
+        log and how often. The DNS chart hides single-label names (NetBIOS and mDNS chatter would
+        bury the real lookups); they are still in the table below. A table that is empty means the
+        log has no rows yet, which is a different fact from a query that failed — and the page
+        says which.
+      </div>
+
     </div>
     <div class="card">
       <h2>Protocol records over time <span class="muted">rows per bucket, by log</span></h2>
@@ -312,7 +341,7 @@
   <!-- ── Identity: what each host IS, from traffic already seen ─────────── -->
   <section id="view-identity" class="view">
     <div class="card">
-      <h2>Passive host identification</h2>
+      <h2>Passive host identification <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
       <div class="controls">
         <label>window
           <select id="id-hours">
@@ -330,6 +359,15 @@
         Confidence reflects how many <em>independent</em> sources agree, so a hostname
         alone is never presented as an answer.
       </p>
+      <div class="info-text hidden" id="id-info">
+        Nothing is probed and nothing is sent — every identity here was derived from traffic the
+        sensor already saw. Confidence counts how many INDEPENDENT sources agree (a banner, a DHCP
+        lease, a NIC vendor, a TLS fingerprint); one weak signal is never presented as an answer.
+        Click any host for each signal with its source and weight, and note that contradicting
+        signals are shown rather than averaged — a host with two operating systems is a finding
+        (dual-boot, a renamed machine, or a spoof), not a rounding error.
+      </div>
+
     </div>
 
     <div class="card">
@@ -366,13 +404,23 @@
 
   <section id="view-anomalies" class="view">
     <div class="card">
-      <h2>All anomalies</h2>
+      <h2>All anomalies <button class="info-btn" data-info="an-info" aria-label="how a row is scored and what the chips do" aria-expanded="false" title="how a row is scored and what the chips do">i</button></h2>
       <div class="controls">
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
         <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
       </div>
       <p class="muted">Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window. Mark a row with ack / resolve / FP to record what you did about it — a recurring benign alert stays cleared that way. Reviews need the operator token (same write gate as Settings).</p>
+      <div class="info-text hidden" id="an-info">
+        Each row is a host-window the ensemble flagged: the score that crossed the line, and
+        which detectors AGREED on it — one model alone is usually noise, so agreement is the
+        signal worth reading first. Click any row to open its evidence: the raw flows, Zeek
+        sessions and DNS queries inside the window, which is what the models actually saw. The
+        chips record your disposition, so a recurring benign alert stays triaged instead of
+        demanding the same decision every week. Sort your work with the minimum-score and
+        unreviewed-only filters above.
+      </div>
+
       <table id="anomalies-table">
         <thead><tr><th>Detected</th><th>Window</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Review</th></tr></thead>
         <tbody></tbody>
@@ -384,8 +432,18 @@
   <!-- ── Models ───────────────────────────────────────────────────────── -->
   <section id="view-models" class="view">
     <div class="card">
-      <h2>Models <span class="muted" id="m-window"></span></h2>
+      <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
+      <div class="info-text hidden" id="m-info">
+        Four detectors watch the same traffic with different methods: Isolation Forest (outliers
+        in feature space), Gradient Boosting (learned patterns from this deployment's own
+        history), DBSCAN (dense-crowd clustering), and an adaptive per-host baseline. The ensemble
+        asks how many of them AGREE before a score is believed. Check freshness first — a model
+        scored against a stale baseline is still confident, just confident about the wrong
+        traffic. The near-miss table is the honest way to judge a threshold: it lists the windows
+        that almost alerted and why they did not.
+      </div>
+
       <div class="controls">
         <label>window
           <select id="m-hours">
@@ -515,7 +573,7 @@
   -->
   <section id="view-host" class="view">
     <div class="card">
-      <h2>Asset inventory <span class="muted" id="as-summary">loading…</span></h2>
+      <h2>Asset inventory <button class="info-btn" data-info="as-info" aria-label="what this inventory lists and how to drill in" aria-expanded="false" title="what this inventory lists and how to drill in">i</button> <span class="muted" id="as-summary">loading…</span></h2>
       <div class="controls">
         <label>search
           <input type="text" id="as-search" placeholder="address, name or service" autocomplete="off">
@@ -543,6 +601,13 @@
       <p class="muted">Every host seen in the window, from both sensors. Click any row to drill
         down. A host with zero bytes was seen by Zeek but moved no volume in this window — it is
         still an asset, so it is listed rather than hidden.</p>
+      <div class="info-text hidden" id="as-info">
+        Every host either sensor saw in the window. Sort by anomalies to start with the
+        interesting ones, or search an address, a name, or a service. Click any row to drill down:
+        volume over time, Zeek services, top destinations and ports, and every anomaly that host
+        ever raised — usually the fastest route from "what is this box" to "what did it do".
+      </div>
+
       <div id="as-note"></div>
       <table id="as-table">
         <thead><tr>
@@ -602,7 +667,7 @@
   <!-- ── Health ───────────────────────────────────────────────────────── -->
   <section id="view-health" class="view active">
     <div class="card">
-      <h2>Health <span class="muted" id="hp-window"></span></h2>
+      <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks and what the audit means" aria-expanded="false" title="what this page checks and what the audit means">i</button> <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
       <div class="controls">
         <label>hours <input type="number" id="hp-hours" value="24" min="1" max="336"></label>
@@ -611,7 +676,16 @@
       <p class="muted">This is the DEEP check — it reads ClickHouse, so it answers "is data
         flowing". The Kubernetes liveness probe deliberately does not, because a probe that
         fails when the database is slow would restart the GUI and hide the real problem.
-        The two are different questions and this page asks the first one.</p>
+        The two are different questions and        this page asks the first one.</p>
+      <div class="info-text hidden" id="hp-info">
+        Ingestion over time is the pulse: rows arriving from each pipeline stage. The alert audit
+        lists EVERY decision the worker made — sent, suppressed by cooldown, capped, or log-only —
+        because "nothing fired" and "it fired and was withheld" must never look alike; if an alert
+        you expected is missing, this is where it went. Checks is each probe with its state and
+        latency; Table sizes shows which store is growing; and the sensor panel reports the last
+        heartbeat per weirling, so a dead capture is visible before the data gap is.
+      </div>
+
     </div>
     <div class="card">
       <h2>Ingestion over time <span class="muted">rows per bucket, by pipeline stage</span></h2>
@@ -675,13 +749,23 @@
   -->
   <section id="view-sluice" class="view">
     <div class="card">
-      <h2>Sluice Gate</h2>
+      <h2>Sluice Gate <button class="info-btn" data-info="sl-info" aria-label="what the gate does and how it fails" aria-expanded="false" title="what the gate does and how it fails">i</button></h2>
       <p class="muted">
         Block traffic by address, port or direction. Every rule is bounded -- this system does not
         create permanent blocks, so a rule that has lapsed shows here as lapsed rather than silently
         continuing to enforce. Blocking runs in the kernel on the sensor, so it does not slow the
         traffic it inspects.
       </p>
+      <div class="info-text hidden" id="sl-info">
+        The gate is the part of this system that can STOP traffic, so it is built to fail open:
+        if its supervisor dies, the gate OPENS rather than taking your network down — a tool that
+        drops a production network when it has a bad day is a tool nobody deploys twice. The
+        panel above always says which enforcement path is actually live, verified from the
+        kernel, not from configuration. Rules are bounded by their duration and every block
+        states its reason. Blocking on detections is off until you enable it in
+        Settings → Sluice Gate.
+      </div>
+
       <!-- THE GATE'S OWN STATE, FIRST AND LARGEST. An operator's first question is "is this
            actually blocking anything", and the answer is not the rule count. -->
       <div id="sl-state" class="stat-row"></div>
@@ -767,7 +851,7 @@
 
   <section id="view-weirlings" class="view">
     <div class="card">
-      <h2>Weirlings</h2>
+      <h2>Weirlings <button class="info-btn" data-info="wl-info" aria-label="what a weirling is and what registering means" aria-expanded="false" title="what a weirling is and what registering means">i</button></h2>
       <p class="muted">
         The fleet: every sensor this hub expects to hear from, compared against what it has
         actually heard. A weirling is any additional sensor elsewhere in the network feeding this
@@ -776,6 +860,16 @@
         apart from <strong>you have no sensors</strong>, which are opposite facts that look
         identical everywhere else.
       </p>
+      <div class="info-text hidden" id="wl-info">
+        A weirling is any sensor feeding this hub — a box running its own capture, or one
+        exporting flows here. Registering records the EXPECTATION, so "the sensor you added never
+        reported" can be told apart from "you have no sensors": two opposite facts that would
+        otherwise look identical. Registration is a ledger, not an ingest switch — the hub always
+        listens, and enforcement lives at the gate. The row marked local is this hub's own
+        sensor; its runtime settings mount in its drill-down, because a sensor can only be
+        configured on the box that runs it.
+      </div>
+
       <!-- THE FLEET'S OWN STATE, FIRST. An operator's first question is "is anything broken", and
            the answer is not the sensor count. -->
       <div id="wl-summary" class="stat-row"></div>
@@ -866,7 +960,7 @@
           <button id="st-sonar" type="button">Sonar</button>
           <button class="setting-help-btn" id="st-sonar-help" type="button"
                   aria-label="explain Sonar" aria-expanded="false"
-                  title="what Sonar does">?</button>
+                  title="what Sonar does">i</button>
         </div>
         <div id="st-sonar-note" class="muted sonar-note"></div>
         <div id="st-sonar-help-text" class="setting-help hidden">
@@ -889,7 +983,7 @@
           <button id="st-test" type="button">Test run (30s)</button>
           <button class="setting-help-btn" id="st-test-help" type="button"
                   aria-label="explain the test run" aria-expanded="false"
-                  title="what the test run does">?</button>
+                  title="what the test run does">i</button>
         </div>
         <div id="st-test-note" class="muted sonar-note"></div>
         <div id="st-test-help-text" class="setting-help hidden">
@@ -926,8 +1020,8 @@
       <p class="muted" id="st-summary">loading…</p>
       <p class="muted">These are the values the running deployment is using, read from the
         cluster. Each setting is shown as the control that changes it — a toggle for on/off, a
-        dropdown for a choice, a bounded number for a number — with a <strong>?</strong> beside
-        every row explaining what it does and what happens when it moves. Who may change a
+        dropdown for a choice, a bounded number for a number — with an <strong>i</strong> in a
+        circle beside every row explaining what it does and what happens when it moves. Who may change a
         setting depends on the account you signed in with: <strong>admins</strong> can stage and
         apply changes, and <strong>viewers</strong> see every value read-only. Secrets
         show as <code>(set, N chars)</code> or <code>(not set)</code>, never in value. To change
