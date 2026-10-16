@@ -937,3 +937,18 @@ def test_the_sweep_CALLS_the_check_before_scoring(monkeypatch):
     i_call = src.index("check_thin_floor_reachable(cfg, settings)")
     i_score = src.index("verdicts = ensemble.detect_flows(")
     assert i_call < i_score, "the check runs after detection has already scored"
+
+
+def test_severity_of_does_not_advertise_a_gate_it_does_not_read():
+    """Issue #33: `agreement` survived the refactor as a DEAD parameter — the signature said
+    severity was gated on the agreement ratio while the body reads only `strong_models` and
+    the structural-signature flag. A parameter nothing reads is this project's oldest bug
+    class: the next severity fix may wire it back in believing it is already consulted, and a
+    caller reading the signature reasonably assumes the same. The signature must not carry
+    it."""
+    import inspect
+
+    params = list(inspect.signature(ensemble.severity_of).parameters)
+    assert params == ["score", "strong_models", "signature"], (
+        f"severity_of's parameters no longer match what it reads: {params}"
+    )

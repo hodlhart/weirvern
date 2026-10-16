@@ -193,8 +193,7 @@ def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dic
     return ports >= cfg.port_scan_min_ports and entropy >= cfg.port_scan_min_entropy
 
 
-def severity_of(score: float, agreement: float, strong_models: int = 0,
-                signature: bool = False) -> str:
+def severity_of(score: float, strong_models: int = 0, signature: bool = False) -> str:
     """Severity tiers, gated on STRONG corroboration.
 
     `strong_models` = how many detectors scored >= STRONG_SIGNAL (0.85).
@@ -211,6 +210,10 @@ def severity_of(score: float, agreement: float, strong_models: int = 0,
     OR one strong detector corroborated by a direct structural signature
     (see signature_corroboration) — the latter covers attack families that only
     one model can see, such as a zero-byte port scan.
+
+    The signature carries NO agreement argument (issue #33): the legacy ratio this
+    gate replaced is described above, and a dead parameter would advertise a gate
+    the body does not read.
     """
     corroborated = strong_models >= 2 or (strong_models >= 1 and signature)
     if score >= 0.95 and corroborated:
@@ -448,7 +451,7 @@ def detect_flows(
             "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
             "model_agreement": round(agreement, 4),
             "detected_by_models": ",".join(detected_by),
-            "severity": severity_of(final_score, agreement, strong_models, signature),
+            "severity": severity_of(final_score, strong_models, signature),
             "strong_models": strong_models,
             "signature": signature,
             "threshold_used": round(threshold, 4),
