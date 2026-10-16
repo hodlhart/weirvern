@@ -215,19 +215,49 @@ def discard_candidate(settings) -> dict[str, Any]:
 
 def report_summary(report: dict[str, Any]) -> str:
     """One sentence for the GUI header -- the same facts the report carries, in the order an
-    operator asks them: did it train, on how much, and was the window clean."""
+    operator asks them: did it train, on how much, and was the window clean.
+
+    ONE UNIT PER CLAUSE (issue #37). The four detectors' `sample_count`s count DIFFERENT
+    things: the teacher's training windows, Isolation Forest's own sample of them, DBSCAN's
+    20% sample of the same window, and the baseline's HOST count. The previous sentence
+    summed them, so a 5000-window span with a 90-host baseline rendered as
+    "on 9840 host-window(s)" -- a number with no referent. The window is now stated ONCE, from
+    a detector whose count IS the window (the teacher first, then the detector that samples
+    the window), and the others carry their own units, or are omitted when they add nothing.
+    """
     if not report:
         return ""
     dets = [d for d in (report.get("detectors") or []) if isinstance(d, dict)]
     trained = [d for d in dets if "trained" in d and d["trained"]]
-    parts = [f"{len(trained)} of {len(dets)} detector(s) trained"]
-    rows = 0
-    for d in trained:
+
+    def _count(d: dict) -> int:
         try:
-            rows += int(d.get("sample_count") or 0)
+            return int(d.get("sample_count") or 0)
         except (TypeError, ValueError):
-            continue
-    parts.append(f"on {rows} host-window(s)")
+            return 0
+
+    def _named(name: str) -> dict | None:
+        return next((d for d in trained if str(d.get("name") or "") == name), None)
+
+    parts = [f"{len(trained)} of {len(dets)} detector(s) trained"]
+    window = 0
+    for teacher in ("Gradient Boosting", "Isolation Forest"):
+        det = _named(teacher)
+        if det is not None and _count(det):
+            window = _count(det)
+            break
+    if window == 0:
+        # No named teacher in the report (older payloads): the largest count is the best
+        # available single-quantity statement -- still ONE number, never a cross-unit sum.
+        window = max((_count(d) for d in trained), default=0)
+    if window:
+        parts.append(f"on {window} host-window(s)")
+    dbscan = _named("DBSCAN")
+    if dbscan is not None and _count(dbscan) and _count(dbscan) != window:
+        parts.append(f"DBSCAN saw a {_count(dbscan)}-window sample")
+    baseline = _named("Adaptive Baseline")
+    if baseline is not None and _count(baseline):
+        parts.append(f"baselines cover {_count(baseline)} host(s)")
     cont = report.get("contamination") or {}
     if cont.get("available") and int(cont.get("detections") or 0) > 0:
         parts.append(

@@ -345,3 +345,29 @@ def test_the_done_write_survives_real_datetimes_from_the_detector_metadata(tmp_p
     assert state == actions.DONE
     loaded = json.loads(stored)  # the column must hold valid JSON
     assert loaded["detectors"][0]["window_start"] == row["window_start"]
+
+
+def test_the_summary_never_sums_counts_that_count_different_things():
+    """Issue #37: the four sample_counts mean four different things -- the teacher's training
+    windows, Isolation Forest's sample of them, DBSCAN's 20% sample, and the baseline's HOST
+    count -- and the old sentence added them into one number with no referent
+    (5000 + 3750 + 1000 + 90 -> "on 9840 host-window(s)"). The sentence states the window
+    ONCE and gives the others their own units, or omits them."""
+    from weirvern.models import retrain
+
+    summary = retrain.report_summary({
+        "detectors": [
+            {"name": "Gradient Boosting", "trained": True, "sample_count": 500},
+            {"name": "DBSCAN", "trained": True, "sample_count": 100},
+            {"name": "Adaptive Baseline", "trained": True, "sample_count": 90},
+            {"name": "Isolation Forest", "trained": False, "sample_count": 0},
+        ],
+        "contamination": {"available": True, "detections": 0},
+    })
+    assert "3 of 4 detector(s) trained" in summary, summary
+    assert "on 500 host-window(s)" in summary, summary
+    assert "DBSCAN saw a 100-window sample" in summary, summary
+    assert "baselines cover 90 host(s)" in summary, summary
+    assert "590" not in summary and "690" not in summary and "9840" not in summary, (
+        f"numbers from different units were summed: {summary}"
+    )
