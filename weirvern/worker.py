@@ -1151,6 +1151,8 @@ def _collapse_partial_aggregates(flows: list[dict], div_idx: dict, client: Clien
         if cur is None:
             merged[key] = dict(f)
             merged[key]["_largest_block_flows"] = f.get("flow_count") or 0
+            merged[key]["_largest_block_bytes"] = f.get("total_bytes") or 0
+            merged[key]["_largest_block_packets"] = f.get("total_packets") or 0
             continue
         for col in ADDITIVE:
             if col in f:
@@ -1158,14 +1160,30 @@ def _collapse_partial_aggregates(flows: list[dict], div_idx: dict, client: Clien
         for col in CARDINALITY:
             if col in f:
                 cur[col] = (cur.get(col) or 0) + (f.get(col) or 0)  # upper bound; replaced below
-        if (f.get("flow_count") or 0) > (cur.get("_largest_block_flows") or 0):
-            cur["_largest_block_flows"] = f.get("flow_count") or 0
+        # ── A TOTAL ORDER, NOT A RACE (measured 2026-10-16) ───────────────────────────────────
+        #
+        # This compared flow counts alone, so two blocks with the SAME count left the window's
+        # avg_bytes/avg_packets to whichever row ClickHouse happened to return first -- and the
+        # seeded-attack harness caught what that costs: the same host-window scored 0.6978 in one
+        # pass and 0.6001 in the next with byte-identical feature contributions, because the ROW
+        # had been assembled differently, not the model. The fold's own docstring promises "row
+        # order stops mattering here"; for this tie it did not. (flow_count, total_bytes,
+        # total_packets) is a total order over the values the two LARGEST_BLOCK columns are derived
+        # from, so ties on all three imply identical averages and the choice cannot matter.
+        rank = (f.get("flow_count") or 0, f.get("total_bytes") or 0, f.get("total_packets") or 0)
+        cur_rank = (cur.get("_largest_block_flows") or 0, cur.get("_largest_block_bytes") or 0,
+                    cur.get("_largest_block_packets") or 0)
+        if rank > cur_rank:
+            (cur["_largest_block_flows"], cur["_largest_block_bytes"],
+             cur["_largest_block_packets"]) = rank
             for col in LARGEST_BLOCK:
                 if col in f:
                     cur[col] = f[col]
 
     for key, cur in merged.items():
         cur.pop("_largest_block_flows", None)
+        cur.pop("_largest_block_bytes", None)
+        cur.pop("_largest_block_packets", None)
         # The DIVERSITY side-table is fragmented the same way and supplies the port counts T1046
         # reads. Folded here so a rule reading `unique_dst_ports` sees the window's number.
         div = div_idx.get(key) or {}
@@ -1266,7 +1284,16 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     agg_cols, agg_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated WHERE window_start >= %(since)s",
+        # ORDERED, AND IT IS NOT COSMETIC (measured 2026-10-16). These tables can hold one row per
+        # INSERT BLOCK for the same (window_start, src_addr); `_collapse_partial_aggregates` folds
+        # the MAIN table order-independently, but the side tables below are indexed by key with
+        # "last row wins", so WHICH copy a host-window got was ClickHouse's arbitrary choice. The
+        # seeded-attack harness caught the cost: two scorings of the same window in one process gave
+        # DBSCAN 0.7178 in one and 0.6487 in the other for the same host -- a detection flipped out
+        # by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
+        # below still does the arithmetic.
+        "SELECT * FROM weirvern.flows_aggregated WHERE window_start >= %(since)s "
+        "ORDER BY window_start, src_addr",
         since=since,
     )
     if not agg_rows:
@@ -1277,12 +1304,14 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
 
     div_cols, div_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s",
+        "SELECT * FROM weirvern.flows_aggregated_diversity WHERE window_start >= %(since)s "
+        "ORDER BY window_start, src_addr",
         since=since,
     )
     tmp_cols, tmp_rows = db.fetch_rows_named(
         client,
-        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s",
+        "SELECT * FROM weirvern.flows_aggregated_temporal WHERE window_start >= %(since)s "
+        "ORDER BY window_start, src_addr",
         since=since,
     )
 

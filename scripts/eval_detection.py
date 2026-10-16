@@ -460,9 +460,20 @@ def main() -> int:
     #    made this check fail on a pipeline that was, in fact, deterministic. The retrain is
     #    deliberately NOT part of the comparison: each sweep's recorded flags legitimately
     #    change what the next retrain excludes.
+    # SNAPSHOT BEFORE THE RESET. The rerun truncates the tables it writes, so the only way to
+    # attribute a disagreement to a component is to hold the first pass's rows in memory.
+    def _snapshot(table: str = "netflow_anomalies"):
+        try:
+            cols = [c[0] for c in client.query(f"DESCRIBE TABLE weirvern.{table}").result_rows]
+            rows = client.query(f"SELECT * FROM weirvern.{table}").result_rows
+            return [dict(zip(cols, r, strict=False)) for r in rows]
+        except Exception:  # noqa: BLE001
+            return []
+
     _reset_sweep_state(client, settings.model_dir)
     rerun, err2 = run_detection(client, (settings, cfg), args.minutes, attack_start_minute,
                                 detectors=detectors)
+    pass_b_near = _snapshot("near_misses")
     if err2:
         _fail(f"the determinism re-run failed: {err2}")
         failures += 1
@@ -471,11 +482,49 @@ def main() -> int:
             return (str(v.get("src_addr")), str(v.get("window_start")),
                     str(v.get("severity")), round(float(v.get("anomaly_score") or 0.0), 4))
 
-        if sorted(map(_key, verdicts or [])) == sorted(map(_key, rerun or [])):
+        a = sorted(map(_key, verdicts or []))
+        b = sorted(map(_key, rerun or []))
+        if a == b:
             _ok(f"deterministic across runs ({len(rerun or [])} verdicts, identical)")
         else:
-            _fail("two identical sweeps disagreed -- ordering or a clock is leaking "
-                  "into the pipeline")
+            drift = []
+            same = {k[0] + k[1] for k in a} & {k[0] + k[1] for k in b}
+            by_a = {k[0] + k[1]: k for k in a}
+            by_b = {k[0] + k[1]: k for k in b}
+            for k in sorted(same):
+                if by_a[k][2:] != by_b[k][2:]:
+                    drift.append((by_a[k], by_b[k]))
+            windows = sorted({k[1] for k in a} | {k[1] for k in b})
+            bad_windows = sorted({k[1] for k in (set(a) ^ set(b))} |
+                                 {by_a[k][1] for k in same if by_a[k][2:] != by_b[k][2:]})
+            def _by_key(rows, host: str, window: str):
+                """The scoring numbers this key carried in a given pass, by name."""
+                cols = ("if_score", "gb_score", "dbscan_score", "baseline_score", "anomaly_score",
+                        "model_agreement", "threshold_used")
+                for v in rows or []:
+                    if str(v.get("src_addr")) == host and str(v.get("window_start")) == window:
+                        return {k: v.get(k) for k in cols if k in v}
+                return None
+
+            # WHAT DISAGREED, AND WHOSE FAULT IT WAS. A row that disappeared did not vanish: it fell
+            # under the bar, so the second pass appended it to `near_misses`. Comparing pass A's
+            # anomaly row against pass B's near-miss row for the SAME host and window names the
+            # component that moved -- measured this way: only the DBSCAN score differed (0.7178 vs
+            # 0.6487), which moved `model_agreement` and dropped the row out of the verdicts.
+            per = None
+            for k in [k for k in a if k not in b][:1]:
+                host, window = k[0], k[1]
+                near_b = next((v for v in pass_b_near
+                               if str(v.get("src_addr")) == host
+                               and str(v.get("window_start")) == window), None)
+                per = {"A_anomaly": _by_key(verdicts or [], host, window),
+                       "B_near_miss": near_b}
+                if per["B_near_miss"] is None:
+                    per["B_any_row"] = _by_key(rerun or [], host, window)
+            _fail(
+                f"two identical sweeps disagreed: {len([k for k in a if k not in b])} only in A, "
+                f"{len([k for k in b if k not in a])} only in B, {len(drift)} drifted -- "
+                f"window(s) {bad_windows} of {len(windows)} | PER-DETECTOR (A vs B): {per}")
             failures += 1
 
     print()

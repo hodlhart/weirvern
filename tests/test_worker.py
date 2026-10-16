@@ -994,6 +994,52 @@ def test_partial_rows_COLLAPSE_to_one_row_per_host_window():
     assert "_largest_block_flows" not in out[0], "the internal scratch key leaked onto the row"
 
 
+def test_the_sweeps_aggregate_reads_are_ORDERED():
+    """A duplicated key resolves by whichever row the storage engine returns last -- so the read
+    must be ordered, and the fold must not care either way.
+
+    MEASURED (2026-10-16, seeded-attack harness): two scorings of the SAME window in one process
+    gave DBSCAN 0.7178 in one and 0.6487 in the other for the same host, which flipped a detection
+    out of the verdict list. These tables can hold one row per insert block for one (window, host);
+    the side tables are indexed by key with "last wins", so without an ORDER BY the choice is the
+    storage engine's, not the code's.
+    """
+    src = (ROOT / "weirvern" / "worker.py").read_text()
+    for table in ("flows_aggregated", "flows_aggregated_diversity", "flows_aggregated_temporal"):
+        needle = f"FROM weirvern.{table} WHERE window_start >= %(since)s"
+        i = src.index(needle)
+        assert "ORDER BY window_start, src_addr" in src[i:i + 160], (
+            f"the read of {table} lost its ORDER BY: a duplicated key again resolves by arbitrary "
+            "row order, and the same host-window can score differently between two runs")
+
+
+def test_the_largest_block_is_chosen_by_a_TOTAL_order_not_by_arrival():
+    """Two blocks with the SAME flow count used to decide the window's averages by arriving first.
+
+    The fold's docstring promises "row order stops mattering here". For this tie it did not, and the
+    seeded-attack harness measured the cost: the same host-window scored 0.6978 in one pass and
+    0.6001 in the next with byte-identical feature contributions -- meaning the ROW had been
+    assembled differently, not the model. A verdict that changes when the input rows are returned in
+    a different order is a verdict nobody can act on.
+    """
+    small = _agg_row(3, 1, 1, 300)   # 3 flows, 300 bytes -> avg 100
+    large = _agg_row(3, 1, 1, 900)   # 3 flows, 900 bytes -> avg 300: same count, bigger block
+
+    class _C:
+        def insert(self, *a, **k):
+            pass
+
+    one = _collapse_partial_aggregates([small, large], {}, _C())
+    two = _collapse_partial_aggregates([large, small], {}, _C())
+    assert len(one) == len(two) == 1
+    assert one[0]["avg_bytes"] == two[0]["avg_bytes"] == 300.0, (
+        "the same two blocks in a different order produced a different window: "
+        f"{one[0]['avg_bytes']} vs {two[0]['avg_bytes']}")
+    assert (one[0]["flow_count"], two[0]["flow_count"]) == (6, 6), "the additive fold regressed"
+    assert not [k for k in one[0] if k.startswith("_largest_block")], (
+        "an internal scratch key leaked onto the row")
+
+
 def test_the_cardinality_comes_from_the_RAW_flows_not_the_sum(monkeypatch):
     """SUMMING PARTIALS IS AN UPPER BOUND, and these numbers GATE detection.
 
