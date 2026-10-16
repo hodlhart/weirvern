@@ -50,25 +50,25 @@ def test_credential_stuffing_lowers_threshold():
 def test_severity_tiers():
     # Escalation to high/critical requires corroboration (>=2 strong detectors,
     # or one strong detector backed by a structural signature).
-    assert severity_of(0.96, 0.8, strong_models=3) == "critical"
-    assert severity_of(0.90, 0.6, strong_models=2) == "high"
-    assert severity_of(0.86, 0.4, strong_models=2) == "high"   # >=0.85 score, corroborated
-    assert severity_of(0.84, 0.5, strong_models=2) == "medium"
-    assert severity_of(0.75, 0.5, strong_models=1) == "medium"
-    assert severity_of(0.50, 0.5, strong_models=0) == "low"
+    assert severity_of(0.96, strong_models=3) == "critical"
+    assert severity_of(0.90, strong_models=2) == "high"
+    assert severity_of(0.86, strong_models=2) == "high"   # >=0.85 score, corroborated
+    assert severity_of(0.84, strong_models=2) == "medium"
+    assert severity_of(0.75, strong_models=1) == "medium"
+    assert severity_of(0.50, strong_models=0) == "low"
 
 
 def test_lone_strong_detector_does_not_escalate():
     """Measured false-positive shape: one strong model (GB 0.96) + weak others
     on ordinary low-activity traffic must NOT be critical/high."""
-    assert severity_of(0.963, 0.75, strong_models=1) == "medium"
-    assert severity_of(0.99, 1.0, strong_models=1) == "medium"
+    assert severity_of(0.963, strong_models=1) == "medium"
+    assert severity_of(0.99, strong_models=1) == "medium"
 
 
 def test_two_strong_detectors_escalate():
     """Genuine attacks: port scan (IF+DBSCAN), exfil (all four)."""
-    assert severity_of(0.99, 1.0, strong_models=2) == "critical"
-    assert severity_of(0.90, 0.5, strong_models=2) == "high"
+    assert severity_of(0.99, strong_models=2) == "critical"
+    assert severity_of(0.90, strong_models=2) == "high"
 
 
 # --- structural signature corroboration --------------------------------------
@@ -82,7 +82,7 @@ def test_lone_specialist_escalates_with_scan_signature():
     evidence, so this must escalate rather than sit at medium."""
     scores = {"Isolation Forest": 0.48, "Gradient Boosting": 0.01, "DBSCAN": 0.99, "Adaptive Baseline": 0.0}
     assert signature_corroboration({}, scores, SCAN_DIV, CFG)
-    assert severity_of(0.99, 0.75, strong_models=1, signature=True) == "critical"
+    assert severity_of(0.99, strong_models=1, signature=True) == "critical"
 
 
 def test_lone_specialist_without_signature_stays_medium():
@@ -90,7 +90,7 @@ def test_lone_specialist_without_signature_stays_medium():
     evidence, thin benign window -> must not escalate."""
     scores = {"Isolation Forest": 0.70, "Gradient Boosting": 0.96, "DBSCAN": 0.31, "Adaptive Baseline": 0.0}
     assert not signature_corroboration({}, scores, NORMAL_DIV, CFG)
-    assert severity_of(0.96, 0.75, strong_models=1, signature=False) == "medium"
+    assert severity_of(0.96, strong_models=1, signature=False) == "medium"
 
 
 def test_signature_requires_lone_specialist():
