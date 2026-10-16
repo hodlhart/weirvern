@@ -2577,7 +2577,16 @@ function renderScoreDistribution(scores) {
       counts[n][b] += 1;
     }
   }
-  const max = Math.max(1, ...names.flatMap((n) => counts[n]));
+  // THE SCALE IS THE STACK, NOT THE TALLEST SINGLE SEGMENT (issue #6, 2026-10-16). Every segment
+  // used to be drawn against the global per-detector max, so a band where several detectors each
+  // scored near that max stacked to k x the plot height -- and the chart painted over the card
+  // above it. Each band scales against its OWN stack total: the tallest stack exactly fills the
+  // plot, and the axis reads the largest stack, which is the number the chart actually draws.
+  const stackTotal = new Array(BANDS).fill(0);
+  for (let i = 0; i < BANDS; i++) {
+    for (const n of names) stackTotal[i] += counts[n][i];
+  }
+  const max = Math.max(1, ...stackTotal);
   // A WIDE, SHORT viewBox ON PURPOSE (the operator, 2026-10-16: "this graph is larger than the
   // chart bounds"). The chart is width:100%/height:auto, so its RATIO decides its height: at
   // 440x200 (2.2) a half-width card on a wide screen rendered it ~800px tall, dwarfing every
@@ -2591,7 +2600,7 @@ function renderScoreDistribution(scores) {
     for (const n of names) {
       const c = counts[n][i];
       if (!c) continue;
-      const h = (c / max) * (plot.b - plot.t);
+      const h = (c / stackTotal[i]) * (plot.b - plot.t);
       svg.appendChild(svgEl("rect", {
         x: plot.l + i * bw + 0.5, y: y - h, width: Math.max(1, bw - 1), height: h,
         fill: MODEL_COLORS[n] || "#888", opacity: 0.85,
@@ -2604,7 +2613,7 @@ function renderScoreDistribution(scores) {
   axisLabel(svg, plot.l - 6, plot.t + 10, String(max), "end");
   axisLabel(svg, plot.l - 6, plot.b, "0", "end");
   host.appendChild(svg);
-  host.appendChild(el("p", { class: "muted", text: `max ${max} per band, over ${total} score(s)` }));
+  host.appendChild(el("p", { class: "muted", text: `max stack ${max} per band, over ${total} score(s)` }));
 }
 
 /** Model agreement: how often each detector fired, as a bar per detector. */

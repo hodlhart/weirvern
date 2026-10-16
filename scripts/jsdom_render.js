@@ -106,7 +106,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
                    loadDns, dnClear, dnApply, loadBlocked, wlPopulateSelector, wlSettingsFor,
-                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
+                   chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
@@ -1443,6 +1443,32 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the panel states what a threshold change would do",
         doc.getElementById("m-near-note").textContent.includes("Raising the threshold"),
         doc.getElementById("m-near-note").textContent.slice(0, 120));
+
+  // ── the score distribution scales stacks, and the chart clips (issue #6) ───────────────────
+  // ONE BAND, SEVERAL DETECTORS, EACH NEAR WHAT THE OLD GLOBAL MAX WOULD HAVE BEEN: in the old
+  // code every segment drew against that max, the band stacked to three times the plot height
+  // and painted over the card above. Geometry is read from the rect ATTRIBUTES the renderer
+  // writes -- jsdom does no layout, so the attributes are the measurable truth here. PLOT_TOP
+  // mirrors PAD.t in renderScoreDistribution.
+  H.renderScoreDistribution({
+    "Isolation Forest": [0.95, 0.95, 0.95, 0.95],
+    "Gradient Boosting": [0.95, 0.95, 0.95, 0.95],
+    "DBSCAN": [0.95, 0.95, 0.25],
+  });
+  const PLOT_TOP = 10;
+  const distSvg = doc.querySelector("#m-scores svg");
+  const distRects = distSvg ? [...distSvg.querySelectorAll("rect")] : [];
+  const distTops = distRects.map((r) => Number(r.getAttribute("y")));
+  check("the score distribution draws something to measure", distRects.length >= 3,
+        `rects=${distRects.length}`);
+  check("no segment stack overruns the plot top",
+        distRects.length > 0 && distTops.every((y) => y >= PLOT_TOP - 0.001),
+        `tops=${distTops.join(",")}`);
+  check("the tallest stack touches the plot top, never above it",
+        distTops.length > 0 && Math.abs(Math.min(...distTops) - PLOT_TOP) < 0.001,
+        `closest top=${distTops.length ? Math.min(...distTops) : "n/a"}`);
+  check("the chart clips as a belt", /\.svg-chart\s*\{[^}]*overflow:\s*hidden/.test(css),
+        "style.css no longer clips the chart");
 
   // The two states that must NOT render identically.
   H.renderNearMisses({ near_misses_available: false, near_misses: [],

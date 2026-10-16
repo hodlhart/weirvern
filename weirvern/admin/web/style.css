@@ -376,7 +376,10 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
   text-align: center;
 }
 
-.svg-chart { width: 100%; height: auto; display: block; overflow: visible; }
+/* CLIPPED ON PURPOSE (issue #6, 2026-10-16): a chart that overruns its box paints over the card
+   above it. The scaling bug that did that is fixed; this belt makes sure a future one hits the
+   clip instead of a neighbouring card. */
+.svg-chart { width: 100%; height: auto; display: block; overflow: hidden; }
 
 /* SVG text and lines do not inherit body colour, so they are set explicitly. */
 .svg-chart .axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
