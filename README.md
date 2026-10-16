@@ -24,7 +24,12 @@ Alerts via [Pushover](https://pushover.net), or log-only.
   roles — and an alert review lifecycle (ack / resolve / false-positive), a near-miss view for
   threshold tuning, and a complete alert audit — plus a CLI and the web console for operations.
 - **Fail-open by design.** The default mode is passive capture. In-path interception is
-  opt-in, gated, and defended by a watchdog with a measured recovery story.
+  opt-in, gated, and defended by a watchdog with a measured recovery story. In-line
+  enforcement (`channel`) drops only what the gate's rules name and forwards the rest.
+- **Enforcement with a receipt.** The Sluice Gate blocks by kernel rule — address, port,
+  direction — with every rule bounded in time, and live, lapsed and revoked rules shown
+  differently because they are different facts. The path it holds (`channel` / `siphon` /
+  `none`) is verified from the kernel, never inferred from configuration.
 
 > **WARNING**: This tool is for monitoring networks **you own or are explicitly
 > authorized to monitor**. See [USAGE_POLICY.md](USAGE_POLICY.md). Unauthorized
@@ -99,40 +104,15 @@ Coverage is stated as a fraction of hosts seen, so a small numerator cannot misl
 
 ## Architecture
 
-```
-                     ┌──────────────┐      ┌───────────────────────┐
-  NetFlow/sFlow ───► │   goflow2    │ ───► │  weirvern-worker     │
-  (switches,         │  (collector) │ JSONL │  tail + parse         │
-   pfsense, VMs)     └──────────────┘  file  │  batch insert         │
-                                             │                       │
-  mirrored packets ─► ┌──────────────┐  TSV   │                       │
-  (SPAN / mirror      │     Zeek     │ ─────► │                       │
-   port / NIC)        │  (sniffer)   │  logs  └──────────┬────────────┘
-                      └──────────────┘                    ▼
-                                             ┌───────────────────────┐
-                                             │     ClickHouse        │
-                                             │  flows (raw, TTL 3d)  │
-                                             │  flows_aggregated +   │
-                                             │    diversity/temporal │
-                                             │  zeek_conn/dns/ssl/   │
-                                             │    notice/… (Tier 3)  │
-                                             │  netflow_anomalies    │
-                                             │  alert_reviews        │
-                                             │  near_misses          │
-                                             │  ml_models, baselines │
-                                             │  alert_events         │
-                                             └──────────┬────────────┘
-                                                        ▼
-                                             ┌───────────────────────┐      ┌──────────────┐
-                                             │  weirvern-worker     │      │ weirvern-gui │
-                                             │  ensemble detectors   │ ───► │ SOC console  │
-                                             │  (scikit-learn)       │      │ (accounts)   │
-                                             └──────────┬────────────┘      └──────────────┘
-                                                        ▼
-                                             ┌───────────────────────┐
-                                             │  Pushover (phone)     │
-                                             └───────────────────────┘
-```
+**The data flow, in one pass.** NetFlow/sFlow exports (switches, pfSense, VMs) arrive at the
+goflow2 collector, which writes them as JSONL; the worker tails that file and batch-inserts
+into ClickHouse. Mirrored packets (a SPAN or mirror port, or a NIC in the path) feed Zeek,
+whose log files the same worker tails and parses. ClickHouse holds the raw flows (TTL: 3
+days), the aggregated windows with their diversity and temporal tables, the Tier-3 Zeek
+tables, and the model outputs — `netflow_anomalies`, `near_misses`, `alert_reviews`,
+`alert_events`, and the model and baseline history. The worker's second stage trains the
+ensemble and scores every window; the SOC console and the API read what all of that recorded,
+and Pushover carries the alerts that pass the hygiene gates.
 
 ### Workloads
 
@@ -210,6 +190,28 @@ and it fails open when forwarding stalls. Three properties are worth knowing bef
   own ARP expiry, measured on stock Linux defaults: **~1 minute** for a host actively
   using the network, and **seconds from that host's next packet** for an idle one.
 
+### Channel: enforcement in line, still `loch`
+
+A channel is a second way to be in the path **without intercepting anything**. Two ports —
+upstream toward the network, downstream toward the protected device — are joined into one
+bridge, so traffic passes *through* the box while Zeek keeps observing. `SENSOR_MODE` stays
+`loch`; nothing is redirected and no ARP is forged. The Sluice Gate's rules are enforced on
+that path: the kernel drops exactly what the rules name and forwards everything else.
+
+**The claim is verified from the kernel, never from configuration.** Before the gate reports
+a channel it checks that both ports are present, on ONE bridge, forwarding, with carrier up,
+with bridge-nf in effect, and that the node's own FORWARD path admits the bridge interface —
+without that last check a channel can silently *blackhole the whole segment*, which is worse
+than a gate that admits it is not enforcing. What the gate actually found is recorded as
+`enforcement` — `channel`, `siphon`, or `none` — so a configured channel with no verified path
+degrades to `none` instead of reading "armed".
+
+**The channel's traffic can also be metered.** `CHANNEL_NETFLOW` (`off` / `upstream` /
+`downstream`) samples one of the two ports — either sees every crossing frame; sampling both
+would count each conversation twice — and summarises it into the deployment's own collector,
+so the records land in the same `flows` table the Netflow view and the models already read. It
+is a selection, not a second pipeline, and it runs only while a verified channel is active.
+
 ### TLS fingerprinting
 
 Weirvern ingests **JA4** TLS client fingerprints (`zeek_ssl.ja4`) — the modern successor
@@ -277,8 +279,8 @@ They are not redundant — each is blind to a different class of attack:
 
 | | NetFlow/sFlow | Zeek |
 |---|---|---|
-| Sees | Volume, packet counts, 5-tuple, topology | Protocol behaviour: DNS queries, TLS/JA3 fingerprints, connection states |
-| Blind to | Slow scans, DNS tunnelling, JA3-tagged C2, anything payload- or protocol-shaped | Nothing about volume — no idea a host moved 3.6 GB |
+| Sees | Volume, packet counts, 5-tuple, topology | Protocol behaviour: DNS queries, TLS/JA4 fingerprints, connection states |
+| Blind to | Slow scans, DNS tunnelling, JA4-tagged C2, anything payload- or protocol-shaped | Nothing about volume — no idea a host moved 3.6 GB |
 | Cost | Cheap (router exports it) | Needs a mirror/SPAN port or a NIC in the traffic path; CPU per packet |
 
 Measured on the test rig: a DNS-tunnelling host showed **0 connections but 40
@@ -829,6 +831,13 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `ZEEK_LOG_DIR` | `/zeek/logs` | Where the worker reads Zeek logs |
 | `TAIL_FILE` | `/data/flows.jsonl` | goflow2 JSONL sink |
 | `SENSOR_MODE` | `loch` | `loch` = passive; `siphon` = in-path intercept (see [Sensor modes](#sensor-modes-loch-and-siphon)) |
+| `CHANNEL_UPSTREAM` / `CHANNEL_DOWNSTREAM` | unset | The two ports of an in-line channel: one bridge, traffic through the box (see [Channel](#channel-enforcement-in-line-still-loch)) |
+| `SLUICE_ENABLED` | `0` | Arm the Sluice Gate. Opened by a decision, never by an install |
+| `SLUICE_IFACE` | unset | Interface enforcement attaches to; empty = the channel bridge, else the capture port. The management interface is refused at write time |
+| `SLUICE_CRITICALITY` | `off` | Whether detections may block on their own (`off` / `high` / `critical`) — off by default |
+| `SLUICE_MAX_BLOCK_S` | 3600 | Ceiling on an automated block's lifetime |
+| `SLUICE_INTERVAL_S` | 60 | How often the gate re-arms — also the interval within which a lapsed rule stops being enforced |
+| `CHANNEL_NETFLOW` | `off` | `off` / `upstream` / `downstream`: summarise the channel's crossing traffic into the deployment's own collector |
 | `DETECT_INTERVAL_S` | 300 | Detection sweep cadence (s) |
 | `RETRAIN_EVERY_H` | 6 | Full retrain cadence (h) |
 | `RETRAIN_WINDOW_H` | 72 | Training data window (h, 3 days) |
@@ -1074,9 +1083,9 @@ sessions are in memory, so a restart signs everyone out.
 | Weirlings | The **fleet**: every sensor this hub expects to hear from, compared against what it has actually heard. A weirling is any additional sensor feeding this hub from elsewhere in the network. The point of the view is the distinction every other surface collapses: **you registered a sensor and it never said anything** versus **you have no sensors** (opposite facts that both render as an empty table). Five states, each needing a different action: *alive*, *stale* (it ran and stopped), *never seen* (it never came up), *unregistered* (something is feeding you that nobody declared), and *disabled* (not reporting is expected, so it is **not** raised as a problem). Registering records the expectation only, since nothing here can reach the remote box, and a sensor begins reporting when its own exporter points at this hub. Revoking retires a registration while keeping the row, so "was this ever covered?" outlives the cleanup |
 | Models | Training history, score distribution, model agreement, per-feature deviations — and **near misses**: the windows that scored close to the bar, or cleared it and were stopped by the agreement gate. The surface a threshold change should be judged against |
 | Identity | What each host **is**, derived passively from traffic already seen — nothing is probed and nothing is sent. Sources are application banners (`software.log`, which names its own platform), DHCP leases, NIC vendors and TLS ClientHello fingerprints. Confidence reflects how many **independent** sources agree, so a hostname convention alone reads as `low`. A host whose sources **contradict** each other is flagged rather than smoothed over — a renamed machine, a dual-boot host or a spoofed hostname all look like that, and it is a finding. Coverage is stated as a fraction of hosts seen, so a small numerator cannot mislead |
-| Sluice Gate | What **passes**, and what does not: block traffic by address, port or direction, and see whether the gate is holding. Blocking is compiled into kernel sets on the sensor, so it does not slow what it inspects. Every rule is **bounded** — this system does not create permanent blocks, and a rule that has lapsed shows as lapsed rather than silently continuing to enforce. Live, lapsed and revoked rules look **different**, because "this rule exists but is not enforced" is a different statement from "this rule does not exist". Refused on purpose: a rule with no address, a port without a protocol, the management interface, the sensor's own address, and anything covering the whole internet. Detections may block too, under a criticality policy that is **off by default** — the operator decides whether model output is grounds to stop traffic |
+| Sluice Gate | What **passes**, and what does not: block traffic by address, port or direction, and see whether the gate is holding. Blocking is compiled into kernel sets on the sensor, so it does not slow what it inspects, and the ledger records which path it actually holds — `channel`, `siphon`, or `none`. Every rule is **bounded** — this system does not create permanent blocks, and a rule that has lapsed shows as lapsed rather than silently continuing to enforce. Live, lapsed and revoked rules look **different**, because "this rule exists but is not enforced" is a different statement from "this rule does not exist". Refused on purpose: a rule with no address, a port without a protocol, the management interface, the sensor's own address, and anything covering the whole internet. Detections may block too, under a criticality policy that is **off by default** — the operator decides whether model output is grounds to stop traffic |
 | Evidence | The raw flows and Zeek records inside a specific alert's window |
-| Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version — each setting rendered as the control that changes it (toggle / dropdown / bounded number) with a **?** explaining what it does, plus **Account** (change your password) and **Users** (admin-only account management). Secrets show as `(set, N chars)` or `(not set)`, never in value |
+| Settings | The **effective configuration** — sensor mode and interfaces, detection thresholds and cadence, reverse-DNS mode, ClickHouse target, namespace, version — each setting rendered as the control that changes it (toggle / dropdown / bounded number) with an **ⓘ** in a circle that opens a plain-language explanation, plus **Account** (change your password) and **Users** (admin-only account management). Secrets show as `(set, N chars)` or `(not set)`, never in value |
 
 Three cross-cutting rules, each of which exists because its opposite shipped once:
 

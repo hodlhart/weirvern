@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — the source-coverage proof, and a README that says what ships
+
+"Verify with proof that JA4 and every Zeek log are assessed by every model." The answer is a
+matrix, now enforced mechanically by `tests/test_ml_source_coverage.py`: the two wide models
+carry the full Zeek block — JA4 included, both features, with the runtime supply asserted end
+to end (the worker attaches the window row, the ensemble hands over the host baseline) — the
+Adaptive Baseline trains on every Zeek feature and scores three named signals, DBSCAN's
+six-feature subset derives to conn/notice/weird, and the logs without host features are exactly
+the earned exemptions the sibling coverage file asserts, checked in both directions. A renamed
+aggregate, a moved log or a dropped feature now fails the proof instead of quietly changing
+what the deployment assesses.
+
+The README loses its ASCII architecture diagram for plain words and gains the channel mode,
+the Sluice Gate's kernel-verified enforcement story, and the channel/Sluice settings that were
+missing from the configuration table.
+
 ## Unreleased — the channel's traffic becomes NetFlow: a selection, not a second pipeline
 
 When the box is IN LINE, every frame crossing it is visible to it — and that visibility stopped
@@ -40,6 +56,15 @@ exports landed in goflow2. So the tap writes bounded rotating segments (-C 16MB,
 and every pass summarises each COMPLETED segment with a one-shot softflowd — deleting it on
 success, keeping it on failure so the evidence is not discarded. "Off" removes the tap AND the
 pending segments: captured traffic must not survive the switch.
+
+**Four more measured repairs followed, each pinned by its own test.** The segment directory
+moved to the pod's own `/tmp`, because the flow-data mount is read-only BY DESIGN — the worker
+reads goflow2's output and must not be able to corrupt it. The sweep learned the names
+tcpdump's `-W` actually writes (`…pcap000`; a `.pcap` suffix filter matched nothing and said
+nothing). The one-shot summariser dropped its pidfile and control socket — that form hung for
+the runner's whole timeout while the same file summarised cleanly without them. And the sweep's
+age check was given wall time: handed the tick's monotonic clock, `monotonic − mtime` is a huge
+negative and every segment read as "too young" while the sweep ran on schedule.
 
 ## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
 
