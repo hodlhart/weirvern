@@ -1924,6 +1924,24 @@ def fingerprint_hosts(client, ja4: str, days: int = 7) -> dict:
         logger.warning("fingerprint lookup failed: %s", exc)
         return {"ja4": token, "hosts": [], "count": 0,
                 "reason": f"could not read the ssl records: {type(exc).__name__}"}
+    if not rows:
+        # "COUNT 0" ALONE READS AS "NOTHING TO SEE" -- and a valid fingerprint whose hosts aged
+        # out of the window is a different fact from one never seen (found 2026-10-16, in the
+        # operator's "identity... it's not working"). The all-time probe turns the blank into a
+        # sentence, and it is cheap: one indexed count.
+        reason = f"no host presented this fingerprint in the last {int(days)} days"
+        try:
+            seen = client.query(
+                "SELECT count(), max(ts) FROM weirvern.zeek_ssl WHERE ja4 = %(f)s",
+                parameters={"f": token},
+            ).result_rows
+            total = int(seen[0][0]) if seen else 0
+            if total:
+                reason += (f"; it WAS seen {total} time(s) before that, most recently "
+                           f"{seen[0][1]}")
+        except Exception as exc:  # noqa: BLE001 -- the window answer already stands
+            logger.debug("fingerprint all-time probe failed: %s", exc)
+        return {"ja4": token, "hosts": [], "count": 0, "reason": reason}
     return {
         "ja4": token, "count": len(rows),
         "hosts": [

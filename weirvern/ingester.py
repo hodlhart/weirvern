@@ -1188,21 +1188,76 @@ def observations_from_dhcp(rec: dict[str, str], row: dict[str, Any]) -> list[dic
 
 
 def observations_from_ssl(rec: dict[str, str], row: dict[str, Any]) -> list[dict[str, Any]]:
-    """A TLS record yields the JA4 fingerprint, when one was computed.
+    """A TLS record yields the JA4 fingerprint and the server name (SNI), when present.
 
     THE EMPTY CASE IS THE COMMON ONE AND MUST NOT PRODUCE A ROW. Zeek writes `-` for a record it
     could not fingerprint, and storing that as an observation would put a row in the table that
     looks like evidence and carries none -- which is how a host ends up reported as "classified"
     on the strength of a dash.
+
+    THE SNI IS A NAME, NOT AN OS CLAIM (2026-10-16): the identity view showed every host's
+    `hostnames_seen` empty while the box was watching hosts TLS-connect by name all day. Names
+    are DISPLAY facts -- the classifier gives them no weight (signal_from_* is never called for
+    them) -- but a reader asking "what is this host" deserves to see the names it presents.
     """
     out: list[dict[str, Any]] = []
-    ja4 = zeek_value(rec.get("ja4", "")) or ""
     src = str(row.get("src_addr") or "")
-    if not src or not ja4 or ja4 in {"-", "(empty)"}:
+    if not src:
         return out
-    out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
-                "source": "ja4", "raw": ja4, "note": "from ssl"})
+    ja4 = zeek_value(rec.get("ja4", "")) or ""
+    if ja4 and ja4 not in {"-", "(empty)"}:
+        out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+                    "source": "ja4", "raw": ja4, "note": "from ssl"})
+    sni = zeek_value(rec.get("server_name", "")) or ""
+    sni = sni.strip().lower().rstrip(".")
+    if sni and sni not in {"-", "(empty)"}:
+        out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+                    "source": "tls_sni", "raw": sni, "note": "from ssl"})
     return out
+
+
+def observations_from_conn(rec: dict[str, str], row: dict[str, Any]) -> list[dict[str, Any]]:
+    """A connection record yields the client's MAC, when Zeek saw one.
+
+    MEASURED GAP (2026-10-16, operator: "Now work on identity. It's not working."): the only MAC
+    source was DHCP, and the sensed segment carries NO DHCP at all -- so every host's `mac` read
+    empty and the OUI signal, the most universal source, never fired once. conn.log's
+    `orig_l2_addr` carries the same MAC on every connection the host makes, which is traffic the
+    box is already reading. The (src_addr, source, raw) dedup happens at READ time; the write is
+    per row like every other observation.
+    """
+    mac = zeek_value(rec.get("orig_l2_addr", "")) or ""
+    src = str(row.get("src_addr") or "")
+    if not src or not mac or mac in {"-", "(empty)"}:
+        return []
+    return [{"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": mac,
+             "source": "oui", "raw": mac, "note": "from conn"}]
+
+
+def observations_from_dns(rec: dict[str, str], row: dict[str, Any]) -> list[dict[str, Any]]:
+    """A DNS query is a NAMED thing this host knows: record the name it asked for.
+
+    MEASURED GAP (2026-10-16): the identity view showed hostnames empty for every host while the
+    DNS view held `living-room.local` for one of the very same hosts -- the names were in the
+    next table and nothing read them. Names carry NO classifier weight (a name proves what a
+    host calls, not what it runs); they exist for the reader. Numeric queries (PTR forms) are
+    not names and are refused rather than stored as one.
+    """
+    import ipaddress  # noqa: PLC0415 -- stdlib, used once per DNS row
+
+    name = zeek_value(rec.get("query", "")) or ""
+    name = name.strip().lower().rstrip(".")
+    src = str(row.get("src_addr") or "")
+    if not src or not name or len(name) > 253 or name in {"-", "(empty)"}:
+        return []
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        pass
+    else:
+        return []
+    return [{"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+             "source": "dns_name", "raw": name, "note": "from dns"}]
 
 
 def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
@@ -1511,6 +1566,13 @@ def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = Non
                 _record_observations(client, observations_from_dhcp(rec, row))
             elif log_type == "ssl":
                 _record_observations(client, observations_from_ssl(rec, row))
+            # The two sources that made identity read as "not working" (2026-10-16): the MAC
+            # every connection carries, and the names every DNS query asks for -- the sensed
+            # segment has no DHCP, so before this the identity pipeline saw almost nothing.
+            elif log_type == "conn":
+                _record_observations(client, observations_from_conn(rec, row))
+            elif log_type == "dns":
+                _record_observations(client, observations_from_dns(rec, row))
             if columns is None:
                 # Already written by the observation path above; nothing is batched here.
                 continue

@@ -51,6 +51,12 @@ logger = logging.getLogger(__name__)
 # better represented by no verdict than by a confident stale one.
 IDENTITY_WINDOW_DAYS = 7
 
+# WHICH SOURCES CARRY A NAME. The verdict's `hostnames_seen` gathers every one of these
+# (2026-10-16: it read ONLY dhcp_*, and the sensed segment has no DHCP, so the list was empty
+# for every host while the DNS view held the names). tls_sni and dns_name carry no classifier
+# weight -- they are for the reader, and signals_for_host never turns them into a Signal.
+HOSTNAME_SOURCES = ("dhcp_hostname", "dhcp_fqdn", "tls_sni", "dns_name")
+
 
 def collect_observations(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> list[dict[str, Any]]:
     """Read every distinct observation in the window, newest first.
@@ -159,7 +165,21 @@ def build_identity(client: Client, days: int = IDENTITY_WINDOW_DAYS,
         # each: a host presenting 400 fingerprints would otherwise store a row nobody can read, and
         # the COUNT is preserved above so the volume is still visible.
         software = [o["raw"] for o in own if o["source"] == "software"][:20]
-        hostnames = [o["raw"] for o in own if o["source"].startswith("dhcp_")][:20]
+
+        # NAMES FROM EVERY SOURCE THAT CARRIES ONE, newest first, deduped case-insensitively:
+        # the same name seen 400 times is one name, and collect_observations already ordered
+        # `own` by last_seen DESC.
+        hostnames: list[str] = []
+        _seen: set[str] = set()
+        for o in own:
+            if o["source"] not in HOSTNAME_SOURCES:
+                continue
+            value = str(o["raw"]).strip()
+            if value and value.lower() not in _seen:
+                _seen.add(value.lower())
+                hostnames.append(value)
+        hostnames = hostnames[:20]
+
         ja4_values = [o["raw"] for o in own if o["source"] == "ja4"][:20]
 
         verdicts.append({

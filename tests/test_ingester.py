@@ -617,14 +617,28 @@ _DNS_TYPES = [
 
 
 class _CaptureClient:
-    """A client that records what the tailer would insert."""
+    """A client that records what the tailer would insert, and WHICH TABLE it was bound for."""
 
     def __init__(self):
         self.rows = []
+        self.tables = []
 
     def insert(self, table, rows, column_names=None):
         for r in rows:
             self.rows.append(dict(zip(column_names or [], r, strict=False)))
+            self.tables.append(table)
+
+
+def _dns_table_rows(client):
+    """The rows bound for weirvern.zeek_dns, in insert order.
+
+    NOT client.rows[0]. Since 2026-10-16 the DNS log is ALSO an identity source, so each row
+    writes an observation insert BEFORE the table insert -- the same shape dhcp and ssl have had
+    all along. A positional read silently started inspecting the observation dict instead of the
+    row under test (caught by these very tests the moment the wiring landed).
+    """
+    return [r for t, r in zip(client.tables, client.rows, strict=False)
+            if str(t).endswith("zeek_dns")]
 
 
 def _real_dns_log(tmp_path, answers, *, subdir="a"):
@@ -681,11 +695,13 @@ def test_the_READ_LAYER_covers_what_a_mapper_forgets(tmp_path):
         "the tailer inserted nothing. The fixture's ARITY must match the header it declares -- a "
         "shorter row is unmappable and this test would pass while proving nothing"
     )
-    assert client.rows[0].get("answers") == "", (
+    rows = _dns_table_rows(client)
+    assert rows, "the DNS table insert went missing entirely"
+    assert rows[0].get("answers") == "", (
         "the sentinel reached the INSERT as literal text. The read layer normalised only `-`, and "
         "the DNS mapper reads this field raw, so nothing else could have caught it"
     )
-    for field, val in client.rows[0].items():
+    for field, val in rows[0].items():
         assert val != "(empty)", f"{field} reached the INSERT as the literal sentinel"
 
 
@@ -695,12 +711,13 @@ def test_the_read_layer_still_normalises_the_unset_sentinel(tmp_path):
 
     client = _CaptureClient()
     tail_zeek_log(client, str(_real_dns_log(tmp_path, "-", subdir="b")))
-    assert client.rows, (
+    rows = _dns_table_rows(client)
+    assert rows, (
         "the tailer inserted nothing. Either the fixture is not named dns.log (the tailer derives "
         "the log type from the FILENAME and skips anything it has no mapper for), or the row does "
         "not satisfy the mapper -- both of which make this test pass while proving nothing"
     )
-    assert client.rows[0].get("answers") == ""
+    assert rows[0].get("answers") == ""
 
 
 def test_a_REAL_value_still_reaches_the_table(tmp_path):
@@ -710,9 +727,10 @@ def test_a_REAL_value_still_reaches_the_table(tmp_path):
 
     client = _CaptureClient()
     tail_zeek_log(client, str(_real_dns_log(tmp_path, "198.51.100.20", subdir="c")))
-    assert client.rows, "the tailer inserted nothing, so this test proves nothing"
-    assert client.rows[0].get("answers") == "198.51.100.20"
-    assert client.rows[0].get("query") == "example.test"
+    rows = _dns_table_rows(client)
+    assert rows, "the tailer inserted nothing, so this test proves nothing"
+    assert rows[0].get("answers") == "198.51.100.20"
+    assert rows[0].get("query") == "example.test"
 
 
 # ── THE TAIL CURSOR MUST SURVIVE A RESTART (audit F018) ──────────────────────────────────────
