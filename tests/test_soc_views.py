@@ -221,6 +221,13 @@ def test_soc_js_only_calls_helpers_that_exist():
     # That is a false positive of exactly the kind that gets an allow-list widened.
     known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", soc, re.M))
     known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", soc, re.M))
+    # discover.js defines `discoverDrill`, which soc.js calls when a volume bucket is clicked
+    # ("show me the rows behind this"). Widening the scan, not the allow-list -- the file is
+    # scanned for definitions exactly like assets.js above.
+    discover = strip_noise((SOC_JS.parent / "discover.js").read_text())
+    known |= set(re.findall(r"^function ([A-Za-z_$][\w$]*)", discover, re.M))
+    known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", discover, re.M))
+    known |= set(re.findall(r"^const ([A-Za-z_$][\w$]*)\s*=", discover, re.M))
     # assets.js defines the Zeek drill-down soc.js calls when a log-volume bar is clicked.
     known |= set(re.findall(r"^function ([A-Za-z_$][\w$]*)", assets, re.M))
     known |= set(re.findall(r"^async function ([A-Za-z_$][\w$]*)", assets, re.M))

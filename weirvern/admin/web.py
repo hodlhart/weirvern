@@ -98,6 +98,9 @@ STATIC_FILES = {
     # the dashboard and the gate -- and because the state model it renders (five states that must
     # never be collapsed) is code a reader should be able to find in one place.
     "/weirlings.js": ("weirlings.js", "application/javascript; charset=utf-8"),
+    # The Discover tab: the raw-flow browser. Its own file for the same reason as the others --
+    # "show me the flows themselves, filtered" is a distinct concern from every chart above it.
+    "/discover.js": ("discover.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -300,6 +303,10 @@ def _build_handler(ctx: GuiContext):
             if path == "/api/zeek":
                 return self._zeek(query)
             # Click-through from the Netflow charts: the hosts behind one port or one protocol.
+            # DISCOVER: the raw-flow browser (Kibana's Discover, over `flows`). A GET with a
+            # filter bar -- flow type, address, port, sensor -- and paging.
+            if path == "/api/discover":
+                return self._discover(query)
             if path == "/api/flows":
                 return self._flows(query)
             # The asset inventory and the connection graph. Separate endpoints from /api/host
@@ -634,6 +641,51 @@ def _build_handler(ctx: GuiContext):
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
                 })
+            self._json(payload)
+
+        def _discover(self, query: dict) -> None:
+            """DISCOVER: raw flows with a filter bar -- Kibana's Discover over the flow table.
+
+            The operator's ask: "select flow types or weirling and see all traffic". Unlike
+            /api/flows (a chart drill-down that REQUIRES a port or proto), this endpoint
+            deliberately answers an unfiltered question -- "all traffic" is the point -- bounded
+            by the global time range and a page limit.
+            """
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            proto_raw = (query.get("proto") or [""])[0].strip()
+            addr = (query.get("addr") or [""])[0].strip()
+            sensor = (query.get("sensor") or [""])[0].strip()
+            port_raw = (query.get("port") or [""])[0].strip()
+            offset = _int_arg(query, "offset", 0, 0, 1000000)
+            limit = _int_arg(query, "limit", 100, 1, 500)
+            try:
+                proto = soc_mod.proto_number(proto_raw)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            for value, name in ((addr, "addr"), (sensor, "sensor")):
+                if value and (len(value) > 64 or not all(c.isalnum() or c in ".:-_" for c in value)):
+                    return self._error(400, f"{name} does not look like an address or a name: {value!r}")
+            port: int | None = None
+            if port_raw:
+                try:
+                    port = int(port_raw)
+                    if not 0 <= port <= 65535:
+                        raise ValueError
+                except ValueError:
+                    return self._error(400, f"port does not look like a port: {port_raw!r}")
+            try:
+                with self._with_client() as client:
+                    payload = soc_mod.discover(
+                        client, hours=hours, proto=proto, addr=addr or None, port=port,
+                        sensor=sensor or None, limit=limit, offset=offset,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("discover unavailable: %s", exc)
+                return self._json({"available": False, "rows": [], "reason":
+                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   "data_error": str(exc)})
             self._json(payload)
 
         def _health(self, query: dict) -> None:

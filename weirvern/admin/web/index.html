@@ -126,6 +126,7 @@
   <button class="tab" data-view="host">Assets</button>
   <button class="tab" data-view="network">Network</button>
   <button class="tab" data-view="netflow">Netflow</button>
+  <button class="tab" data-view="discover">Discover</button>
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="identity">Identity</button>
   <button class="tab" data-view="sluice">Sluice Gate</button>
@@ -233,6 +234,38 @@
         <thead><tr><th>Source</th><th>Target</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <section id="view-discover" class="view">
+    <div class="card">
+      <h2>Discover <button class="info-btn" data-info="dc-info" aria-label="what Discover is and how to filter it" aria-expanded="false" title="what Discover is and how to filter it">i</button> <span class="muted" id="dc-window"></span></h2>
+      <p class="muted" id="dc-summary">loading…</p>
+      <div class="info-text hidden" id="dc-info">
+        The flows themselves, not a summary of them. Pick a sensor or a flow type, type an
+        address or a port, and read the rows; click any row to see every field it carries and to
+        filter the view down to that host, port or flow type. The histogram is the same filter
+        over time — click a bucket to narrow the window to it. Everything here answers the
+        global time control in the header.
+      </div>
+      <div class="controls">
+        <label>sensor <select id="dc-sensor"><option value="">all sensors</option></select></label>
+        <label>flow type <select id="dc-proto"><option value="">any flow type</option></select></label>
+        <label>address <input type="text" id="dc-addr" size="18" placeholder="198.51.100.194"></label>
+        <label>port <input type="number" id="dc-port" min="0" max="65535" style="width:6em"></label>
+        <button id="dc-apply">Apply</button>
+        <button id="dc-clear">Clear</button>
+      </div>
+      <div id="dc-volume" class="chart"></div>
+      <table class="table">
+        <thead><tr><th>time</th><th>sensor</th><th>source</th><th>sport</th><th></th><th>destination</th><th>dport</th><th>type</th><th>bytes</th><th>packets</th></tr></thead>
+        <tbody id="dc-rows"></tbody>
+      </table>
+      <div class="controls">
+        <button id="dc-prev">&#8592; newer</button>
+        <span class="muted" id="dc-page"></span>
+        <button id="dc-next">older &#8594;</button>
+      </div>
     </div>
   </section>
 
@@ -1216,6 +1249,7 @@
 <script src="/assets.js"></script>
 <script src="/sluice.js"></script>
 <script src="/weirlings.js"></script>
+<script src="/discover.js"></script>
 </body>
 </html>
 

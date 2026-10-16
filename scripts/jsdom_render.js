@@ -79,7 +79,7 @@ async function main() {
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
         JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
-                                                 "/weirlings.js"]),
+                                                 "/weirlings.js", "/discover.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -103,6 +103,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    trApply, trHours, TIME_RANGE,
+                   loadDiscover, dcClear, discoverDrill,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
@@ -793,6 +794,26 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   available: true, reason: null, sensor: WEIRLINGS_PAYLOAD.sensors[1],
 };
 
+  // DISCOVER: the raw-flow browser. Two rows and two facet values are enough to prove the
+  // renderer, the detail expansion, and the bucket drill targets exist.
+  const DISCOVER_PAYLOAD = {
+    available: true, reason: "", total: 42, limit: 100, offset: 0, bucket_s: 60,
+    rows: [
+      { timestamp: "2026-10-16 06:00:00", sensor: "sensor-1", src_addr: "198.51.100.20",
+        src_port: 4444, dst_addr: "198.51.100.10", dst_port: 443, proto: 6, proto_label: "tcp",
+        bytes: 1234, packets: 12, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
+      { timestamp: "2026-10-16 06:01:00", sensor: "sensor-1", src_addr: "198.51.100.20",
+        src_port: 4445, dst_addr: "198.51.100.10", dst_port: 53, proto: 17, proto_label: "udp",
+        bytes: 300, packets: 4, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
+    ],
+    histogram: [
+      { t: "2026-10-16 06:00:00", n: 30, bytes: 9000 },
+      { t: "2026-10-16 06:01:00", n: 12, bytes: 4000 },
+    ],
+    facets: { protos: [{ value: 6, label: "tcp", count: 30 }, { value: 17, label: "udp", count: 12 }],
+              sensors: [{ value: "sensor-1", count: 42 }] },
+  };
+
   // The routes, each registered with the payload it serves. One list, so a payload cannot be
   // declared and then forgotten.
   // ── the tri-state health payload (audit F081) ─────────────────────────────────────────────────
@@ -852,6 +873,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
+    ["/api/discover", DISCOVER_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
     ["/api/zeek", ZEEK_PAYLOAD],
     ["/api/session", SESSION_STUB],
@@ -3023,6 +3045,30 @@ check("high capture loss is called out in the fleet",
     check("an unreadable range is refused with a sentence, not a silent fallback",
           !!(note && /cannot read|type a range/.test(note.textContent)),
           note ? note.textContent : "no note element");
+  }
+  // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
+  {
+    H.showView("discover");
+    await H.loadDiscover();
+    const dcRows = doc.querySelectorAll("#dc-rows tr.dc-row");
+    check("Discover renders the flow rows the server served", dcRows.length === 2,
+          "rows=" + dcRows.length);
+    if (dcRows[0]) {
+      dcRows[0].click();
+      const detail = doc.querySelector("#dc-rows tr.dc-detail");
+      check("a row opens its every-field detail", !!detail && /flow started/.test(detail.textContent),
+            detail ? detail.textContent.slice(0, 60) : "no detail row");
+      check("and offers to filter on the fields it shows",
+            !!(detail && detail.querySelectorAll("button").length >= 3),
+            "fewer than three action buttons");
+    }
+    const dcVol = doc.getElementById("dc-volume");
+    const hits = dcVol ? dcVol.querySelectorAll("rect.hit") : [];
+    check("the Discover histogram buckets are clickable drill targets", hits.length >= 1,
+          "hit rects=" + hits.length);
+    const protoSel = doc.getElementById("dc-proto");
+    check("the flow-type facet fills from the payload",
+          !!(protoSel && protoSel.options.length >= 3), "options=" + (protoSel ? protoSel.options.length : "?"));
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

@@ -664,3 +664,144 @@ def alert_audit(client, hours: int = 24, limit: int = 500) -> dict:
     except Exception:  # noqa: BLE001 - a name is never worth failing the audit
         base["names"] = {}
     return base
+
+
+# ── DISCOVER ─────────────────────────────────────────────────────────────────────────────────
+# The operator's ask (2026-10-16): "a discover like tab found in kibana. The ability to select
+# flow types or weirling and see all traffic." Kibana's Discover is a document browser over the
+# raw index -- a filter bar, facets, and the rows themselves. This is that, over `flows`.
+
+PROTO_NAMES: dict[int, str] = {
+    1: "icmp", 6: "tcp", 17: "udp", 47: "gre", 50: "esp", 51: "ah", 58: "icmp6",
+    89: "ospf", 132: "sctp",
+}
+PROTO_NUMBERS: dict[str, int] = {v: k for k, v in PROTO_NAMES.items()}
+
+
+def proto_label(number: object) -> str:
+    """A protocol number as a name an operator recognises; unknown numbers stay numbers."""
+    try:
+        n = int(str(number))
+    except (TypeError, ValueError):
+        return "unknown"
+    return PROTO_NAMES.get(n, f"proto {n}")
+
+
+def proto_number(token: object) -> int | None:
+    """A flow type from the filter bar: a name ("tcp") or a number ("6").
+
+    Raises ValueError with a sentence for anything else -- an unrecognised filter silently
+    dropped would show MORE traffic than was asked for, which reads as a working filter.
+    """
+    t = str(token or "").strip().lower()
+    if not t:
+        return None
+    if t in PROTO_NUMBERS:
+        return PROTO_NUMBERS[t]
+    if t.isdigit() and 0 <= int(t) <= 255:
+        return int(t)
+    raise ValueError(f"not a flow type: {token!r} (try tcp, udp, icmp, or a protocol number)")
+
+
+def _discover_bucket_s(hours: float) -> int:
+    """About sixty buckets whatever the window, clamped so a minute never crowds and an hour
+    never dominates."""
+    return max(60, min(3600, int(float(hours) * 60)))
+
+
+def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | None = None,
+             port: int | None = None, sensor: str | None = None,
+             limit: int = 100, offset: int = 0) -> dict:
+    """One page of raw flows plus the facets the filter bar needs.
+
+    THE FACETS IGNORE THEIR OWN FILTERS: the flow-type list is built from the window + address
+    + port filters but NOT from the chosen flow type (and likewise for the sensor list). A
+    facet filtered by its own value would answer "which types are there?" with "the one you
+    already picked", which is how a filter bar becomes a dead end.
+    """
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    where = ["timestamp >= %(since)s AND timestamp <= %(until)s"]
+    facet_where = list(where)
+    params: dict = {**timewindow.w(hours), "n": limit, "o": offset}
+    facet_params: dict = dict(params)
+    if addr:
+        for target in (where, facet_where):
+            target.append("(positionCaseInsensitive(src_addr, %(addr)s) > 0 "
+                          "OR positionCaseInsensitive(dst_addr, %(addr)s) > 0)")
+        params["addr"] = facet_params["addr"] = str(addr)
+    if port is not None:
+        for target in (where, facet_where):
+            target.append("(src_port = %(port)s OR dst_port = %(port)s)")
+        params["port"] = facet_params["port"] = int(port)
+    if proto is not None:
+        where.append("proto = %(proto)s")
+        params["proto"] = int(proto)
+    if sensor:
+        where.append("sampler_address = %(sensor)s")
+        params["sensor"] = str(sensor)
+    clause = " AND ".join(where)
+    facet_clause = " AND ".join(facet_where)
+
+    cols = ("timestamp, sampler_address, src_addr, src_port, dst_addr, dst_port, proto, "
+            "bytes, packets, tcp_flags, ip_ttl, next_hop, src_as, dst_as")
+    try:
+        rows = client.query(
+            f"SELECT {cols} FROM weirvern.flows WHERE {clause} "  # noqa: S608 -- fixed columns
+            "ORDER BY timestamp DESC LIMIT %(n)s OFFSET %(o)s",
+            parameters=params,
+        ).result_rows
+        total_row = client.query(
+            f"SELECT count() FROM weirvern.flows WHERE {clause}", parameters=params
+        ).result_rows
+        bucket = _discover_bucket_s(hours)
+        hist = client.query(
+            "SELECT toStartOfInterval(timestamp, INTERVAL %(w)s SECOND) AS t, count() AS n, "
+            f"sum(bytes) AS b FROM weirvern.flows WHERE {clause} "  # noqa: S608
+            "GROUP BY t ORDER BY t",
+            parameters={**params, "w": bucket},
+        ).result_rows
+        by_proto = client.query(
+            f"SELECT proto, count() AS n FROM weirvern.flows WHERE {facet_clause} "  # noqa: S608
+            "GROUP BY proto ORDER BY n DESC",
+            parameters=facet_params,
+        ).result_rows
+        by_sensor = client.query(
+            f"SELECT sampler_address, count() AS n FROM weirvern.flows WHERE {facet_clause} "  # noqa: S608
+            "GROUP BY sampler_address ORDER BY n DESC LIMIT 20",
+            parameters=facet_params,
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discover failed: %s", exc)
+        return {"available": False, "reason": f"the flow query failed: {type(exc).__name__}",
+                "rows": [], "total": 0, "histogram": [], "facets": {"protos": [], "sensors": []},
+                "data_error": str(exc)}
+
+    return {
+        "available": True,
+        "reason": "",
+        "rows": [
+            {
+                "timestamp": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "sensor": str(r[1]),
+                "src_addr": str(r[2]), "src_port": int(r[3] or 0),
+                "dst_addr": str(r[4]), "dst_port": int(r[5] or 0),
+                "proto": int(r[6] or 0), "proto_label": proto_label(r[6]),
+                "bytes": int(r[7] or 0), "packets": int(r[8] or 0),
+                "tcp_flags": int(r[9] or 0), "ip_ttl": int(r[10] or 0),
+                "next_hop": str(r[11] or ""), "src_as": int(r[12] or 0), "dst_as": int(r[13] or 0),
+            }
+            for r in rows
+        ],
+        "total": int(total_row[0][0]) if total_row else 0,
+        "limit": limit,
+        "offset": offset,
+        "bucket_s": bucket,
+        "histogram": [{"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                       "n": int(r[1] or 0), "bytes": int(r[2] or 0)} for r in hist],
+        "facets": {
+            "protos": [{"value": int(r[0] or 0), "label": proto_label(r[0]),
+                        "count": int(r[1] or 0)} for r in by_proto],
+            "sensors": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_sensor],
+        },
+    }

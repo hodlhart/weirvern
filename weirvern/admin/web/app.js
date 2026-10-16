@@ -1825,6 +1825,9 @@ function showView(name) {
   // ClickHouse for panels nobody is looking at.
   if (name === "netflow") loadNetflow().then(clearError).catch(showError);
   if (name === "zeek") loadZeek().then(clearError).catch(showError);
+  // Discover loads on selection and on every filter change; like the SOC views it is not on
+  // the refresh timer, because it is a reading surface, not a status surface.
+  if (name === "discover") loadDiscover().then(clearError).catch(showError);
   // Identity also loads on demand: it reads the verdict table plus a coverage aggregation, and
   // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
   // at. Same reasoning as the SOC views above.

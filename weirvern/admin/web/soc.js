@@ -152,6 +152,29 @@ function renderTimeline(hostId, res, opts = {}) {
       el("span", { text: `${name} — ${total.toLocaleString()} row(s) in window` }),
     ]));
   });
+  // THE CLICKABLE RULE: with `onPoint`, every bucket is a hit target that says "show me the
+  // rows behind this". Invisible rects rather than clicks on the path -- a 1.7px line is not a
+  // target a human can hit, and a chart that cannot be entered is a report, not a console.
+  if (typeof opts.onPoint === "function" && series.length) {
+    const first = series[0][1];
+    const step = first.length > 1
+      ? Math.abs(xOf(new Date(first[1].t).getTime()) - xOf(new Date(first[0].t).getTime()))
+      : plot.r - plot.l;
+    first.forEach((p) => {
+      const cx = xOf(new Date(p.t).getTime());
+      const w = Math.max(8, Math.min(step || 24, 48));
+      const hit = svgEl("rect", { x: Math.max(plot.l, cx - w / 2), y: plot.t,
+                                  width: w, height: plot.b - plot.t, fill: "transparent",
+                                  class: "hit" });
+      hit.setAttribute("style", "cursor:pointer");
+      const label = svgEl("title", {});
+      label.textContent = `${fmtTime(new Date(p.t))} \u2014 ${Number(p.n).toLocaleString()}` +
+                          `${opts.pointUnit || ""} \u2014 click to see the flows`;
+      hit.appendChild(label);
+      hit.addEventListener("click", () => opts.onPoint(p));
+      svg.appendChild(hit);
+    });
+  }
   host.appendChild(svg);
   host.appendChild(legend);
 }
@@ -175,7 +198,17 @@ async function loadNetflow() {
   const volSeries = { flows: (((d.volume || {}).points) || []).map((p) => ({ t: p.t, n: p.bytes })) };
   renderTimeline("nf-volume", { available: (d.volume || {}).available !== false,
                                 reason: (d.volume || {}).reason, series: volSeries },
-                 { emptyText: "No flow windows recorded — NetFlow may not be arriving." });
+                 { emptyText: "No flow windows recorded — NetFlow may not be arriving.",
+                   pointUnit: " bytes",
+                   // A bucket is a window: the click lands on Discover, filtered to exactly the
+                   // traffic that bucket drew. The chart stops being a picture and becomes a door.
+                   onPoint: (pt) => {
+                     const b = (d.volume && d.volume.bucket_s) || 60;
+                     const from = new Date(pt.t);
+                     const to = new Date(from.getTime() + b * 1000);
+                     discoverDrill({ from: trFormat(from), to: trFormat(to),
+                                     hours: Math.max(1, Math.round(b / 3600)) });
+                   } });
 
   renderBars("nf-talkers", { available: true, points: (d.talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
              { label: (r) => r.src_addr, value: (r) => r.bytes, format: fmtBytes,
