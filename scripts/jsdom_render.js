@@ -3065,6 +3065,27 @@ check("high capture loss is called out in the fleet",
     check("and a range change re-runs the drill instead of leaving stale rows",
           /last 24 hours/.test(note.textContent), note.textContent);
   }
+
+  // ── A FAILED LOAD MUST NOT LEAVE "loading…" STANDING ───────────────────────────────────────
+  // Measured on the box (2026-10-16): a stale token made /api/netflow answer 401 and the
+  // summary froze on its "loading…" placeholder forever -- a stale spinner claiming work that
+  // had already failed. The loader now names the failure and the next good load replaces it.
+  {
+    H.showView("netflow");
+    fetchOverride = (url) => String(url).includes("/api/netflow")
+      ? { ok: false, status: 401, json: async () => ({ detail: "unauthorized" }) } : null;
+    try { await H.loadNetflow(); } catch (_e) { /* the loader re-throws for the banner */ }
+    fetchOverride = null;
+    const s = doc.getElementById("nf-summary").textContent;
+    check("a failed netflow load does not leave 'loading…' standing",
+          !/loading/i.test(s) && /unavailable/i.test(s), s);
+    await H.loadNetflow();
+    // (this fixture's payload legitimately reports an unavailable volume, so the assertion is
+    // that the FAILURE note is gone -- not that any particular success text is present)
+    const s2 = doc.getElementById("nf-summary").textContent;
+    check("the next good load replaces the failure note",
+          !/loading/i.test(s2) && !/the error is shown at the top/i.test(s2), s2);
+  }
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
   {
     H.showView("discover");

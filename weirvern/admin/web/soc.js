@@ -183,7 +183,18 @@ function renderTimeline(hostId, res, opts = {}) {
 
 async function loadNetflow() {
   const hours = String(trHours());
-  const d = await getJSON(`${API.netflow}?hours=${hours}`);
+  let d;
+  try {
+    d = await getJSON(`${API.netflow}?hours=${hours}`);
+  } catch (err) {
+    // A FAILED LOAD MUST NOT LEAVE "loading…" STANDING. Measured 2026-10-16: a 401 left the
+    // summary reading "loading…" forever -- an element that looks like it is still working
+    // when it is not (the same defect the health view fixed for its pill). The summary says
+    // what happened; the banner at the top carries the detail.
+    const s = document.getElementById("nf-summary");
+    if (s) s.textContent = "Flow volume is unavailable \u2014 the error is shown at the top of the page.";
+    throw err;
+  }
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
   // NOTHING HERE RESTATES THE WINDOW (the operator, twice: the netflow header must not carry
