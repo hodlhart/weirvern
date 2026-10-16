@@ -136,13 +136,56 @@ def test_the_verdict_lists_names_from_every_source_that_carries_one():
     assert verdicts[0]["mac"] == "aa:bb:cc:dd:ee:ff"
 
 
-def test_names_never_become_os_signals():
-    """A name proves what a host CALLS, not what it RUNS. The classifier must ignore them, or
-    one mDNS name would produce a confident OS verdict."""
+def test_only_apple_proprietary_browsing_classifies_and_nothing_else_does():
+    """Revised 2026-10-16 (the operator: "Identity still says... Unknown"): names DO classify,
+    but only through the curated service table, and only the services that are Apple-proprietary.
+
+    A plain name classifies nothing; an SNI classifies nothing; `_googlecast` and
+    spotify-connect classify nothing (Cast and Spotify Connect are licensed to TVs of every
+    stripe). `_companion-link` is not licensed to anyone -- browsing it means the stack speaks
+    Apple Continuity, which is a real fact about the stack, mapped to the vendor-level
+    "Apple device" and never to a specific OS.
+    """
     signals, structure = host_identity.signals_for_host("fe80::1", [
         {"source": "dns_name", "raw": "living-room.local", "mac": ""},
+        {"source": "dns_name", "raw": "jellyfin.home", "mac": ""},
+        {"source": "dns_name", "raw": "_googlecast._tcp.local", "mac": ""},
+        {"source": "dns_name", "raw": "spotifyconnect._spotify-connect._tcp.local", "mac": ""},
         {"source": "tls_sni", "raw": "cdn.example.com", "mac": ""},
-        {"source": "dhcp_hostname", "raw": "iphone", "mac": ""},
     ])
     assert structure is None
-    assert all(s.source != "dns_name" and s.source != "tls_sni" for s in signals)
+    assert signals == [], "none of these carry OS evidence"
+
+    apple, _ = host_identity.signals_for_host("fe80::1", [
+        {"source": "dns_name", "raw": "_companion-link._tcp.local", "mac": ""},
+    ])
+    assert len(apple) == 1 and apple[0].os == "apple", apple
+    assert "continuity" in apple[0].detail.lower()
+
+
+def test_a_looked_for_devices_name_does_not_classify_the_browser():
+    """`owen's ipad._companion-link._tcp.local` describes the device being LOOKED FOR. The
+    signal must come from the service (a fact about the browser's stack), never from the `ipad`
+    word (a fact about someone else's device)."""
+    signals, _ = host_identity.signals_for_host("fe80::1", [
+        {"source": "dns_name", "raw": "owen\u2019s ipad._companion-link._tcp.local", "mac": ""},
+    ])
+    assert len(signals) == 1 and signals[0].os == "apple", (
+        f"the device word must not win: {signals}")
+
+
+def test_service_browsing_alone_stays_low_however_many_names_agree():
+    """Three Apple service names from one host are ONE family's worth of evidence -- the same
+    fact seen three times. Corroboration needs a different class of source (a banner, a lease,
+    a NIC vendor), which is what makes this deployment's Apple TV read low, not medium."""
+    obs = [
+        {"source": "dns_name", "raw": "_companion-link._tcp.local", "mac": ""},
+        {"source": "dns_name", "raw": "living room tv._airplay._tcp.local", "mac": ""},
+        {"source": "dns_name", "raw": "_rdlink._tcp.local", "mac": ""},
+    ]
+    verdicts = host_identity.build_identity(_FakeStore([
+        ("fe80::1", "", o["source"], o["raw"], 1, TS, TS) for o in obs
+    ]), dry_run=True)
+    v = verdicts[0]
+    assert v["os"] == "apple" and v["confidence"] == "low", v
+    assert v["agreeing_sources"] == 1, "one family, however many names"

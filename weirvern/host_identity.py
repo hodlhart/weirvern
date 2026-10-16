@@ -37,6 +37,7 @@ from weirvern.fingerprint import (
     signal_from_dhcp,
     signal_from_ja4,
     signal_from_mac,
+    signal_from_names,
     signal_from_software,
     summarise,
 )
@@ -155,6 +156,12 @@ def signals_for_host(host: str, obs: list[dict[str, Any]]) -> tuple[list[Signal]
                 signals.append(sig)
             if struct and ja4_structure is None:
                 ja4_structure = struct
+        elif src == "dns_name":
+            # What the host's own browsing says about its stack (mDNS service discovery);
+            # display names stay display names otherwise.
+            sig = signal_from_names(src, raw)
+            if sig:
+                signals.append(sig)
         elif src == "ja4_structure":
             # Already decoded when stored; keep the first so the GUI shows one shape.
             if ja4_structure is None:

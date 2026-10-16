@@ -77,6 +77,10 @@ OS_ANDROID = "android"
 OS_NETWORK = "network-device"
 OS_EMBEDDED = "embedded"
 OS_UNKNOWN = "unknown"
+# VENDOR-LEVEL, NOT OS-LEVEL. An Apple TV, an iPhone and a Mac share mDNS ecosystems, and no
+# service name tells them apart -- so the honest answer where the evidence is a service name is
+# "Apple device", never "iOS" or "macOS". The specific OS needs evidence that names the OS.
+OS_APPLE = "apple"
 
 OS_LABELS: dict[str, str] = {
     OS_WINDOWS: "Windows",
@@ -87,6 +91,7 @@ OS_LABELS: dict[str, str] = {
     OS_ANDROID: "Android",
     OS_NETWORK: "Network device",
     OS_EMBEDDED: "Embedded / appliance",
+    OS_APPLE: "Apple device",
     OS_UNKNOWN: "Unknown",
 }
 
@@ -110,6 +115,11 @@ SOURCE_WEIGHTS: dict[str, float] = {
     # this carries evidence it does not.
     "ja4_structure": 0.0,
     "reverse_dns": 0.3,
+    # A QUERIED SERVICE NAME, not a device name: you only browse for AirPlay or Continuity
+    # peers if your stack speaks those protocols, and Continuity is Apple-proprietary. It says
+    # the host participates in the ecosystem -- not which device it is, and not which OS runs
+    # on it -- hence below the stand-alone medium bar.
+    "dns_name": 0.35,
     "operator": 1.0,  # a confirmed human answer outranks every inference
 }
 
@@ -447,6 +457,44 @@ def signal_from_software(name: str, version: str = "", unparsed: str = "",
     return None
 
 
+# mDNS SERVICE TYPES -- what a host's own browsing says about its stack.
+#
+# WHAT THIS IS AND IS NOT. Measured on the deployment (2026-10-16): the segment's devices browse
+# `_airplay`, `_companion-link`, `_rdlink`, `_googlecast` and `spotify-connect` services all day.
+# A host that browses `_companion-link` speaks Apple Continuity, which is proprietary and not
+# licensed to anyone -- that is a real, checkable fact about the STACK. What it is NOT is a
+# statement about which Apple OS runs (tvOS, iOS and macOS all announce the same services), so
+# these map to the vendor-level OS_APPLE, never to iOS or macOS. And a DEVICE word inside a
+# queried name is not evidence at all: `owen's ipad._companion-link._tcp.local` describes the
+# device being LOOKED FOR, not the one asking, so device-name words are deliberately absent here.
+#
+# NOT INCLUDED, ON PURPOSE: `_googlecast` and `spotify-connect` are implemented by TVs and
+# speakers of every stripe (Cast and Spotify Connect are licensed everywhere), so they carry no
+# OS weight -- they stay visible in `hostnames_seen` for the reader and classify nothing.
+KNOWN_DEVICE_NAME: list[tuple[str, str, str]] = [
+    ("_companion-link", OS_APPLE, "browsed Apple Continuity (proprietary; the stack speaks it)"),
+    ("_rdlink", OS_APPLE, "browsed Apple remote-link service (proprietary)"),
+    ("_homekit", OS_APPLE, "browsed HomeKit service (Apple ecosystem)"),
+    ("_apple-mobdev", OS_APPLE, "browsed Apple mobile-device pairing service"),
+    ("_airplay", OS_APPLE, "browsed AirPlay service (Apple ecosystem; also licensed to TV makers)"),
+    ("_raop", OS_APPLE, "browsed AirPlay audio (Remote Audio Output) service"),
+]
+
+
+def signal_from_names(source: str, raw: str) -> Signal | None:
+    """A queried name -> an ecosystem signal, through the service table ONLY.
+
+    Device words (`ipad`, `macbook`) are deliberately not consulted: in the DNS log they name
+    the device being searched for, and attributing a looked-for device's properties to the
+    browser is exactly the confident-wrong-answer this module exists to avoid.
+    """
+    hit = _match(KNOWN_DEVICE_NAME, raw)
+    if not hit:
+        return None
+    os_name, reason = hit
+    return Signal(source, os_name, f"the host {reason}: {raw!r}")
+
+
 def signal_from_dhcp(host_name: str = "", client_fqdn: str = "", domain: str = "") -> list[Signal]:
     """dhcp.log -> signals. Arrives before application traffic, which is the point of using it.
 
@@ -509,6 +557,9 @@ SOURCE_FAMILY: dict[str, str] = {
     "dhcp_hostname": "dhcp",
     "dhcp_fqdn": "dhcp",
     "dhcp_vendor": "dhcp",
+    # Service browsing from the DNS log is name-class evidence: several Apple service names
+    # from one host are one fact seen several times, not corroboration.
+    "dns_name": "name",
 }
 
 
