@@ -277,6 +277,9 @@
     <div class="card">
       <h2>Netflow <button class="info-btn" data-info="nf-info" aria-label="what NetFlow shows and how to drill in" aria-expanded="false" title="what NetFlow shows and how to drill in">i</button></h2>
       <p class="muted" id="nf-summary">loading…</p>
+      <!-- The dashboard-wide filter's chips. Clicking a value anywhere in this view lands here;
+           the whole view re-reads with it applied, and removing the chip widens it back. -->
+      <div id="nf-chips"></div>
       <div class="info-text hidden" id="nf-info">
         NetFlow is the router's own summary of every conversation — who talked to whom, how many
         bytes, how many packets. It is sampled, so read the volumes as a strong estimate rather

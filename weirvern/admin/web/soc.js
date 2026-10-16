@@ -181,11 +181,53 @@ function renderTimeline(hostId, res, opts = {}) {
 
 /* ── Netflow ────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard it should
+ * filter that entire dashboard"). One value per field -- a source, a protocol, a port -- and
+ * EVERY panel in this view re-reads with it applied: the server receives the same filters on
+ * every sub-query, and the panels that cannot answer from the aggregate switch to the raw table
+ * (soc.flow_filter). One value per field on purpose: this is a cross-filter, not a query
+ * builder -- OR-ing multiple values is Discover's job, and saying so here keeps the two honest.
+ */
+const NF_FILTERS = [];
+const NF_FIELD_LABELS = { src: "source", proto: "protocol", dport: "port" };
+
+function nfQuery() {
+  return NF_FILTERS.map((f) => `&${f.field}=${encodeURIComponent(f.value)}`).join("");
+}
+
+function nfRenderChips() {
+  const box = document.getElementById("nf-chips");
+  if (!box) return;
+  box.replaceChildren();
+  for (const [i, f] of NF_FILTERS.entries()) {
+    const chip = el("button", { class: "dc-chip",
+      text: `${NF_FIELD_LABELS[f.field] || f.field} = ${f.label} \u00d7`,
+      attrs: { title: "remove this filter" } });
+    chip.addEventListener("click", () => nfRemoveChip(i));
+    box.appendChild(chip);
+  }
+}
+
+function nfSetFilter(field, value, label) {
+  const i = NF_FILTERS.findIndex((f) => f.field === field);
+  const entry = { field, value: String(value), label: label || String(value) };
+  if (i >= 0) NF_FILTERS[i] = entry; else NF_FILTERS.push(entry);
+  nfRenderChips();
+  loadNetflow().catch(showError);
+}
+
+function nfRemoveChip(i) {
+  NF_FILTERS.splice(i, 1);
+  nfRenderChips();
+  loadNetflow().catch(showError);
+}
+
 async function loadNetflow() {
   const hours = String(trHours());
   let d;
   try {
-    d = await getJSON(`${API.netflow}?hours=${hours}`);
+    d = await getJSON(`${API.netflow}?hours=${hours}${nfQuery()}`);
   } catch (err) {
     // A FAILED LOAD MUST NOT LEAVE "loading…" STANDING. Measured 2026-10-16: a 401 left the
     // summary reading "loading…" forever -- an element that looks like it is still working
@@ -224,29 +266,34 @@ async function loadNetflow() {
 
   renderBars("nf-talkers", { available: true, points: (d.talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
              { label: (r) => r.src_addr, value: (r) => r.bytes, format: fmtBytes,
-               onClick: (r) => openHost(r.src_addr),
-               title: (r) => `${r.hostname ? r.hostname + " · " : ""}${r.src_addr} — ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to drill down.`,
+               // CLICK = FILTER THE WHOLE VIEW (the operator's ask). The host detail is one
+               // chip away in Assets; the dashboard answering "just this host" is the point.
+               onClick: (r) => nfSetFilter("src", r.src_addr, r.hostname || r.src_addr),
+               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} \u2014 ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to filter this view to it.`,
                emptyText: "No talkers in this window." });
 
   renderBars("nf-proto", d.protocols,
              { label: (r) => r.label, value: (r) => r.bytes, format: fmtBytes,
                // Clicking a protocol drills into the hosts behind it. A chart that cannot be
                // entered is a report; the SOC requirement is that every bar leads somewhere.
-               onClick: (r) => loadFlowDetail({ proto: r.proto, name: r.label }).catch(showError),
-               title: (r) => `${r.label}: ${fmtBytes(r.bytes)} across ${r.flows} flows — click for the hosts`,
+               // Filter the view AND fill the detail: the click is both readings at once.
+               onClick: (r) => { nfSetFilter("proto", r.proto, r.label);
+                                 loadFlowDetail({ proto: r.proto, name: r.label }).catch(showError); },
+               title: (r) => `${r.label}: ${fmtBytes(r.bytes)} across ${r.flows} flows \u2014 click to filter this view to it`,
                emptyText: "No protocol records in this window." });
 
   renderBars("nf-ports", d.ports,
              { label: (r) => `:${r.port}`, value: (r) => r.bytes, format: fmtBytes,
-               onClick: (r) => loadFlowDetail({ port: r.port, name: `port ${r.port}` }).catch(showError),
-               title: (r) => `port ${r.port}, proto ${r.proto} — ${r.flows} flows. Click for the hosts.`,
+               onClick: (r) => { nfSetFilter("dport", r.port, `:${r.port}`);
+                                 loadFlowDetail({ port: r.port, name: `port ${r.port}` }).catch(showError); },
+               title: (r) => `port ${r.port}, proto ${r.proto} \u2014 ${r.flows} flows. Click to filter this view to it.`,
                emptyText: "No destination ports recorded in this window." });
 
   renderBars("nf-spread", d.spread,
              { label: (r) => r.src_addr, value: (r) => r.destinations,
                format: (v) => `${v} dst`,
-               onClick: (r) => openHost(r.src_addr),
-               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} talked to ${r.destinations} distinct destinations`,
+               onClick: (r) => nfSetFilter("src", r.src_addr, r.hostname || r.src_addr),
+               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} talked to ${r.destinations} distinct destinations \u2014 click to filter this view to it`,
                emptyText: "No fan-out recorded in this window." });
 
   // THE DRILL FOLLOWS THE RANGE. The flow-detail table is only re-fetched on a bar click, so

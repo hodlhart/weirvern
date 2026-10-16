@@ -55,23 +55,71 @@ def _unavailable(reason: str, **extra) -> dict:
     return {"available": False, "reason": reason, "points": [], **extra}
 
 
-def flow_volume_series(client, hours: int = 24) -> dict:
+# ── THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard it should
+# filter that entire dashboard"). Three fields, because they are what the panels RANK: a source
+# address, a protocol number, a destination port -- one value each (a dashboard cross-filter, not
+# a query builder; Discover is where OR lives).
+#
+# A PROTOCOL OR PORT FILTER FORCES THE RAW PATH, and that is the load-bearing decision:
+# `flows_aggregated` has NO proto or dst_port column at all (measured; see protocol_mix's
+# docstring), so a dashboard where some panels applied the filter and others silently ignored it
+# would agree with itself only by accident. When proto/port filters are active, the volume,
+# talkers and spread panels compute from the raw `flows` table instead -- same output shapes, same
+# question answered everywhere. A source filter alone works on either table.
+def flow_filter(filters: dict | None) -> tuple[str, dict]:
+    """(fragment beginning with ' AND ...' or '', bound params) for the raw `flows` table."""
+    filters = filters or {}
+    parts: list[str] = []
+    params: dict = {}
+    src = str(filters.get("src") or "").strip()
+    if src:
+        parts.append(" AND src_addr = %(fsrc)s")
+        params["fsrc"] = src
+    proto = str(filters.get("proto") or "").strip()
+    if proto != "":
+        parts.append(" AND proto = %(fproto)s")
+        params["fproto"] = int(proto)
+    dport = str(filters.get("dport") or "").strip()
+    if dport != "":
+        parts.append(" AND dst_port = %(fdport)s")
+        params["fdport"] = int(dport)
+    return "".join(parts), params
+
+
+def flow_filter_is_raw(filters: dict | None) -> bool:
+    """True when the filter needs the raw flows table (proto or port present)."""
+    filters = filters or {}
+    return bool(str(filters.get("proto") or "").strip() or str(filters.get("dport") or "").strip())
+
+
+def flow_volume_series(client, hours: int = 24, *, filters: dict | None = None) -> dict:
     """Bytes and flows per time bucket from the aggregated flows.
 
-    Reads `flows_aggregated`, the same table `top_talkers` uses, because the raw `flows`
-    table holds one row per flow and bucketing that is both slower and unnecessary -- the
-    aggregate already carries window_start, total_bytes and flow_count.
+    Reads `flows_aggregated` when it can -- the raw `flows` table holds one row per flow and
+    bucketing that is slower and unnecessary -- and switches to raw `flows` when a protocol or
+    port filter is active (see flow_filter: the aggregate has no such columns).
     """
     width = _bucket_seconds(hours)
+    filt, fparams = flow_filter(filters)
     try:
-        rows = client.query(
-            "SELECT toStartOfInterval(window_start, INTERVAL %(w)s SECOND) AS bucket, "
-            "sum(total_bytes) AS bytes, sum(flow_count) AS flows "
-            "FROM weirvern.flows_aggregated "
-            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
-            "GROUP BY bucket ORDER BY bucket",
-            parameters={"w": width, **timewindow.w(hours)},
-        ).result_rows
+        if flow_filter_is_raw(filters):
+            rows = client.query(
+                "SELECT toStartOfInterval(timestamp, INTERVAL %(w)s SECOND) AS bucket, "
+                "sum(bytes) AS bytes, count() AS flows "
+                "FROM weirvern.flows "
+                "WHERE timestamp >= %(since)s AND timestamp <= %(until)s " + filt +
+                "GROUP BY bucket ORDER BY bucket",
+                parameters={"w": width, **timewindow.w(hours), **fparams},
+            ).result_rows
+        else:
+            rows = client.query(
+                "SELECT toStartOfInterval(window_start, INTERVAL %(w)s SECOND) AS bucket, "
+                "sum(total_bytes) AS bytes, sum(flow_count) AS flows "
+                "FROM weirvern.flows_aggregated "
+                "WHERE window_start >= %(since)s AND window_start <= %(until)s " + filt +
+                "GROUP BY bucket ORDER BY bucket",
+                parameters={"w": width, **timewindow.w(hours), **fparams},
+            ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("flow_volume_series failed: %s", exc)
         return _unavailable(f"flow volume query failed: {type(exc).__name__}")
@@ -88,7 +136,8 @@ def flow_volume_series(client, hours: int = 24) -> dict:
     }
 
 
-def protocol_mix(client, hours: int = 24, limit: int = 12) -> dict:
+def protocol_mix(client, hours: int = 24, limit: int = 12, *,
+                 filters: dict | None = None) -> dict:
     """Flows and bytes per IP protocol.
 
     READS RAW `flows`, NOT `flows_aggregated`, AND THAT IS NOT A PREFERENCE. The aggregate
@@ -105,13 +154,14 @@ def protocol_mix(client, hours: int = 24, limit: int = 12) -> dict:
     consumer shows the same names.
     """
     names = PROTO_DISPLAY
+    filt, fparams = flow_filter(filters)
     try:
         rows = client.query(
             "SELECT proto, sum(bytes) AS bytes, count() AS flows "
             "FROM weirvern.flows "
-            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s " + filt +
             "GROUP BY proto ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            parameters={**timewindow.w(hours), "n": limit, **fparams},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("protocol_mix failed: %s", exc)
@@ -127,7 +177,8 @@ def protocol_mix(client, hours: int = 24, limit: int = 12) -> dict:
     }
 
 
-def top_ports(client, hours: int = 24, limit: int = 12) -> dict:
+def top_ports(client, hours: int = 24, limit: int = 12, *,
+              filters: dict | None = None) -> dict:
     """Busiest destination ports.
 
     Reads raw `flows` for the same reason as `protocol_mix`: the aggregate has no
@@ -136,13 +187,14 @@ def top_ports(client, hours: int = 24, limit: int = 12) -> dict:
     Excludes port 0, which in NetFlow means "not recorded" rather than a real port, and
     including it produces a bar labelled 0 that dominates every real service.
     """
+    filt, fparams = flow_filter(filters)
     try:
         rows = client.query(
             "SELECT dst_port, proto, sum(bytes) AS bytes, count() AS flows "
             "FROM weirvern.flows "
-            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s AND dst_port > 0 "
+            "WHERE timestamp >= %(since)s AND timestamp <= %(until)s AND dst_port > 0 " + filt +
             "GROUP BY dst_port, proto ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            parameters={**timewindow.w(hours), "n": limit, **fparams},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("top_ports failed: %s", exc)
@@ -158,24 +210,36 @@ def top_ports(client, hours: int = 24, limit: int = 12) -> dict:
     }
 
 
-def destination_spread(client, hours: int = 24, limit: int = 12) -> dict:
+def destination_spread(client, hours: int = 24, limit: int = 12, *,
+                       filters: dict | None = None) -> dict:
     """How wide each host's fan-out got, using the precomputed unique_dst_ips.
 
     max() rather than sum(), for the reason documented on `top_talkers`: the aggregate
     stores distinct destinations PER WINDOW, so summing across windows counts the same
     destination again in every window. The honest reading is the widest single window.
     """
+    filt, fparams = flow_filter(filters)
     try:
-        rows = client.query(
-            "SELECT src_addr, max(unique_dst_ips) AS dsts, sum(flow_count) AS flows "
-            "FROM weirvern.flows_aggregated "
-            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
-            # Hosts only -- see weirvern/addressing.py. A fan-out chart for ff02::fb is a chart
-            # about nothing.
-            "  AND " + addressing.sql_host("src_addr") + " "
-            "GROUP BY src_addr ORDER BY dsts DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
-        ).result_rows
+        if flow_filter_is_raw(filters):
+            rows = client.query(
+                "SELECT src_addr, uniqExact(dst_addr) AS dsts, count() AS flows "
+                "FROM weirvern.flows "
+                "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+                "  AND " + addressing.sql_host("src_addr") + " " + filt +
+                "GROUP BY src_addr ORDER BY dsts DESC LIMIT %(n)s",
+                parameters={**timewindow.w(hours), "n": limit, **fparams},
+            ).result_rows
+        else:
+            rows = client.query(
+                "SELECT src_addr, max(unique_dst_ips) AS dsts, sum(flow_count) AS flows "
+                "FROM weirvern.flows_aggregated "
+                "WHERE window_start >= %(since)s AND window_start <= %(until)s "
+                # Hosts only -- see weirvern/addressing.py. A fan-out chart for ff02::fb is a chart
+                # about nothing.
+                "  AND " + addressing.sql_host("src_addr") + " " + filt +
+                "GROUP BY src_addr ORDER BY dsts DESC LIMIT %(n)s",
+                parameters={**timewindow.w(hours), "n": limit, **fparams},
+            ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("destination_spread failed: %s", exc)
         return _unavailable(f"destination spread query failed: {type(exc).__name__}")

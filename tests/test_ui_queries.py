@@ -82,11 +82,19 @@ def test_top_talkers_queries_columns_that_exist(agg_cols):
         "top_talkers must read the aggregated table: total_bytes and flow_count "
         "do not exist on weirvern.flows"
     )
-    assert "FROM weirvern.flows " not in sql and "FROM weirvern.flows WHERE" not in sql
 
     for column in ("total_bytes", "flow_count", "unique_dst_ips", "window_start"):
         assert column in sql, f"expected {column} in the query"
         assert column in agg_cols, f"{column} is not a flows_aggregated column"
+
+    # THE RAW PATH EXISTS BY DESIGN (2026-10-16, the dashboard-wide filter): a protocol or port
+    # filter cannot be answered by the aggregate at all, so the panel switches to `flows` --
+    # with ITS columns, which the schema check above does not cover.
+    assert "FROM weirvern.flows " in sql, (
+        "the filtered branch must read raw flows; without it a proto/port filter would be "
+        "silently ignored here while the other panels applied it")
+    for column in ("timestamp", "bytes", "dst_addr"):
+        assert column in sql, f"the raw branch must query {column}"
 
 
 def test_the_columns_top_talkers_needs_are_not_on_raw_flows(flows_cols):

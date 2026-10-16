@@ -582,14 +582,25 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
+            # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard
+            # it should filter that entire dashboard"): one source address, one protocol, one
+            # destination port -- every panel below receives them, and the aggregate-backed
+            # panels switch to the raw table when proto/port demand it (soc.flow_filter).
+            filters = {"src": (query.get("src") or [""])[0].strip()[:64],
+                       "proto": (query.get("proto") or [""])[0].strip(),
+                       "dport": (query.get("dport") or [""])[0].strip()}
+            for key, hi in (("proto", 255), ("dport", 65535)):
+                if filters[key] and (not filters[key].isdigit() or int(filters[key]) > hi):
+                    return self._error(400, f"{key} must be a number <= {hi}")
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
             try:
                 with self._with_client() as client:
-                    volume = soc_mod.flow_volume_series(client, hours=hours)
-                    proto = soc_mod.protocol_mix(client, hours=hours)
-                    ports = soc_mod.top_ports(client, hours=hours)
-                    spread = soc_mod.destination_spread(client, hours=hours)
-                    talkers = status_mod.top_talkers(client, hours=hours, limit=12)
+                    volume = soc_mod.flow_volume_series(client, hours=hours, filters=filters)
+                    proto = soc_mod.protocol_mix(client, hours=hours, filters=filters)
+                    ports = soc_mod.top_ports(client, hours=hours, filters=filters)
+                    spread = soc_mod.destination_spread(client, hours=hours, filters=filters)
+                    talkers = status_mod.top_talkers(client, hours=hours, limit=12,
+                                                     filters=filters)
                     # The host lists are filtered; this says by how much, so a reader can tell
                     # "a quiet segment" from "a noisy one with the noise hidden".
                     noise = status_mod.noise_flows(client, hours=hours)

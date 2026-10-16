@@ -624,6 +624,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
  * it; the opaque background is required, or page content scrolls visibly THROUGH the strip. */
 #tabs { position: sticky; top: var(--header-h, 64px); z-index: 9; background: var(--bg);
   border-bottom: 1px solid var(--border); }
+#nf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+#nf-chips:empty { display: none; }
 nav { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 nav::-webkit-scrollbar { height: 6px; }
 nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

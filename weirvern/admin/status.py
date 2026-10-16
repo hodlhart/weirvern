@@ -1577,7 +1577,8 @@ def recent_anomalies(client, limit: int = 25, min_score: float = 0.5) -> list[tu
         return []
 
 
-def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
+def top_talkers(client, hours: int = 24, limit: int = 10, *,
+                filters: dict | None = None) -> list[tuple]:
     """Highest-volume talkers recently.
 
     QUERIES flows_aggregated, NOT flows. THE BUG: this used to read
@@ -1592,6 +1593,27 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
     anyone would see. It never surfaced earlier because no test asserted the panel
     had content, and an empty table looks like a quiet network.
     """
+    from weirvern.admin.soc import flow_filter, flow_filter_is_raw  # noqa: PLC0415 -- one definition
+
+    filt, fparams = flow_filter(filters)
+    if flow_filter_is_raw(filters):
+        # The aggregate has no proto/dst_port columns; with those filters active this panel
+        # computes the same answer from the raw flows table (see soc.flow_filter). NOTE: no
+        # local import of addressing here -- a function-local import makes the name local for
+        # the WHOLE function and broke the aggregate path below it ("cannot access local
+        # variable"), measured the same hour it was written.
+        try:
+            return client.query(
+                "SELECT src_addr, sum(bytes) AS bytes, count() AS flows, "
+                "uniqExact(dst_addr) AS dsts FROM weirvern.flows "
+                "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+                "  AND " + addressing.sql_host("src_addr") + " " + filt +
+                "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
+                parameters={**timewindow.w(hours), "n": limit, **fparams},
+            ).result_rows
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("top_talkers (filtered) failed: %s", exc)
+            return []
     try:
         return client.query(
             "SELECT src_addr, sum(total_bytes) AS bytes, sum(flow_count) AS flows, "
@@ -1601,14 +1623,14 @@ def top_talkers(client, hours: int = 24, limit: int = 10) -> list[tuple]:
             # destination in every window. max() is the honest "how wide did this
             # host's fan-out get", which is the question the column answers.
             "max(unique_dst_ips) AS dsts FROM weirvern.flows_aggregated "
-            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s " + filt +
             # NOT EVERY ADDRESS THAT APPEARS IS A HOST (weirvern/addressing.py has the
             # measurement): ranking fe80::/ff02::/224.0.0.251 as talkers made the panel read
             # as broken on the first live segment. The count of what was left out is
             # reported separately by `noise_flows`, so the filter is stated, not silent.
             "  AND " + addressing.sql_host("src_addr") + " "
             "GROUP BY src_addr ORDER BY bytes DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            parameters={**timewindow.w(hours), "n": limit, **fparams},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         # WARNING rather than debug: an empty talkers panel is indistinguishable
