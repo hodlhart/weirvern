@@ -32,6 +32,15 @@ Operation not permitted" — and exits instantly, taking the summariser with it 
 pipe). Measured, as was the swallowing half of the bug: both children's stderr now goes to the
 pod log instead of /dev/null, so the next failure of this kind is legible rather than silent.
 
+**The stream is SEGMENTED, because softflowd blocks forever on a live pipe — measured.** With
+the tap alive and packets demonstrably written into a pipe (tcpdump: 58 captured, 2760 bytes in
+6s), softflowd reading that live pipe processed zero and did not even answer SIGTERM; the same
+softflowd reading those same bytes after EOF (a file, or `cat file |`) processed 30/30 and its
+exports landed in goflow2. So the tap writes bounded rotating segments (-C 16MB, -G 30s, -W 240)
+and every pass summarises each COMPLETED segment with a one-shot softflowd — deleting it on
+success, keeping it on failure so the evidence is not discarded. "Off" removes the tap AND the
+pending segments: captured traffic must not survive the switch.
+
 ## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
 
 Two requests, one theme: nothing important should require kubectl or a manual.

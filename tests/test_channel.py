@@ -11,6 +11,8 @@ Everything here runs against fabricated sysfs and /proc/sys trees -- no kernel, 
 """
 from __future__ import annotations
 
+import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -321,7 +323,7 @@ def test_an_unspecified_mode_takes_no_verdict():
     assert "not in the traffic path" not in (state.detail or "")
 
 
-# ── the channel flow probe: start / stop / back off, without a kernel ───────────────────────────
+# ── the channel flow probe: start / stop / sweep / back off, without a kernel ──────────────────
 
 
 class _DummyPipe:
@@ -352,6 +354,12 @@ class _FakeProc:
         self.killed = True
 
 
+class _Result:
+    def __init__(self, rc: int = 0, stderr: bytes = b"") -> None:
+        self.returncode = rc
+        self.stderr = stderr
+
+
 class _NFChannel:
     def __init__(self, active: bool) -> None:
         self.active = active
@@ -370,17 +378,16 @@ def _nf_settings(mode: str):
 def _reset_probe():
     from weirvern import worker as worker_mod
 
-    worker_mod._CHANNEL_NETFLOW.update(
-        {"proc": None, "tap": None, "iface": "", "retry_after": 0.0})
+    worker_mod._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "retry_after": 0.0})
     return worker_mod
 
 
 def _recorder(spawns, procs=None):
-    """A spawn factory that records (argv, kwargs) and hands out fakes, in order."""
+    """A spawn factory that records argv and hands out fakes, in order."""
     seq = iter(procs) if procs else None
 
     def spawn(argv, **kwargs):
-        spawns.append((list(argv), kwargs))
+        spawns.append(list(argv))
         if seq is not None:
             return next(seq)
         return _FakeProc()
@@ -388,73 +395,123 @@ def _recorder(spawns, procs=None):
     return spawn
 
 
-def test_the_flow_probe_pipes_a_tcpdump_tap_into_softflowd_once():
-    """The MEASURED architecture in one tick: tcpdump taps the chosen port (headers only,
-    packet-buffered) and softflowd summarises that stream, exporting IPFIX to the deployment's
-    own collector -- and a second tick with nothing changed starts nothing."""
+def test_the_probe_taps_into_rotating_segments_once(monkeypatch, tmp_path):
+    """The MEASURED architecture in one tick: a single long-lived child taps the chosen port
+    into bounded rotating pcap segments, with the flags that took a live failure to learn
+    (-Z root) and the ones that bound the disk (-C size, -G time, -W count)."""
     worker_mod = _reset_probe()
+    monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
     spawns: list = []
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=_recorder(spawns), which=lambda n: f"/usr/sbin/{n}", now=lambda: 1000.0)
-    assert len(spawns) == 2, "expected a capture tap and a summariser, not one process"
-    tap_argv, _tap_kw = spawns[0]
-    sf_argv, _sf_kw = spawns[1]
-    assert "tcpdump" in tap_argv[0]
-    assert tap_argv[tap_argv.index("-i") + 1] == "wv-a"
-    assert "-U" in tap_argv and "-w" in tap_argv
-    assert "-Z" in tap_argv and tap_argv[tap_argv.index("-Z") + 1] == "root", (
-        "Debian's tcpdump drops privileges to a user that does not exist in this container and "
-        "exits at once; -Z root is what keeps the tap alive (measured)"
-    )
-    assert "softflowd" in sf_argv[0]
-    assert sf_argv[sf_argv.index("-r") + 1] == "/dev/stdin"
-    assert sf_argv[sf_argv.index("-v") + 1] == "10", "v9 is dropped by the collector; measured"
-    assert sf_argv[sf_argv.index("-n") + 1] == worker_mod.CHANNEL_NETFLOW_COLLECTOR
+        spawn=_recorder(spawns), which=lambda n: f"/usr/sbin/{n}", now=lambda: 1000.0,
+        run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("sweep ran with no segments")))
+    assert len(spawns) == 1, "the only long-lived child is the capture tap"
+    argv = spawns[0]
+    assert "tcpdump" in argv[0]
+    assert argv[argv.index("-i") + 1] == "wv-a"
+    for flag in ("-Z", "-C", "-G", "-W", "-w", "-U"):
+        assert flag in argv, f"{flag} is part of the bounded-segment tap"
+    assert argv[argv.index("-Z") + 1] == "root", "tcpdump's privilege-drop fails here; measured"
+    assert argv[argv.index("-w") + 1].startswith(worker_mod.CHANNEL_NETFLOW_DIR)
+    assert argv[-1] == worker_mod.CHANNEL_NETFLOW_FILTER
+    # A second tick with a live tap and nothing changed starts nothing else and sweeps cleanly.
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 1001.0)
-    assert len(spawns) == 2, "an unchanged tick spawned another probe"
+        spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 1001.0,
+        run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("sweep ran with no segments")))
+    assert len(spawns) == 1, "an unchanged tick spawned another tap"
 
 
-def test_the_flow_probe_stops_both_children_when_off_or_channel_down():
+def test_the_probe_stops_the_tap_and_drops_pending_segments(monkeypatch, tmp_path):
+    """'Off' must mean nothing is being collected -- including the already-captured segments
+    that have not been summarised yet."""
     for mode, active in (("off", True), ("upstream", False)):
         worker_mod = _reset_probe()
-        tap, sf = _FakeProc(), _FakeProc()
-        worker_mod._CHANNEL_NETFLOW.update({"proc": sf, "tap": tap, "iface": "wv-a"})
+        monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
+        (tmp_path / "ch-1.pcap").write_bytes(b"x")
+        (tmp_path / "ch-2.pcap").write_bytes(b"x")
+        tap = _FakeProc()
+        worker_mod._CHANNEL_NETFLOW.update({"tap": tap, "iface": "wv-a"})
         spawns = []
         worker_mod._channel_netflow_maybe(
             _nf_settings(mode), channel_state=_NFChannel(active),
             spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 2000.0)
-        assert sf.terminated and tap.terminated, (
-            f"probe kept running with mode={mode}, active={active}"
+        assert tap.terminated is True, f"tap kept running with mode={mode}, active={active}"
+        assert not list(tmp_path.glob("*.pcap")), (
+            "'off' must not leave captured segments on disk"
         )
         assert spawns == [], "a stopped probe must not be replaced while it is not wanted"
+        for f in tmp_path.glob("*.pcap"):
+            f.unlink()
 
 
-def test_the_flow_probe_moves_port_when_the_selection_moves():
+def test_the_sweep_summarises_only_completed_segments_and_deletes_them(tmp_path):
+    """The batch path, which is the one this kernel supports: softflowd reads a COMPLETED file
+    perfectly (measured 30/30) while a live stream blocks it forever. The newest segment is
+    still being written; a summarised one is deleted; the one-shot argv is the proven shape."""
     worker_mod = _reset_probe()
-    tap1, sf1, tap2, sf2 = (_FakeProc() for _ in range(4))
-    spawns = []
-    spawn = _recorder(spawns, [tap1, sf1, tap2, sf2])
-    worker_mod._channel_netflow_maybe(
-        _nf_settings("upstream"), channel_state=_NFChannel(True),
-        spawn=spawn, which=lambda n: "x", now=lambda: 10.0)
-    worker_mod._channel_netflow_maybe(
-        _nf_settings("downstream"), channel_state=_NFChannel(True),
-        spawn=spawn, which=lambda n: "x", now=lambda: 11.0)
-    assert tap1.terminated and sf1.terminated, "the probe on the old port was left running"
-    assert len(spawns) == 4
-    assert spawns[2][0][spawns[2][0].index("-i") + 1] == "wv-b"
+    old = tmp_path / "ch-20260101-000000.pcap"
+    new = tmp_path / "ch-20260101-000030.pcap"
+    old.write_bytes(b"seg")
+    new.write_bytes(b"seg")
+    past = time.time() - 100.0
+    os.utime(old, (past, past))
+    os.utime(new, (past, past))
+    calls = []
+
+    def run(argv, timeout=None, capture_output=False):
+        calls.append(list(argv))
+        return _Result(0)
+
+    worker_mod._channel_netflow_sweep(run=run, probe="/usr/sbin/softflowd",
+                                      directory=str(tmp_path))
+    assert len(calls) == 1, "the newest segment is still being written; only completed ones go"
+    assert str(old) in calls[0]
+    assert not old.exists() and new.exists(), (
+        "a summarised segment must be deleted; the live one kept"
+    )
+    argv = calls[0]
+    assert argv[argv.index("-r") + 1] == str(old)
+    assert argv[argv.index("-v") + 1] == "10", "v9 is dropped by the collector; measured"
+    assert argv[argv.index("-n") + 1] == worker_mod.CHANNEL_NETFLOW_COLLECTOR
 
 
-def test_the_flow_probe_backs_off_after_a_death_or_a_missing_binary():
+def test_the_sweep_keeps_a_segment_it_could_not_summarise(tmp_path):
+    """A failed summarise must not delete the evidence; the file stays for the next tick."""
+    worker_mod = _reset_probe()
+    seg = tmp_path / "ch-20260101-000000.pcap"
+    other = tmp_path / "ch-20260101-000030.pcap"
+    for f in (seg, other):
+        f.write_bytes(b"seg")
+        os.utime(f, (time.time() - 100.0,) * 2)
+    calls = []
+
+    def run(argv, timeout=None, capture_output=False):
+        calls.append(list(argv))
+        return _Result(1, b"boom")
+
+    worker_mod._channel_netflow_sweep(run=run, probe="/usr/sbin/softflowd",
+                                      directory=str(tmp_path))
+    assert calls and seg.exists(), "a failed segment was deleted anyway -- the evidence is gone"
+
+
+def test_the_sweep_does_nothing_below_two_segments(tmp_path):
+    worker_mod = _reset_probe()
+    (tmp_path / "ch-only.pcap").write_bytes(b"seg")
+    worker_mod._channel_netflow_sweep(
+        run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("swept a lone segment")),
+        probe="/usr/sbin/softflowd", directory=str(tmp_path))
+    assert (tmp_path / "ch-only.pcap").exists()
+
+
+def test_the_probe_backs_off_after_a_death_or_a_missing_binary(monkeypatch, tmp_path):
     """A crash loop that writes a log line and doomed children every tick is worse than a probe
     that is visibly not running: one warning, then a five-minute cooldown, then a retry."""
-    # a dead summariser: one warning, no immediate respawn
     worker_mod = _reset_probe()
+    monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
     worker_mod._CHANNEL_NETFLOW.update(
-        {"proc": _FakeProc(alive=False, rc=1), "tap": _FakeProc(), "iface": "wv-a"})
+        {"tap": _FakeProc(alive=False, rc=1), "iface": "wv-a"})
     spawns = []
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
@@ -468,9 +525,8 @@ def test_the_flow_probe_backs_off_after_a_death_or_a_missing_binary():
     worker_mod._channel_netflow_maybe(
         _nf_settings("upstream"), channel_state=_NFChannel(True),
         spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 401.0)
-    assert len(spawns) == 2, "the probe was never retried after the cooldown"
+    assert len(spawns) == 1, "the probe was never retried after the cooldown"
 
-    # a missing binary: warned once on the cooldown, not once per tick
     worker_mod = _reset_probe()
     spawns.clear()
     missing = lambda n: None if n == "tcpdump" else "x"  # noqa: E731
