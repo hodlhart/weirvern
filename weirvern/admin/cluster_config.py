@@ -82,6 +82,7 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "CHANNEL_DOWNSTREAM",
     # The channel's flow selection: whether the in-line traffic is summarised into NetFlow.
     "CHANNEL_NETFLOW",
+    "SIPHON_NETFLOW",
     # THE GATE'S OWN KEYS. The Sluice Gate is a product surface (its own tab, its own proof), and
     # operating it previously meant a ConfigMap patch and a worker restart -- the opposite of the
     # operator's standing request that everything be clickable. All five are read by the WORKER,
@@ -160,6 +161,8 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
     "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "SIPHON_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                       "runs the flow probe"),
     "CHANNEL_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
                         "starts or stops the flow probe"),
     # The sluice keys are read by the WORKER: it resolves the enforcement interface, compiles the
@@ -304,6 +307,9 @@ SETTING_CONTROLS: dict[str, dict] = {
     "CHANNEL_DOWNSTREAM": {"control": "text"},
     "CHANNEL_NETFLOW": {"control": "select", "options": ["off", "upstream", "downstream"]},
     "SLUICE_ENABLED": {"control": "toggle"},
+    # A switch, and only meaningful in siphon mode: it turns the intercept itself into a flow
+    # source (see the tooltip for the one-path rule).
+    "SIPHON_NETFLOW": {"control": "toggle"},
     # Empty resolves automatically (channel bridge, else capture port), so it stays free text --
     # a closed set of interface names does not exist across deployments.
     "SLUICE_IFACE": {"control": "text"},
@@ -413,6 +419,12 @@ def validate(key: str, value: str) -> str:
     if key in ("PUSHOVER_ENABLED", "SLUICE_ENABLED"):
         if raw.lower() not in ("true", "false", "1", "0", "yes", "no", ""):
             raise ConfigError(f"{key} must be true or false, not '{raw}'")
+        if key == "SIPHON_NETFLOW" and raw.lower() in ("true", "1", "yes"):
+            return ("the sensor's own interface is metered while a siphon intercept is VERIFIED "
+                    "live, and the records land in the same `flows` table the channel and any "
+                    "exporter feed. It never runs on a configured-but-dead intercept, it yields to "
+                    "CHANNEL_NETFLOW on a box doing both -- two taps would count every "
+                    "conversation twice -- and it costs nothing while no intercept is up.")
         if key == "SLUICE_ENABLED" and raw.lower() in ("true", "1", "yes"):
             return ("while this is on, live block rules are compiled into the kernel on the "
                     "sensor. Every rule is TTL-bounded and the gate fails OPEN; turning this off "

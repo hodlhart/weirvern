@@ -819,6 +819,9 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
                 ("channel_downstream", "channel downstream port"),
         # Whether the in-line channel's crossing traffic becomes flow records.
         ("channel_netflow", "channel flow capture"),
+        # The other in-line source: a live siphon intercept relays through this box too, and its
+        # traffic can be metered the same way. One tap per box -- see the tooltip.
+        ("siphon_netflow", "intercept flow capture"),
         ("reverse_dns", "reverse DNS"),
         # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
         # thing an operator needs to respond to without a redeploy.
@@ -918,6 +921,12 @@ _SETTINGS_HELP: dict[str, str] = {
         "that from the kernel -- ports on one forwarding bridge, link up, bridge-nf enabled -- "
         "before it will claim the channel is active, and names exactly what is missing when "
         "it is not."),
+    "siphon_netflow": (
+        "While a siphon intercept is live, the sensor's own interface is metered the way the "
+        "channel's ports are: bounded capture segments, summarised into IPFIX, into the same "
+        "`flows` table the channel and any exporter feed. Never on a configured-but-dead intercept "
+        "(that would be records of nothing), and it yields to the channel selection when both are "
+        "set, because two taps would count each conversation twice."),
     "channel_netflow": (
         "Whether the traffic crossing the IN-LINE channel is summarised into NetFlow records. "
         "'off' (the default) collects nothing from the channel; 'upstream' or 'downstream' names "

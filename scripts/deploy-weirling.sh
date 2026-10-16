@@ -43,6 +43,10 @@
 #   --gate-iface  the interface traffic TRAVERSES on the target (its bridge, or the intercept
 #                 port). Required with --gate, and refused if it is the management NIC. This is
 #                 NOT the capture port.
+#   --netflow     ALSO run the NetFlow/sFlow COLLECTOR on this box, and ship what it receives into
+#                 the hub's `flows` table (goflow2 on 2055/6343 -> the unit's agent -> ClickHouse).
+#                 This is how an exporter somewhere else in the network gets its records into
+#                 Weirvern without a route to the hub. Inert until an exporter is pointed at it.
 #   --remove      stop and remove the containers on the target (logs kept; --purge too)
 #   --purge       with --remove: also delete the env file, helper and log directory
 #   --dry-run     run every CHECK (including the refusals) and print the plan; change nothing
@@ -56,6 +60,7 @@ SENSOR_ID=""
 EXPOSE=0
 GATE=0
 GATE_IFACE=""
+NETFLOW=0
 REMOVE=0
 PURGE=0
 DRY=0
@@ -73,6 +78,7 @@ while [ $# -gt 0 ]; do
         --sensor-id) SENSOR_ID="${2:?--sensor-id needs a value}"; shift 2 ;;
         --expose) EXPOSE=1; shift ;;
         --gate) GATE=1; shift ;;
+        --netflow) NETFLOW=1; shift ;;
         --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
         --remove) REMOVE=1; shift ;;
         --purge) PURGE=1; shift ;;
@@ -230,6 +236,17 @@ if [ "$YES" = "0" ]; then
 fi
 
 # ── ship the images (streamed; nothing lands on the machine running THIS script) ──────────
+if [ "$NETFLOW" = "1" ]; then
+    # THE COLLECTOR IS AN UPSTREAM IMAGE the hub pulls for itself; the target pulls the same tag
+    # rather than streaming it from the hub, because nothing here has been patched or pinned for a
+    # site policy the way the Zeek image is. Visible step, so the network fetch is a decision the
+    # operator watched rather than a surprise on start.
+    step "fetching the flow collector image on the target"
+    rsh "$TARGET" "docker pull netsampler/goflow2:v2.2.6 >/dev/null 2>&1" \
+        || die "could not pull netsampler/goflow2:v2.2.6 on the target -- check its network access"
+    say "  collector image: netsampler/goflow2:v2.2.6"
+fi
+
 step "shipping the images to the target"
 rsh "$HUB" "docker save $ZEEK_IMG $WORKER_IMG" | rsh "$TARGET" "docker load" >/dev/null
 say "  loaded: $ZEEK_IMG , $WORKER_IMG"
@@ -271,24 +288,40 @@ rsh "$TARGET" "cat > /usr/local/bin/weirvern-weirling && chmod 0755 /usr/local/b
 set -eu
 ID='$SENSOR_ID'; IFACE='$IFACE'; MGMT='$DEFROUTE'
 ZEEK_IMG='$ZEEK_IMG'; WORKER_IMG='$WORKER_IMG'
-LOGDIR=/var/lib/weirvern-weirling/logs; ENVF=/etc/weirvern-weirling.env
+NETFLOW='$NETFLOW'; GOFLOW_IMG='netsampler/goflow2:v2.2.6'
+LOGDIR=/var/lib/weirvern-weirling/logs; FLOWDIR=/var/lib/weirvern-weirling/flows
+ENVF=/etc/weirvern-weirling.env
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
-  stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" >/dev/null 2>&1 || true ;;
+  stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true ;;
   start)
     NOW="\$(ip route show default 2>/dev/null | sed -n 's/.*dev \\([^ ]*\\).*/\\1/p' | head -1)"
     if [ "\$IFACE" = "\$MGMT" ] || [ "\$IFACE" = "\$NOW" ]; then
       echo "weirvern-weirling: REFUSING to capture on '\$IFACE' -- management NIC" >&2; exit 1
     fi
-    docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" >/dev/null 2>&1 || true
+    docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true
     docker run -d --name "weirvern-capture-\$ID" --restart unless-stopped \\
       --network host --cap-drop ALL --cap-add NET_RAW --security-opt no-new-privileges \\
       -v "\$LOGDIR":/zeek/logs -v /etc/weirvern-weirling/site:/zeek/site:ro \\
       --entrypoint /bin/sh "$ZEEK_IMG" -c "set -eu; IFACE='$IFACE'; [ -e /sys/class/net/$IFACE ] || exit 1; exec zeek -i $IFACE -C /zeek/site/weirvern-local.zeek Log::default_rotation_interval=1hr Log::default_logdir=/zeek/logs" >/dev/null
+    if [ "\$NETFLOW" = "1" ]; then
+      # THE COLLECTOR. Runs the hub's own collector image with the hub's own arguments, so a record
+      # written here is the record the hub writes for its exporters; the agent above ships them into
+      # the same `flows` table. uid 100 is the image's own user and the directory is chowned to it --
+      # no root needed, unlike the in-cluster unit (a hostPath there cannot be chowned by a pod).
+      mkdir -p "\$FLOWDIR"
+      chown 100:10001 "\$FLOWDIR" 2>/dev/null || true
+      docker run -d --name "weirvern-netflow-\$ID" --restart unless-stopped \\
+        --network host --user 100:10001 --security-opt no-new-privileges \\
+        -v "\$FLOWDIR":/flows \\
+        "\$GOFLOW_IMG" -listen netflow://:2055,sflow://:6343 -format json \\
+        -transport file -transport.file /flows/flows.jsonl >/dev/null
+    fi
     docker run -d --name "weirvern-agent-\$ID" --restart unless-stopped \\
       --network host --env-file "\$ENVF" \\
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
-      -v "\$LOGDIR":/zeek/logs:ro \\
+      -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
+      -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
       --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.sensor_agent >/dev/null
     # NOTE ON THE EXPANSIONS: this whole block was written by the deploy script (the heredoc is
     # unquoted), so `$GATE` and `$GATE_IFACE` are decided NOW, while `\$ID` and `\$GATE_IF` are left
@@ -315,6 +348,7 @@ case "\${1:-status}" in
       echo "weirvern-weirling \$ID: gate enforcing on \$GATE_IF (rules come from the hub)"
     else
       echo "weirvern-weirling \$ID: started (capture + agent; no gate -- pass --gate to enforce here)"
+    [ "\$NETFLOW" = "1" ] && echo "  netflow: collector on 2055/6343 -- point an exporter here and the records land in the hub"
     fi
     ;;
   *) echo "usage: weirvern-weirling [status|start|stop]" >&2; exit 2 ;;

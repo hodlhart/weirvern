@@ -255,6 +255,15 @@ class Settings:
     # which writes the same flows.jsonl the ingester tails -- so the records land in the same
     # `flows` table the Netflow tab and the models already read. Only meaningful while the
     # channel is verified active; the worker starts and stops the probe on that condition.
+    # FLOW RECORDS FROM THE OTHER IN-LINE SOURCE. A live siphon intercept relays the segment's
+    # traffic through this box, so the interface the relay crosses can be metered exactly the way
+    # the channel's ports are -- same tap, same summariser, same collector, same `flows` table.
+    # Off by default, and it only ever runs while the intercept is VERIFIED live: records from a
+    # configured-but-dead intercept would be records of nothing, landing in the same table the
+    # volume baselines train on.
+    siphon_netflow: bool = field(
+        default_factory=lambda: _env_bool("SIPHON_NETFLOW", False)
+    )
     channel_netflow: str = field(
         default_factory=lambda: os.environ.get("CHANNEL_NETFLOW", "off").strip().lower()
     )

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — flow records from wherever the traffic is
+
+TWO WAYS A SENSOR CAN BECOME A FLOW SOURCE, both of them gated on evidence rather than on
+configuration, because a tap started on the strength of a ConfigMap produces records of traffic
+that is not crossing the box -- landing in the very table the volume baselines train on.
+
+**A LIVE SIPHON INTERCEPT CAN NOW BE METERED.** `SIPHON_NETFLOW=1` runs the same probe the channel
+uses (bounded rotating capture segments, each summarised into IPFIX, into the same `flows` table),
+against the interface the intercept's traffic actually relays through -- and only while the
+intercept is VERIFIED live, through the same liveness check the gate uses. It stops the moment the
+intercept does. ONE TAP PER BOX: when the channel selection is collecting, it wins, because two
+taps would count the same conversation twice.
+
+**AND ANY SENSOR CAN RECEIVE NETFLOW, IF ENABLED.** A unit can now run a collector of its own
+(goflow2, the hub's own image and arguments) so that an exporter on *its* segment has somewhere to
+send, and the unit's agent ships what arrives into the hub's `flows` table through the ingester's
+own code path -- same parser, same byte cursor across restarts, same exclusion filter. No second
+transport to secure and no second definition of what a flow row is. The shipping half is one env
+var (`WEIRLING_NETFLOW`), the collector ships disabled with the unit, and a unit whose collector has
+never seen an exporter ships nothing at all: that is a state, not an error. `deploy-weirling.sh
+--netflow` installs both on a remote box.
+
 ## Unreleased — force a retrain, then keep it or trash it
 
 CAN WE SEE THAT ML IS ACTUALLY WORKING? Yes, and the honest form of that answer is not a green

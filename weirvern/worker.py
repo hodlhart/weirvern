@@ -244,7 +244,7 @@ CHANNEL_NETFLOW_DIR = "/tmp/channel-netflow"
 CHANNEL_NETFLOW_SEGMENT_S = 30
 CHANNEL_NETFLOW_SEGMENT_MB = 16
 CHANNEL_NETFLOW_KEEP_SEGMENTS = 240
-_CHANNEL_NETFLOW: dict = {"tap": None, "iface": "", "retry_after": 0.0}
+_CHANNEL_NETFLOW: dict = {"tap": None, "iface": "", "source": "", "retry_after": 0.0}
 
 
 def _stop_channel_netflow(reason: str = "") -> None:
@@ -339,13 +339,43 @@ def _channel_netflow_sweep(*, run=None, probe=None, now=None, directory=None) ->
                            name, getattr(result, "returncode", "?"), err.strip()[:200])
 
 
+def _siphon_liveness(settings, client) -> bool | None:
+    """Is a siphon intercept actually relaying right now? None when the evidence cannot be read.
+
+    SAME QUESTION THE GATE ASKS, through the same helper, deliberately: "configured" is not
+    "intercepting", and a flow probe started on the strength of a ConfigMap would collect records
+    of a segment that is not flowing through this box. None means NOT VERIFIED, which is not a
+    reason to start tapping.
+    """
+    if str(getattr(settings, "sensor_mode", "") or "") != "siphon":
+        return False
+    try:
+        from weirvern.admin import status as _status  # noqa: PLC0415
+
+        return bool(_status.siphon_liveness(settings.sensor_mode, client).get("live"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("netflow: could not read siphon intercept evidence: %s", exc)
+        return None
+
+
 def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=None,
-                           now=None, run=None) -> None:
+                           now=None, run=None, client=None, siphon_live="auto") -> None:
     """One supervision tick for the in-line flow probe. Cheap when nothing changed.
 
-    The injectable pieces (channel_state / spawn / which / now) exist so every DECISION --
-    start, stop, back off, leave alone -- is unit-testable without a kernel, a network or a
-    child process.
+    TWO SOURCES, ONE TAP. The probe answers for whichever in-line path this box is holding:
+
+      * `CHANNEL_NETFLOW=upstream|downstream` -- a port of the channel's bridge, while the channel
+        is verified active;
+      * `SIPHON_NETFLOW=1` -- the interface a LIVE siphon intercept relays through (the sensor's
+        own capture interface), while the intercept is verified live.
+
+    ONE, not both: if the channel selection is collecting, it wins. Tapping both paths on a box
+    that is somehow doing both would count the same conversation twice, and the volume features and
+    per-host baselines read that table.
+
+    The injectable pieces (channel_state / spawn / which / now / siphon_live) exist so every
+    DECISION -- start, stop, back off, leave alone -- is unit-testable without a kernel, a network
+    or a child process.
     """
     import shutil as _shutil  # noqa: PLC0415
     import subprocess as _subprocess  # noqa: PLC0415
@@ -361,20 +391,30 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
         channel_state = _channel.detect(settings.channel_upstream, settings.channel_downstream)
 
     iface = ""
+    source = ""
     if mode in ("upstream", "downstream") and channel_state.active:
         iface = (settings.channel_upstream if mode == "upstream"
                  else settings.channel_downstream).strip()
+        source = "channel"
+    elif bool(getattr(settings, "siphon_netflow", False)):
+        if siphon_live == "auto":
+            siphon_live = _siphon_liveness(settings, client)
+        if siphon_live is True:
+            iface = str(getattr(settings, "zeek_iface", "") or "").strip()
+            source = "siphon"
 
     running = holder["tap"] is not None and holder["tap"].poll() is None
     if running and holder["iface"] != iface:
-        _stop_channel_netflow(f"the channel moved to {iface}" if iface
-                              else "the selection is off or the channel is not active")
+        _stop_channel_netflow(
+            f"the source moved to {iface}" if iface
+            else ("the siphon intercept is not live" if holder.get("source") == "siphon"
+                  else "the selection is off or the channel is not active"))
         running = False
     if holder["tap"] is not None and not running:
         rc = holder["tap"].returncode
         _stop_channel_netflow()
         holder["retry_after"] = max(float(holder["retry_after"]), clock() + 300.0)
-        logger.warning("channel netflow: the capture tap exited (code %s); next attempt in "
+        logger.warning("netflow probe: the capture tap exited (code %s); next attempt in "
                        "5 minutes", rc)
     if not iface:
         return
@@ -396,7 +436,7 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
     probe, tap = look("softflowd"), look("tcpdump")
     if not probe or not tap:
         holder["retry_after"] = clock() + 300.0
-        logger.warning("channel netflow: %s is not in this image, so the selection cannot "
+        logger.warning("netflow probe: %s is not in this image, so the selection cannot "
                        "collect flows (the image contract test pins both)",
                        "softflowd" if not probe else "tcpdump")
         return
@@ -417,10 +457,11 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
              CHANNEL_NETFLOW_FILTER])
         holder["tap"] = tap_proc
         holder["iface"] = iface
-        logger.info("channel netflow: tapping %s into %s (segment %ss / %sMB) and summarising "
-                    "each completed segment to %s IPFIX (selection: %s)", iface,
+        holder["source"] = source
+        logger.info("%s netflow: tapping %s into %s (segment %ss / %sMB) and summarising "
+                    "each completed segment to %s IPFIX", source, iface,
                     CHANNEL_NETFLOW_DIR, CHANNEL_NETFLOW_SEGMENT_S,
-                    CHANNEL_NETFLOW_SEGMENT_MB, CHANNEL_NETFLOW_COLLECTOR, mode)
+                    CHANNEL_NETFLOW_SEGMENT_MB, CHANNEL_NETFLOW_COLLECTOR)
     except Exception as exc:  # noqa: BLE001
         _stop_channel_netflow()
         holder["retry_after"] = clock() + 300.0
@@ -786,6 +827,15 @@ def process_model_actions(client: Client, detectors, settings, cfg: ModelConfig)
 
     for req in actions.pending(client, actions.TRASH):
         action_id = req["action_id"]
+        # MEASURED LIVE: a trash filed while the retrain was still RUNNING discarded an empty
+        # candidate directory and reported success -- and the retrain then wrote its artifacts into
+        # a directory nobody had judged. A decision needs something to decide about, so a trash (or
+        # a keep, above) only acts on a FINISHED candidate; anything else is failed with the reason.
+        done = actions.latest(client, actions.RETRAIN) or {}
+        if done.get("state") != actions.DONE:
+            actions.finish(client, action_id, actions.FAILED,
+                           note="no finished candidate to discard: the retrain is not done")
+            continue
         try:
             outcome = retrain.discard_candidate(settings)
         except Exception as exc:  # noqa: BLE001
@@ -1894,7 +1944,7 @@ def main() -> None:
             # the gate on purpose: collecting flows from the channel does not require blocking
             # anything, and vice versa.
             try:
-                _channel_netflow_maybe(settings)
+                _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("channel netflow tick failed (detection continues): %s", exc)
 
@@ -1929,7 +1979,7 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice gate pass failed (detection continues): %s", exc)
             try:
-                _channel_netflow_maybe(settings)
+                _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("channel netflow tick failed (detection continues): %s", exc)
 

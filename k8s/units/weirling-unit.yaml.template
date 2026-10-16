@@ -157,6 +157,15 @@ spec:
               value: "__CAPTURE_IFACE__"
             - name: ZEEK_LOG_DIR
               value: /zeek/logs
+            # ANY SENSOR CAN RECEIVE NETFLOW, IF ENABLED. "0" here means the collector below may
+            # as well not exist: nothing is shipped, and an exporter on this segment has nowhere
+            # to land. Set to "1" and the agent tails the collector's JSONL into the hub's `flows`
+            # table through the ingester's own code path (cursor kept beside the file, so a restart
+            # does not re-insert the whole file).
+            - name: WEIRLING_NETFLOW
+              value: "0"
+            - name: WEIRLING_FLOW_FILE
+              value: /flows/flows.jsonl
           envFrom:
             - configMapRef:
                 name: weirvern-env
@@ -169,6 +178,9 @@ spec:
           volumeMounts:
             - name: zeek-logs
               mountPath: /zeek/logs
+              readOnly: true
+            - name: flows
+              mountPath: /flows
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -236,12 +248,61 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+        # ── NETFLOW COLLECTOR (opt-in, per unit) ────────────────────────────────────────────────
+        #
+        # THE OTHER HALF OF "A SENSOR CAN RECEIVE NETFLOW": this listener is where an exporter on
+        # THIS segment sends. It runs the hub's own collector image with the hub's own arguments,
+        # so a record written here is the record the hub writes for its own exporters -- and the
+        # agent above ships them into the same `flows` table. It is inert (and harmless) until an
+        # exporter is pointed at it; the switch for the SHIPPING half is WEIRLING_NETFLOW on the
+        # agent, one container up.
+        #
+        # PORT NOTE, inherited from the hub's manifest: with hostNetwork the collector binds
+        # 2055/6343 in the NODE's namespace, so both the conventional ports and any NodePort
+        # mapping work. An exporter pointed at the CONTAINER port of a pod instead would match
+        # nothing and fail silently -- one of the two failures worth writing down.
+        - name: netflow
+          image: netsampler/goflow2:v2.2.6
+          args:
+            - -listen
+            - netflow://:2055,sflow://:6343
+            - -format
+            - json
+            - -transport
+            - file
+            - -transport.file
+            - /flows/flows.jsonl
+          volumeMounts:
+            - name: flows
+              mountPath: /flows
+          securityContext:
+            # ROOT HERE IS ABOUT FILE OWNERSHIP, NOT PRIVILEGE. The flows directory is a hostPath
+            # the kubelet creates as root, and `fsGroup` has no effect on a hostPath -- so the
+            # collector runs as the directory's owner instead of being handed a directory it cannot
+            # write. Every capability is dropped: it binds one UDP port above 1024 and writes one
+            # file, neither of which needs any.
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
       volumes:
         - name: zeek-logs
           hostPath:
             # ONE DIRECTORY PER UNIT: the main deployment's worker tails /var/lib/weirvern/zeek
             # and must never be fed a second sensor's logs under the first one's name.
             path: /var/lib/weirvern/units/__WEIRLING_ID__/logs
+            type: DirectoryOrCreate
+        - name: flows
+          hostPath:
+            # The collector's own directory, one per unit, for the same reason the logs are.
+            path: /var/lib/weirvern/units/__WEIRLING_ID__/flows
             type: DirectoryOrCreate
         - name: zeek-site
           configMap:

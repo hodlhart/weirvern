@@ -27,6 +27,12 @@ ENV CONTRACT (set by the unit manifest, checked here):
   ZEEK_LOG_DIR the capture's log directory (default /zeek/logs), mounted read-only.
   CLICKHOUSE_* via the ordinary Settings env, so it reaches the hub database the same way
                every other component does.
+
+ANY SENSOR CAN ALSO RECEIVE NETFLOW, if enabled:  WEIRLING_NETFLOW=1 starts a second thread that
+tails what a LOCAL collector (goflow2, the same image and the same arguments the hub runs) wrote
+and inserts it into the hub's `flows` table. WEIRLING_FLOW_FILE names that file (default
+/flows/flows.jsonl); an exporter on that segment then has somewhere to send, without an exporter on
+the hub's own segment and without a second transport to secure. See _flow_shipper.
 """
 from __future__ import annotations
 
@@ -41,6 +47,62 @@ from weirvern.config import get_settings
 logger = logging.getLogger("weirvern.sensor_agent")
 
 DEFAULT_INTERVAL_S = 15
+FLOW_SHIP_INTERVAL_S = 5.0
+
+
+def flow_shipping_enabled() -> bool:
+    """Whether this unit should ship a local collector's records into the hub.
+
+    ONE ENV VAR, because the alternative -- a second transport, a broker, an API key per sensor --
+    would be a second thing to secure and a second definition of what a flow row is. The collector
+    on this box speaks goflow2's JSON; the INGESTER already knows how to read it, keep a byte cursor
+    across restarts, and drop the records the operator excluded. So the shipping half is that code
+    run here, and a row written from a unit is the row the hub writes for its own collector.
+    """
+    return str(os.environ.get("WEIRLING_NETFLOW", "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def flow_file() -> str:
+    return os.environ.get("WEIRLING_FLOW_FILE", "/flows/flows.jsonl")
+
+
+def ship_flows_once(client, *, path: str = "", state=None, allow: str = "") -> int:
+    """One shipping pass. Returns the rows the collector wrote since the cursor.
+
+    A missing file is NOT an error: a unit whose collector has never seen an exporter has nothing
+    to ship, which is the normal state of a sensor nobody points NetFlow at yet.
+    """
+    from weirvern import ingester as ingester_mod  # noqa: PLC0415
+
+    path = path or flow_file()
+    if state is None:
+        state = ingester_mod.load_tail_state(path)
+    if not os.path.exists(path):
+        return 0
+    read, _offset, _inode = ingester_mod.tail_and_insert(client, path, state=state, allow=allow)
+    ingester_mod.save_tail_state(path, state)
+    return int(read or 0)
+
+
+def _flow_shipper(settings, stop: threading.Event) -> None:
+    """The thread: its OWN connection, its own retries, and no way to hurt the heartbeat.
+
+    WHAT THIS MUST NEVER DO IS TAKE THE HEARTBEAT DOWN. The heartbeat is the unit's liveness -- it
+    is how the fleet view knows this sensor exists. Flow shipping is a convenience on top, so it
+    runs on a separate thread with its own client, and every failure is a log line and a retry.
+    """
+    client = None
+    allow = str(getattr(settings, "exporter_allow", "") or "")
+    logger.info("netflow: enabled -- shipping %s into the hub's flows table", flow_file())
+    while not stop.is_set():
+        try:
+            if client is None:
+                client = db.connect(settings, retries=1, delay_s=2)
+            ship_flows_once(client, allow=allow)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("netflow: shipping pass failed: %s", exc)
+            client = None
+        stop.wait(FLOW_SHIP_INTERVAL_S)
 
 
 def required_iface() -> str:
@@ -150,6 +212,13 @@ def main() -> None:
 
     logger.info("sensor unit %r: heartbeat every %ds, observing %s on %s",
                 sid, interval, os.environ.get("ZEEK_LOG_DIR") or "/zeek/logs", iface)
+
+    if flow_shipping_enabled():
+        threading.Thread(target=_flow_shipper, args=(settings, stop), daemon=True,
+                         name="netflow-shipper").start()
+    else:
+        logger.info("netflow: not enabled on this unit (WEIRLING_NETFLOW is unset) -- an exporter "
+                    "here has nowhere to land")
 
     client = None
     while not stop.is_set():
