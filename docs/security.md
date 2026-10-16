@@ -10,10 +10,15 @@ what this tool can reach, and what it refuses to.
 ### Privileges
 
 The most privileged workload is Zeek, and it needs to be: packet capture is
-impossible without `hostNetwork` and `NET_RAW`. It is scoped as tightly as the
-task allows — non-root, all other capabilities dropped, no `NET_ADMIN`, and its
-only host access is the log directory. Every other workload runs non-root with
-all capabilities dropped. See [SECURITY.md](../SECURITY.md).
+impossible without `hostNetwork` and `NET_RAW`. It runs as root, because
+Kubernetes keeps added capabilities only for root containers — verified on a
+real cluster: `runAsUser: 0` leaves `CAP_NET_RAW` effective (`CapEff 0x2000`) and
+capture works, while a non-root uid leaves the capability set empty and the
+sensor dies with `pcap_error: socket: Operation not permitted`. The reasoning is
+recorded next to the setting in `k8s/32-zeek.yaml`. Apart from that uid it is
+scoped as tightly as the task allows: all other capabilities dropped, no
+`NET_ADMIN`, and its only host access is the log directory. Every other workload
+runs non-root with all capabilities dropped. See [SECURITY.md](../SECURITY.md).
 
 ### RBAC
 

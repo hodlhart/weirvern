@@ -103,7 +103,7 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `CHANNEL_UPSTREAM` / `CHANNEL_DOWNSTREAM` | unset | The two ports of an in-line channel: one bridge, traffic through the box (see [Channel](#channel-enforcement-in-line-still-loch)) |
 | `SLUICE_ENABLED` | `0` | Arm the Sluice Gate. Opened by a decision, never by an install |
 | `SLUICE_IFACE` | unset | Interface enforcement attaches to; empty = the channel bridge, else the capture port. The management interface is refused at write time |
-| `SLUICE_CRITICALITY` | `off` | Whether detections may block on their own (`off` / `high` / `critical`) — off by default |
+| `SLUICE_CRITICALITY` | `off` | Whether detections may block on their own (`off` / `high` / `medium` / `strict`; an unknown value refuses every block) — off by default |
 | `SLUICE_MAX_BLOCK_S` | 3600 | Ceiling on an automated block's lifetime |
 | `SLUICE_INTERVAL_S` | 60 | How often the gate re-arms — also the interval within which a lapsed rule stops being enforced |
 | `CHANNEL_NETFLOW` | `off` | `off` / `upstream` / `downstream`: summarise the channel's crossing traffic into the deployment's own collector |

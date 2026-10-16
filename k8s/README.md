@@ -16,10 +16,13 @@ sketches and look for somewhere else to start.
 | `00-namespace.yaml` | The namespace, with the Pod Security Admission labels (read the comment there before tightening it) |
 | `10-storage.yaml` | The `models` PVC |
 | `20-configmap-env.yaml` | Non-secret environment (ClickHouse coordinates, Zeek log set, retention, alerting toggles) |
+| `20-configmap-schema.yaml` | A decision record, deliberately NOT in the kustomize build: why the schema ships inside the package and is applied by the schema Job rather than copied into a ConfigMap |
 | `30-clickhouse.yaml` | ClickHouse StatefulSet + the Service the schema Job and worker wait on |
 | `31-goflow2.yaml` | NetFlow/sFlow collector (Deployment) |
 | `32-zeek.yaml` | Zeek packet sensor (DaemonSet) |
 | `33-worker.yaml` | Ingest + detection worker (Deployment) |
+| `34-gui.yaml` | The console — Deployment and the NodePort Service it is reached through |
+| `35-prune-cronjob.yaml` | The retention CronJob that bounds the Zeek log directory |
 | `50-schema-job.yaml` | Applies `weirvern/schema/*.sql` — runs the same code path as `weirvern init-db` |
 | `60-rbac.yaml` | The role the control plane uses to read workload state |
 | `70-networkpolicy.yaml` | Pod-to-pod traffic restrictions |
@@ -39,8 +42,11 @@ kustomize build k8s/             # render without applying, to review
 kubeconform -strict -ignore-missing-schemas k8s/   # validate offline
 ```
 
-Both `kustomize` and `weirvern install --dry-run` are safe: neither contacts the
-cluster to make changes.
+`kustomize build k8s/` and `kubeconform -strict -ignore-missing-schemas k8s/` are
+safe: they render and validate the manifests locally, and change nothing. To
+validate a real apply client-side, use `weirvern apply --dry-run`. (`weirvern
+install` is a prerequisite CHECK, not a dry run: it reads the cluster and runs
+one throwaway probe pod to test cluster DNS — it applies nothing.)
 
 ## Scaling and limits
 
