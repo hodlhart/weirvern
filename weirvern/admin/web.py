@@ -1073,6 +1073,9 @@ def _build_handler(ctx: GuiContext):
                     "origin": r.origin, "severity": r.severity, "created_by": r.created_by,
                     "origin_ref": r.origin_ref, "live": r.is_live(now),
                     "revoked": r.revoked_at is not None,
+                    # A PARKED RULE (schema/017): deliberately switched off, reversible, still
+                    # listed. The client draws it differently from revoked and from lapsed.
+                    "disabled": r.disabled_at is not None,
                     "expires_at": exp.isoformat() if exp else "",
                     # SECONDS, not a timestamp: the GUI should not do clock arithmetic against a
                     # server it may not share a timezone with, and a NEGATIVE value is a meaningful
@@ -1463,15 +1466,25 @@ def _build_handler(ctx: GuiContext):
             except ValueError as exc:
                 return self._error(400, str(exc))
             rule_id = str(body.get("rule_id") or "").strip()
-            if not rule_id:
-                return self._error(400, "rule_id is required")
+            ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
+            if not rule_id and not ids:
+                return self._error(400, "rule_id (or rule_ids, for a bulk revoke) is required")
             from weirvern import sluice_store  # noqa: PLC0415
             try:
                 with self._with_client() as client:
                     ident = self._identity()
-                    ok = sluice_store.revoke_rule(
-                        client, rule_id, by=(ident.username if ident else "operator")
-                    )
+                    by = ident.username if ident else "operator"
+                    if ids:
+                        # A SELECTION, not a rule: the same soft-delete applied to each id,
+                        # with refusals reported instead of swallowed (revoke_rules).
+                        try:
+                            out = sluice_store.revoke_rules(client, ids, by=by)
+                        except sluice_store.SluiceError as exc:
+                            return self._error(400, str(exc))
+                        return self._json({"ok": True, **out,
+                                           "note": "revoked; enforcement stops within "
+                                                   f"{int(ctx.settings.sluice_interval_s)}s"})
+                    ok = sluice_store.revoke_rule(client, rule_id, by=by)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice revoke failed: %s", exc)
                 return self._error(502, f"could not revoke the rule: {type(exc).__name__}")
@@ -1480,6 +1493,45 @@ def _build_handler(ctx: GuiContext):
             self._json({"ok": True, "rule_id": rule_id,
                         "note": f"revoked; enforcement stops within "
                                 f"{int(ctx.settings.sluice_interval_s)}s"})
+
+        def _sluice_rule_disabled(self) -> None:
+            """Park a rule or put it back (the operator, 2026-10-16).
+
+            A single rule_id or a rule_ids selection, and the server re-reads every rule FINAL
+            before flipping it -- a selection must never flip a rule that was edited or revoked
+            in the meantime; those come back in `refused` with sentences, never guessed past.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            rule_id = str(body.get("rule_id") or "").strip()
+            ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
+            if not rule_id and not ids:
+                return self._error(400, "rule_id (or rule_ids) is required")
+            disabled = bool(body.get("disabled"))
+            from weirvern import sluice_store  # noqa: PLC0415
+            ident = self._identity()
+            by = ident.username if ident else "operator"
+            changed: list[str] = []
+            refused: list[dict] = []
+            try:
+                with self._with_client() as client:
+                    for rid in (ids or [rule_id]):
+                        try:
+                            sluice_store.set_rule_disabled(client, rid, disabled, by=by)
+                            changed.append(rid)
+                        except sluice_store.SluiceError as exc:
+                            refused.append({"rule_id": rid, "error": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice rule disable failed: %s", exc)
+                return self._error(502, f"could not change the rule: {type(exc).__name__}")
+            self._json({"ok": True, "changed": changed, "refused": refused,
+                        "note": ("disabled" if disabled else "re-enabled")
+                                + "; enforcement reflects it within "
+                                  f"{int(ctx.settings.sluice_interval_s)}s"})
 
         def _sensor_addresses(self) -> list[str]:
             """This host's own addresses, for the self-block check.
@@ -1940,6 +1992,10 @@ def _build_handler(ctx: GuiContext):
             # 2026-10-16). Same in-place semantics as the mode edit.
             if path == "/api/sluice/rule/domain":
                 return self._sluice_rule_domain()
+            # Park a rule or put it back -- one rule or a checkbox selection (the operator,
+            # 2026-10-16). Not an edit of what it matches; a change of whether it applies.
+            if path == "/api/sluice/rule/disabled":
+                return self._sluice_rule_disabled()
             # ── BLOCKLISTS ──────────────────────────────────────────────────────────────────
             # Both admin-gated: importing a list decides what this deployment WATCHES (and,
             # once a rule blocks, what it stops), which is a change to the configuration.

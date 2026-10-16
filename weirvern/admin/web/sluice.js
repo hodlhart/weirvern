@@ -194,7 +194,15 @@ async function loadSluice() {
           // expired" and "the block never applied".
           : el("span", { class: "chip muted", text: "lapsed" }));
 
-    const tr = el("tr", {}, [
+    const pick = el("input", { attrs: { type: "checkbox" }, class: "sl-pick" });
+    pick.value = r.rule_id;
+    pick.title = "select for a bulk action";
+    pick.addEventListener("click", (e) => e.stopPropagation());
+    pick.addEventListener("change", slBulkRefresh);
+
+    const tr = el("tr", { class: "sl-rule-row",
+                          attrs: { title: "click to open and edit this rule" } }, [
+      el("td", { class: "pick" }, [pick]),
       el("td", { class: "mono", text: r.describes || r.src_cidr || "—" }),
       el("td", {}, [stateCell]),
       // Origin matters for trust: a rule an analyst wrote and one a model derived are different
@@ -206,34 +214,148 @@ async function loadSluice() {
     ]);
 
     if (!r.revoked) {
-      const btn = el("button", { class: "small", text: "Revoke" });
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        btn.textContent = "…";
-        try {
-          const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id });
-          if (out && out.ok) {
-            document.getElementById("sl-block-note").textContent = out.note || "revoked";
-            await loadSluice();
-          } else {
-            showError(new Error((out && out.error) || "the rule could not be revoked"));
-            btn.disabled = false;
-            btn.textContent = "Revoke";
-          }
-        } catch (err) {
-          showError(err);
-          btn.disabled = false;
-          btn.textContent = "Revoke";
-        }
-      });
-      tr.appendChild(el("td", {}, [btn]));
+      const actions = el("td", { class: "sl-actions" });
+      if (r.live || r.disabled) {
+        // A parked rule can be put back; a revoked one cannot -- and that two-way switch is
+        // exactly what separates the disable icon from the trashcan beside it.
+        const dis = el("button", { class: "icon-btn",
+          attrs: { title: r.disabled ? "enable this rule again"
+                                     : "disable this rule (keeps it, stops it)" } }, [slIcon(r.disabled ? "play" : "ban")]);
+        dis.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(dis, () => slRuleSetDisabled(r, !r.disabled)); });
+        actions.appendChild(dis);
+      }
+      const del = el("button", { class: "icon-btn danger",
+        attrs: { title: "delete this rule (the record stays; the rule cannot come back)" } }, [slIcon("trash")]);
+      del.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(del, () => slRuleRevoke(r)); });
+      actions.appendChild(del);
+      tr.appendChild(actions);
     } else {
       tr.appendChild(el("td", { class: "muted", text: "" }));
     }
+    tr.addEventListener("click", () => {
+      if (typeof blOpenRuleById === "function") blOpenRuleById(r.rule_id);
+    });
     tbody.appendChild(tr);
   }
+  slBulkWire();
+  slBulkRefresh();
 
   renderSluicePolicies(d);
+}
+
+// ── RULE MANAGEMENT (the operator, 2026-10-16): a trashcan and a disable icon next to each
+// rule, each behind a confirm; a checkbox column with bulk delete/disable; rows clickable to
+// edit (they open the SAME rule card the Blocked page uses -- one card, one code path).
+function slIcon(kind) {
+  const glyphs = {
+    trash: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6 2h4l.6 1.2H14v2H2V3.2h3.4L6 2zm-3 5h10l-.8 8.1a1 1 0 0 1-1 .9H4.8a1 1 0 0 1-1-.9L3 7zm3 1.6v6h1v-6H6zm3 0v6h1v-6H9z"/></svg>',
+    ban: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zm0 1.6a4.9 4.9 0 0 1 2.9.95l-6.45 6.45A4.9 4.9 0 0 1 8 3.1zm0 9.8a4.9 4.9 0 0 1-2.9-.95l6.45-6.45A4.9 4.9 0 0 1 8 12.9z"/></svg>',
+    play: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4.5 2.2 13.5 8l-9 5.8z"/></svg>',
+  };
+  const span = el("span", { class: "icon" });
+  span.innerHTML = glyphs[kind] || glyphs.ban;
+  return span;
+}
+
+// The confirm: first click arms the button (it says so and outlines), a second click within
+// five seconds runs it. No dialog -- this console does its confirming in place, where the
+// operator can still see what they are confirming.
+function slConfirm(btn, run) {
+  if (btn.dataset.armed === "1") {
+    delete btn.dataset.armed;
+    btn.classList.remove("armed");
+    run().catch(showError);
+    return;
+  }
+  btn.dataset.armed = "1";
+  btn.classList.add("armed");
+  btn.title = "click again to confirm";
+  setTimeout(() => {
+    if (btn.isConnected) { delete btn.dataset.armed; btn.classList.remove("armed"); }
+  }, 5000);
+}
+
+async function slRuleRevoke(r) {
+  const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id });
+  if (out && out.ok) {
+    const n = document.getElementById("sl-block-note");
+    if (n) n.textContent = out.note || "revoked";
+    await loadSluice();
+  } else {
+    showError(new Error((out && out.error) || "the rule could not be revoked"));
+  }
+}
+
+async function slRuleSetDisabled(r, want) {
+  const out = await postJSON("/api/sluice/rule/disabled", { rule_id: r.rule_id, disabled: want });
+  if (out && out.ok) {
+    const n = document.getElementById("sl-block-note");
+    const refused = (out.refused || [])[0];
+    if (n) n.textContent = refused ? refused.error : (out.note || (want ? "disabled" : "re-enabled"));
+    await loadSluice();
+  } else {
+    showError(new Error((out && out.error) || "the rule could not be changed"));
+  }
+}
+
+function slSelected() {
+  return [...document.querySelectorAll("#sl-table .sl-pick:checked")].map((c) => c.value);
+}
+
+function slBulkRefresh() {
+  const bar = document.getElementById("sl-bulk");
+  const n = document.getElementById("sl-bulk-n");
+  const count = slSelected().length;
+  if (bar) bar.classList.toggle("hidden", count === 0);
+  if (n) n.textContent = count ? count + " selected" : "";
+}
+
+async function slBulkAct(kind) {
+  const ids = slSelected();
+  if (!ids.length) return;
+  const out = await postJSON(kind === "delete" ? "/api/sluice/revoke" : "/api/sluice/rule/disabled",
+    kind === "delete" ? { rule_ids: ids } : { rule_ids: ids, disabled: kind === "disable" });
+  if (out && out.ok) {
+    const n = document.getElementById("sl-block-note");
+    const done = (out.changed || out.revoked || []).length;
+    const bad = (out.refused || []).length + (out.missing || []).length;
+    if (n) {
+      n.textContent = `${done} rule(s) ` + (kind === "delete" ? "deleted"
+        : (kind === "disable" ? "disabled" : "re-enabled")) + (bad ? `; ${bad} refused` : "");
+    }
+    await loadSluice();
+  } else {
+    showError(new Error((out && out.error) || "the selection could not be changed"));
+  }
+}
+
+function slBulkWire() {
+  const bar = document.getElementById("sl-bulk");
+  if (!bar || bar.dataset.wired === "1") return;
+  bar.dataset.wired = "1";
+  const all = document.getElementById("sl-pick-all");
+  if (all) {
+    all.addEventListener("change", () => {
+      document.querySelectorAll("#sl-table .sl-pick").forEach((c) => { c.checked = all.checked; });
+      slBulkRefresh();
+    });
+  }
+  const wire = (id, kind) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener("click", () => slConfirm(b, () => slBulkAct(kind)));
+  };
+  wire("sl-bulk-disable", "disable");
+  wire("sl-bulk-enable", "enable");
+  wire("sl-bulk-delete", "delete");
+  const clear = document.getElementById("sl-bulk-clear");
+  if (clear) {
+    clear.addEventListener("click", () => {
+      document.querySelectorAll("#sl-table .sl-pick:checked").forEach((c) => { c.checked = false; });
+      const a2 = document.getElementById("sl-pick-all");
+      if (a2) a2.checked = false;
+      slBulkRefresh();
+    });
+  }
 }
 
 // The policy levels, with their descriptions. Rendered from the server's own text so the GUI cannot

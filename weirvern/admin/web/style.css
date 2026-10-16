@@ -293,6 +293,17 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 /* The occurrence expansion under a counted anomaly row (2026-10-16). */
 /* The Zeek feed's bar list: one bar per log, click opens the Zeek tab. */
+/* Rule management: the pick column, the action icons, the bulk bar (2026-10-16). */
+td.pick, th.pick { width: 1.6em; }
+#sl-bulk { display: flex; gap: 6px; align-items: center; padding: 4px 0; }
+#sl-bulk.hidden { display: none; }
+.icon-btn { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer;
+  padding: 2px 5px; border-radius: 4px; }
+.icon-btn:hover { border-color: var(--line, #333); color: var(--fg, #eee); }
+.icon-btn.danger:hover { color: var(--bad, #f85149); }
+.icon-btn.armed { border-color: var(--bad, #f85149); color: var(--bad, #f85149); }
+tr.sl-picked { background: var(--panel2); }
+.sl-rule-row { cursor: pointer; }
 .zk-bar { display: grid; grid-template-columns: 8em 1fr 4em; gap: 6px; align-items: center;
   cursor: pointer; padding: 2px 0; }
 .zk-bar-fill { height: 10px; background: var(--accent, #58a6ff); border-radius: 2px; }

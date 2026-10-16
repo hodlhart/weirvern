@@ -201,6 +201,10 @@ class Rule:
     origin_ref: str = ""
     severity: str = ""
     revoked_at: datetime | None = None
+    # DISABLED IS DELIBERATE AND REVERSIBLE (2026-10-16): the operator parked the rule. It is
+    # not enforced and records nothing, but it stays in the list -- "switched off" and "deleted"
+    # are different answers to "what happened to that rule", and the list must be able to say both.
+    disabled_at: datetime | None = None
 
     def is_live(self, now: datetime | None = None) -> bool:
         """Whether this rule should be enforced RIGHT NOW.
@@ -210,6 +214,8 @@ class Rule:
         network that stopped working. A bound checked at use is a bound.
         """
         if self.revoked_at is not None:
+            return False
+        if self.disabled_at is not None:
             return False
         if self.expires_at is None:
             # UNTIL REVOKED. This was the opposite until 2026-10-16: 011 made "no expiry" mean

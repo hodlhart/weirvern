@@ -48,9 +48,13 @@ logger = logging.getLogger(__name__)
 
 LIVE_RULE_SQL = """
 SELECT rule_id, src_cidr, dst_cidr, domain, mode, protocol, dst_port, direction, expires_at,
-       created_by, reason, origin, origin_ref, severity, revoked_at
+       created_by, reason, origin, origin_ref, severity, revoked_at, disabled_at
 FROM weirvern.sluice_rules FINAL
 WHERE revoked_at IS NULL
+  -- A DISABLED RULE IS NOT ENFORCED (schema/017). One clause here stops BOTH the kernel compile
+  -- and the alert pass, because both read live rules through this query -- the operator's
+  -- switch must mean the same thing everywhere, or it means nothing.
+  AND disabled_at IS NULL
   -- NULL is UNTIL REVOKED (schema/014), not "missing": a bare `expires_at > now()` evaluates to
   -- NULL for these rows and would drop every indefinite rule out of enforcement silently, which
   -- is the exact failure shape this file's comments keep warning about.
@@ -71,7 +75,7 @@ def new_rule_id() -> str:
 
 def _row_to_rule(row: Sequence[Any]) -> Rule:
     (rule_id, src, dst, domain, mode, proto, port, direction, expires, created_by, reason,
-     origin, origin_ref, severity, revoked) = row
+     origin, origin_ref, severity, revoked, disabled) = row
     return Rule(
         rule_id=str(rule_id),
         src_cidr=str(src or ""),
@@ -88,6 +92,7 @@ def _row_to_rule(row: Sequence[Any]) -> Rule:
         origin_ref=str(origin_ref or ""),
         severity=str(severity or ""),
         revoked_at=revoked,
+        disabled_at=disabled,
     )
 
 
@@ -110,7 +115,8 @@ def load_all_rules(client: Client, limit: int = 500) -> list[Rule]:
     result = client.query(
         """
         SELECT rule_id, src_cidr, dst_cidr, domain, mode, protocol, dst_port, direction,
-               expires_at, created_by, reason, origin, origin_ref, severity, revoked_at
+               expires_at, created_by, reason, origin, origin_ref, severity, revoked_at,
+               disabled_at
         FROM weirvern.sluice_rules FINAL
         ORDER BY created_at DESC
         LIMIT %(lim)s
@@ -312,14 +318,15 @@ def update_rule(client: Client, rule_id: str, *, mode: str | None = None,
     when = now or datetime.now(UTC)
     rows = client.query(
         "SELECT rule_id, created_at, created_by, reason, src_cidr, dst_cidr, domain, mode, "
-        "protocol, dst_port, direction, expires_at, origin, origin_ref, severity, revoked_at "
+        "protocol, dst_port, direction, expires_at, origin, origin_ref, severity, revoked_at, "
+        "disabled_at "
         "FROM weirvern.sluice_rules FINAL WHERE rule_id = %(r)s",
         parameters={"r": rid},
     ).result_rows
     if not rows:
         raise SluiceError(f"no rule with id {rid}")
     (rid, created_at, created_by, reason, src, dst, dom, cur, proto, port, direction,
-     expires, origin, origin_ref, severity, revoked) = rows[0]
+     expires, origin, origin_ref, severity, revoked, was_disabled) = rows[0]
     if revoked is not None:
         raise SluiceError("this rule was revoked; re-arming a revoked rule is a new rule with a "
                            "new reason, not an edit")
@@ -341,17 +348,18 @@ def update_rule(client: Client, rule_id: str, *, mode: str | None = None,
         "weirvern.sluice_rules",
         [[rid, created_at, created_by, reason, src, dst, new_dom, new_mode, proto, port,
           direction, expires, origin, origin_ref, severity, None, "",
-          ("; ".join(changes) + f" by {by or 'operator'} at {when:%Y-%m-%d %H:%M}")]],
+          ("; ".join(changes) + f" by {by or 'operator'} at {when:%Y-%m-%d %H:%M}"),
+          was_disabled]],
         column_names=[
             "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr",
             "domain", "mode",
             "protocol", "dst_port", "direction", "expires_at", "origin", "origin_ref",
-            "severity", "revoked_at", "revoked_by", "note",
+            "severity", "revoked_at", "revoked_by", "note", "disabled_at",
         ],
     )
     logger.info("sluice: rule %s edited: %s by %s", rid, "; ".join(changes), by or "unknown")
     return _row_to_rule((rid, src, dst, new_dom, new_mode, proto, port, direction, expires,
-                         created_by, reason, origin, origin_ref, severity, None))
+                         created_by, reason, origin, origin_ref, severity, None, was_disabled))
 
 
 def revoke_rule(client: Client, rule_id: str, *, by: str = "", now: datetime | None = None) -> bool:
@@ -360,8 +368,8 @@ def revoke_rule(client: Client, rule_id: str, *, by: str = "", now: datetime | N
     now = now or datetime.now(UTC)
     existing = client.query(
         "SELECT rule_id, created_at, created_by, reason, src_cidr, dst_cidr, protocol, dst_port, "
-        "direction, expires_at, origin, origin_ref, severity FROM weirvern.sluice_rules FINAL "
-        "WHERE rule_id = %(r)s",
+        "direction, expires_at, origin, origin_ref, severity, disabled_at "
+        "FROM weirvern.sluice_rules FINAL WHERE rule_id = %(r)s",
         parameters={"r": rule_id},
     ).result_rows
     if not existing:
@@ -371,12 +379,12 @@ def revoke_rule(client: Client, rule_id: str, *, by: str = "", now: datetime | N
         "weirvern.sluice_rules",
         [[
             row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9],
-            row[10], row[11], row[12], now, by, "revoked",
+            row[10], row[11], row[12], row[13], now, by, "revoked",
         ]],
         column_names=[
             "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr",
             "protocol", "dst_port", "direction", "expires_at", "origin", "origin_ref",
-            "severity", "revoked_at", "revoked_by", "note",
+            "severity", "disabled_at", "revoked_at", "revoked_by", "note",
         ],
     )
     logger.info("sluice: rule %s revoked by %s", rule_id, by or "unknown")
@@ -713,3 +721,67 @@ def derived_rules_for_detections(
             "created_by": "detection",
         })
     return out
+
+
+def set_rule_disabled(client: Client, rule_id: str, disabled: bool, *, by: str = "",
+                      now: datetime | None = None) -> Rule:
+    """Park a rule, or put it back (the operator, 2026-10-16: "a trashcan and a disable icon next
+    to each rule ... a confirm if selected").
+
+    IN PLACE, like every other edit here: same rule_id, same creation, same reason -- the note
+    records the flip. Disabling is not revoking: a revoked rule is gone for good, a disabled one
+    is waiting to be switched back on, and the list must tell the operator which of those two
+    they are looking at.
+    """
+    rid = str(rule_id or "").strip()
+    if not rid:
+        raise SluiceError("no rule id given")
+    when = now or datetime.now(UTC)
+    rows = client.query(
+        "SELECT rule_id, created_at, created_by, reason, src_cidr, dst_cidr, domain, mode, "
+        "protocol, dst_port, direction, expires_at, origin, origin_ref, severity, revoked_at, "
+        "disabled_at FROM weirvern.sluice_rules FINAL WHERE rule_id = %(r)s",
+        parameters={"r": rid},
+    ).result_rows
+    if not rows:
+        raise SluiceError(f"no rule with id {rid}")
+    (rid, created_at, created_by, reason, src, dst, dom, mode, proto, port, direction,
+     expires, origin, origin_ref, severity, revoked, was_disabled) = rows[0]
+    if revoked is not None:
+        raise SluiceError("this rule is revoked; a revoked rule is gone -- arm a new one instead")
+    if (was_disabled is not None) == bool(disabled):
+        raise SluiceError("this rule is already " + ("disabled" if disabled else "enabled"))
+    new_disabled = when if disabled else None
+    note = (f"{'disabled' if disabled else 're-enabled'} by {by or 'operator'} "
+            f"at {when:%Y-%m-%d %H:%M}")
+    client.insert(
+        "weirvern.sluice_rules",
+        [[rid, created_at, created_by, reason, src, dst, dom, mode, proto, port, direction,
+          expires, origin, origin_ref, severity, None, "", note, new_disabled]],
+        column_names=[
+            "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr", "domain",
+            "mode", "protocol", "dst_port", "direction", "expires_at", "origin", "origin_ref",
+            "severity", "revoked_at", "revoked_by", "note", "disabled_at",
+        ],
+    )
+    logger.info("sluice: rule %s %s by %s", rid, "disabled" if disabled else "re-enabled",
+                by or "unknown")
+    return _row_to_rule((rid, src, dst, dom, mode, proto, port, direction, expires, created_by,
+                         reason, origin, origin_ref, severity, None, new_disabled))
+
+
+def revoke_rules(client: Client, rule_ids: Sequence[str], *, by: str = "",
+                 limit: int = 200) -> dict:
+    """Revoke a SELECTION (the operator: "bulk select ... for mass delete"). Bounded on purpose:
+    a mass delete is a deliberate act, and one that silently swallowed ten thousand ids would be
+    a worse failure than a refusal. Missing ids are REPORTED, never guessed past."""
+    ids = [str(r or "").strip() for r in (rule_ids or []) if str(r or "").strip()]
+    if not ids:
+        raise SluiceError("no rule ids given")
+    if len(ids) > int(limit):
+        raise SluiceError(f"refusing to revoke {len(ids)} rules at once; the cap is {int(limit)}")
+    done: list[str] = []
+    missing: list[str] = []
+    for rid in ids:
+        (done if revoke_rule(client, rid, by=by) else missing).append(rid)
+    return {"revoked": done, "missing": missing}

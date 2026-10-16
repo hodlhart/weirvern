@@ -156,7 +156,8 @@ def test_update_rule_mode_reinserts_the_same_rule_under_a_new_mode():
     from weirvern import sluice_store
 
     row = ("20261015120000-abcd1234", datetime(2026, 10, 15, 12, 0), "operator", "why it exists",
-           "", "", "living-room.local", "alert", "", 0, "forward", None, "manual", "", "", None)
+           "", "", "living-room.local", "alert", "", 0, "forward", None, "manual", "", "", None,
+           None)
     inserts = []
 
     class _C:
@@ -172,10 +173,11 @@ def test_update_rule_mode_reinserts_the_same_rule_under_a_new_mode():
                                         now=datetime(2026, 10, 16, 18, 0))
     assert out.mode == "block" and out.reason == "why it exists"
     table, data, cols = inserts[0]
-    assert table == "weirvern.sluice_rules" and len(cols) == 18
+    assert table == "weirvern.sluice_rules" and len(cols) == 19
     assert data[0][0] == "20261015120000-abcd1234", "same rule id: an edit, not a new rule"
     assert data[0][7] == "block" and data[0][3] == "why it exists"
     assert data[0][15] is None, "the edit must not revoke it"
+    assert data[0][18] is None, "the edit must not silently re-enable a parked rule"
     assert "alert->block" in data[0][17]
 
 
@@ -193,7 +195,7 @@ def test_update_rule_mode_refuses_revoked_unchanged_and_bad_modes():
             self.inserted = False
         def query(self, sql, parameters=None, **_kw):
             row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "", "", "d.local", "alert",
-                   "", 0, "forward", None, "manual", "", "", self.rev)
+                   "", 0, "forward", None, "manual", "", "", self.rev, None)
             class R:
                 result_rows = [row]
             return R()
@@ -230,7 +232,7 @@ def test_update_rule_edits_the_name_in_place():
     from weirvern import sluice_store
 
     row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "", "", "d.local", "alert",
-           "", 0, "forward", None, "manual", "", "", None)
+           "", 0, "forward", None, "manual", "", "", None, None)
     inserts = []
 
     class _C:
@@ -256,7 +258,7 @@ def test_update_rule_refuses_a_domain_edit_on_an_address_rule():
     from weirvern.sluice import SluiceError
 
     row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "198.51.100.0/8", "", "", "block",
-           "", 0, "forward", None, "manual", "", "", None)
+           "", 0, "forward", None, "manual", "", "", None, None)
 
     class _C:
         def query(self, sql, parameters=None, **_kw):
