@@ -79,7 +79,8 @@ async function main() {
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
         JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
-                                                 "/weirlings.js", "/discover.js"]),
+                                                 "/weirlings.js", "/discover.js",
+                                                 "/dnsview.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -104,6 +105,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
+                   loadDns, dnClear, dnApply,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
@@ -816,6 +818,31 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               weirlings: [{ value: "127.0.0.1", count: 42, label: "weirvern" }] },
   };
 
+  const DNS_PAYLOAD = {
+    available: true, reason: "", total: 12, limit: 100, offset: 0, bucket_s: 60,
+    rows: [
+      { ts: "2026-10-16 06:00:00", client: "198.51.100.20", query: "ads.example.com",
+        qtype: 1, qtype_label: "A", rcode: 0, rcode_label: "NOERROR",
+        answers: "198.51.100.10", answer_ips: ["198.51.100.10"] },
+      { ts: "2026-10-16 06:01:00", client: "198.51.100.20", query: "nope.example.net",
+        qtype: 1, qtype_label: "A", rcode: 3, rcode_label: "NXDOMAIN",
+        answers: "", answer_ips: [] },
+    ],
+    histogram: [
+      { t: "2026-10-16 06:00:00", n: 7 },
+      { t: "2026-10-16 06:01:00", n: 5 },
+    ],
+    facets: {
+      domains: [{ value: "ads.example.com", count: 7 }],
+      clients: [{ value: "198.51.100.20", count: 12 }],
+      rcodes: [{ value: 0, label: "NOERROR", count: 9 }, { value: 3, label: "NXDOMAIN", count: 3 }],
+    },
+  };
+  const DNS_REVERSE_PAYLOAD = {
+    available: true, reason: "",
+    domains: [{ domain: "ads.example.com", last_seen: "2026-10-16 06:00:00" }],
+  };
+
   // The routes, each registered with the payload it serves. One list, so a payload cannot be
   // declared and then forgotten.
   // ── the tri-state health payload (audit F081) ─────────────────────────────────────────────────
@@ -876,6 +903,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/discover", DISCOVER_PAYLOAD],
+    ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
+    ["/api/dns", DNS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
     ["/api/zeek", ZEEK_PAYLOAD],
     ["/api/session", SESSION_STUB],
@@ -3162,6 +3191,33 @@ check("high capture loss is called out in the fleet",
     check("and its default option reads 'all weirlings'",
           !!wSel && /all weirlings/.test(wSel.options[0].textContent),
           wSel ? wSel.options[0].textContent : "");
+
+  // ── THE DNS VIEW (the operator's ask: "can we view dns on port 53") ────────────────────────
+  {
+    H.showView("dns");
+    await H.loadDns();
+    const rows = doc.querySelectorAll("#dn-rows tr.dc-row");
+    check("the DNS view renders Q/A rows", rows.length === 2, "rows=" + rows.length);
+    check("the summary names the NXDOMAIN count",
+          /NXDOMAIN/.test(doc.getElementById("dn-summary").textContent),
+          doc.getElementById("dn-summary").textContent.slice(0, 90));
+    rows[0].click();
+    await new Promise((r) => setTimeout(r, 90));
+    const detail = doc.querySelector("tr.dn-detail");
+    check("a row opens the full answers and the reverse map",
+          !!detail && /ads\.example\.com/.test(detail.textContent),
+          detail ? detail.textContent.slice(0, 140) : "no detail row");
+    const act = detail
+      ? [...detail.querySelectorAll("button.dc-chip")].find((b) => /\+ domain/.test(b.textContent))
+      : null;
+    if (act) act.click();
+    await new Promise((r) => setTimeout(r, 40));
+    check("a detail action filters the view",
+          !!(act) && doc.getElementById("dn-domain").value === "ads.example.com",
+          doc.getElementById("dn-domain").value);
+    H.dnClear();
+    check("clear empties the DNS filters", doc.getElementById("dn-domain").value === "", "");
+  }
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

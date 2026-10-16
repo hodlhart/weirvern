@@ -101,6 +101,7 @@ STATIC_FILES = {
     # The Discover tab: the raw-flow browser. Its own file for the same reason as the others --
     # "show me the flows themselves, filtered" is a distinct concern from every chart above it.
     "/discover.js": ("discover.js", "application/javascript; charset=utf-8"),
+    "/dnsview.js": ("dnsview.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -307,6 +308,13 @@ def _build_handler(ctx: GuiContext):
             # filter bar -- flow type, address, port, sensor -- and paging.
             if path == "/api/discover":
                 return self._discover(query)
+            # DNS ON PORT 53, MADE READABLE: the operator's ask ("can we view dns"). Rows are
+            # Q/A pairs out of `zeek_dns`; the reverse side (address -> names) comes from the
+            # materialized map in schema/016, which is also what domain rules resolve through.
+            if path == "/api/dns":
+                return self._dns(query)
+            if path == "/api/dns/reverse":
+                return self._dns_reverse(query)
             if path == "/api/flows":
                 return self._flows(query)
             # The asset inventory and the connection graph. Separate endpoints from /api/host
@@ -708,6 +716,70 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False, "rows": [], "reason":
                                    f"cannot reach ClickHouse: {type(exc).__name__}",
                                    "data_error": str(exc)})
+            self._json(payload)
+
+        def _dns(self, query: dict) -> None:
+            """The DNS view: Q/A rows, filters, histogram and facets. Read-only.
+
+            Every filter is optional -- "show me the whole window" is the first thing an
+            operator wants -- and every value that cannot be read is a 400 with a sentence,
+            never a silently dropped filter (which would show MORE than was asked for).
+            """
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            domain = (query.get("domain") or [""])[0].strip()
+            client = (query.get("client") or [""])[0].strip()
+            qtype_raw = (query.get("qtype") or [""])[0].strip()
+            rcode_raw = (query.get("rcode") or [""])[0].strip()
+            offset = _int_arg(query, "offset", 0, 0, 1000000)
+            limit = _int_arg(query, "limit", 100, 1, 500)
+            if len(domain) > 200 or len(client) > 64:
+                return self._error(400, "domain or client filter is implausibly long")
+            qtype: int | None = None
+            rcode: int | None = None
+            for raw, name, lo, hi, slot in ((qtype_raw, "qtype", 0, 65535, "qtype"),
+                                            (rcode_raw, "rcode", 0, 255, "rcode")):
+                if not raw:
+                    continue
+                try:
+                    value = int(raw)
+                    if not lo <= value <= hi:
+                        raise ValueError
+                except ValueError:
+                    return self._error(400, f"{name} does not look like a number: {raw!r}")
+                if slot == "qtype":
+                    qtype = value
+                else:
+                    rcode = value
+            try:
+                with self._with_client() as client_db:
+                    payload = soc_mod.dns_rows(
+                        client_db, hours=hours, domain=domain, client_ip=client,
+                        qtype=qtype, rcode=rcode, limit=limit, offset=offset,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("dns view unavailable: %s", exc)
+                return self._json({"available": False, "rows": [], "reason":
+                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   "data_error": str(exc)})
+            self._json(payload)
+
+        def _dns_reverse(self, query: dict) -> None:
+            """Which names pointed at this address, inside the window."""
+            ip = (query.get("ip") or [""])[0].strip()
+            if not ip or len(ip) > 64:
+                return self._error(400, "give an address: /api/dns/reverse?ip=...")
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            try:
+                with self._with_client() as client:
+                    payload = soc_mod.dns_reverse_for(client, ip, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reverse lookup unavailable: %s", exc)
+                return self._json({"available": False, "domains": [], "reason":
+                                   f"cannot reach ClickHouse: {type(exc).__name__}"})
             self._json(payload)
 
         def _health(self, query: dict) -> None:

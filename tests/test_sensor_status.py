@@ -388,6 +388,8 @@ def test_no_orphan_placeholder_elements_remain():
                   # view-discover: a structural section toggled by `showView`, like its siblings
                   # above; its inner elements are what the scripts populate.
                   "view-discover",
+                  # view-dns: same shape -- the section is toggled; dnsview.js fills it.
+                  "view-dns",
                   #   view-settings: a static skeleton -- loadSettings creates every row
                   #     into the st-* hosts, so the section itself is never written to
                   "view-settings",

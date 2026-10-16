@@ -19,6 +19,7 @@ transfer is bounded by the requested bucket count rather than by traffic volume.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 
@@ -882,3 +883,162 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
                            "label": labels.get(str(r[0]), str(r[0]))} for r in by_sensor],
         },
     }
+
+
+# ── DNS ──────────────────────────────────────────────────────────────────────────────────────
+#
+# WHAT THIS IS FOR (the operator, 2026-10-16): "for domain blocks can we view dns on port 53".
+# Zeek has been writing dns.log into `zeek_dns` all along -- this section makes it readable:
+# who asked what, what came back, and which addresses the answers pointed at. The reverse map
+# (schema/016) is the second half: an address -> names lookup served from what DNS actually
+# answered, which is the cache domain rules resolve through.
+#
+# THE ADDRESS TOKENS IN `answers` ARE MESSY: the column is a comma-joined string that mixes real
+# addresses with NSEC/TXT chatter from mDNS (measured on the box: "203.0.113.21,fd42:...,
+# NSEC 70-35-60-63.1 living room._sleep-proxy._udp.local ,..."). Parsing happens HERE, once, and
+# only tokens that parse as addresses survive -- a display that shows "NSEC 70-35..." as if it
+# were an answer would be worse than showing nothing.
+
+QTYPE_LABELS = {0: "other", 1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX",
+                16: "TXT", 28: "AAAA", 33: "SRV", 65: "HTTPS", 255: "ANY"}
+RCODE_LABELS = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP",
+                5: "REFUSED"}
+
+
+def qtype_label(value: int) -> str:
+    return QTYPE_LABELS.get(int(value or 0), str(int(value or 0)))
+
+
+def answer_ips(answers: str) -> list[str]:
+    """The address tokens in a zeek answers string, in order, deduplicated."""
+    out: list[str] = []
+    for token in str(answers or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ipaddress.ip_address(token.split()[0])
+        except ValueError:
+            continue
+        if token.split()[0] not in out:
+            out.append(token.split()[0])
+    return out
+
+
+def dns_rows(client, *, hours: int = 24, domain: str = "", client_ip: str = "",
+             qtype: int | None = None, rcode: int | None = None,
+             limit: int = 100, offset: int = 0) -> dict:
+    """One page of DNS Q/A records plus the facets the view needs.
+
+    Filters are optional and independent -- "show me everything" is a legitimate first look at
+    a segment's DNS. Every value lands as a BOUND parameter; a filter that cannot be read is
+    refused by the caller (web._dns), never silently dropped.
+    """
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    where = ["ts >= %(since)s AND ts <= %(until)s"]
+    params: dict = {**timewindow.w(hours), "n": limit, "o": offset}
+    if domain:
+        where.append("positionCaseInsensitive(query, %(domain)s) > 0")
+        params["domain"] = str(domain)
+    if client_ip:
+        where.append("positionCaseInsensitive(src_addr, %(client)s) > 0")
+        params["client"] = str(client_ip)
+    if qtype is not None:
+        where.append("qtype = %(qtype)s")
+        params["qtype"] = int(qtype)
+    if rcode is not None:
+        where.append("rcode = %(rcode)s")
+        params["rcode"] = int(rcode)
+    clause = " AND ".join(where)
+    try:
+        rows = client.query(
+            "SELECT ts, src_addr, query, qtype, rcode, answers "
+            f"FROM weirvern.zeek_dns WHERE {clause} "  # noqa: S608 -- fixed columns
+            "ORDER BY ts DESC LIMIT %(n)s OFFSET %(o)s",
+            parameters=params,
+        ).result_rows
+        total_row = client.query(
+            f"SELECT count() FROM weirvern.zeek_dns WHERE {clause}", parameters=params
+        ).result_rows
+        bucket = _discover_bucket_s(hours)
+        hist = client.query(
+            "SELECT toStartOfInterval(ts, INTERVAL %(w)s SECOND) AS t, count() AS n "
+            f"FROM weirvern.zeek_dns WHERE {clause} "  # noqa: S608
+            "GROUP BY t ORDER BY t",
+            parameters={**params, "w": bucket},
+        ).result_rows
+        by_domain = client.query(
+            "SELECT lower(query) AS d, count() AS n FROM weirvern.zeek_dns "
+            f"WHERE {clause} GROUP BY d ORDER BY n DESC LIMIT 12",  # noqa: S608
+            parameters=params,
+        ).result_rows
+        by_client = client.query(
+            "SELECT src_addr, count() AS n FROM weirvern.zeek_dns "
+            f"WHERE {clause} GROUP BY src_addr ORDER BY n DESC LIMIT 12",  # noqa: S608
+            parameters=params,
+        ).result_rows
+        by_rcode = client.query(
+            "SELECT rcode, count() AS n FROM weirvern.zeek_dns "
+            f"WHERE {clause} GROUP BY rcode ORDER BY n DESC LIMIT 8",  # noqa: S608
+            parameters=params,
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dns view failed: %s", exc)
+        return {"available": False, "reason": f"the DNS query failed: {type(exc).__name__}",
+                "rows": [], "total": 0, "histogram": [], "facets": {"domains": [], "clients": [],
+                                                                    "rcodes": []},
+                "data_error": str(exc)}
+
+    return {
+        "available": True,
+        "reason": "",
+        "rows": [
+            {
+                "ts": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "client": str(r[1]),
+                "query": str(r[2]),
+                "qtype": int(r[3] or 0), "qtype_label": qtype_label(r[3]),
+                "rcode": int(r[4] or 0), "rcode_label": RCODE_LABELS.get(int(r[4] or 0), str(r[4])),
+                "answers": str(r[5] or ""),
+                "answer_ips": answer_ips(r[5]),
+            }
+            for r in rows
+        ],
+        "total": int(total_row[0][0]) if total_row else 0,
+        "limit": limit,
+        "offset": offset,
+        "bucket_s": bucket,
+        "histogram": [{"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                       "n": int(r[1] or 0)} for r in hist],
+        "facets": {
+            "domains": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_domain],
+            "clients": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_client],
+            "rcodes": [{"value": int(r[0] or 0),
+                        "label": RCODE_LABELS.get(int(r[0] or 0), str(r[0])),
+                        "count": int(r[1] or 0)} for r in by_rcode],
+        },
+    }
+
+
+def dns_reverse_for(client, ip: str, *, hours: int = 24, limit: int = 20) -> dict:
+    """Which names have pointed at this address recently -- the reverse cache's read path.
+
+    Bounded by `last_seen` inside the window, so the answer is "recent names", which is what a
+    block decision needs; an address reassigned by DHCP six months ago must not keep naming a
+    domain nobody uses any more.
+    """
+    try:
+        rows = client.query(
+            "SELECT domain, max(last_seen) AS last_seen FROM weirvern.dns_reverse_map "
+            "WHERE ip = %(ip)s AND last_seen >= %(since)s AND last_seen <= %(until)s "
+            "GROUP BY domain ORDER BY last_seen DESC LIMIT %(n)s",
+            parameters={"ip": str(ip), "n": int(limit), **timewindow.w(hours)},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"the reverse lookup failed: {type(exc).__name__}",
+                "domains": []}
+    return {"available": True, "reason": "",
+            "domains": [{"domain": str(r[0]),
+                         "last_seen": r[1].isoformat() if hasattr(r[1], "isoformat") else str(r[1])}
+                        for r in rows]}

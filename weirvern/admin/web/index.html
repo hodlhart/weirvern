@@ -128,6 +128,7 @@
   <button class="tab" data-view="network">Network</button>
   <button class="tab" data-view="netflow">Netflow</button>
   <button class="tab" data-view="discover">Discover</button>
+  <button class="tab" data-view="dns">DNS</button>
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="identity">Identity</button>
   <button class="tab" data-view="sluice">Sluice Gate</button>
@@ -330,6 +331,38 @@
   </section>
 
   <!-- ── Zeek ─────────────────────────────────────────────────────────── -->
+  <!-- ── DNS ──────────────────────────────────────────────────────────── -->
+  <section id="view-dns" class="view">
+    <div class="card">
+      <h2>DNS <button class="info-btn" data-info="dn-info" aria-label="what the DNS view shows and how to drill in" aria-expanded="false" title="what the DNS view shows and how to drill in">i</button></h2>
+      <div class="info-text hidden" id="dn-info">
+        Every DNS question and answer the sensor saw on port 53. Filters are optional; click a row
+        for the full answers and the reverse lookup &mdash; which names have pointed at that address
+        recently. That reverse map is what a domain block resolves through.
+      </div>
+      <p class="muted" id="dn-summary">loading&hellip;</p>
+      <div class="controls">
+        <label>domain <input id="dn-domain" type="text" placeholder="e.g. example.com" /></label>
+        <label>client <input id="dn-client" type="text" placeholder="address contains" /></label>
+        <label>type <select id="dn-qtype"><option value="">any type</option><option value="1">A</option><option value="28">AAAA</option><option value="12">PTR</option><option value="16">TXT</option><option value="33">SRV</option><option value="65">HTTPS</option><option value="255">ANY</option></select></label>
+        <label>rcode <select id="dn-rcode"><option value="">any rcode</option><option value="0">NOERROR</option><option value="2">SERVFAIL</option><option value="3">NXDOMAIN</option><option value="5">REFUSED</option></select></label>
+        <button id="dn-go">Search</button>
+        <button id="dn-clear">Clear</button>
+      </div>
+      <div id="dn-volume" class="chart"></div>
+      <div id="dn-facets" class="dc-chips"></div>
+      <table>
+        <thead><tr><th>time</th><th>client</th><th>query</th><th>type</th><th>rcode</th><th>answers</th></tr></thead>
+        <tbody id="dn-rows"></tbody>
+      </table>
+      <div class="controls">
+        <button id="dn-newer">&larr; newer</button>
+        <span id="dn-page" class="muted"></span>
+        <button id="dn-older">older &rarr;</button>
+      </div>
+    </div>
+  </section>
+
   <section id="view-zeek" class="view">
     <div class="card">
       <h2>Zeek <button class="info-btn" data-info="zk-info" aria-label="what the Zeek logs show and how to drill in" aria-expanded="false" title="what the Zeek logs show and how to drill in">i</button> <span class="muted" id="zk-window"></span></h2>
@@ -1252,6 +1285,7 @@
 <script src="/sluice.js"></script>
 <script src="/weirlings.js"></script>
 <script src="/discover.js"></script>
+<script src="/dnsview.js"></script>
 </body>
 </html>
 

@@ -27,6 +27,8 @@ const API = {
   // answers the OTHER direction from the identity card (which hosts present this one stack).
   sluice: "/api/sluice",
   sluiceBlock: "/api/sluice/block",
+  // The DNS view and the reverse map's read path (schema/016).
+  dns: "/api/dns",
   fingerprints: (ja4) => `/api/fingerprints?ja4=${encodeURIComponent(ja4)}`,
   // The SOC views. `health` is the DEEP check (reads ClickHouse), NOT /api/healthz, which
   // is the Kubernetes liveness probe and answers a bare {"ok":true} without touching the
@@ -1828,6 +1830,7 @@ function showView(name) {
   // Discover loads on selection and on every filter change; like the SOC views it is not on
   // the refresh timer, because it is a reading surface, not a status surface.
   if (name === "discover") loadDiscover().then(clearError).catch(showError);
+  if (name === "dns") loadDns().then(clearError).catch(showError);
   // Identity also loads on demand: it reads the verdict table plus a coverage aggregation, and
   // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
   // at. Same reasoning as the SOC views above.
