@@ -69,19 +69,22 @@ def _unavailable(reason: str, **extra) -> dict:
 def flow_filter(filters: dict | None) -> tuple[str, dict]:
     """(fragment beginning with ' AND ...' or '', bound params) for the raw `flows` table."""
     filters = filters or {}
+    # EVERY FRAGMENT ENDS WITH A SPACE, and that is not cosmetic: it is concatenated directly
+    # in front of "GROUP BY"/"ORDER BY", and the first cut produced "…%(fproto)sGROUP BY proto"
+    # -- measured live as an empty filtered view the moment the operator clicked a bar.
     parts: list[str] = []
     params: dict = {}
     src = str(filters.get("src") or "").strip()
     if src:
-        parts.append(" AND src_addr = %(fsrc)s")
+        parts.append(" AND src_addr = %(fsrc)s ")
         params["fsrc"] = src
     proto = str(filters.get("proto") or "").strip()
     if proto != "":
-        parts.append(" AND proto = %(fproto)s")
+        parts.append(" AND proto = %(fproto)s ")
         params["fproto"] = int(proto)
     dport = str(filters.get("dport") or "").strip()
     if dport != "":
-        parts.append(" AND dst_port = %(fdport)s")
+        parts.append(" AND dst_port = %(fdport)s ")
         params["fdport"] = int(dport)
     return "".join(parts), params
 
