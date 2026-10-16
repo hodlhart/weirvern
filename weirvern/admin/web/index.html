@@ -362,7 +362,7 @@
       <div id="dn-volume" class="chart"></div>
       <div id="dn-facets" class="dc-chips"></div>
       <table>
-        <thead><tr><th>time</th><th>client</th><th>query</th><th>type</th><th>rcode</th><th>answers</th></tr></thead>
+        <thead><tr><th>time</th><th>client</th><th>query</th><th>type</th><th>rcode</th><th>answers</th><th></th></tr></thead>
         <tbody id="dn-rows"></tbody>
       </table>
       <div class="controls">
@@ -1444,6 +1444,14 @@
     <button id="rc-cancel">Cancel</button>
   </div>
   <p class="muted" id="rc-note"></p>
+</div>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-backdrop" id="modal-backdrop"></div>
+  <div class="modal-panel">
+    <button id="modal-close" class="modal-x" title="close (Esc)">&#215;</button>
+    <div id="modal-body"></div>
+  </div>
 </div>
 
 <script src="/app.js"></script>

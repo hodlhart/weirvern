@@ -293,6 +293,18 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 /* The occurrence expansion under a counted anomaly row (2026-10-16). */
 /* The Zeek feed's bar list: one bar per log, click opens the Zeek tab. */
+/* THE MODAL (2026-10-16): every rule editor and composer opens over the page, never inline. */
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start;
+  justify-content: center; }
+.modal.hidden { display: none; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
+.modal-panel { position: relative; margin: 8vh 16px 16px; width: min(680px, 96vw); max-height: 80vh;
+  overflow: auto; background: var(--panel, #161b22); border: 1px solid var(--line, #30363d);
+  border-radius: 8px; padding: 14px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5); }
+.modal-x { position: absolute; top: 6px; right: 8px; background: none; border: none;
+  color: var(--muted); font-size: 18px; cursor: pointer; }
+.modal-x:hover { color: var(--fg, #eee); }
+body.modal-open { overflow: hidden; }
 /* Rule management: the pick column, the action icons, the bulk bar (2026-10-16). */
 td.pick, th.pick { width: 1.6em; }
 #sl-bulk { display: flex; gap: 6px; align-items: center; padding: 4px 0; }

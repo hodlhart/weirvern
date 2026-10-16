@@ -672,7 +672,7 @@ function openRuleComposer(domain) {
   if (dom) dom.value = String(domain || "");
   if (note) note.textContent = "";
   if (create) { create.textContent = "Create"; delete create.dataset.armed; }
-  card.classList.remove("hidden");
+  openModal(card);
   if (dom) dom.focus();
 }
 
@@ -680,7 +680,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const create = document.getElementById("rc-create");
   const cancel = document.getElementById("rc-cancel");
   if (cancel) cancel.addEventListener("click", () =>
-    document.getElementById("rule-composer").classList.add("hidden"));
+    closeModal(document.getElementById("rule-composer")));
   if (create) create.addEventListener("click", async () => {
     const dom = document.getElementById("rc-domain");
     const wild = document.getElementById("rc-wild");

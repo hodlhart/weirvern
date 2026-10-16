@@ -202,7 +202,7 @@ function dnRenderRows(d) {
   const rows = d.rows || [];
   if (!rows.length) {
     const tr = el("tr", {});
-    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "6" },
+    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "7" },
                               text: "No DNS records matched. Widen the window or clear a filter." }));
     body.appendChild(tr);
     return;
@@ -219,13 +219,6 @@ function dnRenderRows(d) {
     q.classList.add("dcell");
     q.title = "add to the filter: domain = " + r.query;
     q.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-domain", r.query]]); });
-    // PUSH THE NAME TO A RULE (the operator, 2026-10-16: "from dns tab i should be able to push a
-    // domain to a block rule and modify it like adding a *"). The composer opens prefilled; the
-    // filter-click on the cell itself is unchanged.
-    const blk = el("button", { class: "link", text: " block\u2026",
-      attrs: { title: "turn this name into a rule" } });
-    blk.addEventListener("click", (e) => { e.stopPropagation(); openRuleComposer(r.query); });
-    q.appendChild(blk);
     tr.appendChild(q);
     const qt = dnCell(r.qtype_label, "dcell");
     if (r.qtype != null) {
@@ -244,6 +237,17 @@ function dnRenderRows(d) {
     const ax = dnCell(ans.length ? `${ans[0]}${ans.length > 1 ? " +" + (ans.length - 1) : ""}`
                                  : (r.answers || "\u2014").slice(0, 40));
     tr.appendChild(ax);
+    // PUSH THE NAME TO A RULE (the operator: "from dns tab i should be able to push a domain to
+    // a block rule"; then: "put the block or allow button in its own column on the far right").
+    // The action lives in its OWN trailing column now, never inside the query cell -- the
+    // composer opens in the modal, prefilled, and the filter-click on the cell is unchanged.
+    const act = dnCell("");
+    act.className = "dn-actions";
+    const blk = el("button", { class: "link", text: "Block\u2026",
+      attrs: { title: "turn this name into a rule" } });
+    blk.addEventListener("click", (e) => { e.stopPropagation(); openRuleComposer(r.query); });
+    act.appendChild(blk);
+    tr.appendChild(act);
     tr.title = "click for the full answers and the reverse lookup";
     tr.addEventListener("click", () => dnToggleDetail(tr, r));
     body.appendChild(tr);

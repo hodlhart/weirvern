@@ -158,8 +158,8 @@ function blOpenRule(r) {
       domSave2.disabled = false;
     }
   };
-  els.close.onclick = () => els.card.classList.add("hidden");
-  els.card.classList.remove("hidden");
+  els.close.onclick = () => closeModal(els.card);
+  openModal(els.card);
 }
 
 /** The block's REASON, in the reader's words (the operator, 2026-10-16: "the reason in the

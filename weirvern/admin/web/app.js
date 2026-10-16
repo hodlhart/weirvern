@@ -1927,6 +1927,53 @@ function wireInfoButtons() {
  * button, and a surface that can be accidentally collapsed is a new way to lose it. The info
  * button inside a heading is not a toggle target.
  */
+/**
+ * THE MODAL (the operator, 2026-10-16: "any time we click to edit or see a rule or block or allow
+ * dns, clicking that button should generate a popup something. not just added to the bottom of
+ * the screen or in the middle of the current screen between rows"). One dialog shell; openModal
+ * MOVES a node into it and remembers where the node lived; closeModal puts it back. Moving --
+ * not cloning -- is what keeps ONE editor with ONE set of ids and listeners; a second copy would
+ * drift from the first the day someone edits one of them. Esc, the backdrop and the X all close.
+ */
+const MODAL_HOME = new WeakMap();
+
+function openModal(node) {
+  const shell = document.getElementById("modal");
+  const body = document.getElementById("modal-body");
+  if (!shell || !body || !node) return;
+  if (!MODAL_HOME.has(node)) MODAL_HOME.set(node, node.parentNode);
+  body.appendChild(node);
+  node.classList.remove("hidden");
+  shell.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+}
+
+function closeModal(node) {
+  const shell = document.getElementById("modal");
+  if (node) {
+    node.classList.add("hidden");
+    const home = MODAL_HOME.get(node);
+    if (home) home.appendChild(node);
+  }
+  if (shell) shell.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
+
+function modalWiring() {
+  const shell = document.getElementById("modal");
+  if (!shell || shell.dataset.wired === "1") return;
+  shell.dataset.wired = "1";
+  const closeTop = () => {
+    const body = document.getElementById("modal-body");
+    if (body) for (const node of [...body.children]) closeModal(node);
+  };
+  const x = document.getElementById("modal-close");
+  if (x) x.addEventListener("click", closeTop);
+  const back = document.getElementById("modal-backdrop");
+  if (back) back.addEventListener("click", closeTop);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTop(); });
+}
+
 function settingsAccordion() {
   const view = document.getElementById("view-settings");
   if (!view) return;
@@ -2304,6 +2351,7 @@ async function boot() {
   wrapTables();
   lockTabsToTop();
   settingsAccordion();
+  modalWiring();
   // The "i" affordances: every view's explainer is one click from the header it explains.
   wireInfoButtons();
   try {
