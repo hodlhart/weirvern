@@ -186,8 +186,11 @@ async function loadNetflow() {
   const d = await getJSON(`${API.netflow}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
-  document.getElementById("nf-window").textContent =
-    `${hours}h window, ${d.volume && d.volume.bucket_s ? Math.round(d.volume.bucket_s / 60) + "m buckets" : ""}`;
+  // The window is set by the ONE global time control; restating it here as "Nh window" was a
+  // second, weaker copy of the same fact (the operator: "Needs removed we have a universal time
+  // filter"). The bucket size stays: it is a property of the CHART, not a time control.
+  document.getElementById("nf-window").textContent = (d.volume && d.volume.bucket_s)
+    ? `${Math.round(d.volume.bucket_s / 60)}m buckets` : "";
   const totalBytes = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.bytes, 0);
   const totalFlows = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.flows, 0);
   document.getElementById("nf-summary").textContent = (d.volume && d.volume.available)
