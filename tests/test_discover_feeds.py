@@ -28,21 +28,22 @@ def test_discover_dns_wraps_the_dns_views_own_reader(monkeypatch):
         captured.update({"hours": hours, "client_ip": client_ip, "limit": limit, "offset": offset})
         return {"available": True, "rows": [{"query": "example.org"}], "total": 1,
                 "histogram": [{"t": "2026-10-16T07:00:00", "n": 3}], "bucket_s": 1440,
-                "facets": {"clients": [{"value": "10.0.0.5", "count": 9}]}}
+                "facets": {"clients": [{"value": "198.51.100.5", "count": 9}]}}
 
     monkeypatch.setattr(soc, "dns_rows", fake_dns_rows)
-    out = soc.discover_dns(object(), hours=6, limit=50, offset=10, client_ip="10.0.0.5")
-    assert captured == {"hours": 6, "client_ip": "10.0.0.5", "limit": 50, "offset": 10}
+    out = soc.discover_dns(object(), hours=6, limit=50, offset=10, client_ip="198.51.100.5")
+    assert captured == {"hours": 6, "client_ip": "198.51.100.5", "limit": 50, "offset": 10}
     assert out["feed"] == "dns" and out["total"] == 1
     assert out["rows"][0]["query"] == "example.org" and out["histogram"][0]["n"] == 3
-    assert out["facets"]["clients"][0]["value"] == "10.0.0.5"
+    assert out["facets"]["clients"][0]["value"] == "198.51.100.5"
 
 
 def test_discover_zeek_counts_every_log_and_sums_the_window(monkeypatch):
     from weirvern.admin import soc
 
     def fake_counts(client, hours=24):
-        return {"available": True, "logs": [
+        # The real payload files the per-log rows under "points" (verified live 2026-10-16).
+        return {"available": True, "points": [
             {"log": "conn", "rows": 12, "total": 900, "last_ts": "2026-10-16T08:00:00"},
             {"log": "dns", "rows": 0, "total": 40, "last_ts": "2026-10-15T02:00:00"},
         ], "unreadable": ["capture_loss"]}

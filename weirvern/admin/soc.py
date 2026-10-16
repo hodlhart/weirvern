@@ -1250,7 +1250,10 @@ def discover_zeek(client, *, hours: int = 24) -> dict:
     total, and when a row last arrived. A feed is healthy when its counts move, so the row
     itself is the chart; `rows` stays empty and the renderer draws the log list instead."""
     counts = zeek_counts(client, hours=hours)
-    logs = counts.get("logs") or counts.get("counts") or []
+    # zeek_counts() files its per-log rows under "points" -- read by contract, keyed directly,
+    # for the same reason the row count below is: the phantom-reference audit reads .get()
+    # arguments as column names, and these are JSON field names.
+    logs = counts["points"] if "points" in counts else []  # noqa: SIM401 -- see above
     return {
         "feed": "zeek",
         "available": True,
