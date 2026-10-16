@@ -58,8 +58,8 @@ and exporters to reach it.
 
 | Placed as | NICs to dedicate | In the path? | Sluice Gate enforces? | Where the flow records come from |
 |---|---|---|---|---|
-| `loch` — mirror / SPAN / TAP | 1 capture NIC, promiscuous, `NET_RAW`. Never the management NIC. | No | **No.** Reports `degraded`; nothing it drops would have crossed it. | An **exporter** must send NetFlow/sFlow/IPFIX to the hub (router, switch, hypervisor vSwitch). See below. |
-| `siphon` — ARP redirect | 1 NIC on the segment, promiscuous, plus `NET_ADMIN` | Yes, **while a supervised intercept is live** | **Yes, while it is live** — recorded as `enforcement: siphon`. When the intercept ends, the gate says so instead of holding. | Same as `loch`: an exporter, unless one is fed from the intercept. |
+| `loch` — mirror / SPAN / TAP | 1 capture NIC, promiscuous, `NET_RAW`. Never the management NIC. | No | **No.** Reports `degraded`; nothing it drops would have crossed it. | An **exporter** on the segment sends NetFlow/sFlow/IPFIX — to the hub, or to **this sensor**, which collects it (`WEIRLING_NETFLOW`) and ships it into the hub. See below. |
+| `siphon` — ARP redirect | 1 NIC on the segment, promiscuous, plus `NET_ADMIN` | Yes, **while a supervised intercept is live** | **Yes, while it is live** — recorded as `enforcement: siphon`. When the intercept ends, the gate says so instead of holding. | Same as `loch`, plus `SIPHON_NETFLOW` meters the intercept while it is live. |
 | `channel` — in-line bridge | **2 NICs** (upstream + downstream) joined into one bridge, plus `NET_ADMIN` | Yes, continuously — it *is* the wire | **Yes** — the intended enforcement placement, recorded as `enforcement: channel` once verified from the kernel (both ports on one bridge, forwarding, carrier up, bridge-nf in effect, and the node's FORWARD path admitting the bridge). | **Weirvern extracts its own**: `CHANNEL_NETFLOW` samples one port of the bridge and summarises it into IPFIX locally. No external exporter needed for the traffic it carries. |
 | hub only | none (its management NIC is never a sensor) | No | No | From the exporters and sensors above. |
 
@@ -69,12 +69,22 @@ A channel is still a `loch` sensor in the sense that matters — it observes, an
 a rule names.
 
 **Flow records: who exports them.** The volume features and the per-host baselines are built from
-flow records, so a deployment needs a flow source. Either an exporter already on the network sends
-NetFlow/sFlow/IPFIX to the hub, **or** — when the box stands in line as a `channel` — Weirvern taps
-its own bridge and summarises the crossing traffic into IPFIX itself (`CHANNEL_NETFLOW`), so an
-in-line deployment needs no exporter for what it carries. Zeek's behavioural features work in every
-placement; only the flow model depends on one of those two, and the console states which is missing
-rather than drawing an empty chart that reads as a quiet network.
+flow records, and **any sensor can collect NetFlow**. Three ways the records arrive, and a
+deployment needs only one of them:
+
+- An exporter on the network sends NetFlow/sFlow/IPFIX **to the hub** (router, switch, hypervisor
+  vSwitch) — the conventional arrangement.
+- An exporter sends **to a sensor on its own segment** instead. Every sensor can run the hub's own
+  collector, and with `WEIRLING_NETFLOW=1` its agent ships those records into the hub's `flows`
+  table. A deployment can therefore collect from any segment that has a sensor on it, with no
+  exporter pointed at the hub and no second transport to secure.
+- Weirvern reads its own traffic where it stands: a `channel` samples a port of its bridge
+  (`CHANNEL_NETFLOW`), and a `siphon` meters the segment it is intercepting while the intercept is
+  live (`SIPHON_NETFLOW`). No exporter is needed for what they carry.
+
+Zeek's behavioural features work in every placement; only the flow model depends on a flow source,
+and the console states which is missing rather than drawing an empty chart that reads as a quiet
+network.
 
 **The console — what you look at.** Overview (health, workloads, freshest anomalies, top talkers) ·
 Assets (a real inventory: names, vendors, OS families, per-host anomalies) · Network (a
