@@ -23,11 +23,17 @@ CREATE TABLE IF NOT EXISTS weirvern.blocklist_sources
     format       LowCardinality(String),
     enabled      UInt8 DEFAULT 1,
     added_at     DateTime,
+    -- THE VERSION COLUMN MUST NOT BE NULLABLE. Measured on the box: `ReplacingMergeTree(fetched_at)`
+    -- with fetched_at Nullable(DateTime) is refused outright ("cannot be used as a version column
+    -- ... because it is of type Nullable"), and the worker's schema pass rightly refused to report
+    -- success -- a whole deploy's schema blocked by one column type. `updated` is the version;
+    -- fetched_at stays nullable DATA ("never fetched" is a real state).
+    updated      DateTime DEFAULT now(),
     fetched_at   Nullable(DateTime),
     domain_count UInt64 DEFAULT 0,
     last_error   String DEFAULT ''
 )
-ENGINE = ReplacingMergeTree(fetched_at)
+ENGINE = ReplacingMergeTree(updated)
 ORDER BY source_id;
 
 CREATE TABLE IF NOT EXISTS weirvern.blocklist_domains

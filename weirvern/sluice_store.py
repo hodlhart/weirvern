@@ -510,7 +510,7 @@ def write_events(client: Client, events: list[dict], now: datetime | None = None
             "dst_port", "protocol", "packets", "bytes", "rule_snapshot", "direction",
         ],
     )
-    logger.info("sluice: recorded %d blocked flow(s)", len(rows))
+    logger.info("sluice: recorded %d event(s)", len(rows))
     return len(rows)
 
 
