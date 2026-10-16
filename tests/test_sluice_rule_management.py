@@ -135,3 +135,19 @@ def test_the_view_has_checkboxes_icons_confirm_and_click_to_edit():
     assert 'slIcon("trash")' in js and 'slIcon(r.disabled ? "play" : "ban")' in js
     assert "blOpenRuleById(r.rule_id)" in js, "rows must open the shared rule card"
     assert "click again to confirm" in js
+
+
+
+def test_opening_a_rule_does_not_depend_on_the_blocked_tab_having_loaded():
+    """Issue #15: the card is fed from BLOCKED_STATE.data, so the click path must fetch the
+    live sets on demand (once), never fabricate "expired or revoked" from a missing payload --
+    and must not call an UNREADABLE set "not live" either."""
+    blocked = (WEB / "blocked.js").read_text()
+    assert "blEnsureLiveSets" in blocked, (
+        "the on-demand fetch is gone; a fresh console would show live rules as expired again"
+    )
+    assert "async function blOpenRuleById" in blocked
+    assert "lookup_failed" in blocked, (
+        "a failed read has no distinct note -- a read we could not perform would render as a "
+        "decision that ended"
+    )

@@ -45,14 +45,37 @@ function blRuleEls() {
   };
 }
 
-function blOpenRuleById(ruleId, hit) {
-  const d = BLOCKED_STATE.data || {};
-  const all = [...(d.blocks || []), ...(d.alerts || [])];
+/** Fetch the live rule sets ONCE, on demand (issue #15).
+ *
+ * Sluice rows are clickable before the Blocked tab has ever been visited, and the rule card is
+ * fed from BLOCKED_STATE.data. Fetching here -- with one in-flight promise, so N quick clicks
+ * make one request -- is what lets a live rule open in its REAL state. Before this, a missing
+ * payload was rendered as "not among the live rules / expired or revoked", which told the
+ * operator a live rule was dead with no way to tell that the payload had simply never loaded.
+ */
+let blLiveSets = null;
+
+async function blEnsureLiveSets() {
+  if (BLOCKED_STATE.data) return BLOCKED_STATE.data;
+  if (!blLiveSets) {
+    blLiveSets = loadBlocked().catch(() => {}).finally(() => { blLiveSets = null; });
+  }
+  await blLiveSets;
+  return BLOCKED_STATE.data;
+}
+
+async function blOpenRuleById(ruleId, hit) {
+  let d = BLOCKED_STATE.data;
+  if (!d) {
+    await blEnsureLiveSets();
+    d = BLOCKED_STATE.data;
+  }
+  const all = [...((d || {}).blocks || []), ...((d || {}).alerts || [])];
   const found = all.find((x) => x.rule_id === ruleId);
   if (found) return blOpenRule(found);
   blOpenRule({ rule_id: ruleId, describes: (hit && hit.domain) || ruleId, mode: "",
                resolved_count: 0, resolved: [], origin: "", expires_at: null,
-               not_live: true });
+               not_live: true, lookup_failed: !d });
 }
 
 function blOpenRule(r) {
@@ -93,11 +116,17 @@ function blOpenRule(r) {
   els.mode.disabled = !editable;
   els.apply.disabled = !editable;
   els.revoke.disabled = !editable;
-  els.note.textContent = r.not_live
-    ? "This rule is not among the live rules — it has expired or was revoked. That is why the "
-      + "card has no controls: revoking a decision that already ended, or re-arming it, would "
-      + "both be new decisions. Create a new rule if you want one."
-    : "";
+  // THREE NOTES, THREE FACTS (issue #15): a rule genuinely absent from the live sets; the live
+  // sets UNREADABLE (a failed read is not a decision that ended, so it must not borrow the
+  // not-live copy either); or an ordinary editable rule, which gets no note at all.
+  els.note.textContent = r.lookup_failed
+    ? "The live rule set could not be read, so this rule's state is unknown. Reload to try again."
+    : (r.not_live
+        ? "This rule is not among the live rules \u2014 it has expired or was revoked. That is why the "
+          + "card has no controls: revoking a decision that already ended, or re-arming it, would "
+          + "both be new decisions. Create a new rule if you want one."
+        : "");
+  els.apply.textContent = "Apply mode";
   els.apply.textContent = "Apply mode";
   delete els.apply.dataset.armed;
 

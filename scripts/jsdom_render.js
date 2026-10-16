@@ -96,6 +96,7 @@ async function main() {
                       .join("\n;\n");
   const epilogue = `
 window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
+                   BLOCKED_STATE, blOpenRuleById,
                    loadNetwork, drawGraph, computeLayout, settleGraph, nodeTitle, edgeTitle,
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
@@ -506,6 +507,18 @@ const SLUICE_PAYLOAD = {
       enforcement: "", detail: "no verified path" },
   ],
   rules: [
+    // THE SAME STORE FEEDS BOTH TABS (issue #15): the Blocked payload's live sets are built from
+    // this same rule table (soc.py reads one store), so these two carry the ids the
+    // BLOCKED_PAYLOAD lists as a block and an alert -- exactly as a live deployment does. Without
+    // them the fixtures would encode the bug as normal: a live rule that can never be found.
+    { rule_id: "r1", describes: "domain ads.example.com", src_cidr: "", dst_cidr: "",
+      protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
+      domain: "ads.example.com", origin: "manual", severity: "", created_by: "admin",
+      origin_ref: "", reason: "", expires_at: "2026-10-16T07:00:00Z", expires_in_s: 1800 },
+    { rule_id: "r2", describes: "domain track.example.net (alert)", src_cidr: "", dst_cidr: "",
+      protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
+      domain: "track.example.net", origin: "manual", severity: "", created_by: "admin",
+      origin_ref: "", reason: "", expires_at: "", expires_in_s: null },
     { rule_id: "r-live-1", describes: "from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
@@ -627,6 +640,9 @@ const IDENTITY_PAYLOAD = {
   };
 
   const ROUTES = [];
+  // COUNTED (issue #15): the checks assert the Blocked payload is fetched ONCE, on demand --
+  // not once per rule opened from the Sluice tab. Read by the checks at the bottom.
+  let BLOCKED_FETCHES = 0;
   window.fetch = function (url, opts) {
     if (fetchOverride) {
       const r = fetchOverride(String(url), opts || {});
@@ -1001,7 +1017,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/discover", DISCOVER_PAYLOAD],
-    ["/api/blocked", BLOCKED_PAYLOAD],
+    // COUNTED (issue #15): the Sluice tab must be able to fetch this ON DEMAND, once.
+    ["/api/blocked", () => { BLOCKED_FETCHES += 1; return BLOCKED_PAYLOAD; }],
     ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
     ["/api/dns", DNS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
@@ -3594,6 +3611,54 @@ check("high capture loss is called out in the fleet",
           !/track\.example\.net/.test(doc.getElementById("bl-block-rows").textContent) &&
           /track\.example\.net/.test(doc.getElementById("bl-alert-rows").textContent),
           "");
+  }
+
+  // ── OPENING A RULE FROM SLUICE ON A FRESH CONSOLE (#15) ─────────────────────────────────────
+  //
+  // The rule card is fed from BLOCKED_STATE.data, and clicking a Sluice row used to fabricate a
+  // "not among the live rules / expired or revoked" placeholder whenever that payload had not
+  // been fetched yet -- i.e. on every fresh console until the Blocked tab was visited, telling
+  // the operator a live rule was dead. These checks drive the REAL click with the store in its
+  // fresh state, assert the card opens editable with the real rule, prove the payload is
+  // fetched ONCE (not once per click), and keep the genuine not-live case working.
+  {
+    fetchOverride = null;
+    H.showView("sluice");
+    await H.loadSluice();
+    const savedBlocked = H.BLOCKED_STATE.data;
+    H.BLOCKED_STATE.data = null;                 // the console never visited Blocked
+    const fetches0 = BLOCKED_FETCHES;
+    const slRow = (needle) => [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
+      .find((tr) => tr.textContent.includes(needle));
+    const liveRow1 = slRow("ads.example.com");
+    check("a live rule is listed on Sluice before Blocked was ever loaded", !!liveRow1);
+    liveRow1.click();
+    await new Promise((r) => setTimeout(r, 160));
+    const modeSel = doc.getElementById("bl-rule-mode");
+    check("clicking it opens the card EDITABLE -- not the fabricated not-live state",
+          !!modeSel && !modeSel.disabled
+          && doc.getElementById("bl-rule-id").textContent === "r1"
+          && !/not among the live rules/.test(doc.getElementById("bl-rule-note").textContent),
+          `id=${doc.getElementById("bl-rule-id").textContent} disabled=${modeSel ? modeSel.disabled : "missing"}`);
+    check("the card carries the REAL rule (its mode and name, not a placeholder)",
+          !!modeSel && modeSel.value === "block"
+          && /ads\.example\.com/.test(doc.getElementById("bl-rule-body").textContent),
+          modeSel ? `mode=${modeSel.value}` : "no mode select");
+    check("the payload was fetched ON DEMAND, exactly once",
+          BLOCKED_FETCHES === fetches0 + 1,
+          `${BLOCKED_FETCHES - fetches0} fetch(es)`);
+    slRow("track.example.net").click();
+    await new Promise((r) => setTimeout(r, 160));
+    check("opening a second rule does not refetch it",
+          BLOCKED_FETCHES === fetches0 + 1
+          && doc.getElementById("bl-rule-id").textContent === "r2",
+          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${doc.getElementById("bl-rule-id").textContent}`);
+    slRow("203.0.113.6").click();               // r-revoked: not among the live sets
+    await new Promise((r) => setTimeout(r, 160));
+    check("a genuinely non-live rule still renders the not-live copy",
+          /not among the live rules/.test(doc.getElementById("bl-rule-note").textContent)
+          && doc.getElementById("bl-rule-mode").disabled === true);
+    H.BLOCKED_STATE.data = savedBlocked;
   }
 
   // ── THE DNS VIEW (the operator's ask: "can we view dns on port 53") ────────────────────────
