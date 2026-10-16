@@ -3069,6 +3069,29 @@ check("high capture loss is called out in the fleet",
     const protoSel = doc.getElementById("dc-proto");
     check("the flow-type facet fills from the payload",
           !!(protoSel && protoSel.options.length >= 3), "options=" + (protoSel ? protoSel.options.length : "?"));
+    // ── CLICK A VALUE AND IT IS ADDED TO THE FILTER (the operator's words) ────────────────────
+    const srcCell = doc.querySelector("#dc-rows tr.dc-row td.dcell[title^='add to the filter: src']");
+    check("every value cell in a Discover row is a click-to-filter target", !!srcCell,
+          "no src cell carries the drill title");
+    if (srcCell) {
+      srcCell.click();
+      // The chip renders when the re-fetch lands (dcAddChip reloads the page of flows), so the
+      // check waits for that microtask chain instead of racing it.
+      await new Promise((r) => setTimeout(r, 60));
+      const chips = doc.querySelectorAll("#dc-chips .dc-chip");
+      check("clicking a source adds it as a chip", chips.length === 1 &&
+            /src = 198\.51\.100\.20/.test(chips[0].textContent),
+            "chips=" + [...chips].map((c) => c.textContent).join(" | "));
+      const x = chips[0] ? chips[0].querySelector("button.dc-chip-x") : null;
+      check("and the chip can be removed again", !!x, "no remove control on the chip");
+      if (x) {
+        x.click();
+        await new Promise((r) => setTimeout(r, 60));
+        check("removing the chip empties the filter row",
+              doc.querySelectorAll("#dc-chips .dc-chip").length === 0,
+              doc.getElementById("dc-chips").textContent.slice(0, 60));
+      }
+    }
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

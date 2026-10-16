@@ -394,6 +394,16 @@ async function loadHealthDeep() {
     } else {
       pill.textContent = `${measurable.length - bad}/${measurable.length} checks passing${naSuffix}`;
       pill.className = "pill " + (h.ok ? "ok" : "bad");
+      // WHAT THE COUNT MEANS, one hover away. The pill reads "N of M checks passing, K not
+      // applicable" -- and an operator is right to ask which ones, and what "not applicable"
+      // even means for a health check. M counts only the checks that CAN pass or fail (a probe
+      // with nothing to measure reports null and is counted separately, never as a failure);
+      // this title names every check and its state so the question answers itself.
+      const named = (h.checks || []).map((c) =>
+        (c.ok === true ? "PASS " : c.ok === false ? "FAIL " : "N/A  ") + c.name).join("\n");
+      pill.title = named + "\n\nN/A = the probe had nothing to measure in this window (it is " +
+                   "not a failure). The count is passing / measurable: e.g. \"3/6\" plus three " +
+                   "FAIL rows means three checks are broken.";
     }
   }
   const fetched = document.getElementById("fetched");

@@ -714,3 +714,14 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .tr-panel input[type="text"] { flex: 1 1 220px; min-width: 180px; }
 .tr-panel button { cursor: pointer; }
 #tr-note { margin: 8px 0 0; font-size: 12px; }
+
+/* ── Discover's click-a-value filters ────────────────────────────────────────────────────── */
+.dc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 1.6em; }
+.dc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px;
+  background: var(--panel, #1b1f24); border: 1px solid var(--line, #2c333b); border-radius: 12px;
+  font-size: 12px; }
+.dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
+  font-size: 13px; line-height: 1; }
+.dc-chip-x:hover { color: #e66; }
+td.dcell { cursor: pointer; }
+td.dcell:hover { text-decoration: underline dotted; }

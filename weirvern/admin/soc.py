@@ -711,6 +711,8 @@ def _discover_bucket_s(hours: float) -> int:
 
 def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | None = None,
              port: int | None = None, sensor: str | None = None,
+             src: list[str] | None = None, dst: list[str] | None = None,
+             sport: list[int] | None = None, dport: list[int] | None = None,
              limit: int = 100, offset: int = 0) -> dict:
     """One page of raw flows plus the facets the filter bar needs.
 
@@ -718,6 +720,12 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
     + port filters but NOT from the chosen flow type (and likewise for the sensor list). A
     facet filtered by its own value would answer "which types are there?" with "the one you
     already picked", which is how a filter bar becomes a dead end.
+
+    THE CHIP FILTERS (src/dst/sport/dport) ARE LISTS, and that is the semantics the operator
+    asked for when he clicked a value: "click a source and it is added to the filter".
+    Values of the SAME field are OR'd (`src_addr IN (a, b)` -- click two sources, see both),
+    and different fields are ANDed (`src IN (...) AND dport IN (...)`). One row per field makes
+    a third click on the same field a no-op instead of an impossible query.
     """
     limit = max(1, min(500, int(limit)))
     offset = max(0, int(offset))
@@ -734,6 +742,14 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
         for target in (where, facet_where):
             target.append("(src_port = %(port)s OR dst_port = %(port)s)")
         params["port"] = facet_params["port"] = int(port)
+    for field, column, cast in (("src", "src_addr", str), ("dst", "dst_addr", str),
+                                ("sport", "src_port", int), ("dport", "dst_port", int)):
+        values = [cast(v) for v in (locals()[field] or []) if str(v) != ""]
+        if not values:
+            continue
+        for target, bag in ((where, params), (facet_where, facet_params)):
+            target.append(f"{column} IN %({field})s")
+            bag[field] = tuple(values)
     if proto is not None:
         where.append("proto = %(proto)s")
         params["proto"] = int(proto)

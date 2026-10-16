@@ -675,11 +675,33 @@ def _build_handler(ctx: GuiContext):
                         raise ValueError
                 except ValueError:
                     return self._error(400, f"port does not look like a port: {port_raw!r}")
+            # THE CHIP FILTERS. Repeated query parameters (src=A&src=B) are the console's
+            # click-a-value-and-it-is-added filters; parse_qs already hands them over as lists.
+            lists: dict[str, list] = {}
+            for field in ("src", "dst"):
+                values = [v.strip() for v in (query.get(field) or []) if v.strip()]
+                for value in values:
+                    if len(value) > 64 or not all(c.isalnum() or c in ".:-_" for c in value):
+                        return self._error(400, f"{field} does not look like an address: {value!r}")
+                lists[field] = values
+            for field in ("sport", "dport"):
+                values = []
+                for raw in (query.get(field) or []):
+                    try:
+                        n = int(raw)
+                        if not 0 <= n <= 65535:
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        return self._error(400, f"{field} does not look like a port: {raw!r}")
+                    values.append(n)
+                lists[field] = values
             try:
                 with self._with_client() as client:
                     payload = soc_mod.discover(
                         client, hours=hours, proto=proto, addr=addr or None, port=port,
                         sensor=sensor or None, limit=limit, offset=offset,
+                        src=lists["src"], dst=lists["dst"],
+                        sport=lists["sport"], dport=lists["dport"],
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("discover unavailable: %s", exc)

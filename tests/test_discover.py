@@ -39,7 +39,7 @@ class _Client:
         if "GROUP BY sampler_address" in sql:
             return _Result([("127.0.0.1", 7)])
         return _Result([("2026-10-16 06:00:00", "127.0.0.1", "198.51.100.20", 4444,
-                         "143.204.55.23", 443, 6, 1234, 12, 0, 64, "", 0, 0)])
+                         "198.51.100.77", 443, 6, 1234, 12, 0, 64, "", 0, 0)])
 
 
 LIVE_TYPES = (("tcp", 6), ("udp", 17), ("icmp", 1), ("icmp6", 58), ("17", 17), ("6", 6))
@@ -93,6 +93,37 @@ def test_the_facets_do_not_filter_themselves_out_of_usefulness():
     assert "sampler_address = %(sensor)s" not in sensor_sql, "the sensor facet filtered itself"
     # ... but the OTHER filters still apply to both facets.
     assert "%(since)s" in proto_sql and "%(since)s" in sensor_sql
+
+
+def test_a_clicked_value_becomes_an_exact_filter():
+    """"Click a source and it is added to the filter" -- the operator's ask. The chip's field
+    must land as an exact comparison, not a substring: clicking 198.51.100.1 must not also match
+    198.51.100.11."""
+    c = _Client()
+    soc.discover(c, hours=6, src=["198.51.100.1"], dport=[443])
+    row_sql = next(s for s in c.sql if "ORDER BY timestamp DESC" in s)
+    params = c.params[c.sql.index(row_sql)]
+    assert "src_addr IN %(src)s" in row_sql and params["src"] == ("198.51.100.1",)
+    assert "dst_port IN %(dport)s" in row_sql and params["dport"] == (443,)
+
+
+def test_same_field_chips_are_ORed_and_different_fields_ANDed():
+    """Two sources clicked must show BOTH (IN), and a port on top must narrow them: that is the
+    semantics of a filter bar, and the alternative -- ANDing two sources -- matches nothing."""
+    c = _Client()
+    soc.discover(c, hours=6, src=["198.51.100.1", "198.51.100.2"], dst=["198.51.100.9"])
+    row_sql = next(s for s in c.sql if "ORDER BY timestamp DESC" in s)
+    params = c.params[c.sql.index(row_sql)]
+    assert params["src"] == ("198.51.100.1", "198.51.100.2")
+    assert "src_addr IN %(src)s AND dst_addr IN %(dst)s" in row_sql, (
+        "different fields must AND together in one WHERE clause")
+
+
+def test_chips_apply_to_the_facets_too_so_the_counts_follow_the_filter():
+    c = _Client()
+    soc.discover(c, hours=6, src=["198.51.100.1"])
+    proto_sql = next(s for s in c.sql if "GROUP BY proto" in s)
+    assert "%(src)s" in proto_sql, "the facets ignored the chip filters"
 
 
 def test_a_window_is_still_a_window():

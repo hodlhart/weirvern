@@ -8,7 +8,43 @@
 //   1. Every empty state says WHY (no rows vs no data vs the query failed).
 //   2. A filter with a value the server cannot read is refused with a sentence -- never
 //      silently dropped, which would show MORE traffic than was asked for.
-const DC_STATE = { offset: 0, limit: 100, total: 0, last: null };
+const DC_STATE = { offset: 0, limit: 100, total: 0, last: null, filters: [] };
+
+// THE CHIPS. "Click a source and it is added to the filter" -- the operator's words. A chip is
+// {field, value, label}: same-field chips are OR'd by the server (click two sources, see both),
+// different fields AND together. The free-text box stays a "contains" filter; chips are exact.
+function dcAddChip(field, value, label) {
+  const v = String(value);
+  if (!v) return;
+  if (DC_STATE.filters.some((f) => f.field === field && f.value === v)) return;
+  DC_STATE.filters.push({ field, value: v, label: label || field + " = " + v });
+  DC_STATE.offset = 0;
+  loadDiscover().then(clearError).catch(showError);
+}
+function dcRemoveChip(index) {
+  DC_STATE.filters.splice(index, 1);
+  DC_STATE.offset = 0;
+  loadDiscover().then(clearError).catch(showError);
+}
+function dcRenderChips() {
+  const box = document.getElementById("dc-chips");
+  if (!box) return;
+  box.replaceChildren();
+  if (!DC_STATE.filters.length) {
+    box.appendChild(el("span", { class: "muted",
+      text: "no value filters \u2014 click any address, port or type in a row to add one" }));
+    return;
+  }
+  DC_STATE.filters.forEach((f, i) => {
+    const chip = el("span", { class: "dc-chip" });
+    chip.appendChild(el("span", { text: f.label }));
+    const x = el("button", { class: "dc-chip-x", text: "\u00d7",
+                             attrs: { title: "remove this filter" } });
+    x.addEventListener("click", (e) => { e.stopPropagation(); dcRemoveChip(i); });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+}
 
 function dcParams() {
   const sensor = (document.getElementById("dc-sensor") || {}).value || "";
@@ -20,6 +56,7 @@ function dcParams() {
   if (proto) q.push("proto=" + encodeURIComponent(proto));
   if (addr) q.push("addr=" + encodeURIComponent(addr));
   if (port) q.push("port=" + encodeURIComponent(port));
+  DC_STATE.filters.forEach((f) => q.push(f.field + "=" + encodeURIComponent(f.value)));
   q.push("limit=" + DC_STATE.limit);
   q.push("offset=" + DC_STATE.offset);
   return q.join("&");
@@ -41,6 +78,7 @@ async function loadDiscover() {
           : DC_STATE.total + " flow(s) match; showing " + (DC_STATE.offset + 1) + "\u2013" +
             (DC_STATE.offset + rows.length) + ".");
   }
+  dcRenderChips();
   dcRenderHistogram(d);
   dcRenderFacets(d);
   dcRenderRows(d);
@@ -101,16 +139,36 @@ function dcRenderRows(d) {
   (d.rows || []).forEach((r) => {
     const tr = el("tr", { class: "dc-row" });
     tr.appendChild(dcCell(fmtTime(new Date(r.timestamp)), "muted"));
-    tr.appendChild(dcCell(r.sensor, "muted"));
-    tr.appendChild(dcCell(r.src_addr));
-    tr.appendChild(dcCell(r.src_port || "\u00b7"));
+    const cell = (value, field, label, cls) => {
+      const td = dcCell(value, cls);
+      if (field) {
+        td.classList.add("dcell");
+        td.title = "add to the filter: " + (label || field + " = " + value);
+        td.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (field === "proto") {
+            document.getElementById("dc-proto").value = String(r.proto);
+            DC_STATE.offset = 0; loadDiscover().then(clearError).catch(showError); return;
+          }
+          if (field === "sensor") {
+            document.getElementById("dc-sensor").value = r.sensor;
+            DC_STATE.offset = 0; loadDiscover().then(clearError).catch(showError); return;
+          }
+          dcAddChip(field, value, label);
+        });
+      }
+      return td;
+    };
+    tr.appendChild(cell(r.sensor, "sensor", "sensor = " + r.sensor, "muted"));
+    tr.appendChild(cell(r.src_addr, "src", "src = " + r.src_addr));
+    tr.appendChild(cell(r.src_port || "\u00b7", r.src_port ? "sport" : "", r.src_port ? "sport = " + r.src_port : ""));
     tr.appendChild(dcCell("\u2192"));
-    tr.appendChild(dcCell(r.dst_addr));
-    tr.appendChild(dcCell(r.dst_port || "\u00b7"));
-    tr.appendChild(dcCell(r.proto_label));
+    tr.appendChild(cell(r.dst_addr, "dst", "dst = " + r.dst_addr));
+    tr.appendChild(cell(r.dst_port || "\u00b7", r.dst_port ? "dport" : "", r.dst_port ? "dport = " + r.dst_port : ""));
+    tr.appendChild(cell(r.proto_label, "proto", "type = " + r.proto_label));
     tr.appendChild(dcCell(fmtBytes(r.bytes)));
     tr.appendChild(dcCell(Number(r.packets).toLocaleString()));
-    tr.title = "click for every field, and to filter on this host, port or flow type";
+    tr.title = "click a value to add it to the filter \u00b7 click the row for every field";
     tr.addEventListener("click", () => dcToggleDetail(tr, r));
     body.appendChild(tr);
   });
@@ -137,10 +195,10 @@ function dcToggleDetail(tr, r) {
     b.addEventListener("click", (e) => { e.stopPropagation(); fn(); loadDiscover().then(clearError).catch(showError); });
     acts.appendChild(b);
   };
-  addFilter("only " + r.src_addr, () => { document.getElementById("dc-addr").value = r.src_addr; });
-  addFilter("only " + r.dst_addr, () => { document.getElementById("dc-addr").value = r.dst_addr; });
-  if (r.dst_port) addFilter("only port " + r.dst_port, () => { document.getElementById("dc-port").value = String(r.dst_port); });
-  addFilter("only " + r.proto_label, () => { document.getElementById("dc-proto").value = String(r.proto); });
+  addFilter("+ src " + r.src_addr, () => dcAddChip("src", r.src_addr));
+  addFilter("+ dst " + r.dst_addr, () => dcAddChip("dst", r.dst_addr));
+  if (r.src_port) addFilter("+ sport " + r.src_port, () => dcAddChip("sport", r.src_port));
+  if (r.dst_port) addFilter("+ dport " + r.dst_port, () => dcAddChip("dport", r.dst_port));
   const host = el("button", { text: "open host " + r.src_addr });
   host.addEventListener("click", (e) => { e.stopPropagation(); showView("host"); openHost(r.src_addr); });
   acts.appendChild(host);
@@ -183,6 +241,7 @@ function discoverDrill(opts) {
 function dcClear() {
   ["dc-addr", "dc-port"].forEach((id) => { const e = document.getElementById(id); if (e) e.value = ""; });
   ["dc-sensor", "dc-proto"].forEach((id) => { const e = document.getElementById(id); if (e) e.value = ""; });
+  DC_STATE.filters = [];
   DC_STATE.offset = 0;
   loadDiscover().then(clearError).catch(showError);
 }
