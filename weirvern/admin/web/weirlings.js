@@ -378,16 +378,21 @@ async function wlPopulateSelector() {
     if (note) note.textContent = `could not read the fleet: ${(err && err.message) || err}`;
     return;
   }
+  // REGISTERED ROWS ONLY. A heartbeat under a name nobody declared ("Weirvern" beside the
+  // registered "weirvern", measured live) is a fact for the Weirlings tab -- where it shows as
+  // unregistered and can be registered -- not a choice on a settings page: there is no weirling
+  // there to configure, and offering it would suggest there is.
+  const registered = rows.filter((r) => r.registered);
   sel.replaceChildren(el("option", { value: "",
-    text: rows.length ? "pick a weirling" : "none registered" }));
+    text: registered.length ? "pick a weirling" : "none registered" }));
   let localId = "";
-  for (const r of rows) {
+  for (const r of registered) {
     sel.appendChild(el("option", { value: r.sensor_id,
       text: r.sensor_id + (r.local ? " (this hub)" : "") }));
     if (r.local) localId = r.sensor_id;
   }
   const keep = sessionStorage.getItem("weirvern-wl-settings") || localId
-    || (rows[0] || {}).sensor_id || "";
+    || (registered[0] || {}).sensor_id || "";
   if (keep) sel.value = keep;
   sel.dataset.filled = "1";
   await wlSettingsFor(sel.value);
