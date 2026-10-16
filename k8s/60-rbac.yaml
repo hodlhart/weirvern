@@ -95,8 +95,9 @@ rules:
   #
   # The GUI's settings path restarts exactly two workloads (`_RESTART_FOR` in
   # admin/cluster_config.py) plus itself, so those three names are the whole of what it needs.
-  # `update` is still NOT granted anywhere: a PUT replaces the entire object, so one malformed
-  # request could strip a workload's securityContext.
+  # `update` is NOT granted on any workload object: a PUT replaces the entire object, so one
+  # malformed request could strip a workload's securityContext. Its only appearance is on the
+  # name-scoped /scale subresources further down, where it carries `spec.replicas` alone.
   - apiGroups: [""]
     resources: ["pods", "services", "endpoints", "persistentvolumeclaims"]
     verbs: ["get", "list"]
@@ -116,40 +117,65 @@ rules:
     resources: ["deployments"]
     resourceNames: ["weirvern-worker", "weirvern-gui"]
     verbs: ["patch"]
+  # THE STOP/START PATH (`weirvern stop` / `weirvern start`), name-scoped to exactly the
+  # workloads the CLI drives (`runtime.WORKLOADS`): the database, the exporter and the consumer.
+  # An unscoped scale grant let this Role rescale anything in the namespace -- including objects
+  # it has no other business touching. `update` lives ONLY here, on the /scale subresource: a PUT
+  # there carries `spec.replicas` alone, so unlike a PUT on the workload itself it cannot strip a
+  # securityContext. See the note above: `update` is granted on no workload object.
   - apiGroups: ["apps"]
-    resources: ["deployments/scale", "statefulsets/scale"]
+    resources: ["deployments/scale"]
+    resourceNames: ["goflow2", "weirvern-worker"]
     verbs: ["get", "patch", "update"]
-  # The Sonar survey Job. THE ONE GRANT THAT CANNOT BE NAMED: the job is created with a random
-  # suffix (`weirvern-sonar-<8 hex>` in admin/sonar.py) so concurrent surveys do not collide, and
-  # `resourceNames` cannot match a name that does not exist yet. `create` therefore has to be
-  # broad within this namespace.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    resourceNames: ["clickhouse"]
+    verbs: ["get", "patch", "update"]
+  # The Sonar survey Job. THE ONE GRANT THAT CANNOT BE NAMED -- MEASURED, NOT ASSUMED (issue #10,
+  # 2026-10-16): the job is created with a random suffix (`weirvern-sonar-<8 hex>` in
+  # admin/sonar.py) so concurrent surveys do not collide, and a live probe proved the API server
+  # DENIES a `create` scoped by `resourceNames` even when the name matches exactly. So the only
+  # choices are an unscoped `create` here or no `create` at all.
   #
-  # The blast radius is bounded by what a Job CAN do here rather than by its name: it runs the
-  # weirvern-worker image, which the cluster already trusts, and it does not inherit the operator
-  # ServiceAccount. An operator who wants it tighter can drop `create` and run surveys from the CLI
-  # instead -- the GUI reports that cleanly rather than failing oddly.
+  # WHAT IS NOT TRUE, and stood in this comment first: that the blast radius is bounded because
+  # "it runs the weirvern-worker image". The pod spec is chosen by whoever submits the Job. Any
+  # holder of this grant can submit any spec this namespace admits -- and the namespace enforces
+  # `privileged`, because the capture sensor genuinely needs those capabilities. A jobs-create
+  # grant here is therefore a node-escape capability, held by a NodePort HTTP service with
+  # password auth. That is exactly why it is a deliberate, documented choice rather than a
+  # convenience, and why the way to remove it is to not want in-GUI surveys: drop `create` (and
+  # `delete`) and run surveys from the CLI, which the GUI reports cleanly instead of failing
+  # oddly. `delete` is here because the GUI deletes the Job after reading its log; the TTL
+  # (`ttlSecondsAfterFinished`) only covers a GUI that dies mid-survey.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods/log", "pods/portforward"]
     verbs: ["get", "create"]
-  # THE CONFIG WRITE PATH. The GUI patches weirvern-env to change settings, and rolls the
-  # workload that reads it. Scoped to this namespace (this is a Role, not a ClusterRole), so the
-  # grant cannot reach another namespace’s configuration.
-  #
-  # `patch` on configmaps is the whole of what a settings change needs. `update` is deliberately
-  # NOT granted: a PUT replaces every key, which would wipe values the GUI never showed.
-  #
-  # `create` is here for ONE object: the account store (`weirvern-users`), which the GUI creates
-  # on first startup rather than shipping as a manifest. A placeholder manifest would be
-  # re-applied with empty values on every `kubectl apply -k`, silently wiping live accounts --
-  # the same failure mode the Secret has a note about in kustomization.yaml. The grant is
-  # namespace-scoped like everything else here, so a compromised GUI pod cannot create
-  # ConfigMaps anywhere else.
+  # THE CONFIG WRITE PATH. `patch` is NAME-SCOPED to the two objects the GUI writes: `weirvern-env`
+  # (settings) and `weirvern-users` (the account store). An unscoped configmap write let this Role
+  # patch ANY ConfigMap in the namespace -- including sensor configuration a root pod executes.
+  # `update` is deliberately NOT granted anywhere on configmaps: a PUT replaces every key.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "patch", "create"]
+    resourceNames: ["weirvern-env", "weirvern-users"]
+    verbs: ["patch"]
+  #
+  # The first-startup CREATE cannot be named -- same measurement as the jobs grant above: a live
+  # probe with `resourceNames=[the exact object]` was denied the create. It stays because the
+  # account store has to exist before anyone can sign in, and the alternative (shipping a
+  # placeholder manifest) was rejected for the reason the file header gives: `kubectl apply -k`
+  # would re-apply it with empty values and silently wipe live accounts. What a create can make
+  # here is a ConfigMap nobody reads until it is named `weirvern-users`.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  # Reads stay namespace-scoped rather than name-scoped: the GUI reads its own store, the settings
+  # ConfigMap and (for drift display) the sensor config, and a read cannot reconfigure anything.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

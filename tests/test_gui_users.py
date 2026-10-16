@@ -884,7 +884,9 @@ def test_the_gui_can_CREATE_the_users_configmap_it_bootstraps():
                 and d["metadata"]["name"] == "weirvern-operator")
     rules = [r for r in role["rules"] if "configmaps" in r.get("resources", [])]
     assert rules, "the operator role cannot touch configmaps"
-    verbs = set(rules[0]["verbs"])
+    # Separate rules since issue #10 (patch name-scoped, create its own documented grant); the
+    # requirement is about the ROLE's reach, so union the verbs across its configmap rules.
+    verbs = set().union(*(set(r["verbs"]) for r in rules))
     assert {"get", "patch", "create"} <= verbs, (
         f"the operator role is missing a verb the account store needs: {sorted(verbs)}"
     )
@@ -901,12 +903,19 @@ def test_the_users_configmap_is_NOT_a_shipped_manifest():
         "an account ConfigMap manifest would be re-applied with empty values and wipe "
         "live accounts on every `kubectl apply -k`"
     )
+    # SHARPENED (issue #10): the question is whether a manifest DECLARES the ConfigMap, not
+    # whether the string appears. The operator Role must NAME it in resourceNames now that its
+    # configmap `patch` is name-scoped -- naming a resource in a grant is the opposite of
+    # declaring it, and a substring check reads the two the same way.
+    import yaml as _yaml
+
     for path in sorted((ROOT / "k8s").glob("*.yaml")):
-        code = "\n".join(ln.split("#")[0] for ln in path.read_text().splitlines())
-        assert "weirvern-users" not in code, (
-            f"{path.name} references the account store; it is created at runtime and must "
-            f"not be declared in a manifest"
-        )
+        for d in _yaml.safe_load_all(path.read_text()):
+            if d and d.get("kind") == "ConfigMap":
+                assert d.get("metadata", {}).get("name") != "weirvern-users", (
+                    f"{path.name} declares the account store; it is created at runtime and "
+                    f"must not be shipped as a manifest"
+                )
 
 
 # ── the bootstrap password must not be readable by a VIEWER ────────────────────────────────────

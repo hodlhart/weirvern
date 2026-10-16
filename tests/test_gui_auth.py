@@ -599,7 +599,10 @@ def test_the_operator_role_can_patch_configmaps():
                 and d["metadata"]["name"] == "weirvern-operator")
     rules = [r for r in role["rules"] if "configmaps" in r.get("resources", [])]
     assert rules, "the operator Role cannot touch configmaps, so a settings write is refused"
-    verbs = set(rules[0]["verbs"])
+    # The grants are SEPARATE rules now (issue #10): patch is name-scoped, create is its own
+    # documented rule, get stands alone. The question this test asks is about the ROLE, so the
+    # verbs are unioned across its configmap rules rather than read off the first one.
+    verbs = set().union(*(set(r["verbs"]) for r in rules))
     assert "patch" in verbs, "the role cannot patch"
     assert "get" in verbs, "the role cannot read back, so a write cannot be verified"
 

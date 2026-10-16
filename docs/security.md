@@ -22,6 +22,19 @@ all capabilities dropped. See [SECURITY.md](../SECURITY.md).
 read Secrets — an account that displays health cannot exfiltrate the Pushover
 token.
 
+The operator role is name-scoped wherever the API allows it, and says where the API does not:
+
+- workload restarts (`patch`) are limited to the exact objects the GUI rolls (`zeek`,
+  `weirvern-worker`, `weirvern-gui`);
+- ConfigMap writes are limited to the two objects the GUI writes (`weirvern-env`,
+  `weirvern-users`); the first-startup `create` is the documented exception, because
+  `resourceNames` cannot restrict a create — measured against a live cluster, not assumed;
+- `update` appears only on `/scale` subresources, name-scoped to the workloads the CLI's
+  stop/start drives — never on a workload object, where a PUT could strip a securityContext;
+- the GUI's Sonar survey Job cannot be name-scoped (its name is created with a random suffix).
+  A jobs-create grant in this privileged namespace is a node-escape capability; deployments that
+  do not use in-GUI surveys should drop `create` on `jobs` and run surveys from the CLI instead.
+
 ### Data sensitivity
 
 Zeek's `http.log` and `dns.log` contain personal data: hostnames, URLs, user

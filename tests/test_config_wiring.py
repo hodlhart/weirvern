@@ -59,6 +59,60 @@ def _containers(spec: dict) -> list[dict]:
     return list(spec.get("initContainers") or []) + list(spec.get("containers") or [])
 
 
+# --- the operator Role's scope (issue #10) ----------------------------------------------------
+def _operator_rules(docs: list[dict]) -> list[dict]:
+    return list(_find(docs, "Role", "weirvern-operator")["rules"])
+
+
+def test_every_configmap_write_is_name_scoped(docs):
+    """A patch/update on configmaps must name its objects. `create` is exempt, and the reason is
+    measured, not stylistic: the API server denies a create scoped by resourceNames even when the
+    name matches exactly (probe Role, live cluster, 2026-10-16) -- so a name-scoped create would
+    silently break the users store's first startup."""
+    for rule in _operator_rules(docs):
+        if "configmaps" not in rule.get("resources", []):
+            continue
+        writes = set(rule.get("verbs", [])) & {"patch", "update"}
+        if writes:
+            assert rule.get("resourceNames"), (
+                f"unscoped configmap write {sorted(writes)}: name the objects this may touch")
+
+
+def test_every_scale_grant_is_name_scoped_to_what_the_cli_drives(docs):
+    """`weirvern stop/start` scales exactly runtime.WORKLOADS. An unscoped scale grant can
+    rescale anything in the namespace; the scope is the list itself, not a copy of it."""
+    from weirvern.admin.runtime import WORKLOADS
+
+    by_kind: dict[str, set] = {}
+    for name, kind in WORKLOADS:
+        by_kind.setdefault(kind, set()).add(name)
+
+    seen = set()
+    for rule in _operator_rules(docs):
+        for res in rule.get("resources", []):
+            if not res.endswith("/scale"):
+                continue
+            names = rule.get("resourceNames")
+            assert names, f"unscoped {res} grant: the stop/start path must name its workloads"
+            kind = res.split("/")[0][:-1]  # deployments/scale -> deployment
+            assert kind in by_kind, f"scale granted on {res}, which the CLI does not drive"
+            assert set(names) <= by_kind[kind], (
+                f"{res} names {sorted(set(names) - by_kind[kind])}, beyond the CLI's workloads")
+            seen.add(kind)
+    assert seen, "no scale rule found at all -- did the stop/start path lose its grant?"
+
+
+def test_update_is_granted_on_no_workload_object(docs):
+    """A PUT replaces the whole object. `update` may appear only on a /scale subresource, where
+    it carries spec.replicas alone."""
+    for rule in _operator_rules(docs):
+        if "update" not in rule.get("verbs", []):
+            continue
+        for res in rule.get("resources", []):
+            assert res.endswith("/scale"), (
+                f"update on {res}: one malformed PUT could strip a securityContext")
+
+
 # --- the specific regression ---------------------------------------------------
 def test_mgmt_iface_is_in_the_configmap(docs):
     cm = _find(docs, "ConfigMap", "weirvern-env")
