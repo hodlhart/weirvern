@@ -403,6 +403,10 @@ def test_the_flow_probe_pipes_a_tcpdump_tap_into_softflowd_once():
     assert "tcpdump" in tap_argv[0]
     assert tap_argv[tap_argv.index("-i") + 1] == "wv-a"
     assert "-U" in tap_argv and "-w" in tap_argv
+    assert "-Z" in tap_argv and tap_argv[tap_argv.index("-Z") + 1] == "root", (
+        "Debian's tcpdump drops privileges to a user that does not exist in this container and "
+        "exits at once; -Z root is what keeps the tap alive (measured)"
+    )
     assert "softflowd" in sf_argv[0]
     assert sf_argv[sf_argv.index("-r") + 1] == "/dev/stdin"
     assert sf_argv[sf_argv.index("-v") + 1] == "10", "v9 is dropped by the collector; measured"

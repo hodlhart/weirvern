@@ -26,6 +26,12 @@ but silently DROPS its v9. So the probe runs tcpdump → softflowd → IPFIX on 
 the records land in the same `flows` table the Netflow tab and the models read. The image
 contract pins both binaries; the supervision matrix runs against fake processes.
 
+**And the tap runs with `-Z root`, because Debian's tcpdump drops privileges to a `tcpdump`
+user that cannot be switched to inside this container** — "Couldn't change to 'tcpdump' ...:
+Operation not permitted" — and exits instantly, taking the summariser with it (EOF on the
+pipe). Measured, as was the swallowing half of the bug: both children's stderr now goes to the
+pod log instead of /dev/null, so the next failure of this kind is legible rather than silent.
+
 ## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
 
 Two requests, one theme: nothing important should require kubectl or a manual.

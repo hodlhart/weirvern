@@ -290,8 +290,15 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
     spawn_child = spawn or _subprocess.Popen
     try:
         tap_proc = spawn_child(
-            [tap, "-i", iface, "-U", "-s", "160", "-w", "-", CHANNEL_NETFLOW_FILTER],
-            stdout=_subprocess.PIPE, stderr=_subprocess.DEVNULL)
+            # -Z root: Debian's tcpdump DROPS PRIVILEGES to the `tcpdump` user after opening the
+            # device, and in this container that setuid fails -- measured: "Couldn't change to
+            # 'tcpdump' uid=100 gid=101: Operation not permitted", tcpdump exits 1 at once,
+            # softflowd sees EOF, and the probe dies without a single record. It is already root
+            # inside its own container with only the capabilities the overlay grants; staying
+            # root is what makes the tap run at all. stderr is left INHERITED (the pod log) so a
+            # future failure of this kind is legible instead of being swallowed by DEVNULL.
+            [tap, "-Z", "root", "-i", iface, "-U", "-s", "160", "-w", "-", CHANNEL_NETFLOW_FILTER],
+            stdout=_subprocess.PIPE)
         try:
             proc = spawn_child(
                 [probe, "-r", "/dev/stdin", "-n", CHANNEL_NETFLOW_COLLECTOR, "-v", "10", "-d",
