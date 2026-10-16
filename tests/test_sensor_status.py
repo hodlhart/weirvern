@@ -561,7 +561,7 @@ def test_a_schema_file_ending_in_comments_applies_cleanly():
     refused to start with "1 schema statement(s) failed; refusing to report success". Every
     schema file is checked, because the next one to end in a comment would fail the same way.
     """
-    from weirvern.db import _SQL_SPLIT, _strip_sql_comments
+    from weirvern.db import split_sql_statements as db_split
 
     schema_dir = ROOT / "weirvern" / "schema"
     # The condition that triggers it: at least one file ends with a comment.
@@ -572,8 +572,7 @@ def test_a_schema_file_ending_in_comments_applies_cleanly():
     )
 
     for path in sorted(schema_dir.glob("*.sql")):
-        statements = [s for s in (_strip_sql_comments(raw).strip()
-                                  for raw in _SQL_SPLIT.split(path.read_text())) if s]
+        statements = db_split(path.read_text())
         assert statements, f"{path.name} produced no statements"
         for stmt in statements:
             assert stmt.strip(), f"{path.name} produced an empty statement"

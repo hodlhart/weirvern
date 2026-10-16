@@ -58,7 +58,7 @@ def test_the_migration_parses_into_the_expected_statements():
     from weirvern import db
 
     sql = (SCHEMA / "007_sensor_capture.sql").read_text()
-    stmts = [s for s in db._SQL_SPLIT.split(sql) if db._strip_sql_comments(s).strip()]
+    stmts = db.split_sql_statements(sql)
     assert len(stmts) == 3, f"expected 3 ALTERs, parsed {len(stmts)}"
     for s in stmts:
         code = db._strip_sql_comments(s).strip()

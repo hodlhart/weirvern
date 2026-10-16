@@ -38,6 +38,20 @@ SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 _SQL_SPLIT = re.compile(r";\s*$", re.MULTILINE)
 
 
+def split_sql_statements(text: str) -> list[str]:
+    """The ONE way a schema file becomes statements. Callers must not re-derive this.
+
+    COMMENTS ARE STRIPPED *BEFORE* THE SPLIT, and that order is load-bearing (measured on the
+    box, 2026-10-16): the splitter cuts on a `;` at end of line, and a COMMENT LINE ENDING IN A
+    SEMICOLON ("-- ... the version;") split a CREATE TABLE mid-column-list. The chunk left
+    after the cut began with a bare column fragment, ClickHouse answered code 62, apply_schema
+    refused to report success, and the worker crash-looped -- a comment, taking down a deploy.
+    After stripping, a chunk that is empty or comment-only simply disappears.
+    """
+    stripped = _strip_sql_comments(text)
+    return [s.strip() for s in _SQL_SPLIT.split(stripped) if s.strip()]
+
+
 def _strip_sql_comments(statement: str) -> str:
     """Remove `--` comments, leaving only executable SQL.
 
@@ -124,12 +138,9 @@ def apply_schema(client: Client, settings: Settings) -> None:
     applied = []
     failures: list[tuple[str, str]] = []
     for sql_path in sql_files:
-        # Strip comments BEFORE the emptiness check: a file ending in a comment block
-        # splits into a final chunk that is non-empty text but contains no SQL, which
-        # ClickHouse rejects as an empty query and which fails the whole migration.
-        statements = [s for s in (_strip_sql_comments(raw).strip()
-                                  for raw in _SQL_SPLIT.split(sql_path.read_text()))
-                      if s]
+        # Comments first, then split, then the emptiness check -- one helper, one order (see
+        # split_sql_statements for the measured defect that made the order matter).
+        statements = split_sql_statements(sql_path.read_text())
         for stmt in statements:
             # Statements are idempotent (CREATE IF NOT EXISTS); still skip VIEWs
             # that already exist without erroring on the `CREATE VIEW IF NOT EXISTS`.

@@ -159,3 +159,24 @@ def test_apply_schema_fails_loudly_when_a_statement_fails(monkeypatch, tmp_path)
     assert any("good" in c for c in fake.commands), (
         "remaining statements must still be attempted before failing"
     )
+
+
+def test_a_comment_line_ending_in_a_semicolon_does_not_split_a_statement():
+    """REGRESSION, measured on the box 2026-10-16: schema/018's comment line ended in a
+    semicolon, and the splitter -- which cut BEFORE comments were stripped -- broke the CREATE
+    TABLE mid-column-list. ClickHouse answered code 62, apply_schema refused to report success,
+    and the worker crash-looped: a comment, taking down a deploy. Comments are stripped first
+    now, through one shared helper; this pins the order."""
+    from weirvern.db import split_sql_statements
+
+    text = (
+        "CREATE TABLE IF NOT EXISTS t\n(\n    a String,\n"
+        "    -- the version;\n"
+        "    b DateTime DEFAULT now()\n)\nENGINE = ReplacingMergeTree(b)\nORDER BY a;\n"
+        "-- trailing comment;\n"
+    )
+    statements = split_sql_statements(text)
+    assert len(statements) == 1, statements
+    assert "a String" in statements[0] and "b DateTime" in statements[0], (
+        "the comment's semicolon split the statement")
+    assert "--" not in statements[0]
