@@ -2486,7 +2486,9 @@ function renderFeatureDeviations(rows) {
   for (const r of rows) {
     const w = (r.mean_abs_z / max) * 100;
     const wMax = (r.max_abs_z / max) * 100;
-    host.appendChild(el("div", { class: "bar-row" }, [
+    host.appendChild(el("div", { class: "bar-row dcell",
+      attrs: { title: `${r.feature}: click to filter the points table to this feature` },
+      on: { click: () => mSetFilter("feature", r.feature) } }, [
       el("span", { class: "bar-name", text: r.feature,
                    title: `${r.feature}: mean |z| ${r.mean_abs_z.toFixed(2)}, peak ${r.max_abs_z.toFixed(2)}, n=${r.n}` }),
       el("span", { class: "bar-track" }, [
@@ -2527,22 +2529,29 @@ function renderNearMisses(data) {
     ]));
     return;
   }
-  const rows = data.near_misses || [];
+  const allRows = data.near_misses || [];
+  const rows = allRows.filter((nm) => !M_FILTERS.host || String(nm.src_addr || "") === M_FILTERS.host);
   if (!rows.length) {
     body.appendChild(el("tr", {}, [
       el("td", { class: "muted",
-                 text: "No near misses in this window — nothing scored close to the bar.",
+                 text: allRows.length
+                   ? "No near miss matches the host filter."
+                   : "No near misses in this window — nothing scored close to the bar.",
                  attrs: { colspan: 6 } }),
     ]));
     return;
   }
   note.appendChild(el("p", { class: "muted", text:
     `${rows.length} window(s) within reach of the bar. Raising the threshold would `
-    + `reclassify the below-threshold rows; lowering it would surface the gate rows.` }));
+    + `reclassify the below-threshold rows; lowering it would surface the gate rows.`
+    + (M_FILTERS.feature
+        ? " The feature filter does not reach these rows: they carry no feature column." : "") }));
   for (const nm of rows) {
     body.appendChild(el("tr", {}, [
       el("td", { class: "mono", text: fmtTime(nm.window_start) }),
-      el("td", {}, [hostCell(nm.src_addr, nm.hostname)]),
+      el("td", { class: "dcell", attrs: { title: "filter this view to this host" },
+                 on: { click: (e) => { e.stopPropagation(); mSetFilter("host", nm.src_addr); } } },
+         [hostCell(nm.src_addr, nm.hostname)]),
       el("td", { class: "num", text: Number(nm.score || 0).toFixed(3) }),
       el("td", { class: "num", text: Number(nm.threshold || 0).toFixed(3) }),
       el("td", { text: nm.reason === "agreement-gate"
@@ -2551,6 +2560,48 @@ function renderNearMisses(data) {
       el("td", { text: (nm.models || []).join(", ") || "—" }),
     ]));
   }
+}
+
+/**
+ * CLICK-TO-FILTER for the models view (the operator, 2026-10-16: "if i click in any dashboard it
+ * should filter that entire dashboard"). Same contract as the identity list, and the same
+ * reason it is client-side: these tables render the window's full set -- no pagination -- so
+ * the filter cannot hide a match the browser never received.
+ *
+ * WHAT EACH FILTER REACHES, stated where a reader needs it: HOST narrows both row tables (the
+ * points and the near misses); FEATURE narrows the points table, the only one with a feature
+ * column -- when it is active the near-miss caption SAYS SO, because a filter a panel silently
+ * ignores would make the view agree with itself only by accident.
+ */
+const M_FILTERS = { host: "", feature: "" };
+
+function mRenderChips() {
+  const box = document.getElementById("m-filters");
+  if (!box) return;
+  box.replaceChildren();
+  for (const field of ["host", "feature"]) {
+    if (!M_FILTERS[field]) continue;
+    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+      text: `${field} = ${M_FILTERS[field]} \u00d7` });
+    chip.addEventListener("click", () => {
+      M_FILTERS[field] = "";
+      mRenderChips();
+      loadModels().catch(showError);
+    });
+    box.appendChild(chip);
+  }
+}
+
+function mSetFilter(field, value) {
+  M_FILTERS[field] = String(value || "");
+  mRenderChips();
+  loadModels().catch(showError);
+}
+
+function mKeepPoint(pt) {
+  if (M_FILTERS.host && String(pt.src_addr || "") !== M_FILTERS.host) return false;
+  if (M_FILTERS.feature && String(pt.primary || "") !== M_FILTERS.feature) return false;
+  return true;
 }
 
 async function loadModels() {
@@ -2574,6 +2625,7 @@ async function loadModels() {
   if (win) win.textContent = "last " + hours + "h";
   if (sum) sum.textContent = data.summary || "";
 
+  mRenderChips();
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});
@@ -2583,13 +2635,19 @@ async function loadModels() {
 
   const body = document.querySelector("#m-points tbody");
   body.innerHTML = "";
-  if (!(data.points || []).length) {
+  const allPts = data.points || [];
+  const pts = allPts.filter(mKeepPoint);
+  if (!pts.length) {
+    // A FILTER THAT MATCHES NOTHING AND A WINDOW THAT HELD NOTHING ARE DIFFERENT FACTS.
     body.appendChild(el("tr", {}, [
-      el("td", { class: "muted", text: "No anomalies in this window.", attrs: { colspan: 7 } }),
+      el("td", { class: "muted", attrs: { colspan: 7 },
+                 text: allPts.length
+                   ? "No row matches the filter. Remove a chip to see the window again."
+                   : "No anomalies in this window." }),
     ]));
     return;
   }
-  for (const pt of data.points) {
+  for (const pt of pts) {
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "num", text: Number(pt.score || 0).toFixed(3) }),
       el("td", { class: "num", text: Number(pt.agreement || 0).toFixed(2) }),
@@ -2597,7 +2655,9 @@ async function loadModels() {
       el("td", { text: (pt.models || []).join(", ") || "—" }),
       el("td", { text: pt.primary || "—" }),
       el("td", { class: "num", text: Number(pt.magnitude || 0).toFixed(2) }),
-      el("td", {}, [hostCell(pt.src_addr, pt.hostname)]),
+      el("td", { class: "dcell", attrs: { title: "filter this view to this host" },
+                 on: { click: (e) => { e.stopPropagation(); mSetFilter("host", pt.src_addr); } } },
+         [hostCell(pt.src_addr, pt.hostname)]),
     ]);
     if (pt.src_addr) {
       tr.addEventListener("click", () => { showView("host"); loadHost(pt.src_addr, 24); });
@@ -2693,6 +2753,49 @@ async function retrainAction(action) {
 }
 
 /* ── Passive host identification ────────────────────────────────────────────────────────── */
+/**
+ * CLICK-TO-FILTER for the identity list (the operator, 2026-10-16: "if i click in any dashboard
+ * it should filter that entire dashboard"). A click on a host's OS or confidence narrows the
+ * LIST; the chips remove themselves.
+ *
+ * WHY CLIENT-SIDE HERE, DELIBERATELY, where the other views filter server-side: the identity
+ * payload IS the view's full set -- every identified host in the window, no pagination, no
+ * LIMIT -- so the filter cannot hide a match the browser never received. That claim is kept
+ * checkable: the counter reads "showing X of Y", so the relationship between the filtered list
+ * and the window's total is on screen rather than implied. The coverage stats above the list
+ * stay whole-window on purpose: they describe the segment, not the list.
+ */
+const ID_FILTERS = { os: "", confidence: "" };
+
+function idRenderChips() {
+  const box = document.getElementById("id-filters");
+  if (!box) return;
+  box.replaceChildren();
+  for (const field of ["os", "confidence"]) {
+    if (!ID_FILTERS[field]) continue;
+    const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
+      text: `${field} = ${ID_FILTERS[field]} \u00d7` });
+    chip.addEventListener("click", () => {
+      ID_FILTERS[field] = "";
+      idRenderChips();
+      loadIdentity().catch(showError);
+    });
+    box.appendChild(chip);
+  }
+}
+
+function idSetFilter(field, value) {
+  ID_FILTERS[field] = String(value || "");
+  idRenderChips();
+  loadIdentity().catch(showError);
+}
+
+function idKeep(h) {
+  if (ID_FILTERS.os && String(h.os_label || h.os || "unknown") !== ID_FILTERS.os) return false;
+  if (ID_FILTERS.confidence && String(h.confidence || "") !== ID_FILTERS.confidence) return false;
+  return true;
+}
+
 async function loadIdentity() {
   const hours = String(trHours());
   const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
@@ -2731,26 +2834,40 @@ async function loadIdentity() {
     ? `Of ${cov.hosts_seen} hosts seen in the last ${cov.window_days} days, ${cov.hosts_classified} have an identity. The rest have produced no identifying signal yet.`
     : "";
 
+  idRenderChips();
   const hosts = d.hosts || [];
-  document.getElementById("id-count").textContent = hosts.length ? `(${hosts.length})` : "";
+  const shown = hosts.filter(idKeep);
+  document.getElementById("id-count").textContent = hosts.length
+    ? (shown.length === hosts.length ? `(${hosts.length})` : `(showing ${shown.length} of ${hosts.length})`)
+    : "";
   const tbody = document.querySelector("#id-table tbody");
   tbody.replaceChildren();
 
   const empty = document.getElementById("id-empty");
-  if (!hosts.length) {
-    empty.textContent = d.available
-      ? "No host has been identified yet. Identity comes from application banners, DHCP leases and TLS fingerprints, so a segment with none of those produces nothing here."
-      : "";
+  if (!shown.length) {
+    // THREE DIFFERENT EMPTINESSES, three different sentences: a failed read, a filter that
+    // matches nothing, and a segment that has produced no identity at all. Conflating them is
+    // this project's named failure mode.
+    empty.textContent = !d.available
+      ? ""
+      : (hosts.length
+          ? "No host matches the filter. Remove it to see the whole list."
+          : "No host has been identified yet. Identity comes from application banners, DHCP leases and TLS fingerprints, so a segment with none of those produces nothing here.");
     return;
   }
   empty.textContent = "";
 
-  for (const h of hosts) {
+  for (const h of shown) {
     const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "";
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "mono", text: h.hostname ? `${h.hostname} (${h.host})` : h.host }),
-      el("td", { text: h.os_label || h.os || "unknown" }),
-      el("td", {}, [confidenceChip(h.confidence)]),
+      el("td", { class: "dcell", attrs: { title: "filter the list to this identity" },
+                 on: { click: (e) => { e.stopPropagation();
+                   idSetFilter("os", h.os_label || h.os || "unknown"); } } },
+         [el("span", { text: h.os_label || h.os || "unknown" })]),
+      el("td", { class: "dcell", attrs: { title: "filter the list to this confidence" },
+                 on: { click: (e) => { e.stopPropagation(); idSetFilter("confidence", h.confidence); } } },
+         [confidenceChip(h.confidence)]),
       el("td", { text: String(h.agreeing_sources ?? "—") }),
       el("td", { class: "muted", text: strongest }),
       el("td", { class: "muted", text: h.age_s != null ? fmtAge(h.age_s) : "—" }),
