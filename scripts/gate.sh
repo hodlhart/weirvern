@@ -132,7 +132,10 @@ else
     echo "  FAIL"
     FAIL=1
 fi
-run "installer interface logic (simulated machines)" sh scripts/verify_installer.sh
+# bash, not sh: the script's shebang names bash and line 36 is `set -uo pipefail`, which dash
+# rejects. CI calls it the same way now. (2026-10-16: the two invocations disagreed with the
+# file's own shebang, and only the dash runner could see it.)
+run "installer interface logic (simulated machines)" bash scripts/verify_installer.sh
 run "stress-harness liveness (3 states)" sh scripts/verify_liveness.sh
 run "policy-rule cleanup (all forms)" sh scripts/verify_rule_cleanup.sh
 

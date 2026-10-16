@@ -33,6 +33,11 @@
 #     assertion then measures the wrong machine while still reporting PASS/FAIL.
 #   * A driver that produced no decision at all is a FAILURE, not an absence of evidence. An
 #     empty result makes every "must not contain" assertion pass vacuously.
+#   * The sandbox PATH is part of the simulated machine. The kubectl driver once ran with
+#     /usr/bin on its PATH; runner images ship a real kubectl there, so the "no kubectl
+#     anywhere" scenario could only pass on machines that had no system kubectl, and the first
+#     CI run that actually executed this file caught it. The driver PATH is now closed: the
+#     stub dir plus symlinks to exactly the tools the driver, block and tail use.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -243,8 +248,26 @@ echo "DECISION kubectl-block-done"
 TAIL
     } > "$WORK/kdrive$N.sh"
 
+    # The driver runs in a CLOSED PATH: $dir/bin (the stub, or nothing at all for the last
+    # scenario) plus $dir/tools, symlinks to exactly the tools the driver, the block and the
+    # tail use. /usr/bin is deliberately absent. GitHub runners preinstall a real kubectl at
+    # /usr/bin/kubectl, and with /usr/bin on this PATH the "no kubectl anywhere" scenario
+    # resolved THAT binary; the driver's own guard then refused to run it (exit 99, "real
+    # kubectl at /usr/bin/kubectl"), honest about the sandbox but leaving the scenario
+    # unrunnable in CI (it passed on dev boxes only because they carry no system kubectl).
+    # The block's lookup is `command -v kubectl`, i.e. PATH-only: a PATH with no kubectl on it
+    # IS the simulated machine. Close the PATH and the scenario means what its name says on any
+    # host. Tools are resolved out here, where the real PATH is still intact; a missing tool is
+    # a harness failure, never a quiet skip.
+    mkdir -p "$dir/tools"
+    local t p
+    for t in sh ln grep cat readlink; do
+        p="$(command -v "$t" || true)"
+        [ -n "$p" ] || { echo "HARNESS-FAILURE: $t is not on the harness PATH; the kubectl sandbox cannot be built" >&2; exit 99; }
+        ln -sf "$p" "$dir/tools/$t"
+    done
     local out
-    out="$(cd "$dir" && PATH="$dir/bin:/usr/bin:/bin" sh "$WORK/kdrive$N.sh" 2>&1)"
+    out="$(cd "$dir" && PATH="$dir/bin:$dir/tools" "$dir/tools/sh" "$WORK/kdrive$N.sh" 2>&1)"
     if ! printf '%s\n' "$out" | grep -qE '^DECISION '; then
         out="$out
 HARNESS-FAILURE: the kubectl driver produced no decision"
