@@ -110,6 +110,34 @@ def finish(client: Client, action_id: str, state: str, *, report: dict | None = 
     return True
 
 
+def reap_running(client: Client, *, note: str = "") -> int:
+    """Mark every `running` action as FAILED -- on STARTUP, by the only process that runs them.
+
+    WHY THIS IS SAFE AND NECESSARY. Exactly one process executes these actions (the worker), so a
+    row in `running` at worker startup is by definition ORPHANED: the process that was carrying it
+    out is gone (a deploy rolled the pod, an OOM kill, a crash) and nothing will ever finish it. Left
+    alone it is the worst state this table can hold -- "running" reads as a worker that is busy, the
+    operator waits, and the panel never changes. Measured: a deploy during a retrain left exactly
+    that row, which is how this function came to exist.
+
+    It is called at startup, BEFORE the cycle can file anything of its own, so it cannot race a
+    legitimately running action.
+    """
+    reaped = 0
+    for state in (RUNNING,):
+        rows = client.query(
+            f"SELECT action_id FROM {ACTIONS_TABLE} FINAL WHERE state = %(s)s LIMIT 50",
+            parameters={"s": state},
+        ).result_rows
+        for (action_id,) in rows:
+            finish(client, str(action_id), FAILED,
+                   note=note or "the worker restarted while this was running; file it again")
+            reaped += 1
+    if reaped:
+        logger.warning("model actions: %d orphaned row(s) marked failed at startup", reaped)
+    return reaped
+
+
 def pending(client: Client, action: str) -> list[dict[str, Any]]:
     """Requests of one kind that nobody has picked up yet, OLDEST FIRST."""
     rows = client.query(

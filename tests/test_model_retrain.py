@@ -233,6 +233,29 @@ def test_the_operators_requests_are_processed_on_EVERY_cycle():
     assert call < sweep
 
 
+def test_an_action_orphaned_by_a_restart_is_not_left_running():
+    """A `running` row that outlives its worker is a lie the panel repeats: the operator reads
+    "busy", waits, and nothing ever changes. One process executes these actions, so a `running` row
+    at startup is orphaned by definition -- measured when a deploy rolled the pod mid-retrain."""
+    from weirvern.models import actions
+
+    finished: list[tuple] = []
+    client = _Client(rows=[("r-orphan",)])
+
+    import weirvern.models.actions as mod
+
+    real_finish = mod.finish
+    mod.finish = lambda c, aid, state, **kw: (finished.append((aid, state, kw)), True)[1]
+    try:
+        n = actions.reap_running(client)
+    finally:
+        mod.finish = real_finish
+
+    assert n == 1 and finished and finished[0][0] == "r-orphan"
+    assert finished[0][1] == actions.FAILED
+    assert "restarted" in finished[0][2].get("note", ""), finished
+
+
 def test_the_gui_pod_does_not_need_the_model_directory():
     """The request/decision channel is ClickHouse, so the panel must read everything it shows from
     the ROW. A payload that listed files from disk would render an empty candidate on a GUI pod

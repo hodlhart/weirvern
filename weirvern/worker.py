@@ -1711,6 +1711,15 @@ def main() -> None:
     db.apply_schema(client, settings)
     logger.info("Schema ready — starting Weirvern worker")
 
+    # Any action left mid-flight by a previous process is ORPHANED (this is the only executor), and
+    # "running" must not outlive the process that was running it.
+    try:
+        from weirvern.models import actions as _actions  # noqa: PLC0415
+
+        _actions.reap_running(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not reap orphaned model actions: %s", exc)
+
     # ── A WEIRLING GATE: enforce here, derive nothing ────────────────────────────────────────────
     #
     # WHAT "ANY WEIRLING THAT HAS THE ABILITY" MEANS IN CODE. A sensor box that sits in the path
