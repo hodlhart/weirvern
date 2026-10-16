@@ -320,13 +320,17 @@ def test_the_flow_drilldown_demands_a_filter_and_the_route_enforces_it():
 
     d = soc.flows_matching(client=None, hours=24)
     assert d["available"] is False, "an unfiltered flow query must refuse rather than scan"
-    assert "port or a protocol" in d["reason"]
+    # #31 widened the drill vocabulary to source addresses; the refusal must name every way in.
+    for word in ("port", "protocol", "source address"):
+        assert word in d["reason"], f"the refusal does not name {word!r}: {d['reason']}"
 
     src = (WEB.parent / "web.py").read_text()
     i = src.find("def _flows")
     assert i > 0, "_flows handler not found"
-    body = src[i : i + 1400]
-    assert "port or proto is required" in body, "the route does not require a filter"
+    # Sliced to the handler's END, not a fixed window: a growing handler must not silently
+    # outrun the assertion (issue #31 grew it, and the window would have done exactly that).
+    body = src[i:src.index("\n        def ", i + 10)]
+    assert "port, proto or src is required" in body, "the route does not require a filter"
 
 
 def test_the_flow_drilldown_reports_truncation_and_the_total():
@@ -624,3 +628,39 @@ def test_the_tab_bar_is_locked_to_the_top():
     app = (WEB / "app.js").read_text()
     assert "function lockTabsToTop()" in app and "lockTabsToTop();" in app, (
         "nothing measures the header height into --header-h")
+
+
+def test_the_flow_drill_accepts_a_source_filter_and_binds_it():
+    """Issue #31: the Netflow source chip could not reach the drill -- the endpoint took
+    port/proto only, so chipping the view to one host left the table listing everyone.
+    `src` binds to src_addr; any one of port/proto/src is a legitimate drill."""
+    from weirvern.admin import soc
+
+    class _C:
+        def __init__(self):
+            self.sqls = []
+            self.params = {}
+
+        def query(self, sql, parameters=None, **_kw):
+            self.sqls.append(sql)
+            if parameters:
+                self.params.update(parameters)
+
+            class R:
+                result_rows = []
+
+            return R()
+
+    c = _C()
+    out = soc.flows_matching(c, src="203.0.113.9")
+    assert out["available"] is True, out
+    assert "src_addr = %(src)s" in c.sqls[0], c.sqls[0]
+    assert c.params["src"] == "203.0.113.9"
+
+    c2 = _C()
+    soc.flows_matching(c2, src="203.0.113.9", port=443)
+    assert "dst_port = %(port)s" in c2.sqls[0] and "src_addr = %(src)s" in c2.sqls[0], c2.sqls[0]
+
+    # And a request with NOTHING to drill by is still refused (src is a drill, silence is not).
+    nothing = soc.flows_matching(_C(), hours=2)
+    assert nothing["available"] is False and "source address" in nothing["reason"], nothing

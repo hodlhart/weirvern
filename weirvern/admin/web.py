@@ -662,11 +662,11 @@ def _build_handler(ctx: GuiContext):
             self._json(web_api.zeek_payload(counts, timeline, services, dns))
 
         def _flows(self, query: dict) -> None:
-            """The hosts behind one destination port or one IP protocol.
+            """The hosts behind one destination port, one IP protocol, or one source address.
 
-            `port` and `proto` are both optional but ONE is required -- the query refuses an
-            unfiltered request, because "every flow" is not a drill-down and would make a chart
-            click into a slow full-table scan.
+            `port`, `proto` and `src` are all optional but ONE is required -- the query refuses
+            an unfiltered request, because "every flow" is not a drill-down and would make a
+            chart click into a slow full-table scan.
             """
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
@@ -678,11 +678,18 @@ def _build_handler(ctx: GuiContext):
             proto_raw = _int_arg(query, "proto", -1, -1, 255)
             port: int | None = port_raw if port_raw >= 0 else None
             proto: int | None = proto_raw if proto_raw >= 0 else None
-            if port is None and proto is None:
-                return self._error(400, "port or proto is required, e.g. /api/flows?port=443")
+            # The source-address chip (issue #31). BOUND into the query like every filter;
+            # an implausibly long value is REFUSED, never truncated.
+            src = str((query.get("src") or [""])[0]).strip()
+            if len(src) > 64:
+                return self._error(400, "src filter is implausibly long")
+            if port is None and proto is None and not src:
+                return self._error(400,
+                                   "port, proto or src is required, e.g. /api/flows?port=443")
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.flows_matching(client, port=port, proto=proto, hours=hours)
+                    payload = soc_mod.flows_matching(client, port=port, proto=proto, src=src,
+                                                     hours=hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("flow drill-down unavailable: %s", exc)
                 return self._json({

@@ -23,7 +23,8 @@ const ASSET_API = {
   zeeklog: (log, hours) => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}`,
   flows: (params, hours) => `/api/flows?hours=${hours}` +
     (params.port !== undefined ? `&port=${params.port}` : "") +
-    (params.proto !== undefined ? `&proto=${params.proto}` : ""),
+    (params.proto !== undefined ? `&proto=${params.proto}` : "") +
+    (params.src ? `&src=${encodeURIComponent(params.src)}` : ""),
 };
 
 /* State kept in one place: the hosts the operator has chosen to track, and the raw payload so
@@ -1117,14 +1118,25 @@ function loadFlowDetail(params) {
   const title = document.getElementById("nf-detail-title");
   const note = document.getElementById("nf-detail-note");
   if (!host) return Promise.resolve();
+  // THE CHIPS RIDE ALONG (issue #31): the view's click-to-filter chips and this table used to
+  // answer different questions -- a host chip narrowed the charts while the table below kept
+  // whatever the last bar showed, with no sign they had parted ways. The chips are merged
+  // onto the drill ONCE per fetch; a chip the request cannot express is NAMED in the note
+  // rather than silently dropped.
+  const base = params;
+  const merged = (typeof nfDetailWithChips === "function")
+    ? nfDetailWithChips(params) : { params, unapplied: [] };
+  params = merged.params;
+  const chipNote = merged.unapplied.length
+    ? ` Active chip(s) this table cannot apply: ${merged.unapplied.join(", ")}.` : "";
   title.textContent = params.name || "flow detail";
   // THE WINDOW IS SAID OUT LOUD, and it is the GLOBAL one. This table used to read
   // ASSETS_STATE.hours, which nothing updated after the per-view time boxes were removed --
   // so the drill fetched a stale fixed 24h, ignored the operator's range, and (because it is
   // only re-fetched on a bar click) kept rendering whatever it last loaded. Measured by the
   // operator: with "last 15 minutes" selected the table still showed rows from hours earlier.
-  ASSETS_STATE.detailParams = params;
-  note.textContent = `Host-to-host pairs behind this bar, busiest first \u00b7 ${trLabel().toLowerCase()}.`;
+  ASSETS_STATE.detailParams = base;  // the bar's own drill; the chips attach at fetch time
+  note.textContent = `Host-to-host pairs behind this bar, busiest first \u00b7 ${trLabel().toLowerCase()}.` + chipNote;
   host.replaceChildren();
   table.replaceChildren();
 
@@ -1154,9 +1166,9 @@ function loadFlowDetail(params) {
       if (d.truncated) {
         note.textContent =
           `Showing the ${rows.length} busiest of ${d.total_pairs} host pairs ` +
-          `(${d.total_flows} flows total)${windowLabel}.`;
+          `(${d.total_flows} flows total)${windowLabel}.` + chipNote;
       } else {
-        note.textContent = `${rows.length} host pair(s), ${d.total_flows} flows${windowLabel}.`;
+        note.textContent = `${rows.length} host pair(s), ${d.total_flows} flows${windowLabel}.` + chipNote;
       }
       renderBars("nf-detail", {
         available: true,

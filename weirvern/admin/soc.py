@@ -465,7 +465,7 @@ def ingestion_series(client, hours: int = 24) -> dict:
 
 
 def flows_matching(client, port: int | None = None, proto: int | None = None,
-                   hours: int = 24, limit: int = 25) -> dict:
+                   src: str = "", hours: int = 24, limit: int = 25) -> dict:
     """The hosts behind one destination port and/or one IP protocol, for click-through.
 
     WHY THIS IS THE DRILL-DOWN. `top_ports` answers "which ports carry the most bytes" and
@@ -483,9 +483,12 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
 
     `port > 0` is enforced for the same reason as in `top_ports`: NetFlow uses 0 for "not
     recorded", and including it produces a bar that dominates every real service.
+
+    `src` (issue #31) binds to src_addr so the Netflow view's source-address chip can reach
+    the drill; any ONE of port / proto / src is enough to make the request a drill.
     """
-    if port is None and proto is None:
-        return _unavailable("give a port or a protocol to drill into")
+    if port is None and proto is None and not src:
+        return _unavailable("give a port, a protocol, or a source address to drill into")
 
     where = ["timestamp >= %(since)s AND timestamp <= %(until)s"]
     params: dict = {**timewindow.w(hours), "n": limit}
@@ -495,6 +498,10 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
     if proto is not None:
         where.append("proto = %(proto)s")
         params["proto"] = int(proto)
+    if src:
+        # BOUND, like every other filter; the route validates the length.
+        where.append("src_addr = %(src)s")
+        params["src"] = str(src)
     clause = " AND ".join(where)
 
     try:

@@ -104,6 +104,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSonar, stageSonarRecommendations, renderSonarNote,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
+                   NF_FILTERS, nfSetFilter, nfRemoveChip,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
                    loadDns, dnClear, dnApply, loadBlocked, wlPopulateSelector, wlSettingsFor,
@@ -643,6 +644,8 @@ const IDENTITY_PAYLOAD = {
   // COUNTED (issue #15): the checks assert the Blocked payload is fetched ONCE, on demand --
   // not once per rule opened from the Sluice tab. Read by the checks at the bottom.
   let BLOCKED_FETCHES = 0;
+  // Recorded (issue #31): the checks assert the flow-detail request CARRIES the active chips.
+  let FLOW_REQS = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
       const r = fetchOverride(String(url), opts || {});
@@ -1015,7 +1018,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/health?hours=6", HEALTH_WITH_FAILURE],
     ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
-    ["/api/flows", FLOWS_PAYLOAD],
+    ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
     ["/api/discover", DISCOVER_PAYLOAD],
     // COUNTED (issue #15): the Sluice tab must be able to fetch this ON DEMAND, once.
     ["/api/blocked", () => { BLOCKED_FETCHES += 1; return BLOCKED_PAYLOAD; }],
@@ -1472,6 +1475,43 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a failed flow drill-down names the reason",
         doc.getElementById("nf-detail").textContent.includes("flow drill-down failed"),
         doc.getElementById("nf-detail").textContent.slice(0, 90));
+
+  // ── the chips reach the flow-detail table (#31) ─────────────────────────────────────────────
+  // The charts and the table used to answer different questions: a chip narrowed the charts
+  // while the table kept the last bar's rows. Applying/removing a chip re-requests the drill
+  // WITH the chip's filter (through the REAL setter, the real netflow reload, and the real
+  // detail reload), and a chip the request cannot express is NAMED -- never silently dropped.
+  fetchOverride = null;
+  const flowReqs = () => FLOW_REQS.length;
+  let n0 = flowReqs();
+  H.nfSetFilter("src", "192.0.2.10", "192.0.2.10");
+  for (let i = 0; i < 50 && flowReqs() === n0; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const reqWithChip = FLOW_REQS[FLOW_REQS.length - 1] || "";
+  check("applying a source chip re-requests the drill WITH the source",
+        flowReqs() > n0 && /[?&]src=192\.0\.2\.10/.test(reqWithChip),
+        reqWithChip);
+  check("the re-request still carries the bar's own drill",
+        /[?&]proto=6/.test(reqWithChip), reqWithChip);
+  n0 = flowReqs();
+  H.nfRemoveChip(0);
+  for (let i = 0; i < 50 && flowReqs() === n0; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const reqAfterRemoval = FLOW_REQS[FLOW_REQS.length - 1] || "";
+  check("removing the chip re-requests the drill WITHOUT the source",
+        flowReqs() > n0 && !/[?&]src=/.test(reqAfterRemoval), reqAfterRemoval);
+  // A chip the drill cannot express is named in the note, never silently dropped.
+  H.NF_FILTERS.push({ field: "client", value: "198.51.100.9", label: "198.51.100.9" });
+  await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
+  await new Promise((r) => setTimeout(r, 80));
+  check("a chip the table cannot apply is NAMED in its heading",
+        /cannot apply: client/.test(doc.getElementById("nf-detail-note").textContent),
+        doc.getElementById("nf-detail-note").textContent);
+  H.NF_FILTERS.pop();
+  await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
+  await new Promise((r) => setTimeout(r, 80));
 
   // ── the Models staleness panel ─────────────────────────────────────────────────────────
   // The bug this guards: three detectors were 16h overdue against a 6h interval and the Models

@@ -231,6 +231,30 @@ function nfRemoveChip(i) {
   loadNetflow().catch(showError);
 }
 
+/** The drill request the active chips imply (issue #31).
+ *
+ * The chips narrow the whole view server-side; the flow-detail table must answer the same
+ * question. src / dport / proto map onto query parameters the /api/flows route binds; a chip
+ * with any OTHER field cannot ride along, and is returned in `unapplied` so the table's note
+ * can NAME it -- a table silently unfiltered by a visible chip is a table answering a
+ * different question than the charts above it.
+ */
+function nfDetailWithChips(base) {
+  const params = Object.assign({}, base || {});
+  const unapplied = [];
+  for (const f of NF_FILTERS) {
+    if (f.field === "src") {
+      params.src = f.value;
+    } else if (f.field === "dport" || f.field === "proto") {
+      const n = Number(f.value);
+      if (Number.isFinite(n)) params[f.field === "dport" ? "port" : "proto"] = n;
+    } else {
+      unapplied.push(f.field);
+    }
+  }
+  return { params, unapplied };
+}
+
 async function loadNetflow() {
   const hours = String(trHours());
   let d;
