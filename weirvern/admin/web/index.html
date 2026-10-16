@@ -165,7 +165,7 @@
           <input type="number" id="nw-min" value="1" min="1" max="100">
         </label>
         <label class="auto"><input type="checkbox" id="nw-labels"> show names</label>
-        <button id="nw-reload">Reload</button>
+        
         <button id="nw-clear">Clear selection</button>
         <button id="nw-settle">Re-settle</button>
       </div>
@@ -272,7 +272,7 @@
 
   <section id="view-netflow" class="view">
     <div class="card">
-      <h2>Netflow <button class="info-btn" data-info="nf-info" aria-label="what NetFlow shows and how to drill in" aria-expanded="false" title="what NetFlow shows and how to drill in">i</button> <span class="muted" id="nf-window"></span></h2>
+      <h2>Netflow <button class="info-btn" data-info="nf-info" aria-label="what NetFlow shows and how to drill in" aria-expanded="false" title="what NetFlow shows and how to drill in">i</button></h2>
       <p class="muted" id="nf-summary">loading…</p>
       <div class="info-text hidden" id="nf-info">
         NetFlow is the router's own summary of every conversation — who talked to whom, how many
@@ -284,7 +284,7 @@
       </div>
 
       <div class="controls">
-        <button id="nf-reload">Reload</button>
+        
       </div>
     </div>
     <div class="card">
@@ -334,7 +334,7 @@
       <h2>Zeek <button class="info-btn" data-info="zk-info" aria-label="what the Zeek logs show and how to drill in" aria-expanded="false" title="what the Zeek logs show and how to drill in">i</button> <span class="muted" id="zk-window"></span></h2>
       <p class="muted" id="zk-summary">loading…</p>
       <div class="controls">
-        <button id="zk-reload">Reload</button>
+        
       </div>
       <div class="info-text hidden" id="zk-info">
         Zeek records what flows cannot: the services hosts offer, TLS handshakes (with JA4
@@ -396,7 +396,7 @@
     <div class="card">
       <h2>Passive host identification <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
       <div class="controls">
-        <button id="id-reload">Reload</button>
+        
       </div>
       <!--
         THE OTHER DIRECTION. The table below answers "what does this host run?"; this row answers
@@ -528,7 +528,7 @@
         traffic.</div>
 
       <div class="controls">
-        <button id="m-reload">Reload</button>
+        
       </div>
     </div>
 
@@ -674,7 +674,7 @@
             <option value="name">by name</option>
           </select>
         </label>
-        <button id="as-reload">Reload</button>
+        
       </div>
       <div class="info-text hidden" id="as-info">
         Every host either sensor saw in the window. Sort by anomalies to start with the
@@ -748,7 +748,7 @@
       <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks and what the audit means" aria-expanded="false" title="what this page checks and what the audit means">i</button> <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
       <div class="controls">
-        <button id="hp-reload">Reload</button>
+        
       </div>
       <div class="info-text hidden" id="hp-info">
         Ingestion over time is the pulse: rows arriving from each pipeline stage. The alert audit
@@ -918,7 +918,7 @@
     <div class="card">
       <h2>Rules <span id="sl-count" class="muted"></span></h2>
       <div class="controls">
-        <button id="sl-reload">Reload</button>
+        
         <label class="muted"><input id="sl-live-only" type="checkbox"> live rules only</label>
       </div>
       <table id="sl-table">
@@ -1015,7 +1015,7 @@
     <div class="card">
       <h2>Fleet <span id="wl-count" class="muted"></span></h2>
       <div class="controls">
-        <button id="wl-reload">Reload</button>
+        
         <label class="muted"><input id="wl-problems-only" type="checkbox"> problems only</label>
         <label class="muted"><input id="wl-revoked" type="checkbox"> include revoked</label>
       </div>
@@ -1128,7 +1128,7 @@
         apply.
       </div>
       <div class="controls">
-        <button id="st-reload">Reload</button>
+        
       </div>
     </div>
 

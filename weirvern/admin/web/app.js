@@ -1864,8 +1864,6 @@ document.addEventListener("DOMContentLoaded", () => {
     t.addEventListener("click", () => showView(t.dataset.view));
   }
   document.getElementById("refresh").addEventListener("click", refreshAll);
-  const mReload = document.getElementById("m-reload");
-  if (mReload) mReload.addEventListener("click", () => loadModels().then(clearError).catch(showError));
   document.getElementById("autorefresh").addEventListener("change", (e) => {
     if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
   });
@@ -1884,9 +1882,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // SOC view controls. Each reload is explicit rather than automatic for the reason given
   // in showView: these run aggregate queries and should not fire on a background timer.
   for (const [id, fn] of [
-    ["nf-reload", loadNetflow], ["zk-reload", loadZeek], ["hp-reload", loadHealthDeep], ["id-reload", loadIdentity],
-    ["sl-reload", loadSluice],
-    ["st-reload", loadSettings],
     // The token controls. `Use token` stores it and re-reads the page so the server's answer about
     // write access is what updates the UI -- the browser never assumes it succeeded.
     ["st-token-save", async () => {
@@ -1958,12 +1953,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ASSETS_STATE.page = 1;
     renderAssets();
   });
-  const asReload = document.getElementById("as-reload");
-  if (asReload) asReload.addEventListener("click", () => loadAssets().then(clearError).catch(showError));
-
   // ── Network graph controls ─────────────────────────────────────────────────
-  const nwReload = document.getElementById("nw-reload");
-  if (nwReload) nwReload.addEventListener("click", () => loadNetwork().then(clearError).catch(showError));
   const nwClear = document.getElementById("nw-clear");
   if (nwClear) nwClear.addEventListener("click", () => {
     ASSETS_STATE.tracked = [];
@@ -2774,22 +2764,27 @@ function showIdentityDetail(h) {
 // panel's little `hours` box is a DISPLAY fallback only -- the window itself comes from
 // from/to, so no panel can silently widen what was asked for.
 const TIME_RANGE = { mode: "relative", hours: 24, from: "", to: "" };
-// The per-view time boxes are GONE (the operator's instruction, 2026-10-16): "remove any
-// redundant time controls" -- one control is the range, everywhere. `trHours()` is what every
-// loader reads, and `trReloadViews()` re-fetches through the views' OWN reload buttons, so
-// there is still exactly one way to trigger a load of each view.
-const TR_RELOAD_BUTTONS = ["an-reload", "as-reload", "hp-reload", "id-reload", "m-reload",
-                           "nf-reload", "nw-reload", "sl-reload", "st-reload", "wl-reload", "zk-reload"];
+// THE PER-VIEW TIME CONTROLS AND RELOAD BUTTONS ARE GONE (the operator's instruction,
+// 2026-10-16, twice over): "remove any redundant time controls" ... "That needs removed I
+// think. We should use universal time filters through out." One control owns the range; a
+// range change re-fetches each view by calling its LOADER directly -- there is no per-view
+// time text and no per-view refresh button left to disagree with the header.
+const TR_RELOAD_LOADERS = () => [
+  window.loadAnomalies, window.loadAssets, window.loadHealthDeep, window.loadIdentity,
+  window.loadModels, window.loadNetflow, window.loadNetwork, window.loadSluice,
+  window.loadSettings, window.loadWeirlings, window.loadZeek,
+].filter((fn) => typeof fn === "function");
 
 function trHours() {
   const h = Number(TIME_RANGE.hours);
   return Math.max(1, Math.ceil(Number.isFinite(h) && h > 0 ? h : 24));
 }
 function trReloadViews() {
-  TR_RELOAD_BUTTONS.forEach((id) => {
-    const b = document.getElementById(id);
-    if (b) b.click();
-  });
+  // .then(loader) passes the function instead of calling a bare identifier: same effect, and
+  // it keeps the "every function the console calls is defined" scan honest (an arrow param
+  // called by name reads as an undefined function to that check). One broken view rejects its
+  // own promise and cannot stop the refresh of the others.
+  TR_RELOAD_LOADERS().forEach((loader) => { Promise.resolve().then(loader).catch(() => {}); });
 }
 
 function trInit() {

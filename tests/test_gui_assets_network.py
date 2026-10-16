@@ -77,8 +77,8 @@ def test_the_new_controls_in_the_html_all_have_a_handler():
     controls = [
         # `as-hours`/`nw-hours` are deliberately ABSENT: the per-view time boxes were removed
         # when the header grew the global time control (one range, every tab -- 2026-10-16).
-        "as-search", "as-sort", "as-reload",
-        "nw-reload", "nw-clear", "nw-min", "nw-labels", "nw-settle",
+        "as-search", "as-sort",
+        "nw-clear", "nw-min", "nw-labels", "nw-settle",
     ]
     have = _ids_in_html()
     for cid in controls:
@@ -87,6 +87,17 @@ def test_the_new_controls_in_the_html_all_have_a_handler():
             f"#{cid} exists in the HTML but nothing in app.js references it -- "
             f"the control would render and do nothing"
         )
+
+
+def test_no_view_carries_its_own_reload_button():
+    """One refresh path, in the header. A per-view Reload restated the range ("the thing you
+    are looking at") and duplicated the header control -- removed on the operator's call,
+    2026-10-16. If one comes back it must come back with a reason."""
+    stale = sorted(i for i in _ids_in_html() if i.endswith("-reload"))
+    assert not stale, (
+        f"per-view reload buttons are back in index.html: {stale}. The header owns refresh; "
+        f"a range change re-fetches every view by calling its loader directly."
+    )
 
 
 def test_both_new_scripts_are_served_by_the_static_allow_list():

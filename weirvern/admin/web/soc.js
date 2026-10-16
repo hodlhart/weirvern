@@ -186,15 +186,13 @@ async function loadNetflow() {
   const d = await getJSON(`${API.netflow}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
-  // The window is set by the ONE global time control; restating it here as "Nh window" was a
-  // second, weaker copy of the same fact (the operator: "Needs removed we have a universal time
-  // filter"). The bucket size stays: it is a property of the CHART, not a time control.
-  document.getElementById("nf-window").textContent = (d.volume && d.volume.bucket_s)
-    ? `${Math.round(d.volume.bucket_s / 60)}m buckets` : "";
+  // NOTHING HERE RESTATES THE WINDOW (the operator, twice: the netflow header must not carry
+  // its own time text or bucket chatter -- "we should use universal time filters throughout").
+  // The global control owns the range; the summary counts only what it selected.
   const totalBytes = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.bytes, 0);
   const totalFlows = ((d.volume && d.volume.points) || []).reduce((a, p) => a + p.flows, 0);
   document.getElementById("nf-summary").textContent = (d.volume && d.volume.available)
-    ? `${fmtBytes(totalBytes)} across ${totalFlows.toLocaleString()} flows in the last ${hours}h.`
+    ? `${fmtBytes(totalBytes)} across ${totalFlows.toLocaleString()} flows.`
     : "Flow volume is unavailable — see the panel below.";
 
   // Volume as a line: bytes per bucket.
