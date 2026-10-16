@@ -7,7 +7,6 @@ exactly one place and is fully unit-tested.
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Any
 
 from weirvern.config import ModelConfig, Settings
@@ -33,16 +32,6 @@ def strong_signal_threshold(settings: Settings | None = None) -> float:
     if settings is None:
         return STRONG_SIGNAL
     return float(getattr(settings, "strong_signal", STRONG_SIGNAL) or STRONG_SIGNAL)
-
-
-@lru_cache(maxsize=8192)
-def _detector_catalog() -> tuple[str, ...]:
-    return (
-        "Isolation Forest",
-        "Gradient Boosting",
-        "DBSCAN",
-        "Adaptive Baseline",
-    )
 
 
 # The ceiling every fused score is capped at. NAMED BECAUSE IT IS HALF OF AN INVARIANT (audit F186):

@@ -952,3 +952,26 @@ def test_severity_of_does_not_advertise_a_gate_it_does_not_read():
     assert params == ["score", "strong_models", "signature"], (
         f"severity_of's parameters no longer match what it reads: {params}"
     )
+
+
+def test_no_dead_detector_catalog_next_to_the_real_mapping():
+    """Issue #36: `_detector_catalog` duplicated the four display names that NAME_TO_KEY
+    (inside detect_flows) already maps, with NO reader anywhere in the tree. A second copy
+    next to the real mapping invites an edit to one of them -- the shape this codebase ruled
+    on when worker._explain_primary was deleted rather than left "plausible next to the real
+    one". The check strips comments and string contents through the tokenizer, so a comment
+    MAY mention the removed name without resurrecting it; an identifier in real code cannot
+    come back unnoticed."""
+    import io
+    import tokenize
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "weirvern" / "ensemble.py"
+    code = " ".join(
+        tok.string
+        for tok in tokenize.generate_tokens(io.StringIO(src.read_text()).readline)
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING)
+    )
+    assert "_detector_catalog" not in code, (
+        "a detector-name catalog is back beside NAME_TO_KEY -- wire one to the other, or "
+        "delete it; two copies of the names is how they drift"
+    )
