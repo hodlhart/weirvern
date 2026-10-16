@@ -1,0 +1,46 @@
+name: Bug report
+description: Something behaves incorrectly -- a wrong answer, a silent failure, or a crash.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A claim needs evidence. Paste the exact command you ran and its output; a report
+        without both cannot be reproduced, and an unreproducible report is a guess.
+        Redact host addresses before pasting -- use TEST-NET ranges (RFC 5737) in examples.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: The exact commands run and their output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The image tag, or `git rev-parse --short HEAD` of the tree you are running.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - sensor (Zeek / goflow2)
+        - worker (ingest / detection)
+        - GUI / dashboard
+        - Sluice Gate / enforcement
+        - installer / k8s manifests
+        - docs
+    validations:
+      required: true

@@ -1,0 +1,22 @@
+# Update coverage for the four ecosystems this repository actually carries:
+# pip (pyproject.toml, the package and tests), npm (package.json -- the jsdom harness),
+# docker (the Containerfile) and the Actions workflows themselves. One weekly PR each,
+# which keeps the noise bounded; a security update lands as its own PR regardless.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
