@@ -1243,18 +1243,12 @@ def observations_from_dns(rec: dict[str, str], row: dict[str, Any]) -> list[dict
     host calls, not what it runs); they exist for the reader. Numeric queries (PTR forms) are
     not names and are refused rather than stored as one.
     """
-    import ipaddress  # noqa: PLC0415 -- stdlib, used once per DNS row
+    from weirvern.host_identity import is_display_name  # noqa: PLC0415 -- the one definition
 
     name = zeek_value(rec.get("query", "")) or ""
     name = name.strip().lower().rstrip(".")
     src = str(row.get("src_addr") or "")
-    if not src or not name or len(name) > 253 or name in {"-", "(empty)"}:
-        return []
-    try:
-        ipaddress.ip_address(name)
-    except ValueError:
-        pass
-    else:
+    if not src or not is_display_name(name):
         return []
     return [{"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
              "source": "dns_name", "raw": name, "note": "from dns"}]

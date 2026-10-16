@@ -70,6 +70,35 @@ def test_dns_refuses_numeric_and_junk_queries():
     assert observations_from_dns({"query": "(empty)"}, dict(ROW)) == []
 
 
+def test_dns_refuses_protocol_artifacts_not_names():
+    """Found on the first live run: mDNS service-TYPE lookups and reverse names landed in
+    hostnames_seen beside the real ones."""
+    assert observations_from_dns({"query": "_companion-link._tcp.local"}, dict(ROW)) == []
+    # A SHORT reverse label on purpose: an ip6.arpa nibble string parses as an address-shaped
+    # token to the sanitation guard (measured: a long one tripped it), and the test only needs
+    # the .arpa branch exercised.
+    assert observations_from_dns({"query": "label.ip6.arpa"}, dict(ROW)) == []
+
+
+def test_a_stored_artifact_is_filtered_at_READ_too():
+    """Rows stored BEFORE the rule (the first live run, 90-day TTL) must not keep leaking
+    artifacts into hostnames_seen -- the gather consults the same predicate."""
+    t0 = datetime(2026, 10, 16, 8, 0)
+    rows = [
+        ("fe80::1", "", "dns_name", "_companion-link._tcp.local", 1, t0 + timedelta(hours=1), t0),
+        ("fe80::1", "", "dns_name", "living-room.local", 1, t0, t0),
+    ]
+    verdicts = host_identity.build_identity(_FakeStore(rows), dry_run=True)
+    assert verdicts[0]["hostnames_seen"] == ["living-room.local"]
+
+
+def test_dns_keeps_a_device_name_that_carries_a_service_suffix():
+    """The mDNS instance name IS the device's name -- only the bare service-type lookup is an
+    artifact, and the difference is whether the name starts with an underscore."""
+    rows = observations_from_dns({"query": "Owen\u2019s iPad._companion-link._tcp.local"}, dict(ROW))
+    assert len(rows) == 1 and rows[0]["raw"].startswith("owen\u2019s ipad")
+
+
 # ── ssl: the SNI beside the fingerprint ─────────────────────────────────────────────────────────
 def test_ssl_yields_the_sni_alongside_the_fingerprint():
     rows = observations_from_ssl(

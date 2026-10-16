@@ -58,6 +58,33 @@ IDENTITY_WINDOW_DAYS = 7
 HOSTNAME_SOURCES = ("dhcp_hostname", "dhcp_fqdn", "tls_sni", "dns_name")
 
 
+def is_display_name(name: str) -> bool:
+    """Whether a name is one A READER SHOULD SEE. One definition, two callers.
+
+    The ingester's DNS extractor consults this so artifacts are never STORED, and the verdict's
+    gather consults it so rows stored BEFORE the rule existed cannot leak them either -- the
+    first live run of the new DNS source (2026-10-16) put mDNS service-type lookups
+    (`_companion-link._tcp.local`) and reverse names (`....ip6.arpa`) into hostnames_seen beside
+    the real ones, and those rows carry a 90-day TTL.
+
+    A name must be present, bounded, not a bare address, not a service-TYPE lookup (leading
+    underscore -- the mDNS instance name `Owen's iPad._companion-link._tcp.local` IS a device
+    name and stays), and not a reverse lookup (`.arpa`).
+    """
+    import ipaddress  # noqa: PLC0415 -- stdlib; the same check the extractors make
+
+    n = str(name or "").strip().lower().rstrip(".")
+    if not n or len(n) > 253 or n in {"-", "(empty)"}:
+        return False
+    if n.startswith("_") or n.endswith(".arpa"):
+        return False
+    try:
+        ipaddress.ip_address(n)
+    except ValueError:
+        return True
+    return False
+
+
 def collect_observations(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> list[dict[str, Any]]:
     """Read every distinct observation in the window, newest first.
 
@@ -172,7 +199,7 @@ def build_identity(client: Client, days: int = IDENTITY_WINDOW_DAYS,
         hostnames: list[str] = []
         _seen: set[str] = set()
         for o in own:
-            if o["source"] not in HOSTNAME_SOURCES:
+            if o["source"] not in HOSTNAME_SOURCES or not is_display_name(o["raw"]):
                 continue
             value = str(o["raw"]).strip()
             if value and value.lower() not in _seen:
