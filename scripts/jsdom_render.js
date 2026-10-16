@@ -955,7 +955,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // The anomalies list, for the SOC-1 review-column checks. Registered LAST so its match
     // cannot shadow the others; the dispatcher takes the first hit and /api/anomalies shares
     // no prefix with any of the above.
-    ["/api/anomalies", ANOMALIES_PAYLOAD],
+    ["/api/anomalies", { rows: ANOMALIES_PAYLOAD,
+                         severity_counts: { available: true, reason: "",
+                           counts: [{ severity: "high", count: 1 },
+                                    { severity: "medium", count: 1 }] } }],
   );
 
   const H = window.__H;

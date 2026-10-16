@@ -1234,6 +1234,38 @@ function anRenderChips() {
   }
 }
 
+/**
+ * THE CRITICALITY TILES (the operator, 2026-10-16: "add across the top the number of each
+ * criticality level and make it clickable to filter the page"). One tile per severity with the
+ * count under the page's current min-score and host filters; clicking filters the page to that
+ * severity, clicking again removes it. The counts come from the server beside the rows, NOT
+ * from counting what the browser received -- the list is capped by its limit and a browser-side
+ * count would quietly under-count the page it claims to describe.
+ */
+function anRenderSeverity(sc) {
+  const box = document.getElementById("an-sev");
+  if (!box) return;
+  box.replaceChildren();
+  const counts = (sc && sc.available) ? (sc.counts || []) : [];
+  if (!counts.length) {
+    box.appendChild(el("span", { class: "muted", text: sc && !sc.available
+      ? `Severity counts unavailable \u2014 ${sc.reason || "the read did not run"}.`
+      : "No anomalies in this window to split by severity." }));
+    return;
+  }
+  for (const c of counts) {
+    const sev = String(c.severity || "unknown");
+    const active = AN_FILTERS.severity === sev;
+    const tile = el("button", { class: "tile" + (active ? " active" : ""),
+      attrs: { title: active ? "click to remove this filter" : `filter the page to ${sev}` } }, [
+      el("div", { class: "v sev-" + sev, text: String(c.count) }),
+      el("div", { class: "k", text: sev }),
+    ]);
+    tile.addEventListener("click", () => anSetFilter("severity", active ? "" : sev));
+    box.appendChild(tile);
+  }
+}
+
 function anSetFilter(field, value) {
   AN_FILTERS[field] = String(value || "");
   anRenderChips();
@@ -1250,7 +1282,9 @@ async function loadAnomalies() {
   const unrev = document.getElementById("f-unreviewed");
   const unreviewedOnly = !!(unrev && unrev.checked);
   anRenderChips();
-  const rows = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery());
+  const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery());
+  anRenderSeverity(payload.severity_counts);
+  const rows = payload.rows || [];
 
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
@@ -2421,7 +2455,11 @@ function renderScoreDistribution(scores) {
     }
   }
   const max = Math.max(1, ...names.flatMap((n) => counts[n]));
-  const W = 440, H = 200, PAD = { l: 34, r: 10, t: 10, b: 30 };
+  // A WIDE, SHORT viewBox ON PURPOSE (the operator, 2026-10-16: "this graph is larger than the
+  // chart bounds"). The chart is width:100%/height:auto, so its RATIO decides its height: at
+  // 440x200 (2.2) a half-width card on a wide screen rendered it ~800px tall, dwarfing every
+  // sibling. At 760x220 (3.45) it sits at the same visual weight as the other model charts.
+  const W = 760, H = 220, PAD = { l: 34, r: 10, t: 10, b: 30 };
   const { svg, plot } = chartFrame(W, H, PAD);
   const bw = (plot.r - plot.l) / BANDS;
 
@@ -2698,6 +2736,24 @@ async function loadRetrain() {
   body.replaceChildren();
   keep.classList.toggle("hidden", !d.can_keep);
   trash.classList.toggle("hidden", !d.can_keep);
+  // WHY THE BUTTONS ARE NOT THERE (the operator, 2026-10-16: "forcing a retrain doesn't allow me
+  // to keep or trash it"). Keep/Trash need a FINISHED candidate; every other state gets a
+  // sentence -- waiting, training, trained-nothing, failed -- instead of a control that
+  // silently vanishes.
+  const stand = document.getElementById("mr-stand");
+  if (stand) {
+    const st = String(d.state || "none");
+    stand.textContent = {
+      none: "No forced retrain has been filed.",
+      requested: "Filed \u2014 waiting for the worker to pick it up.",
+      running: "Training the candidate now; this takes minutes. A worker restart cancels it.",
+      done: d.can_keep
+        ? "Candidate ready: Keep installs it over the live models, Trash discards it."
+        : "The candidate trained nothing (no data in its window), so there is nothing to keep "
+          + "or trash. File it again once traffic has accumulated.",
+      failed: `Failed: ${d.note || "no reason recorded"} \u2014 file it again to retry.`,
+    }[st] || st;
+  }
   force.disabled = d.state === "requested" || d.state === "running";
 
   if (!d.available) {

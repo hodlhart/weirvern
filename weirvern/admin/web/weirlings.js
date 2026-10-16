@@ -99,16 +99,18 @@ async function loadWeirlings() {
 
   // ── the fleet's own state, first and largest
   const s = d.summary || {};
+  // THE THIRD ELEMENT IS THE TILE'S MEANING, not its number: a count of zero needs no colour,
+  // and a problem nobody can spot at a glance is a problem reported in sixpt grey.
   const items = [
-    ["weirlings", String(s.total ?? "—")],
-    ["reporting", String(s.alive ?? "—")],
-    ["problems", String(s.problems ?? "—")],
-    ["never seen", String(s.never_seen ?? "—")],
-    ["unregistered", String(s.unregistered ?? "—")],
-    ["disabled", String(s.disabled ?? "—")],
+    ["weirlings", String(s.total ?? "—"), ""],
+    ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : ""],
+    ["problems", String(s.problems ?? "—"), (s.problems ?? 0) > 0 ? "bad" : ""],
+    ["never seen", String(s.never_seen ?? "—"), (s.never_seen ?? 0) > 0 ? "warn" : ""],
+    ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : ""],
+    ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : ""],
   ];
-  for (const [k, v] of items) {
-    summaryBox.appendChild(el("div", { class: "stat" }, [
+  for (const [k, v, cls] of items) {
+    summaryBox.appendChild(el("div", { class: cls ? `stat ${cls}` : "stat" }, [
       el("div", { class: "v", text: v }),
       el("div", { class: "k", text: k }),
     ]));

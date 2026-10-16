@@ -34,7 +34,7 @@ def test_web_anomalies_keep_addr_and_add_hostname(monkeypatch):
     monkeypatch.setattr(web_api, "_hostname", lambda a: "host-a.example")
     rows = [{"src_addr": "203.0.113.42", "anomaly_score": 0.9,
              "feature_contributions": "{}"}]
-    out = web_api.anomalies_payload(rows)
+    out = web_api.anomalies_payload(rows)["rows"]  # an object since 2026-10-16: rows + tiles
     assert out[0]["src_addr"] == "203.0.113.42", "src_addr must always be present"
     assert out[0]["hostname"] == "host-a.example"
 

@@ -424,3 +424,38 @@ def test_anomalies_filters_bind_server_side():
     status.anomalies_detailed(_C(), limit=50, min_score=0.0)
     assert "src_addr = %(host)s" not in seen["sql"], "no filter, no clause"
     assert "severity" not in seen["sql"].split("WHERE")[1].split("ORDER")[0]
+
+
+def test_severity_counts_bind_and_do_not_swallow_their_own_output():
+    """The tiles' counts: min-score and host apply, the SEVERITY filter itself must NOT -- a
+    counts query that consumed its own output would collapse to one tile the moment a filter is
+    on, and switching severity would hide the answer."""
+    from weirvern.admin import status as st
+
+    seen = {}
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            seen["sql"], seen["params"] = sql, dict(parameters or {})
+            class R:
+                result_rows = [("high", 7), ("medium", 2)]
+            return R()
+
+    out = st.anomaly_severity_counts(_C(), min_score=0.3, host="198.51.100.9")
+    assert "GROUP BY severity" in seen["sql"]
+    assert "severity = " not in seen["sql"].split("GROUP")[0], "no self-filter"
+    assert seen["params"]["host"] == "198.51.100.9" and seen["params"]["s"] == 0.3
+    assert out["available"] is True
+    assert out["counts"][0] == {"severity": "high", "count": 7}
+
+
+def test_anomalies_payload_is_an_object_carrying_rows_and_tiles():
+    from weirvern.admin import web_api
+
+    p = web_api.anomalies_payload([], severity_counts={"available": True, "reason": "",
+                                                       "counts": [{"severity": "low", "count": 3}]})
+    assert isinstance(p, dict) and p["rows"] == []
+    assert p["severity_counts"]["counts"][0]["count"] == 3
+    p2 = web_api.anomalies_payload([])
+    assert p2["severity_counts"]["available"] is False, (
+        "an unread counts query is a state, never zeros that read as a calm page")

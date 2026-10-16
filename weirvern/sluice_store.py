@@ -270,6 +270,58 @@ def create_rule(
     return rule
 
 
+def update_rule_mode(client: Client, rule_id: str, mode: str, *, by: str = "",
+                     now: datetime | None = None) -> Rule:
+    """Change a rule's mode in place.
+
+    THE SAME RULE, A NEW MODE. The row is re-inserted under the SAME rule_id (the table is read
+    with FINAL, so the newest version wins); the rule's identity, its creation time and its
+    reason survive the edit. A delete-and-recreate would make the audit trail read as two
+    unrelated rules, and the one thing an incident review needs is that a block and its later
+    loosening are the same decision, revised.
+
+    A REVOKED RULE IS REFUSED: re-arming one resurrects a decision somebody ended on purpose.
+    That call is a NEW rule, with a new reason, and the refusal says so.
+    """
+    rid = str(rule_id or "").strip()
+    if not rid:
+        raise SluiceError("no rule id given")
+    want = str(mode or "").strip().lower()
+    if want not in ("alert", "block"):
+        raise SluiceError(f"mode must be alert or block, not {want!r}")
+    when = now or datetime.now(UTC)
+    rows = client.query(
+        "SELECT rule_id, created_at, created_by, reason, src_cidr, dst_cidr, domain, mode, "
+        "protocol, dst_port, direction, expires_at, origin, origin_ref, severity, revoked_at "
+        "FROM weirvern.sluice_rules FINAL WHERE rule_id = %(r)s",
+        parameters={"r": rid},
+    ).result_rows
+    if not rows:
+        raise SluiceError(f"no rule with id {rid}")
+    (rid, created_at, created_by, reason, src, dst, dom, cur, proto, port, direction,
+     expires, origin, origin_ref, severity, revoked) = rows[0]
+    if revoked is not None:
+        raise SluiceError("this rule was revoked; re-arming a revoked rule is a new rule with a "
+                           "new reason, not an edit")
+    if str(cur or "block") == want:
+        raise SluiceError(f"this rule is already in {want} mode")
+    client.insert(
+        "weirvern.sluice_rules",
+        [[rid, created_at, created_by, reason, src, dst, dom, want, proto, port, direction,
+          expires, origin, origin_ref, severity, None, "",
+          f"mode {cur}->{want} by {by or 'operator'} at {when:%Y-%m-%d %H:%M}"]],
+        column_names=[
+            "rule_id", "created_at", "created_by", "reason", "src_cidr", "dst_cidr",
+            "domain", "mode",
+            "protocol", "dst_port", "direction", "expires_at", "origin", "origin_ref",
+            "severity", "revoked_at", "revoked_by", "note",
+        ],
+    )
+    logger.info("sluice: rule %s mode %s -> %s by %s", rid, cur, want, by or "unknown")
+    return _row_to_rule((rid, src, dst, dom, want, proto, port, direction, expires,
+                         created_by, reason, origin, origin_ref, severity, None))
+
+
 def revoke_rule(client: Client, rule_id: str, *, by: str = "", now: datetime | None = None) -> bool:
     """Soft-delete a rule. The record stays readable, because the audit trail of what was blocked
     and why must not be destroyed by the act of unblocking it."""

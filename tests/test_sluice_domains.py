@@ -145,3 +145,64 @@ def test_hits_are_recorded_with_kind_domain_and_query():
         assert col in columns
     assert rows[0][columns.index("kind")] == "dns"
     assert rows[0][columns.index("query")] == "ads.example.com"
+
+
+def test_update_rule_mode_reinserts_the_same_rule_under_a_new_mode():
+    """The Blocked tab's rule card edits a rule IN PLACE: same rule_id, new mode, identity and
+    reason preserved, the change recorded in the note. A delete-and-recreate would make the audit
+    trail read as two unrelated rules."""
+    from datetime import datetime
+
+    from weirvern import sluice_store
+
+    row = ("20261015120000-abcd1234", datetime(2026, 10, 15, 12, 0), "operator", "why it exists",
+           "", "", "living-room.local", "alert", "", 0, "forward", None, "manual", "", "", None)
+    inserts = []
+
+    class _C:
+        def query(self, sql, parameters=None, **_kw):
+            assert "FINAL" in sql and parameters["r"] == "20261015120000-abcd1234"
+            class R:
+                result_rows = [row]
+            return R()
+        def insert(self, table, data, column_names=None, **_kw):
+            inserts.append((table, data, column_names))
+
+    out = sluice_store.update_rule_mode(_C(), "20261015120000-abcd1234", "block", by="operator",
+                                        now=datetime(2026, 10, 16, 18, 0))
+    assert out.mode == "block" and out.reason == "why it exists"
+    table, data, cols = inserts[0]
+    assert table == "weirvern.sluice_rules" and len(cols) == 18
+    assert data[0][0] == "20261015120000-abcd1234", "same rule id: an edit, not a new rule"
+    assert data[0][7] == "block" and data[0][3] == "why it exists"
+    assert data[0][15] is None, "the edit must not revoke it"
+    assert "alert->block" in data[0][17]
+
+
+def test_update_rule_mode_refuses_revoked_unchanged_and_bad_modes():
+    from datetime import datetime
+
+    import pytest
+
+    from weirvern import sluice_store
+    from weirvern.sluice import SluiceError
+
+    class _C:
+        def __init__(self, rev):
+            self.rev = rev
+            self.inserted = False
+        def query(self, sql, parameters=None, **_kw):
+            row = ("r1", datetime(2026, 10, 15, 12, 0), "op", "why", "", "", "d.local", "alert",
+                   "", 0, "forward", None, "manual", "", "", self.rev)
+            class R:
+                result_rows = [row]
+            return R()
+        def insert(self, *a, **k):
+            self.inserted = True
+
+    with pytest.raises(SluiceError, match="revoked"):
+        sluice_store.update_rule_mode(_C(datetime(2026, 10, 16)), "r1", "block")
+    with pytest.raises(SluiceError, match="already"):
+        sluice_store.update_rule_mode(_C(None), "r1", "alert")
+    with pytest.raises(SluiceError, match="alert or block"):
+        sluice_store.update_rule_mode(_C(None), "r1", "snooze")

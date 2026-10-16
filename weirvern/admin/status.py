@@ -1710,6 +1710,34 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
 
 
+def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "") -> dict:
+    """How many anomalies carry each severity, under the page's current filters.
+
+    THE SEVERITY FILTER IS DELIBERATELY NOT APPLIED. These counts are the tiles an operator
+    clicks to SET that filter; a counts query that consumed its own output would collapse to a
+    single tile the moment one is on, and switching severity would become a two-click dance with
+    the answer hidden. Min-score and host ARE applied -- they are the questions the tiles answer
+    ("of what this page is showing, how much is high"). A failed read is a state, not a zero.
+    """
+    where = ["anomaly_score >= %(s)s"]
+    params: dict = {"s": float(min_score)}
+    if host:
+        where.append("src_addr = %(host)s")
+        params["host"] = str(host)
+    try:
+        rows = client.query(
+            "SELECT severity, count() AS n FROM weirvern.netflow_anomalies WHERE "
+            + " AND ".join(where) + " GROUP BY severity ORDER BY n DESC",
+            parameters=params,
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("severity counts failed: %s", exc)
+        return {"available": False, "reason": f"severity counts failed: {type(exc).__name__}",
+                "counts": []}
+    return {"available": True, "reason": "", "counts": [
+        {"severity": str(r[0] or "unknown"), "count": int(r[1] or 0)} for r in rows]}
+
+
 def host_detail(client, src_addr: str, hours: int = 24) -> dict:
     """Everything the host drill-down shows for ONE address.
 

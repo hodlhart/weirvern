@@ -506,6 +506,7 @@
         <label>limit <input type="number" id="f-limit" value="100" min="1" max="1000"></label>
         <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
         <span id="an-filters"></span>
+        <div id="an-sev" class="sev-tiles"></div>
       </div>
       <div class="info-text hidden" id="an-info">
         Each row is a host-window the ensemble flagged: the score that crossed the line, and
@@ -540,7 +541,8 @@
       <p class="muted" id="mr-note">Loading…</p>
       <div class="controls">
         <button id="mr-force" class="primary">Force retrain</button>
-        <button id="mr-keep" class="hidden">Keep this model</button>
+        <p id="mr-stand" class="muted"></p>
+      <button id="mr-keep" class="hidden">Keep this model</button>
         <button id="mr-trash" class="hidden">Trash it</button>
       </div>
       <table id="mr-report">
@@ -808,6 +810,20 @@
       <h2>Ingestion over time <span class="muted">rows per bucket, by pipeline stage</span></h2>
       <div id="hp-ingest"></div>
     </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Checks</h2>
+        <table id="hp-checks"><thead><tr><th>Check</th><th>State</th><th>Value</th><th>Latency</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Table sizes</h2>
+        <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Weirling <button class="info-btn" data-info="st-sensor-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <div id="hp-sensor"><p class="muted">loading…</p></div>
+    </div>
     <div class="card">
       <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span> <button class="info-btn" data-info="hp-audit-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="hp-audit-info">
@@ -828,20 +844,6 @@
           <div id="hp-alerts-recent-pager" class="pager"></div>
         </div>
       </div>
-    </div>
-    <div class="grid">
-      <div class="card">
-        <h2>Checks</h2>
-        <table id="hp-checks"><thead><tr><th>Check</th><th>State</th><th>Value</th><th>Latency</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div class="card">
-        <h2>Table sizes</h2>
-        <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th></tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-    <div class="card">
-      <h2>Weirling <button class="info-btn" data-info="st-sensor-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-      <div id="hp-sensor"><p class="muted">loading…</p></div>
     </div>
   </section>
 
@@ -1037,6 +1039,25 @@
         <button id="bl-newer">&larr; newer</button>
         <span id="bl-page" class="muted"></span>
         <button id="bl-older">older &rarr;</button>
+      </div>
+      <!-- THE RULE CARD (the operator, 2026-10-16: "if i click on the rule button it should open
+           the rule and allow me to see it or modify it"). Clicking a rule row, or the rule chip
+           on a hit, opens the rule HERE: its own fields, the addresses it currently covers, a
+           mode select and Revoke. Moving to block asks a second time, because it arms the
+           kernel. -->
+      <div id="bl-rule-card" class="card hidden">
+        <h3>Rule <span class="mono" id="bl-rule-id"></span></h3>
+        <div id="bl-rule-body"></div>
+        <div class="controls">
+          <label>mode <select id="bl-rule-mode">
+            <option value="alert">alert (record only)</option>
+            <option value="block">block (enforce)</option>
+          </select></label>
+          <button id="bl-rule-apply">Apply mode</button>
+          <button id="bl-rule-revoke">Revoke</button>
+          <button id="bl-rule-close">Close</button>
+        </div>
+        <p class="muted" id="bl-rule-note"></p>
       </div>
     </div>
     <div class="card">

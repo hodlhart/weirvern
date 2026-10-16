@@ -444,6 +444,10 @@ def _build_handler(ctx: GuiContext):
                         return self._error(400, "host or severity filter is implausibly long")
                     rows = status_mod.anomalies_detailed(
                         client, limit=limit, min_score=min_score, host=host_f, severity=sev_f)
+                    # The header tiles: counts per severity under min-score + host, NOT under the
+                    # severity filter itself (see status.anomaly_severity_counts for why).
+                    severity_counts = status_mod.anomaly_severity_counts(
+                        client, min_score=min_score, host=host_f)
                     # SOC-1: merge review state. Read separately (one small query) rather
                     # than joined in SQL because the reviews table may not exist yet on a
                     # deployment whose schema job has not re-run -- a join would make the
@@ -462,7 +466,7 @@ def _build_handler(ctx: GuiContext):
                         rows = [r for r in rows if r.get("review_state") == ""]
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
-            self._json(web_api.anomalies_payload(rows))
+            self._json(web_api.anomalies_payload(rows, severity_counts=severity_counts))
 
         def _models(self, query: dict) -> None:
             """Model overview: training history, score spread, agreement, deviations.
@@ -1305,6 +1309,40 @@ def _build_handler(ctx: GuiContext):
                 return self._error(502, f"the change failed: {type(exc).__name__}")
             self._json({"ok": True, "action": action, "domain": name})
 
+        def _sluice_rule_mode(self) -> None:
+            """Change a rule's mode in place -- the Blocked tab's "open the rule and modify it"
+            (the operator, 2026-10-16).
+
+            MOVING TO block ARMS THE KERNEL, so it needs `"confirmed": true` in the body -- the
+            same friction every enforcement change carries. Moving back to alert needs none:
+            widening what gets dropped is not the dangerous direction.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            from weirvern import sluice_store  # noqa: PLC0415
+            from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+            rule_id = str(body.get("rule_id") or "").strip()
+            mode = str(body.get("mode") or "").strip().lower()
+            if mode == "block" and body.get("confirmed") is not True:
+                return self._json({"ok": False, "error": "moving a rule to block changes what the "
+                                   "kernel drops; resend with confirmed: true"}, 400)
+            try:
+                with self._with_client() as client:
+                    ident = self._identity()
+                    rule = sluice_store.update_rule_mode(
+                        client, rule_id, mode, by=(ident.username if ident else "operator"))
+            except SluiceError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+            self._json({"ok": True, "rule": {"rule_id": rule.rule_id, "describes": rule.describes(),
+                                             "mode": rule.mode}})
+
         def _sluice_revoke(self) -> None:
             """Stop enforcing a rule, keeping the RECORD.
 
@@ -1787,6 +1825,10 @@ def _build_handler(ctx: GuiContext):
                 return self._model_retrain_write()
             if path == "/api/sluice/revoke":
                 return self._sluice_revoke()
+            # An EDIT, not a delete-and-recreate: the rule keeps its id, its reason and its
+            # history (see sluice_store.update_rule_mode).
+            if path == "/api/sluice/rule/mode":
+                return self._sluice_rule_mode()
             # ── BLOCKLISTS ──────────────────────────────────────────────────────────────────
             # Both admin-gated: importing a list decides what this deployment WATCHES (and,
             # once a rule blocks, what it stops), which is a change to the configuration.

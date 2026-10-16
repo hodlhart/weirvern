@@ -84,8 +84,13 @@ def health_payload(report) -> dict:
     }
 
 
-def anomalies_payload(rows: list[dict]) -> list[dict]:
-    """Serialise anomaly rows, decoding the JSON `feature_contributions` string.
+def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None) -> dict:
+    """Serialise anomaly rows plus the severity tiles' counts.
+
+    An OBJECT now, not a bare list (2026-10-16): the page's header needs how many anomalies carry
+    each severity, and a JSON array cannot carry that beside its rows. `severity_counts` rides
+    with the rows because the two must describe the same filters -- a counts read that failed is
+    carried as `available: false` with its reason, never as zeros that would read as a calm page.
 
     The column holds JSON text (it is a String in the schema). Decoding it here
     means the frontend gets an object rather than a string it has to parse, and a
@@ -110,7 +115,9 @@ def anomalies_payload(rows: list[dict]) -> list[dict]:
         # information the operator cannot recover from the UI.
         row["hostname"] = _hostname(row.get("src_addr"))
         out.append(row)
-    return out
+    return {"rows": out,
+            "severity_counts": severity_counts or {
+                "available": False, "reason": "severity counts were not read", "counts": []}}
 
 
 def host_payload(detail: dict) -> dict:
@@ -291,7 +298,9 @@ def overview_payload(services: list, report, anomalies: list[dict],
              "detail": getattr(s, "detail", "")}
             for s in (services or [])
         ],
-        "anomalies": anomalies_payload(anomalies or [])[:25],
+        # The overview wants the ROWS of the anomalies payload, not the tiles block it now
+        # carries beside them (the shape grew an object on 2026-10-16).
+        "anomalies": anomalies_payload(anomalies or [])["rows"][:25],
         "top_talkers": [
             {"src_addr": r[0], "hostname": _hostname(r[0]),
              "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),

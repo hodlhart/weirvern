@@ -14,7 +14,10 @@
   --muted: #8b949e;
   --accent: #2f81f7;
   --ok: #3fb950;
-  --warn: #d29922;
+	--warn: #d29922;
+  /* The one red the palette was missing: used by the fleet tiles' "problems" count and the
+     severity tiles. Kept beside its siblings so the audit that walks var() uses finds it. */
+  --bad: #f85149;
   --crit: #f85149;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   /* Aliases used by a few rules before they were defined here. An undefined custom property
@@ -239,6 +242,39 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
   border-radius: 8px; padding: 6px 8px; font: inherit;
 }
+/* THE FLEET'S NUMBERS, LEFT TO RIGHT (the operator, 2026-10-16: "make it go left to right on
+ * the screen, not down"). The container was classed `stat-row` with no rule behind the name,
+ * so six .stat blocks stacked vertically down the page. Now a row of tiles: each number gets
+ * its own card, and the ones that MEAN something get a colour -- problems red, unregistered and
+ * never-seen amber, disabled greyed -- so the eye lands on trouble without reading every label. */
+/* The rule card's fields: label left, value right, one line per field. */
+#bl-rule-body { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.rl-row { display: flex; gap: 12px; font-size: 13px; }
+.rl-k { width: 72px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px;
+  font-size: 11px; padding-top: 2px; }
+.rl-v { font-family: var(--mono); }
+
+#wl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
+#wl-summary .stat {
+  min-width: 108px; padding: 10px 14px; background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+#wl-summary .stat .v { font-size: 24px; line-height: 1.15; }
+#wl-summary .stat.ok .v { color: var(--ok); }
+#wl-summary .stat.warn .v { color: var(--warn); }
+#wl-summary .stat.bad .v { color: var(--bad); }
+#wl-summary .stat.muted .v { color: var(--muted); }
+
+.sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; width: 100%; }
+.sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 84px;
+  padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 10px; cursor: pointer; text-align: left; color: var(--fg); }
+.sev-tiles .tile.active { border-color: var(--ok); }
+.sev-tiles .tile .v { font-size: 20px; font-weight: 600; font-family: var(--mono);
+  line-height: 1.1; }
+.sev-tiles .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; }
+
 .stats { display: flex; gap: 28px; flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; gap: 2px; }
 .stat .v { font-size: 22px; font-weight: 600; font-family: var(--mono); }
