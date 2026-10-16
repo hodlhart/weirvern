@@ -1370,8 +1370,14 @@ def test_shutdown_JOINS_the_ingest_thread_before_exiting():
 
     # The join must be in the SHUTDOWN path, after the detect loop, and before the siphon teardown --
     # otherwise the pass is still cut short, or the child is SIGKILLed while ingest is still running.
+    #
+    # The anchor is the loop tail's remaining-time computation. It used to be the single
+    # `_stop.wait(...)` that followed it; the tail now sleeps IN SLICE S (so the Sluice Gate's own
+    # interval is honoured -- see worker._sluice_maybe), and the anchor moves to the line that
+    # replaced the wait rather than pinning the old shape. The ORDER this test exists to hold is
+    # unchanged: loop tail, then join, then the siphon teardown.
     i_join = src.index("ingest_thread.join(")
-    i_loop = src.index("_stop.wait(max(1, settings.detect_interval_s")
+    i_loop = src.index("remaining = max(1, settings.detect_interval_s")
     i_siphon = src.index("siphon.stop()")
     assert i_loop < i_join, "the ingest join happens before the detect loop ends"
     assert i_join < i_siphon, (

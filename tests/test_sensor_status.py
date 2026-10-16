@@ -371,6 +371,12 @@ def test_no_orphan_placeholder_elements_remain():
     ids = set(re.findall(r'id="([a-z][a-z0-9-]*)"', html))
     referenced = set(re.findall(r'getElementById\("([a-z][a-z0-9-]*)"\)', scripts))
     referenced |= set(re.findall(r'for="([a-z][a-z0-9-]*)"', html))
+    # THE INFO PANELS' OWN VOCABULARY. The "i" buttons open their panel through
+    # `data-info="<id>"` and `wireInfoButtons()`'s getElementById(btn.dataset.info), so the id
+    # is referenced without ever appearing as a getElementById literal. This is a WIDENING of
+    # the scan, exactly like the soc.js fix above -- the panels really are populated (their
+    # prose is static markup) -- never an exemption: an id nothing references is still an orphan.
+    referenced |= set(re.findall(r'data-info="([a-z][a-z0-9-]*)"', html))
 
     # Elements that are deliberately not written by JS, each for a reason. Without this
     # list the check is noise and gets ignored, which is how a real orphan survives.
