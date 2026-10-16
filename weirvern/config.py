@@ -234,6 +234,16 @@ class Settings:
     # within which a lapsed rule stops being enforced. Short is cheap: compiling a ruleset is
     # milliseconds.
     sluice_interval_s: int = field(default_factory=lambda: _env_int("SLUICE_INTERVAL_S", 60))
+    # CHANNEL NETFLOW: whether the IN-LINE channel's crossing traffic is summarised into flow
+    # records -- 'off' (default), 'upstream' or 'downstream' naming WHICH PORT the probe samples.
+    # Either port sees every frame crossing the box, so one is enough; sampling both would count
+    # each conversation twice. The probe exports to this deployment's OWN collector (goflow2),
+    # which writes the same flows.jsonl the ingester tails -- so the records land in the same
+    # `flows` table the Netflow tab and the models already read. Only meaningful while the
+    # channel is verified active; the worker starts and stops the probe on that condition.
+    channel_netflow: str = field(
+        default_factory=lambda: os.environ.get("CHANNEL_NETFLOW", "off").strip().lower()
+    )
     # CHANNEL: the two ports of an IN-LINE weirling -- upstream toward the network, downstream
     # toward the protected device -- joined into one bridge. A live channel is a VERIFIED
     # enforcement path for the Sluice Gate that needs no siphon interception and no forged

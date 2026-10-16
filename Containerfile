@@ -26,9 +26,17 @@ FROM python:3.11-slim
 # So `siphon` mode could not have worked in-cluster even with every capability granted. It would
 # have failed at the first ip call, after the preflight had passed, which is the worst place.
 #
+# ── WHY softflowd IS HERE, AND WHY IT IS NOT OPTIONAL ─────────────────────────────────────────
+#
+# The channel-netflow probe (`worker._channel_netflow_maybe`) shells out to `softflowd` to turn
+# the in-line channel's crossing traffic into NetFlow records. Without the binary the probe
+# cannot start and the operator gets a selection that silently does nothing -- the same
+# silent-inert class as the missing `nft`, so the same test pins this install line
+# (tests/test_image_contract.py).
+#
 # Installed at BUILD time per the note below -- never at container boot.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends iproute2 nftables \
+ && apt-get install -y --no-install-recommends iproute2 nftables softflowd \
  && rm -rf /var/lib/apt/lists/*
 
 # ── WHY nftables IS HERE, AND WHY IT IS NOT OPTIONAL ──────────────────────────────────────────

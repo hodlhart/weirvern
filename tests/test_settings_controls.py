@@ -169,13 +169,16 @@ def test_a_control_step_exists_for_every_numeric_key():
 
 def test_select_options_match_what_the_validator_accepts():
     """A dropdown cannot produce a value the server rejects, and can produce every value it
-    accepts -- both halves matter. Checked by running the real validator against every option
-    and against a plausible non-option."""
-    for key in ("SENSOR_MODE", "WEIRVERN_REVERSE_DNS"):
-        opts = cc.SETTING_CONTROLS[key]["options"]
-        for option in opts:
+    accepts -- both halves matter. EVERY select control is checked, not a remembered pair: the
+    sluice policy and the channel flow selection joined the set later, and a hand-written list
+    would have missed exactly those two."""
+    selects = {k: v for k, v in cc.SETTING_CONTROLS.items() if v["control"] == "select"}
+    assert {"SENSOR_MODE", "WEIRVERN_REVERSE_DNS", "SLUICE_CRITICALITY",
+            "CHANNEL_NETFLOW"} <= set(selects), "a select control disappeared from the registry"
+    for key, spec in selects.items():
+        for option in spec["options"]:
             cc.validate(key, option)  # raises if the dropdown offers an illegal value
-        # And the set is CLOSED: a plausible value outside it is rejected, so the dropdown is
+        # And each set is CLOSED: a plausible value outside it is rejected, so the dropdown is
         # not a suggestion list.
         with pytest.raises(cc.ConfigError):
             cc.validate(key, "nonsense-mode")

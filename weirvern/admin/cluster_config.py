@@ -80,6 +80,8 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "INTERCEPT_GATEWAY",
     "CHANNEL_UPSTREAM",
     "CHANNEL_DOWNSTREAM",
+    # The channel's flow selection: whether the in-line traffic is summarised into NetFlow.
+    "CHANNEL_NETFLOW",
     # THE GATE'S OWN KEYS. The Sluice Gate is a product surface (its own tab, its own proof), and
     # operating it previously meant a ConfigMap patch and a worker restart -- the opposite of the
     # operator's standing request that everything be clickable. All five are read by the WORKER,
@@ -157,6 +159,8 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
     "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "CHANNEL_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                        "starts or stops the flow probe"),
     # The sluice keys are read by the WORKER: it resolves the enforcement interface, compiles the
     # rules and runs the pass. Restarting it also re-establishes the kernel state immediately
     # rather than waiting for the gate's own interval.
@@ -292,6 +296,7 @@ SETTING_CONTROLS: dict[str, dict] = {
     "INTERCEPT_GATEWAY": {"control": "text"},
     "CHANNEL_UPSTREAM": {"control": "text"},
     "CHANNEL_DOWNSTREAM": {"control": "text"},
+    "CHANNEL_NETFLOW": {"control": "select", "options": ["off", "upstream", "downstream"]},
     "SLUICE_ENABLED": {"control": "toggle"},
     # Empty resolves automatically (channel bridge, else capture port), so it stays free text --
     # a closed set of interface names does not exist across deployments.
@@ -346,6 +351,19 @@ def validate(key: str, value: str) -> str:
             "they are, the channel stays inactive and the Sluice Gate keeps reporting why. "
             "Wire the two ports in line, join them into one bridge, and keep bridge-nf enabled."
         )
+
+    if key == "CHANNEL_NETFLOW":
+        if raw.lower() not in ("off", "upstream", "downstream", ""):
+            raise ConfigError(
+                f"{key} must be off, upstream or downstream; got '{raw}'. The value names which "
+                f"channel port the flow probe samples; either port sees every frame crossing "
+                f"the box, so one is enough."
+            )
+        if raw.lower() not in ("off", ""):
+            return ("the probe records only while the channel is verified active, and its "
+                    "records land in the same Netflow tab and model features as the router's "
+                    "export -- the box's own crossing traffic, summarised.")
+        return ""
 
     if key == "ZEEK_IFACE" or key == "MGMT_IFACE":
         if raw and raw == _other_iface(key):

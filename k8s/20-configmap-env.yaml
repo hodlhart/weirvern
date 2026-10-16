@@ -235,6 +235,9 @@ data:
   # Empty (the default) = no channel; the gate reports that plainly rather than guessing.
   CHANNEL_UPSTREAM: ""
   CHANNEL_DOWNSTREAM: ""
+  # Whether the traffic crossing the in-line channel becomes Netflow records: off | upstream |
+  # downstream (which port the flow probe samples). Only runs while the channel is active.
+  CHANNEL_NETFLOW: "off"
 
   SLUICE_IFACE: ""
 

@@ -170,6 +170,108 @@ def _sluice_maybe(settings, client) -> None:
     logger.info("sluice gate: %s -- %s", state.state, state.detail)
 
 
+# ── CHANNEL NETFLOW: the in-line path feeds the flow pipeline ───────────────────────────────────
+#
+# WHEN THE BOX IS IN LINE the channel carries traffic no mirror can give away -- and until now
+# that visibility stopped at Zeek's logs. This runs `softflowd` on the chosen channel port and
+# exports NetFlow to the deployment's OWN collector (goflow2 listens on the node's 2055 and
+# writes flows.jsonl, which the ingester tails into `weirvern.flows`): one pipeline, no new
+# storage, and the Netflow tab plus the models see what crossed the box.
+#
+# THE CHILD IS SUPERVISED, NOT FIRE-AND-FORGET: started when the selection and a verified-active
+# channel agree, stopped the moment either changes (including on worker shutdown, so softflowd
+# flushes its pending flows), retried on a five-minute cooldown after a crash -- a missing
+# capability or binary would otherwise respawn it every tick and write a log line per minute.
+CHANNEL_NETFLOW_COLLECTOR = "127.0.0.1:2055"  # goflow2, hostNetwork on this node
+# Timeouts chosen for a monitoring pipeline that re-evaluates five-minute buckets: idle flows
+# export within a minute or two and long flows at least every ten, rather than the half-hour-to-
+# hour defaults of a router exporting for billing.
+CHANNEL_NETFLOW_TIMEOUTS = ("-t", "tcp=120", "-t", "udp=60", "-t", "icmp=60",
+                            "-t", "general=180", "-t", "maxlife=600")
+_CHANNEL_NETFLOW: dict = {"proc": None, "iface": "", "retry_after": 0.0}
+
+
+def _stop_channel_netflow(reason: str = "") -> None:
+    """Stop the flow probe if it is running, and say why. Best-effort: never raises."""
+    holder = _CHANNEL_NETFLOW
+    proc = holder["proc"]
+    holder["proc"] = None
+    holder["iface"] = ""
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001 -- TimeoutExpired without importing it
+            proc.kill()
+        logger.info("channel netflow: probe stopped%s", f" ({reason})" if reason else "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("channel netflow: could not stop the probe: %s", exc)
+
+
+def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=None,
+                           now=None) -> None:
+    """One supervision tick for the in-line flow probe. Cheap when nothing changed.
+
+    The injectable pieces (channel_state / spawn / which / now) exist so every DECISION --
+    start, stop, back off, leave alone -- is unit-testable without a kernel, a network or a
+    child process.
+    """
+    import shutil as _shutil  # noqa: PLC0415
+    import subprocess as _subprocess  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    holder = _CHANNEL_NETFLOW
+    clock = now or _time.monotonic
+
+    mode = (getattr(settings, "channel_netflow", "off") or "off").strip().lower()
+    if channel_state is None:
+        from weirvern.admin import channel as _channel  # noqa: PLC0415
+
+        channel_state = _channel.detect(settings.channel_upstream, settings.channel_downstream)
+
+    iface = ""
+    if mode in ("upstream", "downstream") and channel_state.active:
+        iface = (settings.channel_upstream if mode == "upstream"
+                 else settings.channel_downstream).strip()
+
+    running = holder["proc"] is not None and holder["proc"].poll() is None
+    if running and holder["iface"] != iface:
+        _stop_channel_netflow(f"the channel moved to {iface}" if iface
+                              else "the selection is off or the channel is not active")
+        running = False
+    if holder["proc"] is not None and not running:
+        rc = holder["proc"].returncode
+        _stop_channel_netflow()
+        holder["retry_after"] = max(float(holder["retry_after"]), clock() + 300.0)
+        logger.warning("channel netflow: the probe exited (code %s); next attempt in 5 minutes",
+                       rc)
+    if not iface or running:
+        return
+    if clock() < float(holder["retry_after"]):
+        return
+
+    probe = (which or _shutil.which)("softflowd")
+    if not probe:
+        holder["retry_after"] = clock() + 300.0
+        logger.warning("channel netflow: softflowd is not in this image, so the selection "
+                       "cannot collect flows (the image contract test pins this)")
+        return
+    argv = [probe, "-i", iface, "-n", CHANNEL_NETFLOW_COLLECTOR, "-v", "9", "-d",
+            "-p", "/tmp/softflowd-channel.pid", "-c", "/tmp/softflowd-channel.ctl",
+            *CHANNEL_NETFLOW_TIMEOUTS]
+    try:
+        holder["proc"] = (spawn or _subprocess.Popen)(argv)
+        holder["iface"] = iface
+        logger.info("channel netflow: sampling %s -> %s (selection: %s)", iface,
+                    CHANNEL_NETFLOW_COLLECTOR, mode)
+    except Exception as exc:  # noqa: BLE001
+        _stop_channel_netflow()
+        holder["retry_after"] = clock() + 300.0
+        logger.warning("channel netflow: could not start softflowd: %s", exc)
+
+
 def _sensor_name(settings) -> str:
     """What this sensor calls itself in the gate's state row, and in every sensor-keyed table.
 
@@ -1511,6 +1613,14 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice gate pass failed (detection continues): %s", exc)
 
+            # The in-line flow probe, on the same rhythm (see its section above). Separate from
+            # the gate on purpose: collecting flows from the channel does not require blocking
+            # anything, and vice versa.
+            try:
+                _channel_netflow_maybe(settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("channel netflow tick failed (detection continues): %s", exc)
+
             # The sensor heartbeat runs in its OWN thread, not here.
             #
             # Publishing inside this loop would make the heartbeat's interval equal to
@@ -1541,6 +1651,10 @@ def main() -> None:
                 _sluice_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice gate pass failed (detection continues): %s", exc)
+            try:
+                _channel_netflow_maybe(settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("channel netflow tick failed (detection continues): %s", exc)
 
     # ── LET THE INGEST LOOP FINISH ITS PASS (audit F079) ──────────────────────────────────────────
     #
@@ -1579,6 +1693,13 @@ def main() -> None:
             siphon.stop()
         except Exception:  # noqa: BLE001
             logger.error("siphon supervisor shutdown failed", exc_info=True)
+
+    # THE FLOW PROBE IS A CHILD TOO: SIGTERM it before the process exits so softflowd flushes
+    # its pending flows instead of being SIGKILLed at the grace period.
+    try:
+        _stop_channel_netflow("worker shutdown")
+    except Exception:  # noqa: BLE001
+        logger.error("channel netflow probe shutdown failed", exc_info=True)
 
     logger.info("Worker exited cleanly")
     sys.exit(0)

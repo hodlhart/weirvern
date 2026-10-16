@@ -816,7 +816,9 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("intercept_gateway", "intercept gateway"),
         # The IN-LINE channel: two ports, one bridge, enforcement without siphon.
         ("channel_upstream", "channel upstream port"),
-        ("channel_downstream", "channel downstream port"),
+                ("channel_downstream", "channel downstream port"),
+        # Whether the in-line channel's crossing traffic becomes flow records.
+        ("channel_netflow", "channel flow capture"),
         ("reverse_dns", "reverse DNS"),
         # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
         # thing an operator needs to respond to without a redeploy.
@@ -915,6 +917,13 @@ _SETTINGS_HELP: dict[str, str] = {
         "that from the kernel -- ports on one forwarding bridge, link up, bridge-nf enabled -- "
         "before it will claim the channel is active, and names exactly what is missing when "
         "it is not."),
+    "channel_netflow": (
+        "Whether the traffic crossing the IN-LINE channel is summarised into NetFlow records. "
+        "'off' (the default) collects nothing from the channel; 'upstream' or 'downstream' names "
+        "which port the probe samples -- either port sees every frame crossing the box, so one "
+        "is enough. The records go to this deployment's own collector, so they land in the same "
+        "Netflow tab and the same model features as the router's export. The probe runs only "
+        "while the channel is verified active."),
     "sluice_enabled": (
         "Whether the Sluice Gate enforces block rules at all. Default off, on purpose: "
         "installing Weirvern must not start blocking traffic before anyone has looked at what "

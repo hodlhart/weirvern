@@ -67,6 +67,37 @@ def test_nftables_is_installed_because_the_sluice_gate_shells_out_to_it(containe
     )
 
 
+def test_softflowd_is_installed_because_the_channel_probe_shells_out_to_it(
+        containerfile_text: str) -> None:
+    """`worker._channel_netflow_maybe` runs softflowd on the channel port, exporting to the
+    deployment's own collector.
+
+    Without the binary the operator's selection is silently inert: the probe warns once on a
+    five-minute cooldown and collects nothing. That is the exact silent-inert class the
+    nftables clause above exists for, so it gets the same treatment.
+    """
+    assert "softflowd" in containerfile_text, (
+        "the Containerfile no longer installs softflowd; the channel flow probe shells out to "
+        "it and the selection would collect nothing on every deployment"
+    )
+    install_lines = [
+        line for line in containerfile_text.splitlines()
+        if "apt-get install" in line and "softflowd" in line
+    ]
+    assert install_lines, (
+        "softflowd appears in the Containerfile but not on an apt-get install line -- a comment "
+        "is not a package"
+    )
+
+
+def test_the_channel_probe_actually_shells_out_to_softflowd() -> None:
+    """Same coupling note as the nftables pair: if the probe ever stops shelling out to
+    softflowd, the image contract above becomes a stale requirement that blocks nothing."""
+    source_text = (ROOT / "weirvern" / "worker.py").read_text()
+    assert "softflowd" in source_text, "the worker no longer references softflowd at all"
+    assert "CHANNEL_NETFLOW_COLLECTOR" in source_text
+
+
 def test_the_sluice_backend_actually_shells_out_to_nft() -> None:
     """The test above is only meaningful while this is true.
 

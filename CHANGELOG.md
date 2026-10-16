@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — the channel's traffic becomes NetFlow: a selection, not a second pipeline
+
+When the box is IN LINE, every frame crossing it is visible to it — and that visibility stopped
+at Zeek's logs. A new selection (Settings → Sensor → "channel flow capture": off / upstream /
+downstream) runs a supervised `softflowd` probe on the chosen channel port and exports NetFlow
+to the deployment's OWN collector, so the records land in the same `flows` table the Netflow tab
+and the models already read. One port is enough: either port sees every frame crossing the
+bridge, so sampling both would count each conversation twice.
+
+The probe is supervised like every other child in this worker: started only when the selection
+and a VERIFIED-active channel agree (the same kernel checks the gate uses), stopped the moment
+either changes, stopped on worker shutdown so softflowd flushes its pending flows, and retried
+on a five-minute cooldown after a crash — a missing capability cannot produce a log line and a
+doomed child every minute. The image contract gains a `softflowd` clause: without the binary the
+selection would be silently inert, the same class the nftables clause exists for.
+
 ## Unreleased — everything clickable: the gate gets its switches, and the console gets its circle-i
 
 Two requests, one theme: nothing important should require kubectl or a manual.
