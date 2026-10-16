@@ -83,24 +83,37 @@ spec:
               # Written to the hostPath the operator already knows, so the values are readable
               # from the host without entering a container: the whole point of recording them is
               # that they outlive the deployment being undone.
+              #
+              # FIRST RUN WINS (issue #12, 2026-10-16). The save used to be unconditional, so a
+              # second init run -- any pod restart, any node rejoin -- recorded the values this
+              # overlay had ALREADY changed as the "before" state, and the documented restore
+              # then restored the modified values: a silent no-op on the host that was supposed
+              # to be handed back exactly as found. If something is already recorded, it is left
+              # byte-identical and the run SAYS so. An EMPTY file means a first run that failed
+              # to record, so it is still written -- nothing recorded yet is the only state that
+              # records.
               SAVE=/var/lib/weirvern/flows/siphon-sysctls.saved
               RESTORE=/var/lib/weirvern/flows/siphon-sysctls.restore.sh
               CAPTURE_IFACE="${CAPTURE_IFACE:-}"
-              {
-                echo "# Written by the Weirvern siphon overlay at $(date -u +%FT%TZ)"
-                echo "# Kernel networking values on this node BEFORE the overlay changed them."
-                echo "# Restore with:  sh $RESTORE"
-                echo "ip_forward=$(read_sysctl net/ipv4/ip_forward)"
-                echo "all_rp_filter=$(read_sysctl net/ipv4/conf/all/rp_filter)"
-                echo "all_send_redirects=$(read_sysctl net/ipv4/conf/all/send_redirects)"
-                echo "default_rp_filter=$(read_sysctl net/ipv4/conf/default/rp_filter)"
-                echo "default_send_redirects=$(read_sysctl net/ipv4/conf/default/send_redirects)"
-                if [ -n "$CAPTURE_IFACE" ]; then
-                  echo "capture_iface=$CAPTURE_IFACE"
-                  echo "capture_rp_filter=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/rp_filter")"
-                  echo "capture_send_redirects=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/send_redirects")"
-                fi
-              } > "$SAVE" 2>/dev/null || echo "[siphon-init] WARNING: could not save originals to $SAVE"
+              if [ -s "$SAVE" ]; then
+                echo "[siphon-init] originals already recorded at $SAVE; keeping them (first run wins)"
+              else
+                {
+                  echo "# Written by the Weirvern siphon overlay at $(date -u +%FT%TZ)"
+                  echo "# Kernel networking values on this node BEFORE the overlay changed them."
+                  echo "# Restore with:  sh $RESTORE"
+                  echo "ip_forward=$(read_sysctl net/ipv4/ip_forward)"
+                  echo "all_rp_filter=$(read_sysctl net/ipv4/conf/all/rp_filter)"
+                  echo "all_send_redirects=$(read_sysctl net/ipv4/conf/all/send_redirects)"
+                  echo "default_rp_filter=$(read_sysctl net/ipv4/conf/default/rp_filter)"
+                  echo "default_send_redirects=$(read_sysctl net/ipv4/conf/default/send_redirects)"
+                  if [ -n "$CAPTURE_IFACE" ]; then
+                    echo "capture_iface=$CAPTURE_IFACE"
+                    echo "capture_rp_filter=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/rp_filter")"
+                    echo "capture_send_redirects=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/send_redirects")"
+                  fi
+                } > "$SAVE" 2>/dev/null || echo "[siphon-init] WARNING: could not save originals to $SAVE"
+              fi
 
               # Generated FROM the saved values so it cannot drift from them, and it REFUSES to
               # run without them rather than restoring defaults -- "restore" must not mean "guess".
