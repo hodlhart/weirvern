@@ -44,7 +44,12 @@ REPO_PYTHON="$ROOT/.venv/bin/python"
 [ -x "$REPO_PYTHON" ] || REPO_PYTHON=python3
 export PYTHONPATH="$ROOT"
 
-BACKUP="/home/hart/flowforge-backups/weirvern-premessage-scrub-$(date +%Y%m%d-%H%M).bundle"
+# THE BACKUP PATH MOVED WITH THE HOST (2026-10-16). The original path (/home/hart/...) was where
+# this script was first written; the machine this repo actually publishes from has no /home/hart
+# and no passwordless root to create one. A backup path that cannot be created is a backup that
+# does not happen -- and "backup first" is this script's entire contract, so it must not be the
+# step that silently fails. $HOME, overridable.
+BACKUP="${WEIRVERN_BACKUP_DIR:-$HOME/weirvern-backups}/weirvern-premessage-scrub-$(date +%Y%m%d-%H%M).bundle"
 mkdir -p "$(dirname "$BACKUP")"
 echo "=== backup ==="
 git bundle create "$BACKUP" --all 2>&1 | tail -2 | sed 's/^/  /'
