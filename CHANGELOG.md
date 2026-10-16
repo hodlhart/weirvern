@@ -510,6 +510,11 @@ vault README promises (before the manifest, the cleanup deleted anything it did 
 recognise). And a note's frontmatter omits `anomalies` when the anomaly source could not be
 read, instead of claiming a measured zero.
 
+## 0.13.0 — 2026-09-24
+
+Everything below this heading existed at the 0.13.0 version bump (`c774d3d`, 2026-09-24) and
+shipped in that release; everything above it was added afterwards and is unreleased.
+
 ## Unreleased — 0.9.0: the TUI is gone, and the fingerprinting story is one sentence
 
 **Two surfaces were telling a story the software no longer had.**

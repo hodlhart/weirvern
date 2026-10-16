@@ -364,3 +364,27 @@ def test_the_image_tag_is_declared_once_and_applies_everywhere():
     assert f"weirvern-worker:{tag}" in rendered, (
         f"the transformer declares {tag} but the rendered output does not use it"
     )
+
+
+
+def test_the_changelog_draws_the_0_13_0_release_boundary():
+    """Issue #19: the tree publishes 0.13.0 in four places and carries the `v0.13.0` tag and
+    release, while every CHANGELOG heading read "Unreleased" -- a reader following the tag
+    could not tell what that release contained. Everything below the boundary existed at the
+    bump commit (`c774d3d`); everything above it was added afterwards. Measured when written:
+    the text from the boundary onward is byte-identical to `c774d3d:CHANGELOG.md` from its top
+    to EOF -- which is WHY the boundary belongs immediately above that heading."""
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    boundary = "## 0.13.0 — 2026-09-24"
+    assert boundary in changelog, (
+        "the 0.13.0 release boundary is gone; the released tree's changelog cannot say what "
+        "0.13.0 contained"
+    )
+    assert changelog.index(boundary) < changelog.index(
+        "## Unreleased — 0.9.0: the TUI is gone"), (
+        "the boundary must sit immediately ABOVE the first section that shipped with 0.13.0"
+    )
+    intro = changelog[changelog.index(boundary):changelog.index("## Unreleased — 0.9.0")]
+    assert "shipped in that release" in intro and "unreleased" in intro, (
+        "the boundary needs its one-sentence orientation: released below, unreleased above"
+    )
