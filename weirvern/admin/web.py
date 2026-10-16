@@ -401,7 +401,10 @@ def _build_handler(ctx: GuiContext):
 
             report = None
             anomalies: list = []
-            talkers: list = []
+            # A STATE, NOT AN EMPTY LIST (issue #13): if the read below fails, the payload says
+            # so; an empty list would render as a quiet network.
+            talkers: dict = {"available": False, "reason": "the overview read did not run",
+                             "points": []}
             sensor: dict = {}
             data_error = None
             try:
@@ -626,7 +629,10 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("netflow view unavailable: %s", exc)
                 return self._json({"volume": empty, "protocols": empty, "ports": empty,
-                                   "spread": empty, "talkers": [], "noise": {},
+                                   "spread": empty,
+                                   "talkers": {"available": False, "points": [],
+                                               "reason": f"cannot reach ClickHouse: {type(exc).__name__}"},
+                                   "noise": {},
                                    "data_error": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers,
                                               noise=noise))

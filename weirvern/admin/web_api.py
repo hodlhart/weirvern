@@ -273,7 +273,7 @@ def evidence_payload(d: dict) -> dict:
 
 
 def overview_payload(services: list, report, anomalies: list[dict],
-                     talkers: list[tuple], caps, data_error: str | None = None,
+                     talkers: dict, caps, data_error: str | None = None,
                      sensor: dict | None = None) -> dict:
     """One payload for the landing page, so the browser makes ONE request.
 
@@ -305,7 +305,7 @@ def overview_payload(services: list, report, anomalies: list[dict],
             {"src_addr": r[0], "hostname": _hostname(r[0]),
              "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),
              "destinations": _jsonable(r[3])}
-            for r in (talkers or []) if len(r) >= 4
+            for r in ((talkers or {}).get("points") or []) if len(r) >= 4
         ],
         "capabilities": {
             "cluster_available": bool(getattr(caps, "cluster_available", False)),
@@ -460,7 +460,7 @@ def models_payload(data: dict) -> dict:
 
 
 def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
-                    talkers: list[tuple], noise: dict | None = None) -> dict:
+                    talkers: dict, noise: dict | None = None) -> dict:
     """Netflow view payload.
 
     NAMES RIDE WITH EVERY ROW THAT CARRIES AN ADDRESS. The talkers list has had
@@ -483,12 +483,19 @@ def netflow_payload(volume: dict, proto: dict, ports: dict, spread: dict,
         # The STATED omission: rows the host-only lists left out because their address cannot
         # be a host (multicast/link-local/broadcast -- weirvern/addressing.py).
         "noise": noise or {"available": False, "reason": "not counted", "flows": 0, "bytes": 0},
-        "talkers": [
-            {"src_addr": r[0], "hostname": _hostname(r[0]),
-             "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),
-             "destinations": _jsonable(r[3])}
-            for r in (talkers or []) if len(r) >= 4
-        ],
+        # TALKERS KEEP THEIR STATE (issue #13): the list used to be flattened here, dropping the
+        # `available`/`reason` the helper had just produced -- which is how a failed query reached
+        # the panel as an empty list and rendered as a quiet network. Same shape as every sibling.
+        "talkers": {
+            "available": bool((talkers or {}).get("available", True)),
+            "reason": (talkers or {}).get("reason", ""),
+            "points": [
+                {"src_addr": r[0], "hostname": _hostname(r[0]),
+                 "bytes": _jsonable(r[1]), "flows": _jsonable(r[2]),
+                 "destinations": _jsonable(r[3])}
+                for r in ((talkers or {}).get("points") or []) if len(r) >= 4
+            ],
+        },
     }
 
 

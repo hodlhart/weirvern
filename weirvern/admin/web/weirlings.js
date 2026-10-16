@@ -77,8 +77,15 @@ async function loadWeirlings() {
   // `clearError()` removes both.
   let d;
   try {
-    const problems = document.getElementById("wl-problems-only").checked ? "?problems=1" : "";
-    d = await getJSON(`/api/weirlings${problems}`);
+    // BOTH TOGGLES RIDE THE QUERY (issue #7, 2026-10-16): `revoked=1` was never sent, so ticking
+    // the box refetched identical data and the revoked list could never appear, however long the
+    // operator looked. Both read their live checkbox on every load -- which is also what keeps
+    // them across the auto-refresh cycle, the same way `problems` always did.
+    const params = [];
+    if (document.getElementById("wl-problems-only").checked) params.push("problems=1");
+    const revokedBox = document.getElementById("wl-revoked");
+    if (revokedBox && revokedBox.checked) params.push("revoked=1");
+    d = await getJSON(`/api/weirlings${params.length ? "?" + params.join("&") : ""}`);
   } catch (err) {
     showDataError(`the fleet could not be loaded: ${err && err.message ? err.message : err}`);
     return;

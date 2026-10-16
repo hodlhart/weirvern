@@ -119,8 +119,13 @@ def test_top_talkers_failure_is_logged_above_debug(caplog):
             raise RuntimeError("Code: 47. Unknown identifier `total_bytes`")
 
     with caplog.at_level(logging.WARNING):
-        rows = status.top_talkers(Boom())
-    assert rows == []
+        out = status.top_talkers(Boom())
+    # STRENGTHENED (issue #13): a failed read is now a STATE the panel renders ("Cannot draw
+    # this: ..."), not an empty list that reads as a quiet network. The log stays as the second
+    # layer.
+    assert out["available"] is False and out["points"] == [], (
+        "a failed read must be renderable as a failure, not an empty list")
+    assert "talkers" in out["reason"]
     assert any("top_talkers failed" in r.message for r in caplog.records), (
         "the failure was swallowed silently; an empty talkers table is "
         "indistinguishable from a quiet network"

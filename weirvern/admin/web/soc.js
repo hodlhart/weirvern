@@ -275,7 +275,11 @@ async function loadNetflow() {
                                      hours: Math.max(1, Math.round(b / 3600)) });
                    } });
 
-  renderBars("nf-talkers", { available: true, points: (d.talkers || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
+  // THE PAYLOAD'S OWN STATE, not a hardcoded true (issue #13, 2026-10-16): a failed talkers query
+  // rendered "No talkers in this window." -- a broken read shown as a quiet network.
+  const tk = d.talkers || {};
+  renderBars("nf-talkers", { available: tk.available !== false, reason: tk.reason,
+                             points: (tk.points || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
              { label: (r) => r.src_addr, value: (r) => r.bytes, format: fmtBytes,
                // CLICK = FILTER THE WHOLE VIEW (the operator's ask). The host detail is one
                // chip away in Assets; the dashboard answering "just this host" is the point.

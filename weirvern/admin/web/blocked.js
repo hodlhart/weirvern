@@ -207,6 +207,10 @@ function blRenderHits(d) {
   const body = document.getElementById("bl-hit-rows");
   if (!body) return;
   body.replaceChildren();
+  if (d.available === false) {
+    blEmptyRow(body, 5, `Cannot list these: ${d.reason || "the query did not run"}.`);
+    return;
+  }
   const hits = d.hits || [];
   if (!hits.length) {
     blEmptyRow(body, 5, "Nothing recorded in this window. A hit appears when a device asks " +
@@ -249,6 +253,12 @@ function blRenderRules(d) {
     const body = document.getElementById(id);
     if (!body) continue;
     body.replaceChildren();
+    if (d.available === false) {
+      // A FAILED READ IS NOT AN EMPTY LIST (issue #13): the old copy invited the operator to
+      // create a rule while nothing could be read at all.
+      blEmptyRow(body, 4, `Cannot list these: ${d.reason || "the query did not run"}.`);
+      continue;
+    }
     if (!rows.length) {
       blEmptyRow(body, 4, id === "bl-block-rows"
         ? "No blocking rules. Create one in Sluice Gate; a domain rule blocks what its name " +

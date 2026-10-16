@@ -68,6 +68,11 @@ function dnRenderHistogram(d) {
   const host = document.getElementById("dn-volume");
   if (!host) return;
   host.replaceChildren();
+  if (d.available === false) {
+    host.appendChild(el("p", { class: "muted",
+      text: `Cannot draw this: ${d.reason || "the query did not run"}.` }));
+    return;
+  }
   const pts = d.histogram || [];
   if (!pts.length) {
     host.appendChild(el("p", { class: "muted", text: "No DNS records in this window." }));
@@ -138,7 +143,12 @@ function dnReverseInto(container, ip) {
   getJSON(`/api/dns/reverse?ip=${encodeURIComponent(ip)}&hours=${trHours()}`)
     .then((d) => {
       container.replaceChildren();
-      if (d.available === false || !(d.domains || []).length) {
+      if (d.available === false) {
+        container.appendChild(el("span", { class: "muted",
+          text: `Cannot look this up: ${d.reason || "the query did not run"}.` }));
+        return;
+      }
+      if (!(d.domains || []).length) {
         container.appendChild(el("span", { class: "muted",
           text: `${ip}: no names in this window` }));
         return;
@@ -199,6 +209,13 @@ function dnRenderRows(d) {
   const body = document.getElementById("dn-rows");
   if (!body) return;
   body.replaceChildren();
+  if (d.available === false) {
+    const tr = el("tr", {});
+    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "7" },
+                              text: `Cannot list these: ${d.reason || "the query did not run"}.` }));
+    body.appendChild(tr);
+    return;
+  }
   const rows = d.rows || [];
   if (!rows.length) {
     const tr = el("tr", {});

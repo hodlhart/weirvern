@@ -1470,6 +1470,108 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the chart clips as a belt", /\.svg-chart\s*\{[^}]*overflow:\s*hidden/.test(css),
         "style.css no longer clips the chart");
 
+  // ── include revoked actually asks, and the list appears (issue #7) ──────────────────────────
+  {
+    const asked = [];
+    fetchOverride = (u) => {
+      const s = String(u);
+      if (!s.includes("/api/weirlings")) return null;
+      asked.push(s);
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+        available: true, reason: null, heartbeats_available: true, heartbeat_reason: null,
+        summary: { total: 2, registered: 1, problems: 0, alive: 1, stale: 0, never_seen: 0,
+                   unregistered: 0, disabled: 0 },
+        sensors: [WEIRLINGS_PAYLOAD.sensors[0]],
+        revoked: [{ sensor_id: "edge-retired", revoked_at: "2026-09-01T00:00:00+00:00" }],
+        revoked_reason: "",
+      }) });
+    };
+    const wlTableText = () => (H.document.getElementById("wl-table") || {}).textContent || "";
+    const revokedBox = H.document.getElementById("wl-revoked");
+    revokedBox.checked = true;
+    await H.loadWeirlings();
+    check("ticking include-revoked asks the server for them",
+          asked.length > 0 && asked[asked.length - 1].includes("revoked=1"),
+          `urls=${asked.join(" | ")}`);
+    check("the revoked registration renders once asked for",
+          wlTableText().includes("edge-retired"), "revoked row missing from the table");
+    revokedBox.checked = false;
+    await H.loadWeirlings();
+    check("unticking it stops asking, and the row leaves",
+          asked.length > 1 && !asked[asked.length - 1].includes("revoked=1")
+            && !wlTableText().includes("edge-retired"),
+          `urls=${asked.join(" | ")}`);
+    fetchOverride = null;
+  }
+
+  // ── a failed read is not an empty panel (issue #13) ──────────────────────────────────────────
+  {
+    const serve = (payload) => Promise.resolve(
+      { ok: true, status: 200, statusText: "OK", json: async () => payload });
+    const textOf = (id) => (H.document.getElementById(id) || {}).textContent || "";
+
+    // Netflow talkers: FAILED says why; EMPTY keeps the quiet copy.
+    fetchOverride = (u) => (String(u).includes("/api/netflow")
+      ? serve({ volume: { available: true, reason: "", points: [] },
+                protocols: { available: true, reason: "", points: [] },
+                ports: { available: true, reason: "", points: [] },
+                spread: { available: true, reason: "", points: [] },
+                talkers: { available: false, reason: "the talkers query failed: Timeout",
+                           points: [] },
+                noise: {}, data_error: null })
+      : null);
+    await H.loadNetflow();
+    check("a FAILED talkers read says why instead of reading as a quiet network",
+          textOf("nf-talkers").includes("Cannot draw this: the talkers query failed"),
+          textOf("nf-talkers").slice(0, 90));
+    fetchOverride = (u) => (String(u).includes("/api/netflow")
+      ? serve({ volume: { available: true, reason: "", points: [] },
+                protocols: { available: true, reason: "", points: [] },
+                ports: { available: true, reason: "", points: [] },
+                spread: { available: true, reason: "", points: [] },
+                talkers: { available: true, reason: "", points: [] },
+                noise: {}, data_error: null })
+      : null);
+    await H.loadNetflow();
+    check("an EMPTY talkers window keeps the quiet copy",
+          textOf("nf-talkers").includes("No talkers in this window"),
+          textOf("nf-talkers").slice(0, 90));
+
+    // DNS: FAILED carries the reason on the histogram and the table.
+    fetchOverride = (u) => (String(u).includes("/api/dns")
+      ? serve({ available: false, reason: "cannot reach ClickHouse: OperationalError",
+                rows: [], total: 0, histogram: [], facets: {}, data_error: "x" })
+      : null);
+    await H.loadDns();
+    check("a FAILED dns read says why instead of 'No DNS records in this window'",
+          textOf("dn-volume").includes("Cannot draw this: cannot reach ClickHouse"),
+          textOf("dn-volume").slice(0, 90));
+    check("the failed dns read does not tell the operator to widen a filter",
+          textOf("dn-rows").includes("Cannot list these:"),
+          textOf("dn-rows").slice(0, 90));
+
+    // Blocked: FAILED says why in both rule tables and the hits list.
+    fetchOverride = (u) => (String(u).includes("/api/blocked")
+      ? serve({ available: false, reason: "the events query failed: OperationalError",
+                hits: [], total: 0, blocks: [], alerts: [], gate: {}, data_error: "x" })
+      : null);
+    await H.loadBlocked();
+    check("a FAILED blocked read says why instead of inviting a new rule",
+          textOf("bl-block-rows").includes("Cannot list these:")
+            && textOf("bl-hit-rows").includes("Cannot list these:"),
+          `${textOf("bl-block-rows").slice(0, 60)} | ${textOf("bl-hit-rows").slice(0, 60)}`);
+    fetchOverride = (u) => (String(u).includes("/api/blocked")
+      ? serve({ available: true, reason: "", hits: [], total: 0, blocks: [], alerts: [],
+                gate: {}, data_error: null })
+      : null);
+    await H.loadBlocked();
+    check("an EMPTY blocked read keeps the real empty copies",
+          textOf("bl-block-rows").includes("No blocking rules")
+            && textOf("bl-hit-rows").includes("Nothing recorded in this window"),
+          textOf("bl-block-rows").slice(0, 60));
+    fetchOverride = null;
+  }
+
   // The two states that must NOT render identically.
   H.renderNearMisses({ near_misses_available: false, near_misses: [],
                        near_misses_reason: "the near-miss table has not been created on this "

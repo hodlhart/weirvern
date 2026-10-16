@@ -58,9 +58,12 @@ def test_web_overview_keeps_addr_and_adds_hostname(monkeypatch):
     from weirvern.admin import web_api
 
     monkeypatch.setattr(web_api, "_hostname", lambda a: "host-a.example")
+    # top_talkers now arrives in the standard {available, reason, points} shape (issue #13);
+    # the overview payload still renders the rows, and still adds the name beside the address.
     payload = web_api.overview_payload(
         services=[], report=None, anomalies=[],
-        talkers=[("203.0.113.42", 1000, 5, 3)], caps=None,
+        talkers={"available": True, "reason": "", "points": [("203.0.113.42", 1000, 5, 3)]},
+        caps=None,
     )
     assert payload["top_talkers"][0]["src_addr"] == "203.0.113.42"
     assert payload["top_talkers"][0]["hostname"] == "host-a.example"
