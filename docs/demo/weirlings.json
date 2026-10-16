@@ -1,0 +1,161 @@
+{
+  "available": true,
+  "reason": null,
+  "heartbeats_available": true,
+  "heartbeat_reason": null,
+  "summary": {
+    "total": 6,
+    "registered": 5,
+    "problems": 4,
+    "alive": 1,
+    "stale": 1,
+    "never_seen": 1,
+    "unregistered": 1,
+    "disabled": 1
+  },
+  "sensors": [
+    {
+      "sensor_id": "edge-alive",
+      "state": "alive",
+      "is_problem": false,
+      "address": "198.51.100.7",
+      "segment": "third floor",
+      "reported_segment": "third floor",
+      "expected_mode": "loch",
+      "reported_mode": "loch",
+      "enabled": true,
+      "registered": true,
+      "local": true,
+      "age_s": 4,
+      "last_seen": "2026-09-23T12:00:00+00:00",
+      "capture_loss_pct": 0,
+      "packets_recv": 900000,
+      "packets_dropped": 0,
+      "hosts": 12,
+      "note": "ops owns this one",
+      "stale_after_s": 45,
+      "findings": [
+        "reporting normally, last heard 4s ago."
+      ]
+    },
+    {
+      "sensor_id": "edge-stopped",
+      "state": "stale",
+      "is_problem": true,
+      "address": "",
+      "segment": "second floor",
+      "reported_segment": "",
+      "expected_mode": "loch",
+      "reported_mode": "loch",
+      "enabled": true,
+      "registered": true,
+      "age_s": 900,
+      "last_seen": "2026-09-23T11:45:00+00:00",
+      "capture_loss_pct": null,
+      "packets_recv": null,
+      "packets_dropped": null,
+      "hosts": 0,
+      "note": "",
+      "stale_after_s": 45,
+      "findings": [
+        "last reported 900s ago, past the 45s freshness window, so it has stopped. It ran and then stopped, which is different from never starting: look for why it died rather than why it never came up.",
+        "no capture-loss measurement, so packet loss is unknown rather than zero."
+      ]
+    },
+    {
+      "sensor_id": "edge-promised",
+      "state": "never_seen",
+      "is_problem": true,
+      "address": "198.51.100.9",
+      "segment": "fourth floor IDF",
+      "reported_segment": "",
+      "expected_mode": "siphon",
+      "reported_mode": "",
+      "enabled": true,
+      "registered": true,
+      "age_s": null,
+      "last_seen": null,
+      "capture_loss_pct": null,
+      "packets_recv": null,
+      "packets_dropped": null,
+      "hosts": 0,
+      "note": "waiting on the switch port",
+      "stale_after_s": 45,
+      "findings": [
+        "registered but has never reported. Check that it can reach this hub.",
+        "this sensor was registered as IN-PATH (siphon), so the segment it covers may be waiting on an intercept that has never run."
+      ]
+    },
+    {
+      "sensor_id": "ghost-box",
+      "state": "unregistered",
+      "is_problem": true,
+      "address": "198.51.100.44",
+      "segment": "",
+      "reported_segment": "",
+      "expected_mode": "",
+      "reported_mode": "loch",
+      "enabled": false,
+      "registered": false,
+      "age_s": 2,
+      "last_seen": "2026-09-23T12:00:00+00:00",
+      "capture_loss_pct": 3.5,
+      "packets_recv": 1000,
+      "packets_dropped": 35,
+      "hosts": 3,
+      "note": "",
+      "stale_after_s": 45,
+      "findings": [
+        "this sensor is feeding the hub but is not registered, so nobody declared it."
+      ]
+    },
+    {
+      "sensor_id": "edge-off",
+      "state": "disabled",
+      "is_problem": false,
+      "address": "",
+      "segment": "spare",
+      "reported_segment": "",
+      "expected_mode": "loch",
+      "reported_mode": "",
+      "enabled": false,
+      "registered": true,
+      "age_s": 90000,
+      "last_seen": "2026-09-22T11:00:00+00:00",
+      "capture_loss_pct": null,
+      "packets_recv": null,
+      "packets_dropped": null,
+      "hosts": 0,
+      "note": "pulled for maintenance",
+      "stale_after_s": 45,
+      "findings": [
+        "this sensor is registered but switched off, so it is not expected to report."
+      ]
+    },
+    {
+      "sensor_id": "edge-moved",
+      "state": "alive",
+      "is_problem": false,
+      "address": "198.51.100.60",
+      "segment": "fifth floor",
+      "reported_segment": "sixth floor",
+      "expected_mode": "loch",
+      "reported_mode": "siphon",
+      "enabled": true,
+      "registered": true,
+      "age_s": 9,
+      "last_seen": "2026-09-23T12:00:00+00:00",
+      "capture_loss_pct": 62.5,
+      "packets_recv": 400,
+      "packets_dropped": 250,
+      "hosts": 5,
+      "note": "",
+      "stale_after_s": 45,
+      "findings": [
+        "reporting normally, last heard 9s ago.",
+        "registered for segment 'fifth floor' but reporting 'sixth floor'.",
+        "capture loss is 62.5%: this sensor is blind to most of what is on the wire."
+      ]
+    }
+  ]
+}

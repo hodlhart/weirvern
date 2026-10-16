@@ -1,0 +1,9 @@
+{
+  "accounts": false,
+  "authenticated": false,
+  "username": "",
+  "role": "",
+  "must_change": false,
+  "via": "",
+  "note": ""
+}

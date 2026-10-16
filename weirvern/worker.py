@@ -63,8 +63,23 @@ AGG_BUCKET_S = 300  # toStartOfFiveMinute in weirvern/schema/001_weirvern.sql
 _SLUICE: dict = {"supervisor": None, "last_pass": 0.0, "armed": False, "swept": False}
 
 
-def _sluice_maybe(settings, client) -> None:
+def _is_gate_only(settings) -> bool:
+    """Whether this process is a WEIRLING GATE rather than the hub.
+
+    A weirling gate runs the SAME pass with the SAME requirements; what it does not do is DERIVE
+    rules from detections (see _sluice_maybe). Read through getattr so a settings object from an
+    older ConfigMap -- which has no `role` -- is the hub, which is what it was.
+    """
+    return str(getattr(settings, "role", "full") or "full") == "gate"
+
+
+def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
     """Run one Sluice Gate pass if it is enabled and its interval has elapsed.
+
+    `derive` is False on a weirling gate: it enforces the rule set the hub wrote, and does not
+    mint rules of its own. The check is here rather than at the call site because the pass is the
+    only thing that reads detections, and a caller that forgot would silently become a second
+    writer.
 
     DISABLED BY DEFAULT, which is a decision about what kind of tool this is. Weirvern is a
     monitoring appliance first: installing it must not start blocking traffic before anyone has
@@ -144,7 +159,7 @@ def _sluice_maybe(settings, client) -> None:
     # query for it.
     detections: list[dict] = []
     auto_score = float(getattr(settings, "sluice_auto_score", 0.0) or 0.0)
-    if settings.sluice_criticality != "off" or auto_score > 0.0:
+    if derive and (settings.sluice_criticality != "off" or auto_score > 0.0):
         detections = current_detections_for_blocking(client)
 
     # WHETHER A CONFIGURED SIPHON IS ACTUALLY INTERCEPTING, checked only when it matters. A
@@ -532,8 +547,14 @@ def _handle_sigterm(signum, frame):  # noqa: ARG001
     _stop.set()
 
 
-def build_detectors(settings, cfg: ModelConfig):
-    model_dir = settings.model_dir
+def build_detectors(settings, cfg: ModelConfig, model_dir: str | None = None):
+    """The four detectors, aimed at `model_dir` (the live artifact directory by default).
+
+    The override exists for the FORCED RETRAIN: the candidate must train through these same
+    classes with these same arguments, or the rehearsal proves nothing about the scheduled path
+    -- but it must write its artifacts somewhere that is not scoring traffic.
+    """
+    model_dir = model_dir or settings.model_dir
     return [
         IsolationForestDetector(model_dir, cfg),
         GradientBoostingDetector(model_dir, cfg),
@@ -702,6 +723,78 @@ def train_if_due(
         bl_model.persist_history(client, 24)
         _record_model_metadata(client, [bl_model])
     return last_full_train
+
+
+def process_model_actions(client: Client, detectors, settings, cfg: ModelConfig) -> None:
+    """Carry out whatever the operator asked for on the Models page.
+
+    Cheap when idle: two indexed lookups against a table with a handful of rows. The WORKER does
+    this because it is the only process that owns MODEL_DIR; the GUI files rows and reads them
+    (weirvern/models/actions.py explains why the channel between the two pods is ClickHouse).
+
+      * `retrain` -> train a candidate and report it. Nothing live is touched.
+      * `keep`    -> install the candidate over the live artifacts (archiving what they replace)
+                     and record the training history at the moment it becomes live.
+      * `trash`   -> delete the candidate. The live models were never touched.
+
+    A request that cannot be carried out is moved to `failed` WITH ITS REASON, never left in
+    `requested`: a request that sits there forever looks like a worker that is busy.
+    """
+    from weirvern.models import actions, retrain  # noqa: PLC0415
+
+    for req in actions.pending(client, actions.RETRAIN):
+        action_id = req["action_id"]
+        actions.finish(client, action_id, actions.RUNNING)
+        try:
+            report = retrain.run_candidate(client, settings, cfg)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("forced retrain %s failed", action_id)
+            actions.finish(client, action_id, actions.FAILED,
+                           report={"error": f"{type(exc).__name__}: {exc}"})
+            continue
+        actions.finish(client, action_id, actions.DONE, report=report,
+                       note=retrain.report_summary(report))
+
+    for req in actions.pending(client, actions.KEEP):
+        action_id = req["action_id"]
+        target = req["target_id"] or str((actions.latest(client, actions.RETRAIN) or {}).get(
+            "action_id", ""))
+        done = actions.latest(client, actions.RETRAIN) or {}
+        if done.get("state") != actions.DONE or done.get("action_id") != target:
+            actions.finish(client, action_id, actions.FAILED,
+                           note="no finished candidate to keep")
+            continue
+        try:
+            outcome = retrain.apply_candidate(client, settings, detectors)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("keeping candidate %s failed", target)
+            actions.finish(client, action_id, actions.FAILED,
+                           report={"error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if not outcome["installed"]:
+            actions.finish(client, action_id, actions.FAILED,
+                           note="the candidate had no artifacts left to install")
+            continue
+        # The artifacts are live; their training IS the newest entry in the model history, and
+        # the metadata inside them carries the candidate's real training time (not now).
+        try:
+            _record_model_metadata(client, detectors)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not record model metadata after keep: %s", exc)
+        actions.finish(client, action_id, actions.APPLIED, report=outcome,
+                       note=f"{len(outcome['installed'])} artifact(s) installed")
+
+    for req in actions.pending(client, actions.TRASH):
+        action_id = req["action_id"]
+        try:
+            outcome = retrain.discard_candidate(settings)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("discarding candidate failed")
+            actions.finish(client, action_id, actions.FAILED,
+                           report={"error": f"{type(exc).__name__}: {exc}"})
+            continue
+        actions.finish(client, action_id, actions.DISCARDED, report=outcome,
+                       note=f"{len(outcome['removed'])} artifact(s) removed")
 
 
 def _record_model_metadata(client: Client, detectors) -> None:
@@ -1568,6 +1661,39 @@ def main() -> None:
     db.apply_schema(client, settings)
     logger.info("Schema ready — starting Weirvern worker")
 
+    # ── A WEIRLING GATE: enforce here, derive nothing ────────────────────────────────────────────
+    #
+    # WHAT "ANY WEIRLING THAT HAS THE ABILITY" MEANS IN CODE. A sensor box that sits in the path
+    # (its own channel, or a live siphon intercept) and can install rules is a place traffic can be
+    # stopped, so it enforces the shared rule set -- with the hub's own checks, because it is the
+    # hub's own code: the rules must be READABLE (an unreadable ruleset is not an empty one and the
+    # gate is left as it is), the enforcement path must be VERIFIED rather than configured, and the
+    # interface is never the management NIC. `SLUICE_ENABLED=0` means disarmed here too, exactly as
+    # on the hub.
+    #
+    # IT DOES NOT DERIVE. The hub reads the detections and writes the rules; a second deriver would
+    # create a duplicate rule for the same detection, and the operator who revoked one would keep
+    # being blocked by the other -- the worst possible way for two gates to disagree.
+    #
+    # IT DOES NOT INGEST, DETECT, OR TRAIN either. Those are the hub's, and a sensor running them
+    # would double-count a segment's traffic in the hub's own database.
+    if _is_gate_only(settings):
+        logger.info(
+            "WEIRVERN_ROLE=gate — enforcing the shared rule set on this sensor (%s); "
+            "rules are derived on the hub", _sensor_name(settings) or "unnamed",
+        )
+        while not _stop.is_set():
+            try:
+                _sluice_maybe(settings, client, derive=False)
+            except Exception:  # noqa: BLE001
+                # One failed pass must not kill the gate: the next interval retries, and the last
+                # recorded state stays what the kernel last confirmed. Crashing here would leave
+                # rules installed with nothing re-checking them.
+                logger.exception("gate pass failed; retrying next interval")
+            _stop.wait(max(5, int(settings.sluice_interval_s)))
+        logger.info("gate role stopping")
+        return
+
     # Ingest thread: tail goflow2's sink continuously (legacy: inline heredoc pod).
     # v20 fix: tail_forever tracks file offsets so rows are never re-inserted.
     #
@@ -1717,6 +1843,9 @@ def main() -> None:
                                 "(this clears automatically once flows arrive)")
             else:
                 last_full_train = train_if_due(client, detectors, settings, cfg, last_full_train)
+                # The operator's own requests, carried out on this cycle: a forced retrain
+                # (candidate only), and the keep-or-trash decision on a finished candidate.
+                process_model_actions(client, detectors, settings, cfg)
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
             for v in verdicts:

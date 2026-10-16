@@ -12,6 +12,9 @@
 # Then register it in the Weirlings view (the row will show as unregistered until you do).
 #
 # WHAT A UNIT IS FOR. A deployment's worker reports for exactly ONE sensor identity; a unit
+# ALSO carries the optional GATE: if this box sits in the path, it can enforce the fleet's rules
+# on its own segment (see the `gate` container at the end of this file -- it ships DISABLED, and
+# each unit decides for itself, because each sensor is in its own configuration)
 # is how a SECOND sensor — on another box, or on this one on another NIC — becomes a fleet
 # row with its own id, port and capture loss. The reporting half is
 # weirvern/admin/sensor_agent.py; this manifest is the capture half.
@@ -171,6 +174,61 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        # ── THE GATE (opt-in, PER UNIT) ─────────────────────────────────────────────────────────
+        #
+        # ONE RULE STORE, MANY GATES. This box can be a place traffic is STOPPED, not only watched
+        # -- but only if it actually sits in the path. So the gate ships DISABLED (`SLUICE_ENABLED
+        # "0"` below) and an operator turns it on for the units that deserve it. That is the point
+        # of a fleet of differently-configured sensors.
+        #
+        # WHEN ENABLED IT RUNS THE HUB'S OWN CODE (WEIRVERN_ROLE=gate): same pass, same checks --
+        # a VERIFIED enforcement path (this box's channel bridge, or a live siphon intercept), a
+        # READABLE ruleset (an unreadable one leaves the gate as it is, never reopening it), and
+        # never the management NIC. Rules are DERIVED ON THE HUB; this container only enforces
+        # them, so two gates can never disagree about what a detection means.
+        #
+        # NET_ADMIN is the whole job -- installing a ruleset on the host's own interfaces, which
+        # is why it shares the host network like the capture container. Everything else is dropped.
+        - name: gate
+          image: weirvern-worker:0.13.0
+          command: ["python3", "-m", "weirvern.worker"]
+          env:
+            - name: WEIRVERN_ROLE
+              value: "gate"
+            - name: SENSOR_ID
+              value: "__WEIRLING_ID__"
+            # PER UNIT, NOT SHARED: SLUICE_ENABLED in the fleet ConfigMap is the HUB's answer for
+            # the hub. A unit that should enforce says so here.
+            - name: SLUICE_ENABLED
+              value: "0"
+            # THE INTERFACE TRAFFIC TRAVERSES ON THIS BOX (its bridge, or the intercept port) --
+            # NOT the capture port, which is a mirror and enforces nothing. Empty means "resolve
+            # it": the channel's bridge when the channel is up, else the capture interface; a gate
+            # with no verified path reports DEGRADED rather than blocking on a guess.
+            - name: SLUICE_IFACE
+              value: ""
+            - name: SLUICE_INTERVAL_S
+              value: "60"
+            - name: SLUICE_MAX_BLOCK_S
+              value: "3600"
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            # The password lives in the Secret, like every other ClickHouse reader.
+            - secretRef:
+                name: weirvern-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN"]
           resources:
             requests:
               cpu: "50m"

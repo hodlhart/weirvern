@@ -1,0 +1,119 @@
+{
+  "counts": {
+    "available": true,
+    "reason": "",
+    "unreadable": [],
+    "points": [
+      {
+        "log": "conn",
+        "table": "zeek_conn",
+        "rows": 40731,
+        "total": 74661,
+        "state": "active",
+        "last_ts": "2026-01-01T00:00:00"
+      },
+      {
+        "log": "dns",
+        "table": "zeek_dns",
+        "rows": 62016,
+        "total": 121518,
+        "state": "active",
+        "last_ts": "2026-01-01T00:00:00"
+      },
+      {
+        "log": "http",
+        "table": "zeek_http",
+        "rows": 0,
+        "total": 389,
+        "state": "idle",
+        "last_ts": "2026-01-01T00:00:00"
+      },
+      {
+        "log": "ssl",
+        "table": "zeek_ssl",
+        "rows": 2,
+        "total": 71,
+        "state": "active",
+        "last_ts": "2026-01-01T00:00:00"
+      },
+      {
+        "log": "notice",
+        "table": "zeek_notice",
+        "rows": 1013,
+        "total": 5078,
+        "state": "active",
+        "last_ts": "2026-01-01T00:00:00"
+      },
+      {
+        "log": "kerberos",
+        "table": "zeek_kerberos",
+        "rows": 0,
+        "total": 0,
+        "state": "empty-forever",
+        "last_ts": "1970-01-01T00:00:00"
+      },
+      {
+        "log": "ntlm",
+        "table": "zeek_ntlm",
+        "rows": 0,
+        "total": 0,
+        "state": "empty-forever",
+        "last_ts": "1970-01-01T00:00:00"
+      }
+    ]
+  },
+  "timeline": {
+    "available": true,
+    "reason": "",
+    "hours": 24,
+    "bucket_s": 900,
+    "series": {
+      "conn": [
+        {
+          "t": "2026-01-01T00:00:00",
+          "n": 352
+        },
+        {
+          "t": "2026-01-01T00:15:00",
+          "n": 1189
+        }
+      ],
+      "dns": [
+        {
+          "t": "2026-01-01T00:00:00",
+          "n": 900
+        },
+        {
+          "t": "2026-01-01T00:15:00",
+          "n": 1500
+        }
+      ]
+    }
+  },
+  "services": {
+    "available": true,
+    "reason": "",
+    "points": [
+      {
+        "service": "dns",
+        "n": 10049
+      },
+      {
+        "service": "ntp",
+        "n": 56
+      }
+    ]
+  },
+  "dns": {
+    "available": true,
+    "reason": "",
+    "filtered": "single-label names excluded",
+    "points": [
+      {
+        "query": "host.example",
+        "n": 6633,
+        "askers": 2
+      }
+    ]
+  }
+}

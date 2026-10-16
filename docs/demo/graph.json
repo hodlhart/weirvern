@@ -1,0 +1,64 @@
+{
+  "available": true,
+  "hours": 24,
+  "nodes": [
+    {
+      "id": "203.0.113.42",
+      "name": "workstation.lan",
+      "degree": 38,
+      "bytes": 7153288,
+      "hops": 0,
+      "ttl": 64
+    },
+    {
+      "id": "192.0.2.40",
+      "name": "vault",
+      "degree": 6,
+      "bytes": 182400000,
+      "hops": 1,
+      "ttl": 63
+    },
+    {
+      "id": "203.0.113.1",
+      "name": "gateway",
+      "degree": 4,
+      "bytes": 900000
+    }
+  ],
+  "edges": [
+    {
+      "source": "203.0.113.42",
+      "target": "203.0.113.1",
+      "bytes": 5000000,
+      "flows": 900,
+      "ports": [
+        443,
+        80
+      ],
+      "source_name": "workstation.lan",
+      "target_name": "gateway",
+      "first_seen": "2026-01-01T00:00:00",
+      "last_seen": "2026-01-02T00:00:00",
+      "ttl_min": 64,
+      "ttl_max": 64
+    },
+    {
+      "source": "203.0.113.42",
+      "target": "192.0.2.40",
+      "bytes": 400000,
+      "flows": 60,
+      "ports": [
+        22
+      ],
+      "source_name": "workstation.lan",
+      "target_name": "vault",
+      "first_seen": "2026-01-01T06:00:00",
+      "last_seen": "2026-01-02T06:00:00",
+      "ttl_min": 63,
+      "ttl_max": 63
+    }
+  ],
+  "total_edges": 25,
+  "truncated": true,
+  "reason": ""
+}

@@ -200,11 +200,14 @@ class Rule:
         if self.revoked_at is not None:
             return False
         if self.expires_at is None:
-            # Not reachable through the API (the schema forbids it) but reachable through a manual
-            # INSERT. Treat "no bound" as INERT rather than infinite: refusing to enforce is the
-            # safe direction for an unbounded rule.
-            logger.warning("sluice rule %s has no expiry; treating it as inert", self.rule_id)
-            return False
+            # UNTIL REVOKED. This was the opposite until 2026-10-16: 011 made "no expiry" mean
+            # INERT, on the reasoning that an unbounded rule outlives the person who wrote it, and
+            # that refusing to enforce was the safe direction. The operator has since asked for
+            # exactly this capability, explicitly, so it is theirs to make -- and the store now
+            # records NULL ON PURPOSE (schema/014) rather than a far-future date that every view
+            # would format as a plausible one. Revocation is the only stop, which is why the rules
+            # list shows these rows as "until revoked".
+            return True
         now = now or datetime.now(UTC)
         exp = self.expires_at
         if exp.tzinfo is None:

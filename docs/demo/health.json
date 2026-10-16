@@ -1,0 +1,44 @@
+{
+  "health": {
+    "ok": true,
+    "fetched_at": "2026-01-03T10:00:00Z",
+    "checks": [
+      {
+        "name": "clickhouse",
+        "ok": true,
+        "value": "198.51.100.10",
+        "latency_ms": 4
+      },
+      {
+        "name": "ingest_freshness",
+        "ok": false,
+        "value": 2000,
+        "latency_ms": 6
+      },
+      {
+        "name": "zeek_freshness",
+        "ok": null,
+        "value": null,
+        "latency_ms": 5
+      }
+    ]
+  },
+  "ingest": {
+    "available": true,
+    "points": []
+  },
+  "tables": {
+    "available": true,
+    "points": []
+  },
+  "sensor": {},
+  "alerts": {
+    "available": true,
+    "by_reason": [],
+    "recent": [],
+    "suppressed": 0,
+    "total": 0,
+    "truncated": false,
+    "names": {}
+  }
+}

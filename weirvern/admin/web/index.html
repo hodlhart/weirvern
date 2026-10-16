@@ -445,6 +445,26 @@
 
   <!-- ── Models ───────────────────────────────────────────────────────── -->
   <section id="view-models" class="view">
+    <!--
+      THE OPERATOR'S OWN CHECK THAT ML IS WORKING. A forced retrain trains a CANDIDATE on the last
+      window's traffic and reports what it built; nothing that is scoring traffic changes until Keep
+      is pressed, and Trash deletes the candidate. The WORKER does the work -- it owns the model
+      directory -- so this panel files a request and reads the result back through ClickHouse.
+    -->
+    <div class="card">
+      <h2>Retraining <span class="muted" id="mr-state"></span></h2>
+      <p class="muted" id="mr-note">Loading…</p>
+      <div class="controls">
+        <button id="mr-force" class="primary">Force retrain</button>
+        <button id="mr-keep" class="hidden">Keep this model</button>
+        <button id="mr-trash" class="hidden">Trash it</button>
+      </div>
+      <table id="mr-report">
+        <thead><tr><th>Detector</th><th>Outcome</th><th>Host-windows</th><th>Training window</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <div class="card">
       <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
@@ -790,6 +810,22 @@
       <p id="sl-state-note" class="muted"></p>
     </div>
 
+    <!--
+      WHERE THE RULES ARE ENFORCED. One rule store, many gates: the hub and every weirling that sits
+      in the path install the same rules on their own segment. A gate that has stopped reporting is
+      a segment the operator believes is filtered and is not, so this list is the only place that
+      distinction can be seen.
+    -->
+    <div class="card">
+      <h2>Enforcing gates</h2>
+      <p class="muted" id="sl-gates-note"></p>
+      <table id="sl-gates">
+        <thead><tr><th>Sensor</th><th>State</th><th>Interface</th><th>Rules active / total</th>
+          <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <div class="card">
       <h2>Block a host or network</h2>
       <div class="grid2">
@@ -816,13 +852,15 @@
             <option value="in">inbound (traffic to this sensor)</option>
           </select>
         </label>
-        <label>duration in minutes
-          <input id="sl-ttl" type="number" min="1" max="10080" value="60">
+        <label>duration in minutes (0 = until revoked)
+          <input id="sl-ttl" type="number" min="0" max="10080" value="60">
         </label>
       </div>
-      <!-- THE REASON IS REQUIRED, AND THE FIELD SAYS SO RATHER THAN THE SERVER REJECTING IT
-           after the operator has filled in six other fields. -->
-      <label>reason (required)
+      <!-- THE REASON IS OPTIONAL (2026-10-16). A derived block always writes one and the alert
+           form pre-fills one; a manual block may be left blank, and blank is recorded as blank.
+           The question "why is this blocked" is still the one asked later, which is why the field
+           is here and why the auto-block path never leaves it empty. -->
+      <label>reason (optional)
         <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
       </label>
       <div class="controls">

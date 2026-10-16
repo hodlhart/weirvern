@@ -1,0 +1,26 @@
+{
+  "available": true,
+  "reason": "",
+  "port": 443,
+  "proto": null,
+  "hours": 24,
+  "points": [
+    {
+      "src_addr": "192.0.2.10",
+      "dst_addr": "203.0.113.15",
+      "dst_port": 443,
+      "bytes": 271422406,
+      "flows": 374
+    },
+    {
+      "src_addr": "192.0.2.10",
+      "dst_addr": "192.0.2.1",
+      "dst_port": 443,
+      "bytes": 900000,
+      "flows": 40
+    }
+  ],
+  "total_flows": 414,
+  "total_pairs": 276,
+  "truncated": true
+}

@@ -9,7 +9,8 @@ integration test without anyone deciding that.
 THE READ PATH IS THE ONE THAT MATTERS HERE, because it is what the enforcement loop calls every
 minute. Two things are deliberate:
 
-  * The live-rule filter is applied in SQL (`revoked_at IS NULL AND expires_at > now()`) AND again
+  * The live-rule filter is applied in SQL (`revoked_at IS NULL AND (expires_at IS NULL OR
+    expires_at > now())` -- NULL meaning until revoked) AND again
     in `Rule.is_live()`. That is not redundant defensiveness: the SQL filter is what keeps the read
     cheap, and `is_live` is what guarantees correctness if the two ever disagree -- a rule that
     lapsed between the query and the arming must not be enforced. Belt and braces on the ONE thing
@@ -49,7 +50,10 @@ SELECT rule_id, src_cidr, dst_cidr, protocol, dst_port, direction, expires_at,
        created_by, reason, origin, origin_ref, severity, revoked_at
 FROM weirvern.sluice_rules FINAL
 WHERE revoked_at IS NULL
-  AND expires_at > now()
+  -- NULL is UNTIL REVOKED (schema/014), not "missing": a bare `expires_at > now()` evaluates to
+  -- NULL for these rows and would drop every indefinite rule out of enforcement silently, which
+  -- is the exact failure shape this file's comments keep warning about.
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY created_at DESC
 LIMIT 10000
 """
@@ -129,12 +133,13 @@ def create_rule(
     severity: str = "",
     now: datetime | None = None,
 ) -> Rule:
-    """Record a new rule. Validates the addresses, and REFUSES to record one with no expiry.
+    """Record a new rule. Validates the addresses; a ttl of 0 means UNTIL REVOKED.
 
-    The expiry is required here as well as in the schema because this is the function a future
-    caller is most likely to use to mean "block this forever", and "forever" is exactly what this
-    system does not offer. A caller wanting permanence must renew, and the renewal is a decision
-    they can see.
+    This function used to refuse a non-positive ttl outright, and the schema backed it up (011:
+    "a block is always BOUNDED"). That was the right default and the wrong ceiling: the operator
+    asked for the capability explicitly (2026-10-16), so 0 now records `expires_at = NULL`, which
+    every reader treats as live-until-revoked. A NEGATIVE value is still refused -- it is a typo,
+    not an intention, and there is nothing it could mean.
     """
     now = now or datetime.now(UTC)
     src = parse_cidr(src_cidr, "source")
@@ -161,10 +166,10 @@ def create_rule(
         )
     if dst_port and not protocol:
         raise SluiceError("a port needs a protocol: set protocol to tcp or udp")
-    if ttl_minutes <= 0:
+    if ttl_minutes < 0:
         raise SluiceError(
-            "ttl_minutes must be positive: this system does not create permanent blocks. "
-            "Use a long ttl and renew it if that is what you want, so the decision stays visible."
+            "ttl_minutes cannot be negative: 0 means until revoked, and any positive number is "
+            "the number of minutes"
         )
 
     rule = Rule(
@@ -174,7 +179,9 @@ def create_rule(
         protocol=protocol,
         dst_port=int(dst_port),
         direction=direction,
-        expires_at=now + timedelta(minutes=int(ttl_minutes)),
+        # 0 -> NULL -> until revoked (schema/014). Not a far-future date: the rules list and the
+        # expiry view format this value, and a date meaning "forever" is a lie in both.
+        expires_at=((now + timedelta(minutes=int(ttl_minutes))) if int(ttl_minutes) > 0 else None),
         created_by=created_by,
         reason=reason,
         origin=origin,
@@ -196,7 +203,8 @@ def create_rule(
     )
     logger.info(
         "sluice: rule %s created by %s for %s until %s (%s)",
-        rule.rule_id, created_by or "unknown", rule.describes(), rule.expires_at, reason or "no reason given",
+        rule.rule_id, created_by or "unknown", rule.describes(),
+        rule.expires_at or "revoked", reason or "no reason given",
     )
     return rule
 
@@ -252,6 +260,44 @@ def write_gate_state(client: Client, sensor: str, state: GateState,
             "backend_expected", "enforcement",
         ],
     )
+
+
+def load_gate_states(client: Client, limit: int = 50) -> dict:
+    """EVERY sensor's last recorded gate state, newest first -- who is enforcing, and where.
+
+    ONE RULE STORE, MANY GATES. The rules are fleet-wide; enforcement happens on every box that
+    sits in the path, which in a distributed deployment is the hub AND whichever weirlings can
+    install rules. The operator needs to see that list, because "the rule is live" and "the rule is
+    blocking on the segment that saw the traffic" are different statements, and only this view can
+    tell them apart.
+
+    Staleness is NOT decided here: the caller compares `updated_at` to now, because only it knows
+    the expected cadence.
+    """
+    try:
+        rows = client.query(
+            """
+            SELECT sensor, updated_at, state, iface, rules_active, rules_total,
+                   packets_blocked, bytes_blocked, detail, enforcement
+            FROM weirvern.sluice_state FINAL
+            ORDER BY updated_at DESC
+            LIMIT %(lim)s
+            """,
+            parameters={"lim": int(limit)},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read the fleet's gate states: %s", exc)
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}", "gates": []}
+    return {
+        "available": True, "reason": "",
+        "gates": [
+            {"sensor": str(r[0]), "updated_at": r[1], "state": str(r[2]), "iface": str(r[3]),
+             "rules_active": int(r[4] or 0), "rules_total": int(r[5] or 0),
+             "packets_blocked": int(r[6] or 0), "bytes_blocked": int(r[7] or 0),
+             "detail": str(r[8]), "enforcement": str(r[9] or "")}
+            for r in rows
+        ],
+    }
 
 
 def load_gate_state(client: Client, sensor: str = "") -> dict:

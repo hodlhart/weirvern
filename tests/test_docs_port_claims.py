@@ -35,6 +35,20 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _docs_text() -> str:
+    """The documentation SET: the README and the per-topic documents it links to.
+
+    The README leads with what the tool does and the detail moved to `docs/*.md`, so a claim that
+    moved is still a claim -- these assertions are about what a reader is told, not about which
+    file says it. The one thing that must stay true of the README ITSELF is that it links every
+    document, and that is checked directly.
+    """
+    return "\n".join([(ROOT / "README.md").read_text()]
+                     + [p.read_text() for p in sorted((ROOT / "docs").glob("*.md"))])
+
+
 DOCS = ["SECURITY.md", "README.md", ".env.example"]
 
 # The claim, in the forms it actually appeared in. Narrow phrases rather than a broad reading of
@@ -145,7 +159,7 @@ def test_the_security_document_names_the_two_controls():
 
 def test_the_readme_agrees_that_both_port_forms_listen():
     """The README told operators 2055 'sends its packets nowhere'. Both forms now work."""
-    text = (ROOT / "README.md").read_text()
+    text = _docs_text()
     assert "hostNetwork" in text, (
         "the README does not explain why the conventional ports also listen, so the next reader "
         "will re-derive the old (wrong) conclusion"
@@ -255,7 +269,7 @@ def test_the_readme_documents_reading_and_setting_the_token():
     A recovery procedure that references a value with no way to obtain it is worse than silence:
     it tells the operator a way out exists and then fails to provide it.
     """
-    text = (ROOT / "README.md").read_text()
+    text = _docs_text()
     assert "WEIRVERN_GUI_TOKEN" in text, (
         "the README describes the operator-token recovery door but never names the variable"
     )
@@ -300,7 +314,7 @@ def test_the_last_resort_recovery_command_uses_real_api_names():
         "(ClusterConfig(configmap=USERS_CONFIGMAP))"
     )
     # And the README's command must build the client with the account store's own ConfigMap name.
-    text = (ROOT / "README.md").read_text()
+    text = _docs_text()
     assert "ClusterConfig(configmap=users.USERS_CONFIGMAP)" in text, (
         "the README's command does not bind the client to the account store's ConfigMap"
     )
@@ -321,7 +335,7 @@ def test_the_last_resort_recovery_command_uses_real_api_names():
 # would have been a public credential -- before checking timestamps showed the mundane cause.
 def test_the_readme_says_the_restart_is_required():
     """Documenting the patch without the restart hands the operator a token that does not work."""
-    text = (ROOT / "README.md").read_text()
+    text = _docs_text()
     idx = text.index("patch secret weirvern-secrets")
     window = text[idx: idx + 900]
     assert "rollout restart deploy/weirvern-gui" in window, (

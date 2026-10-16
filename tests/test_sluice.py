@@ -152,18 +152,76 @@ def test_the_compiled_ruleset_is_hash_based_not_linear():
     )
 
 
-# ── the bound that must never be absent ───────────────────────────────────────────────────────
+# ── the bound, and the one case where it is deliberately absent ───────────────────────────────
 
 
-def test_a_rule_without_an_expiry_is_inert():
-    """There is no such thing as a permanent block from this system.
+def test_a_rule_with_no_expiry_is_live_until_it_is_revoked():
+    """A duration of 0 means UNTIL REVOKED, and that is now the INTENDED state.
 
-    The schema forbids a null expiry, but a hand-written INSERT can produce one, and an unbounded
-    rule is the failure mode of every unattended blocklist: a network that quietly stops working
-    months later with nobody able to say why. Treating it as INERT is refusing to enforce, which
-    is the safe direction.
+    This assertion was `is False` until 2026-10-16: 011 made `expires_at` NOT NULL and this side
+    refused to enforce a rule with no bound, on the reasoning that an unbounded rule outlives the
+    person who wrote it and refusing to enforce is the safe direction. The operator asked for the
+    capability explicitly, so the direction reverses -- and the check stays, in the other
+    direction: a null expiry must be LIVE, because a bare `expires_at > now()` evaluates to NULL
+    for these rows and would drop every indefinite rule out of enforcement without a word.
     """
-    assert Rule("x", src_cidr="192.0.2.9/32", expires_at=None).is_live() is False
+    assert Rule("x", src_cidr="192.0.2.9/32", expires_at=None).is_live() is True
+    # Revocation is the only stop, and it does stop it.
+    assert Rule("y", src_cidr="192.0.2.9/32", expires_at=None,
+                revoked_at=datetime.now(UTC)).is_live() is False
+
+
+def test_zero_ttl_records_an_unbounded_rule_and_a_negative_one_is_refused():
+    """0 -> NULL -> until revoked; -5 is a typo and is refused. The refusal names the fix, because
+    "must be positive" was true when every block was bounded and is not any more."""
+    import pytest
+
+    from weirvern.sluice import SluiceError
+    from weirvern.sluice_store import create_rule
+
+    class _Rec:
+        def __init__(self):
+            self.inserts = []
+
+        def insert(self, table, rows, column_names=None):
+            self.inserts.append((table, rows, column_names))
+
+    client = _Rec()
+    rule = create_rule(client, src_cidr="198.51.100.7", ttl_minutes=0)
+    assert rule.expires_at is None, "a zero ttl produced an expiry"
+    assert client.inserts, "nothing was written"
+    # Column order: rule_id, created_at, created_by, reason, src_cidr, ..., expires_at at index 9.
+    assert client.inserts[0][1][0][9] is None, "the stored row carries a date, not NULL"
+
+    bounded = create_rule(client, src_cidr="198.51.100.8", ttl_minutes=15)
+    assert bounded.expires_at is not None
+
+    with pytest.raises(SluiceError) as excinfo:
+        create_rule(client, src_cidr="198.51.100.9", ttl_minutes=-5)
+    assert "0 means until revoked" in str(excinfo.value)
+
+
+def test_the_live_rule_query_treats_a_null_expiry_as_live():
+    """The SQL filter is the OTHER place a null expiry silently drops a rule out of enforcement.
+    The Python check alone would not save it: the query never returns the row in the first place,
+    so the rule is absent rather than inert, and the rules list would show it as live while
+    nothing enforced it."""
+    from weirvern.sluice_store import LIVE_RULE_SQL
+
+    assert "expires_at IS NULL OR expires_at > now()" in LIVE_RULE_SQL
+
+
+def test_a_derived_block_never_has_an_empty_reason():
+    """A reason is OPTIONAL for an operator and mandatory for the machine. A derived block is the
+    one nobody was watching, so it is the one that must explain itself; both the policy path and
+    the threshold path fill the field."""
+    from weirvern.sluice_store import derived_rules_for_detections
+
+    detections = [{"src_addr": "198.51.100.9", "severity": "low", "anomaly_score": 0.95},
+                  {"src_addr": "198.51.100.10", "severity": "high", "anomaly_score": 0.90}]
+    out = derived_rules_for_detections(detections, policy="high", max_ttl_minutes=60,
+                                       auto_score=0.9)
+    assert out and all(r["reason"].strip() for r in out), out
 
 
 def test_expiry_is_checked_at_use_not_only_at_insert():

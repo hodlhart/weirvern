@@ -107,6 +107,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
+                   loadRetrain, retrainAction,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm,
@@ -436,6 +437,20 @@ const SLUICE_PAYLOAD = {
     strict: { label: "Strict", description: "Block anything the ensemble flagged.",
               ttl_minutes: 5, min_severity: "low", min_confidence: 0.5 },
   },
+  // ONE RULE STORE, MANY GATES: this deployment's own gate, a weirling enforcing on its own
+  // segment, and one that has STOPPED -- the state that must never read as covered.
+  gates_available: true,
+  gates: [
+    { sensor: "weirvern-dual", state: "armed", iface: "eth1", rules_active: 2, rules_total: 3,
+      packets_blocked: 1234, bytes_blocked: 987654, age_s: 12, local: true, stale: false,
+      enforcement: "channel", detail: "" },
+    { sensor: "weirvern-eth2", state: "armed", iface: "eth2", rules_active: 2, rules_total: 3,
+      packets_blocked: 88, bytes_blocked: 4096, age_s: 30, local: false, stale: false,
+      enforcement: "siphon", detail: "" },
+    { sensor: "lab-west", state: "degraded", iface: "eth1", rules_active: 0, rules_total: 3,
+      packets_blocked: 0, bytes_blocked: 0, age_s: 5400, local: false, stale: true,
+      enforcement: "", detail: "no verified path" },
+  ],
   rules: [
     { rule_id: "r-live-1", describes: "from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
@@ -445,6 +460,13 @@ const SLUICE_PAYLOAD = {
       dst_cidr: "", protocol: "tcp", dst_port: 22, direction: "forward", live: true, revoked: false,
       origin: "detection", severity: "high", created_by: "detection", origin_ref: "w-123",
       reason: "detection: severity high at confidence 0.91", expires_at: "", expires_in_s: 900 },
+    // UNTIL REVOKED, with no reason recorded: the two states an operator can now create on
+    // purpose (duration 0, reason left blank). A stub without them cannot show that either
+    // renders as something an analyst can read.
+    { rule_id: "r-indef", describes: "from 203.0.113.9/32", src_cidr: "203.0.113.9/32",
+      dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
+      origin: "manual", severity: "", created_by: "admin", origin_ref: "",
+      reason: "", expires_at: "", expires_in_s: null },
     { rule_id: "r-lapsed", describes: "from 203.0.113.5/32", src_cidr: "203.0.113.5/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: false, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
@@ -524,6 +546,32 @@ const IDENTITY_PAYLOAD = {
     ],
   };
 
+  // The forced retrain: a candidate that built two of four detectors, on a window that contains
+  // detections this deployment already recorded -- the warning that has to be read before Keep.
+  const RETRAIN_PAYLOAD = {
+    available: true, reason: "", state: "done", action_id: "r123", requested_by: "admin",
+    requested_at: "2026-01-02T09:30:00", can_keep: true,
+    note: "2 of 4 detector(s) trained; on 1234 host-window(s); WARNING: 3 detection(s) already "
+      + "recorded inside this window -- keeping it teaches the new model to treat that traffic "
+      + "as normal",
+    summary: "2 of 4 detector(s) trained; on 1234 host-window(s); WARNING: 3 detection(s) already "
+      + "recorded inside this window -- keeping it teaches the new model to treat that traffic "
+      + "as normal",
+    decision: null,
+    report: {
+      built_at: "2026-01-02T09:30:00", window_start: "2026-01-02T03:00:00",
+      window_end: "2026-01-02T09:00:00", window_hours: 6, trained_any: true,
+      files: ["Isolation Forest_v2.pkl", "Gradient Boosting_v2.pkl"],
+      contamination: { available: true, detections: 3 },
+      detectors: [
+        { name: "Isolation Forest", trained: true, sample_count: 800 },
+        { name: "Gradient Boosting", trained: true, sample_count: 434 },
+        { name: "DBSCAN", trained: false, sample_count: 0 },
+        { name: "Adaptive Baseline", trained: false, sample_count: 0 },
+      ],
+    },
+  };
+
   const ROUTES = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
@@ -579,6 +627,10 @@ const IDENTITY_PAYLOAD = {
                     ? { ok: true, state: sent.state || "", note: sent.note || "" }
                   : u.includes("/api/sluice/block")
                     ? { ok: true, note: "the rule is filed; the gate re-checks within a minute" }
+                  : u.includes("/api/models/retrain")
+                    ? { ok: true, action: sent.action || "retrain",
+                        action_id: sent.action_id || "r124",
+                        note: "filed; the worker acts on its next cycle" }
                   : u.includes("/api/weirlings/register")
                     ? (() => {
                         // STATEFUL, like the real store: a registration PERSISTS, so the
@@ -788,6 +840,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/identity", IDENTITY_PAYLOAD],
     ["/api/sluice", SLUICE_PAYLOAD],
     ["/api/fingerprints", FP_PAYLOAD],
+    ["/api/models/retrain", RETRAIN_PAYLOAD],
 
     // WEIRLINGS. The DETAIL route is handled ABOVE this table because it must be
     // REQUEST-AWARE: it answers for the sensor asked about, like the real server. A static
@@ -1981,6 +2034,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                 body.src_cidr === "203.0.113.42" && body.protocol === "tcp"
                 && body.dst_port === 3389 && !!body.reason && body.direction === "forward",
                 JSON.stringify(body).slice(0, 160));
+
+          // The reason is optional: clearing the pre-filled one must still file (the server
+          // records it blank), because a field the operator does not have to fill in must not
+          // behave as if it were required.
+          whyIn.value = "";
+          const before2 = POSTED.length;
+          gf.querySelector("button.review-act:not(.gate-open)").click();
+          await new Promise((r) => setTimeout(r, 80));
+          check("clearing the pre-filled reason still files the block (it is optional)",
+                POSTED.slice(before2).some((r) => r.url.includes("/api/sluice/block")),
+                POSTED.slice(before2).map((r) => r.url).join(","));
         }
       }
     }
@@ -2040,6 +2104,55 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           doc.querySelectorAll("#fp-results tbody tr").length === 0);
     fetchOverride = null;
   }
+
+  // ── the forced retrain: a rehearsal, and keep-or-trash as the decision ─────────────────────
+  //
+  // The panel has to make three things visible BEFORE the decision: what the candidate was trained
+  // on, whether the window contained detections the deployment already recorded (a retrain learns
+  // those as normal), and which of Keep / Trash applies. A candidate that trained nothing must not
+  // offer Keep at all.
+  H.showView("overview");
+  await new Promise((r) => setTimeout(r, 20));
+  H.showView("models");
+  await H.loadRetrain();
+  const mrNote = (doc.getElementById("mr-note") || {}).textContent || "";
+  check("the retrain panel says what the candidate trained, and on how much",
+        /2 of 4 detector/.test(mrNote) && /host-window/.test(mrNote), mrNote.slice(0, 180));
+  check("the contamination warning reaches the screen, beside the decision",
+        /WARNING/.test(mrNote) && /as normal/.test(mrNote), mrNote.slice(0, 240));
+  check("one row per detector, so 'trained' can be read per model",
+        doc.querySelectorAll("#mr-report tbody tr").length === 4,
+        `${doc.querySelectorAll("#mr-report tbody tr").length} row(s)`);
+  {
+    const keepBtn = doc.getElementById("mr-keep");
+    check("Keep is offered for a candidate that trained something",
+          !!keepBtn && !keepBtn.classList.contains("hidden"));
+    if (keepBtn) {
+      const postedBefore = POSTED.length;
+      keepBtn.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/models/retrain"));
+      check("Keep is a WRITE carrying the action and the candidate's own id",
+            !!req && /keep/.test(req.body) && /r123/.test(req.body),
+            req ? req.body.slice(0, 180)
+                : POSTED.slice(postedBefore).map((r) => r.url).join(","));
+    }
+  }
+
+  // A candidate that built NOTHING: Keep must be absent, not merely unhelpful.
+  fetchOverride = (u, opts) => (String(u).split("?")[0].endsWith("/api/models/retrain")
+    && String((opts || {}).method || "GET").toUpperCase() === "GET"
+    ? { ok: true, status: 200, json: async () => Object.assign({}, RETRAIN_PAYLOAD, {
+        state: "done", can_keep: false,
+        summary: "0 of 4 detector(s) trained; on 0 host-window(s)",
+        report: Object.assign({}, RETRAIN_PAYLOAD.report, { trained_any: false }) }) }
+    : null);
+  await H.loadRetrain();
+  check("a candidate that trained NOTHING does not offer Keep",
+        doc.getElementById("mr-keep").classList.contains("hidden"),
+        "an empty candidate must not be installable over working models");
+  fetchOverride = null;
+  await H.loadRetrain();
 
   // ── accounts: the sign-in gate, roles, and the Users panel ────────────────────────────────
   //
@@ -2436,6 +2549,58 @@ check("the ACTIVE policy is marked as in use",
 check("a rule with no reason says so rather than showing blank",
       !slText().includes("undefined"),
       "undefined reached the screen, which means a missing field rendered as a value");
+
+check("a rule with NO EXPIRY reads as 'until revoked', not as a date or a dash",
+      slText().includes("until revoked"),
+      "the operator set the duration to 0; the row must say what that means");
+
+// ── one rule store, many gates ───────────────────────────────────────────────────────────────
+//
+// The fleet's gates: this hub's own, a weirling enforcing on its own segment, and one that has
+// stopped. "The rule is live" and "the rule is blocking the segment that saw the traffic" are
+// different statements, and only this table tells them apart.
+check("every gate is listed, with the local one marked as this hub",
+      slText().includes("weirvern-eth2") && slText().includes("(this hub)"),
+      slText().slice(0, 240));
+check("a gate that STOPPED is called out, not merely listed",
+      /stopped reporting/i.test(slText()),
+      "a stale gate must not read like a covered segment");
+check("each gate states the path it is enforcing by",
+      slText().includes("channel") && slText().includes("siphon"),
+      "which of the two paths is live is the difference between armed and claimed");
+
+// THE MANUAL FORM (2026-10-16): the reason is OPTIONAL and a duration of 0 means until revoked.
+// Both are the operator's own instruction, and each fails silently in its own way -- the client
+// refusing a blank reason, or the server reading a deliberate 0 as "unset" and substituting the
+// default hour.
+{
+  const slSrc = H.document.getElementById("sl-src");
+  const slTtl = H.document.getElementById("sl-ttl");
+  const slWhy = H.document.getElementById("sl-reason");
+  const slGo = H.document.getElementById("sl-block");
+  check("the manual block form is on the page with its duration and reason fields",
+        !!slSrc && !!slTtl && !!slWhy && !!slGo);
+  if (slSrc && slTtl && slWhy && slGo) {
+    slSrc.value = "203.0.113.77";
+    slWhy.value = "";
+    slTtl.value = "0";
+    const postedBefore = POSTED.length;
+    slGo.click();
+    await new Promise((r) => setTimeout(r, 140));
+    const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/sluice/block"));
+    check("a block with NO reason and a duration of 0 is still filed", !!req,
+          POSTED.slice(postedBefore).map((r) => r.url).join(","));
+    if (req) {
+      let body = {};
+      try { body = JSON.parse(req.body || "{}"); } catch (_e) { body = {}; }
+      check("the POST carries ttl_minutes 0 and an empty reason -- not the default hour",
+            body.ttl_minutes === 0 && body.reason === "",
+            JSON.stringify(body).slice(0, 160));
+    }
+    slSrc.value = "";
+    slWhy.value = "";
+  }
+}
 
 // ── the failure path: a broken gate must not read as an empty one ──────────────────────────
 //

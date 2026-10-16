@@ -241,6 +241,13 @@ class Settings:
     # the operator asks. A NUMBER rather than another severity level, because a fleet's notion
     # of "high" moves with its own thresholds while a score the operator picked does not.
     sluice_auto_score: float = field(default_factory=lambda: _env_float("SLUICE_AUTO_SCORE", 0.0))
+    # WHAT THIS PROCESS IS FOR. "full" is the hub: ingest, detect, train, and enforce. "gate" is a
+    # WEIRLING that has an enforcement ability of its own -- same image, same rule store, same
+    # checks; it enforces and derives nothing (the hub is the single writer of rules, and a second
+    # writer would mint a second rule for one detection, so revoking one would keep blocking on the
+    # other). The point of a role rather than a second program: the hub's gate path and a
+    # weirling's gate path cannot drift, because they are the same code.
+    role: str = field(default_factory=lambda: os.environ.get("WEIRVERN_ROLE", "full"))
     # CHANNEL NETFLOW: whether the IN-LINE channel's crossing traffic is summarised into flow
     # records -- 'off' (default), 'upstream' or 'downstream' naming WHICH PORT the probe samples.
     # Either port sees every frame crossing the box, so one is enough; sampling both would count
@@ -307,6 +314,11 @@ class Settings:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")
         if self.retrain_every_h < 1:
             raise ValueError("RETRAIN_EVERY_H must be >= 1")
+        if self.role not in ("full", "gate"):
+            raise ValueError(
+                f"WEIRVERN_ROLE must be 'full' or 'gate', got {self.role!r}: a typo here would "
+                "start the hub pipeline on a sensor box, or a gate with no detection behind it"
+            )
         if self.pushover_enabled and (
             not self.pushover_user_key or not self.pushover_api_token
         ):

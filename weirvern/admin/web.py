@@ -284,6 +284,12 @@ def _build_handler(ctx: GuiContext):
                 return self._fingerprints(query)
             if path == "/api/models":
                 return self._models(query)
+            # The operator's FORCED RETRAIN: the state of the last request and the report it
+            # produced. The write that files one is on the POST side, admin-gated like every other
+            # mutation -- but this GET is a read of the fleet's own record, so it stays open to
+            # viewers like the rest of the monitoring data.
+            if path == "/api/models/retrain":
+                return self._model_retrain()
             if path == "/api/netflow":
                 return self._netflow(query)
             if path == "/api/zeek":
@@ -441,6 +447,77 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.models_payload(data))
+
+        def _model_retrain(self) -> None:
+            """The last forced retrain: what state it is in, and what it produced.
+
+            A FAILED read is a 200 with `available: false` and the reason, like every other panel:
+            an error page for one card would take down the views around it, and an empty report
+            would read as "nothing has been trained".
+            """
+            from weirvern.models import actions  # noqa: PLC0415
+
+            try:
+                with self._with_client() as client:
+                    row = actions.latest(client, actions.RETRAIN)
+                    decision = (actions.latest(client, actions.KEEP)
+                                or actions.latest(client, actions.TRASH))
+            except Exception as exc:  # noqa: BLE001
+                return self._json(web_api.retrain_payload(
+                    None, None, available=False, reason=f"cannot reach ClickHouse: {exc}"))
+            self._json(web_api.retrain_payload(row, decision))
+
+        def _model_retrain_write(self) -> None:
+            """File a retrain, or judge the candidate it produced.
+
+            Body: {"action": "retrain"|"keep"|"trash", "note": "...", "target_id": "..."} -- or the
+            action in the URL. The request is a ROW in ClickHouse because the worker (which owns the
+            model artifacts) is a different pod; this handler only files it and says what it filed.
+            The response is explicit about that: nothing has happened yet when it returns 200.
+            """
+            if not self._authorize():
+                return
+            from weirvern.models import actions  # noqa: PLC0415
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            action = str(body.get("action") or "").strip().lower()
+            if not action:
+                # The action may ride in the URL (`/api/models/retrain/keep`), which is the shape a
+                # reader would guess from the route table.
+                tail = str(getattr(self, "path", "")).split("?")[0].rsplit("/", 1)[-1]
+                action = tail if tail in (actions.RETRAIN, actions.KEEP, actions.TRASH) else ""
+            if action not in (actions.RETRAIN, actions.KEEP, actions.TRASH):
+                return self._error(400, "action must be retrain, keep or trash")
+
+            ident = self._identity()
+            by = ident.username if ident else "operator"
+            try:
+                with self._with_client() as client:
+                    if action == actions.RETRAIN:
+                        action_id = actions.request(client, action=actions.RETRAIN, by=by,
+                                                    note=str(body.get("note") or "").strip())
+                        note = ("filed; the worker builds a candidate on its next cycle and "
+                                "NOTHING live changes until you keep it")
+                    else:
+                        target = str(body.get("target_id") or "").strip()
+                        if not target:
+                            latest = actions.latest(client, actions.RETRAIN) or {}
+                            target = str(latest.get("action_id") or "")
+                        if not target:
+                            return self._error(400, "there is no retrain to judge yet")
+                        action_id = actions.request(client, action=action, by=by, target_id=target,
+                                                    note="")
+                        note = ("filed; the worker applies it on its next cycle"
+                                if action == actions.KEEP
+                                else "filed; the worker discards the candidate on its next cycle")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("model action failed: %s", exc)
+                return self._error(502, f"could not record the request: {type(exc).__name__}")
+            self._json({"ok": True, "action": action, "action_id": action_id, "note": note})
 
         def _netflow(self, query: dict) -> None:
             """Netflow shape: volume trend, protocols, ports, fan-out, talkers.
@@ -674,6 +751,9 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     rules = sluice_store.load_all_rules(client)
                     gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+                    # ONE RULE STORE, MANY GATES: every box that can enforce reports its own row,
+                    # and the operator sees who is actually filtering (and who has stopped).
+                    fleet_gates = sluice_store.load_gate_states(client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice view unavailable: %s", exc)
                 return self._json({
@@ -704,8 +784,14 @@ def _build_handler(ctx: GuiContext):
                     # answer ("lapsed N seconds ago") rather than an error.
                     "expires_in_s": int((exp - now).total_seconds()) if exp else None,
                 })
-            payload.update({"available": True, "rules": rows,
-                            "live": sum(1 for r in rows if r["live"]), "gate": gate})
+            # A GATE THAT STOPPED IS ITS OWN STATE, not an absent one. Four missed intervals is
+            # the threshold: the cadence is minutes, and one slow cycle is not news.
+            stale_after = max(180, 4 * int(ctx.settings.sluice_interval_s))
+            payload.update({
+                "available": True, "rules": rows,
+                "live": sum(1 for r in rows if r["live"]), "gate": gate,
+                **web_api.gates_payload(fleet_gates, _gate_sensor_name(), stale_after, now),
+            })
             self._json(payload)
 
         def _sluice_state(self) -> None:
@@ -837,8 +923,12 @@ def _build_handler(ctx: GuiContext):
                 dst_port = int(body.get("dst_port") or 0)
             except (TypeError, ValueError):
                 return self._error(400, "dst_port must be a number")
+            # 0 IS A VALUE, NOT AN ABSENCE. `or 60` read a deliberate 0 as "unset" and silently
+            # substituted an hour -- the one input an operator reaching for "block it
+            # indefinitely" is most likely to send. Absent or blank still defaults to 60.
+            raw_ttl = body.get("ttl_minutes")
             try:
-                ttl = int(body.get("ttl_minutes") or 60)
+                ttl = 60 if raw_ttl is None or raw_ttl == "" else int(raw_ttl)
             except (TypeError, ValueError):
                 return self._error(400, "ttl_minutes must be a number")
 
@@ -857,15 +947,12 @@ def _build_handler(ctx: GuiContext):
             if why:
                 return self._json({"ok": False, "error": why}, 400)
 
+            # OPTIONAL, by the operator's own instruction (2026-10-16). A reason is still the only
+            # record of WHY, so a DERIVED block always writes one (derived_rules_for_detections)
+            # and the form pre-fills the field from the alert; a manual block left blank records an
+            # EMPTY reason rather than a placeholder, because a placeholder in an audit row reads
+            # like a fact.
             reason = str(body.get("reason") or "").strip()
-            if not reason:
-                # REQUIRED: the question asked three weeks later is always "why is this blocked",
-                # and a rule with no reason cannot answer it.
-                return self._json({
-                    "ok": False,
-                    "error": "a reason is required -- it is the only record of why this rule "
-                             "exists, and the question asked later is always 'why is this blocked?'",
-                }, 400)
 
             try:
                 with self._with_client() as client:
@@ -885,9 +972,11 @@ def _build_handler(ctx: GuiContext):
                 "ok": True, "rule_id": rule.rule_id, "describes": rule.describes(),
                 "expires_at": rule.expires_at.isoformat() if rule.expires_at else "",
                 # The gate arms on its own interval, so say so rather than letting the operator
-                # assume the block is instant.
-                "note": f"recorded; enforcement picks it up within "
-                        f"{int(ctx.settings.sluice_interval_s)}s",
+                # assume the block is instant. An indefinite rule says so as well: "recorded" on
+                # its own would read as a bounded block like every other one.
+                "note": (f"recorded; enforcement picks it up within "
+                         f"{int(ctx.settings.sluice_interval_s)}s"
+                         + ("" if rule.expires_at else "; it stays until it is revoked")),
             })
 
         def _sluice_revoke(self) -> None:
@@ -1359,6 +1448,15 @@ def _build_handler(ctx: GuiContext):
             # ── SLUICE GATE writes ────────────────────────────────────────────────────────
             if path == "/api/sluice/block":
                 return self._sluice_block()
+            # ── FORCED RETRAIN writes ───────────────────────────────────────────────────────
+            # `retrain` trains a CANDIDATE and changes nothing live; `keep` installs it over the
+            # live artifacts (archiving them); `trash` deletes the candidate. All three are
+            # admin-gated: the last two decide what is watching the network.
+            if path == "/api/models/retrain" or path.startswith("/api/models/retrain/"):
+                # No argument, like every other write route here: the dispatcher's own parser (and
+                # the test that reads it) looks up handlers by `def name(self`, and the route is
+                # available on `self.path` anyway.
+                return self._model_retrain_write()
             if path == "/api/sluice/revoke":
                 return self._sluice_revoke()
             # ── WEIRLINGS writes ─────────────────────────────────────────────────────────

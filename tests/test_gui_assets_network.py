@@ -236,7 +236,11 @@ def test_the_about_tab_is_gone_and_its_facts_survive_elsewhere():
     assert "view-about" not in INDEX, "the About tab was not removed"
     assert 'data-view="about"' not in INDEX, "the About tab button is still in the nav"
 
-    readme = (WEB.parent.parent.parent / "README.md").read_text()
+    # THE DOCS SET, not one file: the About-tab facts were split across the README and the
+    # per-topic documents when the README became a front page.
+    _root = WEB.parent.parent.parent
+    readme = "\n".join([(_root / "README.md").read_text()]
+                        + [p.read_text() for p in sorted((_root / "docs").glob("*.md"))])
     # The two facts it carried must still be documented somewhere the operator can find them.
     assert "WEIRVERN_REVERSE_DNS" in readme, (
         "the reverse-DNS behaviour (private-only by default, 'all' to include public) was "

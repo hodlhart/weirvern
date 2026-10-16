@@ -1,0 +1,57 @@
+[
+  {
+    "detected_at": "2026-01-02T09:12:00",
+    "window_start": "2026-01-02T09:10:00",
+    "window_end": "2026-01-02T09:15:00",
+    "src_addr": "203.0.113.42",
+    "hostname": "workstation.lan",
+    "anomaly_score": 0.91,
+    "confidence": 0.8,
+    "severity": "high",
+    "detected_by_models": "Isolation Forest, DBSCAN",
+    "model_agreement": 0.7,
+    "isolation_forest_score": 0.9,
+    "gradient_boosting_score": 0.4,
+    "dbscan_score": 0.8,
+    "baseline_score": 0.2,
+    "primary_deviation_feature": "unique_dst_ports",
+    "primary_deviation_zscore": 5.2,
+    "deviation_magnitude": 3.1,
+    "feature_contributions": {
+      "unique_dst_ports": {
+        "z": 5.2
+      },
+      "total_bytes": {
+        "z": 1.1
+      }
+    },
+    "baseline_comparison": "unique_dst_ports is 5.2 sigma above this host's baseline",
+    "review_state": "",
+    "review_note": "",
+    "reviewed_at": null
+  },
+  {
+    "detected_at": "2026-01-02T08:00:00",
+    "window_start": "2026-01-02T07:55:00",
+    "window_end": "2026-01-02T08:00:00",
+    "src_addr": "192.0.2.40",
+    "hostname": "vault",
+    "anomaly_score": 0.72,
+    "confidence": 0.6,
+    "severity": "medium",
+    "detected_by_models": "Adaptive Baseline",
+    "model_agreement": 0.5,
+    "isolation_forest_score": 0.4,
+    "gradient_boosting_score": 0.3,
+    "dbscan_score": 0.2,
+    "baseline_score": 0.7,
+    "primary_deviation_feature": "total_bytes",
+    "primary_deviation_zscore": 3.4,
+    "deviation_magnitude": 2,
+    "feature_contributions": {},
+    "baseline_comparison": "total_bytes is 3.4 sigma above baseline",
+    "review_state": "ack",
+    "review_note": "nightly backup job",
+    "reviewed_at": "2026-01-02T08:05:00"
+  }
+]

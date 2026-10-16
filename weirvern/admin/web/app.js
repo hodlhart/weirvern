@@ -1371,8 +1371,10 @@ function openHost(addr) {
  *    plain loch compiles, counts its own drops and changes nothing. So the control reads the
  *    gate's own state and, when it is not active, STATES WHY instead of offering a button. A
  *    disabled button still reads as "this is possible" to someone skimming a table.
- *  - A block without a reason is unanswerable three weeks later. The reason is PRE-FILLED from
- *    the alert (score, host, window) and stays editable; the server refuses an empty one.
+ *  - A block without a reason is unanswerable three weeks later, so the reason is PRE-FILLED
+ *    from the alert (score, host, window). It is still OPTIONAL -- an operator who knows why they
+ *    are blocking can leave it alone or clear it -- and a blank one is stored blank rather than
+ *    replaced by a placeholder.
  *
  * The vocabulary is the Gate view's own manual form (src_cidr / protocol / dst_port / direction
  * / ttl_minutes / reason), so a rule filed from an alert is indistinguishable from one filed by
@@ -1440,8 +1442,8 @@ function gateForm(a) {
   const proto = el("select", { attrs: { "aria-label": "protocol" } },
     ["tcp", "udp"].map((p) => el("option", { value: p, text: p })));
   const ttl = el("select", { attrs: { "aria-label": "how long to block" } },
-    [5, 15, 30, 60, 240].map((m) => el("option", { value: String(m), text: `${m} min`,
-                                                    selected: m === 60 })));
+    [5, 15, 30, 60, 240, 0].map((m) => el("option", {
+      value: String(m), text: m === 0 ? "until revoked" : `${m} min`, selected: m === 60 })));
   const why = el("input", { class: "gate-why", attrs: { type: "text", "aria-label": "reason" },
     value: `alert score ${(a.anomaly_score ?? 0).toFixed(3)} on ${a.src_addr}, ` +
            `window ${fmtTime(a.window_start)}` });
@@ -1455,10 +1457,7 @@ function gateForm(a) {
         note.textContent = "enter a port, or switch to all traffic";
         return;
       }
-      if (!why.value.trim()) {
-        note.textContent = "a reason is required";
-        return;
-      }
+      // The reason is optional; a blank field posts as an empty string and the row records it.
       const body = {
         src_cidr: a.src_addr, dst_cidr: "",
         protocol: portMode ? proto.value : "",
@@ -1806,7 +1805,10 @@ function showView(name) {
     catch (_e) { /* older browsers: the tab stays wherever it is */ }
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
-  if (name === "models") loadModels().then(clearError).catch(showError);
+  if (name === "models") {
+    loadModels().then(clearError).catch(showError);
+    loadRetrain().catch(showError);
+  }
   if (name === "settings") loadSettings().then(clearError).catch(showError);
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on
@@ -1998,6 +2000,16 @@ document.addEventListener("DOMContentLoaded", () => {
   // the way back to the comparable view without a reload.
   const nwSettle = document.getElementById("nw-settle");
   if (nwSettle) nwSettle.addEventListener("click", () => settleGraph());
+
+  // ── the forced retrain (models view) ────────────────────────────────────────
+  // Guarded like the other wirings: a missing control costs one button, not every listener
+  // registered after this point.
+  const mrForce = document.getElementById("mr-force");
+  if (mrForce) mrForce.addEventListener("click", () => retrainAction("retrain").catch(showError));
+  const mrKeep = document.getElementById("mr-keep");
+  if (mrKeep) mrKeep.addEventListener("click", () => retrainAction("keep").catch(showError));
+  const mrTrash = document.getElementById("mr-trash");
+  if (mrTrash) mrTrash.addEventListener("click", () => retrainAction("trash").catch(showError));
 
   // ── fingerprint lookup (identity view) ─────────────────────────────────────
   // Guarded like the module wirings below: if the markup is absent the page should lose one
@@ -2541,6 +2553,92 @@ async function loadModels() {
     }
     body.appendChild(tr);
   }
+}
+
+/* ── the operator's forced retrain ───────────────────────────────────────────────────────── */
+
+/*
+ * A FORCED RETRAIN IS A REHEARSAL, NOT A REPLACEMENT. The worker trains a CANDIDATE on the last
+ * window's traffic and reports it; nothing scoring traffic changes until Keep.
+ *
+ * The panel's whole job is to make that visible before the decision: what trained, on how much,
+ * whether the training window contained detections this deployment already recorded (a retrain
+ * learns those as NORMAL -- that is what a model is for, and exactly the wrong thing here), and
+ * then two buttons. Keep installs the candidate over the live artifacts (archiving them); Trash
+ * deletes it and the running models were never touched.
+ *
+ * Keep is only offered when the candidate actually built something: a retrain that found no data
+ * has nothing to install, and a Keep button there would be an offer to replace working models with
+ * an empty set.
+ */
+let RETRAIN_STATE = null;
+
+async function loadRetrain() {
+  const state = document.getElementById("mr-state");
+  const note = document.getElementById("mr-note");
+  const body = document.querySelector("#mr-report tbody");
+  const force = document.getElementById("mr-force");
+  const keep = document.getElementById("mr-keep");
+  const trash = document.getElementById("mr-trash");
+  if (!state || !note || !body || !force || !keep || !trash) return;
+
+  const d = await getJSON("/api/models/retrain");
+  RETRAIN_STATE = d;
+  body.replaceChildren();
+  keep.classList.toggle("hidden", !d.can_keep);
+  trash.classList.toggle("hidden", !d.can_keep);
+  force.disabled = d.state === "requested" || d.state === "running";
+
+  if (!d.available) {
+    state.textContent = "";
+    note.textContent = `The retrain state could not be read — ${d.reason}. This says nothing `
+      + "about whether a candidate exists.";
+    return;
+  }
+  if (d.state === "none") {
+    state.textContent = "never run";
+    note.textContent = "No forced retrain has been run. One trains a candidate on the last "
+      + "training window and reports it here; the models currently scoring are not touched.";
+    return;
+  }
+  state.textContent = d.state + (d.requested_by ? ` (${d.requested_by})` : "");
+  note.textContent = d.summary || "";
+
+  const rep = d.report || {};
+  for (const det of rep.detectors || []) {
+    body.appendChild(el("tr", {}, [
+      el("td", { text: det.name || "?" }),
+      el("td", {}, [el("span", { class: det.trained ? "ok" : "muted",
+                                text: det.trained ? "trained" : "no data" })]),
+      el("td", { class: "num", text: String(det.sample_count ?? "—") }),
+      el("td", { class: "muted mono",
+                 text: `${fmtTime(rep.window_start)} → ${fmtTime(rep.window_end)}` }),
+    ]));
+  }
+  if (!(rep.detectors || []).length && d.state !== "requested" && d.state !== "running") {
+    body.appendChild(el("tr", {}, [el("td", {
+      class: "muted", attrs: { colspan: 4 },
+      text: rep.error ? `the retrain failed: ${rep.error}` : "no report",
+    })]));
+  }
+  if (d.decision && d.decision.state) {
+    note.textContent += ` — decision: ${d.decision.state}`;
+  }
+}
+
+async function retrainAction(action) {
+  const note = document.getElementById("mr-note");
+  const body = action === "retrain"
+    ? { action }
+    : { action, target_id: (RETRAIN_STATE && RETRAIN_STATE.action_id) || "" };
+  note.textContent = "filing…";
+  try {
+    const out = await postJSON("/api/models/retrain", body);
+    note.textContent = (out && (out.ok ? (out.note || "filed") : out.error)) || "filed";
+  } catch (err) {
+    note.textContent = String(err.message || err);
+  }
+  await loadRetrain();
 }
 
 /* ── Passive host identification ────────────────────────────────────────────────────────── */

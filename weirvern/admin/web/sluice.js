@@ -23,7 +23,10 @@
 // rather than an error: the server sends seconds so the client never does clock arithmetic against
 // a box that may not share its timezone.
 function sluiceDuration(seconds) {
-  if (seconds === null || seconds === undefined) return "never";
+  // NULL IS NOT MISSING: it is a rule with NO EXPIRY, which the store records on purpose when the
+  // operator sets a duration of 0 (until revoked). "never" would read as "never enforced", so the
+  // row says what the operator actually chose.
+  if (seconds === null || seconds === undefined) return "until revoked";
   const past = seconds < 0;
   const s = Math.abs(seconds);
   let text;
@@ -113,6 +116,46 @@ async function loadSluice() {
     bits.push("Blocking is DISABLED (SLUICE_ENABLED=0), so no rule is enforced however many exist.");
   }
   noteBox.textContent = bits.join(" ");
+
+  // ── where the rules are enforced ─────────────────────────────────────────────────────────────
+  //
+  // ONE RULE STORE, MANY GATES. In a distributed deployment the hub is not the only place traffic
+  // can be stopped: every weirling that sits in the path installs the same rules on its own
+  // segment. "The rule is live" and "the rule is blocking the segment that saw it" are different
+  // statements, and only this list tells them apart -- a gate that stopped reporting is a segment
+  // where the operator THINKS traffic is filtered and it is not.
+  const gateBody = document.querySelector("#sl-gates tbody");
+  const gateNote = document.getElementById("sl-gates-note");
+  if (gateBody && gateNote) {
+    gateBody.replaceChildren();
+    const gates = d.gates || [];
+    if (!d.gates_available) {
+      gateNote.textContent = `The fleet's gates could not be read — ${
+        d.gates_reason || "the query failed"}. This says nothing about whether any of them is armed.`;
+    } else if (!gates.length) {
+      gateNote.textContent = "No gate has reported. Enforcement happens where a gate runs — "
+        + "see the deployment notes for putting one on a sensor that sits in the path.";
+    } else {
+      gateNote.textContent = gates.some((g) => g.stale)
+        ? "A gate marked stale has stopped reporting: its segment is NOT being filtered, "
+          + "whatever the rule list says."
+        : "Every gate listed reported within its own interval.";
+      for (const g of gates) {
+        gateBody.appendChild(el("tr", {}, [
+          el("td", {}, [
+            el("span", { class: "mono", text: g.sensor || "—" }),
+            g.local ? el("span", { class: "muted", text: "  (this hub)" }) : null,
+          ]),
+          el("td", {}, [sluiceStateChip(g.state)]),
+          el("td", { class: "mono", text: g.iface || "—" }),
+          el("td", { class: "mono", text: `${g.rules_active ?? 0} / ${g.rules_total ?? 0}` }),
+          el("td", { class: "mono", text: String(g.packets_blocked ?? 0) }),
+          el("td", { class: "muted", text: g.age_s == null ? "—" : fmtAge(g.age_s) }),
+          el("td", { class: "muted", text: g.enforcement || "none" }),
+        ]));
+      }
+    }
+  }
 
   // ── the rules ───────────────────────────────────────────────────────────────────────────────
   const liveOnly = document.getElementById("sl-live-only").checked;
@@ -242,12 +285,9 @@ function wireSluice() {
       ttl_minutes: Number(document.getElementById("sl-ttl").value || 60),
       reason: document.getElementById("sl-reason").value.trim(),
     };
-    // CHECK THE ONE THING THE SERVER WILL REFUSE, HERE, so the operator is not told after filling
-    // in six fields. The server still enforces it -- this is convenience, not the guard.
-    if (!body.reason) {
-      note.textContent = "a reason is required";
-      return;
-    }
+    // NO REASON CHECK HERE ANY MORE (2026-10-16): the reason is optional. A derived block always
+    // carries one and the form pre-fills the field, but a manual block may be left blank, and the
+    // store records it blank rather than inventing a placeholder that would read like a fact.
     block.disabled = true;
     note.textContent = "recording…";
     try {

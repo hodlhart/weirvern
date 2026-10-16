@@ -1,0 +1,218 @@
+# Operations
+
+*Part of the [Weirvern](../README.md) documentation.*
+
+Day two: the CLI, lifecycle, backups, the settings that matter,
+and what to do when something looks wrong.
+
+## Operations
+
+### Using the CLI
+
+| Command | What it does |
+|---|---|
+| `weirvern install` | Prerequisite check: kubectl, cluster reachability, namespace, manifests, schema, secrets |
+| `weirvern apply` | `kubectl apply -k k8s/` — deploy or update the stack |
+| `weirvern apply --dry-run` | Validate client-side; changes nothing |
+| `weirvern wait` | Block until every workload is ready, naming any that is not |
+| `weirvern status` | Workload state, resource use, and database health probes |
+| `weirvern logs [workload]` | Logs by label, so it works across rollouts |
+| `weirvern start / stop / restart [workload...]` | Lifecycle (see the mapping below) |
+| `weirvern config list / get / set / validate` | Inspect and edit `.env` for local runs |
+| `weirvern tune` | Guided threshold tuning, with a preview against real data |
+| `weirvern mode` | Show the configured sensor mode and whether it can run here |
+| `weirvern intercept` | In-path ARP intercept (`siphon` mode); always `--dry-run` first |
+| `weirvern interfaces` | Probe a node's NICs ("which one is the capture port?") |
+| `weirvern version` | Version, current context, manifest presence |
+| `weirvern down [--volumes]` | Delete the workloads; `--volumes` also destroys the data |
+
+### What the lifecycle commands mean on Kubernetes
+
+Container vocabulary does not map cleanly onto Kubernetes, so here is the honest
+mapping. The CLI reports which case it took rather than pretending otherwise.
+
+| Command | Kubernetes operation |
+|---|---|
+| `start` | Scale Deployments/StatefulSets back to their normal replica count |
+| `stop` | Scale to zero — **except Zeek**, which is *suspended* (below) |
+| `restart` | `kubectl rollout restart` — there is no "restart a pod" verb |
+| `down` | Delete the workload objects from the namespace |
+| `pull` | A no-op that explains itself: each node's kubelet pulls images |
+
+**Zeek cannot be scaled to zero.** Kubernetes rejects `replicas: 0` on a
+DaemonSet, because its entire purpose is one pod per node. `weirvern stop zeek`
+therefore *suspends* it — a nodeSelector key no node matches, so the controller
+drains the pods and capture stops. The workload reports `suspended` (with a `‖`
+marker) rather than `stopped`, because an operator who believes the sensor is
+off when it is only suspended would misread their own network coverage.
+`weirvern start zeek` removes exactly that key, restoring the manifest's own
+selector.
+
+### Doing it without the CLI
+
+```bash
+kubectl apply -k k8s/                                  # deploy / update
+kubectl -n weirvern get pods -w                       # watch
+kubectl -n weirvern rollout status deploy/weirvern-worker
+kubectl -n weirvern logs -l app.kubernetes.io/name=weirvern-worker --tail=200
+kubectl -n weirvern scale deploy/weirvern-worker --replicas=0     # stop
+kubectl -n weirvern rollout restart daemonset/zeek                 # bounce Zeek
+kubectl -n weirvern exec -it deploy/weirvern-worker -- bash       # shell
+```
+
+### Backups
+
+Two things are worth backing up, and neither is on a `hostPath` in a way a
+cluster backup would catch:
+
+- the `clickhouse-data` PVC (all collected flows, anomalies, baselines)
+- the `models` PVC (trained model artifacts — small, but retraining takes time)
+
+Both are `ReadWriteOnce` claims; snapshot them with your storage provisioner, or
+copy them out:
+
+```bash
+kubectl -n weirvern exec deploy/weirvern-worker -- tar cz /models | cat > models-backup.tgz
+```
+
+---
+
+
+## Configuration
+
+There are two configuration surfaces, and the distinction matters:
+
+| Surface | Applies to | Where |
+|---|---|---|
+| **Cluster** | What the deployment actually runs | `k8s/20-configmap-env.yaml` (+ the out-of-band `weirvern-secrets` Secret) |
+| **Local** | The CLI, `init-db`, `tune`, and `weirvern config set` | `.env` (created from `.env.example`) |
+
+Changing `.env` does **not** change the running deployment. After editing the
+ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
+
+### Key settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLICKHOUSE_HOST` / `CLICKHOUSE_PORT` | `clickhouse` / `8123` | ClickHouse endpoint (the Service name resolves in-cluster) |
+| `ZEEK_IFACE` | `eth1` | **Capture port on the sensor node** — the dedicated NIC receiving mirrored/SPAN traffic. Must not carry the default route, and must not be a bridge member |
+| `MGMT_IFACE` | `eth0` | **Management port** — default route, SSH, cluster API. Not sniffed. Used to detect when `ZEEK_IFACE` points at the wrong NIC |
+| `ZEEK_LOG_DIR` | `/zeek/logs` | Where the worker reads Zeek logs |
+| `TAIL_FILE` | `/data/flows.jsonl` | goflow2 JSONL sink |
+| `SENSOR_MODE` | `loch` | `loch` = passive; `siphon` = in-path intercept (see [Sensor modes](#sensor-modes-loch-and-siphon)) |
+| `CHANNEL_UPSTREAM` / `CHANNEL_DOWNSTREAM` | unset | The two ports of an in-line channel: one bridge, traffic through the box (see [Channel](#channel-enforcement-in-line-still-loch)) |
+| `SLUICE_ENABLED` | `0` | Arm the Sluice Gate. Opened by a decision, never by an install |
+| `SLUICE_IFACE` | unset | Interface enforcement attaches to; empty = the channel bridge, else the capture port. The management interface is refused at write time |
+| `SLUICE_CRITICALITY` | `off` | Whether detections may block on their own (`off` / `high` / `critical`) — off by default |
+| `SLUICE_MAX_BLOCK_S` | 3600 | Ceiling on an automated block's lifetime |
+| `SLUICE_INTERVAL_S` | 60 | How often the gate re-arms — also the interval within which a lapsed rule stops being enforced |
+| `CHANNEL_NETFLOW` | `off` | `off` / `upstream` / `downstream`: summarise the channel's crossing traffic into the deployment's own collector |
+| `DETECT_INTERVAL_S` | 300 | Detection sweep cadence (s) |
+| `RETRAIN_EVERY_H` | 6 | Full retrain cadence (h) |
+| `RETRAIN_WINDOW_H` | 72 | Training data window (h, 3 days) |
+| `BASE_THRESHOLD` | 0.35 | Ensemble score floor for alerting |
+| `MIN_AGREEMENT` | 0.33 | Fraction of models that must fire (never below a single detector's share) |
+| `PUSHOVER_ENABLED` | `0` | `1` sends real pushes; `0` logs only |
+| `PUSHOVER_USER_KEY` / `PUSHOVER_API_TOKEN` | unset | **Secret** — see step 4 |
+| `PUSHOVER_COOLDOWN_S` | 1800 | Per-source alert cooldown |
+| `PUSHOVER_MAX_PER_HOUR` | 20 | Global hourly cap |
+| `MODEL_DIR` | `/models` | Persisted model artifacts (survive restarts) |
+
+Fusion and severity behaviour (see `weirvern/ensemble.py` docstrings for the
+measured rationale behind each of these):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ModelConfig.fusion_mode` | `max` | `max` = strongest detector signal (recommended); `mean` = legacy averaging, retained for A/B |
+| `ModelConfig.min_flows_for_full_confidence` | 10 | Windows with fewer flows have their score damped (thin-window statistics are unreliable) |
+| `ModelConfig.thin_window_floor` | 0.35 | Lower bound of that damping multiplier |
+| `ModelConfig.port_scan_min_ports` / `..._entropy` | 50 / 4.0 | Structural scan signature that lets a lone strong specialist escalate |
+| `ModelConfig.near_miss_band` | 0.85 | Fraction of the threshold within which a dropped window is recorded as a near miss (see the Models view) |
+
+### Editing the Zeek policy
+
+`k8s/zeek/weirvern-local.zeek` is the sensor's site policy. It is fed to the
+cluster by kustomize's `configMapGenerator`, so the repository copy **is** the
+source of truth — there is no manifest copy to keep in sync. Editing it changes
+the generated ConfigMap's name hash, which triggers a rolling restart of the
+DaemonSet automatically.
+
+---
+
+
+## Troubleshooting
+
+### The stack is up but nothing is detected
+
+Work through these in order — the first two account for most reports.
+
+1. **Is the sensor node labelled?**
+   ```bash
+   kubectl -n weirvern get pods -o wide          # are goflow2/worker Running?
+   kubectl -n weirvern get daemonset zeek
+   ```
+   If the worker is `Pending`, check `kubectl -n weirvern describe pod <pod>`
+   for a nodeSelector mismatch.
+
+2. **Are flows arriving?**
+   ```bash
+   weirvern status        # look for ingest_freshness
+   ```
+   Red or "no flow data yet" means the exporter is not reaching the collector.
+   Confirm the exporter points at the sensor node's IP on UDP **32055** (or
+   **2055** — both listen on the node; the collector runs with `hostNetwork`),
+   and that the
+   Service is `externalTrafficPolicy: Local` (it is, by design — see
+   `k8s/31-goflow2.yaml`; with the default policy, kube-proxy on another node
+   can accept and misroute the UDP packets).
+
+3. **Is Zeek on the right interface?**
+   ```bash
+   weirvern interfaces --node <sensor-node>
+   ```
+   Reports a role for every NIC and a verdict on `ZEEK_IFACE`. A sensor pointed at
+   the management port, a bridge member, or a veth still runs and still logs — it
+   just captures almost none of the network, which is why this check is explicit
+   rather than left to reading `ip link` output. The Zeek container also validates
+   `ZEEK_IFACE` at startup, warns when the interface is a bridge member or carries
+   the default route, and lists the interfaces that do exist if the name is wrong.
+
+4. **Is capture loss hiding the traffic?** Zeek reports dropped packets in its
+   own `capture_loss` log; a sensor that cannot keep up degrades detection
+   quality without erroring.
+
+### `weirvern status` cannot reach ClickHouse
+
+Expected from a workstation — the Service is cluster-internal. Port-forward it:
+
+```bash
+kubectl -n weirvern port-forward svc/clickhouse 8123:8123 &
+```
+
+### The schema Job failed
+
+```bash
+kubectl -n weirvern logs job/weirvern-schema
+```
+
+The Job is idempotent (`CREATE ... IF NOT EXISTS` throughout), so fixing the
+cause and re-running is safe:
+
+```bash
+kubectl -n weirvern delete job weirvern-schema
+kubectl apply -k k8s/
+```
+
+### A pod is OOM-killed during retraining
+
+The worker's memory limit is the constraint — training the ensemble over a
+3-day window is the spike. Raise the limit in `k8s/33-worker.yaml` rather than
+lowering `RETRAIN_WINDOW_H`, which would shorten the baseline.
+
+### Alerts stopped after enabling the NetworkPolicy
+
+`k8s/70-networkpolicy.yaml` is **not** applied by default. If you enabled it,
+its egress rule for TCP/443 (Pushover) is the first suspect, and it only takes
+effect on a CNI that enforces policy at all.
+
+---

@@ -304,6 +304,88 @@ def overview_payload(services: list, report, anomalies: list[dict],
         },
     }
 
+def retrain_payload(row: dict | None, decision: dict | None, *, available: bool = True,
+                    reason: str = "") -> dict:
+    """The state of the operator's forced retrain, and what it produced.
+
+    EVERYTHING HERE COMES FROM THE ROW, not from the artifact directory: the GUI pod does not mount
+    MODEL_DIR (the worker owns it), so a payload that listed files would report an empty candidate on
+    a deployment where the candidate exists. The worker wrote the report; this layer only carries it.
+
+    `can_keep` is the honest gate on the button: a candidate that trained NOTHING has nothing to
+    install, and offering Keep would be offering to replace working models with an empty set.
+    """
+    import json as _json  # noqa: PLC0415
+
+    if not available:
+        return {"available": False, "reason": reason or "the model actions could not be read",
+                "state": "", "report": {}, "summary": "", "can_keep": False, "decision": None}
+    if row is None:
+        return {"available": True, "reason": "", "state": "none", "action_id": "",
+                "requested_by": "", "requested_at": None, "note": "",
+                "report": {}, "summary": "", "can_keep": False, "decision": None}
+    try:
+        report = _json.loads(row.get("report") or "{}")
+    except (TypeError, ValueError):
+        report = {}
+    state = str(row.get("state") or "")
+    return {
+        "available": True, "reason": "",
+        "state": state,
+        "action_id": str(row.get("action_id") or ""),
+        "requested_by": str(row.get("requested_by") or ""),
+        "requested_at": _jsonable(row.get("ts")),
+        "note": str(row.get("note") or ""),
+        "report": report if isinstance(report, dict) else {},
+        "summary": str(row.get("note") or ""),
+        "can_keep": (state == "done" and bool((report or {}).get("trained_any"))),
+        "decision": ({"state": str(decision.get("state") or ""),
+                      "note": str(decision.get("note") or ""),
+                      "at": _jsonable(decision.get("ts"))} if decision else None),
+    }
+
+
+def gates_payload(fleet: dict, local_name: str, stale_after_s: int,
+                  now: _dt.datetime | None = None) -> dict:
+    """Every sensor's gate state, plus the two facts only this layer can add.
+
+    ONE RULE STORE, MANY GATES. In a distributed deployment the hub is not the only place traffic
+    can be stopped: every weirling that sits in the path installs the same rules on its own
+    segment. The store knows each gate's own last words; what the operator cannot read off them:
+
+      * WHICH ONE IS MINE -- "armed" on somebody else's box means nothing for the traffic here;
+      * WHETHER IT HAS STOPPED -- a gate that quit reporting is a segment the operator believes is
+        filtered. `None` age counts as stale; unknown must never read as fresh.
+
+    Staleness is four missed intervals by default (the caller passes the threshold), and its own
+    gate is NEVER marked stale on the strength of somebody else's clock: the row is compared with
+    `now` here, which is the hub's clock and the one the operator's browser is closest to.
+    """
+    if now is None:
+        now = _dt.datetime.now(_dt.UTC)
+    rows = []
+    for g in fleet.get("gates", []):
+        updated = g.get("updated_at")
+        age: int | None = None
+        if isinstance(updated, _dt.datetime):
+            if updated.tzinfo is None:
+                # ClickHouse can hand back naive values; subtracting one from an aware `now` RAISES,
+                # and the row would then render as neither fresh nor stale.
+                updated = updated.replace(tzinfo=_dt.UTC)
+            age = int((now - updated).total_seconds())
+        rows.append({
+            **{k: v for k, v in g.items() if k != "updated_at"},
+            "age_s": age,
+            "local": g.get("sensor") == local_name,
+            "stale": (age is None or age > max(1, int(stale_after_s))),
+        })
+    return {
+        "gates": rows,
+        "gates_available": bool(fleet.get("available")),
+        "gates_reason": str(fleet.get("reason") or ""),
+    }
+
+
 def models_payload(data: dict) -> dict:
     """Serialise model_overview() for the frontend.
 

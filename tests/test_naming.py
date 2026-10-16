@@ -161,7 +161,10 @@ def test_entry_point_names_match_the_pyproject():
     assert "weirvern = \"weirvern.admin.cli:main\"" in pyproject
 
     # And the README must not document a command that no longer exists.
-    readme = (ROOT / "README.md").read_text()
+    # The CLI is documented in the docs SET: the README is a front page and hands operations to
+    # docs/operations.md. A stale command name is still the defect this catches.
+    readme = "\n".join([(ROOT / "README.md").read_text()]
+                       + [p.read_text() for p in sorted((ROOT / "docs").glob("*.md"))])
     assert "weirvern " in readme
     for stale in ("flowforge install", "flowforge status", "flowforge apply",
                   "flowforge tui", "flowforge logs"):

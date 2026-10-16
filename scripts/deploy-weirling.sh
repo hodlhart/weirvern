@@ -34,6 +34,15 @@
 #   --sensor-id   the fleet identity this weirling reports under ([a-z0-9-], max 64)
 #   --expose      allow patching clickhouse-external to a NodePort when the target is not
 #                 the hub (needed for the agent to reach the database)
+#   --gate        ALSO install the ENFORCEMENT GATE on this box. The rules are fleet-wide; the
+#                 gate is what makes them stop traffic, and it only works where the box is IN
+#                 THE PATH. Same requirements as the hub: SLUICE_ENABLED=1, a VERIFIED path (the
+#                 box's own channel bridge, or a live siphon intercept), never the management NIC,
+#                 and a ruleset that could be read. A gate that cannot meet them reports DEGRADED
+#                 and blocks nothing -- it does not guess.
+#   --gate-iface  the interface traffic TRAVERSES on the target (its bridge, or the intercept
+#                 port). Required with --gate, and refused if it is the management NIC. This is
+#                 NOT the capture port.
 #   --remove      stop and remove the containers on the target (logs kept; --purge too)
 #   --purge       with --remove: also delete the env file, helper and log directory
 #   --dry-run     run every CHECK (including the refusals) and print the plan; change nothing
@@ -45,6 +54,8 @@ TARGET=""
 IFACE=""
 SENSOR_ID=""
 EXPOSE=0
+GATE=0
+GATE_IFACE=""
 REMOVE=0
 PURGE=0
 DRY=0
@@ -61,6 +72,8 @@ while [ $# -gt 0 ]; do
         --iface) IFACE="${2:?--iface needs a value}"; shift 2 ;;
         --sensor-id) SENSOR_ID="${2:?--sensor-id needs a value}"; shift 2 ;;
         --expose) EXPOSE=1; shift ;;
+        --gate) GATE=1; shift ;;
+        --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
         --remove) REMOVE=1; shift ;;
         --purge) PURGE=1; shift ;;
         --dry-run) DRY=1; shift ;;
@@ -80,6 +93,13 @@ fi
 [ -n "$SENSOR_ID" ] || die "--sensor-id is required (it is the fleet identity)"
 if [ "$PURGE" = "1" ] && [ "$REMOVE" = "0" ]; then
     die "--purge only makes sense together with --remove"
+fi
+if [ "$GATE" = "1" ] && [ "$REMOVE" = "0" ] && [ -z "$GATE_IFACE" ]; then
+    # REFUSED RATHER THAN DEFAULTED. The obvious default -- the capture port -- is a mirror: rules
+    # installed there match nothing that matters, and the operator would be told a segment is
+    # blocked by a gate that is only decorating a span port.
+    die "--gate needs --gate-iface: the interface traffic TRAVERSES on this box (its bridge, or the
+    intercept port) -- not the capture port, which is a mirror and enforces nothing."
 fi
 case "$SENSOR_ID" in
     *[!a-z0-9-]*) die "sensor id must be [a-z0-9-] only (got '$SENSOR_ID')" ;;
@@ -107,7 +127,7 @@ if [ "$REMOVE" = "1" ]; then
     fi
     # The helper is generated per weirling; if it is gone, fall back to plain docker names.
     rsh "$TARGET" "if [ -x /usr/local/bin/weirvern-weirling ]; then weirvern-weirling stop; \
-                    else docker rm -f weirvern-capture-$SENSOR_ID weirvern-agent-$SENSOR_ID >/dev/null 2>&1 || true; fi"
+                    else docker rm -f weirvern-capture-$SENSOR_ID weirvern-agent-$SENSOR_ID weirvern-gate-$SENSOR_ID >/dev/null 2>&1 || true; fi"
     if [ "$PURGE" = "1" ]; then
         rsh "$TARGET" "rm -f /etc/weirvern-weirling.env /usr/local/bin/weirvern-weirling; \
                        rm -rf /var/lib/weirvern-weirling"
@@ -254,13 +274,13 @@ ZEEK_IMG='$ZEEK_IMG'; WORKER_IMG='$WORKER_IMG'
 LOGDIR=/var/lib/weirvern-weirling/logs; ENVF=/etc/weirvern-weirling.env
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
-  stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" >/dev/null 2>&1 || true ;;
+  stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" >/dev/null 2>&1 || true ;;
   start)
     NOW="\$(ip route show default 2>/dev/null | sed -n 's/.*dev \\([^ ]*\\).*/\\1/p' | head -1)"
     if [ "\$IFACE" = "\$MGMT" ] || [ "\$IFACE" = "\$NOW" ]; then
       echo "weirvern-weirling: REFUSING to capture on '\$IFACE' -- management NIC" >&2; exit 1
     fi
-    docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" >/dev/null 2>&1 || true
+    docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" >/dev/null 2>&1 || true
     docker run -d --name "weirvern-capture-\$ID" --restart unless-stopped \\
       --network host --cap-drop ALL --cap-add NET_RAW --security-opt no-new-privileges \\
       -v "\$LOGDIR":/zeek/logs -v /etc/weirvern-weirling/site:/zeek/site:ro \\
@@ -270,7 +290,32 @@ case "\${1:-status}" in
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
       -v "\$LOGDIR":/zeek/logs:ro \\
       --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.sensor_agent >/dev/null
-    echo "weirvern-weirling \$ID: started (capture + agent)"
+    # NOTE ON THE EXPANSIONS: this whole block was written by the deploy script (the heredoc is
+    # unquoted), so `$GATE` and `$GATE_IFACE` are decided NOW, while `\$ID` and `\$GATE_IF` are left
+    # for the target's own runtime.
+    if [ "$GATE" = "1" ]; then
+      # THE GATE. Same image, same code path as the hub's (WEIRVERN_ROLE=gate): it reads the shared
+      # rules and enforces them HERE, with the hub's own checks -- enabled, a VERIFIED path, a
+      # readable ruleset, never the management NIC. It derives nothing: the hub is the single
+      # writer, and a second deriver would mint a second rule for one detection.
+      #
+      # NET_ADMIN because installing a ruleset is the job; everything else is dropped, and
+      # no-new-privileges stays on.
+      GATE_IF='$GATE_IFACE'
+      if [ "\$GATE_IF" = "\$MGMT" ] || [ "\$GATE_IF" = "\$NOW" ]; then
+        echo "weirvern-gate: REFUSING to enforce on '\$GATE_IF' -- management NIC" >&2; exit 1
+      fi
+      docker run -d --name "weirvern-gate-\$ID" --restart unless-stopped \\
+        --network host --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges \\
+        --env-file "\$ENVF" \\
+        -e WEIRVERN_ROLE=gate -e SENSOR_ID="\$ID" \\
+        -e SLUICE_ENABLED=1 -e SLUICE_IFACE="\$GATE_IF" \\
+        -e SLUICE_INTERVAL_S=60 -e SLUICE_MAX_BLOCK_S=3600 \\
+        --entrypoint python3 "\$WORKER_IMG" -m weirvern.worker >/dev/null
+      echo "weirvern-weirling \$ID: gate enforcing on \$GATE_IF (rules come from the hub)"
+    else
+      echo "weirvern-weirling \$ID: started (capture + agent; no gate -- pass --gate to enforce here)"
+    fi
     ;;
   *) echo "usage: weirvern-weirling [status|start|stop]" >&2; exit 2 ;;
 esac

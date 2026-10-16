@@ -5,7 +5,7 @@ WHY THIS IS A TEST AND NOT A REVIEW CHECKLIST.
 Every defect these guard against has actually happened in this project, and none of them was
 visible without looking for it specifically:
 
-  * the README listed `zeek/zeek:lts` as the sensor image long after it became the derived
+  * the DOCS listed `zeek/zeek:lts` as the sensor image long after it became the derived
     `weirvern-zeek:0.4.0` -- so the documented build step built the WRONG image, and the
     operator would never get JA4
   * the build instructions described ONE image when there are two, and the second has a
@@ -13,7 +13,7 @@ visible without looking for it specifically:
   * the workload table omitted the GUI, the prune CronJob and the schema Job entirely
   * nothing documented the sensor modes, so `loch` and `siphon` were discoverable only by
     reading `mode.py`
-  * `redef FINGERPRINT::JA4*_enabled = F` was still in the README's own description of the
+  * `redef FINGERPRINT::JA4*_enabled = F` was still in the DOCS's own description of the
     licensing after the options were deleted -- instructions that would crash the sensor
 
 A doc that describes a previous version of the software is worse than no doc, because it is
@@ -27,6 +27,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text()
+# THE DOCUMENTATION SET. The README is a front page now (what the tool does) and the detail lives
+# in docs/*.md, so a claim that moved is still a claim: these tests assert what a reader is TOLD,
+# not which file says it. The one thing checked against the README itself is that it links every
+# document -- see test_the_readme_links_every_document_in_the_set.
+DOCS = "\n".join([README] + [p.read_text() for p in sorted((ROOT / "docs").glob("*.md"))])
 ZEEK_POLICY = (ROOT / "k8s" / "zeek" / "weirvern-local.zeek").read_text()
 DOCKERFILES = (ROOT / "Containerfile").read_text() + (ROOT / "zeek" / "Containerfile").read_text()
 
@@ -46,27 +51,37 @@ def _headings(text: str) -> set[str]:
 def test_every_internal_link_resolves():
     """A broken anchor in a table of contents is worse than no contents: it looks
     authoritative and goes nowhere."""
-    heads = _headings(README)
-    links = re.findall(r"\]\(#([^)]+)\)", README)
+    heads = _headings(DOCS)
+    links = re.findall(r"\]\(#([^)]+)\)", DOCS)
     missing = sorted({link for link in links if link not in heads})
-    assert not missing, f"README links to headings that do not exist: {missing}"
+    assert not missing, f"DOCS links to headings that do not exist: {missing}"
 
 
-def test_the_contents_lists_every_top_level_section():
-    """A section nobody can navigate to may as well not exist."""
-    contents = README[README.index("## Contents"):README.index("---", README.index("## Contents"))]
-    listed = set(re.findall(r"\]\(#([^)]+)\)", contents))
-    # Every H2, since those are what the index is for.
-    h2 = {_slug(m.group(1)) for m in re.finditer(r"^## (.+)$", README, re.M)}
-    h2.discard("contents")
-    missing = sorted(h2 - listed)
-    assert not missing, f"H2 sections absent from the Contents list: {missing}"
+def test_the_readme_links_every_document_in_the_set():
+    """THE NAVIGATION CONTRACT, after the split.
+
+    The README used to carry everything under a Contents list; it now leads with what the tool
+    does and hands the detail to `docs/*.md`. What must stay true is that every document in the
+    set is reachable from the front page -- a document nobody can navigate to may as well not
+    exist -- and that the front page still states the one thing every reader needs first (the
+    modes: loch, siphon, the gate).
+    """
+    files = sorted(p.name for p in (ROOT / "docs").glob("*.md"))
+    assert files, "there are no per-topic documents, so this test proves nothing"
+    missing = [f for f in files if f"docs/{f}" not in README]
+    assert not missing, f"document(s) not linked from the README: {missing}"
+
+    # The front page still leads with the feature set; these are the words a reader arrives with.
+    for word in ("loch", "siphon", "Sluice Gate", "console"):
+        assert word in README, f"the README no longer mentions {word}"
+    # And the screenshots are a stated placeholder until publishing, never claimed as done.
+    assert "Placeholder" in README and "screenshots" in README.lower()
 
 
 # ── the images, which is where the doc was most wrong ────────────────────────────
 
 def test_the_documented_sensor_image_is_the_one_the_manifests_use():
-    """The README said `zeek/zeek:lts` long after the sensor became a derived image. An
+    """The DOCS said `zeek/zeek:lts` long after the sensor became a derived image. An
     operator following it would build the upstream image and get no JA4 at all."""
     manifest = (ROOT / "k8s" / "32-zeek.yaml").read_text()
     match = re.search(r"image:\s*(\S+)", manifest)
@@ -75,7 +90,7 @@ def test_the_documented_sensor_image_is_the_one_the_manifests_use():
 
     # The upstream base is fine to MENTION (the Containerfile derives FROM it), but the
     # manifest's image must appear in the deploy instructions.
-    build_section = README[README.index("Build and push the images"):]
+    build_section = DOCS[DOCS.index("Build and push the images"):]
     build_section = build_section[:build_section.index("### 4.")]
     assert expected in build_section, (
         f"the manifests use {expected} but the build instructions never mention it"
@@ -87,18 +102,18 @@ def test_the_documented_image_names_match_the_manifests():
     for manifest in ("33-worker.yaml", "34-gui.yaml", "35-prune-cronjob.yaml"):
         text = (ROOT / "k8s" / manifest).read_text()
         for image in set(re.findall(r"image:\s*(weirvern-\S+)", text)):
-            assert image in README, f"{image} is used by {manifest} but absent from the README"
+            assert image in DOCS, f"{image} is used by {manifest} but absent from the DOCS"
 
 
 def test_both_build_commands_are_documented_with_the_right_contexts():
     """The worker builds from the repo root; the Zeek image builds from `zeek/` because its
     COPY lines reference files there. Getting the context wrong fails the build with
     "file not found", which is at least loud -- but only if the command is in the doc."""
-    assert "kustomize edit set image weirvern-worker" in README
-    assert "kustomize edit set image weirvern-zeek" in README
-    assert "zeek/Containerfile" in README, "the derived sensor build is not documented"
+    assert "kustomize edit set image weirvern-worker" in DOCS
+    assert "kustomize edit set image weirvern-zeek" in DOCS
+    assert "zeek/Containerfile" in DOCS, "the derived sensor build is not documented"
     # The context argument, which is the part that is easy to get wrong.
-    assert re.search(r"-f\s+zeek/Containerfile\s+zeek/", README), (
+    assert re.search(r"-f\s+zeek/Containerfile\s+zeek/", DOCS), (
         "the documented Zeek build does not pass zeek/ as the build context"
     )
 
@@ -107,8 +122,8 @@ def test_every_workload_kind_is_described():
     """The workload table omitted the GUI, the CronJob and the schema Job."""
     for kind, name in (("Deployment", "weirvern-gui"), ("CronJob", "weirvern-prune"),
                        ("Job", "weirvern-schema")):
-        assert name in README, f"{kind}/{name} is not described in the README"
-        assert kind in README, f"the {kind} kind is not named for {name}"
+        assert name in DOCS, f"{kind}/{name} is not described in the DOCS"
+        assert kind in DOCS, f"the {kind} kind is not named for {name}"
 
 
 # ── licensing instructions that would crash the sensor ──────────────────────────
@@ -121,8 +136,8 @@ def test_the_readme_does_not_instruct_an_operator_to_disable_deleted_options():
     """
     for name in ("JA4S_enabled", "JA4H_enabled", "JA4X_enabled", "JA4SSH_enabled",
                  "JA4T_enabled", "JA4L_enabled", "JA4D_enabled"):
-        assert f"redef FINGERPRINT::{name}" not in README, (
-            f"the README shows a redef of {name}, which no longer exists in the image "
+        assert f"redef FINGERPRINT::{name}" not in DOCS, (
+            f"the DOCS shows a redef of {name}, which no longer exists in the image "
             f"and aborts Zeek at startup"
         )
 
@@ -136,8 +151,8 @@ def test_the_policy_and_the_readme_agree_that_the_module_is_vendored():
     assert "redef FINGERPRINT" not in code, (
         "the site policy still carries a disable list, which the vendored module does not need"
     )
-    assert "zeek/vendor/ja4-zeek-scripts" in README, (
-        "the README does not point at the vendored module"
+    assert "zeek/vendor/ja4-zeek-scripts" in DOCS, (
+        "the DOCS does not point at the vendored module"
     )
     assert "zeek/vendor/ja4-zeek-scripts" in ZEEK_POLICY, (
         "the policy does not point at it either"
@@ -147,8 +162,8 @@ def test_the_policy_and_the_readme_agree_that_the_module_is_vendored():
 def test_the_readme_states_that_image_and_policy_ship_together():
     """The one deployment fact that caused a crash-loop. It belongs in the doc, not only in a
     commit message."""
-    assert "crash-loop" in README.lower() or "crash loop" in README.lower(), (
-        "the README does not warn that the sensor image and the site policy must be deployed "
+    assert "crash-loop" in DOCS.lower() or "crash loop" in DOCS.lower(), (
+        "the DOCS does not warn that the sensor image and the site policy must be deployed "
         "together"
     )
 
@@ -158,8 +173,8 @@ def test_the_readme_states_that_image_and_policy_ship_together():
 def test_the_sensor_modes_are_documented():
     """`loch` and `siphon` were discoverable only by reading mode.py. The difference between
     them is whether Weirvern can take the network down, so it is not a detail."""
-    assert "`loch`" in README and "`siphon`" in README
-    section = README[README.index("Sensor modes"):]
+    assert "`loch`" in DOCS and "`siphon`" in DOCS
+    section = DOCS[DOCS.index("Sensor modes"):]
     section = section[:section.index("### ")]
     assert "SENSOR_MODE" in section
     assert "watchdog" in section.lower(), (
@@ -172,7 +187,7 @@ def test_the_sensor_modes_are_documented():
 def test_the_readme_says_siphon_does_not_decrypt():
     """The single most likely misconception about in-path interception. Someone deciding
     whether this is acceptable on their network needs it stated, not inferred."""
-    section = README[README.index("Sensor modes"):]
+    section = DOCS[DOCS.index("Sensor modes"):]
     section = section[:section.index("### ")]
     assert "not a TLS intercept" in section or "Nothing is decrypted" in section
 
@@ -180,18 +195,18 @@ def test_the_readme_says_siphon_does_not_decrypt():
 def test_the_readme_documents_the_zeek_features_the_models_use():
     """The models gained a whole second sensor's worth of features; a reader of the detection
     section would otherwise not know Zeek contributes to scoring at all."""
-    assert "zeek_present" in README, (
-        "the README does not describe the presence flag, which is the part an operator "
+    assert "zeek_present" in DOCS, (
+        "the DOCS does not describe the presence flag, which is the part an operator "
         "misreading the numbers would get wrong"
     )
-    section = README[README.index("What the models see"):]
+    section = DOCS[DOCS.index("What the models see"):]
     assert "NetFlow" in section and "Zeek" in section
 
 
 def test_the_readme_documents_the_gui_views():
     # The list must cover EVERY tab in index.html, not a remembered subset: a view added to the
     # nav and never documented is exactly what this test exists to catch, and it cannot catch it
-    # from a hand-maintained list. The nav is the source of truth, and the README must name every
+    # from a hand-maintained list. The nav is the source of truth, and the DOCS must name every
     # entry in it.
     from pathlib import Path
 
@@ -215,12 +230,12 @@ def test_the_readme_documents_the_gui_views():
     }
     for key, label in tabs:
         phrase = documented_as.get(key, label.strip())
-        assert phrase in README, (
+        assert phrase in DOCS, (
             f"the GUI's {label.strip()} view (data-view={key!r}) is in the nav but undocumented. "
-            f"Either document it in the README's GUI view table or remove the tab."
+            f"Either document it in the DOCS's GUI view table or remove the tab."
         )
-    assert "30088" in README, "the GUI's port is not stated"
-    assert "30088" in README, "the GUI's port is not stated"
+    assert "30088" in DOCS, "the GUI's port is not stated"
+    assert "30088" in DOCS, "the GUI's port is not stated"
 
 
 # ── the docs must not describe dead things ──────────────────────────────────────
@@ -231,11 +246,11 @@ def test_the_readme_does_not_advertise_a_feature_that_was_removed():
     from weirvern.admin import mode as mode_mod
 
     known = {mode_mod.MODE_LOCH, mode_mod.MODE_SIPHON}
-    mentioned = set(re.findall(r"`(loch|siphon|dam|pool|reservoir|cistern)`", README))
+    mentioned = set(re.findall(r"`(loch|siphon|dam|pool|reservoir|cistern)`", DOCS))
     stale = {m for m in mentioned if m in ("dam",)}
-    assert not stale, f"the README mentions removed mode names: {stale}"
+    assert not stale, f"the DOCS mentions removed mode names: {stale}"
     # And the modes it does describe must be the ones the code knows.
-    assert mentioned & known, "the README mentions no mode the code actually implements"
+    assert mentioned & known, "the DOCS mentions no mode the code actually implements"
 
 
 def test_the_linter_is_pinned_to_an_exact_version():

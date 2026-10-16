@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased — force a retrain, then keep it or trash it
+
+CAN WE SEE THAT ML IS ACTUALLY WORKING? Yes, and the honest form of that answer is not a green
+dot: it is to train the same detectors again on the traffic you have now, show what they built,
+and let the operator decide whether that is what should be watching the segment. The Models view
+gains the control.
+
+TWO RULES MAKE IT TRUSTWORTHY, and both exist because the alternative fails quietly. A forced
+retrain NEVER touches the live artifacts: it trains into `<MODEL_DIR>/candidate`, reports, and
+stops -- nothing scoring traffic changes until Keep, so "was that a good idea?" is answered BEFORE
+the model watching the network is replaced. And the report says WHAT THE WINDOW CONTAINED: a
+retrain learns from whatever it is shown, so a window holding an attack teaches the new model that
+the attack is normal. The machine cannot know whether the traffic was friendly; the operator can.
+The count of detections this deployment already recorded inside the window is computed and put
+beside the decision, in one sentence, with the per-detector rows it trained on.
+
+Keep installs the candidate over the live artifacts and ARCHIVES what it replaced (a worse retrain
+must be undoable without re-running anything), then reloads the running detectors in place so the
+pod starts scoring with them immediately. Trash deletes the candidate and the live models were
+never touched. Keep is offered only when the candidate actually trained something: a retrain that
+found no data has nothing to install, and a button there would offer to replace working models with
+an empty set.
+
+THE WORK HAPPENS IN THE WORKER, which owns the model directory; the GUI files a request and reads
+the result back. The channel between the two pods is ClickHouse (`weirvern.model_actions`), for the
+same reason the gate's rule store is: a decision made in one process and read in another must be
+visible in both and survive a restart of either. A request that cannot be carried out becomes
+`failed` WITH ITS REASON -- a row that sits in `requested` forever looks like a worker that is busy.
+
+## Unreleased — the gate follows the capability: any sensor that can enforce, does
+
+`WEIRVERN_ROLE=gate` turns a weirling into a second ENFORCER. One rule store, many gates: the hub
+derives the rules from detections, and every sensor that sits in the path installs the same rules on
+its own segment -- with the hub's own checks, because it is the hub's own code. A box with an in-line
+path (its own channel bridge, or a live siphon intercept) and the ability to install a ruleset is a
+place traffic can be stopped; a box without one reports DEGRADED and blocks nothing. Nothing is taken
+on faith from a ConfigMap: the path is VERIFIED, the ruleset must be READABLE (an unreadable one
+leaves the gate as it is and never reopens it), and the interface is never the management NIC.
+`SLUICE_ENABLED=0` disarms on a weirling exactly as it does on the hub.
+
+A WEIRLING GATE DERIVES NOTHING. The hub is the single writer: a second deriver would mint a second
+rule for the same detection, and the operator who revoked one would keep being blocked by the other
+-- the worst possible way for two gates to disagree. It also does not ingest, detect, or train, so a
+sensor cannot double-count its own segment in the hub's database.
+
+THE FLEET'S GATES ARE VISIBLE. The Sluice view lists every gate with its state, interface, rules
+active/total and packets blocked, marked for this hub, and a gate that has STOPPED reporting is
+called out: four missed intervals -- or an unreadable timestamp -- marks it stale, because a segment
+the operator believes is filtered and is not is the worst state this feature can produce.
+
+The delivery matches the design: the unit template carries the gate container (NET_ADMIN, host
+network) and ships it DISABLED, because each sensor in its own configuration is the point of a fleet;
+and `deploy-weirling.sh --gate --gate-iface IFACE` installs one on a remote box, refusing the
+management NIC and refusing to default to the capture port -- a mirror enforces nothing.
+
 ## Unreleased — the operator's hand on the gate: block from an alert, and a threshold that blocks for you
 
 Two instruments for the operator, plus the two JA4 gaps the audit left open.
@@ -25,6 +80,18 @@ is unchanged; a score-triggered block takes a 30-minute TTL, always capped by
 asked weeks later. The worker reads detections when EITHER instrument is set -- reading them only
 for a policy above Off would have made the threshold silently inert, the exact defect the JA4
 novelty audit found elsewhere.
+
+TWO THINGS THE OPERATOR ASKED FOR AFTER USING IT (2026-10-16): the reason is now OPTIONAL on a
+manual block, and a duration of 0 means UNTIL REVOKED. The reason stays mandatory in the one place
+it matters -- a derived block always writes one, because that is the block nobody was watching --
+and the form still pre-fills it from the alert; a blank one is stored blank rather than replaced by
+a placeholder that would read like a fact in an audit row. For the duration, `expires_at` becomes
+NULLABLE (schema/014) and NULL means indefinitely: deliberately not a far-future timestamp, which
+every view would format as a plausible date and which would be a lie in the store. Both places that
+filter live rules -- the SQL and `Rule.is_live()` -- treat NULL as LIVE, and a row with no expiry
+reads as "until revoked" in the rules list rather than "never". The old behaviour was the reverse
+in both directions: a non-positive TTL was refused outright and a null expiry was treated as inert.
+That was the right default and the wrong ceiling, and the operator's instruction is the override.
 
 THE EVIDENCE PAGE CAN SHOW THE TLS RECORDS. `/api/evidence` now carries a `zeek_ssl` section
 (timestamp, destination, port, version, server name, ja4, ja4_orig), so a JA4-driven alert pivots
