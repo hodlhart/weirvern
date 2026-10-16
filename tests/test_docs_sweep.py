@@ -50,7 +50,7 @@ def test_the_development_extras_and_the_harness_shape_match_reality():
     nxt = re.search(r"^\[", tail, flags=re.M)
     extras_block = tail[:nxt.start()] if nxt else tail
     declared = set(re.findall(r"^(\w+) = \[", extras_block, flags=re.M))
-    line = next((l for l in dev.splitlines() if "pip install -e" in l), "")
+    line = next((ln for ln in dev.splitlines() if "pip install -e" in ln), "")
     assert ".[" in line, "the development install line lost its extras"
     extras = [e.strip() for e in line[line.index(".[") + 2:line.index("]")].split(",")
               if e.strip()]
