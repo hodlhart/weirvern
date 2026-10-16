@@ -279,24 +279,27 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert '"/api/settings"' in src, "there is no /api/settings route"
 
 
-def test_the_sensor_settings_live_with_the_sensor():
-    """Moved on request (2026-10-15): "configure each weirling".
+def test_the_sensor_settings_live_on_the_settings_page_behind_a_selector():
+    """The operator, 2026-10-16: "move weirling setting back to the settings page. Create a
+    section where you select the wierling and then set setting. The wierling tab should be
+    status and performance and registration."
 
-    The sensor's knobs belong on the sensor's row, and the honest boundary is that a runtime can
-    only be changed on the box that runs it -- so the Weirlings drill-down mounts them for the
-    local sensor only (the row the server marks `local`) and every other row says where its
-    settings live. Settings keeps a pointer, not the controls.
+    The honest boundary is unchanged -- a runtime can only be changed on the box that runs it --
+    so the selector mounts the live controls for the LOCAL row and the sentence for every other;
+    the Weirlings tab keeps status, performance and registration, and points here.
     """
     index = (WEB / "index.html").read_text()
     settings = index.split('id="view-settings"')[1].split("</section>")[0]
     weirlings = index.split('id="view-weirlings"')[1].split("</section>")[0]
     for element in ("st-sensor", "st-sonar", "st-test"):
-        assert f'id="{element}"' in weirlings, f"#{element} is not in the Weirlings view"
-        assert f'id="{element}"' not in settings, (
-            f"#{element} is still in the Settings view; the sensor's controls were moved to "
-            f"the sensor's row"
+        assert f'id="{element}"' in settings, f"#{element} is not on the Settings page"
+        assert f'id="{element}"' not in weirlings, (
+            f"#{element} is still mounted in the Weirlings view; the settings moved back to "
+            f"the Settings page"
         )
-    assert "Weirlings" in settings, "Settings does not say where the sensor settings went"
+    assert 'id="st-wl-select"' in settings, "the Settings page has no weirling selector"
+    assert "Weirling settings" in weirlings, (
+        "the Weirlings drill-down must point at Settings -> Weirling settings")
 
 
 # ── the version row, which reported a version the deployment was not running ───────────────

@@ -35,6 +35,9 @@ class _Client:
             return _Result([("198.51.100.20", 12)])
         if "GROUP BY rcode" in sql:
             return _Result([(0, 9), (3, 3)])
+        if "uniqExact" in sql:
+            # the "top ten + others" total (2026-10-16); a distinct count, not another list
+            return _Result([(7,)])
         if "FROM weirvern.dns_reverse_map" in sql:
             return _Result([("ads.example.com", "2026-10-16 06:00:00")])
         return _Result([("2026-10-16 06:00:00", "198.51.100.20", "ads.example.com", 1, 0,
@@ -64,6 +67,15 @@ def test_a_row_carries_its_labels_and_parsed_answers():
     assert row["qtype_label"] == "A" and row["rcode_label"] == "NOERROR"
     assert row["answer_ips"] == ["198.51.100.10", "fd42::1"], (
         "the display list must be parsed, not the raw string")
+
+
+def test_the_facets_carry_the_distinct_total_for_others():
+    """"Top ten and an others to click for more" needs a REAL total, or the chip lies."""
+    c = _Client()
+    d = soc.dns_rows(c, hours=6)
+    assert d["facets"]["domains_total"] == 7
+    sql = next(s for s in c.sql if "uniqExact" in s)
+    assert "GROUP BY" not in sql.split("WHERE")[0], "the total is a distinct count, not a list"
 
 
 def test_the_reverse_read_path_is_windowed_by_last_seen():

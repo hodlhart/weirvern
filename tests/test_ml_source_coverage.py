@@ -337,10 +337,10 @@ def test_the_adaptive_baseline_trains_on_every_feature_and_scores_three():
 
 
 def test_dbscan_covers_the_logs_its_subset_names(tmp_path):
-    """The small model's coverage, derived rather than assumed: eight Zeek features spanning
-    conn, notice, weird and -- appended at the operator\'s direction -- the TLS fingerprints
-    from the ssl log. The presence flag spans five logs and is a join flag, not a signal, so it
-    is counted separately."""
+    """The small model's coverage, derived rather than assumed: Zeek features spanning conn,
+    notice, weird, the TLS fingerprints from the ssl log, and -- "make sure dns is added to all
+    ml as well" (2026-10-16) -- the DNS triple. The presence flag spans the logs and is a join
+    flag, not a signal, so it is counted separately."""
     cols = _detector(tmp_path, DBSCANDetector).expected_feature_columns()
     assert cols == list(DBSCAN_FEATURES)
     assert set(ZEEK_DBSCAN_FEATURES) <= set(ZEEK_FEATURES)
@@ -351,10 +351,10 @@ def test_dbscan_covers_the_logs_its_subset_names(tmp_path):
             continue
         assert mapping[feature], f"{feature} no longer resolves to an aggregate"
         signal_aggs.update(mapping[feature])
-    assert signal_aggs == {"conn_agg", "notice_agg", "weird_agg", "ssl_agg"}, (
+    assert signal_aggs == {"conn_agg", "notice_agg", "weird_agg", "ssl_agg", "dns_agg"}, (
         f"DBSCAN's signal coverage moved to {sorted(signal_aggs)} -- it is documented as "
-        f"conn/notice/weird plus the JA4 pair from ssl; a widened or shrunken subset needs the "
-        f"docs updated with it"
+        f"conn/notice/weird plus the JA4 pair from ssl plus the DNS triple (2026-10-16); a "
+        f"widened or shrunken subset needs the docs updated with it"
     )
 
 

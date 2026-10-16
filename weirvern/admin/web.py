@@ -102,6 +102,7 @@ STATIC_FILES = {
     # "show me the flows themselves, filtered" is a distinct concern from every chart above it.
     "/discover.js": ("discover.js", "application/javascript; charset=utf-8"),
     "/dnsview.js": ("dnsview.js", "application/javascript; charset=utf-8"),
+    "/blocked.js": ("blocked.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
@@ -315,6 +316,10 @@ def _build_handler(ctx: GuiContext):
                 return self._dns(query)
             if path == "/api/dns/reverse":
                 return self._dns_reverse(query)
+            # THE BLOCKED LEDGER (the operator's ask: "We need a blocked tab too"): recorded
+            # hits plus the live rules split by what they do now, with the gate's state along.
+            if path == "/api/blocked":
+                return self._blocked(query)
             if path == "/api/flows":
                 return self._flows(query)
             # The asset inventory and the connection graph. Separate endpoints from /api/host
@@ -761,6 +766,31 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("dns view unavailable: %s", exc)
                 return self._json({"available": False, "rows": [], "reason":
+                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   "data_error": str(exc)})
+            self._json(payload)
+
+        def _blocked(self, query: dict) -> None:
+            """The Blocked tab: hits + live blocks + live alerts + gate state, one read."""
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            domain = (query.get("domain") or [""])[0].strip()
+            if len(domain) > 200:
+                return self._error(400, "the domain filter is implausibly long")
+            offset = _int_arg(query, "offset", 0, 0, 1000000)
+            limit = _int_arg(query, "limit", 200, 1, 500)
+            try:
+                from weirvern import sluice_store  # noqa: PLC0415
+                with self._with_client() as client:
+                    gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+                    payload = soc_mod.blocked_view(
+                        client, hours=hours, domain=domain, limit=limit, offset=offset,
+                        gate=gate,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocked view unavailable: %s", exc)
+                return self._json({"available": False, "hits": [], "reason":
                                    f"cannot reach ClickHouse: {type(exc).__name__}",
                                    "data_error": str(exc)})
             self._json(payload)

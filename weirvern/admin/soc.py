@@ -968,14 +968,22 @@ def dns_rows(client, *, hours: int = 24, domain: str = "", client_ip: str = "",
             "GROUP BY t ORDER BY t",
             parameters={**params, "w": bucket},
         ).result_rows
+        # THE TOP TEN AND AN "OTHERS" THAT OPENS (the operator, 2026-10-16): the chips show
+        # ten, the payload carries up to 200 more so the click is instant, and the DISTINCT
+        # total rides along so "others (+N)" is a real count rather than "that is all there is".
         by_domain = client.query(
             "SELECT lower(query) AS d, count() AS n FROM weirvern.zeek_dns "
-            f"WHERE {clause} GROUP BY d ORDER BY n DESC LIMIT 12",  # noqa: S608
+            f"WHERE {clause} GROUP BY d ORDER BY n DESC LIMIT 200",  # noqa: S608
             parameters=params,
         ).result_rows
         by_client = client.query(
             "SELECT src_addr, count() AS n FROM weirvern.zeek_dns "
-            f"WHERE {clause} GROUP BY src_addr ORDER BY n DESC LIMIT 12",  # noqa: S608
+            f"WHERE {clause} GROUP BY src_addr ORDER BY n DESC LIMIT 200",  # noqa: S608
+            parameters=params,
+        ).result_rows
+        distinct_domains = client.query(
+            "SELECT uniqExact(lower(query)) FROM weirvern.zeek_dns "  # noqa: S608
+            f"WHERE {clause}",
             parameters=params,
         ).result_rows
         by_rcode = client.query(
@@ -1013,12 +1021,89 @@ def dns_rows(client, *, hours: int = 24, domain: str = "", client_ip: str = "",
                        "n": int(r[1] or 0)} for r in hist],
         "facets": {
             "domains": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_domain],
+            "domains_total": (int(distinct_domains[0][0]) if distinct_domains else len(by_domain)),
             "clients": [{"value": str(r[0]), "count": int(r[1] or 0)} for r in by_client],
             "rcodes": [{"value": int(r[0] or 0),
                         "label": RCODE_LABELS.get(int(r[0] or 0), str(r[0])),
                         "count": int(r[1] or 0)} for r in by_rcode],
         },
     }
+
+
+def blocked_view(client, *, hours: int = 24, domain: str = "", limit: int = 200,
+                 offset: int = 0, gate: dict | None = None) -> dict:
+    """The Blocked ledger: what has been stopped or caught, and by what.
+
+    THE OPERATOR'S ASK: "We need a blocked tab too." The Sluice view is where rules are MADE;
+    this is where their work is READ -- the recorded DNS hits (blocked-name asks, alert-first
+    included) and the live rules split by what they do RIGHT NOW (blocking vs alerting), each
+    domain rule carrying the addresses it currently resolves to, because that IS what the
+    kernel enforces. The gate's own state rides along so "is anything actually being stopped"
+    is answerable from the same screen as "what was caught".
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    where = ["kind = 'dns'", "ts >= %(since)s AND ts <= %(until)s"]
+    params: dict = {**timewindow.w(hours), "n": limit, "o": offset}
+    if domain:
+        where.append("positionCaseInsensitive(domain, %(domain)s) > 0")
+        params["domain"] = str(domain)
+    clause = " AND ".join(where)
+    hits: list[dict] = []
+    total = 0
+    try:
+        rows = client.query(
+            "SELECT ts, rule_id, domain, query, src_addr FROM weirvern.sluice_events "
+            f"WHERE {clause} ORDER BY ts DESC LIMIT %(n)s OFFSET %(o)s",  # noqa: S608
+            parameters=params,
+        ).result_rows
+        total_row = client.query(
+            f"SELECT count() FROM weirvern.sluice_events WHERE {clause}",  # noqa: S608
+            parameters=params,
+        ).result_rows
+        total = int(total_row[0][0]) if total_row else 0
+        hits = [
+            {"ts": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+             "rule_id": str(r[1]), "domain": str(r[2]), "query": str(r[3]),
+             "client": str(r[4])}
+            for r in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("blocked view failed: %s", exc)
+        return {"available": False, "reason": f"the events query failed: {type(exc).__name__}",
+                "hits": [], "total": 0, "blocks": [], "alerts": [], "gate": gate or {},
+                "data_error": str(exc)}
+
+    blocks: list[dict] = []
+    alerts: list[dict] = []
+    try:
+        for r in sluice_store.load_all_rules(client, limit=500):
+            if not r.is_live():
+                continue
+            item = {
+                "rule_id": r.rule_id, "describes": r.describes(), "mode": r.mode,
+                "domain": r.domain, "origin": r.origin, "severity": r.severity,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else "",
+                "resolved": [], "resolved_count": 0, "resolved_error": False,
+            }
+            if r.domain:
+                # The addresses a name resolves to NOW are what the kernel enforces; showing
+                # the count here is what makes "the rule blocks something" checkable rather
+                # than asserted.
+                try:
+                    ips = sluice_store.resolve_domain_ips(client, r.domain)
+                    item["resolved"] = ips[:12]
+                    item["resolved_count"] = len(ips)
+                except Exception:  # noqa: BLE001
+                    item["resolved_error"] = True
+            (blocks if r.enforcing else alerts).append(item)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("blocked view: rules unavailable: %s", exc)
+
+    return {"available": True, "reason": "", "hits": hits, "total": total, "limit": limit,
+            "offset": offset, "blocks": blocks, "alerts": alerts, "gate": gate or {}}
 
 
 def dns_reverse_for(client, ip: str, *, hours: int = 24, limit: int = 20) -> dict:

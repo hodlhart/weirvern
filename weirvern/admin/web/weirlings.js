@@ -248,12 +248,10 @@ async function openWeirling(sensorId) {
   const note = document.getElementById("wl-detail-note");
   document.getElementById("wl-detail-id").textContent = sensorId;
   wlDetail = null;
-  // Both settings homes start hidden and are re-decided by the render: the sensor's config
-  // panel for the row this hub runs, the "settings live elsewhere" note for every other.
-  for (const id of ["wl-sensor-config", "wl-sensor-remote"]) {
-    const n = document.getElementById(id);
-    if (n) n.classList.add("hidden");
-  }
+  // THE SETTINGS PANELS ARE NOT IN THIS CARD ANY MORE (the operator, 2026-10-16: "move
+  // weirling setting back to the settings page... select the weirling and then set setting").
+  // They live in Settings -> Weirling settings, driven by that page's selector; this card is
+  // status and actions, and points there.
   body.replaceChildren(el("p", { class: "muted", text: "loading…" }));
   note.textContent = "";
   card.classList.remove("hidden");
@@ -317,6 +315,11 @@ async function openWeirling(sensorId) {
   }
   body.appendChild(dl);
 
+  body.appendChild(el("p", { class: "muted",
+    text: "Runtime settings for this weirling live in Settings \u2192 Weirling settings, " +
+          "where you pick the weirling first \u2014 only the one this hub runs can be " +
+          "changed here." }));
+
   // ── the controls, only where they MEAN something.
   const registerBtn = document.getElementById("wl-detail-register");
   const enableBtn = document.getElementById("wl-detail-enable");
@@ -324,15 +327,6 @@ async function openWeirling(sensorId) {
   const revokeBtn = document.getElementById("wl-detail-revoke");
   const all = [registerBtn, enableBtn, disableBtn, revokeBtn];
   for (const b of all) b.classList.add("hidden");
-
-  // WHICH SENSOR CAN BE CONFIGURED FROM HERE. A runtime lives on one box; the hub can only
-  // change the sensor running on THIS deployment -- the row the server marks `local`. Every
-  // other row gets the sentence saying where its settings are, instead of knobs that would
-  // write to the wrong machine.
-  const cfgPanel = document.getElementById("wl-sensor-config");
-  const remoteNote = document.getElementById("wl-sensor-remote");
-  if (cfgPanel) cfgPanel.classList.toggle("hidden", !r.local);
-  if (remoteNote) remoteNote.classList.toggle("hidden", !!r.local);
 
   if (!r.registered) {
     // NO ENABLE/RETIRE CONTROLS for an undeclared sensor, with the reason stated -- but REGISTER
@@ -362,9 +356,81 @@ async function openWeirling(sensorId) {
 
 // ── wiring ────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The Settings page's Weirling selector (the operator, 2026-10-16: "Create a section where you
+ * select the wierling and then set setting. The wierling tab should be status and performance
+ * and registration").
+ *
+ * THE PANEL IDS ARE UNCHANGED (#wl-sensor-config, #st-sensor and friends): the settings
+ * machinery fills them by id wherever they live, and this code only decides WHOSE panel is
+ * shown -- the weirling this hub runs gets the live controls, every other selection gets the
+ * sentence saying where its runtime actually lives. The choice is remembered per session.
+ */
+async function wlPopulateSelector() {
+  const sel = document.getElementById("st-wl-select");
+  if (!sel || sel.dataset.filled) return;
+  let rows = [];
+  try {
+    const d = await getJSON("/api/weirlings");
+    rows = d.sensors || [];
+  } catch (err) {
+    const note = document.getElementById("st-wl-note");
+    if (note) note.textContent = `could not read the fleet: ${(err && err.message) || err}`;
+    return;
+  }
+  sel.replaceChildren(el("option", { value: "",
+    text: rows.length ? "pick a weirling" : "none registered" }));
+  let localId = "";
+  for (const r of rows) {
+    sel.appendChild(el("option", { value: r.sensor_id,
+      text: r.sensor_id + (r.local ? " (this hub)" : "") }));
+    if (r.local) localId = r.sensor_id;
+  }
+  const keep = sessionStorage.getItem("weirvern-wl-settings") || localId
+    || (rows[0] || {}).sensor_id || "";
+  if (keep) sel.value = keep;
+  sel.dataset.filled = "1";
+  await wlSettingsFor(sel.value);
+}
+
+async function wlSettingsFor(sensorId) {
+  const cfg = document.getElementById("wl-sensor-config");
+  const remote = document.getElementById("wl-sensor-remote");
+  const head = document.getElementById("st-wl-head");
+  const note = document.getElementById("st-wl-note");
+  if (!cfg || !remote) return;
+  if (!sensorId) {
+    cfg.classList.add("hidden");
+    remote.classList.add("hidden");
+    return;
+  }
+  sessionStorage.setItem("weirvern-wl-settings", sensorId);
+  try {
+    const d = await getJSON(`/api/weirlings/detail?sensor=${encodeURIComponent(sensorId)}`);
+    const r = (d && d.sensor) || {};
+    if (head) head.textContent = `\u2014 ${sensorId}${r.local ? " (runs on this hub)" : ""}`;
+    if (r.local) {
+      cfg.classList.remove("hidden");
+      remote.classList.add("hidden");
+      if (note) note.textContent = "Changes stage and apply like every settings edit.";
+    } else {
+      cfg.classList.add("hidden");
+      remote.classList.remove("hidden");
+      if (note) note.textContent = "Not the weirling this hub runs: its runtime can only be changed on its own box.";
+    }
+  } catch (err) {
+    cfg.classList.add("hidden");
+    remote.classList.add("hidden");
+    if (note) note.textContent = `could not read ${sensorId}: ${(err && err.message) || err}`;
+  }
+}
+
 function wireWeirlings() {
   const reload = document.getElementById("wl-reload");
   if (reload) reload.addEventListener("click", () => loadWeirlings().catch(showError));
+
+  const pick = document.getElementById("st-wl-select");
+  if (pick) pick.addEventListener("change", () => wlSettingsFor(pick.value));
 
   for (const id of ["wl-problems-only", "wl-revoked"]) {
     const box = document.getElementById(id);

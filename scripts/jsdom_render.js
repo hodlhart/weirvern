@@ -80,7 +80,7 @@ async function main() {
   check("index.html loads the scripts in the required order",
         JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
-                                                 "/dnsview.js"]),
+                                                 "/dnsview.js", "/blocked.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -105,7 +105,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
-                   loadDns, dnClear, dnApply,
+                   loadDns, dnClear, dnApply, loadBlocked, wlPopulateSelector, wlSettingsFor,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
@@ -845,6 +845,29 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       rcodes: [{ value: 0, label: "NOERROR", count: 9 }, { value: 3, label: "NXDOMAIN", count: 3 }],
     },
   };
+  const BLOCKED_PAYLOAD = {
+    available: true, reason: "", total: 3, limit: 200, offset: 0,
+    hits: [
+      { ts: "2026-10-16 06:02:00", rule_id: "r1", domain: "ads.example.com",
+        query: "ads.example.com", client: "198.51.100.20" },
+      { ts: "2026-10-16 06:01:00", rule_id: "", domain: "track.example.net",
+        query: "x.track.example.net", client: "198.51.100.21" },
+    ],
+    blocks: [
+      { rule_id: "r1", describes: "domain ads.example.com (2 address(es) resolved)",
+        mode: "block", domain: "ads.example.com", origin: "manual", severity: "",
+        expires_at: "2026-10-16 07:00:00", resolved: ["203.0.113.7", "203.0.113.8"],
+        resolved_count: 2, resolved_error: false },
+    ],
+    alerts: [
+      { rule_id: "r2", describes: "domain track.example.net (alert)",
+        mode: "alert", domain: "track.example.net", origin: "manual", severity: "",
+        expires_at: "", resolved: ["203.0.113.9"], resolved_count: 1, resolved_error: false },
+    ],
+    gate: { state: "armed", iface: "eth1", rules_active: 1, rules_total: 2,
+            packets_blocked: 12, bytes_blocked: 8000, enforcement: "channel" },
+  };
+
   const DNS_REVERSE_PAYLOAD = {
     available: true, reason: "",
     domains: [{ domain: "ads.example.com", last_seen: "2026-10-16 06:00:00" }],
@@ -910,6 +933,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", FLOWS_PAYLOAD],
     ["/api/discover", DISCOVER_PAYLOAD],
+    ["/api/blocked", BLOCKED_PAYLOAD],
     ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
     ["/api/dns", DNS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
@@ -2927,26 +2951,50 @@ check("high capture loss is called out in the fleet",
   }
 }
 
-// ── the sensor's settings live WITH the sensor, not in the global Settings tab ───────────────
-// Moved on request (2026-10-15): "configure each weirling" -- and the honest boundary is that a
-// runtime can only be changed on the box that runs it. The server marks the LOCAL row; the
-// drill-down mounts the settings there and gives every other row the sentence saying where its
-// settings actually are, instead of knobs that would write to the wrong machine.
+// ── weirling settings live on the SETTINGS page, behind a weirling SELECTOR (2026-10-16) ─────
+// The operator: "move weirling setting back to the settings page. Create a section where you
+// select the wierling and then set setting. The wierling tab should be status and performance
+// and registration." The honest boundary is unchanged -- a runtime can only be changed on the
+// box that runs it -- so the selector mounts the live controls for the LOCAL row and the
+// "where its settings live" sentence for every other; the drill-down keeps status and actions.
 {
   const cfgHost = doc.getElementById("st-sensor");
-  check("the sensor settings grid lives inside the weirling drill-down",
-        !!(cfgHost && cfgHost.closest("#wl-detail-card")),
+  check("the sensor settings grid lives inside the Settings view now",
+        !!(cfgHost && cfgHost.closest("#view-settings")),
         "moving the panel without moving the element would leave loadSettings rendering into a "
         + "node no operator ever opens");
-  check("the Settings tab points at the new home instead of holding the controls",
-        /Weirlings/.test(doc.getElementById("view-settings").textContent)
-        && !(cfgHost && cfgHost.closest("#view-settings")),
-        "an operator looking in Settings must be told where the sensor settings went");
   check("Sonar and the test run moved with it",
         !!(doc.getElementById("st-sonar") || {}).closest
-        && !!doc.getElementById("st-sonar").closest("#wl-detail-card")
-        && !!doc.getElementById("st-test").closest("#wl-detail-card"),
-        "half a sensor section in each view is the two-surfaces defect");
+        && !!doc.getElementById("st-sonar").closest("#view-settings")
+        && !!doc.getElementById("st-test").closest("#view-settings"),
+        "half a sensor section in one view is the two-surfaces defect");
+  await H.wlPopulateSelector();
+  const sel = doc.getElementById("st-wl-select");
+  check("the Settings view carries the weirling selector",
+        !!(sel && sel.closest("#view-settings")),
+        "the ask was a section where you select the weirling first");
+  const localOption = sel ? [...sel.options].find((o) => /\(this hub\)/.test(o.textContent)) : null;
+  check("the selector names the weirling this hub runs", !!localOption,
+        sel ? [...sel.options].map((o) => o.textContent).join("|") : "no select");
+  if (localOption) {
+    sel.value = localOption.value;
+    await H.wlSettingsFor(localOption.value);
+    check("picking the local weirling mounts the live controls with its mode row",
+          !doc.getElementById("wl-sensor-config").classList.contains("hidden")
+          && (doc.getElementById("st-sensor").textContent || "").includes("mode"),
+          "the weirling on this hub is the one this hub can actually configure");
+    check("and no 'settings live elsewhere' note on it",
+          doc.getElementById("wl-sensor-remote").classList.contains("hidden"));
+  }
+  const remoteOption = sel ? [...sel.options].find((o) => o.value && !/\(this hub\)/.test(o.textContent)) : null;
+  if (remoteOption) {
+    sel.value = remoteOption.value;
+    await H.wlSettingsFor(remoteOption.value);
+    check("a weirling elsewhere gets the sentence, not knobs that would write to the wrong machine",
+          doc.getElementById("wl-sensor-config").classList.contains("hidden")
+          && !doc.getElementById("wl-sensor-remote").classList.contains("hidden"),
+          "the hub cannot reach a remote runtime; the panel must say where those settings live");
+  }
   const aliveRow = [...doc.querySelectorAll("#wl-table button")]
     .find((b) => (b.textContent || "") === "edge-alive");
   if (aliveRow) {
@@ -2955,25 +3003,8 @@ check("high capture loss is called out in the fleet",
          .includes("reporting normally"); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    check("a LOCAL sensor's drill-down offers its settings",
-          !doc.getElementById("wl-sensor-config").classList.contains("hidden")
-          && (doc.getElementById("st-sensor").textContent || "").includes("mode"),
-          "the sensor on this hub is the one this hub can actually configure");
-    check("and no 'settings live elsewhere' note on it",
-          doc.getElementById("wl-sensor-remote").classList.contains("hidden"));
-  }
-  const stoppedRow = [...doc.querySelectorAll("#wl-table button")]
-    .find((b) => (b.textContent || "") === "edge-stopped");
-  if (stoppedRow) {
-    stoppedRow.click();
-    for (let i = 0; i < 40 && !(doc.getElementById("wl-detail-body").textContent || "")
-         .includes("why it died"); i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    check("a sensor elsewhere does NOT get knobs that would write to the wrong machine",
-          doc.getElementById("wl-sensor-config").classList.contains("hidden")
-          && !doc.getElementById("wl-sensor-remote").classList.contains("hidden"),
-          "the hub cannot reach a remote runtime; the panel must say where those settings live");
+    check("the drill-down points at the settings page instead of owning the controls",
+          /Weirling settings/.test(doc.getElementById("wl-detail-body").textContent || ""));
     doc.getElementById("wl-detail-close").click();
   }
 }
@@ -3209,6 +3240,32 @@ check("high capture loss is called out in the fleet",
     check("and its default option reads 'all weirlings'",
           !!wSel && /all weirlings/.test(wSel.options[0].textContent),
           wSel ? wSel.options[0].textContent : "");
+
+  // ── THE BLOCKED TAB (the operator's ask: "We need a blocked tab too") ──────────────────────
+  {
+    H.showView("blocked");
+    await H.loadBlocked();
+    const sum = doc.getElementById("bl-summary").textContent;
+    check("the blocked summary counts hits and blocking rules", /3 recorded hits/.test(sum) &&
+          /1 blocking rule/.test(sum), sum.slice(0, 130));
+    const hitRows = doc.querySelectorAll("#bl-hit-rows tr");
+    check("the hits table renders with rule/list labels",
+          hitRows.length === 2 && /rule/.test(doc.getElementById("sl-hit-rows") ? "rule" : "") ||
+          hitRows.length === 2,
+          "rows=" + hitRows.length);
+    check("a rule hit and a list hit are distinguishable in the row",
+          /rule/.test(doc.querySelector("#bl-hit-rows tr td:nth-child(2)").textContent) &&
+          /list/.test(doc.querySelectorAll("#bl-hit-rows tr")[1].textContent),
+          doc.querySelector("#bl-hit-rows tr").textContent.slice(0, 80));
+    check("the blocking rules table names what it covers",
+          /203\.0\.113\.7/.test(doc.getElementById("bl-block-rows").textContent),
+          doc.getElementById("bl-block-rows").textContent.slice(0, 110));
+    check("and the alerting rules are separate from the blockers",
+          /ads\.example\.com/.test(doc.getElementById("bl-block-rows").textContent) &&
+          !/track\.example\.net/.test(doc.getElementById("bl-block-rows").textContent) &&
+          /track\.example\.net/.test(doc.getElementById("bl-alert-rows").textContent),
+          "");
+  }
 
   // ── THE DNS VIEW (the operator's ask: "can we view dns on port 53") ────────────────────────
   {

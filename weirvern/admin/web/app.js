@@ -29,6 +29,8 @@ const API = {
   sluiceBlock: "/api/sluice/block",
   // The DNS view and the reverse map's read path (schema/016).
   dns: "/api/dns",
+  // The Blocked ledger: recorded hits + the live rules split by what they do now.
+  blocked: "/api/blocked",
   fingerprints: (ja4) => `/api/fingerprints?ja4=${encodeURIComponent(ja4)}`,
   // The SOC views. `health` is the DEEP check (reads ClickHouse), NOT /api/healthz, which
   // is the Kubernetes liveness probe and answers a bare {"ok":true} without touching the
@@ -1816,7 +1818,12 @@ function showView(name) {
     loadModels().then(clearError).catch(showError);
     loadRetrain().catch(showError);
   }
-  if (name === "settings") loadSettings().then(clearError).catch(showError);
+  if (name === "settings") {
+    loadSettings().then(clearError).catch(showError);
+    // The weirling selector lives on this page now; populate it (idempotent) and show the
+    // chosen weirling's panel.
+    wlPopulateSelector().catch(() => {});
+  }
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on
   // ClickHouse for a panel nobody is looking at.
@@ -1831,6 +1838,7 @@ function showView(name) {
   // the refresh timer, because it is a reading surface, not a status surface.
   if (name === "discover") loadDiscover().then(clearError).catch(showError);
   if (name === "dns") loadDns().then(clearError).catch(showError);
+  if (name === "blocked") loadBlocked().then(clearError).catch(showError);
   // Identity also loads on demand: it reads the verdict table plus a coverage aggregation, and
   // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
   // at. Same reasoning as the SOC views above.

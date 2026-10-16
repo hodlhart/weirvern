@@ -73,7 +73,12 @@ DBSCAN_FEATURES = [
 # zeek_ja4_novelty), so the DBSCAN vector changed SHAPE from 14 to 16 columns. v1 artifacts are
 # refused at load and the detectors retrain into `_v2.pkl` files; the v1 files stay on disk, and
 # a rollback reverts this bump rather than deleting them.
-FEATURE_SCHEMA_VERSION = 2
+# BUMPED TO 3 (2026-10-16): the same subset gained the DNS triple (count, mean query entropy,
+# rcode error ratio) -- "make sure dns is added to all ml as well". DBSCAN\'s vector changed
+# shape from 16 to 19 columns; v2 artifacts are refused at load and the detector retrains into
+# `_v3.pkl` on its normal cadence (or immediately from Models -> force a retrain). The v2
+# files stay on disk.
+FEATURE_SCHEMA_VERSION = 3
 
 
 def _safe_log1p(v: float) -> float:

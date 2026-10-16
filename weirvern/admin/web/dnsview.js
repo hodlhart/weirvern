@@ -92,23 +92,45 @@ function dnRenderHistogram(d) {
   host.appendChild(svg);
 }
 
+/** THE TOP TEN, THEN AN "others" THAT OPENS (the operator, 2026-10-16).
+ *
+ * The payload carries up to 200 per facet plus the DISTINCT total, so the first click is
+ * instant and the label is a real count. If the total runs past what the payload holds, the
+ * note says so instead of pretending the list ended. */
+const DN_FACET_SHOWN = 10;
+
+function dnFacetChips(box, rows, shown, total, applyField, title) {
+  for (const row of rows.slice(0, shown)) {
+    const chip = el("button", { class: "dc-chip", text: `${row.value} \u00b7 ${row.count}`,
+                                attrs: { title } });
+    chip.addEventListener("click", () => dnApply([[applyField, row.value]]));
+    box.appendChild(chip);
+  }
+  if (rows.length <= shown && total <= rows.length) return;
+  const rest = rows.slice(shown);
+  const others = Math.max(total - shown, rest.length);
+  const chip = el("button", { class: "dc-chip", text: `others (+${others})`,
+                              attrs: { title: "show the rest" } });
+  chip.addEventListener("click", () => {
+    chip.remove();
+    dnFacetChips(box, rows, rows.length, total, applyField, title);
+    if (total > rows.length) {
+      box.appendChild(el("span", { class: "muted",
+        text: `showing the top ${rows.length} of ${total}` }));
+    }
+  });
+  box.appendChild(chip);
+}
+
 function dnRenderFacets(d) {
   const box = document.getElementById("dn-facets");
   if (!box) return;
   box.replaceChildren();
   const f = d.facets || {};
-  for (const row of (f.domains || []).slice(0, 8)) {
-    const chip = el("button", { class: "dc-chip", text: `${row.value} \u00b7 ${row.count}`,
-                                attrs: { title: "filter to this domain" } });
-    chip.addEventListener("click", () => dnApply([["dn-domain", row.value]]));
-    box.appendChild(chip);
-  }
-  for (const row of (f.clients || []).slice(0, 6)) {
-    const chip = el("button", { class: "dc-chip", text: `${row.value} \u00b7 ${row.count}`,
-                                attrs: { title: "filter to this client" } });
-    chip.addEventListener("click", () => dnApply([["dn-client", row.value]]));
-    box.appendChild(chip);
-  }
+  dnFacetChips(box, f.domains || [], DN_FACET_SHOWN, Number(f.domains_total || 0),
+               "dn-domain", "filter to this domain");
+  dnFacetChips(box, f.clients || [], DN_FACET_SHOWN, (f.clients || []).length,
+               "dn-client", "filter to this client");
 }
 
 function dnReverseInto(container, ip) {

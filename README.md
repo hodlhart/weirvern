@@ -92,11 +92,16 @@ deterministic force map of who talks to whom) · Anomalies with a **raw-evidence
 (flows, Zeek sessions, TLS records with their JA4 fingerprints, DNS, notices) · Models, including
 **force a retrain** — it trains a candidate on the last window, reports what it found (and whether
 the window already held detections, which a retrain would learn as normal) and waits for you to keep
-or trash it · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes · Identity (passive OS
-identification, and a lookup by TLS fingerprint for "who else presents this stack") · Weirlings
-(the fleet: registered-but-silent is a different fact from never installed) · Sluice (rules, and
-every gate that is enforcing, including the ones on other sensors) · Settings (every knob with
-bounds, help, and the restart it costs).
+or trash it · Discover (the raw flows themselves, filterable down to every field) · DNS (port-53
+questions and answers, with a reverse lookup: which names pointed at an address recently, out of
+what DNS actually answered) · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes ·
+Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this
+stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed) ·
+Sluice (rules, domain blocklists imported from the internet or your own names, and every gate that
+is enforcing, including the ones on other sensors) · **Blocked** (what has been caught — the
+recorded name hits — and what is doing the catching: the live rules split by whether they block
+or only alert, with the addresses a domain's name currently resolves to) · Settings (every knob
+with bounds, help, and the restart it costs).
 
 **Detection — what the models conclude.** Four independently trained detectors — Isolation Forest,
 Gradient Boosting, DBSCAN and a per-host Adaptive Baseline — fused into one score with a

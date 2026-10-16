@@ -132,6 +132,7 @@
   <button class="tab" data-view="zeek">Zeek</button>
   <button class="tab" data-view="identity">Identity</button>
   <button class="tab" data-view="sluice">Sluice Gate</button>
+  <button class="tab" data-view="blocked">Blocked</button>
   <button class="tab" data-view="weirlings">Weirlings</button>
   <button class="tab" data-view="models">Models</button>
   <button class="tab active" data-view="health">Health</button>
@@ -1014,6 +1015,48 @@
     </div>
   </section>
 
+  <!-- ── Blocked ──────────────────────────────────────────────────────── -->
+  <section id="view-blocked" class="view">
+    <div class="card">
+      <h2>Blocked <button class="info-btn" data-info="bl-info" aria-label="what this tab shows" aria-expanded="false" title="what this tab shows">i</button></h2>
+      <div class="info-text hidden" id="bl-info">
+        What has been caught and what is doing the catching: the recorded hits (a device asked
+        for a name a rule or a list watches), the live rules split by what they do right now,
+        and the gate's own counters. A hit is not a block &mdash; read the what column.
+      </div>
+      <p class="muted" id="bl-summary">loading&hellip;</p>
+      <div class="controls">
+        <label>domain <input id="bl-domain" type="text" placeholder="filter the hits" /></label>
+        <button id="bl-go">Filter</button>
+        <button id="bl-clear">Clear</button>
+        <button id="bl-newer">&larr; newer</button>
+        <span id="bl-page" class="muted"></span>
+        <button id="bl-older">older &rarr;</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recorded hits <span class="muted">a watched name was asked for</span></h2>
+      <table>
+        <thead><tr><th>time</th><th>what</th><th>domain</th><th>query</th><th>client</th></tr></thead>
+        <tbody id="bl-hit-rows"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Blocking now <span class="muted">these rules stop traffic</span></h2>
+      <table>
+        <thead><tr><th>rule</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
+        <tbody id="bl-block-rows"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Alerting <span class="muted">these rules record only</span></h2>
+      <table>
+        <thead><tr><th>rule</th><th>addresses (from the reverse map)</th><th>origin</th><th>expires</th></tr></thead>
+        <tbody id="bl-alert-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
   <section id="view-weirlings" class="view">
     <div class="card">
       <h2>Weirlings <button class="info-btn" data-info="wl-info" aria-label="what a weirling is and what registering means" aria-expanded="false" title="what a weirling is and what registering means">i</button></h2>
@@ -1105,13 +1148,34 @@
       <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="st-stage-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <div id="wl-detail-body"></div>
 
-      <!-- SENSOR SETTINGS, WITH THE SENSOR. A runtime can only be changed on the box that runs
-           it, so these controls mount on the drill-down for the sensor THIS hub runs (the row
-           the server marks `local`); every other sensor gets the note below instead of knobs
-           that would write to the wrong machine. The ids are unchanged, so the settings
-           machinery and its wiring find them wherever they live. -->
+      <p class="muted">Runtime settings for a weirling live in <strong>Settings</strong> → <strong>Weirling settings</strong>, where you pick the weirling first — a runtime can only be changed on the box that runs it.</p>
+
+      <div class="controls">
+        <button id="wl-detail-register" class="hidden"></button>
+        <button id="wl-detail-enable" class="hidden"></button>
+        <button id="wl-detail-disable" class="hidden"></button>
+        <button id="wl-detail-revoke" class="hidden"></button>
+        <button id="wl-detail-close">Close</button>
+        <span id="wl-detail-note" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-settings" class="view">
+    <div class="card">
+      <h2>Weirling settings <button class="info-btn" data-info="st-wl-info" aria-label="whose settings these are and why only some can change" aria-expanded="false" title="whose settings these are and why only some can change">i</button></h2>
+      <div class="info-text hidden" id="st-wl-info">
+        Pick a weirling, then read or change its runtime settings. A runtime can only be
+        changed on the box that runs it, so only the weirling this hub runs gets live
+        controls here; every other selection says where its settings live. Changes stage
+        and apply like every other settings edit.
+      </div>
+      <div class="controls">
+        <label>weirling <select id="st-wl-select"><option value="">loading…</option></select></label>
+        <span class="muted" id="st-wl-note"></span>
+      </div>
       <div id="wl-sensor-config" class="hidden">
-        <h3>Sensor settings <span class="muted">— this sensor runs on this hub</span></h3>
+        <h3>Runtime settings <span id="st-wl-head" class="muted"></span></h3>
         <div id="st-sensor" class="grid-inline"></div>
         <!--
           SONAR: the one-click setup for siphon mode. The survey itself is read-only (ARP
@@ -1169,18 +1233,8 @@
         <p>Runtime settings live on the box that runs this sensor — nothing here can reach it.
           What you declare here (segment, expected mode) is the expectation this hub holds it to.</p>
       </div>
-      <div class="controls">
-        <button id="wl-detail-register" class="hidden"></button>
-        <button id="wl-detail-enable" class="hidden"></button>
-        <button id="wl-detail-disable" class="hidden"></button>
-        <button id="wl-detail-revoke" class="hidden"></button>
-        <button id="wl-detail-close">Close</button>
-        <span id="wl-detail-note" class="muted"></span>
-      </div>
     </div>
-  </section>
 
-  <section id="view-settings" class="view">
     <div class="card">
       <h2>Settings <span class="muted" id="st-window"></span> <button class="info-btn" data-info="st-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <p class="muted" id="st-summary">loading…</p>
@@ -1320,6 +1374,7 @@
 <script src="/weirlings.js"></script>
 <script src="/discover.js"></script>
 <script src="/dnsview.js"></script>
+<script src="/blocked.js"></script>
 </body>
 </html>
 

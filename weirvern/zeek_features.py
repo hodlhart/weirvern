@@ -201,6 +201,15 @@ ZEEK_DBSCAN_FEATURES = [
     # so a rollback can still read the old file it kept.
     "zeek_ja4_count",
     "zeek_ja4_novelty",
+    # DNS (2026-10-16 -- the operator: "make sure dns is added to all ml as well"). The DNS
+    # block was in the isolation forest's set but NOT in this clustering subset, so the DBSCAN
+    # detector could not see a tunnel's query entropy or a resolver's error ratio AT ALL. The
+    # three most separable signals, not all five: clustering degrades in high dimensions, and
+    # count (activity), entropy (tunnelling shape) and the error ratio (failure bursts) cover
+    # the space the other two would mostly echo.
+    "zeek_dns_count",
+    "zeek_dns_mean_query_entropy",
+    "zeek_dns_rcode_error_ratio",
 ]
 
 # THE JA4 SENTINELS, AND WHY THERE ARE THREE. Zeek writes `-` for "unset_field" and
