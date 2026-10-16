@@ -233,6 +233,36 @@ def run_detection(client, cfg_settings, window_minutes: int,
     return verdicts, None
 
 
+def wait_for_aggregates(client, *, timeout_s: int = 180) -> tuple[int, str]:
+    """Wait until the aggregate table STOPS GROWING before anything reads it.
+
+    ISSUE #2, MEASURED (2026-10-16). The old wait broke on the FIRST non-zero count:
+    the seed inserts in 20k-row chunks and the MVs fire per insert, so `count() > 0` only
+    means the first chunk landed. Training and the sweep then ran against a table that was
+    still filling -- WHICH windows existed differed run to run, which is the coin toss
+    behind detection-quality flipping PASS/FAIL on identical eval code. The rule now: the
+    count must be STABLE across three consecutive polls before anything reads the table,
+    and a table that never settles is a STATED failure, not a shrug.
+    """
+    from weirvern import db  # noqa: PLC0415 -- function-local, like this file's other helpers
+
+    stable, last, t0 = 0, -1, time.time()
+    while time.time() - t0 < timeout_s:
+        rows = db.fetch_rows(
+            client, "SELECT count(), max(window_start) FROM weirvern.flows_aggregated")
+        count = int(rows[0][0]) if rows else 0
+        if count == last and count > 0:
+            stable += 1
+            if stable >= 3:
+                return count, ""
+        else:
+            stable = 0
+        last = count
+        time.sleep(0.5)
+    return last, (f"flows_aggregated did not settle within {timeout_s}s (count={last}); "
+                  f"refusing to train or sweep against a half-filled table")
+
+
 def _reset_sweep_state(client, model_dir) -> None:
     """Clear the state a sweep leaves behind: recorded anomaly rows and the resume cursor.
 
@@ -306,14 +336,15 @@ def main() -> int:
     print(f"  seeded {n} flows ({time.time() - t0:.1f}s)")
     print(f"  attacks begin at minute {attack_start_minute}; training holds out before it")
 
-    # The MVs populate asynchronously via their insert triggers; poll briefly.
-    for _ in range(20):
-        rows = db.fetch_rows(client, "SELECT count() FROM weirvern.flows_aggregated")
-        if rows and rows[0][0] > 0:
-            break
-        time.sleep(0.5)
-    agg = db.fetch_rows(client, "SELECT count() FROM weirvern.flows_aggregated")[0][0]
-    print(f"  flows_aggregated: {agg} rows")
+    # EVERY INPUT THIS RUN WILL BE JUDGED BY, ON THE RECORD (issue #2, recommendation 3):
+    # a red run must be reproducible from the job log alone.
+    print(f"  eval inputs: seed={args.seed} minutes={args.minutes} devices={args.devices} "
+          f"attack_start_minute={attack_start_minute} clickhouse={args.host}:{args.port}")
+    agg, werr = wait_for_aggregates(client)
+    print(f"  flows_aggregated: {agg} rows (settled)")
+    if werr:
+        _fail(werr)
+        return 1
     if agg == 0:
         _fail("the materialized view produced no aggregates -- detection cannot run")
         return 1

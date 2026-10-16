@@ -112,6 +112,46 @@ def test_the_harness_holds_the_attack_period_out_of_training():
     )
 
 
+def test_the_harness_waits_for_the_aggregates_to_SETTLE_not_just_appear():
+    """Issue #2, measured: the old wait broke on the FIRST non-zero count -- the seed inserts
+    in chunks and the MVs fire per insert, so training and the sweep then ran against a table
+    that was still filling, and WHICH windows existed differed run to run. That is the coin
+    toss behind detection-quality flipping PASS/FAIL on identical eval code."""
+    src = HARNESS.read_text()
+    assert "wait_for_aggregates" in src, "the settle-wait is gone; the race is back"
+    assert "if rows and rows[0][0] > 0:" not in src, (
+        "the first-nonzero wait is back: the run trains and scores against a half-filled table"
+    )
+    assert "eval inputs:" in src, (
+        "the run no longer records its seed and inputs; a red CI run cannot be reproduced"
+    )
+
+
+def test_the_settle_wait_returns_only_when_the_count_stops_growing():
+    import importlib.util
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("eval_detection_under_test", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class _C:
+        def __init__(self, counts):
+            self.counts, self.i = counts, 0
+
+        def query(self, sql, parameters=None, **_kw):
+            n = self.counts[min(self.i, len(self.counts) - 1)]
+            self.i += 1
+            return SimpleNamespace(result_rows=[(n, None)])
+
+    count, err = mod.wait_for_aggregates(_C([5, 9, 12, 12, 12, 12]), timeout_s=5)
+    assert err == "" and count == 12
+
+    count, err = mod.wait_for_aggregates(_C(list(range(1, 50))), timeout_s=1)
+    assert err and "did not settle" in err, (
+        "a table that never stops growing must be a stated failure, not a shrug")
+
+
 def test_the_harness_asserts_a_storm_ceiling_and_determinism():
     """The two checks that bound what a green run MEANS: a host flagged in most windows is
     a storm no matter which other assertions pass, and two identical sweeps must agree."""
