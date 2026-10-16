@@ -486,10 +486,13 @@ async function loadBlockingControls() {
   }
   const rows = {};
   for (const rs of Object.values((settings && settings.groups) || {})) {
-    for (const r of rs || []) if (r && r.key) rows[r.key] = r;
+    // Row keys arrive in ROW vocabulary (lowercase: sluice_block_domains), while the apply
+    // path speaks ConfigMap keys (uppercase). Normalize on the way in; the apply path keeps
+    // the upper-case key because that is what the settings writer expects.
+    for (const r of rs || []) if (r && r.key) rows[String(r.key).toLowerCase()] = r;
   }
   const val = (k) => {
-    const r = rows[k];
+    const r = rows[String(k).toLowerCase()];
     const v = r ? String(r.value != null ? r.value : (r.current != null ? r.current : "")) : "";
     return v;
   };
@@ -514,10 +517,13 @@ async function loadBlockingControls() {
     strip.appendChild(el("span", { class: "muted",
       text: "The policy list could not be read; set it on the Settings tab instead." }));
   }
-  const gateOn = /^(1|true|on|yes|armed)$/i.test(val("SLUICE_ENABLED"));
+  // The payload RENDERS booleans as enabled/disabled while the reader stores 1/true/on/yes --
+  // read both vocabularies, write the storage one (below).
+  const onVals = /^(1|true|on|yes|enabled|armed)$/i;
+  const gateOn = onVals.test(val("SLUICE_ENABLED"));
   gateBtn.textContent = gateOn ? "Take the gate off (disarm)" : "Turn the gate on (arm)";
   gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
-  const domOn = /^(1|true|on|yes)$/i.test(val("SLUICE_BLOCK_DOMAINS"));
+  const domOn = onVals.test(val("SLUICE_BLOCK_DOMAINS"));
   domBtn.textContent = domOn ? "Domain blocking: on — turn off" : "Domain blocking: off — turn on";
   domBtn.onclick = () => slApplyChange("SLUICE_BLOCK_DOMAINS", domOn ? "0" : "1", domBtn, note);
   if (autoInput) autoInput.value = val("SLUICE_AUTO_SCORE") || "0";

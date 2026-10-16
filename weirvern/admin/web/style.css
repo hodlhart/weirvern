@@ -292,6 +292,11 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .view-head h2 { margin: 0; }
 .sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 /* The occurrence expansion under a counted anomaly row (2026-10-16). */
+/* The Zeek feed's bar list: one bar per log, click opens the Zeek tab. */
+.zk-bar { display: grid; grid-template-columns: 8em 1fr 4em; gap: 6px; align-items: center;
+  cursor: pointer; padding: 2px 0; }
+.zk-bar-fill { height: 10px; background: var(--accent, #58a6ff); border-radius: 2px; }
+.zk-name { text-align: right; }
 .occ-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
 .occ { font-size: 12px; }
 tr.an-exp td { background: var(--panel2); }

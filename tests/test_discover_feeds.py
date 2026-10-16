@@ -1,0 +1,68 @@
+"""Discover reads three feeds (the operator, 2026-10-16): "flow type in discover should be DNS,
+Zeek, or Netflow with the charts updating to reflect. This is our view to see the data feeds
+being collected". These pin the routing, the wrappers' honesty, and the selector itself."""
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "weirvern" / "admin" / "web"
+
+
+def test_the_discover_route_refuses_an_unknown_feed_with_a_sentence():
+    body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    assert "is not a feed this view reads" in body, "an unknown feed must be refused, not defaulted"
+
+
+def test_the_route_branches_to_the_right_reader_per_feed():
+    body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    assert "soc_mod.discover_dns(" in body and "soc_mod.discover_zeek(" in body
+    assert 'feed == "dns"' in body and 'feed == "zeek"' in body
+
+
+def test_discover_dns_wraps_the_dns_views_own_reader(monkeypatch):
+    from weirvern.admin import soc
+
+    captured = {}
+
+    def fake_dns_rows(client, *, hours=24, client_ip="", limit=100, offset=0):
+        captured.update({"hours": hours, "client_ip": client_ip, "limit": limit, "offset": offset})
+        return {"available": True, "rows": [{"query": "example.org"}], "total": 1,
+                "histogram": [{"t": "2026-10-16T07:00:00", "n": 3}], "bucket_s": 1440,
+                "facets": {"clients": [{"value": "10.0.0.5", "count": 9}]}}
+
+    monkeypatch.setattr(soc, "dns_rows", fake_dns_rows)
+    out = soc.discover_dns(object(), hours=6, limit=50, offset=10, client_ip="10.0.0.5")
+    assert captured == {"hours": 6, "client_ip": "10.0.0.5", "limit": 50, "offset": 10}
+    assert out["feed"] == "dns" and out["total"] == 1
+    assert out["rows"][0]["query"] == "example.org" and out["histogram"][0]["n"] == 3
+    assert out["facets"]["clients"][0]["value"] == "10.0.0.5"
+
+
+def test_discover_zeek_counts_every_log_and_sums_the_window(monkeypatch):
+    from weirvern.admin import soc
+
+    def fake_counts(client, hours=24):
+        return {"available": True, "logs": [
+            {"log": "conn", "rows": 12, "total": 900, "last_ts": "2026-10-16T08:00:00"},
+            {"log": "dns", "rows": 0, "total": 40, "last_ts": "2026-10-15T02:00:00"},
+        ], "unreadable": ["capture_loss"]}
+
+    monkeypatch.setattr(soc, "zeek_counts", fake_counts)
+    out = soc.discover_zeek(object(), hours=24)
+    assert out["feed"] == "zeek" and out["total"] == 12
+    assert out["unreadable"] == ["capture_loss"]
+    assert {row["log"] for row in out["logs"]} == {"conn", "dns"}
+
+
+def test_the_flow_type_selector_offers_the_three_feeds():
+    html = (WEB / "index.html").read_text()
+    assert 'id="dc-feed"' in html
+    for value in ("netflow", "dns", "zeek"):
+        assert f'<option value="{value}">' in html, f"the selector must offer {value}"
+    assert "flow type" in html
+
+
+def test_discover_params_carry_the_chosen_feed():
+    js = (WEB / "discover.js").read_text()
+    assert '\"feed=\" + encodeURIComponent(feed)' in js
+    assert "dcFeedColumns" in js and '"dns"' in js and '"zeek"' in js

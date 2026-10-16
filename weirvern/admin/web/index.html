@@ -252,10 +252,15 @@
         global time control in the header.
       </div>
       <div class="controls">
-        <label>weirling <select id="dc-sensor"><option value="">all weirlings</option></select></label>
-        <label>flow type <select id="dc-proto"><option value="">any flow type</option></select></label>
-        <label>address <input type="text" id="dc-addr" size="18" placeholder="198.51.100.194"></label>
-        <label>port <input type="number" id="dc-port" min="0" max="65535" style="width:6em"></label>
+        <label>flow type <select id="dc-feed">
+          <option value="netflow">NetFlow</option>
+          <option value="dns">DNS</option>
+          <option value="zeek">Zeek</option>
+        </select></label>
+        <label id="dc-lab-sensor">weirling <select id="dc-sensor"><option value="">all weirlings</option></select></label>
+        <label id="dc-lab-proto">protocol <select id="dc-proto"><option value="">any protocol</option></select></label>
+        <label id="dc-lab-addr">address <input type="text" id="dc-addr" size="18" placeholder="198.51.100.194"></label>
+        <label id="dc-lab-port">port <input type="number" id="dc-port" min="0" max="65535" style="width:6em"></label>
         <button id="dc-apply">Apply</button>
         <button id="dc-clear">Clear</button>
       </div>

@@ -51,7 +51,8 @@ function dcParams() {
   const proto = (document.getElementById("dc-proto") || {}).value || "";
   const addr = ((document.getElementById("dc-addr") || {}).value || "").trim();
   const port = ((document.getElementById("dc-port") || {}).value || "").trim();
-  const q = ["hours=" + trHours()];
+  const feed = (document.getElementById("dc-feed") || {}).value || "netflow";
+  const q = ["hours=" + trHours(), "feed=" + encodeURIComponent(feed)];
   if (sensor) q.push("sensor=" + encodeURIComponent(sensor));
   if (proto) q.push("proto=" + encodeURIComponent(proto));
   if (addr) q.push("addr=" + encodeURIComponent(addr));
@@ -66,17 +67,25 @@ async function loadDiscover() {
   const d = await getJSON("/api/discover?" + dcParams());
   DC_STATE.last = d;
   DC_STATE.total = d.total || 0;
+  dcApplyFeedChrome(d);
   const win = document.getElementById("dc-window");
   if (win) win.textContent = trLabel().toLowerCase() + " window";
   const summary = document.getElementById("dc-summary");
   const rows = d.rows || [];
+  const noun = d.feed === "dns" ? "DNS record" : (d.feed === "zeek" ? "log" : "flow");
   if (summary) {
     summary.textContent = d.available === false
-      ? "Cannot read flows: " + (d.reason || "the query did not run") + "."
-      : (DC_STATE.total === 0
-          ? "No flows match this filter in this window."
-          : DC_STATE.total + " flow(s) match; showing " + (DC_STATE.offset + 1) + "\u2013" +
-            (DC_STATE.offset + rows.length) + ".");
+      ? "Cannot read " + (d.feed === "dns" ? "DNS records" : d.feed === "zeek" ? "the logs" : "flows")
+        + ": " + (d.reason || "the query did not run") + "."
+      : (d.feed === "zeek"
+          ? (DC_STATE.total === 0
+              ? "No Zeek log reported a row in this window."
+              : DC_STATE.total.toLocaleString() + " record(s) across " + (d.logs || []).length
+                + " log(s) in this window \u2014 click a bar or a row for the log itself.")
+          : (DC_STATE.total === 0
+              ? "No " + noun + "(s) match this filter in this window."
+              : DC_STATE.total + " " + noun + "(s) match; showing " + (DC_STATE.offset + 1)
+                + "\u2013" + (DC_STATE.offset + rows.length) + "."));
   }
   dcRenderChips();
   dcRenderHistogram(d);
@@ -88,6 +97,7 @@ async function loadDiscover() {
 function dcRenderHistogram(d) {
   const host = document.getElementById("dc-volume");
   if (!host) return;
+  if (d.feed === "zeek") { dcRenderZeekBars(d); return; }
   renderTimeline("dc-volume", {
     available: d.available !== false,
     reason: d.reason,
@@ -132,12 +142,116 @@ function dcRenderFacets(d) {
   }
 }
 
+/**
+ * THE FEED CHROME (the operator, 2026-10-16: "flow type in discover should be DNS, Zeek, or
+ * Netflow with the charts updating to reflect. This is our view to see the data feeds being
+ * collected"). The flow-type selector swaps the whole view: the table header, the controls
+ * that no longer apply, and the chart -- DNS records and Zeek logs are not flows, and hiding
+ * a control that does nothing beats leaving it set and silently ignored.
+ */
+function dcFeedColumns(feed) {
+  if (feed === "dns") return ["time", "client", "type", "rcode", "query", "answers"];
+  if (feed === "zeek") return ["log", "rows in window", "all time", "last row"];
+  return ["time", "weirling", "source", "sport", "", "destination", "dport", "type", "bytes",
+          "packets"];
+}
+
+function dcSetHeader(cols) {
+  const tr = document.querySelector("#view-discover table thead tr");
+  if (!tr || tr.dataset.feed === cols.join("|")) return;
+  tr.dataset.feed = cols.join("|");
+  tr.replaceChildren(...cols.map((c) => el("th", { text: c })));
+}
+
+function dcApplyFeedChrome(d) {
+  const feed = (d && d.feed) || "netflow";
+  const net = feed === "netflow";
+  const show = (id, on) => { const e = document.getElementById(id); if (e) e.classList.toggle("hidden", !on); };
+  show("dc-lab-sensor", net);
+  show("dc-lab-proto", net);
+  show("dc-lab-port", net);
+  const lab = document.getElementById("dc-lab-addr");
+  if (lab && lab.firstChild && lab.firstChild.nodeType === 3) {
+    lab.firstChild.textContent = net ? "address " : "client ";
+  }
+  const addr = document.getElementById("dc-addr");
+  if (addr) addr.placeholder = net ? "198.51.100.194" : "client address";
+  dcSetHeader(dcFeedColumns(feed));
+}
+
+function dcRenderZeekBars(d) {
+  const host = document.getElementById("dc-volume");
+  if (!host) return;
+  host.replaceChildren();
+  const rows = (d.logs || []).map((row) => ({
+    log: row.log || row.label || "?", n: Number(row.rows || row.in_window || 0),
+    total: Number(row.total || 0), last: row.last_ts || row.last || null,
+  }));
+  const live = rows.filter((r) => r.n > 0).sort((a, b) => b.n - a.n);
+  if (!live.length) {
+    host.appendChild(el("p", { class: "muted",
+      text: "No Zeek log produced a row in this window; the table below says when each last did." }));
+    return;
+  }
+  const max = Math.max(...live.map((r) => r.n));
+  live.forEach((r) => {
+    const bar = el("div", { class: "zk-bar" }, [
+      el("span", { class: "muted zk-name", text: r.log }),
+      el("div", { class: "zk-bar-fill", attrs: { style: "width:" + Math.max(2, Math.round(100 * r.n / max)) + "%" } }),
+      el("span", { class: "muted", text: " " + r.n.toLocaleString() }),
+    ]);
+    bar.title = "open the Zeek tab";
+    bar.addEventListener("click", () => showView("zeek"));
+    host.appendChild(bar);
+  });
+}
+
 function dcCell(text, cls) { return el("td", { class: cls || "", text: String(text) }); }
 
 function dcRenderRows(d) {
   const body = document.getElementById("dc-rows");
   if (!body) return;
   body.replaceChildren();
+  if (d.feed === "dns") {
+    (d.rows || []).forEach((r) => {
+      const tr = el("tr", { class: "dc-row" });
+      tr.appendChild(dcCell(fmtTime(new Date(r.ts)), "muted"));
+      const cl = dcCell(r.client, "dcell");
+      cl.title = "filter the feed to this client";
+      cl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const box = document.getElementById("dc-addr");
+        if (box) box.value = r.client;
+        DC_STATE.offset = 0;
+        loadDiscover().then(clearError).catch(showError);
+      });
+      tr.appendChild(cl);
+      tr.appendChild(dcCell(r.qtype_label || r.qtype));
+      tr.appendChild(dcCell(r.rcode_label || r.rcode));
+      tr.appendChild(dcCell(r.query));
+      tr.appendChild(dcCell((r.answer_ips || []).length));
+      tr.title = "click the client to filter by it \u00b7 click the row for the record";
+      tr.addEventListener("click", () => dcToggleDetail(tr, r));
+      body.appendChild(tr);
+    });
+    return;
+  }
+  if (d.feed === "zeek") {
+    (d.logs || []).forEach((row) => {
+      const tr = el("tr", { class: "dc-row" });
+      const name = row.log || row.label || "?";
+      const nm = dcCell(name, "dcell");
+      nm.title = "open the Zeek tab";
+      nm.addEventListener("click", (e) => { e.stopPropagation(); showView("zeek"); });
+      tr.appendChild(nm);
+      tr.appendChild(dcCell(Number(row.rows || row.in_window || 0).toLocaleString()));
+      tr.appendChild(dcCell(Number(row.total || 0).toLocaleString()));
+      tr.appendChild(dcCell(row.last_ts || row.last ? fmtTime(new Date(row.last_ts || row.last)) : "never"));
+      tr.title = "a log with zero this window but a recent last row is quiet, not broken";
+      body.appendChild(tr);
+    });
+    return;
+  }
   (d.rows || []).forEach((r) => {
     const tr = el("tr", { class: "dc-row" });
     tr.appendChild(dcCell(fmtTime(new Date(r.timestamp)), "muted"));
@@ -183,12 +297,17 @@ function dcToggleDetail(tr, r) {
   const cols = 10;
   const td = el("td", { attrs: { colspan: String(cols) } });
   const dl = el("div", { class: "dc-detail" });
-  [["flow started", r.timestamp], ["sensor", r.sensor], ["source", r.src_addr + ":" + r.src_port],
-   ["destination", r.dst_addr + ":" + r.dst_port], ["flow type", r.proto_label + " (" + r.proto + ")"],
-   ["bytes / packets", fmtBytes(r.bytes) + " / " + Number(r.packets).toLocaleString()],
-   ["TTL", r.ip_ttl || "not measured"], ["next hop", r.next_hop || "not measured"],
-   ["AS (src \u2192 dst)", (r.src_as || 0) + " \u2192 " + (r.dst_as || 0)],
-   ["TCP flags", r.tcp_flags || 0]].forEach(([k, v]) => {
+  // A DNS record and a flow share none of their fields; the detail panel asks the row which it is.
+  const dnsRow = r && (r.query !== undefined);
+  (dnsRow ? [["time", r.ts], ["client", r.client], ["query", r.query],
+             ["type", r.qtype_label || r.qtype], ["rcode", r.rcode_label || r.rcode],
+             ["answers", (r.answer_ips || []).join(", ") || "none recorded"]]
+          : [["flow started", r.timestamp], ["sensor", r.sensor], ["source", r.src_addr + ":" + r.src_port],
+             ["destination", r.dst_addr + ":" + r.dst_port], ["flow type", r.proto_label + " (" + r.proto + ")"],
+             ["bytes / packets", fmtBytes(r.bytes) + " / " + Number(r.packets).toLocaleString()],
+             ["TTL", r.ip_ttl || "not measured"], ["next hop", r.next_hop || "not measured"],
+             ["AS (src \u2192 dst)", (r.src_as || 0) + " \u2192 " + (r.dst_as || 0)],
+             ["TCP flags", r.tcp_flags || 0]]).forEach(([k, v]) => {
     dl.appendChild(el("span", { class: "muted", text: k + ": " }));
     dl.appendChild(el("span", { text: String(v) + "  " }));
   });

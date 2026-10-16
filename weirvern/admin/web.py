@@ -697,6 +697,14 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
+            # THE FEED (the operator, 2026-10-16): Discover reads three feeds -- its native
+            # flows, the DNS records, and the Zeek logs -- because the view's job is "see the
+            # data feeds being collected". An unknown feed is a 400 with a sentence, never a
+            # silent fallback: answering the flows question when the DNS one was asked is a lie.
+            feed = (query.get("feed") or ["netflow"])[0].strip().lower() or "netflow"
+            if feed not in ("netflow", "dns", "zeek"):
+                return self._error(
+                    400, f"'{feed}' is not a feed this view reads; expected netflow, dns or zeek")
             proto_raw = (query.get("proto") or [""])[0].strip()
             addr = (query.get("addr") or [""])[0].strip()
             sensor = (query.get("sensor") or [""])[0].strip()
@@ -740,12 +748,23 @@ def _build_handler(ctx: GuiContext):
                 lists[field] = values
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.discover(
-                        client, hours=hours, proto=proto, addr=addr or None, port=port,
-                        sensor=sensor or None, limit=limit, offset=offset,
-                        src=lists["src"], dst=lists["dst"],
-                        sport=lists["sport"], dport=lists["dport"],
-                    )
+                    if feed == "dns":
+                        # The address box filters the CLIENT in this feed (the host asking the
+                        # questions); chips and the weirling/protocol/port controls do not
+                        # apply to DNS records and the view hides them.
+                        payload = soc_mod.discover_dns(
+                            client, hours=hours, limit=limit, offset=offset,
+                            client_ip=addr,
+                        )
+                    elif feed == "zeek":
+                        payload = soc_mod.discover_zeek(client, hours=hours)
+                    else:
+                        payload = soc_mod.discover(
+                            client, hours=hours, proto=proto, addr=addr or None, port=port,
+                            sensor=sensor or None, limit=limit, offset=offset,
+                            src=lists["src"], dst=lists["dst"],
+                            sport=lists["sport"], dport=lists["dport"],
+                        )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("discover unavailable: %s", exc)
                 return self._json({"available": False, "rows": [], "reason":

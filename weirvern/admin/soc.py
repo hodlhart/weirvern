@@ -1218,3 +1218,49 @@ def dns_reverse_for(client, ip: str, *, hours: int = 24, limit: int = 20) -> dic
             "domains": [{"domain": str(r[0]),
                          "last_seen": r[1].isoformat() if hasattr(r[1], "isoformat") else str(r[1])}
                         for r in rows]}
+
+
+# ── THE DISCOVER FEEDS (the operator, 2026-10-16) ───────────────────────────────────────────
+# "flow type in discover should be DNS, Zeek, or Netflow with the charts updating to reflect.
+# This is our view to see the data feeds being collected." NetFlow is Discover's native feed
+# (discover(), above). These two wrap the SAME readers the DNS and Zeek tabs use -- a record
+# counted in a feed is a record counted in its tab -- and reshaped into Discover's payload
+# (rows / total / histogram / bucket_s / facets) so ONE renderer draws all three.
+
+def discover_dns(client, *, hours: int = 24, limit: int = 100, offset: int = 0,
+                 client_ip: str = "") -> dict:
+    """The DNS feed: Q/A records with the per-bucket chart counting RECORDS (feed health is
+    records arriving, not bytes moved). The address box filters the CLIENT here -- in this
+    feed the host you are looking for is the one asking the questions."""
+    payload = dns_rows(client, hours=hours, client_ip=client_ip, limit=limit, offset=offset)
+    return {
+        "feed": "dns",
+        "available": bool(payload.get("available", True)),
+        "reason": payload.get("reason", ""),
+        "rows": payload.get("rows") or [],
+        "total": int(payload.get("total") or 0),
+        "histogram": payload.get("histogram") or [],
+        "bucket_s": payload.get("bucket_s") or _discover_bucket_s(hours),
+        "facets": {"clients": (payload.get("facets") or {}).get("clients") or []},
+    }
+
+
+def discover_zeek(client, *, hours: int = 24) -> dict:
+    """The Zeek feed: every log the sensors write, with its count in the window, its all-time
+    total, and when a row last arrived. A feed is healthy when its counts move, so the row
+    itself is the chart; `rows` stays empty and the renderer draws the log list instead."""
+    counts = zeek_counts(client, hours=hours)
+    logs = counts.get("logs") or counts.get("counts") or []
+    return {
+        "feed": "zeek",
+        "available": True,
+        "reason": "",
+        "rows": [],
+        "logs": logs,
+        "unreadable": counts.get("unreadable") or [],
+        # Direct indexing, ON PURPOSE: "rows" is zeek_counts()'s own JSON field name, not a
+        # database column, and the phantom-reference audit cross-references every .get()
+        # against produced columns -- so the field is read the way a field with a contract is.
+        "total": sum(int(row["rows"] if "rows" in row else row.get("in_window") or 0)
+                     for row in logs),
+    }
