@@ -62,18 +62,61 @@ kubectl -n weirvern exec -it deploy/weirvern-worker -- bash       # shell
 
 ### Backups
 
-Two things are worth backing up, and neither is on a `hostPath` in a way a
-cluster backup would catch:
+Two things are worth backing up:
 
-- the `clickhouse-data` PVC (all collected flows, anomalies, baselines)
-- the `models` PVC (trained model artifacts — small, but retraining takes time)
+- the `clickhouse-data` PVC — every collected flow, anomaly, baseline and rule
+- the `models` PVC — trained model artifacts (small, but retraining takes time)
 
-Both are `ReadWriteOnce` claims; snapshot them with your storage provisioner, or
-copy them out:
+**ClickHouse data — `scripts/backup_clickhouse.sh`.** ClickHouse's own backup
+engine writes a portable artifact onto the clickhouse PVC; nothing here needs
+snapshot-capable storage (the shipped `local-path` class has none). The commands,
+in full:
+
+```bash
+scripts/backup_clickhouse.sh                    # BACKUP DATABASE weirvern, timestamped name
+scripts/backup_clickhouse.sh --list             # what is on the PVC now
+scripts/backup_clickhouse.sh --restore <name>   # restore into a SCRATCH database, then verify
+scripts/backup_clickhouse.sh --prune <name>     # delete one backup
+```
+
+Each is a `kubectl -n weirvern exec clickhouse-0 -- clickhouse-client -q '...'`
+under the hood; the two commands that matter, by hand:
+
+```sql
+BACKUP DATABASE weirvern TO Disk('default', 'backups/weirvern-YYYYmmdd-HHMMSS')
+RESTORE DATABASE weirvern AS weirvern_restore FROM Disk('default', 'backups/<name>')
+```
+
+Artifacts land at `/var/lib/clickhouse/backups/<name>` on the clickhouse PVC.
+This depends on the `weirvern-clickhouse-config` ConfigMap shipped in
+`k8s/30-clickhouse.yaml`: it tells ClickHouse the `default` disk is an allowed
+backup destination, and without it the backup is refused with
+`backups.allowed_disk ... is not set`.
+
+**Verifying a restore.** `--restore` restores into a scratch database
+(`weirvern_restore`, dropped and re-created on every run) and prints
+live-vs-restored counts for `flows`, `netflow_anomalies` and `flows_aggregated` —
+they must match, table for table. Inspect the restored data at leisure; when done:
+
+```bash
+kubectl -n weirvern exec clickhouse-0 -- clickhouse-client -q 'DROP DATABASE weirvern_restore'
+```
+
+**Retention is manual, on purpose.** Backups accumulate under
+`/var/lib/clickhouse/backups/`; nothing prunes them automatically (a scheduled
+backup job is deliberately not shipped — wrap this script in a CronJob of your
+own if you want one). Watch the PVC's free space.
+
+**The `models` PVC** keeps its simpler path — a tar pulled through the worker:
 
 ```bash
 kubectl -n weirvern exec deploy/weirvern-worker -- tar cz /models | cat > models-backup.tgz
 ```
+
+**Not covered:** off-cluster copies (pull an artifact out with
+`kubectl cp weirvern/clickhouse-0:/var/lib/clickhouse/backups/<name> ./` if you
+need one), encryption at rest, and the data-retention windows themselves (that is
+`35-prune-cronjob.yaml`).
 
 ---
 

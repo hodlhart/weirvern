@@ -17,7 +17,7 @@ sketches and look for somewhere else to start.
 | `10-storage.yaml` | The `models` PVC |
 | `20-configmap-env.yaml` | Non-secret environment (ClickHouse coordinates, Zeek log set, retention, alerting toggles) |
 | `20-configmap-schema.yaml` | A decision record, deliberately NOT in the kustomize build: why the schema ships inside the package and is applied by the schema Job rather than copied into a ConfigMap |
-| `30-clickhouse.yaml` | ClickHouse StatefulSet + the Service the schema Job and worker wait on |
+| `30-clickhouse.yaml` | ClickHouse StatefulSet (with the backup engine's allow-list drop-in) + the Service the schema Job and worker wait on |
 | `31-goflow2.yaml` | NetFlow/sFlow collector (Deployment) |
 | `32-zeek.yaml` | Zeek packet sensor (DaemonSet) |
 | `33-worker.yaml` | Ingest + detection worker (Deployment) |

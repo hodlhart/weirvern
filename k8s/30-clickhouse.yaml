@@ -1,3 +1,29 @@
+# The backup engine's write guard (issue #16).
+#
+# ClickHouse REFUSES a backup to a disk the server has not been told it may write to. Without
+# this drop-in the operator gets, verbatim:
+#
+#   Code: 318. DB::Exception: The 'backups.allowed_disk' configuration parameter is not set,
+#   cannot use 'Disk' backup engine. (INVALID_CONFIG_PARAMETER)
+#
+# and the backup procedure in docs/operations.md cannot run on the shipped stack. This names
+# the cluster's own data disk, so `BACKUP ... TO Disk('default', 'backups/<name>')` writes
+# under /var/lib/clickhouse/backups/ on the clickhouse PVC. It is mounted as a config.d
+# drop-in (NOT over the whole directory -- that would shadow the image's own drop-ins).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weirvern-clickhouse-config
+  namespace: weirvern
+data:
+  zz-weirvern-backups.xml: |
+    <clickhouse>
+      <backups>
+        <allowed_disk>default</allowed_disk>
+        <allowed_path>/var/lib/clickhouse/backups</allowed_path>
+      </backups>
+    </clickhouse>
+---
 # ClickHouse — the storage layer.
 #
 # StatefulSet rather than Deployment: the data PVC and the pod identity must be
@@ -141,6 +167,12 @@ spec:
               mountPath: /var/lib/clickhouse
             - name: clickhouse-logs
               mountPath: /var/log/clickhouse-server
+            # The backup engine's write guard (issue #16). A FILE mount, not a directory
+            # mount: dropping a directory here would shadow the image's own config.d.
+            - name: clickhouse-config
+              mountPath: /etc/clickhouse-server/config.d/zz-weirvern-backups.xml
+              subPath: zz-weirvern-backups.xml
+              readOnly: true
           resources:
             requests:
               cpu: "500m"
@@ -177,6 +209,13 @@ spec:
         - name: clickhouse-logs
           emptyDir:
             sizeLimit: 1Gi
+        # Consumed by the mount above; defined as the first document in this file.
+        - name: clickhouse-config
+          configMap:
+            name: weirvern-clickhouse-config
+            items:
+              - key: zz-weirvern-backups.xml
+                path: zz-weirvern-backups.xml
   volumeClaimTemplates:
     # NOTE: this template applies only to a NEWLY created StatefulSet. Changing
     # it for an existing one has no effect on the already-bound claim.
