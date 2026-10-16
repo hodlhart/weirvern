@@ -435,10 +435,15 @@ def _build_handler(ctx: GuiContext):
             unreviewed_only = (_query_bool(query, "unreviewed") is True)
             try:
                 with self._with_client() as client:
+                    # REFUSED, NOT TRUNCATED (the house rule: a filter that cannot be read is a
+                    # 400 with a sentence, never silently altered -- a truncated value would
+                    # answer a DIFFERENT question than the one that was asked).
+                    host_f = (query.get("host") or [""])[0].strip()
+                    sev_f = (query.get("severity") or [""])[0].strip()
+                    if len(host_f) > 64 or len(sev_f) > 24:
+                        return self._error(400, "host or severity filter is implausibly long")
                     rows = status_mod.anomalies_detailed(
-                        client, limit=limit, min_score=min_score,
-                        host=(query.get("host") or [""])[0].strip()[:64],
-                        severity=(query.get("severity") or [""])[0].strip()[:24])
+                        client, limit=limit, min_score=min_score, host=host_f, severity=sev_f)
                     # SOC-1: merge review state. Read separately (one small query) rather
                     # than joined in SQL because the reviews table may not exist yet on a
                     # deployment whose schema job has not re-run -- a join would make the
@@ -588,9 +593,11 @@ def _build_handler(ctx: GuiContext):
             # it should filter that entire dashboard"): one source address, one protocol, one
             # destination port -- every panel below receives them, and the aggregate-backed
             # panels switch to the raw table when proto/port demand it (soc.flow_filter).
-            filters = {"src": (query.get("src") or [""])[0].strip()[:64],
+            filters = {"src": (query.get("src") or [""])[0].strip(),
                        "proto": (query.get("proto") or [""])[0].strip(),
                        "dport": (query.get("dport") or [""])[0].strip()}
+            if len(filters["src"]) > 64:
+                return self._error(400, "source filter is implausibly long")
             for key, hi in (("proto", 255), ("dport", 65535)):
                 if filters[key] and (not filters[key].isdigit() or int(filters[key]) > hi):
                     return self._error(400, f"{key} must be a number <= {hi}")
