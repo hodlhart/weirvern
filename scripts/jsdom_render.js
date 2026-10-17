@@ -318,6 +318,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     retrain_every_h: { restarts: ["deploy/weirvern-worker"], blast: "restarts the detection worker",
                        warning: "" },
   };
+  let APPLY_FAIL_ONCE = true;
   function planReply(changes) {
     const proposals = [];
     for (const key of Object.keys(changes || {})) {
@@ -698,8 +699,21 @@ const IDENTITY_PAYLOAD = {
                     ? { ok: true, username: sent.username || "" }
                   : u.includes("/api/settings/plan") ? planReply(sent.changes)
                   : u.includes("/api/settings/apply")
-                    ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
-                        restart_errors: [], note: "restarted deploy/weirvern-worker" }
+                    ? ((sent.changes || {}).base_threshold === "0.7" && APPLY_FAIL_ONCE)
+                      ? (() => {
+                          APPLY_FAIL_ONCE = false;
+                          // A REFUSED WRITE: the read-back says the value is not there. The
+                          // refusal still carries per-item verdicts and a timestamp.
+                          return { __http: 502, ok: false, at: "2026-10-17T17:06:00Z",
+                                   error: "read-back: base_threshold did not land",
+                                   items: [{ key: "base_threshold", value: "0.7", ok: false,
+                                             error: "read-back: base_threshold did not land" }] };
+                        })()
+                      : { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
+                          restart_errors: [], note: "restarted deploy/weirvern-worker",
+                          at: "2026-10-17T17:05:00Z",
+                          items: Object.entries(sent.changes || {}).map(([k, v]) => ({
+                            key: k, value: String(v), ok: true, error: "" })) }
                   : u.includes("/api/settings/sonar")
                     // REQUEST-AWARE like the real route: a survey FOR a named weirling
                     // comes back stamped with that sensor, and reports the interface that
@@ -1993,6 +2007,42 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         Object.keys(H.STAGE.changes).length === 0);
   check("the chip hides again once the stage is empty",
         doc.getElementById("stage-pill").classList.contains("hidden"));
+
+  // THE RECEIPT: per-item results after an apply.
+  check("the receipt names the key and the time it landed",
+        /base_threshold/.test(doc.getElementById("st-apply-results").textContent)
+        && /applied/.test(doc.getElementById("st-apply-results").textContent),
+        doc.getElementById("st-apply-results").textContent.slice(0, 140));
+
+  // A REFUSED WRITE: the read-back refuses the 0.7 write once -- the receipt must say FAILED
+  // with the server's reason and offer the one-click re-apply.
+  const bt7 = [...doc.querySelectorAll("#view-settings .setting-input")]
+    .find((n) => n.dataset.key === "base_threshold");
+  bt7.value = "0.7";
+  bt7.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await H.applyStage();
+  check("a failed apply says which item failed and why",
+        /FAILED/.test(doc.getElementById("st-apply-results").textContent)
+        && /did not land/.test(doc.getElementById("st-apply-results").textContent),
+        doc.getElementById("st-apply-results").textContent.slice(0, 180));
+  const reBtn = [...doc.querySelectorAll("#st-apply-results button")]
+    .find((b) => /Re-apply failed/.test(b.textContent));
+  check("a failed item offers a one-click re-apply", !!reBtn);
+  if (reBtn) {
+    const beforeRe = POSTED.length;
+    reBtn.click();
+    await new Promise((r) => setTimeout(r, 260));
+    const reReq = POSTED.slice(beforeRe).find((r) => r.url.includes("/api/settings/apply"));
+    let reBody = {};
+    try { reBody = JSON.parse(reReq.body || "{}"); } catch (_e) { reBody = {}; }
+    check("re-apply stages just the failed key and posts it again",
+          !!reReq && reBody.changes && reBody.changes.base_threshold === "0.7",
+          JSON.stringify(reBody).slice(0, 120));
+    check("the re-applied item now reads as applied",
+          /applied/.test(doc.getElementById("st-apply-results").textContent)
+          && !/FAILED/.test(doc.getElementById("st-apply-results").textContent),
+          doc.getElementById("st-apply-results").textContent.slice(0, 140));
+  }
 
   // DISCARD: staged changes are dropped and the view reloads from the server's values.
   const bt2 = [...doc.querySelectorAll("#view-settings .setting-input")]

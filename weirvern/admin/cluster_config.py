@@ -534,6 +534,35 @@ def _other_iface(key: str) -> str:
     return os.environ.get("MGMT_IFACE" if key == "ZEEK_IFACE" else "ZEEK_IFACE", "") or ""
 
 
+def receipt_items(changes: dict[str, str], landed: dict[str, str] | None,
+                  after: dict[str, str] | None = None, error: str = "") -> list[dict]:
+    """The per-item receipt for a settings write: one record per requested key.
+
+    WHY PER ITEM. The apply response used to say only "saved" -- one batch result for what was
+    really N separate intentions. When a write half-landed, the operator could not tell WHICH
+    value failed or why; the staged-settings research names exactly this (a result that cannot
+    be audited) as a reason operators stop trusting Apply buttons. One record per key, each
+    carrying the value, the verdict and (on failure) the reason.
+
+    WHOSE VERDICT. `ok` is NOT "the call returned" -- it is what a READ-BACK shows: the value
+    in `after` (a fresh read, used on the refusal path) or in `landed` (the apply's own
+    read-back result). No read-back source at all -> not ok, never assumed.
+    """
+    items: list[dict] = []
+    for key, value in changes.items():
+        want = (value or "").strip()
+        source = after if after is not None else landed
+        got = None if source is None else source.get(to_configmap_key(key), "")
+        ok = source is not None and got == want
+        items.append({
+            "key": key,
+            "value": want,
+            "ok": ok,
+            "error": "" if ok else (error or "the read-back does not show this value"),
+        })
+    return items
+
+
 def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
     """Compute what a set of changes would do. Touches nothing.
 

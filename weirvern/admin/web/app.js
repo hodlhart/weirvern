@@ -567,6 +567,7 @@ function stageChange(key, value, original) {
   // A new edit supersedes the previous apply's message: leaving a stale "saved" line next to a
   // fresh staged change would claim a state that no longer holds.
   LAST_APPLY.text = "";
+  LAST_APPLY.results = null;
   if (value === original) delete STAGE.changes[key];
   else STAGE.changes[key] = value;
   STAGE.plan = null;   // any edit invalidates a previously fetched plan
@@ -583,7 +584,7 @@ function discardStage() {
 }
 
 /** The outcome of the last apply, shown until the next apply. Survives a settings reload. */
-const LAST_APPLY = { text: "" };
+const LAST_APPLY = { text: "", results: null };
 
 function renderStage() {
   const keys = Object.keys(STAGE.changes);
@@ -647,6 +648,53 @@ function renderStage() {
       }),
     ]));
   }
+  renderApplyResults();
+}
+
+/** The after-apply receipt: every key it tried -- the value, applied at HH:MM, or FAILED with
+ * the server's own reason -- and, when anything failed, one button that stages the failed items
+ * again and applies just those. "It said error" is not a result; this is. */
+function renderApplyResults() {
+  const out = document.getElementById("st-apply-results");
+  if (!out) return;
+  out.replaceChildren();
+  const R = LAST_APPLY.results;
+  if (!R) return;
+  const stamp = R.at ? String(R.at).slice(11, 16) : "";
+  const failed = [];
+  for (const item of (R.items || [])) {
+    const row = el("div", { class: "stage-res-item", attrs: { "data-key": item.key } }, [
+      el("span", { class: "mono", text: item.key }),
+      el("span", { text: " = " + (item.value || "(empty)") }),
+    ]);
+    if (item.ok) {
+      row.appendChild(el("span", { class: "muted", text: "\u2014 applied" + (stamp ? " " + stamp : "") }));
+    } else {
+      row.appendChild(el("span", { class: "fail", text: "\u2014 FAILED: " + (item.error || "unknown reason") }));
+      failed.push(item);
+    }
+    out.appendChild(row);
+  }
+  for (const t of (R.restarted || [])) {
+    out.appendChild(el("div", { class: "stage-res-item muted", text: "restarted " + t }));
+  }
+  for (const e of (R.restart_errors || [])) {
+    out.appendChild(el("div", { class: "stage-res-item fail", text: "restart failed \u2014 " + e }));
+  }
+  if (failed.length) {
+    const btn = el("button", {
+      class: "review-act", text: "Re-apply failed", attrs: { type: "button" },
+      title: "stage the failed items again and apply just those",
+      on: { click: async () => {
+        btn.disabled = true;
+        for (const item of failed) STAGE.changes[item.key] = item.value;
+        persistStage();
+        renderStage();
+        await applyStage();
+      } },
+    });
+    out.appendChild(el("div", { class: "stage-res-item" }, [btn]));
+  }
 }
 
 /** Ask the server what the staged changes would do. Touches nothing. */
@@ -691,6 +739,11 @@ async function applyStage(skipWarnConfirm) {
     STAGE.changes = {};
     STAGE.plan = null;
     persistStage();
+    LAST_APPLY.results = {
+      at: res.at || "", items: res.items || [],
+      restarted: res.restarted || [], restart_errors: res.restart_errors || [],
+    };
+    renderApplyResults();
     const parts = ["saved: " + Object.entries(res.applied || {}).map(([k, v]) => `${k}=${v || "(empty)"}`).join(", ")];
     if ((res.restarted || []).length) parts.push("restarted " + res.restarted.join(", "));
     if ((res.restart_errors || []).length) {
@@ -703,6 +756,14 @@ async function applyStage(skipWarnConfirm) {
     // A refused write states the server's reason: a missing token, an RBAC gap, a bad value.
     if (note) note.textContent = "not applied — " + (err.message || err);
     if (err.status === 401) { setToken(""); await refreshAuthNote(); }
+    // A REFUSED WRITE STILL GETS ITS RECEIPT: the server's per-item verdicts ride the refusal,
+    // and the failed items can be re-staged in one click.
+    const p = err.payload;
+    if (p && Array.isArray(p.items)) {
+      LAST_APPLY.results = { at: p.at || "", items: p.items,
+                             restarted: p.restarted || [], restart_errors: p.restart_errors || [] };
+    }
+    renderApplyResults();
   }
 }
 

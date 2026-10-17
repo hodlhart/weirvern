@@ -2671,7 +2671,21 @@ def _build_handler(ctx: GuiContext):
             try:
                 landed = client.apply({k: str(v) for k, v in changes.items()})
             except cc.ConfigError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 502)
+                # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT. The apply's read-back raised, but
+                # a fresh read can still say which values ARE there -- "failed, and here is the
+                # reason per key" beats a whole-batch error the operator cannot act on.
+                after = None
+                try:
+                    after = client.read()
+                except Exception:  # noqa: BLE001
+                    after = None
+                return self._json({
+                    "ok": False,
+                    "error": str(exc),
+                    "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+                    "items": cc.receipt_items({k: str(v) for k, v in changes.items()},
+                                              None, after=after, error=str(exc)),
+                }, 502)
 
             restarted: list[str] = []
             restart_errors: list[str] = []
@@ -2697,6 +2711,9 @@ def _build_handler(ctx: GuiContext):
                 "restart_errors": restart_errors,
                 "note": ("restarted " + ", ".join(restarted)) if restarted
                         else "no workload needed a restart",
+                "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+                # THE RECEIPT: per key, the value, the verdict and (on failure) the reason.
+                "items": cc.receipt_items({k: str(v) for k, v in changes.items()}, landed),
             })
 
         def _settings_sonar(self) -> None:
