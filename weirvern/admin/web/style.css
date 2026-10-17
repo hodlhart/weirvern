@@ -993,9 +993,21 @@ nav::-webkit-scrollbar-track { background: transparent; }
 
 /* ── Discover's click-a-value filters ────────────────────────────────────────────────────── */
 .dc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 1.6em; }
+/* US-7: THE FILTER-CHIP GRAMMAR, beside the status-chip contract (US-1) and pinned there.
+ *  - `.chip` is a STATUS pill: no pointer, no hover, a SOLID border.
+ *  - `.dc-chip` / `.chip.act` are FILTERS and toggles: the same pill shape with a DASHED border
+ *    at rest -- additive and temporary, not a state the system reports.
+ *  - a chip HOLDING a filter wears the accent border, a CHECKMARK and aria-pressed="true".
+ *    Never colour alone: the checkmark is the state, the border is the reinforcement. */
 .dc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); border: 1px dashed var(--line); border-radius: 12px;
   font-size: 12px; }
+.dc-chip[aria-pressed="true"], .chip.act[aria-pressed="true"] {
+  border-style: solid; border-color: var(--accent); color: var(--fg);
+}
+.dc-chip[aria-pressed="true"]::before, .chip.act[aria-pressed="true"]::before {
+  content: "\2713"; font-size: 11px; line-height: 1; color: var(--accent);
+}
 .dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
   font-size: 13px; line-height: 1; }
 .dc-chip-x:hover { color: var(--bad); }

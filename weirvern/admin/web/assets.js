@@ -37,6 +37,8 @@ const ASSETS_STATE = {
   tracked: [],       // addresses the operator selected on the Network view
   sort: "anomalies",
   search: "",
+  svc: "",          // US-7: the service facet filter (click a chip; filters in place)
+  trackedOnly: false,  // US-7: the graph filter -- only the hosts the operator tracks
   minEdges: 1,
   showNames: false,
   // Pagination for the inventory. 15 per page by default (the user's number): a segment with
@@ -69,6 +71,42 @@ function loadAssets() {
 }
 
 /** Sort + filter + render the inventory, from the cached payload. */
+/** US-7: the service facet -- one chip per service the inventory saw, with its host count.
+ *  A chip TOGGLES: click it to filter, click it again to stop. It wears aria-pressed while it
+ *  holds the filter, and the CSS gives pressed chips a checkmark (never colour alone). */
+function renderAssetFacets(all) {
+  const box = document.getElementById("as-facets");
+  if (!box) return;
+  box.replaceChildren();
+  const counts = new Map();
+  for (const h of all) {
+    for (const s of (h.services || [])) {
+      const key = String(s || "").trim();
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+  if (!counts.size) return;
+  const top = [...counts.entries()]
+    .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+    .slice(0, 10);
+  for (const [svc, n] of top) {
+    const on = ASSETS_STATE.svc.toLowerCase() === svc.toLowerCase();
+    const chip = el("button", {
+      class: "dc-chip", text: `${svc} \u00b7 ${n}`,
+      attrs: { type: "button", "aria-pressed": on ? "true" : "false",
+               title: on ? `stop filtering by ${svc}` : `show only hosts speaking ${svc}` },
+    });
+    chip.addEventListener("click", () => {
+      ASSETS_STATE.svc = on ? "" : svc;
+      ASSETS_STATE.page = 1;
+      renderAssets();
+      // US-7: the filter rides the URL (so Copy link carries it and a reload keeps it).
+      if (typeof scheduleURLSync === "function") scheduleURLSync();
+    });
+    box.appendChild(chip);
+  }
+}
+
 function renderAssets() {
   const tbody = document.querySelector("#as-table tbody");
   const note = document.getElementById("as-note");
@@ -91,12 +129,18 @@ function renderAssets() {
   // Search matches the address, the reverse-DNS name, or a service -- an analyst looking for
   // "everything that spoke smb" has a service name, not an address.
   const q = ASSETS_STATE.search.trim().toLowerCase();
-  const rows = q
+  const searched = q
     ? all.filter((h) =>
         h.addr.toLowerCase().includes(q) ||
         (h.name || "").toLowerCase().includes(q) ||
         (h.services || []).some((s) => s.toLowerCase().includes(q)))
     : all;
+  // US-7: the service facet is an EXACT service, not a substring -- clicking the "dns" chip must
+  // show the hosts that speak dns, not every host whose service name contains "dn".
+  const rows = ASSETS_STATE.svc
+    ? searched.filter((h) => (h.services || [])
+        .some((s) => s.toLowerCase() === ASSETS_STATE.svc.toLowerCase()))
+    : searched;
 
   const sorters = {
     anomalies: (a, b) => (b.anomalies - a.anomalies) || (b.bytes - a.bytes),
@@ -130,9 +174,17 @@ function renderAssets() {
   const range = rows.length
     ? ` (showing ${from + 1}\u2013${Math.min(from + size, rows.length)})`
     : "";
-  summary.textContent = (q
-    ? `${rows.length} of ${all.length} hosts matching “${ASSETS_STATE.search}”`
+  // US-7: "showing X of Y" for EVERY filter combination -- the count and the reasons travel
+  // together, so a short list always says what made it short.
+  const why = [];
+  if (q) why.push(`matching “${ASSETS_STATE.search}”`);
+  if (ASSETS_STATE.svc) why.push(`with service ${ASSETS_STATE.svc}`);
+  summary.textContent = (why.length
+    ? `${rows.length} of ${all.length} hosts ${why.join(" and ")}`
     : `${all.length} hosts in the last ${d.hours}h`) + range;
+
+  // The facet itself: what services this inventory actually saw, most common first.
+  renderAssetFacets(all);
 
   // The unreadable sources are named, because a short list must never be mistaken for a
   // quiet network.
@@ -311,7 +363,10 @@ function renderChips() {
   }
   box.appendChild(el("span", { class: "muted", text: "Tracking:" }));
   for (const addr of ASSETS_STATE.tracked) {
-    const chip = el("span", { class: "chip act", title: "click to stop tracking this host" }, [
+    // US-7: this chip HOLDS a filter (the host is tracked), so it says so: aria-pressed, and
+    // the grammar's checkmark follows from the attribute. Clicking releases it.
+    const chip = el("span", { class: "chip act", title: "click to stop tracking this host",
+                              attrs: { "aria-pressed": "true" } }, [
       el("span", { text: addr }),
       el("span", { class: "x", text: "×" }),
     ]);
@@ -346,10 +401,36 @@ function renderNetwork() {
     win.textContent = `${h}h window` + (d.truncated ? `, ${d.total_edges} total edges` : "");
   }
 
-  const nodes = d.nodes || [];
+  const nodes0 = d.nodes || [];
   const allEdges = d.edges || [];
-  const edges = allEdges.filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  // US-7: TRACKED ONLY. The graph holds every host the weirlings saw; this chip narrows it to
+  // the ones the operator chose to follow (and the edges between them), so a busy map can be
+  // read as a worklist.
+  const trackedSet = new Set(ASSETS_STATE.tracked || []);
+  const nodes = ASSETS_STATE.trackedOnly
+    ? nodes0.filter((n) => trackedSet.has(n.id)) : nodes0;
+  const edgesPool = ASSETS_STATE.trackedOnly
+    ? allEdges.filter((e) => trackedSet.has(e.source) && trackedSet.has(e.target)) : allEdges;
+  const edges = edgesPool.filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  // A filter that hides everything must say so -- the tracked-only chip with nothing tracked is
+  // the operator's own empty set, not a quiet network.
+  const trackedEmpty = ASSETS_STATE.trackedOnly && nodes0.length > 0 && nodes.length === 0;
+  if (trackedEmpty) {
+    caption.textContent = `${nodes0.length} hosts in this window, none tracked yet \u2014 `
+      + "click a dot or a row to track one.";
+    host.appendChild(chartEmpty("The tracked-only filter is on and no host is tracked."));
+    emptyRow(table, 5, "No tracked hosts to draw.");
+    return;
+  }
   if (!nodes.length || !edges.length) {
+    if (ASSETS_STATE.trackedOnly && nodes.length) {
+      caption.textContent = `showing ${nodes.length} of ${nodes0.length} hosts \u00b7 `
+        + `no connections among them in the last ${d.hours || ASSETS_STATE.hours}h.`;
+      host.appendChild(chartEmpty("The tracked hosts did not talk to each other in this "
+        + "window. Track more hosts, widen the window, or turn the filter off."));
+      emptyRow(table, 5, "No connections among the tracked hosts.");
+      return;
+    }
     // THREE states, not two (review round 2026-10-15). This branch used to collapse "the
     // filter removed every edge" into "No host-to-host traffic was recorded" -- a panel
     // HIDING data it held, while blaming the network for the absence. The filtered case
@@ -373,7 +454,10 @@ function renderNetwork() {
 
   // The caption reports what was actually drawn, and says so when the edge cap truncated the
   // set -- a graph silently missing hosts looks complete.
-  const bits = [`${nodes.length} hosts`, `${edges.length} connections`];
+  // US-7: "showing X of Y" whenever the tracked-only filter is narrowing the map.
+  const bits = [ASSETS_STATE.trackedOnly
+    ? `showing ${nodes.length} of ${nodes0.length} hosts`
+    : `${nodes.length} hosts`, `${edges.length} connections`];
   if (ASSETS_STATE.tracked.length) bits.push(`filtered to ${ASSETS_STATE.tracked.length} tracked`);
   if (d.truncated) bits.push(`of ${d.total_edges} total edges (capped)`);
   caption.textContent = bits.join(" · ");

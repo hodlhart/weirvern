@@ -203,6 +203,8 @@
         
         <button id="nw-clear">Clear selection</button>
         <button id="nw-settle">Re-settle</button>
+        <button id="nw-only-tracked" class="chip act" type="button" aria-pressed="false"
+                title="show only the hosts you track">tracked only</button>
       </div>
       <div class="info-text hidden" id="nw-info">
   <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
@@ -767,6 +769,8 @@
         </label>
         
       </div>
+      <!-- US-7: the services the inventory actually saw, as chips that filter it in place. -->
+      <div id="as-facets" class="dc-chips" aria-label="filter by service"></div>
       <div class="info-text hidden" id="as-info">
   <p><strong>What it is.</strong> Every host either weirling saw in the window.</p>
   <p><strong>What writes it.</strong> Flow, Zeek and identity records together.</p>

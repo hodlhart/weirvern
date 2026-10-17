@@ -1208,6 +1208,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // probes, and weakening them to make room for this would trade one blind spot for another.
     ["/api/health?hours=6", HEALTH_WITH_FAILURE],
     ["/api/health", HEALTH_PAYLOAD],
+    // US-7: the inventory, finally stubbed -- the facet checks need real services, and a
+    // missing arm made loadAssets answer an empty {} ("0 hosts in the last undefinedh").
+    ["/api/assets", () => ({
+      available: true, reason: "", hours: 24,
+      hosts: [
+        { addr: "203.0.113.42", name: "workstation.lan", bytes: 7153288, bytes_out: 5000000,
+          bytes_in: 2153288, flows: 900, dst_count: 37, services: ["conn", "http", "ssh"],
+          anomalies: 3, last_seen: "2026-09-19T07:39:10" },
+        { addr: "192.0.2.40", name: "vault", bytes: 1824000, bytes_out: 24000,
+          bytes_in: 1800000, flows: 60, dst_count: 4, services: ["conn", "ssh"],
+          anomalies: 0, last_seen: "2026-09-19T07:00:00" },
+        { addr: "198.51.100.77", name: "", bytes: 9000, bytes_out: 1000, bytes_in: 8000,
+          flows: 12, dst_count: 2, services: ["dns"], anomalies: 0,
+          last_seen: "2026-09-19T06:00:00" },
+      ], unreadable: [], errors: null })],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
     ["/api/discover", (u) => {
@@ -6137,6 +6152,126 @@ check("high capture loss is called out in the fleet",
     window.scrollTo = prevScrollTo;
     try { Object.defineProperty(window, "scrollY", { value: 0, configurable: true }); }
     catch (_e) { /* ignore */ }
+    H.showView("health");
+    await sleep(150);
+  }
+
+  // ── CHIPS + URLS, PER VIEW (US-7) ──────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // A) ASSETS: the service facet filters in place, is PRESSED, rides the URL, survives reload.
+    H.showView("host");
+    await H.loadAssets();
+    await sleep(300);
+    const facet = [...doc.querySelectorAll("#as-facets .dc-chip")];
+    check("ASSETS: the inventory offers service filter chips",
+          facet.length >= 2, `chips=${facet.length}`);
+    const beforeRows = doc.querySelectorAll("#as-table tbody tr").length;
+    if (facet[0]) { facet[0].click(); }
+    await sleep(200);
+    const svcLabel = facet[0] ? facet[0].textContent.split(" \u00b7 ")[0].trim() : "";
+    // The render REPLACES the chips, so the clicked node is detached and reads stale: ask the
+    // fresh set which chip is pressed (the DOM is the contract, not the node we held).
+    const pressedNow = [...doc.querySelectorAll("#as-facets .dc-chip")]
+      .find((c) => c.getAttribute("aria-pressed") === "true");
+    check("ASSETS: clicking the chip filters the inventory in place and marks it pressed",
+          !!pressedNow && H.ASSETS_STATE.svc === svcLabel
+          && pressedNow.textContent.startsWith(svcLabel),
+          `pressed=${pressedNow ? pressedNow.textContent.trim() : "none"} svc=${H.ASSETS_STATE.svc}`);
+    const sumTxt = (doc.getElementById("as-summary") || {}).textContent || "";
+    check("ASSETS: the summary says showing X of Y with the reason",
+          /\d+ of \d+ hosts with service/.test(sumTxt) && sumTxt.includes(svcLabel), sumTxt);
+    H.syncURL();
+    check("ASSETS: the service filter rides the URL",
+          /as\.svc=/.test(window.location.hash), window.location.hash);
+    // the reload: wipe the state, then let BOOT's own path restore it from the URL.
+    const keepHash = window.location.hash;
+    H.ASSETS_STATE.svc = "";
+    H.renderAssets();
+    await sleep(100);
+    const wiped = H.ASSETS_STATE.svc;
+    window.location.hash = keepHash;
+    H.applyURLState();
+    H.renderAssets();
+    await sleep(120);
+    check("ASSETS: a reload restored by the URL puts the filter back",
+          wiped === "" && H.ASSETS_STATE.svc === svcLabel
+          && [...doc.querySelectorAll("#as-facets .dc-chip")]
+               .some((c) => c.getAttribute("aria-pressed") === "true"),
+          `wiped=${wiped} now=${H.ASSETS_STATE.svc}`);
+    const pressedFacet = [...doc.querySelectorAll("#as-facets .dc-chip")]
+      .find((c) => c.getAttribute("aria-pressed") === "true");
+    if (pressedFacet) { pressedFacet.click(); await sleep(120); }   // stop filtering
+
+    // B) NETWORK: the tracked-only chip filters the map, is pressed, rides the URL.
+    H.showView("network");
+    await H.loadNetwork();
+    await sleep(250);
+    H.ASSETS_STATE.tracked = ["203.0.113.42", "203.0.113.1"];
+    H.renderNetwork();
+    await sleep(120);
+    const nwChip = doc.getElementById("nw-only-tracked");
+    if (nwChip) { nwChip.click(); }
+    await sleep(150);
+    check("NETWORK: the tracked-only chip filters the map and is pressed",
+          nwChip && nwChip.getAttribute("aria-pressed") === "true"
+          && /showing 2 of 3 hosts/.test((doc.getElementById("nw-caption") || {}).textContent || ""),
+          `pressed=${nwChip ? nwChip.getAttribute("aria-pressed") : "none"} ` +
+          `caption=${(doc.getElementById("nw-caption") || {}).textContent || ""}`);
+    H.syncURL();
+    check("NETWORK: the filter rides the URL", /nw\.tracked=1/.test(window.location.hash),
+          window.location.hash);
+    H.ASSETS_STATE.trackedOnly = false;
+    H.renderNetwork();
+    H.applyURLState();
+    H.renderNetwork();
+    await sleep(120);
+    check("NETWORK: a reload restored by the URL puts the filter back",
+          H.ASSETS_STATE.trackedOnly === true
+          && doc.getElementById("nw-only-tracked").getAttribute("aria-pressed") === "true");
+    if (nwChip) { nwChip.click(); await sleep(120); }   // release
+    H.ASSETS_STATE.tracked = [];
+    H.renderNetwork();
+
+    // C) DISCOVER: the feed switch applies, rides the URL, and the reload asks for it.
+    H.showView("discover");
+    await H.loadDiscover();
+    await sleep(300);
+    const feedSel = doc.getElementById("dc-feed");
+    check("DISCOVER: the feed select is on screen", !!feedSel);
+    if (feedSel) {
+      feedSel.value = "dns";
+      feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    }
+    await sleep(400);
+    check("DISCOVER: the feed switch is applied (the summary speaks DNS)",
+          /DNS/.test((doc.getElementById("dc-summary") || {}).textContent || ""),
+          (doc.getElementById("dc-summary") || {}).textContent || "");
+    H.syncURL();
+    check("DISCOVER: the feed rides the URL", /dc\.feed=dns/.test(window.location.hash),
+          window.location.hash);
+    const keepDcHash = window.location.hash;
+    const DC_REQS = [];
+    fetchOverride = (u) => {
+      if (String(u).includes("/api/discover")) DC_REQS.push(String(u));
+      return null;
+    };
+    feedSel.value = "netflow";
+    window.location.hash = keepDcHash;
+    H.applyURLState();
+    check("DISCOVER: a reload restored by the URL puts the select back",
+          feedSel.value === "dns", feedSel.value);
+    await H.loadDiscover();
+    await sleep(250);
+    check("...and the request asks for the restored feed",
+          DC_REQS.some((u) => /feed=dns/.test(u)), DC_REQS.join(" ").slice(0, 140));
+    fetchOverride = null;
+    feedSel.value = "netflow";
+    await H.loadDiscover();
+    await sleep(200);
+    window.location.hash = "";
+
     H.showView("health");
     await sleep(150);
   }

@@ -3292,6 +3292,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // empty table, which reads as "no matches" rather than "you are past the end".
     ASSETS_STATE.page = 1;
     renderAssets();
+    scheduleURLSync();   // US-7: the search rides the URL
   });
   const asSort = document.getElementById("as-sort");
   if (asSort) asSort.addEventListener("change", (e) => {
@@ -3305,6 +3306,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const nwClear = document.getElementById("nw-clear");
   if (nwClear) nwClear.addEventListener("click", () => {
     ASSETS_STATE.tracked = [];
+    // Clearing the selection also releases the tracked-only filter: leaving it on would point
+    // the graph at an empty set and read as "no traffic".
+    ASSETS_STATE.trackedOnly = false;
+    const only = document.getElementById("nw-only-tracked");
+    if (only) only.setAttribute("aria-pressed", "false");
     loadNetwork().then(clearError).catch(showError);
   });
   // The edge filter re-renders from the cached payload; it is a view control, not a query.
@@ -3312,11 +3318,22 @@ document.addEventListener("DOMContentLoaded", () => {
   if (nwMin) nwMin.addEventListener("input", (e) => {
     ASSETS_STATE.minEdges = Number(e.target.value) || 1;
     renderNetwork();
+    scheduleURLSync();   // US-7
   });
   const nwLabels = document.getElementById("nw-labels");
   if (nwLabels) nwLabels.addEventListener("change", (e) => {
     ASSETS_STATE.showNames = e.target.checked;
     renderNetwork();
+    scheduleURLSync();   // US-7
+  });
+  // US-7: the tracked-only chip. A real filter over the cached graph (no refetch), pressed when
+  // it holds the filter, and carrying its state in the URL.
+  const nwOnly = document.getElementById("nw-only-tracked");
+  if (nwOnly) nwOnly.addEventListener("click", () => {
+    ASSETS_STATE.trackedOnly = !ASSETS_STATE.trackedOnly;
+    nwOnly.setAttribute("aria-pressed", ASSETS_STATE.trackedOnly ? "true" : "false");
+    renderNetwork();
+    scheduleURLSync();
   });
   // Re-settle: re-run the deterministic layout, discarding any hand-dragged arrangement --
   // the way back to the comparable view without a reload.
@@ -4484,6 +4501,24 @@ function syncURL() {
   if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
   if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
   if (AN_FILTERS.model) p.set("an.model", AN_FILTERS.model);
+  // US-7: the LAST views without URL state. Assets' search and service facet, the graph's
+  // filters, and Discover's feed/selects/chips -- a Copy link now carries the screen, and a
+  // reload returns to it.
+  if (ASSETS_STATE.search) p.set("as.q", ASSETS_STATE.search);
+  if (ASSETS_STATE.svc) p.set("as.svc", ASSETS_STATE.svc);
+  if (Number(ASSETS_STATE.minEdges) > 1) p.set("nw.min", String(ASSETS_STATE.minEdges));
+  if (ASSETS_STATE.showNames) p.set("nw.labels", "1");
+  if (ASSETS_STATE.trackedOnly) p.set("nw.tracked", "1");
+  const dcFeedSel = document.getElementById("dc-feed");
+  if (dcFeedSel && dcFeedSel.value && dcFeedSel.value !== "netflow") {
+    p.set("dc.feed", dcFeedSel.value);
+  }
+  for (const [id, key] of [["dc-sensor", "dc.sensor"], ["dc-proto", "dc.proto"],
+                           ["dc-addr", "dc.addr"], ["dc-port", "dc.port"]]) {
+    const elx = document.getElementById(id);
+    if (elx && elx.value) p.set(key, elx.value);
+  }
+  (DC_STATE.filters || []).forEach((f) => p.append("dc.f", `${f.field}=${f.value}`));
   const unrev = document.getElementById("f-unreviewed");
   const watched = document.getElementById("f-watched");
   const min = document.getElementById("f-min-score");
@@ -4547,6 +4582,38 @@ function applyURLState() {
   if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
   // US-6: filters that came from the URL are not this screen's choices -- say so.
   ARRIVED_FROM_LINK = !!(p.get("an.host") || p.get("an.sev") || p.get("an.model"));
+  // US-7: Assets / Network / Discover state, restored the same way (control values AND state).
+  if (p.get("as.q")) ASSETS_STATE.search = p.get("as.q");
+  if (p.get("as.svc")) ASSETS_STATE.svc = p.get("as.svc");
+  const asSearchEl = document.getElementById("as-search");
+  if (asSearchEl) asSearchEl.value = ASSETS_STATE.search;
+  if (p.get("nw.min")) ASSETS_STATE.minEdges = Number(p.get("nw.min")) || 1;
+  const nwMinEl = document.getElementById("nw-min");
+  if (nwMinEl) nwMinEl.value = String(ASSETS_STATE.minEdges);
+  ASSETS_STATE.showNames = p.get("nw.labels") === "1";
+  const nwLblEl = document.getElementById("nw-labels");
+  if (nwLblEl) nwLblEl.checked = ASSETS_STATE.showNames;
+  ASSETS_STATE.trackedOnly = p.get("nw.tracked") === "1";
+  const nwOnlyEl = document.getElementById("nw-only-tracked");
+  if (nwOnlyEl) nwOnlyEl.setAttribute("aria-pressed", ASSETS_STATE.trackedOnly ? "true" : "false");
+  if (p.get("dc.feed")) {
+    const feedEl = document.getElementById("dc-feed");
+    if (feedEl) feedEl.value = p.get("dc.feed");
+  }
+  for (const [key, id] of [["dc.sensor", "dc-sensor"], ["dc.proto", "dc-proto"],
+                           ["dc.addr", "dc-addr"], ["dc.port", "dc-port"]]) {
+    if (p.get(key)) {
+      const elx = document.getElementById(id);
+      if (elx) elx.value = p.get(key);
+    }
+  }
+  const dcChips = p.getAll("dc.f");
+  if (dcChips.length) {
+    DC_STATE.filters = dcChips.map((s) => {
+      const i = s.indexOf("=");
+      return { field: i >= 0 ? s.slice(0, i) : s, value: i >= 0 ? s.slice(i + 1) : "" };
+    }).filter((f) => f.field && f.value);
+  }
   const unrev = document.getElementById("f-unreviewed");
   const watched = document.getElementById("f-watched");
   const min = document.getElementById("f-min-score");
