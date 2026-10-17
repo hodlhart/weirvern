@@ -696,6 +696,24 @@ function renderApplyResults() {
   for (const t of (R.restarted || [])) {
     out.appendChild(el("div", { class: "stage-res-item muted", text: "restarted " + t }));
   }
+  // THE APPLY-TIME CHECKS, REPORTED THE WAY THE RESEARCH ASKS (BF-14): the summary line
+  // answers "how many passed and what was skipped", and the hover names every check with
+  // its verdict and reason -- a skip nobody can explain is a skip nobody trusts.
+  if (R.tests && R.tests.length) {
+    const passed = R.tests.filter((t) => t.status === "pass").length;
+    const skipped = R.tests.filter((t) => t.status === "skip").length;
+    const failedT = R.tests.filter((t) => t.status === "fail");
+    const detail = R.tests.map((t) => `${t.name} \u2014 ${t.status}: ${t.detail || ""}`)
+      .join("\n");
+    out.appendChild(el("div", {
+      class: "stage-res-item" + (failedT.length ? " fail" : " muted"),
+      text: (failedT.length ? "BLOCKED \u2014 " : "apply-time checks: ") +
+            `${passed} passed, ${skipped} skipped` +
+            (failedT.length ? `, ${failedT.length} failed` : "") +
+            (skipped ? " \u2014 why? hover" : ""),
+      attrs: { title: detail },
+    }));
+  }
   for (const e of (R.restart_errors || [])) {
     out.appendChild(el("div", { class: "stage-res-item fail", text: "restart failed \u2014 " + e }));
   }
@@ -760,6 +778,7 @@ async function applyStage(skipWarnConfirm) {
     LAST_APPLY.results = {
       at: res.at || "", items: res.items || [],
       restarted: res.restarted || [], restart_errors: res.restart_errors || [],
+      tests: res.tests || [], blocked: false,
     };
     renderApplyResults();
     const parts = ["saved: " + Object.entries(res.applied || {}).map(([k, v]) => `${k}=${v || "(empty)"}`).join(", ")];
@@ -777,6 +796,17 @@ async function applyStage(skipWarnConfirm) {
     // A REFUSED WRITE STILL GETS ITS RECEIPT: the server's per-item verdicts ride the refusal,
     // and the failed items can be re-staged in one click.
     const p = err.payload;
+    if (p && p.blocked) {
+      // AN APPLY-TIME CHECK REFUSED THE WRITE (BF-14): the failed assertion is the headline,
+      // every check that ran (and every skip with its reason) is one hover away, and the
+      // stage is deliberately NOT cleared -- the fix is to adjust the staged value.
+      LAST_APPLY.text = "BLOCKED \u2014 " + (p.error || "an apply-time check refused this change");
+      if (note) note.textContent = LAST_APPLY.text;
+      LAST_APPLY.results = { at: "", items: [], restarted: [], restart_errors: [],
+                             tests: p.tests || [], blocked: true };
+      renderApplyResults();
+      return;
+    }
     if (p && Array.isArray(p.items)) {
       LAST_APPLY.results = { at: p.at || "", items: p.items,
                              restarted: p.restarted || [], restart_errors: p.restart_errors || [] };

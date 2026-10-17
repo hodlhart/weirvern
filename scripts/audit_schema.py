@@ -247,6 +247,8 @@ def main() -> int:
         "filtered", "revoked", "revoked_reason",
         # row fields pipeline_audit reads
         "registered", "enabled", "state", "age_s", "stale_after_s", "sensor_id", "note",
+        # the self-audit's own finding records (pipeline_audit -> panic_page)
+        "class", "severity", "subject", "detail", "elapsed_s", "fix",
     }
 
     # GoFlow2's raw JSON is not a table: `raw` in ingester.py is the collector's message, whose

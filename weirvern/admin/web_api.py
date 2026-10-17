@@ -125,6 +125,116 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
                 "available": False, "reason": "severity counts were not read", "counts": []}}
 
 
+def panic_page(*, fleet: dict | None, audit: dict | None, alerts: dict | None,
+               rendered_at: str, gate_note: str = "") -> str:
+    """The degraded-console fallback (BF-14, research #10): a NO-JS server-rendered page.
+
+    Assume the console runs during the outage it must help fix (the AWS/Facebook/Roblox
+    postmortems): this page is plain HTML with inline CSS and NO script tag -- it renders
+    with JavaScript off, broken, or blocked. What it carries is the panic set: sensor
+    liveness with the data's own staleness stamp, the 24h alert counts, and the pipeline
+    self-audit (whose findings ARE the degraded view). Every section that could not be read
+    says so WITH ITS REASON -- a fallback page that silently drops a section would be the
+    calm-empty failure this project keeps refusing.
+
+    Timestamps are UTC and labelled UTC (single-zone; the console's local-time hover is a
+    JS affordance this page deliberately does not have).
+    """
+    import html as _html  # noqa: PLC0415
+
+    def esc(v: object) -> str:
+        return _html.escape(str(v if v is not None else ""))
+
+    def section(title: str, body: str) -> str:
+        return f"<h2>{esc(title)}</h2>{body}"
+
+    parts: list[str] = [
+        "<!doctype html><html><head><meta charset=\"utf-8\">",
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+        "<title>Weirvern — panic view</title>",
+        "<style>body{font-family:system-ui,sans-serif;margin:24px;max-width:960px;"
+        "background:#131416;color:#dee0e3}h2{margin-top:28px;font-size:15px;"
+        "text-transform:uppercase;letter-spacing:.4px;color:#9aa0a6}"
+        "table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:4px 10px;"
+        "border-bottom:1px solid #2a2d31;font-size:14px}th{color:#9aa0a6;font-weight:600}"
+        ".muted{color:#9aa0a6}.warn{color:#e8b84b}.fail{color:#f06d72}.mono{font-family:ui-monospace,"
+        "monospace}.stamp{color:#9aa0a6;font-size:13px}</style></head><body>",
+        "<h1 style=\"font-size:20px\">Weirvern <span class=\"muted\">\u2014 panic view "
+        "(no JavaScript required)</span></h1>",
+        f"<p class=\"stamp\">rendered at {esc(rendered_at)} (UTC). "
+        "This page shows what the hub can read right now; nothing here is cached.</p>",
+    ]
+    if gate_note:
+        parts.append(f"<p class=\"warn\">{esc(gate_note)}</p>")
+
+    # ── sensors
+    if not fleet:
+        parts.append(section("sensors", "<p class=\"fail\">The fleet could not be read.</p>"))
+    elif not fleet.get("available"):
+        parts.append(section("sensors",
+                             f"<p class=\"fail\">Fleet unknown \u2014 {esc(fleet.get('reason'))}</p>"))
+    else:
+        rows = []
+        for r in fleet.get("sensors") or []:
+            rows.append(
+                "<tr><td class=\"mono\">" + esc(r.get("sensor_id")) + "</td>"
+                "<td>" + esc(r.get("state")) + "</td>"
+                "<td>" + esc(r.get("age_s")) + "s ago</td>"
+                "<td>" + ("enabled" if r.get("enabled") else "switched off") + "</td></tr>")
+        if not rows:
+            rows.append("<tr><td colspan=\"4\" class=\"muted\">No sensors are registered.</td></tr>")
+        data_as_of = fleet.get("data_as_of") or ""
+        stamp = (f"<p class=\"stamp\">data as of {esc(data_as_of)} (UTC) \u2014 "
+                 "the newest heartbeat the hub has.</p>") if data_as_of else \
+                "<p class=\"stamp warn\">No heartbeat has ever been recorded.</p>"
+        if fleet.get("heartbeats_available") is False:
+            stamp = (f"<p class=\"stamp warn\">Heartbeats are unreadable "
+                     f"({esc(fleet.get('heartbeat_reason'))}) \u2014 states below are "
+                     "registrations only.</p>")
+        parts.append(section("sensors", stamp +
+                             "<table><tr><th>sensor</th><th>state</th><th>last heard</th>"
+                             "<th></th></tr>" + "".join(rows) + "</table>"))
+
+    # ── alerts (24h)
+    if not alerts:
+        parts.append(section("alerts, last 24h", "<p class=\"fail\">The counts could not be read.</p>"))
+    elif not alerts.get("available"):
+        parts.append(section("alerts, last 24h",
+                             f"<p class=\"fail\">Counts unavailable \u2014 {esc(alerts.get('reason'))}</p>"))
+    else:
+        parts.append(section("alerts, last 24h",
+                             f"<p><span class=\"mono\">{esc(alerts.get('fired'))}</span> fired \u00b7 "
+                             f"<span class=\"mono\">{esc(alerts.get('acted'))}</span> acted on</p>"))
+
+    # ── the pipeline's own audit
+    if not audit or not audit.get("available"):
+        reason_bit = (" \u2014 " + esc(audit.get("reason"))) if audit else ""
+        parts.append(section("self-audit",
+                             f"<p class=\"fail\">The self-audit could not be read"
+                             f"{reason_bit}.</p>"))
+    else:
+        findings = audit.get("findings") or []
+        if findings:
+            rows_html = "".join(
+                "<tr><td class=\"warn\">" + esc(f.get("class")) + "</td>"
+                "<td class=\"mono\">" + esc(f.get("subject")) + "</td>"
+                "<td>" + esc(f.get("detail")) + "</td></tr>" for f in findings)
+            body = "<table><tr><th>class</th><th>who</th><th>detail</th></tr>" + rows_html + "</table>"
+        else:
+            body = "<p class=\"muted\">The pipeline passes its own checks.</p>"
+        errs = audit.get("errors") or {}
+        if errs:
+            body += "<p class=\"warn\">Checks that could not run: " + \
+                esc(", ".join(f"{k} ({v})" for k, v in errs.items())) + ".</p>"
+        parts.append(section("self-audit", body))
+
+    parts.append("<p class=\"stamp\">staged changes live in the browser tab, not on the "
+                 "server, so this page cannot see them; the console names them when it is "
+                 "working.</p>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
 def host_payload(detail: dict) -> dict:
     """Serialise the host drill-down, filling gaps so the frontend never guesses.
 

@@ -370,6 +370,8 @@ def _build_handler(ctx: GuiContext):
             # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
             if path == "/api/settings":
                 return self._settings(query)
+            if path == "/panic":
+                return self._panic()
             if path == "/api/healthz":
                 # Liveness for the Kubernetes probe. Deliberately does NOT touch
                 # ClickHouse: a probe that fails when the database is slow would
@@ -501,6 +503,51 @@ def _build_handler(ctx: GuiContext):
             self._json(web_api.anomalies_payload(
                 rows, severity_counts=severity_counts, discipline=discipline,
                 watch_error=watch_err))
+
+        def _panic(self) -> None:
+            """The no-JS fallback page (BF-14). Read-only; every section self-guards."""
+            import datetime as _dt  # noqa: PLC0415
+
+            from weirvern import fleet_store  # noqa: PLC0415
+
+            fleet = None
+            audit = None
+            alerts = None
+            try:
+                with self._with_client() as client:
+                    try:
+                        fleet = fleet_store.build_fleet(client)
+                        # THE STALENESS STAMP: the newest heartbeat is the data's own clock.
+                        hbs, _err = fleet_store.read_heartbeats(client)
+                        newest = ""
+                        for hb in hbs or []:
+                            ts = str(hb.get("last_seen") or "")
+                            if ts > newest:
+                                newest = ts
+                        if newest:
+                            fleet["data_as_of"] = newest
+                    except Exception:  # noqa: BLE001
+                        fleet = None
+                    try:
+                        alerts = status_mod.anomaly_discipline_counts(client)
+                    except Exception:  # noqa: BLE001
+                        alerts = None
+                    try:
+                        audit = status_mod.pipeline_audit(client)
+                    except Exception:  # noqa: BLE001
+                        audit = None
+            except Exception:  # noqa: BLE001
+                pass
+            page = web_api.panic_page(
+                fleet=fleet, audit=audit, alerts=alerts,
+                rendered_at=_dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d %H:%M:%S"))
+            body = page.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def _audit(self) -> None:
             """The pipeline's self-audit read (BF-13). Read-only like the rest of the surface."""
@@ -2703,6 +2750,32 @@ def _build_handler(ctx: GuiContext):
             if mode_error:
                 return self._json({"ok": False, "error": mode_error}, 409)
 
+            # APPLY-TIME CHECKS (BF-14): named assertions between the plan and the write. A
+            # failure BLOCKS the apply and names itself; a check that cannot run says why
+            # (the UI's "N passed, M skipped -- why?" reads this payload). The checks judge
+            # the EFFECTIVE configuration -- current merged with what is being staged.
+            from weirvern import apply_checks  # noqa: PLC0415
+
+            try:
+                norm_changes = {cc.to_configmap_key(k): str(v) for k, v in changes.items()}
+                with self._with_client() as ch:
+                    checks = apply_checks.run_apply_checks(
+                        changes=norm_changes, current=current, ch_client=ch)
+            except Exception as exc:  # noqa: BLE001
+                # THE CHECKS THEMSELVES FAILING MUST NOT FAIL THE APPLY: they are a gate on
+                # the CHANGE, not a dependency of the write. The operator sees the skip.
+                logger.warning("apply-time checks could not run: %s", exc)
+                checks = {"results": [], "blocked": False, "failed": [],
+                          "summary": f"the apply-time checks could not run ({type(exc).__name__})"}
+            if checks.get("blocked"):
+                return self._json({
+                    "ok": False,
+                    "blocked": True,
+                    "error": "blocked by apply-time checks: " + "; ".join(checks.get("failed") or []),
+                    "tests": checks.get("results") or [],
+                    "summary": checks.get("summary") or "",
+                }, 409)
+
             try:
                 landed = client.apply({k: str(v) for k, v in changes.items()})
             except cc.ConfigError as exc:
@@ -2749,6 +2822,9 @@ def _build_handler(ctx: GuiContext):
                 "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
                 # THE RECEIPT: per key, the value, the verdict and (on failure) the reason.
                 "items": cc.receipt_items({k: str(v) for k, v in changes.items()}, landed),
+                # ...and the apply-time checks that let this write through.
+                "tests": checks.get("results") or [],
+                "summary": checks.get("summary") or "",
             })
 
         def _settings_sonar(self) -> None:

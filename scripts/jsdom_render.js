@@ -724,7 +724,20 @@ const IDENTITY_PAYLOAD = {
                     ? { ok: true, username: sent.username || "" }
                   : u.includes("/api/settings/plan") ? planReply(sent.changes)
                   : u.includes("/api/settings/apply")
-                    ? ((sent.changes || {}).base_threshold === "0.7" && APPLY_FAIL_ONCE)
+                    ? ((sent.changes || {}).base_threshold === "0.001")
+                      // AN APPLY-TIME CHECK BLOCKED THE WRITE (BF-14): a 409 with the named
+                      // failed assertion and every check that ran, like the real route.
+                      ? { __http: 409, ok: false, blocked: true,
+                          error: "blocked by apply-time checks: the threshold does not fire on yesterday's baseline",
+                          tests: [
+                            { name: "the interconnect plan stays complete", status: "skip",
+                              detail: "this change does not touch the interconnect plan" },
+                            { name: "the capture interface is one the sensors report", status: "skip",
+                              detail: "the change does not name a capture interface" },
+                            { name: "the threshold does not fire on yesterday's baseline", status: "fail",
+                              detail: "threshold 0.001 would have fired on 999 rows in the last 24h (the day's budget is 50). Raise it, or change your mind on purpose." },
+                          ], summary: "0 passed, 2 skipped, 1 failed" }
+                    : ((sent.changes || {}).base_threshold === "0.7" && APPLY_FAIL_ONCE)
                       ? (() => {
                           APPLY_FAIL_ONCE = false;
                           // A REFUSED WRITE: the read-back says the value is not there. The
@@ -737,6 +750,14 @@ const IDENTITY_PAYLOAD = {
                       : { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                           restart_errors: [], note: "restarted deploy/weirvern-worker",
                           at: "2026-10-17T17:05:00Z",
+                          tests: [
+                            { name: "the threshold does not fire on yesterday's baseline",
+                              status: "pass",
+                              detail: "would have fired on 3 of the last 24h's rows (budget 50)" },
+                            { name: "the interconnect plan stays complete", status: "skip",
+                              detail: "this change does not touch the interconnect plan" },
+                          ],
+                          summary: "1 passed, 1 skipped",
                           items: Object.entries(sent.changes || {}).map(([k, v]) => ({
                             key: k, value: String(v), ok: true, error: "" })) }
                   : u.includes("/api/settings/sonar")
@@ -3414,6 +3435,45 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             doc.getElementById("view-anomalies").classList.contains("active"));
     }
     H.showView("anomalies");
+  }
+
+  // ── APPLY-TIME CHECKS CAN BLOCK (BF-14) ─────────────────────────────────────────────────────
+  {
+    H.showView("settings");
+    await new Promise((r) => setTimeout(r, 200));
+    H.setToken("test-token-value");
+    const btIn = [...doc.querySelectorAll("#view-settings .setting-input")]
+      .find((n) => n.dataset.key === "base_threshold");
+    btIn.value = "0.001";
+    btIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await H.applyStage();
+    await new Promise((r) => setTimeout(r, 60));
+    const noteT = doc.getElementById("st-stage-note").textContent;
+    check("a failed apply-time check BLOCKS the write and names itself",
+          /BLOCKED/.test(noteT) && /threshold does not fire on yesterday/.test(noteT),
+          noteT.slice(0, 150));
+    const resT = doc.getElementById("st-apply-results").textContent;
+    check("...and the receipt counts what passed and what skipped",
+          /2 skipped/.test(resT) && /1 failed/.test(resT),
+          resT.slice(0, 180));
+    const line = [...doc.querySelectorAll("#st-apply-results .stage-res-item")]
+      .find((n) => /BLOCKED|apply-time checks/.test(n.textContent));
+    check("...with every check's verdict and reason on the hover",
+          !!line && /999 rows/.test(line.getAttribute("title") || ""),
+          line ? (line.getAttribute("title") || "").slice(0, 160) : "no line");
+    check("a blocked apply does NOT clear the stage -- the fix is the staged value",
+          Object.keys(H.STAGE.changes).length > 0,
+          JSON.stringify(H.STAGE.changes));
+    // now a value that passes: the checks ride the success receipt too
+    btIn.value = "0.5";
+    btIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await H.applyStage();
+    await new Promise((r) => setTimeout(r, 60));
+    const resOk = doc.getElementById("st-apply-results").textContent;
+    check("a clean apply reports its checks in the receipt",
+          /1 passed, 1 skipped/.test(resOk), resOk.slice(0, 180));
+    check("...and the stage clears when the write lands",
+          Object.keys(H.STAGE.changes).length === 0);
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
