@@ -747,3 +747,44 @@ def test_the_GUI_health_routes_pass_the_store():
             f"a GUI health route does not pass the account store, so the probe reports 'not probed' "
             f"in the very process that HAS one: {ast.unparse(node)}"
         )
+
+# ── issue #29: the volume evidence is READ, and a failed read is on the record ───────────────
+
+
+def test_the_volume_evidence_uses_the_REAL_flows_column():
+    """Issue #29, measured: the probe queried `weirvern.flows WHERE ts >= ...`, and `flows`
+    keys its time on `timestamp` -- so the query threw on every call and the input-volume
+    evidence this branch exists to show was never once produced. The stub honours fragments,
+    so this test answers only the query that names the real column, and records it."""
+    seen = {}
+
+    class _Rec(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "FROM weirvern.flows" in sql:
+                seen["sql"] = sql
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_Rec({"FROM weirvern.flows": [(18430, 12)]}), _settings())
+    p = next((x for x in report.probes if x.name == "models"), None)
+    assert p is not None
+    assert "timestamp >=" in seen.get("sql", ""), f"the query does not use the real column: {seen.get('sql')}"
+    assert "18430 flow row(s)" in str(p.detail), p.detail
+    assert "12 host(s)" in str(p.detail), p.detail
+
+
+def test_a_FAILED_volume_read_is_carried_into_the_detail():
+    """The swallow, made honest: when the volume query fails, its reason must ride in the
+    detail the operator reads -- a probe that cannot read its evidence must not read as one
+    with nothing to say."""
+
+    class _BrokenVolume(_StubClient):
+        def query(self, sql, *a, **kw):
+            if "FROM weirvern.flows" in sql:
+                raise RuntimeError("Code: 47. Unknown identifier ts")
+            return super().query(sql, *a, **kw)
+
+    report = status.collect_health(_BrokenVolume({}), _settings())
+    p = next((x for x in report.probes if x.name == "models"), None)
+    assert p is not None
+    assert "could not be read" in str(p.detail), p.detail
+    assert "Unknown identifier" in str(p.detail), p.detail

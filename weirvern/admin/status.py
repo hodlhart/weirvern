@@ -421,9 +421,15 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
         # here?", and answering it needs the input VOLUME, not the absence of an output.
         volume = ""
         try:
+            # THE REAL COLUMN NAME (issue #29): `flows` keys its time on `timestamp` -- the
+            # aggregate tables use `window_start`, and only the zeek_* tables use `ts` (the
+            # codebase says so in soc.py's ingestion series). The old query threw on EVERY
+            # call, and the throw was swallowed below, so this probe silently lost its
+            # input-volume evidence for good.
             rows = client.query(
                 f"SELECT count(), uniqExact(src_addr) FROM weirvern.flows "
-                f"WHERE ts >= now() - INTERVAL {int(getattr(settings, 'detect_window_h', 24))} HOUR"
+                f"WHERE timestamp >= now() - INTERVAL "
+                f"{int(getattr(settings, 'detect_window_h', 24))} HOUR"
             ).result_rows
             if rows and rows[0]:
                 vol_rows, vol_hosts = int(rows[0][0] or 0), int(rows[0][1] or 0)
@@ -431,6 +437,11 @@ def collect_health(client, settings, user_store=None) -> HealthReport:
                           f"{vol_rows} flow row(s) from {vol_hosts} host(s); training needs "
                           f"more than that before a detector is stored")
         except Exception as exc:  # noqa: BLE001
+            # HONEST, NOT SWALLOWED (issue #29): this used to leave `volume` empty and log
+            # only at DEBUG, so a probe that could not READ its evidence read identically to
+            # one with nothing to say. The reason now rides in the detail string -- the
+            # surface the operator actually reads.
+            volume = f" the input volume could not be read: {exc}"
             logger.debug("model input volume could not be read: %s", exc)
         report.add(Probe("models", ok=False,
                          detail="no training runs recorded;" + volume if volume
