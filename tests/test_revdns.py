@@ -312,3 +312,19 @@ class _RaisingPool:
                 raise exc
 
         return _Fut()
+
+def test_the_lookup_cache_is_BOUNDED():
+    """Issue #29: per-entry TTLs alone left the map unbounded -- an entry that has not
+    expired YET is never evicted, so a segment with many distinct addresses grows it without
+    limit. Driven past the cap, the cache stays at MAX_ENTRIES and the most recent put
+    survives with its value readable."""
+    c = revdns._Cache()
+    cap = revdns._Cache.MAX_ENTRIES
+    assert cap > 0
+    for i in range(cap + 500):
+        # keys are opaque strings to the cache; the bound is the subject here
+        c.put("addr-" + str(i), "host.example" if i % 2 else None)
+    assert c.size() <= cap, "the cache grew past its stated bound: " + str(c.size())
+    c.put("addr-fresh", "fresh.example")
+    hit, val = c.get("addr-fresh")
+    assert hit and val == "fresh.example", (hit, val)

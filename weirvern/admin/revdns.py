@@ -116,7 +116,15 @@ class _Cache:
     Both outcomes are cached because the NEGATIVE case dominates: in flow data
     most addresses are external with no PTR record, so an uncached negative would
     mean paying the timeout for the same unresolvable address on every refresh.
+
+    BOUNDED (issue #29): per-entry TTLs alone bound nothing -- nothing evicts an entry that
+    has not expired YET, so a segment with many distinct addresses (a /16 sweep is 65k) grew
+    the map without limit. MAX_ENTRIES caps it: a put at the cap first drops expired entries
+    (cheap, and usually enough), then the entry closest to expiry, so a hot address is not
+    evicted while dead ones linger.
     """
+
+    MAX_ENTRIES = 4096
 
     def __init__(self) -> None:
         self._entries: dict[str, tuple[float, str | None]] = {}
@@ -137,8 +145,14 @@ class _Cache:
 
     def put(self, addr: str, value: str | None) -> None:
         ttl = TTL_POSITIVE_S if value else TTL_NEGATIVE_S
+        now = time.time()
         with self._lock:
-            self._entries[addr] = (time.time() + ttl, value)
+            if len(self._entries) >= self.MAX_ENTRIES:
+                self._entries = {a: e for a, e in self._entries.items() if e[0] > now}
+            while len(self._entries) >= self.MAX_ENTRIES:
+                oldest = min(self._entries, key=lambda a: self._entries[a][0])
+                del self._entries[oldest]
+            self._entries[addr] = (now + ttl, value)
 
     def clear(self) -> None:
         with self._lock:
