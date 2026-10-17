@@ -413,6 +413,12 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 .stat.clickable:hover { border-color: var(--border-solid); }
 .stat.clickable.active { border-color: var(--accent); }
 .wl-sel { margin-right: 8px; }
+/* TH-5: the micro sparkline -- past buckets in the chart's own area colour, the CURRENT
+   bucket in accent. Same two colours every chart uses, so a sparkline reads as a tiny echo
+   of the full chart above it, not as a third palette. */
+svg.spark { display: block; margin-top: 4px; overflow: visible; }
+svg.spark rect { fill: var(--chart-area); }
+svg.spark rect.cur { fill: var(--accent); }
 /* TH-4: the drill-down SHEET -- fixed to the right edge, over the view. position: fixed is
    the no-layout-jump guarantee: the fleet list underneath never reflows under the reader. */
 #wl-detail-card.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;

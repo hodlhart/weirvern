@@ -1668,10 +1668,8 @@ function anRenderSeverity(sc) {
     const sev = String(c.severity || "unknown");
     const active = AN_FILTERS.severity === sev;
     const tile = el("button", { class: "tile" + (active ? " active" : ""),
-      attrs: { title: active ? "click to remove this filter" : `filter the page to ${sev}` } }, [
-      el("div", { class: "v sev-" + sev, text: String(c.count) }),
-      el("div", { class: "k", text: sev }),
-    ]);
+      attrs: { title: active ? "click to remove this filter" : `filter the page to ${sev}` } },
+      statCells(sev, String(c.count), { vClass: "sev-" + sev }));
     tile.addEventListener("click", () => anSetFilter("severity", active ? "" : sev));
     box.appendChild(tile);
   }
@@ -1791,6 +1789,53 @@ async function loadAnomalies() {
 
 /* ── host drill-down ────────────────────────────────────────────────────── */
 
+// ── THE METRIC-TILE RECIPE (TH-5) ────────────────────────────────────────────────────────────
+// Label ABOVE the value: the label is what the eye scans for, the number is what it reads.
+// Values are tabular (CSS), and a number with a series behind it gets a MICRO SPARKLINE -- the
+// current bucket in accent, the past in --chart-area. A number with no series gets no
+// sparkline: a made-up shape would be a lie told at twenty pixels tall.
+function sparkSvg(points, opts) {
+  const o = opts || {};
+  const w = o.w || 92, h = o.h || 20;
+  const vals = (points || []).map((p) => Number(p) || 0);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-hidden", "true");
+  const max = Math.max(1, ...vals);
+  const n = Math.max(1, vals.length);
+  const bw = w / n;
+  vals.forEach((v, i) => {
+    const r = document.createElementNS(ns, "rect");
+    // A zero bucket keeps a 1.5px stub: a gap must read as "nothing happened", not as a
+    // missing element (the host timeline's own rule, at sparkline scale).
+    const bh = v === 0 ? 1.5 : Math.max(2, (v / max) * (h - 2));
+    r.setAttribute("x", String(i * bw + 0.5));
+    r.setAttribute("y", String(h - bh));
+    r.setAttribute("width", String(Math.max(1, bw - 1.5)));
+    r.setAttribute("height", String(bh));
+    r.setAttribute("class", i === vals.length - 1 ? "cur" : "rest");
+    svg.appendChild(r);
+  });
+  return svg;
+}
+
+/** The children of one stat cell, in reading order: label, value, sparkline (when earned).
+ *  opts: { vClass, series, sparkTitle }. */
+function statCells(k, v, opts) {
+  const o = opts || {};
+  const cells = [
+    el("div", { class: "k", text: String(k) }),
+    el("div", { class: "v" + (o.vClass ? " " + o.vClass : ""), text: String(v) }),
+  ];
+  if (o.series && o.series.length) cells.push(sparkSvg(o.series, { title: o.sparkTitle }));
+  return cells;
+}
+
 async function loadHost(addr, hours) {
   const d = await getJSON(API.host(addr, hours));
 
@@ -1814,15 +1859,19 @@ async function loadHost(addr, hours) {
         ? "Host totals could not be read — see the message above."
         : `No flows from ${d.src_addr} in the last ${d.hours}h.` }));
   } else {
+    // bytes and flows have a series behind them (the timeline); the rest do not and get no
+    // sparkline. The series rides the tile the number belongs to, never a second query.
+    const tl = d.timeline || [];
     const items = [
-      ["bytes", fmtBytes(t.bytes)], ["packets", String(t.packets ?? "—")],
-      ["flows", String(t.flows ?? "—")], ["destinations", String(t.unique_destinations ?? "—")],
-      ["dest ports", String(t.unique_ports ?? "—")], ["last seen", fmtTime(t.last_seen)],
+      ["bytes", fmtBytes(t.bytes), tl.map((b) => b.bytes)],
+      ["packets", String(t.packets ?? "—")],
+      ["flows", String(t.flows ?? "—"), tl.map((b) => b.flows)],
+      ["destinations", String(t.unique_destinations ?? "—")],
+      ["dest ports", String(t.unique_ports ?? "—")],
+      ["last seen", fmtTime(t.last_seen)],
     ];
-    for (const [k, v] of items) {
-      stats.appendChild(el("div", { class: "stat" }, [
-        el("div", { class: "v", text: v }), el("div", { class: "k", text: k }),
-      ]));
+    for (const [k, v, series] of items) {
+      stats.appendChild(el("div", { class: "stat" }, statCells(k, v, { series })));
     }
   }
 
@@ -2248,9 +2297,7 @@ async function loadEvidence(addr, start, end) {
       ["ports", String(s.unique_ports ?? "—")],
     ];
     for (const [k, v] of cells) {
-      stats.appendChild(el("div", { class: "stat" }, [
-        el("div", { class: "v", text: v }), el("div", { class: "k", text: k }),
-      ]));
+      stats.appendChild(el("div", { class: "stat" }, statCells(k, v)));
     }
   }
 
@@ -3789,9 +3836,7 @@ async function loadIdentity() {
       ["unknown", String(cov.unknown ?? "—")],
     ];
     for (const [k, v] of items) {
-      covBox.appendChild(el("div", { class: "stat" }, [
-        el("div", { class: "v", text: v }), el("div", { class: "k", text: k }),
-      ]));
+      covBox.appendChild(el("div", { class: "stat" }, statCells(k, v)));
     }
   }
   document.getElementById("id-coverage-note").textContent = cov.available

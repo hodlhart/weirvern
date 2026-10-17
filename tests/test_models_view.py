@@ -360,7 +360,10 @@ def test_the_anomalies_table_has_a_header_for_every_cell():
     # The row is one `tbody.appendChild(el("tr", {...}, [ ...cells... ]));`, so the cells belong to
     # the span between the tr opening and the array's close.
     region = region[region.index('el("tr"'):]
-    region = region[:region.index("      ]));")]
+    # The boundary is the ROW's OWN array close (4-space indent). It used to be a 6-space
+    # closer that happened to be the next tiles array; TH-5 shortened that neighbour and the
+    # old boundary walked 8k chars into unrelated renderers. Pin the row's own close.
+    region = region[:region.index("\n    ]));")]
     cells = region.count('el("td"')
     # The empty-state row must span the same width, or the "no anomalies" message sits under a
     # header it does not fill.

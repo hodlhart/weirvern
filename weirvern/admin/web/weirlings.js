@@ -135,8 +135,10 @@ async function loadWeirlings() {
                title: state ? `show ${k} only` : "clear every filter" },
       on: { click: () => wlSetState(state) },
     }, [
-      el("div", { class: "v", text: v }),
+      // TH-5 recipe, built inline: label above value; fleet counts carry no series, so no
+      // sparkline is faked onto them.
       el("div", { class: "k", text: k }),
+      el("div", { class: "v", text: v }),
     ]);
     summaryBox.appendChild(tile);
   }

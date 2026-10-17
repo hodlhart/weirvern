@@ -120,7 +120,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
-                   setCrumbs, clearCrumbs, closeWeirling,
+                   setCrumbs, clearCrumbs, closeWeirling, sparkSvg, statCells,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
@@ -1168,6 +1168,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // payload served one sensor's row under every name, which would let a check on registering
     // an undeclared sensor act on a registered one's data.
     ["/api/weirlings", WEIRLINGS_PAYLOAD],
+
+    // The host view (TH-5): its timeline feeds the bytes/flows tile sparklines, and the zero
+    // bucket exercises the stub-height rule (a gap must not read as a missing bar).
+    ["/api/host", () => ({
+      available: true, hostname: "host.example", src_addr: "198.51.100.5", hours: 24,
+      totals: { bytes: 1234567, packets: 900, flows: 42, unique_destinations: 7,
+                unique_ports: 9, last_seen: "2026-01-01T00:30:00" },
+      timeline: [
+        { hour: "2026-01-01T00:00:00", bytes: 100, flows: 1 },
+        { hour: "2026-01-01T01:00:00", bytes: 900, flows: 5 },
+        { hour: "2026-01-01T02:00:00", bytes: 0, flows: 0 },
+        { hour: "2026-01-01T03:00:00", bytes: 4000, flows: 9 },
+      ],
+      top_destinations: [], top_ports: [], errors: null,
+    })],
 
 
     // The anomalies list, for the SOC-1 review-column checks and the #20 agreement checks.
@@ -3661,6 +3676,53 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(60);
     check("...and the sheet carries its own visible Close",
           card.classList.contains("hidden") && !!doc.getElementById("wl-sheet-close"));
+    H.showView("health");
+    await sleep(60);
+  }
+
+  // ── THE METRIC-TILE RECIPE (TH-5) ───────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
+    check("the sparkline's two fills are the chart's own colours",
+          /svg\.spark rect \{ fill: var\(--chart-area\); \}/.test(cssText)
+          && /svg\.spark rect\.cur \{ fill: var\(--accent\); \}/.test(cssText));
+    // the host view: the two series-backed tiles earn sparklines; the rest do not.
+    await H.openHost("198.51.100.5");
+    await sleep(250);
+    const hStats = doc.getElementById("h-stats");
+    const hTiles = [...hStats.querySelectorAll(".stat")];
+    check("the host tiles put the LABEL above the value",
+          hTiles.length >= 5 && hTiles.every((t) => t.children[0].classList.contains("k")),
+          hTiles.map((t) => t.children[0].className).join(","));
+    const bytesTile = hTiles.find((t) => /bytes/.test(t.textContent));
+    const bytesSpark = bytesTile && bytesTile.querySelector("svg.spark");
+    check("...and a series-backed number carries its sparkline",
+          !!bytesSpark && bytesSpark.querySelectorAll("rect").length === 4,
+          bytesSpark ? String(bytesSpark.querySelectorAll("rect").length) : "no svg");
+    check("...with the current bucket in accent and the past in chart-area",
+          !!bytesSpark
+          && bytesSpark.querySelectorAll("rect.cur").length === 1
+          && bytesSpark.querySelector("rect:last-of-type").classList.contains("cur")
+          && bytesSpark.querySelectorAll("rect.rest").length === 3);
+    check("...a zero bucket keeps a stub, so a gap never reads as a missing bar",
+          !!bytesSpark && [...bytesSpark.querySelectorAll("rect")]
+            .some((r) => Number(r.getAttribute("height")) === 1.5));
+    const destTile = hTiles.find((t) => /destinations/.test(t.textContent));
+    check("...and a number with no series gets no invented shape",
+          !!destTile && !destTile.querySelector("svg.spark"));
+    // the other tile families follow the same reading order, without sparklines
+    await H.loadWeirlings();
+    await sleep(200);
+    const wlFirst = doc.querySelector("#wl-summary .stat");
+    check("the fleet's count tiles read label-then-value too",
+          !!wlFirst && wlFirst.children[0].classList.contains("k"));
+    await H.loadAnomalies();
+    await sleep(200);
+    const sevFirst = doc.querySelector("#an-sev .tile");
+    check("the severity tiles read label-then-value as well",
+          !!sevFirst && sevFirst.children[0].classList.contains("k"),
+          sevFirst ? sevFirst.children[0].className : "none");
     H.showView("health");
     await sleep(60);
   }
