@@ -318,13 +318,25 @@ function dcToggleDetail(tr, r) {
     b.addEventListener("click", (e) => { e.stopPropagation(); fn(); loadDiscover().then(clearError).catch(showError); });
     acts.appendChild(b);
   };
-  addFilter("+ src " + r.src_addr, () => dcAddChip("src", r.src_addr));
-  addFilter("+ dst " + r.dst_addr, () => dcAddChip("dst", r.dst_addr));
-  if (r.src_port) addFilter("+ sport " + r.src_port, () => dcAddChip("sport", r.src_port));
-  if (r.dst_port) addFilter("+ dport " + r.dst_port, () => dcAddChip("dport", r.dst_port));
-  const host = el("button", { text: "open host " + r.src_addr });
-  host.addEventListener("click", (e) => { e.stopPropagation(); showView("host"); openHost(r.src_addr); });
-  acts.appendChild(host);
+  const openHostBtn = (addr) => {
+    const host = el("button", { text: "open host " + addr });
+    host.addEventListener("click", (e) => { e.stopPropagation(); showView("host"); openHost(addr); });
+    acts.appendChild(host);
+  };
+  if (dnsRow) {
+    // US-1: a DNS record has a client and a query, not a src/dst pair -- and the DNS feed
+    // ignores the chip filters server-side, so offering them added chips that filtered
+    // nothing. The record's own client is the one host worth a jump.
+    if (r.client) openHostBtn(r.client);
+  } else {
+    // Every value is offered only when it EXISTS -- a button labelled "+ src undefined" is a
+    // click that lies, which is the defect this replaces.
+    if (r.src_addr) addFilter("+ src " + r.src_addr, () => dcAddChip("src", r.src_addr));
+    if (r.dst_addr) addFilter("+ dst " + r.dst_addr, () => dcAddChip("dst", r.dst_addr));
+    if (r.src_port) addFilter("+ sport " + r.src_port, () => dcAddChip("sport", r.src_port));
+    if (r.dst_port) addFilter("+ dport " + r.dst_port, () => dcAddChip("dport", r.dst_port));
+    if (r.src_addr) openHostBtn(r.src_addr);
+  }
   dl.appendChild(acts);
   td.appendChild(dl);
   const detailTr = el("tr", { class: "dc-detail" });
@@ -385,6 +397,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const next = document.getElementById("dc-next");
   if (next) next.addEventListener("click", () => {
     DC_STATE.offset = DC_STATE.offset + DC_STATE.limit;
+    loadDiscover().then(clearError).catch(showError);
+  });
+  // US-1: the feed select had NO listener -- picking DNS or Zeek changed nothing, the biggest
+  // "click that lies" this console had. Switching feeds reloads; leaving netflow also drops the
+  // value chips, because the DNS and Zeek feeds ignore them and a chip that filters nothing is
+  // the same lie one layer down.
+  const feed = document.getElementById("dc-feed");
+  if (feed) feed.addEventListener("change", () => {
+    if (feed.value !== "netflow") DC_STATE.filters = [];
+    DC_STATE.offset = 0;
     loadDiscover().then(clearError).catch(showError);
   });
   const addr = document.getElementById("dc-addr");

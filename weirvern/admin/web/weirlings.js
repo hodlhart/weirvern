@@ -744,9 +744,9 @@ function wireWeirlings() {
   if (cancel) cancel.addEventListener("click", () => clearWeirlingForm());
 
   const close = document.getElementById("wl-detail-close");
-  if (close) close.addEventListener("click", () => {
-    document.getElementById("wl-detail-card").classList.add("hidden");
-  });
+  // US-1: through the ONE exit. Hiding the card alone left the scrim up -- the console was
+  // unclickable until a reload (measured).
+  if (close) close.addEventListener("click", () => closeWeirling());
 
   const enableBtn = document.getElementById("wl-detail-enable");
   if (enableBtn) enableBtn.addEventListener("click", () => setWeirlingEnabled(true));
@@ -1209,14 +1209,22 @@ async function setWeirlingEnabled(enabled) {
 async function revokeWeirling() {
   const id = document.getElementById("wl-detail-id").textContent;
   const note = document.getElementById("wl-detail-note");
-  // CONFIRMED, because it is not reversible from this page: re-registering is how a sensor comes
-  // back, and an operator should not learn that by clicking.
-  if (!window.confirm(`Revoke ${id}?\n\nThe registration is retired but kept for the audit trail. `
-    + `Re-register it to bring it back.`)) return;
+  // CONFIRMED through the ONE echo -- closed here as a BF-9 gap: this path kept a bare
+  // window.confirm, sent no reason (which the server refuses), and hid the card without
+  // releasing the scrim.
+  if (typeof confirmDestructive !== "function") return;
+  const verdict = await confirmDestructive({
+    title: `Revoke ${id}: the hub stops expecting it.`,
+    target: id,
+    blast: "its heartbeats stop being raised as missing; the record stays readable and it can "
+           + "be registered again later",
+    reasonHint: "why this sensor is being retired",
+  });
+  if (!verdict.ok) return;
   note.textContent = "revoking…";
   let d;
   try {
-    d = await postJSON("/api/weirlings/revoke", { sensor_id: id });
+    d = await postJSON("/api/weirlings/revoke", { sensor_id: id, reason: verdict.reason });
   } catch (err) {
     note.textContent = `Could not revoke: ${err && err.message ? err.message : err}`;
     return;
@@ -1225,6 +1233,6 @@ async function revokeWeirling() {
     note.textContent = `Refused: ${(d && d.error) || "the server did not accept the revocation"}`;
     return;
   }
-  document.getElementById("wl-detail-card").classList.add("hidden");
+  closeWeirling();
   await loadWeirlings();
 }

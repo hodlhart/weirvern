@@ -869,6 +869,9 @@ const IDENTITY_PAYLOAD = {
                         }
                         return { ok: true, sensor_id: sent.sensor_id || "" };
                       })()
+                  : u.includes("/api/weirlings/revoke")
+                    ? { ok: true, sensor_id: sent.sensor_id || "",
+                        note: "revoked; the record stays for the audit trail" }
                   : { ok: false, error: "no write route at " + u };
       // `__http` lets one reply carry a real status code: the failed sign-in and the dead-session
       // password refusal are 401s on the real server, and the client decides whether to throw by
@@ -1043,6 +1046,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               weirlings: [{ value: "127.0.0.1", count: 42, label: "weirvern" }] },
   };
 
+  // US-1: the discover DNS feed, so the record detail's actions are checkable. Shaped like
+  // soc.discover_dns serves it (client/query/qtype/rcode/answer_ips).
+  const DISCOVER_DNS_PAYLOAD = {
+    available: true, reason: "", total: 1, limit: 100, offset: 0, feed: "dns",
+    rows: [
+      { ts: "2026-10-16 06:00:00", client: "198.51.100.77", query: "tracker.example",
+        qtype: 1, qtype_label: "A", rcode: 0, rcode_label: "NOERROR",
+        answer_ips: ["198.51.100.9"], answers: "198.51.100.9" },
+    ],
+    histogram: [{ t: "2026-10-16 06:00:00", n: 1, bytes: 0 }],
+    facets: { clients: [{ value: "198.51.100.77", count: 1, label: "198.51.100.77" }] },
+  };
+
   const DNS_PAYLOAD = {
     available: true, reason: "", total: 12, limit: 100, offset: 0, bucket_s: 60,
     rows: [
@@ -1150,7 +1166,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
-    ["/api/discover", (u) => { DISCOVER_REQS.push(String(u)); return DISCOVER_PAYLOAD; }],
+    ["/api/discover", (u) => {
+      DISCOVER_REQS.push(String(u));
+      return String(u).includes("feed=dns") ? DISCOVER_DNS_PAYLOAD : DISCOVER_PAYLOAD;
+    }],
     // COUNTED (issue #15): the Sluice tab must be able to fetch this ON DEMAND, once.
     ["/api/blocked", () => { BLOCKED_FETCHES += 1; return BLOCKED_PAYLOAD; }],
     ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
@@ -5150,6 +5169,81 @@ check("high capture loss is called out in the fleet",
     check("the next good load replaces the failure note",
           !/loading/i.test(s2) && !/the error is shown at the top/i.test(s2), s2);
   }
+  // ── THE CLICKS THAT LIE (US-1) ──────────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // (a) a gate-form field must not bubble to the anomaly row (it used to open Evidence mid-edit)
+    H.showView("anomalies");
+    await sleep(300);
+    const anRow = doc.querySelector("#anomalies-table tbody tr");
+    const gateOpen = anRow ? anRow.querySelector(".gate-open") : null;
+    check("the anomaly row offers its gate form", !!gateOpen);
+    if (gateOpen) {
+      gateOpen.click();
+      await sleep(60);
+      const form = anRow.querySelector(".gate-form");
+      check("...and the form opens inside the row", !!form);
+      const sel = form ? form.querySelector("select") : null;
+      if (sel) {
+        sel.click();
+        await sleep(60);
+        check("a click on a form field does NOT fall through to the row (no Evidence mid-edit)",
+              doc.getElementById("view-anomalies").classList.contains("active")
+              && !doc.getElementById("view-evidence").classList.contains("active")
+              && !!anRow.querySelector(".gate-form"),
+              "anomalies active=" + doc.getElementById("view-anomalies").classList.contains("active"));
+      }
+      const port = form ? form.querySelector("input[type=number]") : null;
+      if (port) {
+        port.click();
+        await sleep(60);
+        check("...not even typing into the port field",
+              !doc.getElementById("view-evidence").classList.contains("active"));
+      }
+    }
+    // (b) the sheet's Close button releases the scrim (it used to hide the card only)
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    await H.openWeirling("edge-alive");
+    await sleep(150);
+    let scrim = doc.getElementById("wl-sheet-scrim");
+    check("the sheet opens with its scrim", !!scrim && !scrim.classList.contains("hidden"));
+    doc.getElementById("wl-detail-close").click();
+    await sleep(40);
+    check("Close hides the card AND releases the scrim (the console stays clickable)",
+          doc.getElementById("wl-detail-card").classList.contains("hidden")
+          && (!scrim || scrim.classList.contains("hidden")),
+          "scrim hidden=" + (scrim ? scrim.classList.contains("hidden") : "no scrim"));
+    // (b2) the drill revoke: through the echo, carrying the reason, and it releases the scrim
+    await H.openWeirling("edge-alive");
+    await sleep(150);
+    const beforeRevoke = POSTED.length;
+    doc.getElementById("wl-detail-revoke").click();
+    await sleep(120);
+    check("the drill's Revoke opens the echo first", !!doc.querySelector("#modal-body .dest-confirm"));
+    await confirmEcho("retiring it on purpose");
+    await sleep(200);
+    const revReq = POSTED.slice(beforeRevoke).find((r) => r.url.includes("/api/weirlings/revoke"));
+    check("...and the revoke carries its reason", !!revReq && /retiring it on purpose/.test(revReq.body),
+          revReq ? revReq.body.slice(0, 120) : "no revoke POST");
+    scrim = doc.getElementById("wl-sheet-scrim");
+    check("...and the exit releases the scrim too",
+          doc.getElementById("wl-detail-card").classList.contains("hidden")
+          && (!scrim || scrim.classList.contains("hidden")));
+    // (d) the anomalies header and its row cells agree BY POSITION
+    H.showView("anomalies");
+    await sleep(300);
+    const head = [...doc.querySelectorAll("#anomalies-table thead th")].map((t) => t.textContent.toLowerCase());
+    const cells = [...doc.querySelectorAll("#anomalies-table tbody tr")[0].querySelectorAll("td")].map((t) => t.textContent);
+    const ownerAt = cells.findIndex((c) => c === "ops");
+    const matchedAt = cells.findIndex((c) => /scored this window/.test(c));
+    check("the header names its columns where the rows put them",
+          head.indexOf("owner") === ownerAt && head.indexOf("matched rule") === matchedAt
+          && ownerAt > -1 && matchedAt > -1,
+          "owner head=" + head.indexOf("owner") + " cell=" + ownerAt
+          + "; matched head=" + head.indexOf("matched rule") + " cell=" + matchedAt);
+  }
+
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
   {
     H.showView("discover");
@@ -5165,6 +5259,42 @@ check("high capture loss is called out in the fleet",
       check("and offers to filter on the fields it shows",
             !!(detail && detail.querySelectorAll("button").length >= 3),
             "fewer than three action buttons");
+      check("the flow detail renders no 'undefined' anywhere",
+            !!detail && !/undefined/.test(detail.textContent)
+            && ![...detail.querySelectorAll("button")].some((b) => /undefined/.test(b.textContent)));
+      dcRows[0].click();   // close the detail before the DNS arm of this block
+    }
+    // US-1: the DNS feed's record detail -- a client and a query, never a src/dst pair, and
+    // never the word undefined.
+    const feedSel = doc.getElementById("dc-feed");
+    if (feedSel) {
+      feedSel.value = "dns";
+      feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const dnsRows = doc.querySelectorAll("#dc-rows tr.dc-row");
+      check("the DNS feed renders its records", dnsRows.length >= 1, "rows=" + dnsRows.length);
+      if (dnsRows[0]) {
+        dnsRows[0].click();
+        const dnsDetail = doc.querySelector("#dc-rows tr.dc-detail");
+        check("a DNS record's detail says client and answers, with no undefined",
+              !!dnsDetail && /client: 198.51.100.77/.test(dnsDetail.textContent)
+              && !/undefined/.test(dnsDetail.textContent),
+              dnsDetail ? dnsDetail.textContent.slice(0, 100) : "no detail");
+        const dnsBtns = dnsDetail ? [...dnsDetail.querySelectorAll("button")].map((b) => b.textContent) : [];
+        check("...and its one action opens the CLIENT's host view",
+              dnsBtns.length === 1 && /open host 198.51.100.77/.test(dnsBtns[0]),
+              dnsBtns.join(" | "));
+        // Guarded: a regression that strips the button must fail the checks, not crash the run.
+        const dnsBtn = dnsDetail ? dnsDetail.querySelector("button") : null;
+        if (dnsBtn) dnsBtn.click();
+        await new Promise((r) => setTimeout(r, 120));
+        check("...and that button lands on the host view",
+              !!dnsBtn && doc.getElementById("view-host").classList.contains("active"));
+        H.showView("discover");
+        feedSel.value = "netflow";
+        feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 200));
+      }
     }
     const dcVol = doc.getElementById("dc-volume");
     const hits = dcVol ? dcVol.querySelectorAll("rect.hit") : [];

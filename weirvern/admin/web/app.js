@@ -2103,6 +2103,9 @@ function toggleGateForm(wrap, a) {
 /** The form: all traffic from the host, or one service (port + protocol). */
 function gateForm(a) {
   const form = el("div", { class: "gate-form" });
+  // US-1: a click inside the form belongs to the form. Without this the row's own click
+  // handler swallows it and the Evidence drill opens mid-edit (measured).
+  form.addEventListener("click", (e) => e.stopPropagation());
   const scope = el("select", { attrs: { "aria-label": "what to block" } }, [
     el("option", { value: "all", text: "all traffic from this host", selected: true }),
     el("option", { value: "port", text: "only one service" }),

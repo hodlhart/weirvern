@@ -311,7 +311,7 @@ function renderChips() {
   }
   box.appendChild(el("span", { class: "muted", text: "Tracking:" }));
   for (const addr of ASSETS_STATE.tracked) {
-    const chip = el("span", { class: "chip", title: "click to stop tracking this host" }, [
+    const chip = el("span", { class: "chip act", title: "click to stop tracking this host" }, [
       el("span", { text: addr }),
       el("span", { class: "x", text: "×" }),
     ]);
