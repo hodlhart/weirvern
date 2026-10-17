@@ -1163,9 +1163,12 @@
     </div>
 
     <!-- DRILL-DOWN. The finding text is the whole point of this panel: a state word alone does
-         not say whether "stale" means the box is powered off or its capture died. -->
-    <div class="card hidden" id="wl-detail-card">
-      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+         not say whether "stale" means the box is powered off or its capture died.
+         TH-4: it is a SLIDE-IN SHEET now -- fixed to the right edge, over the view, so the
+         fleet list underneath never reflows while you read one sensor. -->
+    <div class="card sheet hidden" id="wl-detail-card" tabindex="-1">
+      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
+        <button id="wl-sheet-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
       <div class="controls sonar-row hidden" id="wl-runtime">
         <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
         <button id="st-sonar" type="button">Sonar</button>

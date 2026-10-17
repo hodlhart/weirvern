@@ -413,6 +413,18 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 .stat.clickable:hover { border-color: var(--border-solid); }
 .stat.clickable.active { border-color: var(--accent); }
 .wl-sel { margin-right: 8px; }
+/* TH-4: the drill-down SHEET -- fixed to the right edge, over the view. position: fixed is
+   the no-layout-jump guarantee: the fleet list underneath never reflows under the reader. */
+#wl-detail-card.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;
+  width: min(480px, 94vw); margin: 0; border-radius: 0; border-left: 1px solid var(--border-solid);
+  overflow-y: auto; z-index: 75; animation: sheet-in .18s ease-out; }
+#wl-detail-card.sheet.hidden { display: none; }
+@keyframes sheet-in { from { transform: translateX(100%); } to { transform: none; } }
+.sheet-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 74; }
+.sheet-scrim.hidden { display: none; }
+.sheet-close { float: right; font-size: 12px; padding: 2px 10px; background: none;
+  border: 1px solid var(--border-solid); color: var(--muted); border-radius: 4px; cursor: pointer; }
+.sheet-close:hover { color: var(--fg); }
 /* TH-3: the grouped nav -- one row, labelled clusters, nothing hidden or collapsing. */
 #tabs { display: flex; align-items: center; flex-wrap: nowrap; }
 .tab-group { display: flex; align-items: center; gap: 2px; flex: none; }

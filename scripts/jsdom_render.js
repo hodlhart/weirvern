@@ -120,7 +120,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
-                   setCrumbs, clearCrumbs,
+                   setCrumbs, clearCrumbs, closeWeirling,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
@@ -3619,6 +3619,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(80);
     check("a view change clears any breadcrumb that was left",
           doc.getElementById("crumbs").classList.contains("hidden"));
+  }
+
+  // ── THE DRILL-DOWN SHEET (TH-4) ─────────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
+    check("the drill-down is a sheet: fixed to the right edge, so the view never reflows",
+          cssText.includes("#wl-detail-card.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;"),
+          "css rule");
+    const card = doc.getElementById("wl-detail-card");
+    check("...and it slides in (the sheet-in keyframe is defined)",
+          card.classList.contains("sheet") && cssText.includes("@keyframes sheet-in"));
+    check("editors stay centred modals: the settings stage card is NOT a sheet",
+          !doc.getElementById("st-stage-card").classList.contains("sheet"));
+    await H.showView("weirlings");
+    await H.loadWeirlings();
+    await H.openWeirling("edge-alive");
+    await sleep(200);
+    check("opening a sensor brings the sheet up",
+          !card.classList.contains("hidden"));
+    check("...with focus moved INTO the sheet (keyboard belongs to it)",
+          doc.activeElement === card, String(doc.activeElement && doc.activeElement.id));
+    const scrim = doc.getElementById("wl-sheet-scrim");
+    check("...and a click-out scrim behind it", !!scrim && !scrim.classList.contains("hidden"));
+    window.document.dispatchEvent(new window.KeyboardEvent("keydown",
+      { key: "Escape", bubbles: true, cancelable: true }));
+    await sleep(60);
+    check("Escape returns from the sheet",
+          card.classList.contains("hidden") && scrim.classList.contains("hidden"));
+    check("...and the breadcrumb trail goes with it",
+          doc.getElementById("crumbs").classList.contains("hidden"));
+    await H.openWeirling("edge-alive");
+    await sleep(120);
+    scrim.click();
+    await sleep(60);
+    check("a click outside returns too", card.classList.contains("hidden"));
+    await H.openWeirling("edge-alive");
+    await sleep(120);
+    doc.getElementById("wl-sheet-close").click();
+    await sleep(60);
+    check("...and the sheet carries its own visible Close",
+          card.classList.contains("hidden") && !!doc.getElementById("wl-sheet-close"));
+    H.showView("health");
+    await sleep(60);
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
