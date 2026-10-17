@@ -5817,6 +5817,175 @@ check("high capture loss is called out in the fleet",
     await sleep(120);
   }
 
+  // ── THE CLICK BUDGET, MEASURED (US-5): the four top jobs, counted ──────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // COUNTS OPERATOR CLICKS, not code steps. Budget: understanding <=1, acting <=2; where the
+    // act is irreversible the BF-9 destructive echo is RETAINED and consumes its own click
+    // (US-5's own carve-out: "with the BF-9 destructive echo retained where acts are
+    // irreversible").
+    let clicks = 0;
+    const C = (elm) => { clicks += 1; elm.click(); return elm; };
+    const budget = [];
+    const note = (job, phase, n) => budget.push(`${job.padEnd(20)} ${phase.padEnd(11)} = ${n} click(s)`);
+
+    // ── JOB 1: investigate an anomaly (understand 1, act 2) ──────────────────────────────────
+    const AN_ONE = { available: true, reason: "", rows: [
+      { detected_at: "2026-10-17T11:00:00", window_start: "2026-10-17T10:55:00",
+        window_end: "2026-10-17T11:00:00", src_addr: "198.51.100.5", hostname: "host.example",
+        anomaly_score: 0.91, severity: "high", detected_by_models: "Isolation Forest, DBSCAN",
+        n: 1, review_state: "", reviewed_at: null, windows: [
+          { window: "2026-10-17T10:55:00", review_state: "", review_note: "", reviewed_at: null }],
+        owner: "ops", matched_rule: "x", primary_deviation_feature: "bytes_z", baseline_comparison: "" },
+    ], severity_counts: {}, discipline: null, watch_error: null };
+    fetchOverride = (u) => (String(u).includes("/api/evidence")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5",
+          window_start: "2026-10-17T10:55:00", window_end: "2026-10-17T11:00:00",
+          anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "Isolation Forest",
+                     baseline_comparison: "", attack_techniques: "" },
+          flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
+          flows: [], errors: null }) })
+      : String(u).includes("/api/anomalies")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => AN_ONE })
+      : null);
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(250);
+    const jobRow = doc.querySelector("#anomalies-table tbody tr");
+    check("JOB investigate-anomaly: the row is on screen", !!jobRow);
+    clicks = 0;
+    C(jobRow);                                   // 1: the row -> Evidence
+    await sleep(280);
+    check("JOB investigate-anomaly: understanding is ONE click (row -> Evidence)",
+          clicks === 1 && doc.getElementById("view-evidence").classList.contains("active"),
+          `clicks=${clicks}`);
+    note("investigate-anomaly", "understand", clicks);
+    const evVerb = doc.querySelector("#ev-verdict .gate-open");
+    clicks = 0;
+    if (evVerb) {
+      C(evVerb);                                 // 1: the block verb (form = the BF-9 echo)
+      await sleep(180);
+      const fileBtn = [...doc.querySelectorAll("#ev-verdict .gate-form button")]
+        .find((b) => /File block/.test(b.textContent));
+      if (fileBtn) { C(fileBtn); await sleep(320); }   // 2: file
+    }
+    const act1 = clicks;
+    const post1 = POSTED.slice(-1)[0] || {};
+    check("JOB investigate-anomaly: acting is TWO clicks (verb + file) and posts the block",
+          act1 === 2 && /\/api\/sluice\/block/.test(post1.url || "")
+          && /198\.51\.100\.5/.test(post1.body || ""),
+          `clicks=${act1} post=${(post1.url || "none")} body=${String(post1.body || "").slice(0, 60)}`);
+    note("investigate-anomaly", "act", act1);
+    fetchOverride = null;
+
+    // ── JOB 2: block a domain from where it is seen (verb on the row) ────────────────────────
+    H.showView("dns");
+    await H.loadDns();
+    await sleep(220);
+    const dnsRow = doc.querySelector("#dn-rows tr.dc-row");
+    const blockVerb = dnsRow
+      ? [...dnsRow.querySelectorAll("button")].find((b) => /^Block/.test(b.textContent.trim()))
+      : null;
+    check("JOB block-domain: the verb lives ON the row that shows the domain", !!blockVerb);
+    clicks = 0;
+    if (blockVerb) {
+      C(blockVerb);                              // 1: open the composer (target+blast on screen)
+      await sleep(180);
+      const modeSel = doc.getElementById("rc-mode");
+      if (modeSel) {
+        modeSel.value = "block";
+        modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+      }
+      check("JOB block-domain: choosing block mode is not a click (a select, not a step)",
+            clicks === 1, `clicks=${clicks}`);
+      const createBtn = doc.getElementById("rc-create");
+      if (createBtn) {
+        C(createBtn);                            // 2: arms -- the retained BF-9 echo
+        await sleep(100);
+        check("...the echo is on the button before it writes",
+              /Confirm/.test(createBtn.textContent), createBtn.textContent);
+        C(createBtn);                            // 3: commits
+        await sleep(320);
+      }
+      const cancelBtn = doc.getElementById("rc-cancel");
+      if (cancelBtn) cancelBtn.click();
+    }
+    const act2 = clicks;
+    const post2 = POSTED.slice(-1)[0] || {};
+    check("JOB block-domain: TWO clicks + the retained BF-9 confirm, posting the rule",
+          act2 === 3 && /\/api\/sluice\/block/.test(post2.url || "")
+          && /ads\.example\.com/.test(post2.body || "") && /"mode":"block"/.test(post2.body || ""),
+          `clicks=${act2} post=${(post2.url || "none")} body=${String(post2.body || "").slice(0, 80)}`);
+    note("block-domain", "act", act2);
+    budget.push("                     (of which 1 = the BF-9 destructive confirm, retained)");
+
+    // ── JOB 3: quiet a noisy detector (registry row -> its alerts -> ack) ────────────────────
+    const AN_REQS = [];
+    fetchOverride = (u) => {
+      const s = String(u);
+      if (!s.includes("/api/anomalies")) return null;
+      AN_REQS.push(s);
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => AN_ONE });
+    };
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(300);
+    const regCell = [...doc.querySelectorAll("#detectors-table tbody .dcell")]
+      .find((el2) => /DBSCAN/.test(el2.textContent));
+    check("JOB quiet-detector: the registry row offers its verb", !!regCell);
+    clicks = 0;
+    if (regCell) {
+      C(regCell);                                // 1: filter the queue to this detector
+      await sleep(350);
+    }
+    const uq3 = clicks;
+    check("JOB quiet-detector: understanding is ONE click (registry row -> its alerts)",
+          uq3 === 1 && H.AN_FILTERS.model === "DBSCAN"
+          && AN_REQS.some((u) => u.includes("model=DBSCAN")),
+          `clicks=${uq3} model=${H.AN_FILTERS.model} asked=${AN_REQS.length ? AN_REQS[AN_REQS.length - 1] : "none"}`);
+    note("quiet-detector", "understand", uq3);
+    const ackBtn = [...doc.querySelectorAll("#anomalies-table .review-act")]
+      .find((b) => b.textContent === "ack");
+    clicks = 0;
+    if (ackBtn) {
+      C(ackBtn);                                 // 1: the disposition -- the actual quieting
+      await sleep(300);
+    }
+    const post3 = POSTED.slice(-1)[0] || {};
+    check("JOB quiet-detector: quieting one finding is ONE more click (ack posts)",
+          clicks === 1 && /\/api\/review/.test(post3.url || "")
+          && /"state":"ack"/.test(String(post3.body || "")),
+          `clicks=${clicks} post=${(post3.url || "none")}`);
+    note("quiet-detector", "act", clicks);
+    H.anClearAllFilters();
+    await sleep(200);
+    fetchOverride = null;
+
+    // ── JOB 4: find a host and inspect its traffic (1 click) ─────────────────────────────────
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(250);
+    const jobHostCell = [...doc.querySelectorAll("#anomalies-table tbody td.dcell")]
+      .find((td) => /open this host's view/.test(td.title || ""));
+    check("JOB find-and-inspect: the host cell is on the row", !!jobHostCell);
+    clicks = 0;
+    if (jobHostCell) {
+      C(jobHostCell);                            // 1: the host's own view, traffic included
+      await sleep(320);
+    }
+    check("JOB find-and-inspect: ONE click from the row to the host's traffic",
+          clicks === 1 && doc.getElementById("view-host").classList.contains("active")
+          && (doc.getElementById("h-stats").textContent || "").length > 0,
+          `clicks=${clicks} stats=${(doc.getElementById("h-stats").textContent || "").slice(0, 40)}`);
+    note("find-and-inspect", "understand", clicks);
+
+    console.log("CLICK BUDGET (US-5, measured):");
+    for (const line of budget) console.log("  " + line);
+    H.showView("health");
+    await sleep(120);
+  }
+
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
   {
     H.showView("discover");

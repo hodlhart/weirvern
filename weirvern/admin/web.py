@@ -463,13 +463,15 @@ def _build_handler(ctx: GuiContext):
                     # answer a DIFFERENT question than the one that was asked).
                     host_f = (query.get("host") or [""])[0].strip()
                     sev_f = (query.get("severity") or [""])[0].strip()
-                    if len(host_f) > 64 or len(sev_f) > 24:
-                        return self._error(400, "host or severity filter is implausibly long")
+                    model_f = (query.get("model") or [""])[0].strip()
+                    if len(host_f) > 64 or len(sev_f) > 24 or len(model_f) > 64:
+                        return self._error(400, "host, severity or model filter is implausibly long")
                     # GROUPED (the operator, 2026-10-16): identical anomalies fold into one row
                     # carrying a count, with each occurrence's window behind the click. A
                     # duplicate-consuming list would quietly shrink the queue's coverage.
                     rows = status_mod.anomalies_grouped(
-                        client, limit=limit, min_score=min_score, host=host_f, severity=sev_f)
+                        client, limit=limit, min_score=min_score, host=host_f, severity=sev_f,
+                        model=model_f)
                     # The header tiles: counts per severity under min-score + host, NOT under the
                     # severity filter itself (see status.anomaly_severity_counts for why).
                     severity_counts = status_mod.anomaly_severity_counts(

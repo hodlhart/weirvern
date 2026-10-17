@@ -1505,12 +1505,13 @@ function anToggleOccurrences(tr, a) {
  * binds both into the anomalies query, so the list and its counts are the filtered truth --
  * never a smaller list the browser worked out by hiding rows it had already received.
  */
-const AN_FILTERS = { host: "", severity: "" };
+const AN_FILTERS = { host: "", severity: "", model: "" };
 
 function anQuery() {
   let q = "";
   if (AN_FILTERS.host) q += "&host=" + encodeURIComponent(AN_FILTERS.host);
   if (AN_FILTERS.severity) q += "&severity=" + encodeURIComponent(AN_FILTERS.severity);
+  if (AN_FILTERS.model) q += "&model=" + encodeURIComponent(AN_FILTERS.model);
   return q;
 }
 
@@ -1518,7 +1519,7 @@ function anRenderChips() {
   const box = document.getElementById("an-filters");
   if (!box) return;
   box.replaceChildren();
-  for (const field of ["host", "severity"]) {
+  for (const field of ["host", "severity", "model"]) {
     if (!AN_FILTERS[field]) continue;
     const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
       text: `${field} = ${AN_FILTERS[field]} \u00d7` });
@@ -1706,7 +1707,10 @@ async function loadDetectors() {
   for (const det of d.detectors || []) {
     tbody.appendChild(el("tr", { attrs: { "data-detector": det.name } }, [
       el("td", {}, [
-        el("span", { class: "mono", text: det.name }),
+        // US-5: the registry row answers "show me what this detector found" in one click.
+        el("span", { class: "mono dcell", attrs: { title: "show only this detector's alerts" },
+                     on: { click: () => anSetFilter("model", det.name) } },
+           [el("span", { text: det.name })]),
         det.known ? null : el("span", { class: "chip warn", text: " unregistered",
           attrs: { title: "nobody has registered this detector: it cannot page until an owner and runbook exist" } }),
       ]),
@@ -1757,6 +1761,7 @@ function anSetFilter(field, value) {
 function anClearAllFilters() {
   AN_FILTERS.host = "";
   AN_FILTERS.severity = "";
+  AN_FILTERS.model = "";
   const min = document.getElementById("f-min-score");
   if (min) min.value = "0";
   for (const id of ["f-unreviewed", "f-watched"]) {
@@ -1798,8 +1803,8 @@ async function loadAnomalies() {
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
   if (!rows.length) {
-    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || Number(min) > 0 ||
-                        unreviewedOnly || watchedOnly);
+    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model ||
+                        Number(min) > 0 || unreviewedOnly || watchedOnly);
     const note = unreviewedOnly
       ? (Number(min) > 0
           ? `No unreviewed anomalies at or above score ${min}.`
@@ -1843,7 +1848,25 @@ async function loadAnomalies() {
       el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
          [sevCell(a.severity)]),
-      el("td", { class: "mono", text: a.detected_by_models || "—" }),
+      // US-5: each name in the models cell is an entity -- clicking one filters the queue to
+      // that detector (the quiet-a-noisy-detector job's entry, beside the registry strip's).
+      el("td", { class: "mono" }, String(a.detected_by_models || "—").split(",")
+        .flatMap((nm, i, arr) => {
+          const clean = nm.trim();
+          const parts = [];
+          if (clean) {
+            const piece = el("span", { class: "dcell",
+                                       attrs: { title: "show only this detector's alerts" },
+                                       text: clean });
+            piece.addEventListener("click", (e) => {
+              e.stopPropagation();
+              anSetFilter("model", clean);
+            });
+            parts.push(piece);
+          }
+          if (i < arr.length - 1) parts.push(el("span", { text: ", " }));
+          return parts;
+        })),
       // THE CONTRACT'S OWNER + MATCHED RULE (BF-12), derived server-side from the same
       // registry the pager reads.
       el("td", { class: a.owner ? "" : "muted", text: a.owner || "unowned",
@@ -4383,6 +4406,7 @@ function syncURL() {
   }
   if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
   if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
+  if (AN_FILTERS.model) p.set("an.model", AN_FILTERS.model);
   const unrev = document.getElementById("f-unreviewed");
   const watched = document.getElementById("f-watched");
   const min = document.getElementById("f-min-score");
@@ -4443,6 +4467,7 @@ function applyURLState() {
   }
   if (p.get("an.host")) AN_FILTERS.host = p.get("an.host");
   if (p.get("an.sev")) AN_FILTERS.severity = p.get("an.sev");
+  if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
   const unrev = document.getElementById("f-unreviewed");
   const watched = document.getElementById("f-watched");
   const min = document.getElementById("f-min-score");

@@ -1792,7 +1792,7 @@ def noise_flows(client, hours: int = 24) -> dict:
 
 
 def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
-                       host: str = "", severity: str = "") -> list[dict]:
+                       host: str = "", severity: str = "", model: str = "") -> list[dict]:
     """Anomalies WITH the explainability columns, as dicts.
 
     The GUI needs the WHY: which feature deviated, by how much,
@@ -1831,16 +1831,22 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
         # would silently mis-report the total.
         + ("AND src_addr = %(host)s " if host else "")
         + ("AND severity = %(sev)s " if severity else "")
+        # THE DETECTOR FILTER (US-5, the quiet-a-noisy-detector job): exact per-name match
+        # against the comma-joined list -- `involved()`'s own semantics, so "DBSCAN" can
+        # never be shadowed by a longer name that contains it.
+        + ("AND arrayExists(m -> trimBoth(m) = %(model)s, "
+           "splitByChar(',', detected_by_models)) " if model else "")
         + "ORDER BY detected_at DESC LIMIT %(n)s",
         parameters={"s": min_score, "n": limit, **({"host": host} if host else {}),
-                    **({"sev": severity} if severity else {})},
+                    **({"sev": severity} if severity else {}),
+                    **({"model": model} if model else {})},
     )
     cols = list(res.column_names)
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
 
 
 def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
-                      host: str = "", severity: str = "") -> list[dict]:
+                      host: str = "", severity: str = "", model: str = "") -> list[dict]:
     """One row per DISTINCT anomaly, with its occurrence count and its windows.
 
     The operator, 2026-10-16: "These are identical in anomalies. Add a count column instead of
@@ -1858,6 +1864,11 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
     if severity:
         where.append("severity = %(sev)s")
         params["sev"] = str(severity)
+    if model:
+        # Same exact-name semantics as anomalies_detailed (see its note).
+        where.append("arrayExists(m -> trimBoth(m) = %(model)s, "
+                     "splitByChar(',', detected_by_models))")
+        params["model"] = str(model)
     result = client.query(
         "SELECT detected_at, src_addr, anomaly_score, confidence, severity, "
         "detected_by_models, model_agreement, isolation_forest_score, gradient_boosting_score, "
