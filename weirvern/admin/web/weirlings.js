@@ -423,6 +423,8 @@ async function wlSettingsFor(sensorId) {
   if (!sensorId) {
     cfg.classList.add("hidden");
     remote.classList.add("hidden");
+    const exp = document.getElementById("wl-expectation");
+    if (exp) exp.classList.add("hidden");
     return;
   }
   sessionStorage.setItem("weirvern-wl-settings", sensorId);
@@ -430,6 +432,26 @@ async function wlSettingsFor(sensorId) {
     const d = await getJSON(`/api/weirlings/detail?sensor=${encodeURIComponent(sensorId)}`);
     const r = (d && d.sensor) || {};
     if (head) head.textContent = `\u2014 ${sensorId}${r.local ? " (runs on this hub)" : ""}`;
+    // THE EXPECTATION IS EDITABLE FOR EVERY WEIRLING (2026-10-17). The hub cannot reach a
+    // remote runtime -- but it ALWAYS holds an expectation, and that layer is what this page
+    // can set. Before this, a non-local selection was a sentence with no fields: an operator
+    // reported twice that the page "can't change the weirlings settings".
+    const exp = document.getElementById("wl-expectation");
+    if (exp) {
+      exp.classList.remove("hidden");
+      const expHead = document.getElementById("st-wl-exp-head");
+      if (expHead) expHead.textContent = `\u2014 ${sensorId}`;
+      const seg = document.getElementById("st-wl-segment");
+      const mode = document.getElementById("st-wl-mode");
+      const addr = document.getElementById("st-wl-address");
+      const dnote = document.getElementById("st-wl-decl-note");
+      if (seg) seg.value = r.segment || "";
+      if (mode) mode.value = (r.expected_mode === "siphon") ? "siphon" : "loch";
+      if (addr) addr.value = r.address || "";
+      if (dnote) dnote.value = r.note || "";
+      const res = document.getElementById("st-wl-save-result");
+      if (res) res.textContent = "";
+    }
     if (r.local) {
       cfg.classList.remove("hidden");
       remote.classList.add("hidden");
@@ -437,7 +459,7 @@ async function wlSettingsFor(sensorId) {
     } else {
       cfg.classList.add("hidden");
       remote.classList.remove("hidden");
-      if (note) note.textContent = "Not the weirling this hub runs: its runtime can only be changed on its own box.";
+      if (note) note.textContent = "";
     }
   } catch (err) {
     cfg.classList.add("hidden");
@@ -460,6 +482,9 @@ function wireWeirlings() {
 
   const save = document.getElementById("wl-save");
   if (save) save.addEventListener("click", () => saveWeirling());
+
+  const saveExp = document.getElementById("st-wl-save");
+  if (saveExp) saveExp.addEventListener("click", () => saveWeirlingExpectation().catch(showError));
 
   const cancel = document.getElementById("wl-cancel");
   if (cancel) cancel.addEventListener("click", () => clearWeirlingForm());
@@ -492,6 +517,41 @@ function clearWeirlingForm() {
   document.getElementById("wl-cancel").classList.add("hidden");
   document.getElementById("wl-save").textContent = "Register";
   document.getElementById("wl-save-note").textContent = "";
+}
+
+async function saveWeirlingExpectation() {
+  // THE EXPECTATION LAYER'S WRITE (2026-10-17). Posts the same fields the register form does;
+  // the store MERGES, so an empty field keeps what was declared before rather than blanking it.
+  const res = document.getElementById("st-wl-save-result");
+  const sid = (document.getElementById("st-wl-select") || {}).value || "";
+  if (!sid) {
+    if (res) res.textContent = "Pick a weirling first.";
+    return;
+  }
+  const body = {
+    sensor_id: sid,
+    segment: ((document.getElementById("st-wl-segment") || {}).value || "").trim(),
+    address: ((document.getElementById("st-wl-address") || {}).value || "").trim(),
+    expected_mode: ((document.getElementById("st-wl-mode") || {}).value || "loch"),
+    note: ((document.getElementById("st-wl-decl-note") || {}).value || "").trim(),
+  };
+  if (res) res.textContent = "saving…";
+  let d;
+  try {
+    d = await postJSON("/api/weirlings/register", body);
+  } catch (err) {
+    if (res) res.textContent = `Could not save: ${(err && err.message) || err}`;
+    return;
+  }
+  if (!d || d.ok !== true) {
+    // The server's own refusal, verbatim: it names the fix.
+    if (res) res.textContent = `Refused: ${(d && d.error) || "the server did not accept this"}`;
+    return;
+  }
+  await wlSettingsFor(sid);
+  if (res) res.textContent = `Saved ${sid}: this hub now holds it to ${body.expected_mode}.`;
+  // The fleet list shows expectations against reports; keep it current for the next glance.
+  await loadWeirlings().catch(() => {});
 }
 
 async function saveWeirling() {

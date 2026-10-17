@@ -1188,10 +1188,16 @@
     <!-- DRILL-DOWN. The finding text is the whole point of this panel: a state word alone does
          not say whether "stale" means the box is powered off or its capture died. -->
     <div class="card hidden" id="wl-detail-card">
-      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="st-stage-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <div id="wl-detail-body"></div>
 
       <p class="muted">Runtime settings for a weirling live in <strong>Settings</strong> → <strong>Weirling settings</strong>, where you pick the weirling first — a runtime can only be changed on the box that runs it.</p>
+      <div class="info-text hidden" id="wl-detail-info">
+        One weirling's live state, and the actions that change its fleet membership (register,
+        enable/disable, revoke). Runtime settings live on the box that runs the sensor; what
+        this hub can set for any weirling — the segment and mode it is expected to run, its
+        address and a note — is under Settings → Weirling settings.
+      </div>
 
       <div class="controls">
         <button id="wl-detail-register" class="hidden"></button>
@@ -1208,14 +1214,30 @@
     <div class="card">
       <h2>Weirling settings <button class="info-btn" data-info="st-wl-info" aria-label="whose settings these are and why only some can change" aria-expanded="false" title="whose settings these are and why only some can change">i</button></h2>
       <div class="info-text hidden" id="st-wl-info">
-        Pick a weirling, then read or change its runtime settings. A runtime can only be
-        changed on the box that runs it, so only the weirling this hub runs gets live
-        controls here; every other selection says where its settings live. Changes stage
-        and apply like every other settings edit.
+        Pick a weirling, then read or change its settings. Every weirling has an
+        EXPECTATION this hub holds it to — its segment, the mode it should run, and a note —
+        which is what you set below for any selection. A RUNTIME can only be changed on the
+        box that runs the sensor, so only the weirling this hub runs gets live runtime
+        controls here; for every other, the expectation is the layer this page owns. Changes
+        stage and apply like every other settings edit.
       </div>
       <div class="controls">
         <label>weirling <select id="st-wl-select"><option value="">loading…</option></select></label>
         <span class="muted" id="st-wl-note"></span>
+      </div>
+      <div id="wl-expectation" class="hidden">
+        <h3>Expectation <span class="muted" id="st-wl-exp-head"></span></h3>
+        <p class="muted">What this hub HOLDS the weirling to; a sensor that reports otherwise
+          shows the difference on the Weirlings tab. This sets the expectation, not the
+          sensor's own runtime.</p>
+        <div class="controls">
+          <label>segment <input id="st-wl-segment" type="text" placeholder="the segment this weirling covers, in your words" spellcheck="false" autocomplete="off"></label>
+          <label>expected mode <select id="st-wl-mode"><option value="loch">loch</option><option value="siphon">siphon</option></select></label>
+          <label>address <input id="st-wl-address" type="text" placeholder="where it reports from, when known" spellcheck="false" autocomplete="off"></label>
+          <label>note <input id="st-wl-decl-note" type="text" placeholder="anything the next reader should know" spellcheck="false" autocomplete="off"></label>
+          <button id="st-wl-save">Save expectation</button>
+          <span class="muted" id="st-wl-save-result"></span>
+        </div>
       </div>
       <div id="wl-sensor-config" class="hidden">
         <h3>Runtime settings <span id="st-wl-head" class="muted"></span></h3>
@@ -1267,14 +1289,11 @@
           plan (segment, address, gateway, targets). The result below says which hosts
           were intercepted and that the mode was put back.
         </div>
-<div class="info-text hidden" id="st-stage-info">
-        Edits here stage like every settings change: review and apply them in
-          <strong>Settings</strong> → Pending changes.
       </div>
-      </div>
-      <div id="wl-sensor-remote" class="hidden muted">
-        <p>Runtime settings live on the box that runs this sensor — nothing here can reach it.
-          What you declare here (segment, expected mode) is the expectation this hub holds it to.</p>
+      <div id="wl-sensor-remote" class="hidden">
+        <p class="muted">Runtime settings live on the box that runs this sensor. What this hub
+          can hold it to — the segment it covers and the mode it should run — is the
+          expectation above.</p>
       </div>
     </div>
 
@@ -1291,9 +1310,6 @@
         show as <code>(set, N chars)</code> or <code>(not set)</code>, never in value. To change
         values without a web account, use <code>weirvern config set</code>, then
         apply.
-      </div>
-      <div class="controls">
-        
       </div>
     </div>
 
@@ -1379,14 +1395,11 @@
       <div id="st-detect" class="grid-inline"></div>
     </div>
 
-    <div class="card">
-      <h2>Sensor</h2>
 <div class="info-text hidden" id="st-sensor-info">
-        Sensor settings — mode, the siphon plan, Sonar and the test run — now live
-        <strong>with the sensor</strong>: open the <strong>Weirlings</strong> tab and pick this
-        hub's own sensor. A sensor's runtime can only be changed on the box that runs it, and the
-        fleet view is where you find that box.
-      </div>
+      Live sensor status comes from the heartbeat: what this hub's capture is doing right now.
+      To CHANGE what a sensor runs, use <strong>Weirling settings</strong> above — a runtime can
+      only be changed on the box that runs it, and what this hub holds each weirling to
+      (segment, expected mode) is set there as well.
     </div>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so

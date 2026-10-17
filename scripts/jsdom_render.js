@@ -116,7 +116,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadRetrain, retrainAction,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
-                   wlStateChip, wlLoss, saveWeirling, clearWeirlingForm,
+                   wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, saveWeirlingExpectation,
                    setWeirlingEnabled, revokeWeirling,
                    document,
                    document };
@@ -3406,7 +3406,7 @@ check("high capture loss is called out in the fleet",
   if (remoteOption) {
     sel.value = remoteOption.value;
     await H.wlSettingsFor(remoteOption.value);
-    check("a weirling elsewhere gets the sentence, not knobs that would write to the wrong machine",
+    check("a weirling elsewhere gets no runtime knobs aimed at a machine this hub cannot reach",
           doc.getElementById("wl-sensor-config").classList.contains("hidden")
           && !doc.getElementById("wl-sensor-remote").classList.contains("hidden"),
           "the hub cannot reach a remote runtime; the panel must say where those settings live");
@@ -3423,6 +3423,57 @@ check("high capture loss is called out in the fleet",
           /Weirling settings/.test(doc.getElementById("wl-detail-body").textContent || ""));
     doc.getElementById("wl-detail-close").click();
   }
+}
+
+// ── THE EXPECTATION FORM: every weirling gets its settable layer (2026-10-17) ───────────────
+{
+  H.showView("settings");
+  await H.wlPopulateSelector();
+  const sel = doc.getElementById("st-wl-select");
+  const nonHub = sel ? [...sel.options].find((o) => o.value && !/\(this hub\)/.test(o.textContent)) : null;
+  check("the selector offers a non-hub weirling to drive", !!nonHub,
+        sel ? [...sel.options].map((o) => o.textContent).join("|") : "no select");
+  if (nonHub) {
+    sel.value = nonHub.value;
+    await H.wlSettingsFor(nonHub.value);
+    const exp = doc.getElementById("wl-expectation");
+    check("picking a weirling elsewhere mounts the expectation fields it CAN change",
+          !!exp && !exp.classList.contains("hidden")
+          && !!doc.getElementById("st-wl-segment") && !!doc.getElementById("st-wl-mode"),
+          "the section was fields-free again -- the dead end the operator reported twice");
+    const row = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === nonHub.value) || {};
+    check("the expectation fields arrive PREFILLED with what this hub holds",
+          doc.getElementById("st-wl-segment").value === (row.segment || "")
+          && doc.getElementById("st-wl-mode").value === (row.expected_mode || "loch")
+          && doc.getElementById("st-wl-address").value === (row.address || ""),
+          "segment=" + String(doc.getElementById("st-wl-segment").value)
+          + " mode=" + String(doc.getElementById("st-wl-mode").value));
+    const posted0 = POSTED.length;
+    doc.getElementById("st-wl-mode").value = "siphon";
+    doc.getElementById("st-wl-save").click();
+    await new Promise((r) => setTimeout(r, 150));
+    const posted = POSTED.slice(posted0).find((p) => p.url.includes("/api/weirlings/register"));
+    check("saving posts the expectation to the registry (the write this hub CAN make)",
+          !!posted && /"expected_mode":"siphon"/.test(posted.body)
+          && posted.body.includes('"sensor_id":"' + nonHub.value + '"'),
+          posted ? posted.body.slice(0, 130) : "no register POST");
+    check("and the result line names what was saved",
+          /Saved /.test(doc.getElementById("st-wl-save-result").textContent),
+          doc.getElementById("st-wl-save-result").textContent);
+  }
+}
+
+// ── no content-less cards on the Settings tab (audit 2026-10-17) ─────────────────────────────
+// The tab carried a "Sensor" card that was heading + hidden help only -- an empty box an
+// operator reads as broken. A card must carry at least one element beyond its h2 and help.
+{
+  const emptyCards = [...doc.querySelectorAll("#view-settings .card")].filter((c) => {
+    const kids = [...c.children].filter((k) => k.tagName !== "H2" && !k.classList.contains("info-text"));
+    return kids.length === 0;
+  });
+  check("no content-less cards on the Settings tab",
+        emptyCards.length === 0,
+        emptyCards.map((c) => ((c.querySelector("h2") || {}).textContent || "?").trim()).join(", "));
 }
 
 // ── an outage must never render as an empty fleet ────────────────────────────────────────────
