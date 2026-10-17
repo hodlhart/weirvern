@@ -75,6 +75,26 @@ def _strip_sql_comments(statement: str) -> str:
     return "\n".join(out)
 
 
+_DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def validated_db_name(name: str) -> str:
+    """The database name gets the validation the identifiers around it already have.
+
+    WHY (issue #29): CLICKHOUSE_DB is interpolated into DDL (`CREATE DATABASE IF NOT EXISTS`,
+    and every qualified table read), and unlike the other inputs it was never checked -- a
+    misconfigured value was injected straight into statements. Anything that is not letters,
+    digits and underscores (not leading with a digit) is refused AT THE BOUNDARY, before a
+    client is constructed, so a hostile value never reaches the server.
+    """
+    if not _DB_NAME_RE.match(name or ""):
+        raise ValueError(
+            f"CLICKHOUSE_DB is not a usable database name: {name!r}. Database names are "
+            f"letters, digits and underscores, not starting with a digit."
+        )
+    return name
+
+
 def connect(settings: Settings, retries: int = 30, delay_s: float = 5.0) -> Client:
     """Connect with retry (ClickHouse takes longer than the worker to boot).
 
@@ -83,6 +103,9 @@ def connect(settings: Settings, retries: int = 30, delay_s: float = 5.0) -> Clie
     volume: binding straight to a non-existent database raises UNKNOWN_DATABASE
     for every retry, so the worker died before apply_schema() could create it.
     """
+    # VALIDATE BEFORE ANY SOCKET (issue #29): the name is refused here, not at the first
+    # interpolation, so a misconfigured deployment fails fast and legibly.
+    db_name = validated_db_name(settings.clickhouse_db)
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -93,14 +116,14 @@ def connect(settings: Settings, retries: int = 30, delay_s: float = 5.0) -> Clie
                 password=settings.clickhouse_password,
                 database="default",
             )
-            bootstrap.command(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_db}")
+            bootstrap.command(f"CREATE DATABASE IF NOT EXISTS {db_name}")
             bootstrap.close()
             client = clickhouse_connect.get_client(
                 host=settings.clickhouse_host,
                 port=settings.clickhouse_port,
                 username=settings.clickhouse_user,
                 password=settings.clickhouse_password,
-                database=settings.clickhouse_db,
+                database=db_name,
             )
             client.command("SELECT 1")
             return client
@@ -121,7 +144,7 @@ def apply_schema(client: Client, settings: Settings) -> None:
     completion while creating not a single table — verified against a
     non-editable install, where the path resolved outside the package.
     """
-    client.command(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_db}")
+    client.command(f"CREATE DATABASE IF NOT EXISTS {validated_db_name(settings.clickhouse_db)}")
 
     if not SCHEMA_DIR.is_dir():
         raise RuntimeError(

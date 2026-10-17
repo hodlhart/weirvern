@@ -180,3 +180,31 @@ def test_a_comment_line_ending_in_a_semicolon_does_not_split_a_statement():
     assert "a String" in statements[0] and "b DateTime" in statements[0], (
         "the comment's semicolon split the statement")
     assert "--" not in statements[0]
+
+def test_a_hostile_database_name_is_refused_before_it_reaches_SQL():
+    """Issue #29: CLICKHOUSE_DB was interpolated into DDL unvalidated, unlike the identifiers
+    around it. A hostile value must die at the boundary, with the setting named."""
+    for bad in ("weirvern; DROP TABLE x", "weirvern`", "1weirvern", "", "wei vern",
+                "weirvern) --", "weirvern'"):
+        with pytest.raises(ValueError) as ei:
+            db.validated_db_name(bad)
+        assert "CLICKHOUSE_DB" in str(ei.value), f"{bad!r} was refused without naming the setting"
+    assert db.validated_db_name("weirvern") == "weirvern"
+    assert db.validated_db_name("w_2") == "w_2"
+
+
+def test_connect_validates_the_name_BEFORE_any_network_call(monkeypatch):
+    """The connect path builds a bootstrap client FIRST; the validation must happen before
+    that, or a misconfigured value is already on the wire. Measured by making the client
+    factory explode: a ValueError proves the order."""
+    from types import SimpleNamespace
+
+    def _boom(*a, **kw):
+        raise AssertionError("the client factory was reached before validating the name")
+
+    monkeypatch.setattr(db.clickhouse_connect, "get_client", _boom)
+    settings = SimpleNamespace(clickhouse_host="127.0.0.1", clickhouse_port=8123,
+                               clickhouse_user="u", clickhouse_password="p",
+                               clickhouse_db="bad; DROP", http_url="http://example.invalid")
+    with pytest.raises(ValueError):
+        db.connect(settings, retries=1, delay_s=0)
