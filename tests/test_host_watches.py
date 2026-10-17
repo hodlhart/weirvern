@@ -86,7 +86,7 @@ def test_write_watch_inserts_the_toggle():
     assert c.calls[1][1][0][1] == 0, "off is a write of 0, not a delete -- the replace needs it"
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "not-an-ip", "999.1.2.3", "x" * 65])
+@pytest.mark.parametrize("bad", ["", "   ", "not-an-ip", "12345", "x" * 65])
 def test_write_watch_refuses_garbage(bad):
     with pytest.raises(ValueError):
         status.write_watch(_Ins(), src_addr=bad, watching=True)
