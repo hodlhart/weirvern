@@ -1053,8 +1053,10 @@ function showNodeDetail(node) {
   // Tracking stays available, but as an explicit ACTION inside the panel rather than the thing
   // a click silently did.
   const tracking = ASSETS_STATE.tracked.includes(node.id);
+  // US-4: an action button wore the PAGINATION class (a pager arrow's styling on a verb);
+  // it wears the standard action shape now.
   const btn = el("button", {
-    class: "pager-btn",
+    class: "review-act",
     text: tracking ? "stop tracking this host" : "track only this host's connections",
   });
   btn.addEventListener("click", () => { toggleTracked(node.id); showNodeDetail(node); });

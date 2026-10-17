@@ -1460,8 +1460,14 @@ async function postReview(a, state) {
 }
 
 function anToggleOccurrences(tr, a) {
+  const cell = tr.querySelector("td.expander");
   const next = tr.nextElementSibling;
-  if (next && next.classList && next.classList.contains("an-exp")) { next.remove(); return; }
+  if (next && next.classList && next.classList.contains("an-exp")) {
+    next.remove();
+    if (cell) cell.setAttribute("aria-expanded", "false");
+    return;
+  }
+  if (cell) cell.setAttribute("aria-expanded", "true");
   const occ = (a.windows && a.windows.length) ? a.windows
     : [{ window: a.window_start, review_state: a.review_state, review_note: a.review_note,
          reviewed_at: a.reviewed_at }];
@@ -1818,14 +1824,15 @@ async function loadAnomalies() {
                                  on: { click: () => openEvidence(a) } }, [
       el("td", { class: "mono", text: fmtTime(a.detected_at) }),
       el("td", { class: "mono", text: fmtTime(a.window_start) }),
-      el("td", { class: Number(a.n || 1) > 1 ? "num dcell" : "num", text: String(a.n || 1),
-                 attrs: Number(a.n || 1) > 1
-                   ? { title: anReviewSummary(a).title + " \u2014 click to list them" } : {},
+      // US-4: the expansion cue rides the cell at rest (chevron + aria-expanded), and the
+      // handler exists for EVERY n -- with n==1 the cell used to be inert while a chip beside
+      // it pointed at it as the target, a dead end for the server's single-occurrence case.
+      el("td", { class: "num dcell expander", text: String(a.n || 1),
+                 attrs: { title: anReviewSummary(a).title + " \u2014 click to list them",
+                          "aria-expanded": "false" },
                  on: { click: (e) => {
-                   if (Number(a.n || 1) > 1) {
-                     e.stopPropagation();
-                     anToggleOccurrences(e.target.closest("tr"), a);
-                   }
+                   e.stopPropagation();
+                   anToggleOccurrences(e.target.closest("tr"), a);
                  } } }),
       el("td", { class: "dcell", attrs: { title: "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); showView("host"); openHost(a.src_addr); } } },
@@ -2143,7 +2150,10 @@ function gateAction(a) {
   const wrap = el("div", { class: "gate-act" });
   const reason = gateBlockableReason();
   if (reason) {
+    // US-4: plain text in an action cell -- it must not wear the row's pointer or navigate:
+    // a span that opens the Evidence drill when clicked reads as an action and is not one.
     wrap.appendChild(el("span", { class: "gate-off", title: reason,
+                                  on: { click: (e) => e.stopPropagation() },
                                   text: `Block unavailable \u2014 ${reason}` }));
     return wrap;
   }

@@ -266,3 +266,10 @@ function paletteGlobalKey(e) {
 }
 
 document.addEventListener("keydown", paletteGlobalKey);
+
+// US-4: the visible entry point (the header button). The keyboard paths stay; hover never
+// discovered anything, so the chrome now says the palette exists.
+document.addEventListener("DOMContentLoaded", () => {
+  const pb = document.getElementById("palette-btn");
+  if (pb) pb.addEventListener("click", () => paletteOpen());
+});

@@ -172,3 +172,37 @@ one value, one control. Queued refinements: the churn states and the failure lab
   ring.
 - `prefers-reduced-motion: reduce` neutralises every animation and transition (including
   the sheet slide); scrollbars are themed in the page, the nav, the sheet and the palette.
+
+## 10. The click grammar (US-4 — cues at rest, one vocabulary)
+
+The rule the whole console answers to: **an element that looks clickable IS clickable, and
+nothing else looks clickable.** Hover only amplifies; it never discovers. Pinned by
+`tests/test_grammar.py` and the harness's cue checks — drift fails a test.
+
+Cue classes (the complete vocabulary — a new interactive element reuses one of these, it
+does not invent a fourth):
+
+- **`.dcell` / `.link` — the one entity-link cue.** An inline value that opens somewhere
+  (a host, a rule, a log, a destination) wears the accent colour plus a dotted underline
+  **at rest**; hover amplifies to solid. Both class names resolve to ONE shared rule;
+  per-view copies are forbidden. Counts, status pills and timestamps never wear it.
+- **`tr.clickable` / `.bar-row.clickable` — rows and bars that open.** Row-level cursor
+  plus a hover wash; inner controls (checkboxes, toggles) `stopPropagation` so one click
+  does one thing.
+- **`.dc-row` — detail rows (DNS Q/A, Discover).** Same shape as `tr.clickable`.
+- **`.expander` — disclosure.** A chevron `▸` at rest that rotates when
+  `aria-expanded="true"`; the handler exists for every row that has anything to expand.
+- **`.review-act`, `button` — actions.** Actions sit in their own cell/column, never on a
+  value. A piece of text that cannot act (`Block unavailable — …`) is inert and carries no
+  pointer.
+- **`.chip.act` / `.chip` — chips.** Bare `.chip` is status (no cursor, no hover);
+  interactive chips opt in with `.act`.
+
+Refusals (the kill-list, from the research):
+
+- No hover-only affordances: if a cue exists only on hover, the element is not clickable
+  and the cue is a lie.
+- No invisible entries: the command palette has a header button (`#palette-btn`); keyboard
+  shortcuts are accelerators, not the only door.
+- No dead pointers: a class that sets `cursor: pointer` with no handler anywhere is a bug,
+  not decoration.

@@ -366,8 +366,13 @@ function renderWeirlings(rows, revoked, revokedReason) {
   for (const r of visible) {
     // The state on the ROW, not only in the chip: a scanning eye reads the row's edge before it
     // reads any word (see the .wl-state-* rules in style.css).
-    const tr = el("tr", { class: `wl-state-${r.state || "unknown"}` +
+    // US-4: rows on this table highlight on hover, and now they OPEN -- a hover wash over a
+    // row that does nothing is the false-affordance the grammar bans.
+    const tr = el("tr", { class: `wl-state-${r.state || "unknown"} clickable` +
                                  (r.is_problem ? " row-problem" : "") });
+    tr.addEventListener("click", () => {
+      if (typeof openWeirling === "function") openWeirling(r.sensor_id);
+    });
 
     // The sensor id is the drill-down affordance AND stays a plain text label -- a button inside
     // a table cell is the accessible form of "the row is clickable".
@@ -391,7 +396,9 @@ function renderWeirlings(rows, revoked, revokedReason) {
         class: "link",
         text: r.sensor_id,
         attrs: { title: "open this sensor" },
-        on: { click: () => openWeirling(r.sensor_id) },
+        // US-4: the row now opens on its own; the name cell stops bubbling so the sheet
+        // is not opened twice by one click.
+        on: { click: (ev) => { ev.stopPropagation(); openWeirling(r.sensor_id); } },
       }),
       r.note ? el("div", { class: "muted", text: r.note }) : null,
     ].filter(Boolean)));

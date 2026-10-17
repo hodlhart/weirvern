@@ -274,7 +274,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 #st-users td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .user-role {
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: 6px; padding: 3px 6px; font: inherit;
+  border-radius: 6px; padding: 3px 6px; font: inherit; cursor: pointer;
 }
 .user-act {
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
@@ -575,8 +575,27 @@ td.num { font-family: var(--mono); text-align: right; }
  */
 .bar-row.clickable, tr.clickable { cursor: pointer; }
 .bar-row.clickable:hover, tr.clickable:hover { background: var(--panel2); }
-td.link, .link { color: var(--accent); cursor: pointer; }
-td.link:hover, .link:hover { text-decoration: underline; }
+/* US-4: a row whose click opens a detail (DNS Q/A rows, Discover's feeds) says so at rest --
+ * these carried no rule at all, so the only cue was a title attribute nobody sees. */
+.dc-row { cursor: pointer; }
+.dc-row:hover { background: var(--panel2); }
+/* THE ONE entity-link cue (US-4), single-sourced for EVERY element and both class names:
+ * an inline value that opens somewhere wears the accent colour plus a dotted underline AT
+ * REST; hover only amplifies (solid). The two vocabularies this replaces (accent-only links
+ * here, hover-only dotted cells there) meant the same idea looked different per view.
+ * Counts, status pills and timestamps never wear this. */
+.dcell, .link {
+  color: var(--accent); cursor: pointer;
+  border-bottom: 1px dotted var(--accent);
+}
+.dcell:hover, .link:hover { border-bottom-style: solid; }
+/* US-4: the occurrence expansion announces itself -- a chevron at rest that flips when open. */
+.expander { cursor: pointer; }
+.expander::after {
+  content: "\25B8"; margin-left: 6px; color: var(--muted);
+  display: inline-block; transition: transform 0.12s ease;
+}
+.expander[aria-expanded="true"]::after { transform: rotate(90deg); }
 
 /* ── host chips (the Network selection) ────────────────────────────────────
  * The selection has to be visible as a selection even when the graph is filtered down to a
@@ -980,11 +999,9 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
   font-size: 13px; line-height: 1; }
 .dc-chip-x:hover { color: var(--bad); }
-td.dcell { cursor: pointer; }
-td.dcell:hover { text-decoration: underline dotted; }
+/* (US-4: the td.dcell rules moved into the single grammar block above.) */
 
-/* ── the health pill: click it for every check's state ────────────────────────────────────── */
-.pill { cursor: pointer; }
+/* (US-4: deleted -- every .pill is a <button>, which the base button rule already cues.) */
 .pill-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: 13px;
   background: var(--panel2); border: 1px solid var(--border-solid); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }

@@ -3549,10 +3549,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const allowed = new Set(["ack", "resolve", "FP", "clear"]);
     check("the disposition vocabulary is closed",
           acts.length >= 1 && acts.every((a) => allowed.has(a)), acts.join(","));
-    const collapse = doc.querySelector("#anomalies-table td.num.dcell");
+    // US-4: every count cell carries the cue now; target the GROUPED row by its count.
+    const collapse = [...doc.querySelectorAll("#anomalies-table td.num.expander")]
+      .find((td) => td.textContent.trim() === "3");
     check("a collapsed group shows its count",
           !!collapse && collapse.textContent.trim() === "3",
-          collapse ? collapse.textContent : "no count cell");
+          collapse ? collapse.textContent : "no grouped count cell");
     if (collapse) {
       collapse.click();
       await new Promise((r) => setTimeout(r, 80));
@@ -5735,6 +5737,84 @@ check("high capture loss is called out in the fleet",
     H.showView("health");
     await H.loadAudit();
     await sleep(150);
+  }
+
+  // ── THE CLICK GRAMMAR, LIVE (US-4) ──────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 1. the palette has a visible door.
+    const palBtn = doc.getElementById("palette-btn");
+    check("the palette has a visible entry in the chrome", !!palBtn);
+    if (palBtn) {
+      palBtn.click();
+      await sleep(120);
+      check("...and the button opens it",
+            !doc.getElementById("palette").classList.contains("hidden"),
+            "palette hidden=" + doc.getElementById("palette").classList.contains("hidden"));
+      if (typeof H.paletteClose === "function") H.paletteClose();
+    }
+    // 2. the fleet row opens its sheet (a hover wash must not be the whole story).
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    await sleep(200);
+    const fleetRow = [...doc.querySelectorAll("#wl-table tbody tr")].find((r) => /clickable/.test(r.className));
+    check("a fleet row carries the row-level cue", !!fleetRow);
+    if (fleetRow) {
+      fleetRow.click();
+      await sleep(250);
+      check("...and the row opens that sensor's sheet",
+            !doc.getElementById("wl-detail-card").classList.contains("hidden")
+            && ((doc.getElementById("wl-detail-id") || {}).textContent || "").length > 0,
+            "id=" + ((doc.getElementById("wl-detail-id") || {}).textContent || ""));
+    }
+    // 3. the count cell discloses for EVERY n (the n==1 case used to be inert).
+    fetchOverride = (u) => (String(u).includes("/api/anomalies")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, reason: "", rows: [
+            { detected_at: "2026-10-17T11:00:00", window_start: "2026-10-17T10:55:00",
+              window_end: "2026-10-17T11:00:00", src_addr: "198.51.100.5", hostname: "host.example",
+              anomaly_score: 0.9, severity: "high", detected_by_models: "IF", n: 1,
+              review_state: "", reviewed_at: null, windows: [
+                { window: "2026-10-17T10:55:00", review_state: "", review_note: "", reviewed_at: null }] },
+            { detected_at: "2026-10-17T11:05:00", window_start: "2026-10-17T11:00:00",
+              window_end: "2026-10-17T11:05:00", src_addr: "198.51.100.9", hostname: "peer.example",
+              anomaly_score: 0.8, severity: "medium", detected_by_models: "DBSCAN", n: 3,
+              review_state: "", reviewed_at: null, windows: [
+                { window: "2026-10-17T11:00:00", review_state: "", review_note: "", reviewed_at: null }] },
+          ],
+          severity_counts: {}, discipline: null, watch_error: null }) })
+      : null);
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(250);
+    const exCells = [...doc.querySelectorAll("#anomalies-table tbody td.expander")];
+    // (The chevron itself is a ::after pseudo-element -- not readable from the DOM -- so its
+    // RULE is pinned in tests/test_grammar.py; here the cell's class + aria do the work.)
+    check("the count cell carries the disclosure cue at rest",
+          exCells.length === 2, "cells=" + exCells.length);
+    // The driver is optional: with no cue cells the two checks below FAIL rather than
+    // crash the run (a killed feature must fail a check -- the standing harness rule).
+    const oneCell = exCells[0] || null;
+    if (oneCell) {
+      oneCell.click();
+      await sleep(150);
+      check("the n==1 count cell discloses (it used to be inert while a chip pointed at it)",
+            !!doc.querySelector("#anomalies-table tbody tr.an-exp")
+            && oneCell.getAttribute("aria-expanded") === "true");
+      oneCell.click();
+      await sleep(120);
+      check("...and collapsing flips the cue back",
+            !doc.querySelector("#anomalies-table tbody tr.an-exp")
+            && oneCell.getAttribute("aria-expanded") === "false");
+    } else {
+      check("the n==1 count cell discloses (it used to be inert while a chip pointed at it)",
+            false, "no disclosure cells to drive");
+      check("...and collapsing flips the cue back", false, "no disclosure cells to drive");
+    }
+    fetchOverride = null;
+    H.showView("health");
+    await H.loadAnomalies();
+    await sleep(120);
   }
 
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
