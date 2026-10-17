@@ -399,6 +399,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       baseline_score: 0.2, primary_deviation_feature: "unique_dst_ports",
       primary_deviation_zscore: 5.2, deviation_magnitude: 3.1,
       feature_contributions: { unique_dst_ports: { z: 5.2 }, total_bytes: { z: 1.1 } },
+      owner: "ops", matched_rule: "IsolationForest scored this window above the strong-signal floor",
       baseline_comparison: "unique_dst_ports is 5.2 sigma above this host's baseline",
       review_state: "", review_note: "", reviewed_at: null, watched: true },
     { detected_at: "2026-01-02T08:00:00", window_start: "2026-01-02T07:55:00",
@@ -409,6 +410,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       baseline_score: 0.7, primary_deviation_feature: "total_bytes",
       primary_deviation_zscore: 3.4, deviation_magnitude: 2.0,
       feature_contributions: {}, baseline_comparison: "total_bytes is 3.4 sigma above baseline",
+      owner: "ops", matched_rule: "the adaptive baseline's z-score deviation passed the strong-signal floor",
       review_state: "ack", review_note: "nightly backup job",
       reviewed_at: "2026-01-02T08:05:00", watched: false },
 
@@ -424,6 +426,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       baseline_score: 0.3, primary_deviation_feature: "unique_dst_ports",
       primary_deviation_zscore: 4.4, deviation_magnitude: 2.6,
       feature_contributions: { unique_dst_ports: { z: 4.4 } },
+      owner: "ops", matched_rule: "IsolationForest scored this window above the strong-signal floor",
       baseline_comparison: "unique_dst_ports is 4.4 sigma above this host's baseline",
       n: 3, review_state: "", review_note: "", reviewed_at: null,
       windows: [
@@ -1150,6 +1153,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // #20): the unreviewed-only filter keeps a row while ANY occurrence is unreviewed -- the
     // rule web.py applies -- because the filter is one of the three surfaces the agreement
     // check compares, so the stub must apply it too.
+    ["/api/detectors", () => ({ available: true, reason: "", detectors: [
+      { name: "Isolation Forest", owner: "ops", runbook: "read the evidence first",
+        rule: "IsolationForest scored this window above the strong-signal floor",
+        loud: true, known: true, fired: 3, acted: 1 },
+      { name: "DBSCAN", owner: "ops", runbook: "check first-seen before acting",
+        rule: "DBSCAN found the window outside every dense behavioural cluster",
+        loud: true, known: true, fired: 2, acted: 0 },
+      { name: "Mystery Net", owner: "", runbook: "", rule: "", loud: false, known: false,
+        fired: 1, acted: 0 },
+    ] })],
     ["/api/anomalies", (u) => {
       // REQUEST-AWARE, like the server: unreviewed keeps a row while ANY occurrence is
       // unreviewed (issue #20), and the min-score floor excludes below-threshold rows so the
@@ -1159,6 +1172,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       return { rows: ANOMALIES_STATE.filter(
                  (r) => (r.anomaly_score || 0) >= minF
                         && (!String(u).includes("unreviewed=1") || (r.unreviewed_n || 0) > 0)),
+               discipline: { available: true, reason: "", fired: 4, acted: 1,
+                             by_state: { ack: 1 } },
                severity_counts: { available: true, reason: "",
                                  counts: [{ severity: "high", count: 1 },
                                           { severity: "medium", count: 1 }] } };
@@ -3137,7 +3152,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             autoPill.textContent);
       autoPill.click();
       await new Promise((r) => setTimeout(r, 30));
-      check("...resuming puts it back", /auto 15s/.test(autoPill.textContent));
+      check("...resuming puts it back", /\blive\b/.test(autoPill.textContent),
+            autoPill.textContent);
     }
     check("the title is the name, not an emoji",
           !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(doc.title) && /Weirvern/.test(doc.title),
@@ -3302,6 +3318,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           posts2.join(" | ").slice(0, 110));
     try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}
     await H.loadWeirlings();
+  }
+
+  // ── ALERT DISCIPLINE (BF-12) ────────────────────────────────────────────────────────────────
+  {
+    H.showView("anomalies");
+    await new Promise((r) => setTimeout(r, 300));
+    const head = [...doc.querySelectorAll("#anomalies-table thead th")]
+      .map((t) => t.textContent.toLowerCase());
+    check("the triage table names its fixed contract",
+          head.includes("owner") && head.includes("matched rule"), head.join(","));
+    const first = doc.querySelector("#anomalies-table tbody tr");
+    const cells = first ? [...first.querySelectorAll("td")].map((t) => t.textContent) : [];
+    check("...and rows carry the owner and what matched",
+          cells.length >= 11 && cells.includes("ops") &&
+            cells.some((c) => /scored this window/.test(c)),
+          cells.join(" | ").slice(0, 140));
+    const disc = doc.getElementById("an-discipline").textContent;
+    check("the fired-vs-acted-on budget line renders",
+          /4 fired/.test(disc) && /1 acted on/.test(disc) && /3 still open/.test(disc), disc);
+    const detRows = [...doc.querySelectorAll("#detectors-table tbody tr")];
+    const detText = detRows.map((r) => r.textContent).join(" || ");
+    check("the registry says who may page",
+          detRows.length >= 3 && detRows.some((r) => /pages/.test(r.textContent)) &&
+            detRows.some((r) => /quiet/.test(r.textContent)),
+          detText.slice(0, 160));
+    check("...and flags a detector nobody registered",
+          /unregistered/.test(detText), detText.slice(0, 140));
+    const acts = [...doc.querySelectorAll("#anomalies-table .review-acts .review-act")]
+      .map((b) => b.textContent);
+    const allowed = new Set(["ack", "resolve", "FP", "clear"]);
+    check("the disposition vocabulary is closed",
+          acts.length >= 1 && acts.every((a) => allowed.has(a)), acts.join(","));
+    const collapse = doc.querySelector("#anomalies-table td.num.dcell");
+    check("a collapsed group shows its count",
+          !!collapse && collapse.textContent.trim() === "3",
+          collapse ? collapse.textContent : "no count cell");
+    if (collapse) {
+      collapse.click();
+      await new Promise((r) => setTimeout(r, 80));
+      check("...and expands into its occurrences",
+            !!doc.querySelector("#anomalies-table tr.an-exp"));
+      collapse.click();
+      await new Promise((r) => setTimeout(r, 40));
+    }
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

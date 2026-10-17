@@ -1482,6 +1482,63 @@ function anRenderChips() {
  * from counting what the browser received -- the list is capped by its limit and a browser-side
  * count would quietly under-count the page it claims to describe.
  */
+/* FIRED VS ACTED ON (BF-12; SRE workbook: the alert budget). Fired counts the occurrences
+ * under the page's score/host filters; acted-on counts disposed occurrences from the review
+ * history. The two are the same unit (one review exists per occurrence), so their difference
+ * is the open queue and is said out loud. */
+function anRenderDiscipline(d) {
+  const box = document.getElementById("an-discipline");
+  if (!box) return;
+  if (!d || !d.available) {
+    box.textContent = d && d.reason
+      ? `Fired / acted-on counts unavailable \u2014 ${d.reason}.` : "";
+    return;
+  }
+  const open = Number(d.fired || 0) - Number(d.acted || 0);
+  box.textContent = `${d.fired} fired \u00b7 ${d.acted} acted on` +
+    (open > 0 ? ` \u00b7 ${open} still open` : "");
+}
+
+/** The registry strip: who owns each detector and who may page, with its catch counts. */
+async function loadDetectors() {
+  const tbody = document.querySelector("#detectors-table tbody");
+  const note = document.getElementById("an-detectors-note");
+  if (!tbody) return;
+  let d;
+  try {
+    d = await getJSON("/api/detectors");
+  } catch (err) {
+    if (note) note.textContent = `The detector registry could not be read: ${err && err.message ? err.message : err}`;
+    return;
+  }
+  tbody.replaceChildren();
+  if (note) note.textContent = "";
+  if (!d || d.available !== true) {
+    if (note) note.textContent = `The detector registry is unavailable \u2014 ` +
+      `${(d && d.reason) || "the read did not run"}.`;
+    return;
+  }
+  for (const det of d.detectors || []) {
+    tbody.appendChild(el("tr", {}, [
+      el("td", {}, [
+        el("span", { class: "mono", text: det.name }),
+        det.known ? null : el("span", { class: "chip warn", text: " unregistered",
+          attrs: { title: "nobody has registered this detector: it cannot page until an owner and runbook exist" } }),
+      ]),
+      el("td", { text: det.owner || "—" }),
+      el("td", {}, [
+        el("span", { class: "chip " + (det.loud ? "pages" : "quiet"),
+                     text: det.loud ? "pages" : "quiet",
+                     attrs: { title: det.loud
+                       ? `may page a phone; runbook: ${det.runbook || "none recorded"}`
+                       : `console-only until it has an owner and runbook${det.runbook ? " — " + det.runbook : ""}` } }),
+      ]),
+      el("td", { class: "num", text: String(det.fired ?? "—") }),
+      el("td", { class: "num", text: String(det.acted ?? "—") }),
+    ]));
+  }
+}
+
 function anRenderSeverity(sc) {
   const box = document.getElementById("an-sev");
   if (!box) return;
@@ -1540,6 +1597,8 @@ async function loadAnomalies() {
   const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery()
     + (watchedOnly ? "&watched=1" : ""));
   anRenderSeverity(payload.severity_counts);
+  anRenderDiscipline(payload.discipline);
+  await loadDetectors();
   // THE FILTER'S HONESTY RIDES THE PAYLOAD: when the watch store could not be read, the
   // checkbox turns itself off, says why, and never filters on a state nobody read.
   if (wchk) {
@@ -1563,7 +1622,7 @@ async function loadAnomalies() {
       : (Number(min) > 0
           ? `No anomalies at or above score ${min}.`
           : "No anomalies recorded yet — rows land as scan windows complete.");
-    emptyRow(tbody, 9, note, filtered
+    emptyRow(tbody, 11, note, filtered
       ? { label: "Clear filters", fn: () => anClearAllFilters() }
       : null);
     return;
@@ -1599,6 +1658,14 @@ async function loadAnomalies() {
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
          [sevCell(a.severity)]),
       el("td", { class: "mono", text: a.detected_by_models || "—" }),
+      // THE CONTRACT'S OWNER + MATCHED RULE (BF-12), derived server-side from the same
+      // registry the pager reads.
+      el("td", { class: a.owner ? "" : "muted", text: a.owner || "unowned",
+                 attrs: { title: a.owner
+                   ? `the ${a.owner} team owns this detector`
+                   : "no owner registered: this detector cannot page anyone" } }),
+      el("td", { class: "muted", text: a.matched_rule || "—",
+                 attrs: { title: "what matched, from the detector registry" } }),
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
@@ -2544,7 +2611,12 @@ function setAutoPaused(paused) {
   }
   const pill = document.getElementById("auto-toggle");
   if (pill) {
-    pill.textContent = AUTO_PAUSED ? "auto paused" : "auto 15s";
+    // LIVE / PAUSED, said plainly (BF-12): the pill is the answer to "is this page still
+    // updating itself?" and nothing else on it competes with that question.
+    pill.textContent = AUTO_PAUSED ? "paused" : "live";
+    pill.title = AUTO_PAUSED
+      ? "auto-refresh is paused — click to resume"
+      : "auto-refresh is live (every 15s) — click to pause";
     pill.setAttribute("aria-pressed", AUTO_PAUSED ? "true" : "false");
   }
 }

@@ -503,10 +503,22 @@
 </div>
 
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Owner</th><th>Matched rule</th><th>Actions</th></tr></thead>
         <tbody></tbody>
       </table>
-    </div>
+    
+      <!-- FIRED VS ACTED ON (BF-12): the alert-budget line. -->
+      <div class="muted" id="an-discipline"></div>
+      <!-- THE DETECTOR REGISTRY (BF-12): who owns what, and who is allowed to page a human.
+           Quiet is the default; a detector that is not here yet shows up unregistered. -->
+      <div class="card">
+        <h3>detectors <span class="muted">who owns what, who may page</span></h3>
+        <table id="detectors-table">
+          <thead><tr><th>detector</th><th>owner</th><th>paging</th><th>fired</th><th>acted on</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="muted" id="an-detectors-note"></p>
+      </div></div>
   </section>
 
 

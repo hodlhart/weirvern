@@ -1841,6 +1841,7 @@ def attach_group_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | 
         newest = wins[-1] if wins else {}
         row["review_state"] = str(newest.get("review_state") or "")
         row["review_note"] = str(newest.get("review_note") or "")
+        _attach_ownership(row)
     return rows
 
 
@@ -2612,6 +2613,82 @@ VALID_REVIEW_STATES = ("ack", "resolved", "false_positive", "")
 REVIEW_UNAVAILABLE = "unavailable"
 
 
+def detectors_overview(client) -> dict:
+    """The registry joined to what it actually caught: fired and acted-on per detector.
+
+    Rows are the registry UNION the detectors seen in the data -- an unregistered detector
+    shows up as exactly that, which is the signal to register it (or leave it quiet on
+    purpose). Counts failure is a state with its reason, never an empty registry.
+    """
+    from weirvern import detector_registry as dr  # noqa: PLC0415
+
+    seen: dict[str, int] = {}
+    acted: dict[str, int] = {}
+    try:
+        for name_str, n in client.query(
+            "SELECT detected_by_models, count() FROM weirvern.netflow_anomalies "
+            "GROUP BY detected_by_models"
+        ).result_rows:
+            for nm in dr.involved(str(name_str or "")):
+                seen[nm] = seen.get(nm, 0) + int(n or 0)
+        for name_str, n in client.query(
+            "SELECT a.detected_by_models, count() FROM weirvern.netflow_anomalies AS a "
+            "INNER JOIN (SELECT window_start, src_addr FROM weirvern.alert_reviews FINAL "
+            "WHERE state != '') AS r "
+            "ON a.window_start = r.window_start AND a.src_addr = r.src_addr "
+            "GROUP BY a.detected_by_models"
+        ).result_rows:
+            for nm in dr.involved(str(name_str or "")):
+                acted[nm] = acted.get(nm, 0) + int(n or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("detector counts failed: %s", exc)
+        return {"available": False, "reason": f"detector counts failed: {type(exc).__name__}",
+                "detectors": []}
+    out = []
+    for nm in sorted(set(dr.DETECTORS) | set(seen)):
+        st = dr.detector_status(nm)
+        out.append({"name": nm, "owner": st["owner"], "runbook": st["runbook"],
+                    "rule": st["rule"], "loud": st["loud"], "known": st["known"],
+                    "fired": seen.get(nm, 0), "acted": acted.get(nm, 0)})
+    return {"available": True, "reason": "", "detectors": out}
+
+
+def anomaly_discipline_counts(client, *, min_score: float = 0.0, host: str = "") -> dict:
+    """Fired vs acted-on, the alert-budget line (BF-12; SRE workbook [S58]).
+
+    `fired` counts the anomaly rows under the same min-score/host filters the severity tiles
+    use. `acted` counts disposed occurrences from the review history -- the reviews table
+    carries no score, so the score floor cannot apply to it; host can, and does. A failed
+    read is a state with its reason, never zeros that would read as a calm queue.
+    """
+    where = ["anomaly_score >= %(s)s"]
+    params: dict = {"s": float(min_score)}
+    if host:
+        where.append("src_addr = %(host)s")
+        params["host"] = str(host)
+    try:
+        fired = int(client.query(
+            "SELECT count() FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where),
+            parameters=params,
+        ).result_rows[0][0] or 0)
+        rwhere = ["state != ''"]
+        rparams: dict = {}
+        if host:
+            rwhere.append("src_addr = %(host)s")
+            rparams["host"] = str(host)
+        rows = client.query(
+            "SELECT state, count() FROM weirvern.alert_reviews FINAL WHERE "
+            + " AND ".join(rwhere) + " GROUP BY state",
+            parameters=rparams,
+        ).result_rows
+        by_state = {str(r[0]): int(r[1] or 0) for r in rows}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discipline counts failed: %s", exc)
+        return {"available": False, "reason": f"discipline counts failed: {type(exc).__name__}"}
+    return {"available": True, "reason": "", "fired": fired,
+            "acted": sum(by_state.values()), "by_state": by_state}
+
+
 def write_review(client, *, window_start: str, src_addr: str, state: str,
                  note: str = "") -> bool:
     """Record an analyst's disposition of one anomaly. Returns whether it landed.
@@ -2781,6 +2858,7 @@ def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None,
                 "being shown here"
             )
             row["reviewed_at"] = None
+            _attach_ownership(row)
             continue
         found = idx.get(key)
         if found is not None:
@@ -2791,7 +2869,19 @@ def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None,
             row["review_state"] = "" if error is None else REVIEW_UNAVAILABLE
             row["review_note"] = ""
             row["reviewed_at"] = None
+        _attach_ownership(row)
     return rows
+
+
+def _attach_ownership(row: dict) -> None:
+    """The triage contract's owner + matched-rule fields (BF-12), DERIVED from the detector
+    registry the same way the alert gate reads it -- one table, so a row can never claim an
+    owner the pager does not honour."""
+    from weirvern import detector_registry  # noqa: PLC0415
+
+    owner, rule = detector_registry.row_ownership(str(row.get("detected_by_models") or ""))
+    row["owner"] = owner
+    row["matched_rule"] = rule
 
 
 def _json_safe_stamp(value):

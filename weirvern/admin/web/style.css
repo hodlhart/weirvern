@@ -413,6 +413,9 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 .stat.clickable:hover { border-color: var(--border-solid); }
 .stat.clickable.active { border-color: var(--accent); }
 .wl-sel { margin-right: 8px; }
+/* THE PAGING CHIP (BF-12): loud and quiet are one word apart on purpose. */
+.chip.pages { color: var(--ok); }
+.chip.quiet { color: var(--warn); }
 .firstrun-next, .firstrun-review, .firstrun-skip { margin-right: 6px; }
 .firstrun-next, .firstrun-review { border-color: var(--accent); color: var(--accent); }
 .firstrun-skip { color: var(--muted); }

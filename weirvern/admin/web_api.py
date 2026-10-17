@@ -85,6 +85,7 @@ def health_payload(report) -> dict:
 
 
 def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
+                      discipline: dict | None = None,
                       watch_error: str | None = None) -> dict:
     """Serialise anomaly rows plus the severity tiles' counts.
 
@@ -118,6 +119,8 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
         out.append(row)
     return {"rows": out,
             "watch_error": watch_error,
+            "discipline": discipline or {
+                "available": False, "reason": "fired/acted-on counts were not read"},
             "severity_counts": severity_counts or {
                 "available": False, "reason": "severity counts were not read", "counts": []}}
 

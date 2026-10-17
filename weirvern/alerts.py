@@ -15,7 +15,7 @@ from datetime import datetime
 import requests
 from clickhouse_connect.driver.client import Client
 
-from weirvern import attack
+from weirvern import attack, detector_registry
 from weirvern.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,15 @@ def push_alert(verdict: dict, settings: Settings, state: AlertState,
     """Send (or suppress) one alert. Returns (delivered, reason)."""
     src = verdict["src_addr"]
     now = time.time()
+
+    # THE QUIET-BY-DEFAULT GATE (BF-12), before every other decision: a detector that has no
+    # owner and runbook does not page, and neither does one nobody registered. The finding
+    # still landed in the console and this audit row still records the decision -- what is
+    # withheld is the interruption, which is the scarce resource.
+    allowed_page, quiet_reason = detector_registry.may_page(verdict.get("detected_by_models") or "")
+    if not allowed_page:
+        _audit(client, verdict, sent=False, reason="quiet", message="")
+        return False, "quiet: " + quiet_reason
 
     allowed, reason = state.can_send(src, settings, now)
     if not allowed:

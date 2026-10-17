@@ -280,6 +280,8 @@ def _build_handler(ctx: GuiContext):
                 return
             if path == "/api/overview":
                 return self._overview()
+            if path == "/api/detectors":
+                return self._detectors()
             if path == "/api/anomalies":
                 return self._anomalies(query)
             # Who the caller is, and whether the sign-in gate is armed. Exempt above; returns
@@ -461,6 +463,10 @@ def _build_handler(ctx: GuiContext):
                     # severity filter itself (see status.anomaly_severity_counts for why).
                     severity_counts = status_mod.anomaly_severity_counts(
                         client, min_score=min_score, host=host_f)
+                    # FIRED VS ACTED-ON (BF-12): the alert-budget line. Same self-guarding
+                    # shape as the severity counts -- a failed read is its own state.
+                    discipline = status_mod.anomaly_discipline_counts(
+                        client, min_score=min_score, host=host_f)
                     # SOC-1: merge review state. Read separately (one small query) rather
                     # than joined in SQL because the reviews table may not exist yet on a
                     # deployment whose schema job has not re-run -- a join would make the
@@ -491,7 +497,21 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.anomalies_payload(
-                rows, severity_counts=severity_counts, watch_error=watch_err))
+                rows, severity_counts=severity_counts, discipline=discipline,
+                watch_error=watch_err))
+
+        def _detectors(self) -> None:
+            """The detector registry with its catch counts: who owns what, who may page.
+
+            Read-only and unauthenticated like the rest of the read surface -- it carries no
+            operator data, only which detectors exist and what they caught.
+            """
+            try:
+                with self._with_client() as client:
+                    out = status_mod.detectors_overview(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"cannot reach ClickHouse: {exc}")
+            self._json(out)
 
         def _models(self, query: dict) -> None:
             """Model overview: training history, score spread, agreement, deviations.
