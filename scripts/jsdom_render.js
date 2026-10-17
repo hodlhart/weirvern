@@ -3727,6 +3727,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(60);
   }
 
+  // ── THE ACCESSIBILITY GUARANTEES, LIVE (TH-6) ──────────────────────────────────────────────
+  {
+    const stageNote = doc.getElementById("st-stage-note");
+    const applyRes = doc.getElementById("st-apply-results");
+    check("the staged-changes note announces itself to a screen reader",
+          stageNote.getAttribute("aria-live") === "polite"
+          && stageNote.getAttribute("role") === "status");
+    check("...and so do the apply results",
+          applyRes.getAttribute("aria-live") === "polite"
+          && applyRes.getAttribute("role") === "status");
+  }
+
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
   {
     H.showView("sluice");

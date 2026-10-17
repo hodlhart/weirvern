@@ -92,8 +92,20 @@ new names and are kept for one release; a future rename pass retires them togeth
   `var(--chart-area)` for resting bars and the accent for the current bucket only.
 - **Settings row**: key left (13px `--muted`), control right; one row = one control; hairline
   divider between rows; the `i` affordance on every row.
-- **Drill-down side sheet** (phase 3): entity detail slides in from the right (see the
-  research spec for the exact recipe); editors stay in centered modals.
+- **Drill-down side sheet** (landed): entity detail slides in from the right edge
+  (`position: fixed` -- the view underneath never reflows); one close affordance behind four
+  doors (Escape, scrim click, a visible Close, the breadcrumb's back segment); focus moves
+  into the sheet on open; editors stay in centered, in-flow surfaces.
+- **Grouped nav + breadcrumbs** (landed): at most seven labelled groups in one row; nothing
+  collapses into sub-menus; a drill-down posts `Group > surface > entity` under the nav and
+  any view change clears the trail.
+- **Command palette** (landed): Ctrl/Cmd-K (or `/`) over tabs, entities, settings keys and
+  actions; every result carries its full path as a breadcrumb; it executes by driving the
+  real controls, never a second copy of an action; `h` help, `f` maximize, `g+letter` tab
+  chords; every shortcut is quiet while a field is being typed into.
+- **Micro sparkline** (landed): for series-backed numbers only; resting bars in
+  `--chart-area`, the current bucket in accent, zero buckets keep a stub. A number without a
+  series gets no sparkline -- shape is a claim.
 
 ## 5. Status semantics
 
@@ -119,10 +131,17 @@ one value, one control. Queued refinements: the churn states and the failure lab
 
 - **Phase 1 — LANDED** (2026-10-17): palette, typography, card anatomy, control chrome,
   scrollbars, focus ring, reduced-motion.
-- **Phase 2 — queued**: the one chip recipe; metric tiles; chart theming.
-- **Phase 3 — queued**: sensor drill-down as a slide-in sheet; fleet as a triage worklist
-  (badges, filters in the URL, bulk actions); adoption churn states; a pipeline-quality
-  self-audit page.
+- **Phase 2 — LANDED**: the chip/status grammar (one vocabulary, glyphs beside hues); the
+  metric-tile recipe with label-above-value and series-backed sparklines; chart theming.
+- **Phase 3 — LANDED**: the drill-down side sheet (one exit, four doors, focus moves in);
+  the fleet as a triage worklist (counts ARE filters, filters in the URL, built-in + saved
+  views, bulk actions behind two-stage confirms); adoption churn states and the first-run
+  wizard; the pipeline self-audit page with one-click fixes; the grouped nav with
+  breadcrumbs; the command palette over everything.
+- **Console behaviour that rides the same rules** (not visual, documented here because the
+  copy is part of the interface): staged settings validate at apply time with named,
+  blocking checks and skips that carry their reasons; a no-JS panic page renders the
+  liveness picture when the console itself is the casualty.
 
 ### Deliberate refusals (do not "fix" these later without reading §1)
 
@@ -136,8 +155,20 @@ one value, one control. Queued refinements: the churn states and the failure lab
 ## 8. Changing the theme
 
 - Tokens are the API: change values in `:root`, not rules. No hex outside `:root` except
-  the documented focus ring.
+  the two documented exceptions, both pinned by `tests/test_a11y.py`: the focus ring
+  (`#66a8ff`) and the `#fff` in the chip recipe's `color-mix` lightening.
 - A new colour must be a semantic role (a state or an affordance), never decoration.
 - Every pass runs the jsdom harness and `scripts/gate.sh` before it ships.
 - Visual changes ship as their own commit with the phase named, so the history reads as a
   system evolving rather than a pile of tweaks.
+
+## 9. Accessibility guarantees (swept 2026-10-17, pinned by tests)
+
+- `color-scheme: dark` on `:root`: the UA themes native controls to match.
+- `aria-live="polite"` (`role="status"`) on the staged-changes note and the apply results:
+  a screen reader hears what a sighted operator sees change.
+- A visible focus ring everywhere: a 2px base `:focus-visible` ring, plus a companion rule
+  for every control that opts its own outline out -- a focus ring with a hole in it is not a
+  ring.
+- `prefers-reduced-motion: reduce` neutralises every animation and transition (including
+  the sheet slide); scrollbars are themed in the page, the nav, the sheet and the palette.

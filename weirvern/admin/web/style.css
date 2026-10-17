@@ -8,6 +8,9 @@
  * The token system and the principles behind every value: docs/theme.md.
  */
 :root {
+  /* The UA renders native controls (scrollbars, form widgets, selection) in the theme's own
+   * key: without this, a dark page shows light scrollbars and a white date picker. */
+  color-scheme: dark;
   /* ── THE VISUAL-THEME PALETTE (2026-10-17). A neutral single ramp on near-black; depth via
    * the ramp and the hairline ring in --ring, never drawn borders. One accent, spent only on
    * active/selected/primary. Values derived from shipped design tokens of the reference
@@ -182,7 +185,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .review-resolved { background: var(--wash-ok); border-color: transparent;
   color: color-mix(in srgb, var(--ok) 78%, #fff); }
 .review-fp { color: var(--muted); text-decoration: line-through; }
-.review-unavailable { color: var(--danger, #e05c5c); border-style: dashed; }
+.review-unavailable { color: var(--danger); border-style: dashed; }
 .review-remain {
   display: inline-block; border-radius: 999px; padding: 2px 8px; margin-left: 4px;
   font-size: 11px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap;
@@ -341,11 +344,11 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .modal.hidden { display: none; }
 .modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
 .modal-panel { position: relative; margin: 8vh 16px 16px; width: min(680px, 96vw); max-height: 80vh;
-  overflow: auto; background: var(--panel, #161b22); border: 1px solid var(--line, #30363d);
+  overflow: auto; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 14px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5); }
 .modal-x { position: absolute; top: 6px; right: 8px; background: none; border: none;
   color: var(--muted); font-size: 18px; cursor: pointer; }
-.modal-x:hover { color: var(--fg, #eee); }
+.modal-x:hover { color: var(--fg); }
 body.modal-open { overflow: hidden; }
 /* Rule management: the pick column, the action icons, the bulk bar (2026-10-16). */
 td.pick, th.pick { width: 1.6em; }
@@ -353,14 +356,14 @@ td.pick, th.pick { width: 1.6em; }
 #sl-bulk.hidden { display: none; }
 .icon-btn { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer;
   padding: 2px 5px; border-radius: 4px; }
-.icon-btn:hover { border-color: var(--line, #333); color: var(--fg, #eee); }
-.icon-btn.danger:hover { color: var(--bad, #f85149); }
-.icon-btn.armed { border-color: var(--bad, #f85149); color: var(--bad, #f85149); }
+.icon-btn:hover { border-color: var(--line); color: var(--fg); }
+.icon-btn.danger:hover { color: var(--bad); }
+.icon-btn.armed { border-color: var(--bad); color: var(--bad); }
 tr.sl-picked { background: var(--panel2); }
 .sl-rule-row { cursor: pointer; }
 .zk-bar { display: grid; grid-template-columns: 8em 1fr 4em; gap: 6px; align-items: center;
   cursor: pointer; padding: 2px 0; }
-.zk-bar-fill { height: 10px; background: var(--accent, #58a6ff); border-radius: 2px; }
+.zk-bar-fill { height: 10px; background: var(--accent); border-radius: 2px; }
 .zk-name { text-align: right; }
 .occ-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
 .occ { font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -436,13 +439,13 @@ svg.spark rect.cur { fill: var(--accent); }
 .tab-group { display: flex; align-items: center; gap: 2px; flex: none; }
 .tab-group + .tab-group { margin-left: 16px; }
 .tab-group-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
-                   color: var(--muted, #9aa0a6); margin-right: 6px; user-select: none; }
+                   color: var(--muted); margin-right: 6px; user-select: none; }
 #crumbs { padding: 5px 18px 7px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 #crumbs.hidden { display: none; }
 .crumb { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
          padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .crumb.current { color: inherit; }
-.crumb-sep { color: var(--muted, #9aa0a6); }
+.crumb-sep { color: var(--muted); }
 /* THE COMMAND PALETTE (BF-11): a quiet overlay; the active row is unmistakable. */
 #palette { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90;
            display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
@@ -580,7 +583,7 @@ td.link:hover, .link:hover { text-decoration: underline; }
   border-radius: 999px; padding: 3px 10px; cursor: pointer; }
 .chip:hover { border-color: var(--accent); }
 .chip .x { color: var(--muted); font-weight: 700; }
-.chip .x:hover { color: var(--danger, #e05c5c); }
+.chip .x:hover { color: var(--danger); }
 /* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a
  * state modifier. The modifiers existed since the fleet shipped but rendered neutral -- the
  * colour lived only in the row's left bar. They now wear the same wash fills as .pill, so the
@@ -757,11 +760,11 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .stage-arrow { color: var(--accent); }
 .stage-val { font-size: 13px; }
 /* A warning is stated BEFORE apply, in the plan's own words. */
-.stage-warn { flex-basis: 100%; font-size: 12px; color: var(--warn, #d9a441); }
+.stage-warn { flex-basis: 100%; font-size: 12px; color: var(--warn); }
 .stage-was { font-size: 12px; color: var(--muted); }
 .stage-res-item { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap;
   padding: 3px 0; font-size: 12px; }
-.stage-res-item .fail { color: var(--warn, #d9a441); }
+.stage-res-item .fail { color: var(--warn); }
 .stage-blast { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 6px;
   flex-wrap: wrap; }
 button.primary { background: var(--accent); border-color: transparent; color: #fff; }
@@ -944,7 +947,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .timerange { position: relative; display: inline-block; }
 #tr-open { }
 .tr-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; width: 460px;
-  background: var(--panel, #1b1f24); border: 1px solid var(--line, #2c333b); border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.45); text-align: left; }
 .tr-panel .tr-sec { margin: 6px 0; }
 .tr-panel .tr-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
@@ -955,11 +958,11 @@ nav::-webkit-scrollbar-track { background: transparent; }
 /* ── Discover's click-a-value filters ────────────────────────────────────────────────────── */
 .dc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 1.6em; }
 .dc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px;
-  background: var(--panel, #1b1f24); border: 1px solid var(--line, #2c333b); border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   font-size: 12px; }
 .dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
   font-size: 13px; line-height: 1; }
-.dc-chip-x:hover { color: #e66; }
+.dc-chip-x:hover { color: var(--bad); }
 td.dcell { cursor: pointer; }
 td.dcell:hover { text-decoration: underline dotted; }
 
@@ -973,7 +976,7 @@ td.dcell:hover { text-decoration: underline dotted; }
   flex: 0 0 auto; }
 .pill-pop .pill-state.ok { color: var(--ok); }
 .pill-pop .pill-state.bad { color: var(--crit); }
-.pill-pop .pill-state.na { color: var(--muted, #999); }
+.pill-pop .pill-state.na { color: var(--muted); }
 .pill-pop p { margin: 6px 0 2px; }
 
 /* ── chrome — scrollbars, focus ring, motion (visual-theme pass, 2026-10-17) ─────────────── */
@@ -981,7 +984,16 @@ html { scrollbar-width: thin; scrollbar-color: var(--hover) transparent; }
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-thumb { background: var(--hover); border-radius: 14px; min-height: 20px; }
 ::-webkit-scrollbar-track { background: transparent; }
-:focus-visible { outline: none; box-shadow: 0 0 0 1px #66a8ff; }
+:focus-visible { outline: none; box-shadow: 0 0 0 2px #66a8ff; }
+/* COMPANIONS FOR THE TWO CONTROLS THAT KILL THE RING THEMSELVES. An `outline: none` on a
+ * plain :focus has higher specificity than the base :focus-visible rule, so each one that
+ * opts out owns a keyboard-visible ring of its own -- a field you cannot see yourself in is
+ * a field a keyboard user loses. */
+#palette-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.gate-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The sheet and the palette results scroll; their scrollbars join the theme like the page's. */
+#wl-detail-card.sheet, #palette-results { scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
