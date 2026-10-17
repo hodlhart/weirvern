@@ -70,6 +70,10 @@ async function main() {
     virtualConsole: vc,
     pretendToBeVisual: true,
   });
+  // jsdom does not implement window.scrollTo (the US-6 return trip calls it): replace it with
+  // a no-op. Same treatment as window.confirm below -- the "no JavaScript errors" check must
+  // report real defects, not environment gaps.
+  dom.window.scrollTo = function () {};
   const { window } = dom;
   const doc = window.document;
 
@@ -123,6 +127,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
                    setCrumbs, clearCrumbs, closeWeirling, sparkSvg, statCells,
+                   HOST_RETURN, get CURRENT_VIEW() { return CURRENT_VIEW; },
                    confirmDestructive, withReadBack,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
@@ -5984,6 +5989,156 @@ check("high capture loss is called out in the fleet",
     for (const line of budget) console.log("  " + line);
     H.showView("health");
     await sleep(120);
+  }
+
+  // ── ARRIVE AND RETURN (US-6): filters, range and scroll survive the trip ───────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let scrollTo = [];
+    const prevScrollTo = window.scrollTo;
+    window.scrollTo = (x, y) => { scrollTo.push([x, y]); };
+    let EXPECT_SCROLL = 420;
+    try { Object.defineProperty(window, "scrollY", { value: EXPECT_SCROLL, configurable: true }); }
+    catch (_e) { EXPECT_SCROLL = Number(window.scrollY) || 0; }
+
+    // 1) ARRIVAL: a link carries state in. The chip says where the filters came from, and the
+    //    header says WHY the list may look short (X of Y).
+    const HOST_REQS = [];
+    const AN_ARRIVAL = { available: true, reason: "", total_unfiltered: 40, rows: [
+      { detected_at: "2026-10-17T11:00:00", window_start: "2026-10-17T10:55:00",
+        window_end: "2026-10-17T11:00:00", src_addr: "198.51.100.5", hostname: "host.example",
+        anomaly_score: 0.91, severity: "high", detected_by_models: "DBSCAN", n: 1,
+        review_state: "", reviewed_at: null, owner: "ops",
+        windows: [{ window: "2026-10-17T10:55:00", review_state: "", reviewed_at: null }] },
+      { detected_at: "2026-10-17T11:05:00", window_start: "2026-10-17T11:00:00",
+        window_end: "2026-10-17T11:05:00", src_addr: "198.51.100.5", hostname: "host.example",
+        anomaly_score: 0.80, severity: "medium", detected_by_models: "DBSCAN", n: 3,
+        review_state: "", reviewed_at: null, owner: "ops",
+        windows: [{ window: "2026-10-17T11:00:00", review_state: "", reviewed_at: null }] },
+    ], severity_counts: {}, discipline: null, watch_error: null };
+    fetchOverride = (u) => {
+      const s = String(u);
+      if (s.includes("/api/anomalies")) {
+        return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => AN_ARRIVAL });
+      }
+      if (s.includes("/api/host")) {
+        HOST_REQS.push(s);
+        // The FULL host payload: the minimal default fixture lacks the drill's later tables
+        // (zeek_services / anomalies), and a partial payload makes loadHost throw mid-render --
+        // no crumb, and the failure hides behind the .catch. Serve the complete shape.
+        return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5", hours: 6,
+          totals: { bytes: 1234567, packets: 900, flows: 42, unique_destinations: 7,
+                    unique_ports: 9, last_seen: "2026-10-17T11:00:00" },
+          timeline: [{ hour: "2026-10-17T10:00:00", bytes: 100, flows: 1 }],
+          top_destinations: [
+            { dst_addr: "198.51.100.9", hostname: "peer.example", bytes: 9000, flows: 9, ports: 3 }],
+          top_ports: [{ dst_port: 443, proto: "tcp", bytes: 8000, flows: 8 }],
+          zeek_services: [{ service: "ssl", conns: 5, bytes: 7000 }],
+          anomalies: [], errors: null }) });
+      }
+      return null;
+    };
+    window.location.hash = "#v=anomalies&tr=6&an.host=198.51.100.5&an.model=DBSCAN";
+    H.applyURLState();
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(300);
+    check("ARRIVAL: the link's filters and range land active",
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN"
+          && Number(H.trHours()) === 6,
+          `host=${H.AN_FILTERS.host} model=${H.AN_FILTERS.model} h=${H.trHours()}`);
+    check("ARRIVAL: a removable chip explains the link's filters",
+          [...doc.querySelectorAll("#an-filters .dc-chip")]
+            .some((c) => /arrived with filters/.test(c.textContent)),
+          (doc.getElementById("an-filters").textContent || "").slice(0, 90));
+    check("ARRIVAL: the header says showing X of Y",
+          /showing 4 of 40 alerts/.test((doc.getElementById("an-count-line") || {}).textContent || ""),
+          (doc.getElementById("an-count-line") || {}).textContent || "no line");
+
+    // 2) RETURN from Evidence: the labeled exit; chips, range and SCROLL all survive.
+    const rowA = doc.querySelector("#anomalies-table tbody tr");
+    check("RETURN: an alert row is on screen to drill into", !!rowA);
+    if (rowA) { rowA.click(); }
+    await sleep(320);
+    const evCrumb = [...doc.querySelectorAll("#crumbs .crumb")].slice(-1)[0];
+    check("RETURN: Evidence's exit is LABELED with its destination",
+          !!evCrumb && /Anomalies/.test(evCrumb.textContent),
+          evCrumb ? evCrumb.textContent : "no crumb");
+    scrollTo = [];
+    if (evCrumb) { evCrumb.click(); }
+    await sleep(1250);
+    check("RETURN: the origin's filters survive the round trip",
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN",
+          `${H.AN_FILTERS.host} / ${H.AN_FILTERS.model}`);
+    check("RETURN: the time window is unchanged", Number(H.trHours()) === 6, String(H.trHours()));
+    check("RETURN: the scroll is restored after the view re-renders",
+          scrollTo.some(([x, y]) => x === 0 && y === EXPECT_SCROLL), JSON.stringify(scrollTo));
+
+    // 3) RETURN from the host drill: same guarantees, and the drill asked the GLOBAL window.
+    await sleep(200);
+    const jobHostCell = [...doc.querySelectorAll("#anomalies-table tbody td.dcell")]
+      .find((td) => /open this host's view/.test(td.title || ""));
+    HOST_REQS.length = 0;
+    if (jobHostCell) { jobHostCell.click(); }
+    await sleep(380);
+    const hCrumb = [...doc.querySelectorAll("#crumbs .crumb")].slice(-1)[0];
+    check("HOST RETURN: the jump lands with the labeled way back",
+          doc.getElementById("view-host").classList.contains("active")
+          && !!hCrumb && /Anomalies/.test(hCrumb.textContent),
+          hCrumb ? hCrumb.textContent : "no crumb");
+    check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
+          HOST_REQS.some((u) => /hours=6/.test(u)), HOST_REQS.join(" ").slice(0, 120));
+    scrollTo = [];
+    if (hCrumb) { hCrumb.click(); }
+    await sleep(1250);
+    check("HOST RETURN: filters and range survive, scroll restored",
+          H.AN_FILTERS.host === "198.51.100.5" && Number(H.trHours()) === 6
+          && scrollTo.some(([x, y]) => x === 0 && y === EXPECT_SCROLL),
+          `${H.AN_FILTERS.host} / ${H.trHours()} / ${JSON.stringify(scrollTo)}`);
+
+    // 4) COPY LINK round trip: the URL forces the CURRENT state; re-applying it from a cold
+    //    state reproduces everything (a fresh boot's own path, driven again).
+    let COPIED = "";
+    try {
+      Object.defineProperty(window.navigator, "clipboard",
+        { value: { writeText: async (t) => { COPIED = String(t); } }, configurable: true });
+    } catch (_e) { /* leave it; the check below will say why */ }
+    const cbtn = doc.getElementById("copy-link");
+    if (cbtn) { cbtn.click(); }
+    await sleep(150);
+    check("COPY: the link forces the current state (view + filters + range)",
+          /v=anomalies/.test(COPIED) && /an\.host=198\.51\.100\.5/.test(COPIED)
+          && /tr=6/.test(COPIED), COPIED);
+    H.anClearAllFilters();
+    H.showView("health");
+    const q = COPIED.includes("#") ? COPIED.slice(COPIED.indexOf("#") + 1) : "v=health";
+    // The shared boot carries a lingering sheet state (wl=...), which applyURLState dutifully
+    // re-opens -- restore THIS card's state: strip it so the assertions answer about the
+    // filters/range/view, not about a panel another section left open.
+    const qp = new window.URLSearchParams(q);
+    qp.delete("wl");
+    window.location.hash = "#" + qp.toString();
+    H.applyURLState();
+    H.showView(qp.get("v") || "health");
+    await sleep(250);
+    check("COPY: a cold boot from that URL reproduces the exact state",
+          H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN"
+          && Number(H.trHours()) === 6
+          && doc.getElementById("view-anomalies").classList.contains("active"),
+          `${H.AN_FILTERS.host} / ${H.AN_FILTERS.model} / ${H.trHours()} / active=` +
+          doc.getElementById("view-anomalies").classList.contains("active"));
+
+    // cleanup: back to a neutral world for the sections that follow.
+    fetchOverride = null;
+    window.location.hash = "";
+    H.anClearAllFilters();
+    H.trApply("24");   // the range is global state; the sections after assume the default
+    window.scrollTo = prevScrollTo;
+    try { Object.defineProperty(window, "scrollY", { value: 0, configurable: true }); }
+    catch (_e) { /* ignore */ }
+    H.showView("health");
+    await sleep(150);
   }
 
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────

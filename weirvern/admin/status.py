@@ -1845,6 +1845,21 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
 
 
+def anomalies_total_count(client, min_score: float = 0.0) -> int:
+    """The UNFILTERED count under the same min-score -- the Y in "showing X of Y".
+
+    Deliberately carries NONE of the page's filters (host/severity/model): its whole job is to
+    say how many alerts exist before them, so a filtered list can state what it is a subset of.
+    Raises like its neighbours: a failed read is the caller's to render, never a zero -- a "0"
+    here would read as a quiet network rather than a broken query.
+    """
+    res = client.query(
+        "SELECT count() FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s",
+        parameters={"s": float(min_score)},
+    )
+    return int(res.result_rows[0][0]) if res.result_rows else 0
+
+
 def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
                       host: str = "", severity: str = "", model: str = "") -> list[dict]:
     """One row per DISTINCT anomaly, with its occurrence count and its windows.

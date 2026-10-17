@@ -493,6 +493,13 @@ def _build_handler(ctx: GuiContext):
                     # THE WATCH LIST rides the same way the reviews do: a separate small
                     # read that degrades to an explicit "unavailable" marker instead of
                     # failing the view.
+                    # US-6: the UNFILTERED total under the same min-score. A failed read is
+                    # carried as None (the header omits "of Y") -- never as a zero.
+                    try:
+                        total_unfiltered = status_mod.anomalies_total_count(
+                            client, min_score=min_score)
+                    except Exception:  # noqa: BLE001
+                        total_unfiltered = None
                     watch_set, watch_err = status_mod.watch_index(client)
                     for r in rows:
                         r["watched"] = (r.get("src_addr") in watch_set) if watch_err is None else None
@@ -511,7 +518,7 @@ def _build_handler(ctx: GuiContext):
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.anomalies_payload(
                 rows, severity_counts=severity_counts, discipline=discipline,
-                watch_error=watch_err))
+                watch_error=watch_err, total_unfiltered=total_unfiltered))
 
         def _panic(self) -> None:
             """The no-JS fallback page (BF-14). Read-only; every section self-guards."""

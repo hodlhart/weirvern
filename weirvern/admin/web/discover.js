@@ -336,7 +336,7 @@ function dcToggleDetail(tr, r) {
   };
   const openHostBtn = (addr) => {
     const host = el("button", { text: "open host " + addr });
-    host.addEventListener("click", (e) => { e.stopPropagation(); showView("host"); openHost(addr); });
+    host.addEventListener("click", (e) => { e.stopPropagation(); openHost(addr); });
     acts.appendChild(host);
   };
   if (dnsRow) {

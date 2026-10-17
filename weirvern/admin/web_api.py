@@ -86,7 +86,8 @@ def health_payload(report) -> dict:
 
 def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
                       discipline: dict | None = None,
-                      watch_error: str | None = None) -> dict:
+                      watch_error: str | None = None,
+                      total_unfiltered: int | None = None) -> dict:
     """Serialise anomaly rows plus the severity tiles' counts.
 
     An OBJECT now, not a bare list (2026-10-16): the page's header needs how many anomalies carry
@@ -118,6 +119,9 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
         row["hostname"] = _hostname(row.get("src_addr"))
         out.append(row)
     return {"rows": out,
+            # US-6: the unfiltered count beside the rows, so the list can say "showing X of Y".
+            # None when the read failed -- the line then omits the "of Y" rather than inventing it.
+            "total_unfiltered": total_unfiltered,
             "watch_error": watch_error,
             "discipline": discipline or {
                 "available": False, "reason": "fired/acted-on counts were not read"},

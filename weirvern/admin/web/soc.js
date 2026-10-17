@@ -310,7 +310,7 @@ async function loadNetflow() {
                // its traffic, destinations and anomalies live together. This comment used to
                // concede the host was "one chip away in Assets"; now it is the click.
                // The view's chips still filter; an entity value navigates.
-               onClick: (r) => { showView("host"); openHost(r.src_addr); },
+               onClick: (r) => { openHost(r.src_addr); },
                title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} \u2014 ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to open this host.`,
                emptyText: "No talkers in this window." });
 

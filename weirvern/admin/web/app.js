@@ -1519,6 +1519,15 @@ function anRenderChips() {
   const box = document.getElementById("an-filters");
   if (!box) return;
   box.replaceChildren();
+  // US-6: ARRIVED THROUGH A LINK. These filters were not chosen on this screen -- they came in
+  // the URL -- so the reason is said out loud, and one click shows everything again.
+  if (ARRIVED_FROM_LINK && (AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model)) {
+    const arrival = el("button", { class: "dc-chip",
+      attrs: { title: "these filters arrived with the link; click to show everything" },
+      text: "arrived with filters \u2014 show everything \u00d7" });
+    arrival.addEventListener("click", () => { ARRIVED_FROM_LINK = false; anClearAllFilters(); });
+    box.appendChild(arrival);
+  }
   for (const field of ["host", "severity", "model"]) {
     if (!AN_FILTERS[field]) continue;
     const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
@@ -1762,6 +1771,7 @@ function anClearAllFilters() {
   AN_FILTERS.host = "";
   AN_FILTERS.severity = "";
   AN_FILTERS.model = "";
+  ARRIVED_FROM_LINK = false;
   const min = document.getElementById("f-min-score");
   if (min) min.value = "0";
   for (const id of ["f-unreviewed", "f-watched"]) {
@@ -1840,7 +1850,7 @@ async function loadAnomalies() {
                    anToggleOccurrences(e.target.closest("tr"), a);
                  } } }),
       el("td", { class: "dcell", attrs: { title: "open this host's view" },
-                 on: { click: (e) => { e.stopPropagation(); showView("host"); openHost(a.src_addr); } } },
+                 on: { click: (e) => { e.stopPropagation(); openHost(a.src_addr); } } },
          [hostCell(a.src_addr, a.hostname),
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
                                    title: "on the watch list" }) : null]),
@@ -1881,6 +1891,19 @@ async function loadAnomalies() {
       ]),
       el("td", {}, [anActions(a), reviewCell(a)]),
     ]));
+  }
+
+  // US-6: "showing X of Y" -- the header says WHY the list may look short. X counts the
+  // occurrences on screen (grouped rows carry n); Y is the unfiltered count under the same
+  // min-score, from the server. When filters are off the line just states the count.
+  const countLine = document.getElementById("an-count-line");
+  if (countLine) {
+    const x = rows.reduce((s, r) => s + Number(r.n || 1), 0);
+    const y = Number(payload.total_unfiltered);
+    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model);
+    countLine.textContent = (filtered && Number.isFinite(y))
+      ? `showing ${x} of ${y} alerts \u2014 filters are on`
+      : `${x} alert${x === 1 ? "" : "s"} on screen`;
   }
 }
 
@@ -2063,13 +2086,33 @@ async function loadHost(addr, hours) {
       el("td", { text: a.baseline_comparison || a.primary_deviation_feature || "—" }),
     ]));
   }
+
+  // US-6: the labeled exit, only for JOURNEYS (openHost) -- a fresh lookup in the box is not
+  // somewhere you came from. The label names the DESTINATION, not "back".
+  if (HOST_RETURN.pending && CURRENT_VIEW === "host") {
+    HOST_RETURN.pending = false;
+    const fromTab = [...document.querySelectorAll(".tab")]
+      .find((t) => t.dataset.view === HOST_RETURN.view);
+    setCrumbs([{ label: fromTab ? fromTab.textContent : "Back",
+                 run: () => returnWithScroll(HOST_RETURN.view, HOST_RETURN.scroll),
+                 title: "back where this was opened, with its filters and scroll" }]);
+  }
 }
 
 function openHost(addr) {
   if (!addr) return;
+  if (CURRENT_VIEW && CURRENT_VIEW !== "host") {
+    // US-6: remember where the jump started -- the labeled way back needs it, and so does the
+    // scroll restore. A host->host hop (a destination cell on the drill) is not a journey.
+    HOST_RETURN = { pending: true, view: CURRENT_VIEW, scroll: Number(window.scrollY || 0) };
+  } else {
+    HOST_RETURN.pending = false;
+  }
   showView("host");
   document.getElementById("h-addr").value = addr;
-  loadHost(addr, 24).catch(showError);
+  // US-6: the GLOBAL time window, not a hardcoded 24h -- a drill must answer the question the
+  // operator already asked (the audit: "window = global range").
+  loadHost(addr, String(trHours())).catch(showError);
 }
 
 /* ── sending an alert to the Sluice Gate ─────────────────────────────────── */
@@ -2351,6 +2394,7 @@ async function lookupFingerprint(ja4) {
 function openEvidence(a) {
   if (!a || !a.src_addr) return;
   EVIDENCE_FROM = CURRENT_VIEW || "anomalies";
+  EVIDENCE_SCROLL = Number(window.scrollY || 0);
   showView("evidence");
   const start = a.window_start || a.detected_at;
   loadEvidence(a.src_addr, start, a.window_end).catch(showError);
@@ -2371,8 +2415,9 @@ async function loadEvidence(addr, start, end) {
   // wherever it was opened from (Anomalies, the Host view), filters and all.
   const fromView = EVIDENCE_FROM || "anomalies";
   const fromTab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === fromView);
-  setCrumbs([{ label: fromTab ? fromTab.textContent : "Back", run: () => showView(fromView),
-               title: "back where this drill was opened" }]);
+  setCrumbs([{ label: fromTab ? fromTab.textContent : "Back",
+               run: () => returnWithScroll(fromView, EVIDENCE_SCROLL),
+               title: "back where this drill was opened, with its filters and scroll" }]);
 
   // The verdict, so the evidence is read in context rather than cold.
   const verdict = document.getElementById("ev-verdict");
@@ -2887,7 +2932,11 @@ function setCrumbs(items) {
   CRUMBS.forEach((c, i) => {
     if (i) host.appendChild(el("span", { class: "crumb-sep", text: "\u203a" }));
     const isLast = i === CRUMBS.length - 1;
-    if (c.run && !isLast) {
+    // US-6 FIX (found by driving the exit): a drill's crumb is usually the ONLY crumb, and the
+    // old rule ("last crumb never carries a handler") rendered it as an inert span -- the
+    // labeled way back existed and did nothing. A last crumb with a run is a button when it is
+    // the whole trail; in a longer trail the last entry is where you already are.
+    if (c.run && (!isLast || CRUMBS.length === 1)) {
       host.appendChild(el("button", {
         class: "crumb", text: c.label, attrs: { type: "button", title: c.title || "back" },
         on: { click: c.run },
@@ -2898,6 +2947,21 @@ function setCrumbs(items) {
   });
 }
 function clearCrumbs() { setCrumbs([]); }
+
+/* US-6: the return trip. showView fires the origin view's loader, which replaces the DOM a
+ * beat later, so the scroll is applied after that render (twice: cheap insurance for slow
+ * loads -- the second call is a no-op once the first has consumed PENDING_SCROLL). */
+function returnWithScroll(view, scroll) {
+  PENDING_SCROLL = Number(scroll) || 0;
+  showView(view || "health");
+  const apply = () => {
+    if (PENDING_SCROLL === null) return;
+    try { window.scrollTo(0, PENDING_SCROLL); } catch (_e) { /* jsdom / ancient engines */ }
+    PENDING_SCROLL = null;
+  };
+  setTimeout(apply, 350);
+  setTimeout(apply, 900);
+}
 
 /* US-3: a DRILL VIEW keeps its family's tab lit (Evidence belongs to Anomalies), and the URL
  * follows the VIEW NAME rather than whichever tab happens to match: `v=evidence` was
@@ -3587,7 +3651,7 @@ function renderBaselines(bl) {
   for (const h of show) {
     body.appendChild(el("tr", {}, [
       el("td", { class: "dcell", attrs: { title: "open this host's view" },
-                 on: { click: () => { showView("host"); openHost(h.src_addr); } } },
+                 on: { click: () => { openHost(h.src_addr); } } },
          [hostCell(h.src_addr, h.hostname)]),
       el("td", { class: "num", text: mbBytes(h.avg_bytes) }),
       el("td", { class: "num", text: mbBytes(h.p95_bytes) }),
@@ -4001,7 +4065,7 @@ async function loadModels() {
          [hostCell(pt.src_addr, pt.hostname)]),
     ]);
     if (pt.src_addr) {
-      tr.addEventListener("click", () => { showView("host"); loadHost(pt.src_addr, 24); });
+      tr.addEventListener("click", () => { openHost(pt.src_addr); });
     }
     body.appendChild(tr);
   }
@@ -4251,7 +4315,7 @@ async function loadIdentity() {
       // US-2: the host is an ENTITY -- its cell opens the host's own view (traffic,
       // destinations, anomalies together); the row's own click still opens the identity detail.
       el("td", { class: "mono dcell", attrs: { title: "open this host's view" },
-                 on: { click: (e) => { e.stopPropagation(); showView("host"); openHost(h.host); } } },
+                 on: { click: (e) => { e.stopPropagation(); openHost(h.host); } } },
          [el("span", { text: h.hostname ? `${h.hostname} (${h.host})` : h.host })]),
       el("td", { class: "dcell", attrs: { title: "filter the list to this identity" },
                  on: { click: (e) => { e.stopPropagation();
@@ -4384,6 +4448,19 @@ let CURRENT_EVIDENCE = null;
 // US-3: the view Evidence was OPENED FROM -- the crumb goes back there, and its filters are
 // untouched because nothing ever resets them (the controls still hold what was set).
 let EVIDENCE_FROM = "";
+let EVIDENCE_SCROLL = 0;   // US-6: the return trip to Evidence's origin restores its scroll
+/* US-6: where a HOST drill was opened from, and the scroll to return to. Captured BEFORE
+ * showView("host") runs, because showView rewrites CURRENT_VIEW. `pending` marks a JOURNEY
+ * (openHost) rather than a fresh lookup in the address box (h-go) -- only journeys get a way
+ * back. */
+let HOST_RETURN = { pending: false, view: "", scroll: 0 };
+/* US-6: the scroll a labeled exit must restore. Set by the exit BEFORE showView triggers the
+ * destination's loader; applied AFTER that loader has rendered -- the return trip re-renders
+ * the origin view, so scrolling immediately would land on a page that is about to be replaced. */
+let PENDING_SCROLL = null;
+/* US-6: true when the current filters arrived through the URL (a shared link), so the chips
+ * can say WHY the list looks short and offer the way out. */
+let ARRIVED_FROM_LINK = false;
 let PENDING_WL = "";   // a sensor drill-down a link asked for, opened once the fleet loads
 
 function scheduleURLSync() {
@@ -4468,6 +4545,8 @@ function applyURLState() {
   if (p.get("an.host")) AN_FILTERS.host = p.get("an.host");
   if (p.get("an.sev")) AN_FILTERS.severity = p.get("an.sev");
   if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
+  // US-6: filters that came from the URL are not this screen's choices -- say so.
+  ARRIVED_FROM_LINK = !!(p.get("an.host") || p.get("an.sev") || p.get("an.model"));
   const unrev = document.getElementById("f-unreviewed");
   const watched = document.getElementById("f-watched");
   const min = document.getElementById("f-min-score");
