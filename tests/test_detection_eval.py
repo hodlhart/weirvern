@@ -31,6 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "scripts" / "eval_detection.py"
+GENERATOR = ROOT / "weirvern" / "tools" / "demo_flows.py"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 
 
@@ -160,4 +161,59 @@ def test_the_harness_asserts_a_storm_ceiling_and_determinism():
     assert "deterministic" in src.lower(), (
         "the harness no longer re-runs the sweep and compares -- ordering/clock leaks "
         "would pass again"
+    )
+
+
+def test_the_seed_start_is_anchored_to_the_aggregation_grid():
+    """Issue #49, measured: the seed's start was wall-clock, so two eval runs two minutes
+    apart landed the same flows at different phases of the five-minute bucket grid -- 728 vs
+    732 settled rows, 158 vs 118 verdicts, the benign high+ set changing, DBSCAN's cluster
+    centres appearing in one run and vanishing in the other. One fixture, two datasets.
+
+    The start is now a multiple of the bucket width, and every fixture value -- durations
+    included -- comes from the seeded rng: same seed, frozen clock, same bytes."""
+    import importlib.util
+    import json
+    import os
+    import tempfile
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("demo_flows_under_test", GENERATOR)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # 1. THE ANCHOR: a multiple of the 300s grid, never after the clock it was read from,
+    #    and STABLE within a bucket -- everything inside one five-minute window seeds
+    #    byte-identical data, which is what makes two eval runs comparable.
+    for now in (1_800_000_123.7, 1_800_000_299.9, 1_800_000_300.0, 12345.0):
+        assert mod._anchored_start(now) % 300 == 0, f"start for {now} is off the bucket grid"
+        assert mod._anchored_start(now) <= int(now)
+    assert mod._anchored_start(1_800_000_001.0) == mod._anchored_start(1_800_000_299.9)
+
+    # 2. FROZEN CLOCK, SAME SEED -> IDENTICAL FIXTURE, timestamps included. The duration
+    #    draw used the module-global `random` before this; it differed run to run.
+    def run(seed: int, start: int):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "demo.jsonl")
+            mod.generate(SimpleNamespace(minutes=10, devices=4, output=out, seed=seed,
+                                         scanner=True, scan_ports=20, beacon=True,
+                                         exfil=True, attack_start_minute=3, start=start))
+            return [json.loads(line) for line in open(out) if line.strip()]
+
+    a = run(7, 1_800_000_000)
+    b = run(7, 1_800_000_000)
+    assert a == b, "the same seed and clock produced two different fixtures"
+    assert [r["time_flow_end_ns"] for r in a] == [r["time_flow_end_ns"] for r in b]
+    # Not degenerate: the end stamp is a per-flow draw, not one constant.
+    assert len({r["time_flow_end_ns"] for r in a}) > 1
+
+    # 3. THE EVAL STATES ITS PHASE: the log names the first bucket it calibrated on, and the
+    #    generator's anchor is what puts it on a bucket boundary.
+    harness = HARNESS.read_text()
+    assert "seed phase:" in harness, (
+        "the eval no longer states the phase it seeded on; a green run cannot be reproduced "
+        "from its log alone"
+    )
+    assert "_anchored_start" in GENERATOR.read_text(), (
+        "the generator's start is unanchored again -- the phase is wall-clock dependent"
     )

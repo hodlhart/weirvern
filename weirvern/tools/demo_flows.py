@@ -22,10 +22,14 @@ _DEFAULT_PROTO = 6  # TCP
 
 
 def _flow(time_ns: int, src: str, dst: str, sport: int, dport: int, proto: int,
-          bytes_: int, packets: int, flags: int = 16) -> dict:
+          bytes_: int, packets: int, flags: int = 16, *, rng: random.Random) -> dict:
+    # The duration draw comes from the SEEDED rng, never the module-global `random` (issue
+    # #49): with the global, two runs of the same seed produced different end timestamps --
+    # so the fixture was not a function of its seed, and no run could be reproduced from the
+    # inputs it printed.
     return {
         "time_flow_start_ns": time_ns,
-        "time_flow_end_ns": time_ns + random.randint(50_000_000, 5_000_000_000),
+        "time_flow_end_ns": time_ns + rng.randint(50_000_000, 5_000_000_000),
         "src_addr": src,
         "dst_addr": dst,
         "src_port": sport,
@@ -42,6 +46,23 @@ def _flow(time_ns: int, src: str, dst: str, sport: int, dport: int, proto: int,
     }
 
 
+def _anchored_start(now: float, grid_s: int = 300) -> int:
+    """The seed's start second, ANCHORED to the aggregation grid (issue #49).
+
+    The dataset is generated forward from this second and ClickHouse's five-minute buckets
+    (`toStartOfFiveMinute`) split it, so an unanchored start made that split a function of
+    WHEN the run happened. Measured on the eval harness: two runs two minutes apart settled
+    728 vs 732 aggregate rows, 158 vs 118 verdicts, benign hosts flipped in and out of the
+    high+ set, and DBSCAN's cluster centres appeared in one run and vanished in the other --
+    one fixture, two different datasets. Anchored, the phase relative to the grid is a
+    constant, so the same seed lands the same flows in the same buckets on every run.
+
+    `grid_s` is the bucket width (AGG_BUCKET_S, 300s); the docstring repeats the number
+    rather than importing it because this module deliberately has no package imports.
+    """
+    return (int(now) // grid_s) * grid_s
+
+
 def generate(args) -> int:
     """Generate synthetic traffic.
 
@@ -56,7 +77,10 @@ def generate(args) -> int:
     # Documentation addresses (RFC 5737), not real resolvers: this fixture is invented, and a
     # real address here reads as observed traffic from the network this was developed on.
     servers = ["198.51.100.53", "203.0.113.53", "192.0.2.53", "198.51.100.54", "203.0.113.54"]
-    start = int(time.time())
+    # Grid-anchored (issue #49) unless the caller passes an exact epoch as `args.start`
+    # (tests use that to freeze the clock). See _anchored_start for the measured why.
+    provided = getattr(args, "start", None)
+    start = int(provided) if provided else _anchored_start(time.time())
     total = 0
     # The minute the seeded attacks begin. Default 0 (attacks from the start -- the shape
     # every pre-review caller relied on). The eval harness passes the last-third mark so
@@ -87,6 +111,7 @@ def generate(args) -> int:
                         dev, rng.choice(servers),
                         rng.randint(1024, 65535), dport, 6,
                         b, max(1, b // rng.randint(400, 1400)),
+                        rng=rng,
                     )
                     fh.write(json.dumps(f) + "\n")
                     total += 1
@@ -94,7 +119,8 @@ def generate(args) -> int:
             if args.scanner and minute == attack_from:
                 scanner = devices[0]
                 for dport in range(1, min(1024, args.scan_ports + 1)):
-                    f = _flow(t0 * 1_000_000_000, scanner, "198.51.100.99", 40000 + dport, dport, 6, 0, 1, flags=2)
+                    f = _flow(t0 * 1_000_000_000, scanner, "198.51.100.99", 40000 + dport, dport, 6, 0, 1,
+                              flags=2, rng=rng)
                     fh.write(json.dumps(f) + "\n")
                     total += 1
             # Attack device 2: beacon (regular callbacks every 15 min, from the attack start)
@@ -102,6 +128,7 @@ def generate(args) -> int:
                 f = _flow(
                     (t0 + 7) * 1_000_000_000, devices[1], "203.0.113.66",
                     4444, 443, 6, rng.randint(200, 900), rng.randint(1, 3),
+                    rng=rng,
                 )
                 fh.write(json.dumps(f) + "\n")
                 total += 1
@@ -110,6 +137,7 @@ def generate(args) -> int:
                 f = _flow(
                     t0 * 1_000_000_000, devices[2], "198.51.100.7",
                     50000, 8443, 6, 450_000_000, 400_000,
+                    rng=rng,
                 )
                 fh.write(json.dumps(f) + "\n")
                 total += 1
