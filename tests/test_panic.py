@@ -25,8 +25,16 @@ def test_the_fallback_carries_liveness_with_the_staleness_stamp():
     page = web_api.panic_page(fleet=_FLEET, audit=_AUDIT, alerts=_ALERTS,
                               rendered_at="2026-10-17 12:00:00")
     assert "weirvern" in page and "edge-stale" in page
-    assert "data as of 2026-10-17T12:00:00+00:00 (UTC)" in page
+    assert "data as of 2026-10-17 12:00:00 UTC" in page
     assert "rendered at 2026-10-17 12:00:00 (UTC)" in page
+
+
+def test_an_offset_stamp_is_normalised_not_mislabelled():
+    """A heartbeat carrying -05:00 must print as UTC, not wear a UTC label over local time."""
+    fleet = dict(_FLEET, data_as_of="2026-10-17T13:27:22-05:00")
+    page = web_api.panic_page(fleet=fleet, audit=_AUDIT, alerts=_ALERTS, rendered_at="t")
+    assert "data as of 2026-10-17 18:27:22 UTC" in page
+    assert "-05:00" not in page
 
 
 def test_the_fallback_carries_counts_and_the_audit_findings():

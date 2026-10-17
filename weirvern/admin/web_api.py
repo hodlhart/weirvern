@@ -183,10 +183,25 @@ def panic_page(*, fleet: dict | None, audit: dict | None, alerts: dict | None,
                 "<td>" + ("enabled" if r.get("enabled") else "switched off") + "</td></tr>")
         if not rows:
             rows.append("<tr><td colspan=\"4\" class=\"muted\">No sensors are registered.</td></tr>")
-        data_as_of = fleet.get("data_as_of") or ""
-        stamp = (f"<p class=\"stamp\">data as of {esc(data_as_of)} (UTC) \u2014 "
-                 "the newest heartbeat the hub has.</p>") if data_as_of else \
-                "<p class=\"stamp warn\">No heartbeat has ever been recorded.</p>"
+        data_as_of = ""
+        raw_stamp = str(fleet.get("data_as_of") or "")
+        if raw_stamp:
+            # SINGLE-ZONE, ENFORCED (BF-14): the heartbeat's own timestamp can carry a
+            # sensor-local offset, and labelling that "(UTC)" would be a lie in the one
+            # place an operator checks how fresh the data is. Normalise, then label.
+            try:
+                import datetime as _dt  # noqa: PLC0415
+
+                parsed = _dt.datetime.fromisoformat(raw_stamp)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(_dt.UTC)
+                data_as_of = parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except ValueError:
+                data_as_of = raw_stamp
+        stamp = (f"<p class=\"stamp\">data as of {esc(data_as_of)} \u2014 "
+                 "the newest heartbeat the hub has (all times on this page are UTC).</p>") \
+            if data_as_of else \
+            "<p class=\"stamp warn\">No heartbeat has ever been recorded.</p>"
         if fleet.get("heartbeats_available") is False:
             stamp = (f"<p class=\"stamp warn\">Heartbeats are unreadable "
                      f"({esc(fleet.get('heartbeat_reason'))}) \u2014 states below are "
