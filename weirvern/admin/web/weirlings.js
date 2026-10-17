@@ -474,6 +474,16 @@ async function openWeirling(sensorId) {
   body.replaceChildren(el("p", { class: "muted", text: "loading…" }));
   note.textContent = "";
   card.classList.remove("hidden");
+  // THE DRILL-DOWN'S PATH BACK (TH-3): Fleet > Weirlings > <sensor>. The middle segment is a
+  // real button out of the drill -- the detail card has no other close affordance.
+  if (typeof setCrumbs === "function") {
+    setCrumbs([
+      { label: "Fleet" },
+      { label: "Weirlings", title: "back to the fleet list",
+        run: () => { card.classList.add("hidden"); clearCrumbs(); } },
+      { label: sensorId },
+    ]);
+  }
 
   let d;
   try {

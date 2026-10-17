@@ -120,6 +120,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
+                   setCrumbs, clearCrumbs,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
@@ -1913,10 +1914,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     doc.querySelector('nav .tab[data-view="health"]').classList.contains("active");
   check("Health is ACTIVE at load (it inherited the landing role from Overview)",
         healthWasActive, `active=${healthWasActive}`);
-  check("Health sits between Models and Settings in the nav",
-        navAtLoad.indexOf("models") < navAtLoad.indexOf("health")
-          && navAtLoad.indexOf("health") < navAtLoad.indexOf("settings"),
-        `nav is ${navAtLoad.join(", ")}`);
+  // TH-3: the nav is grouped now, and Health leads the first group (Operations); what this
+  // check must keep true is that Health sits in the FIRST group and Settings in the LAST --
+  // the landing view is where the eye starts, and the console's controls are where it ends.
+  const groupOf = (v) => {
+    const t = doc.querySelector(`nav .tab[data-view="${v}"]`);
+    const g = t && t.closest(".tab-group");
+    return g ? g.dataset.group : null;
+  };
+  check("Health leads the first group and Settings the last",
+        groupOf("health") === "operations" && groupOf("settings") === "console",
+        `health=${groupOf("health")} settings=${groupOf("settings")} nav is ${navAtLoad.join(", ")}`);
 
 
   // ── the Zeek tab ───────────────────────────────────────────────────────────────────────────
@@ -3566,6 +3574,51 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             doc.getElementById("palette").classList.contains("hidden")
             && !doc.getElementById("view-netflow").classList.contains("active"));
     }
+  }
+
+  // ── THE GROUPED NAV AND ITS BREADCRUMBS (TH-3) ──────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const groups = [...doc.querySelectorAll("#tabs .tab-group")];
+    check("the nav holds at most seven groups", groups.length <= 7 && groups.length >= 2,
+          String(groups.length));
+    check("...every group is labelled and carries tabs",
+          groups.every((g) => !!g.querySelector(".tab-group-label") && !!g.querySelector(".tab")),
+          groups.map((g) => (g.querySelector(".tab-group-label") || {}).textContent).join(", "));
+    const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
+    check("...and all fourteen tabs survive the regrouping",
+          views.length === 14 && new Set(views).size === 14
+          && ["health", "anomalies", "network", "netflow", "discover", "dns", "zeek", "identity",
+              "sluice", "blocked", "weirlings", "models", "host", "settings"]
+             .every((v) => views.includes(v)),
+          views.join(","));
+    check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
+    const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
+    check("...one row: the strip is nowrap and scrolls rather than wrapping",
+          cssText.includes("#tabs { display: flex; align-items: center; flex-wrap: nowrap; }"));
+    await H.showView("weirlings");
+    await H.loadWeirlings();
+    await H.openWeirling("edge-alive");
+    await sleep(250);
+    const crumbs = doc.getElementById("crumbs");
+    check("a drill-down posts its breadcrumb path",
+          !crumbs.classList.contains("hidden") && /Fleet/.test(crumbs.textContent)
+          && /Weirlings/.test(crumbs.textContent) && /edge-alive/.test(crumbs.textContent),
+          crumbs.textContent.trim());
+    check("...and the nav stays on screen inside the detail view",
+          !doc.getElementById("tabs").classList.contains("hidden")
+          && doc.querySelectorAll("#tabs .tab").length === 14);
+    const back = [...crumbs.querySelectorAll("button.crumb")].find((b) => /Weirlings/.test(b.textContent));
+    check("...with a real, clickable way back out of the drill", !!back);
+    if (back) back.click();
+    await sleep(80);
+    check("...which closes the detail and clears the trail",
+          doc.getElementById("wl-detail-card").classList.contains("hidden")
+          && doc.getElementById("crumbs").classList.contains("hidden"));
+    H.showView("health");
+    await sleep(80);
+    check("a view change clears any breadcrumb that was left",
+          doc.getElementById("crumbs").classList.contains("hidden"));
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

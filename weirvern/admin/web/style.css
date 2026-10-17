@@ -413,6 +413,18 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 .stat.clickable:hover { border-color: var(--border-solid); }
 .stat.clickable.active { border-color: var(--accent); }
 .wl-sel { margin-right: 8px; }
+/* TH-3: the grouped nav -- one row, labelled clusters, nothing hidden or collapsing. */
+#tabs { display: flex; align-items: center; flex-wrap: nowrap; }
+.tab-group { display: flex; align-items: center; gap: 2px; flex: none; }
+.tab-group + .tab-group { margin-left: 16px; }
+.tab-group-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+                   color: var(--muted, #9aa0a6); margin-right: 6px; user-select: none; }
+#crumbs { padding: 5px 18px 7px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+#crumbs.hidden { display: none; }
+.crumb { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
+         padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+.crumb.current { color: inherit; }
+.crumb-sep { color: var(--muted, #9aa0a6); }
 /* THE COMMAND PALETTE (BF-11): a quiet overlay; the active row is unmistakable. */
 #palette { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90;
            display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }

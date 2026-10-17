@@ -2611,7 +2611,34 @@ function wrapTables() {
   }
 }
 
+// ── breadcrumbs (TH-3) ──────────────────────────────────────────────────────────────────────
+// A drill-down must carry its path back out (the studied consoles' regression was a detail
+// view that ate the way home). Crumbs are SET by the drill-down itself and CLEARED by any
+// view change; the non-final segments that carry a `run` are the way back.
+let CRUMBS = [];
+function setCrumbs(items) {
+  CRUMBS = items || [];
+  const host = document.getElementById("crumbs");
+  if (!host) return;
+  host.replaceChildren();
+  host.classList.toggle("hidden", !CRUMBS.length);
+  CRUMBS.forEach((c, i) => {
+    if (i) host.appendChild(el("span", { class: "crumb-sep", text: "\u203a" }));
+    const isLast = i === CRUMBS.length - 1;
+    if (c.run && !isLast) {
+      host.appendChild(el("button", {
+        class: "crumb", text: c.label, attrs: { type: "button", title: c.title || "back" },
+        on: { click: c.run },
+      }));
+    } else {
+      host.appendChild(el("span", { class: "crumb muted" + (isLast ? " current" : ""), text: c.label }));
+    }
+  });
+}
+function clearCrumbs() { setCrumbs([]); }
+
 function showView(name) {
+  clearCrumbs();       // a view change always leaves every drill-down behind
   scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
   for (const t of document.querySelectorAll(".tab")) {
     t.classList.toggle("active", t.dataset.view === name);

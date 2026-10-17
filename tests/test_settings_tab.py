@@ -238,10 +238,13 @@ def test_the_overview_tab_is_gone_and_health_is_the_landing_view():
         f"the landing tab is {active!r}, expected exactly ['health'] -- it inherited the landing "
         f"role from Overview"
     )
-    # The requested position: between Models and Settings.
+    # TH-3 regrouped the nav: Health now LEADS the first group (Operations) and Settings
+    # closes the last (Console). The invariant this test keeps: the landing tab exists, is
+    # active, and sits in the nav's first group -- the eye starts where the landing view is.
     assert "models" in order and "settings" in order, f"nav is {order}"
-    assert order.index("models") < order.index("health") < order.index("settings"), (
-        f"Health must sit between Models and Settings, but the nav is {order}"
+    first_group = re.search(r'data-group="([\w-]+)">.*?data-view="(\w+)"', index, re.S)
+    assert first_group and first_group.group(2) == "health", (
+        f"Health must lead the nav's first group, but the first group is {first_group!r}"
     )
 
 
