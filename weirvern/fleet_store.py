@@ -204,7 +204,7 @@ def write_audit(client: Client, *, scope: str, action: str, target: str,
     )
 
 
-def read_audit(client: Client, *, scope: str = "", target: str = "",
+def read_audit(client: Client, *, scope: str = "", action: str = "", target: str = "",
                limit: int = 20) -> tuple[list[dict], str]:
     """The trail, newest first, or ([], reason). Never raises -- a store outage must not take
     the surface down with it (the store's own degradation pattern)."""
@@ -214,6 +214,11 @@ def read_audit(client: Client, *, scope: str = "", target: str = "",
         if scope:
             where.append("scope = %(scope)s")
             params["scope"] = scope
+        # US-10: filterable by ACTION too -- "who applied settings" is a different question
+        # from "who touched the fleet", and the trail must answer both.
+        if action:
+            where.append("action = %(act)s")
+            params["act"] = action
         if target:
             where.append("target = %(target)s")
             params["target"] = target

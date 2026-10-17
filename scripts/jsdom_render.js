@@ -250,6 +250,12 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
   const SETTINGS_PAYLOAD = {
     available: true, reason: "",
     writes: { enabled: true, reason: "" },
+    // US-10: the GUI-write provenance the apply path records (with the value each write replaced).
+    provenance: {
+      base_threshold: { value: "0.35", at: "2026-10-17T11:50:00Z", by: "admin",
+                        reason: "tighten after the scanner", prev_value: "0.45" },
+      sluice_auto_score: { value: "0.8", at: "2026-10-14T09:00:00Z", by: "admin", reason: "" },
+    },
     caller: { username: "", role: "", via: "" },
     editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "channel_netflow", "intercept_segment",
                     "pushover_enabled", "sluice_auto_score"],
@@ -1235,6 +1241,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           flows: 12, dst_count: 2, services: ["dns"], anomalies: 0,
           last_seen: "2026-09-19T06:00:00" },
       ], unreadable: [], errors: null })],
+    // US-10: the write trail (the fleet_audit read surface).
+    ["/api/write-trail", () => ({
+      available: true, reason: "",
+      scopes: ["fleet", "settings"],
+      actions: ["apply", "plan", "revert", "revoke"],
+      rows: [
+        { at: "2026-10-17T11:50:00Z", scope: "settings", action: "apply", target: "base_threshold",
+          reason: "tighten after the scanner", actor: "admin" },
+        { at: "2026-10-17T11:00:00Z", scope: "settings", action: "revert", target: "sluice_auto_score",
+          reason: "auto-block misfired on the lab segment", actor: "admin" },
+        { at: "2026-10-16T09:00:00Z", scope: "fleet", action: "plan", target: "edge-alive",
+          reason: "split the plan for the new segment", actor: "operator" },
+      ] })],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
     ["/api/discover", (u) => {
@@ -6401,6 +6420,87 @@ check("high capture loss is called out in the fleet",
     await sleep(200);
     window.location.hash = "";
 
+    H.showView("health");
+    await sleep(150);
+  }
+
+  // ── THE WRITE TRAIL (US-10) ────────────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const trailing = [];
+    fetchOverride = (u) => {
+      if (String(u).includes("/api/write-trail")) trailing.push(String(u));
+      return null;
+    };
+    // 1) the trail is a readable surface: who / what / why / when.
+    H.showView("settings");
+    await H.loadSettings();
+    await sleep(450);
+    const stTrail = doc.getElementById("st-audit");
+    const trailRows = stTrail ? [...stTrail.querySelectorAll("tbody tr")] : [];
+    check("US-10: the write trail lists its entries",
+          trailRows.length >= 3,
+          `${trailRows.length} row(s)`);
+    const rowText = trailRows.map((r) => r.textContent).join(" | ");
+    check("...with ACTOR, REASON and TARGET on each entry",
+          /admin/.test(rowText) && /tighten after the scanner/.test(rowText)
+          && /base_threshold/.test(rowText) && /edge-alive/.test(rowText),
+          rowText.slice(0, 160));
+    check("...and the filter menus are the table's own scopes and actions",
+          stTrail && stTrail.querySelectorAll("select").length === 2
+          && /settings/.test(stTrail.querySelector("select").textContent),
+          stTrail ? stTrail.querySelector("select").textContent : "none");
+    // 2) the settings provenance line links to the entry.
+    const provRow = doc.querySelector('#view-settings [data-key="base_threshold"] .setting-prov');
+    check("US-10: a GUI-written setting says who set it, when, and why",
+          !!provRow && /set via GUI/.test(provRow.textContent)
+          && /tighten after the scanner/.test(provRow.textContent),
+          provRow ? provRow.textContent.slice(0, 120) : "none");
+    const trailLink = provRow && [...provRow.querySelectorAll("button.link")]
+      .find((b) => b.textContent === "trail");
+    check("...with a one-click link to its trail entries", !!trailLink);
+    trailing.length = 0;
+    if (trailLink) trailLink.click();
+    await sleep(450);
+    check("...which lands on the trail FILTERED to that key",
+          trailing.some((u) => /scope=settings/.test(u) && /target=base_threshold/.test(u)),
+          trailing.slice(-1)[0] || "no request");
+    const hit = doc.querySelector("#st-audit tr.wtl-hit");
+    check("...with the matching entry standing out", !!hit && /base_threshold/.test(hit.textContent),
+          hit ? hit.textContent.slice(0, 100) : "none");
+    // 3) REVERT: the BF-9 echo demands its reason; the write posts revert with it.
+    const revertBtn = provRow && [...provRow.querySelectorAll("button.link")]
+      .find((b) => b.textContent === "revert");
+    check("US-10: a GUI-written setting offers a revert", !!revertBtn);
+    const postsBefore = POSTED.length;
+    if (revertBtn) revertBtn.click();
+    await sleep(300);
+    const modal = doc.querySelector(".dest-confirm");
+    check("...the reverts go through the destructive echo (target + blast radius shown)",
+          !!modal && /base_threshold/.test(modal.textContent)
+          && /0\.35/.test(modal.textContent) && /0\.45/.test(modal.textContent),
+          modal ? modal.textContent.replace(/\s+/g, " ").slice(0, 140) : "no echo");
+    const goBtn = modal && [...modal.querySelectorAll("button")]
+      .find((b) => /Revert/.test(b.textContent));
+    check("...and the confirm is DISABLED until a reason is typed",
+          !!goBtn && goBtn.hasAttribute("disabled"));
+    const reasonIn = modal && modal.querySelector(".dest-reason");
+    if (reasonIn) {
+      reasonIn.value = "the scanner is gone; put the threshold back";
+      reasonIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+    await sleep(80);
+    check("...typing the reason enables it", !!goBtn && !goBtn.hasAttribute("disabled"));
+    if (goBtn) goBtn.click();
+    await sleep(500);
+    const applyPost = POSTED.slice(postsBefore).find((r) => /\/api\/settings\/apply/.test(r.url));
+    check("...and the revert POSTS the previous value, the reason, and its own flag",
+          !!applyPost
+          && /"base_threshold":"0\.45"/.test(applyPost.body || "")
+          && /scanner is gone/.test(applyPost.body || "")
+          && /"revert":true/.test(applyPost.body || ""),
+          applyPost ? String(applyPost.body).slice(0, 160) : "no apply post");
+    fetchOverride = null;
     H.showView("health");
     await sleep(150);
   }

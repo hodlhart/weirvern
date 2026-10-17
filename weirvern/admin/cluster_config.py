@@ -842,6 +842,15 @@ class ClusterConfig:
         """
         want = {to_configmap_key(k): (v or "").strip() for k, v in changes.items()}
         stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # US-10: the PREVIOUS landed value, read BEFORE this write. A revert needs the version
+        # this write replaced -- the annotation only ever held the newest one. An unreadable
+        # configmap degrades to "no previous recorded" (the revert then says so), never to a
+        # guessed value.
+        before: dict = {}
+        try:
+            before = self.read()
+        except Exception:  # noqa: BLE001
+            before = {}
 
         # Read the existing provenance so this write ADDS to it rather than replacing it: an
         # operator who changed two keys on two days must not lose the first record.
@@ -864,6 +873,12 @@ class ClusterConfig:
                 record["by"] = by
             if reason:
                 record["reason"] = reason
+            # US-10: the version this write replaced (the ConfigMap's own prior value), so the
+            # settings row can offer a revert that lands somewhere real.
+            if before:
+                record["prev_value"] = before.get(key, "")
+                if isinstance(records.get(key), dict) and records[key].get("at"):
+                    record["prev_at"] = records[key]["at"]
             records[key] = record
 
         self._request("PATCH", {"data": want, "metadata": {"annotations": {

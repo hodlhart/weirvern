@@ -1282,6 +1282,20 @@
         <span id="wl-detail-note" class="muted"></span>
       </div>
     </div>
+
+    <!-- US-10: the write trail, where the fleet's own writes land. -->
+    <div class="card">
+      <h2>Write trail <span class="muted">who changed what, why, and when</span>
+        <button class="info-btn" data-info="wl-audit-info" aria-label="what the write trail is"
+                aria-expanded="false" title="what the write trail is">i</button></h2>
+      <div class="info-text hidden" id="wl-audit-info">
+  <p><strong>What it is.</strong> The append-only record of writes: sensor plans, revokes, settings applies and reverts — who, what, why, when, newest first. Nothing here is edited or deleted.</p>
+  <p><strong>What writes it.</strong> Every write path, beside the write itself.</p>
+  <p><strong>Last changed.</strong> Each write appends a row.</p>
+  <p><strong>Where to see it.</strong> Here and on Settings; filter by scope or action.</p>
+</div>
+      <div id="wl-audit"></div>
+    </div>
   </section>
 
   <section id="view-settings" class="view">
@@ -1424,6 +1438,20 @@
         <button id="sl-bl-add">Add</button>
         <span id="sl-bl-note" class="muted"></span>
       </div>
+    </div>
+
+    <!-- US-10: the same trail, beside the settings it mainly records. -->
+    <div class="card">
+      <h2>Write trail <span class="muted">who changed what, why, and when</span>
+        <button class="info-btn" data-info="st-audit-info" aria-label="what the write trail is"
+                aria-expanded="false" title="what the write trail is">i</button></h2>
+      <div class="info-text hidden" id="st-audit-info">
+  <p><strong>What it is.</strong> The append-only record of writes: sensor plans, revokes, settings applies and reverts — who, what, why, when, newest first. Nothing here is edited or deleted.</p>
+  <p><strong>What writes it.</strong> Every write path, beside the write itself.</p>
+  <p><strong>Last changed.</strong> Each write appends a row.</p>
+  <p><strong>Where to see it.</strong> Here and on Settings; filter by scope or action.</p>
+</div>
+      <div id="st-audit"></div>
     </div>
 </section>
 </main>

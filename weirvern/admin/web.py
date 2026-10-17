@@ -285,6 +285,10 @@ def _build_handler(ctx: GuiContext):
                 return self._overview()
             if path == "/api/audit":
                 return self._audit()
+            # US-10: THE WRITE TRAIL. The fleet_audit table was append-only and invisible;
+            # this is its read surface (newest first, filterable by scope / action / target).
+            if path == "/api/write-trail":
+                return self._write_trail(query)
             if path == "/api/detectors":
                 return self._detectors()
             if path == "/api/anomalies":
@@ -564,6 +568,42 @@ def _build_handler(ctx: GuiContext):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _write_trail(self, query: dict) -> None:
+            """US-10: the write trail, newest first, filterable by scope, action and target.
+
+            Read-only like the rest of the surface. Degrades the HOUSE way: an unreadable trail
+            is `available: false` with its reason, never an empty list that reads as a quiet
+            history. The filter menus are derived from the table itself (distinct scopes and
+            actions), so a scope can never be offered that no row has.
+            """
+            scope_f = (query.get("scope") or [""])[0].strip()[:32]
+            action_f = (query.get("action") or [""])[0].strip()[:32]
+            target_f = (query.get("target") or [""])[0].strip()[:128]
+            try:
+                limit = max(1, min(int((query.get("limit") or ["50"])[0]), 200))
+            except (TypeError, ValueError):
+                limit = 50
+            from weirvern import fleet_store  # noqa: PLC0415
+
+            with self._with_client() as client:
+                rows, reason = fleet_store.read_audit(
+                    client, scope=scope_f, action=action_f, target=target_f, limit=limit)
+                facets: dict[str, list[str]] = {"scopes": [], "actions": []}
+                if not reason:
+                    try:
+                        facets["scopes"] = sorted({
+                            str(r[0]) for r in client.query(
+                                "SELECT DISTINCT scope FROM weirvern.fleet_audit"
+                            ).result_rows})
+                        facets["actions"] = sorted({
+                            str(r[0]) for r in client.query(
+                                "SELECT DISTINCT action FROM weirvern.fleet_audit"
+                            ).result_rows})
+                    except Exception:  # noqa: BLE001
+                        facets = {"scopes": [], "actions": []}
+            self._json({"available": not reason, "reason": reason, "rows": rows,
+                        "scopes": facets["scopes"], "actions": facets["actions"]})
 
         def _audit(self) -> None:
             """The pipeline's self-audit read (BF-13). Read-only like the rest of the surface."""
@@ -2899,6 +2939,19 @@ def _build_handler(ctx: GuiContext):
                 except cc.ConfigError as exc:
                     restart_errors.append(str(exc))
 
+            # US-10: THE TRAIL GETS THE SETTINGS WRITE TOO. One row PER KEY -- a multi-key apply
+            # must stay linkable from a single key's provenance row (an exact target match).
+            # A failed audit write does not fail the apply (the write landed); it is logged so
+            # the gap is findable, the same contract as the fleet writes.
+            action = "revert" if body.get("revert") else "apply"
+            try:
+                with self._with_client() as ch:
+                    for key in changes:
+                        fleet_store.write_audit(
+                            ch, scope="settings", action=action, target=str(key),
+                            reason=reason, actor=(ident.username if ident else "operator"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("settings audit write failed: %s", exc)
             self._json({
                 "ok": True,
                 # TRANSLATED AT THE BOUNDARY, same reason as the plan route: `changes` is
@@ -3215,10 +3268,12 @@ def _build_handler(ctx: GuiContext):
             # tab report what the CLUSTER is running; when the cluster is unreachable the
             # pod env remains the honest fallback, and rows keep their provenance labels.
             configmap = None
+            config_client = None
             try:
                 from weirvern.admin import cluster_config as cc  # noqa: PLC0415
 
                 client = ctx.config_client or cc.ClusterConfig()
+                config_client = client
                 configmap = client.read()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("settings: live ConfigMap unavailable (%s); showing this "
@@ -3235,6 +3290,23 @@ def _build_handler(ctx: GuiContext):
                     "available": False, "groups": {},
                     "reason": f"could not read the configuration: {type(exc).__name__}",
                 })
+            # US-10: the GUI-write provenance, per key -- what the operator changed, when, why,
+            # and what the value was BEFORE (a revert needs somewhere to go). Read from the
+            # ConfigMap annotation the apply path maintains; unreadable provenance is simply
+            # absent (the rows keep their values and lose the "set via GUI" line).
+            provenance: dict = {}
+            if config_client is not None:
+                try:
+                    from weirvern.admin import cluster_config as cc2  # noqa: PLC0415
+
+                    raw = config_client.configmap_annotation(cc2.GUI_WRITE_ANNOTATION)
+                    parsed = json.loads(raw) if raw else {}
+                    if isinstance(parsed, dict):
+                        provenance = {k: v for k, v in parsed.items()
+                                      if isinstance(v, dict) and "value" in v}
+                except Exception:  # noqa: BLE001
+                    provenance = {}
+            payload["provenance"] = provenance
             # Whether THIS caller may offer writes, and why not when they may not. Sent with
             # every settings read so the panel can DISABLE rather than hide: a control that
             # vanishes teaches nothing, a disabled one with a stated reason tells the operator

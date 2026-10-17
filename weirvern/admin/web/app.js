@@ -1172,6 +1172,23 @@ async function loadSettings() {
         ]),
         el("span", { class: "setting-ctl" }, [valueNode, helpBtn]),
         help,
+        // US-10: WHERE THIS VALUE CAME FROM. The apply path records who/when/why and the value
+        // it replaced; the row says so, and both verbs are one click away.
+        (data.provenance || {})[r.key] ? (() => {
+          const prov = data.provenance[r.key];
+          return el("div", { class: "setting-prov" }, [
+            el("span", { text: `set via GUI ${prov.at || "?"}` + (prov.by ? ` by ${prov.by}` : "") }),
+            prov.reason ? el("span", { text: ` \u00b7 ${prov.reason}` }) : null,
+            el("button", { class: "link", text: "trail", attrs: { type: "button",
+              title: "where did this value come from \u2014 jump to its write-trail entries" },
+              on: { click: (ev) => { ev.stopPropagation(); openSettingTrail(r.key); } } }),
+            prov.prev_value !== undefined && canWrite ? el("button", { class: "link",
+              text: "revert", attrs: { type: "button",
+                title: `revert to ${String(prov.prev_value) || "(empty)"} \u2014 through the confirm echo` },
+              on: { click: (ev) => { ev.stopPropagation(); revertSetting(r.key, prov).catch(showError); } } })
+              : null,
+          ]);
+        })() : null,
       ]));
     }
     renderStage();
@@ -2962,6 +2979,157 @@ function clearCrumbs() { setCrumbs([]); }
 /* US-6: the return trip. showView fires the origin view's loader, which replaces the DOM a
  * beat later, so the scroll is applied after that render (twice: cheap insurance for slow
  * loads -- the second call is a no-op once the first has consumed PENDING_SCROLL). */
+/** US-10: THE WRITE TRAIL. One renderer serves both mounts (the fleet's card and Settings');
+ *  the cards differ only in their default scope. Filters ride the URL (au.scope / au.action),
+ *  so "show me the settings writes" is a shareable link. */
+const WTL_STATE = { scope: "", action: "", target: "" };
+
+function wtlQuery() {
+  const q = ["limit=50"];
+  if (WTL_STATE.scope) q.push("scope=" + encodeURIComponent(WTL_STATE.scope));
+  if (WTL_STATE.action) q.push("action=" + encodeURIComponent(WTL_STATE.action));
+  if (WTL_STATE.target) q.push("target=" + encodeURIComponent(WTL_STATE.target));
+  return q.join("&");
+}
+
+function refreshWriteTrails() {
+  for (const [id, def] of [["wl-audit", "fleet"], ["st-audit", "settings"]]) {
+    if (document.getElementById(id)) {
+      loadWriteTrail(id, def).catch(showError);
+    }
+  }
+}
+
+async function loadWriteTrail(mountId, defaultScope) {
+  const box = document.getElementById(mountId);
+  if (!box) return;
+  box.replaceChildren();
+  let d;
+  try {
+    d = await getJSON("/api/write-trail?" + wtlQuery());
+  } catch (exc) {
+    box.appendChild(el("p", { class: "muted",
+      text: "The trail cannot be read: " + (exc && exc.message ? exc.message : String(exc)) }));
+    return;
+  }
+  // The select's own value: the shared filter when one is set, else this mount's default --
+  // a card on Settings opens on the settings writes, the fleet's on the fleet's.
+  const scopeShown = WTL_STATE.scope || defaultScope || "";
+  const head = el("div", { class: "controls" });
+  const scopeSel = el("select", { attrs: { title: "filter the trail by scope" } });
+  for (const s of [""].concat(d.scopes || [])) {
+    scopeSel.appendChild(el("option", { value: s, text: s || "any scope" }));
+  }
+  scopeSel.value = scopeShown;
+  scopeSel.addEventListener("change", () => {
+    WTL_STATE.scope = scopeSel.value;
+    scheduleURLSync();
+    refreshWriteTrails();
+  });
+  const actSel = el("select", { attrs: { title: "filter the trail by action" } });
+  for (const a of [""].concat(d.actions || [])) {
+    actSel.appendChild(el("option", { value: a, text: a || "any action" }));
+  }
+  actSel.value = WTL_STATE.action || "";
+  actSel.addEventListener("change", () => {
+    WTL_STATE.action = actSel.value;
+    scheduleURLSync();
+    refreshWriteTrails();
+  });
+  head.append(scopeSel, actSel);
+  head.appendChild(el("span", { class: "wtl-chip" }, [el("span", { class: "muted",
+    text: WTL_STATE.target ? "target " : "" })]));
+  if (WTL_STATE.target) {
+    const targetChip = el("button", { class: "dc-chip", text: WTL_STATE.target + " \u00d7",
+      attrs: { type: "button", title: "stop filtering by this target" } });
+    targetChip.addEventListener("click", () => {
+      WTL_STATE.target = "";
+      scheduleURLSync();
+      refreshWriteTrails();
+    });
+    head.appendChild(targetChip);
+  }
+  box.appendChild(head);
+
+  const rows = d.rows || [];
+  box.appendChild(el("p", { class: "muted wtl-note", text: d.available === false
+    ? "The trail cannot be read: " + (d.reason || "the store did not answer")
+    : `${rows.length} entr${rows.length === 1 ? "y" : "ies"} — newest first`
+      + (WTL_STATE.target ? ` · target ${WTL_STATE.target}` : "") }));
+
+  const tbody = el("tbody");
+  if (!rows.length && d.available !== false) {
+    emptyRow(tbody, 6, "No writes have been recorded yet.");
+  }
+  for (const r of rows) {
+    tbody.appendChild(el("tr", { class: WTL_STATE.target && r.target === WTL_STATE.target
+                                   ? "clickable wtl-hit" : "",
+      on: { click: () => { if (r.target) { WTL_STATE.target = r.target; scheduleURLSync();
+                                            refreshWriteTrails(); } } } }, [
+      el("td", { class: "mono", text: fmtTime(r.at) }),
+      el("td", { class: "mono muted", text: r.scope || "" }),
+      el("td", { text: r.action || "" }),
+      el("td", { class: "mono", text: r.target || "" }),
+      el("td", { text: r.reason || "\u2014" }),
+      el("td", { class: "mono muted", text: r.actor || "" }),
+    ]));
+  }
+  box.appendChild(el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", { text: "when" }), el("th", { text: "scope" }), el("th", { text: "action" }),
+      el("th", { text: "target" }), el("th", { text: "why" }), el("th", { text: "who" }),
+    ])]),
+    tbody,
+  ]));
+}
+
+/** US-10: "where did this value come from" -- ONE click from a settings row to its entries.
+ *  Lands on the trail with the target pinned, and flashes the card so the eye finds it. */
+function openSettingTrail(key) {
+  WTL_STATE.scope = "settings";
+  WTL_STATE.action = "";
+  WTL_STATE.target = key;
+  scheduleURLSync();
+  refreshWriteTrails();
+  const card = document.getElementById("st-audit");
+  if (card) {
+    if (typeof card.scrollIntoView === "function") {
+      try { card.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
+    }
+    card.classList.add("row-flash");
+    setTimeout(() => card.classList.remove("row-flash"), 1600);
+  }
+}
+
+/** US-10: REVERT a GUI-written value to the version its write replaced. The BF-9 echo is the
+ *  gate (a REQUIRED reason), and the revert is an audited write of its own (action=revert). */
+async function revertSetting(key, prov) {
+  const row = SETTINGS_ROWS[key] || {};
+  const from = String(prov.value === undefined ? "" : prov.value);
+  const to = String(prov.prev_value === undefined ? "" : prov.prev_value);
+  const res = await confirmDestructive({
+    title: `Revert ${row.label || key} to its previous value`,
+    target: key,
+    blast: `${key}: ${from || "(empty)"} \u2192 ${to || "(empty)"}` +
+      (prov.at ? ` — the version replaced ${prov.at}` : ""),
+    reasonHint: "why revert \u2014 required, recorded with your name and the time",
+    confirmLabel: "Revert",
+  });
+  if (!res || !res.ok) return;
+  const out = await postJSON("/api/settings/apply", {
+    changes: { [key]: to },
+    reason: res.reason,
+    revert: true,
+    confirmed: true,
+  });
+  if (!out || out.ok === false) {
+    showError(new Error((out && out.error) || "the revert was refused"));
+    return;
+  }
+  await loadSettings();
+  refreshWriteTrails();
+}
+
 /** US-9 (with US-8): LAND ON a settings row. Every settings card boots collapsed, so this
  *  expands the row's own card FIRST, then scrolls and flashes. ONE implementation -- the
  *  palette and the per-row Tune verb both call it (a second copy would drift). */
@@ -3004,6 +3172,10 @@ function showView(name) {
   CURRENT_VIEW = name;
   // US-8: the session's last views become palette recents, however they were reached.
   if (typeof paletteNoteView === "function") paletteNoteView(name);
+  // US-10: the trail mounts read their card when their view arrives (a stale trail is a lie).
+  if ((name === "weirlings" || name === "settings") && typeof refreshWriteTrails === "function") {
+    refreshWriteTrails();
+  }
   clearCrumbs();       // a view change always leaves every drill-down behind
   scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
   const tabName = TAB_FOR_DRILL[name] || name;
@@ -4535,6 +4707,10 @@ function syncURL() {
   if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
   if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
   if (AN_FILTERS.model) p.set("an.model", AN_FILTERS.model);
+  // US-10: the write trail's filters ride the URL too.
+  if (WTL_STATE.scope) p.set("au.scope", WTL_STATE.scope);
+  if (WTL_STATE.action) p.set("au.action", WTL_STATE.action);
+  if (WTL_STATE.target) p.set("au.target", WTL_STATE.target);
   // US-7: the LAST views without URL state. Assets' search and service facet, the graph's
   // filters, and Discover's feed/selects/chips -- a Copy link now carries the screen, and a
   // reload returns to it.
@@ -4616,6 +4792,10 @@ function applyURLState() {
   if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
   // US-6: filters that came from the URL are not this screen's choices -- say so.
   ARRIVED_FROM_LINK = !!(p.get("an.host") || p.get("an.sev") || p.get("an.model"));
+  // US-10: the trail's filters (the cards re-read them on load).
+  if (p.get("au.scope")) WTL_STATE.scope = p.get("au.scope");
+  if (p.get("au.action")) WTL_STATE.action = p.get("au.action");
+  if (p.get("au.target")) WTL_STATE.target = p.get("au.target");
   // US-7: Assets / Network / Discover state, restored the same way (control values AND state).
   if (p.get("as.q")) ASSETS_STATE.search = p.get("as.q");
   if (p.get("as.svc")) ASSETS_STATE.svc = p.get("as.svc");
