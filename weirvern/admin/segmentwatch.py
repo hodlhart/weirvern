@@ -327,7 +327,11 @@ def derive_network(obs: SegmentObservations) -> tuple[ipaddress.IPv4Network | No
             ip = ipaddress.ip_address(a)
         except ValueError:
             continue
-        if ip.version == 4:
+        # isinstance, not `ip.version == 4`: the property check does not narrow the type for
+        # the checker under every target version (measured: three errors at a 3.14 target on a
+        # tree a 3.12 target accepts), while isinstance states the same boundary in the code
+        # and narrows under all of them.
+        if isinstance(ip, ipaddress.IPv4Address):
             addrs.append(ip)
     if not addrs:
         return None, ("no IPv4 traffic was observed on this interface, so its segment is "
@@ -356,7 +360,7 @@ def derive_network(obs: SegmentObservations) -> tuple[ipaddress.IPv4Network | No
             if anchor.version != 4:
                 raise ValueError("anchor is not IPv4")
             net = ipaddress.ip_network(f"{anchor}/{mask_bits}", strict=False)
-            if net.version != 4:
+            if not isinstance(net, ipaddress.IPv4Network):
                 raise ValueError("the network is not IPv4")
             if net.prefixlen < 8:
                 return None, (
@@ -389,7 +393,7 @@ def derive_network(obs: SegmentObservations) -> tuple[ipaddress.IPv4Network | No
             f"or carrying traffic that is not local."
         )
     inferred = ipaddress.ip_network(f"{addrs[0]}/{inferred_prefix}", strict=False)
-    if inferred.version != 4:
+    if not isinstance(inferred, ipaddress.IPv4Network):
         # Unreachable while `addrs` holds only IPv4, and stated rather than asserted: the
         # return type is IPv4-only because siphon is IPv4-only, so this is the boundary that
         # keeps a future change to `addrs` from widening the type silently.

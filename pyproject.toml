@@ -57,6 +57,15 @@ weirvern = ["schema/*.sql", "admin/web/*"]
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.mypy]
+# THE CHECKER'S TARGET IS DECLARED, not inherited from whichever interpreter runs the venv.
+# mypy defaults to the RUNNING interpreter's version, so one command and one mypy version gave
+# different verdicts on different machines (measured: three errors at a 3.14 target on a tree
+# CI accepts at 3.12 -- and a local gate that refuses a push CI would accept is a gate people
+# learn to ignore). This value matches the CI matrix's upper bound; gate.sh and ci.yml both
+# invoke mypy from the repository root, so both read the target from this one place.
+python_version = "3.12"
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"
