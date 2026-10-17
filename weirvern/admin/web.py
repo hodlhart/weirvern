@@ -280,6 +280,8 @@ def _build_handler(ctx: GuiContext):
                 return
             if path == "/api/overview":
                 return self._overview()
+            if path == "/api/audit":
+                return self._audit()
             if path == "/api/detectors":
                 return self._detectors()
             if path == "/api/anomalies":
@@ -499,6 +501,15 @@ def _build_handler(ctx: GuiContext):
             self._json(web_api.anomalies_payload(
                 rows, severity_counts=severity_counts, discipline=discipline,
                 watch_error=watch_err))
+
+        def _audit(self) -> None:
+            """The pipeline's self-audit read (BF-13). Read-only like the rest of the surface."""
+            try:
+                with self._with_client() as client:
+                    out = status_mod.pipeline_audit(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"cannot reach ClickHouse: {exc}")
+            self._json(out)
 
         def _detectors(self) -> None:
             """The detector registry with its catch counts: who owns what, who may page.

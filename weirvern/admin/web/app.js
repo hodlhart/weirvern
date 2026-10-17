@@ -1486,6 +1486,90 @@ function anRenderChips() {
  * under the page's score/host filters; acted-on counts disposed occurrences from the review
  * history. The two are the same unit (one review exists per occurrence), so their difference
  * is the open queue and is said out loud. */
+/* ── THE PIPELINE'S SELF-AUDIT (BF-13) ──────────────────────────────────────────────────────
+ * The findings are the SERVER's -- classes, details, and the fix spec all come from
+ * /api/audit, because the checks and the console reading them must not be able to drift.
+ * This renderer's whole job is presenting the fix as one click. */
+const AUDIT_CLASS_LABELS = {
+  silent_sensor: "silent sensor",
+  expired_rule: "expired rule",
+  stuck_rule: "stuck rule",
+  unowned_detector: "unowned detector",
+};
+
+function anAgeShort(sec) {
+  if (sec == null || !isFinite(sec)) return "—";
+  const s = Math.max(0, Number(sec));
+  if (s < 90) return `${Math.round(s)}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  if (s < 129600) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+function auditGo(fix) {
+  if (!fix || !fix.view) return;
+  showView(fix.view);
+  if (fix.sensor && typeof openWeirling === "function") {
+    openWeirling(fix.sensor).catch(() => {});
+  }
+}
+
+async function loadAudit() {
+  const tbody = document.querySelector("#audit-table tbody");
+  const note = document.getElementById("audit-note");
+  if (!tbody) return;
+  let d;
+  try {
+    d = await getJSON("/api/audit");
+  } catch (err) {
+    if (note) note.textContent =
+      `The self-audit could not be read: ${err && err.message ? err.message : err}`;
+    return;
+  }
+  tbody.replaceChildren();
+  if (note) note.textContent = "";
+  if (!d || d.available !== true) {
+    if (note) note.textContent =
+      `The self-audit is unavailable \u2014 ${(d && d.reason) || "the read did not run"}.`;
+    return;
+  }
+  const findings = d.findings || [];
+  if (!findings.length) {
+    tbody.appendChild(el("tr", {}, [
+      el("td", { attrs: { colspan: "4" } }, [
+        el("span", { class: "muted",
+          text: "The pipeline passes its own checks \u2014 no silent sensors, expired rules, " +
+                "stuck rules, or unowned detectors." }),
+      ]),
+    ]));
+  }
+  for (const f of findings) {
+    tbody.appendChild(el("tr", {}, [
+      el("td", {}, [
+        el("span", { class: "chip " + (f.severity === "warn" ? "warn" : "muted"),
+                     text: AUDIT_CLASS_LABELS[f.class] || f.class }),
+      ]),
+      el("td", {}, [
+        el("span", { class: "mono", text: f.subject || "" }),
+        el("div", { class: "muted", text: f.detail || "" }),
+      ]),
+      el("td", { class: "num", text: anAgeShort(f.elapsed_s) }),
+      el("td", {}, [
+        el("button", { class: "small", text: f.fix && f.fix.label ? f.fix.label : "open",
+                       attrs: { type: "button", title: "go to the surface that fixes this" },
+                       on: { click: () => auditGo(f.fix) } }),
+      ]),
+    ]));
+  }
+  const errs = d.errors || {};
+  if (note && Object.keys(errs).length) {
+    // A CLASS THAT DID NOT RUN IS SAID SO (BF-13): "nothing found" and "the check did not
+    // run" must never look alike.
+    note.textContent = "Checks that could not run: " +
+      Object.entries(errs).map(([k, v]) => `${k} (${v})`).join(", ") + ".";
+  }
+}
+
 function anRenderDiscipline(d) {
   const box = document.getElementById("an-discipline");
   if (!box) return;
@@ -2559,7 +2643,7 @@ function showView(name) {
  * do. The statusline carries the honesty: "updating…" while any of it is in flight, the
  * finish time when it is whole, "paused" when the operator has paused it. */
 const VIEW_LOADERS = {
-  health: () => loadHealthDeep(), anomalies: () => loadAnomalies(),
+  health: () => Promise.all([loadHealthDeep(), loadAudit()]), anomalies: () => loadAnomalies(),
   netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),

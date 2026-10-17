@@ -1153,6 +1153,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // #20): the unreviewed-only filter keeps a row while ANY occurrence is unreviewed -- the
     // rule web.py applies -- because the filter is one of the three surfaces the agreement
     // check compares, so the stub must apply it too.
+    ["/api/audit", () => ({ available: true, reason: "",
+      now: "2026-10-17T12:00:00+00:00",
+      findings: [
+        { class: "silent_sensor", severity: "warn", subject: "edge-stale",
+          detail: "silent for 1h (stale after 45s)", elapsed_s: 3600,
+          fix: { view: "weirlings", sensor: "edge-alive", label: "open the sensor" } },
+        { class: "expired_rule", severity: "info", subject: "r-2026-10-14-1",
+          detail: "domain rule for ads.example", elapsed_s: 259200,
+          fix: { view: "sluice", label: "adjust or revoke on Sluice" } },
+        { class: "stuck_rule", severity: "warn", subject: "r-2026-09-01-2",
+          detail: "firing without a quiet week since 46d (400 hits in 30d) \u2014 still wanted?",
+          elapsed_s: 3974400, fix: { view: "blocked", label: "read the hits on Blocked" } },
+        { class: "unowned_detector", severity: "warn", subject: "Mystery Net",
+          detail: "unregistered \u2014 no owner, no runbook: it cannot page", elapsed_s: null,
+          fix: { view: "anomalies", label: "register it (registry strip)" } },
+      ],
+      counts: { silent_sensor: 1, expired_rule: 1, stuck_rule: 1, unowned_detector: 1 },
+      errors: {} })],
     ["/api/detectors", () => ({ available: true, reason: "", detectors: [
       { name: "Isolation Forest", owner: "ops", runbook: "read the evidence first",
         rule: "IsolationForest scored this window above the strong-signal floor",
@@ -3362,6 +3380,40 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       collapse.click();
       await new Promise((r) => setTimeout(r, 40));
     }
+  }
+
+  // ── THE PIPELINE AUDITS ITSELF (BF-13) ──────────────────────────────────────────────────────
+  {
+    H.showView("health");
+    await new Promise((r) => setTimeout(r, 350));
+    const auditRows = [...doc.querySelectorAll("#audit-table tbody tr")];
+    const auditText = auditRows.map((r) => r.textContent).join(" || ");
+    check("every audit class renders a finding with its name",
+          auditRows.length === 4 &&
+            ["silent sensor", "expired rule", "stuck rule", "unowned detector"]
+              .every((c) => auditText.includes(c)),
+          auditText.slice(0, 200));
+    check("...and the elapsed column says how long",
+          auditText.includes("3d") && auditText.includes("1h"),
+          auditRows.map((r) => r.textContent).join(" | ").slice(0, 180));
+    const fixBtn = [...doc.querySelectorAll("#audit-table button")]
+      .find((b) => /open the sensor/.test(b.textContent));
+    check("every finding carries its fix", !!fixBtn, String(fixBtn && fixBtn.textContent));
+    if (fixBtn) {
+      fixBtn.click();
+      await new Promise((r) => setTimeout(r, 300));
+      check("...and the fix button lands on the fixing surface",
+            doc.getElementById("view-weirlings").classList.contains("active"));
+    }
+    const detBtn = [...doc.querySelectorAll("#audit-table button")]
+      .find((b) => /register it/.test(b.textContent));
+    if (detBtn) {
+      detBtn.click();
+      await new Promise((r) => setTimeout(r, 200));
+      check("...and another class lands on its own surface",
+            doc.getElementById("view-anomalies").classList.contains("active"));
+    }
+    H.showView("anomalies");
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

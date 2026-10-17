@@ -235,6 +235,20 @@ def main() -> int:
         if m:
             produced |= set(re.findall(r'"(\w+)"', m.group(1)))
 
+    # THE FLEET PAYLOAD is the same situation one layer in: `fleet_store.build_fleet` builds its
+    # envelope and rows with dict literals, which the producer patterns above cannot see, while
+    # status.py legitimately reads them with row-like names (pipeline_audit reads `f` and `r`).
+    # Checking these keys here reported six false phantoms the moment BF-13 landed -- the exact
+    # "unverified finding that gets a real one ignored" the section above warns about. The
+    # contract itself is pinned by tests/test_pipeline_audit.py + the fleet tests.
+    FLEET_PAYLOAD = {
+        # envelope
+        "sensors", "summary", "available", "reason", "heartbeats_available", "heartbeat_reason",
+        "filtered", "revoked", "revoked_reason",
+        # row fields pipeline_audit reads
+        "registered", "enabled", "state", "age_s", "stale_after_s", "sensor_id", "note",
+    }
+
     # GoFlow2's raw JSON is not a table: `raw` in ingester.py is the collector's message, whose
     # field names come from the collector's schema, not from our DDL. Checking them here would
     # report the whole flow mapper as phantom.
@@ -263,6 +277,8 @@ def main() -> int:
             if key in {"name", "type", "version", "reason", "message", "ts", "uid"}:
                 continue
             if key in COLLECTOR_JSON:
+                continue
+            if key in FLEET_PAYLOAD:
                 continue
             if not re.match(r"^[a-z][a-z0-9_]*$", key):
                 continue

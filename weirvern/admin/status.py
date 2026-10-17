@@ -2613,6 +2613,153 @@ VALID_REVIEW_STATES = ("ack", "resolved", "false_positive", "")
 REVIEW_UNAVAILABLE = "unavailable"
 
 
+def _audit_humanize(sec: float) -> str:
+    """Seconds to the shortest honest span ("45s", "3h", "9d"). Display only."""
+    sec = max(0.0, float(sec))
+    if sec < 90:
+        return f"{int(sec)}s"
+    if sec < 5400:
+        return f"{int(sec / 60)}m"
+    if sec < 129600:
+        return f"{int(sec / 3600)}h"
+    return f"{int(sec / 86400)}d"
+
+
+def pipeline_audit(client, *, now=None) -> dict:
+    """The pipeline auditing itself (BF-13; Datadog's monitor-quality, Splunk's content
+    management, Hurricane Labs' hygiene lists). Four classes, each read INDEPENDENTLY: a
+    class that cannot be read is an entry in `errors`, never a silently absent finding --
+    "nothing found" and "the check did not run" must never look alike here, because this
+    page's whole job is telling the operator which of the two they are looking at. Every
+    finding carries the fix, and the fix names the surface that owns it.
+    """
+    import datetime as _dt  # noqa: PLC0415
+
+    from weirvern import fleet_store  # noqa: PLC0415
+
+    now = now or _dt.datetime.now(_dt.UTC)
+    findings: list[dict] = []
+    errors: dict[str, str] = {}
+
+    # ── silent sensors: declared and enabled, but the hub cannot hear them
+    try:
+        f = fleet_store.build_fleet(client, now=now)
+        if not f.get("available"):
+            errors["silent_sensors"] = str(f.get("reason") or "the registry did not answer")
+        else:
+            if f.get("heartbeats_available") is False:
+                errors["heartbeats"] = str(f.get("heartbeat_reason") or "heartbeats unreadable")
+            for r in f.get("sensors") or []:
+                if (r.get("registered") and r.get("enabled")
+                        and r.get("state") in ("stale", "never_seen")):
+                    age = r.get("age_s")
+                    detail = ("declared and enabled but never heard from"
+                              if r.get("state") == "never_seen" or age is None
+                              else f"silent for {_audit_humanize(age)}"
+                                   f" (stale after {r.get('stale_after_s', '?')}s)")
+                    findings.append({
+                        "class": "silent_sensor", "severity": "warn",
+                        "subject": str(r.get("sensor_id") or ""),
+                        "detail": detail, "elapsed_s": int(age) if age is not None else None,
+                        "fix": {"view": "weirlings", "sensor": str(r.get("sensor_id") or ""),
+                                "label": "open the sensor"},
+                    })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit: silent sensors failed: %s", exc)
+        errors["silent_sensors"] = type(exc).__name__
+
+    # ── expired rules: a block whose expiry has elapsed -- enforcement already stopped, the
+    #    row is waiting to be cleaned up or extended. The elapsed column is the "muted how
+    #    long" fact (BF-13 acceptance), so an operator can tell a stale housekeeping item
+    #    from a fresh one.
+    try:
+        rows = client.query(
+            "SELECT rule_id, domain, dst_cidr, expires_at FROM weirvern.sluice_rules FINAL "
+            "WHERE revoked_at IS NULL AND disabled_at IS NULL "
+            "AND expires_at IS NOT NULL AND expires_at <= %(now)s "
+            "ORDER BY expires_at LIMIT 200",
+            parameters={"now": now.replace(tzinfo=None)},
+        ).result_rows
+        for rid, domain, dst, exp in rows:
+            elapsed = None
+            if exp is not None:
+                base = now.replace(tzinfo=None)
+                elapsed = max(0.0, (base - exp).total_seconds())
+            findings.append({
+                "class": "expired_rule", "severity": "info", "subject": str(rid),
+                "detail": ("domain rule for " + str(domain)) if domain
+                          else ("block of " + str(dst)),
+                "elapsed_s": int(elapsed) if elapsed is not None else None,
+                "fix": {"view": "sluice", "label": "adjust or revoke on Sluice"},
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit: expired rules failed: %s", exc)
+        errors["expired_rules"] = type(exc).__name__
+
+    # ── stuck rules: firing without a quiet week. A rule that has hit SOMETHING every few
+    #    minutes for a week is either doing exactly its job or hiding a problem nobody read;
+    #    either way a person should say so on purpose (the alert-budget rule, one layer up).
+    try:
+        old = (now - _dt.timedelta(days=7)).replace(tzinfo=None)
+        recent = (now - _dt.timedelta(hours=1)).replace(tzinfo=None)
+        rows = client.query(
+            "SELECT rule_id, count(), min(ts), max(ts) FROM weirvern.sluice_events "
+            "WHERE ts >= %(since)s AND ts <= %(until)s GROUP BY rule_id "
+            "HAVING min(ts) <= %(old)s AND max(ts) >= %(recent)s LIMIT 100",
+            parameters={"since": (now - _dt.timedelta(days=30)).replace(tzinfo=None),
+                        "until": now.replace(tzinfo=None),
+                        "old": old, "recent": recent},
+        ).result_rows
+        for rid, n, first, _last in rows:
+            span = ""
+            if first is not None:
+                span = f" since {_audit_humanize((now.replace(tzinfo=None) - first).total_seconds())}"
+            findings.append({
+                "class": "stuck_rule", "severity": "warn", "subject": str(rid),
+                "detail": f"firing without a quiet week{span} ({int(n or 0)} hits in 30d) "
+                          f"— still wanted?",
+                "elapsed_s": int((now.replace(tzinfo=None) - first).total_seconds())
+                             if first is not None else None,
+                "fix": {"view": "blocked", "label": "read the hits on Blocked"},
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit: stuck rules failed: %s", exc)
+        errors["stuck_rules"] = type(exc).__name__
+
+    # ── unowned detectors: the BF-12 registry, audited. An unregistered or ownerless
+    #    detector cannot page -- which is correct -- but somebody should decide whether that
+    #    is deliberate, so it is listed until it is.
+    try:
+        ov = detectors_overview(client)
+        if not ov.get("available"):
+            errors["detectors"] = str(ov.get("reason") or "the registry did not answer")
+        else:
+            for d in ov["detectors"]:
+                if not d["known"]:
+                    findings.append({
+                        "class": "unowned_detector", "severity": "warn", "subject": d["name"],
+                        "detail": "unregistered — no owner, no runbook: it cannot page",
+                        "elapsed_s": None,
+                        "fix": {"view": "anomalies", "label": "register it (registry strip)"},
+                    })
+                elif not d["loud"] or not d["owner"]:
+                    findings.append({
+                        "class": "unowned_detector", "severity": "warn", "subject": d["name"],
+                        "detail": "console-only: no owner or loud permission yet",
+                        "elapsed_s": None,
+                        "fix": {"view": "anomalies", "label": "register it (registry strip)"},
+                    })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit: detectors failed: %s", exc)
+        errors["detectors"] = type(exc).__name__
+
+    counts: dict[str, int] = {}
+    for fnd in findings:
+        counts[fnd["class"]] = counts.get(fnd["class"], 0) + 1
+    return {"available": True, "reason": "", "now": now.isoformat(),
+            "findings": findings, "counts": counts, "errors": errors}
+
+
 def detectors_overview(client) -> dict:
     """The registry joined to what it actually caught: fired and acted-on per detector.
 
