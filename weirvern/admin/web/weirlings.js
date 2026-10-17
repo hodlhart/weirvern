@@ -70,6 +70,7 @@ function wlLoss(v) {
 }
 
 async function loadWeirlings() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   // A REJECTED REQUEST MUST STILL SAY SOMETHING. `showView` fires this without awaiting it, so a
   // bare `await getJSON(...)` that rejects becomes an unhandled rejection: the panel keeps
   // whatever it had and no banner appears. Caught here and reported, NOT re-thrown -- a re-throw
@@ -147,6 +148,13 @@ async function loadWeirlings() {
 
   const count = document.getElementById("wl-count");
   count.textContent = `— ${(d.sensors || []).length} shown`;
+  // A LINK THAT NAMED A SENSOR OPENS IT. The pending drill-down is consumed here, once the
+  // fleet the link describes has actually loaded -- never on a timer racing the fetch.
+  if (PENDING_WL) {
+    const wanted = PENDING_WL;
+    PENDING_WL = "";
+    openWeirling(wanted).catch(() => {});
+  }
 }
 
 function renderWeirlings(rows, revoked, revokedReason) {
@@ -278,6 +286,7 @@ async function openWeirling(sensorId) {
 
   const r = d.sensor;
   wlDetail = r;
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   body.replaceChildren();
 
   // THE RUNTIME CONTROLS: only where they mean something (a runtime can only be changed on

@@ -316,6 +316,7 @@ function blRenderRules(d) {
 }
 
 async function loadBlocked() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const d = await getJSON(`${API.blocked}?${blParams()}`);
   // Kept so a click can find the FULL rule behind a row or a hit's chip (the hit itself carries
   // only the id) without a second fetch.

@@ -256,6 +256,7 @@ function nfDetailWithChips(base) {
 }
 
 async function loadNetflow() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
   let d;
   try {
@@ -342,11 +343,13 @@ async function loadNetflow() {
   if (typeof ASSETS_STATE !== "undefined" && ASSETS_STATE.detailParams) {
     loadFlowDetail(ASSETS_STATE.detailParams).catch(() => { /* the panel says why */ });
   }
+  nfRenderChips();
 }
 
 /* ── Zeek ───────────────────────────────────────────────────────────────────────────── */
 
 async function loadZeek() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
   const d = await getJSON(`${API.zeek}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
@@ -459,6 +462,7 @@ function probeText(c) {
 }
 
 async function loadHealthDeep() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
   const d = await getJSON(`${API.health}?hours=${hours}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();

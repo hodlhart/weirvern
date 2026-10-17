@@ -101,6 +101,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
+                     syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS,
+                     loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
@@ -2823,6 +2825,92 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         }
       }
     }
+  }
+
+  // ── THE VIEW IS IN THE URL (BF-6) ───────────────────────────────────────────────────────────
+  // Every state change lands in the hash; a link restores exactly the view it names.
+  {
+    H.showView("anomalies");
+    await new Promise((r) => setTimeout(r, 150));
+    const sevTile = [...doc.querySelectorAll("#view-anomalies .tile")]
+      .find((t) => /high/i.test(t.textContent));
+    if (sevTile) {
+      sevTile.click();
+      await new Promise((r) => setTimeout(r, 250));
+      check("a severity filter lands in the URL", /an\.sev=high/.test(window.location.hash),
+            window.location.hash.slice(0, 90));
+      sevTile.click();   // toggle back off before the round-trip below
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const unrevBox = doc.getElementById("f-unreviewed");
+    unrevBox.checked = true;
+    unrevBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+    check("a checkbox filter lands in the URL", /an\.unrev=1/.test(window.location.hash),
+          window.location.hash.slice(0, 90));
+    check("the header carries a Copy-link affordance",
+          !!doc.getElementById("copy-link") && /link/i.test(doc.getElementById("copy-link").title));
+    const copyBtn = doc.getElementById("copy-link");
+    if (copyBtn) {
+      copyBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+      check("clicking it gives honest feedback and never throws",
+            /copied|copy failed/.test(copyBtn.textContent), copyBtn.textContent);
+    }
+    // THE ROUND TRIP: exactly what opening a shared link does. The checkbox is cleared FIRST,
+    // so the restore is observable -- a fixture value left over from the previous check would
+    // make any restore look correct.
+    unrevBox.checked = false;
+    unrevBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+    window.location.hash = "#v=anomalies&an.sev=high&an.unrev=1&tr=6";
+    H.applyURLState();
+    check("opening a link restores its tab",
+          doc.getElementById("view-anomalies").classList.contains("active"));
+    check("...its range", Number(H.TIME_RANGE.hours) === 6, String(H.TIME_RANGE.hours));
+    check("...its severity filter", H.AN_FILTERS.severity === "high", String(H.AN_FILTERS.severity));
+    check("...and its checkbox filter", doc.getElementById("f-unreviewed").checked === true);
+    // every remaining tab rides the same grammar
+    H.M_FILTERS.host = "203.0.113.42";
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 250));
+    check("the models filter lands in the URL", /m\.host=203\.0\.113\.42/.test(window.location.hash),
+          window.location.hash.slice(0, 110));
+    H.nfSetFilter("src_addr", "203.0.113.42");
+    await new Promise((r) => setTimeout(r, 250));
+    check("the netflow filter lands in the URL", /nf=src_addr/.test(window.location.hash),
+          window.location.hash.slice(0, 110));
+    const blInput = doc.getElementById("bl-domain");
+    if (blInput) {
+      blInput.value = "example.test";
+      await H.loadBlocked();
+      await new Promise((r) => setTimeout(r, 250));
+      check("the Blocked filter lands in the URL", /bl\.domain=example\.test/.test(window.location.hash),
+            window.location.hash.slice(0, 110));
+    }
+    // and a link restores: a tab filter, and the sensor drill-down it names
+    const wlSensor = WEIRLINGS_PAYLOAD.sensors[0].sensor_id;
+    window.location.hash = "#v=weirlings&wl=" + encodeURIComponent(wlSensor)
+      + "&m.host=203.0.113.42";
+    H.applyURLState();
+    await new Promise((r) => setTimeout(r, 450));
+    check("a link restores a tab filter", H.M_FILTERS.host === "203.0.113.42", String(H.M_FILTERS.host));
+    check("a link opens the sensor drill-down it names",
+          doc.getElementById("wl-detail-id").textContent === wlSensor,
+          doc.getElementById("wl-detail-id").textContent);
+
+    // reset the world for the checks after this block
+    window.location.hash = "";
+    unrevBox.checked = false;
+    unrevBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    H.AN_FILTERS.severity = "";
+    H.AN_FILTERS.host = "";
+    H.M_FILTERS.host = ""; H.M_FILTERS.feature = "";
+    H.ID_FILTERS.os = ""; H.ID_FILTERS.confidence = "";
+    if (H.NF_FILTERS.length) H.nfRemoveChip(0);
+    if (blInput) blInput.value = "";
+    H.trApply({ mode: "relative", hours: 24 });
+    await new Promise((r) => setTimeout(r, 250));
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

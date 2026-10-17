@@ -64,6 +64,7 @@ function dcParams() {
 }
 
 async function loadDiscover() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const d = await getJSON("/api/discover?" + dcParams());
   DC_STATE.last = d;
   DC_STATE.total = d.total || 0;

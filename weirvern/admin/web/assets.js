@@ -53,6 +53,7 @@ const ASSETS_STATE = {
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 
 function loadAssets() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = trHours();  // the global time control is the range (one control, every view)
   return getJSON(ASSET_API.assets(hours))
     .then((d) => {
@@ -276,6 +277,7 @@ function renderPager(hostId, total, page, pages, onGo, size = ASSETS_STATE.pageS
 /* ── Network: the connection graph ─────────────────────────────────────────── */
 
 function loadNetwork() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hosts = ASSETS_STATE.tracked;
   return getJSON(ASSET_API.graph(trHours(), hosts))
     .then((d) => {

@@ -43,6 +43,7 @@ function sluiceStateChip(state) {
 }
 
 async function loadSluice() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   // A REJECTED REQUEST MUST STILL SAY SOMETHING. `showView` fires this without awaiting it, so a
   // bare `await getJSON(...)` that rejects becomes an unhandled rejection: the panel keeps whatever
   // it had, no banner appears, and the operator sees a stale or empty gate. That is this project's

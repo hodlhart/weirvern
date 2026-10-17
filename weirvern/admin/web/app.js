@@ -977,6 +977,7 @@ async function refreshAuthNote() {
 }
 
 async function loadSettings() {
+  scheduleURLSync();
   // Resolve the auth note and account card on LOAD, not only when a token button is clicked.
   // It shipped as "checking…" and stayed that way until the operator happened to click a
   // button, so the one card that says whether writes are even possible reported a state that
@@ -1486,6 +1487,7 @@ function anSetFilter(field, value) {
 }
 
 async function loadAnomalies() {
+  scheduleURLSync();
   // The gate's state rides along with the list, so every row's block control can say whether it
   // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
   // shape is worse than one that appears a beat late.
@@ -1947,6 +1949,8 @@ function openEvidence(a) {
 }
 
 async function loadEvidence(addr, start, end) {
+  scheduleURLSync();
+  CURRENT_EVIDENCE = { addr, start, end };
   const d = await getJSON(API.evidence(addr, start, end));
   showDataError(d.errors ? Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join(" | ") : null);
 
@@ -2276,6 +2280,7 @@ function wrapTables() {
 }
 
 function showView(name) {
+  scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
   for (const t of document.querySelectorAll(".tab")) {
     t.classList.toggle("active", t.dataset.view === name);
   }
@@ -2363,6 +2368,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   renderStagePill();
+  const copyBtn = document.getElementById("copy-link");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", () => {
+      syncURL();   // the link must carry the CURRENT state, not the last debounce's
+      const done = (ok) => {
+        copyBtn.textContent = ok ? "copied" : "copy failed";
+        setTimeout(() => { copyBtn.textContent = "Copy link"; }, 1200);
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(location.href).then(() => done(true)).catch(() => done(false));
+        } else {
+          done(false);
+        }
+      } catch (_e) { done(false); }
+    });
+  }
   document.getElementById("refresh").addEventListener("click", refreshAll);
   document.getElementById("autorefresh").addEventListener("change", (e) => {
     if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
@@ -2374,7 +2396,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("h-addr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("h-go").click();
   });
-  for (const id of ["f-min-score", "f-limit", "f-unreviewed"]) {
+  for (const id of ["f-min-score", "f-limit", "f-unreviewed", "f-watched"]) {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
     });
@@ -2644,6 +2666,7 @@ async function bootAuthed() {
     return;
   }
   showGate("");
+  applyURLState();
   refreshAll();
   startAuto(15);
 }
@@ -3047,6 +3070,7 @@ function mKeepPoint(pt) {
 }
 
 async function loadModels() {
+  scheduleURLSync();
   const hours = String(trHours());
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
   const sum = document.getElementById("m-summary");
@@ -3269,6 +3293,7 @@ function idKeep(h) {
 }
 
 async function loadIdentity() {
+  scheduleURLSync();
   const hours = String(trHours());
   const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
 
@@ -3430,6 +3455,142 @@ function showIdentityDetail(h) {
 // panel's little `hours` box is a DISPLAY fallback only -- the window itself comes from
 // from/to, so no panel can silently widen what was asked for.
 const TIME_RANGE = { mode: "relative", hours: 24, from: "", to: "" };
+
+/* ── THE VIEW IS IN THE URL ──────────────────────────────────────────────────────────────────
+ * The #1 cross-cutting finding of the console research: every product studied keeps the view
+ * in the URL (Grafana, Kibana, the SOC consoles) and ours kept it nowhere -- a filtered queue
+ * or an open drill-down could not be sent to anyone, bookmarked, or survive an accidental
+ * reload. The grammar is flat and readable: #v=<tab>&tr=<hours|from~to>&an.sev=high&an.unrev=1
+ * &ev.host=<addr>. Every state change writes it (replacing, not pushing history: a filter
+ * tweak is not a navigation); opening a link restores exactly that view through the SAME
+ * setters the UI uses. */
+let urlSyncTimer = null;
+let CURRENT_EVIDENCE = null;
+let PENDING_WL = "";   // a sensor drill-down a link asked for, opened once the fleet loads
+
+function scheduleURLSync() {
+  if (urlSyncTimer) clearTimeout(urlSyncTimer);
+  urlSyncTimer = setTimeout(syncURL, 150);
+}
+
+function syncURL() {
+  if (urlSyncTimer) { clearTimeout(urlSyncTimer); urlSyncTimer = null; }
+  const p = new URLSearchParams();
+  const active = document.querySelector(".tab.active");
+  if (active) p.set("v", active.dataset.view);
+  if (TIME_RANGE.mode === "absolute" && TIME_RANGE.from) {
+    p.set("tr", TIME_RANGE.from + "~" + (TIME_RANGE.to || "now"));
+  } else if (Number(TIME_RANGE.hours) !== 24) {
+    p.set("tr", String(trHours()));
+  }
+  if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
+  if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
+  const unrev = document.getElementById("f-unreviewed");
+  const watched = document.getElementById("f-watched");
+  const min = document.getElementById("f-min-score");
+  if (unrev && unrev.checked) p.set("an.unrev", "1");
+  if (watched && watched.checked) p.set("an.watched", "1");
+  if (min && String(min.value || "0") !== "0") p.set("an.min", String(min.value));
+  if (M_FILTERS.host) p.set("m.host", M_FILTERS.host);
+  if (M_FILTERS.feature) p.set("m.feature", M_FILTERS.feature);
+  if (ID_FILTERS.os) p.set("id.os", ID_FILTERS.os);
+  if (ID_FILTERS.confidence) p.set("id.conf", ID_FILTERS.confidence);
+  if (typeof NF_FILTERS !== "undefined") {
+    for (const f of NF_FILTERS) p.append("nf", f.field + ":" + f.value);
+  }
+  if (typeof wlDetail !== "undefined" && wlDetail) {
+    p.set("wl", String(wlDetail.sensor_id || ""));
+  }
+  const dv = (id) => {
+    const e = document.getElementById(id);
+    return e ? String(e.value || "").trim() : "";
+  };
+  if (dv("dc-addr")) p.set("dc.addr", dv("dc-addr"));
+  if (dv("dc-port")) p.set("dc.port", dv("dc-port"));
+  if (dv("bl-domain")) p.set("bl.domain", dv("bl-domain"));
+  if (dv("bl-client")) p.set("bl.client", dv("bl-client"));
+  for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
+    if (dv(id)) p.set(id.replace("dn-", "dn."), dv(id));
+  }
+  if (active && active.dataset.view === "evidence" && CURRENT_EVIDENCE) {
+    if (CURRENT_EVIDENCE.addr) p.set("ev.host", CURRENT_EVIDENCE.addr);
+    if (CURRENT_EVIDENCE.start) p.set("ev.start", String(CURRENT_EVIDENCE.start));
+    if (CURRENT_EVIDENCE.end) p.set("ev.end", String(CURRENT_EVIDENCE.end));
+  }
+  const qs = p.toString();
+  const target = location.pathname + location.search + (qs ? "#" + qs : "");
+  try { history.replaceState(null, "", target); } catch (_e) { location.hash = qs; }
+}
+
+function applyURLState() {
+  const raw = (location.hash || "").replace(/^#/, "");
+  if (!raw) return false;
+  const p = new URLSearchParams(raw);
+  const v = p.get("v") || "";
+  const tr = p.get("tr") || "";
+  if (/^\d+$/.test(tr)) {
+    TIME_RANGE.mode = "relative"; TIME_RANGE.hours = Number(tr);
+    TIME_RANGE.from = ""; TIME_RANGE.to = "";
+    try { trPersist(); } catch (_e) { /* label below is best-effort too */ }
+    const btn = document.getElementById("tr-open");
+    if (btn) btn.textContent = trLabel();
+  } else if (tr.includes("~")) {
+    const parts = tr.split("~");
+    TIME_RANGE.mode = "absolute"; TIME_RANGE.from = parts[0]; TIME_RANGE.to = parts[1] || "now";
+    try { trPersist(); } catch (_e) { /* label below is best-effort too */ }
+    const btn = document.getElementById("tr-open");
+    if (btn) btn.textContent = trLabel();
+  }
+  if (p.get("an.host")) AN_FILTERS.host = p.get("an.host");
+  if (p.get("an.sev")) AN_FILTERS.severity = p.get("an.sev");
+  const unrev = document.getElementById("f-unreviewed");
+  const watched = document.getElementById("f-watched");
+  const min = document.getElementById("f-min-score");
+  if (unrev && p.get("an.unrev") === "1") unrev.checked = true;
+  if (watched && p.get("an.watched") === "1") watched.checked = true;
+  if (min && p.get("an.min")) min.value = p.get("an.min");
+  if (p.get("m.host")) M_FILTERS.host = p.get("m.host");
+  if (p.get("m.feature")) M_FILTERS.feature = p.get("m.feature");
+  if (p.get("id.os")) ID_FILTERS.os = p.get("id.os");
+  if (p.get("id.conf")) ID_FILTERS.confidence = p.get("id.conf");
+  const nfPairs = p.getAll("nf");
+  if (nfPairs.length && typeof NF_FILTERS !== "undefined") {
+    NF_FILTERS.splice(0, NF_FILTERS.length);
+    for (const pair of nfPairs) {
+      const i = pair.indexOf(":");
+      if (i > 0) {
+        NF_FILTERS.push({ field: pair.slice(0, i), value: pair.slice(i + 1),
+                          label: pair.slice(i + 1) });
+      }
+    }
+  }
+  const dv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  if (p.get("dc.addr")) dv("dc-addr", p.get("dc.addr"));
+  if (p.get("dc.port")) dv("dc-port", p.get("dc.port"));
+  if (p.get("bl.domain")) dv("bl-domain", p.get("bl.domain"));
+  if (p.get("bl.client")) dv("bl-client", p.get("bl.client"));
+  for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
+    if (p.get(id.replace("dn-", "dn."))) dv(id, p.get(id.replace("dn-", "dn.")));
+  }
+  if (p.get("wl")) {
+    showView("weirlings");
+    PENDING_WL = p.get("wl");
+  }
+  // The most specific target first: an evidence drill-down outranks its plain tab.
+  if (v === "evidence" || p.get("ev.host")) {
+    const host = p.get("ev.host");
+    if (host) {
+      showView("evidence");
+      loadEvidence(host, p.get("ev.start") || "", p.get("ev.end") || "").catch(showError);
+      return true;
+    }
+  }
+  if (v) {
+    const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === v);
+    if (tab) showView(v);
+  }
+  return true;
+}
 // THE PER-VIEW TIME CONTROLS AND RELOAD BUTTONS ARE GONE (the operator's instruction,
 // 2026-10-16, twice over): "remove any redundant time controls" ... "That needs removed I
 // think. We should use universal time filters through out." One control owns the range; a
@@ -3493,6 +3654,7 @@ function trApply(range) {
   if (btn) btn.textContent = trLabel();
   trPushRecent();
   trReloadViews();
+  scheduleURLSync();
 }
 function trFormat(d) {
   const p = (n) => String(n).padStart(2, "0");

@@ -295,6 +295,7 @@ function dnRenderPager(d) {
 }
 
 async function loadDns() {
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
   const d = await getJSON(`${API.dns}?${dnsParams()}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
   dnRenderSummary(d);
