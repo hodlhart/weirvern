@@ -86,7 +86,7 @@ function dnRenderHistogram(d) {
   }
   const pts = d.histogram || [];
   if (!pts.length) {
-    host.appendChild(el("p", { class: "muted", text: "No DNS records in this window." }));
+    host.appendChild(el("p", { class: "muted", text: "No DNS records in this window — an empty window is not zero traffic." }));
     return;
   }
   const W = 900, H = 90, pad = 4;
@@ -230,8 +230,18 @@ function dnRenderRows(d) {
   const rows = d.rows || [];
   if (!rows.length) {
     const tr = el("tr", {});
-    tr.appendChild(el("td", { class: "muted", attrs: { colspan: "7" },
-                              text: "No DNS records matched. Widen the window or clear a filter." }));
+    const cell = el("td", { class: "muted", attrs: { colspan: "7" },
+                            text: "No DNS records matched. Widen the window or clear a filter." });
+    const fix = el("button", { class: "empty-act", text: "Clear filters", attrs: { type: "button" } });
+    fix.addEventListener("click", () => {
+      for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
+        const e = document.getElementById(id);
+        if (e) e.value = "";
+      }
+      loadDns().then(clearError).catch(showError);
+    });
+    cell.appendChild(fix);
+    tr.appendChild(cell);
     body.appendChild(tr);
     return;
   }

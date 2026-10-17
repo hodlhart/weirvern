@@ -1065,6 +1065,13 @@
   <p><strong>Where to see it.</strong> The state column — register, enable, revoke on each row.</p>
 </div>
 
+    <!-- THE FIRST RUN (BF-8): appears only while no live sensor has ever reported; skippable
+         at every step; its edits ride the ordinary staged plan, never a parallel one. -->
+    <div class="card hidden" id="firstrun-card">
+      <h2>First run <span class="muted" id="firstrun-step">step 1 of 3</span></h2>
+      <div id="firstrun-body"></div>
+    </div>
+
       <!-- THE FLEET'S OWN STATE, FIRST. An operator's first question is "is anything broken", and
            the answer is not the sensor count. -->
       <div id="wl-summary" class="stat-row"></div>

@@ -146,6 +146,15 @@ async function loadWeirlings() {
   // ── the rows
   renderWeirlings(d.sensors || [], d.revoked || [], d.revoked_reason || "");
 
+  // THE FIRST RUN APPEARS ONLY WHILE THE FLEET HAS NEVER HAD A LIVE SENSOR -- onboarding, not
+  // decoration; the moment one reports, it is gone for good (or for this tab, if skipped).
+  const everLive = ((d && d.sensors) || []).length > 0;
+  if (!everLive && !firstrunDismissed()) {
+    firstrunShow(1);
+  } else {
+    firstrunHide();
+  }
+
   const count = document.getElementById("wl-count");
   count.textContent = `— ${(d.sensors || []).length} shown`;
   // A LINK THAT NAMED A SENSOR OPENS IT. The pending drill-down is consumed here, once the
@@ -166,9 +175,18 @@ function renderWeirlings(rows, revoked, revokedReason) {
   const showRevoked = document.getElementById("wl-revoked").checked;
 
   if (!rows.length) {
-    emptyRow(tbody, 2, (document.getElementById("wl-problems-only").checked
-      ? "No weirling has a problem."
-      : "No sensors yet. Point a sensor's exporter at this hub — it appears here to adopt."));
+    const problemsOnly = document.getElementById("wl-problems-only").checked;
+    emptyRow(tbody, 2,
+      problemsOnly
+        ? "No weirling has a problem right now."
+        : "No sensors yet. Point a sensor's exporter at this hub — it appears here to adopt.",
+      problemsOnly
+        ? { label: "Show all", fn: () => {
+              const box = document.getElementById("wl-problems-only");
+              if (box) box.checked = false;
+              loadWeirlings().then(clearError).catch(showError);
+            } }
+        : { label: "How adding works", fn: () => openHelpPanel("wl-info") });
   }
 
   for (const r of rows) {

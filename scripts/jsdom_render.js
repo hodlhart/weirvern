@@ -102,6 +102,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, toggleAllHelp,
+                     openHelpPanel, firstrunShow, anClearAllFilters,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
@@ -1130,12 +1131,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // #20): the unreviewed-only filter keeps a row while ANY occurrence is unreviewed -- the
     // rule web.py applies -- because the filter is one of the three surfaces the agreement
     // check compares, so the stub must apply it too.
-    ["/api/anomalies", (u) => ({ rows: ANOMALIES_STATE.filter(
-                                 (r) => !String(u).includes("unreviewed=1")
-                                        || (r.unreviewed_n || 0) > 0),
-                               severity_counts: { available: true, reason: "",
+    ["/api/anomalies", (u) => {
+      // REQUEST-AWARE, like the server: unreviewed keeps a row while ANY occurrence is
+      // unreviewed (issue #20), and the min-score floor excludes below-threshold rows so the
+      // empty-state checks exercise the same filter path the real query takes.
+      const q = new URLSearchParams(String(u).split("?")[1] || "");
+      const minF = Number(q.get("min_score") || q.get("min") || "0") || 0;
+      return { rows: ANOMALIES_STATE.filter(
+                 (r) => (r.anomaly_score || 0) >= minF
+                        && (!String(u).includes("unreviewed=1") || (r.unreviewed_n || 0) > 0)),
+               severity_counts: { available: true, reason: "",
                                  counts: [{ severity: "high", count: 1 },
-                                          { severity: "medium", count: 1 }] } })],
+                                          { severity: "medium", count: 1 }] } };
+    }],
   );
 
   const H = window.__H;
@@ -2959,6 +2967,91 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !anPanel.classList.contains("hidden"));
     H.toggleAllHelp(false);   // tidy for whatever follows
     await new Promise((r) => setTimeout(r, 40));
+  }
+
+  // ── THE EMPTY STATES TEACH (BF-8) ───────────────────────────────────────────────────────────
+  {
+    // 1. a queue filter that matches nothing: cause + the way back
+    H.showView("anomalies");
+    await new Promise((r) => setTimeout(r, 150));
+    const minBox = doc.getElementById("f-min-score");
+    minBox.value = "99";
+    minBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    const anEmpty = doc.querySelector("#anomalies-table .empty");
+    check("an empty queue says why and offers the way back",
+          !!anEmpty && /at or above score 99/.test(anEmpty.textContent) &&
+            /Clear filters/.test(anEmpty.textContent),
+          anEmpty ? anEmpty.textContent.slice(0, 90) : "no empty row at all");
+    const clearBtn = anEmpty ? anEmpty.querySelector("button.empty-act") : null;
+    if (clearBtn) {
+      clearBtn.click();
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    check("...and the button behind it actually clears the filter", String(minBox.value) === "0");
+
+    // 2. a fleet that has never had a sensor: the empty state, its explainer, the first run
+    const savedSensors = WEIRLINGS_PAYLOAD.sensors.splice(0, WEIRLINGS_PAYLOAD.sensors.length);
+    try { window.sessionStorage.removeItem("wv-firstrun"); } catch (_e) {}
+    await H.loadWeirlings();
+    await new Promise((r) => setTimeout(r, 150));
+    const wlEmpty = doc.querySelector("#wl-table .empty");
+    check("an empty fleet teaches and offers the button",
+          !!wlEmpty && /Point a sensor's exporter/.test(wlEmpty.textContent) &&
+            /How adding works/.test(wlEmpty.textContent),
+          wlEmpty ? wlEmpty.textContent.slice(0, 90) : "no empty fleet row");
+    const wlBtn = wlEmpty ? wlEmpty.querySelector("button.empty-act") : null;
+    if (wlBtn) {
+      wlBtn.click();
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    check("...and its button opens the explainer",
+          !doc.getElementById("wl-info").classList.contains("hidden"));
+    const frCard = doc.getElementById("firstrun-card");
+    check("the first run appears only while the fleet is empty",
+          !!frCard && !frCard.classList.contains("hidden"));
+    const frNext = doc.querySelector("#firstrun-body button.firstrun-next");
+    if (frNext) {
+      frNext.click();   // step 1 -> 2 (settings load behind it)
+      await new Promise((r) => setTimeout(r, 300));
+      const frInput = doc.querySelector('#firstrun-body input[type="number"]');
+      if (frInput) {
+        frInput.value = String(Number(frInput.value || "0") + 7);
+        frInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      check("step two stages real settings through the real flow",
+            Object.keys(H.STAGE.changes).length >= 1, JSON.stringify(H.STAGE.changes));
+      const frNext2 = doc.querySelector("#firstrun-body button.firstrun-next");
+      if (frNext2) {
+        frNext2.click();   // step 2 -> 3
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      const frReview = doc.querySelector("#firstrun-body button.firstrun-review");
+      if (frReview) {
+        frReview.click();
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      check("step three lands on the ordinary review",
+            doc.getElementById("view-settings").classList.contains("active") &&
+            frCard.classList.contains("hidden"));
+    }
+    // the skip, on a fresh appearance
+    try { window.sessionStorage.removeItem("wv-firstrun"); } catch (_e) {}
+    H.firstrunShow(1);
+    await new Promise((r) => setTimeout(r, 40));
+    const frSkip = doc.querySelector("#firstrun-body button.firstrun-skip");
+    if (frSkip) frSkip.click();
+    await new Promise((r) => setTimeout(r, 40));
+    check("Skip for now dismisses it for this tab",
+          frCard.classList.contains("hidden") &&
+          window.sessionStorage.getItem("wv-firstrun") === "skip");
+    // restore the world for the checks after this block
+    WEIRLINGS_PAYLOAD.sensors.push(...savedSensors);
+    try { window.sessionStorage.removeItem("wv-firstrun"); } catch (_e) {}
+    if (typeof H.discardStage === "function") H.discardStage();
+    await H.loadWeirlings();
+    await new Promise((r) => setTimeout(r, 150));
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

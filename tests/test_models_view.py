@@ -364,7 +364,7 @@ def test_the_anomalies_table_has_a_header_for_every_cell():
     cells = region.count('el("td"')
     # The empty-state row must span the same width, or the "no anomalies" message sits under a
     # header it does not fill.
-    empty = re.search(r"emptyRow\(tbody, (\d+), note\)", app)
+    empty = re.search(r"emptyRow\(tbody, (\d+), note", app)   # the action argument is optional (BF-8)
     assert empty and int(empty.group(1)) == headers, (
         f"the empty-state row spans {empty.group(1) if empty else '?'} columns but the table has "
         f"{headers} headers"

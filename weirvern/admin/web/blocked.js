@@ -211,9 +211,15 @@ function blFilterTo(field, value) {
   loadBlocked().then(clearError).catch(showError);
 }
 
-function blEmptyRow(body, span, text) {
+function blEmptyRow(body, span, text, action) {
   const tr = el("tr", {});
-  tr.appendChild(el("td", { class: "muted", attrs: { colspan: String(span) }, text }));
+  const cell = el("td", { class: "muted", attrs: { colspan: String(span) }, text });
+  if (action && action.label && typeof action.fn === "function") {
+    const fix = el("button", { class: "empty-act", text: action.label, attrs: { type: "button" } });
+    fix.addEventListener("click", action.fn);
+    cell.appendChild(fix);
+  }
+  tr.appendChild(cell);
   body.appendChild(tr);
 }
 
@@ -242,7 +248,8 @@ function blRenderHits(d) {
   const hits = d.hits || [];
   if (!hits.length) {
     blEmptyRow(body, 5, "Nothing recorded in this window. A hit appears when a device asks " +
-      "for a name a rule or a list watches \u2014 recording blocks nothing.");
+      "for a name a rule or a list watches \u2014 recording blocks nothing.",
+      { label: "How hits work", fn: () => openHelpPanel("bl-info") });
     return;
   }
   for (const h of hits) {

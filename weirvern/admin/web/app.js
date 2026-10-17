@@ -145,10 +145,17 @@ function sevCell(sev) {
   return el("span", { class: "sev-" + s, text: sevText(s) });
 }
 
-function emptyRow(tbody, cols, message) {
-  tbody.replaceChildren(el("tr", {}, [
-    el("td", { class: "empty", text: message, attrs: { colspan: String(cols) } }),
-  ]));
+function emptyRow(tbody, cols, message, action) {
+  const cell = el("td", { class: "empty", text: message, attrs: { colspan: String(cols) } });
+  // AN EMPTY STATE OFFERS THE BUTTON (BF-8): the cause in words, and -- when a control
+  // exists that genuinely fixes this emptiness -- the control itself, right here. An empty
+  // state that only describes the void makes the reader go find the fix.
+  if (action && action.label && typeof action.fn === "function") {
+    const fix = el("button", { class: "empty-act", text: action.label, attrs: { type: "button" } });
+    fix.addEventListener("click", action.fn);
+    cell.appendChild(fix);
+  }
+  tbody.replaceChildren(el("tr", {}, [cell]));
 }
 
 /* The ONE JSON fetch helper, shared by every script. scripts/jsdom_render.js evaluates all
@@ -1497,6 +1504,18 @@ function anSetFilter(field, value) {
   loadAnomalies().catch(showError);
 }
 
+function anClearAllFilters() {
+  AN_FILTERS.host = "";
+  AN_FILTERS.severity = "";
+  const min = document.getElementById("f-min-score");
+  if (min) min.value = "0";
+  for (const id of ["f-unreviewed", "f-watched"]) {
+    const box = document.getElementById(id);
+    if (box) box.checked = false;
+  }
+  loadAnomalies().then(clearError).catch(showError);
+}
+
 async function loadAnomalies() {
   scheduleURLSync();
   // The gate's state rides along with the list, so every row's block control can say whether it
@@ -1527,14 +1546,18 @@ async function loadAnomalies() {
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
   if (!rows.length) {
+    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || Number(min) > 0 ||
+                        unreviewedOnly || watchedOnly);
     const note = unreviewedOnly
       ? (Number(min) > 0
           ? `No unreviewed anomalies at or above score ${min}.`
           : "No unreviewed anomalies — everything has been triaged.")
       : (Number(min) > 0
           ? `No anomalies at or above score ${min}.`
-          : "No anomalies recorded yet.");
-    emptyRow(tbody, 9, note);
+          : "No anomalies recorded yet — rows land as scan windows complete.");
+    emptyRow(tbody, 9, note, filtered
+      ? { label: "Clear filters", fn: () => anClearAllFilters() }
+      : null);
     return;
   }
   for (const a of rows) {
@@ -1635,7 +1658,7 @@ async function loadHost(addr, hours) {
 
   const dests = document.querySelector("#h-dests tbody");
   dests.replaceChildren();
-  if (!d.top_destinations.length) emptyRow(dests, 4, "No destinations recorded.");
+  if (!d.top_destinations.length) emptyRow(dests, 4, "No destinations recorded in this window — an empty window is not zero traffic.");
   for (const x of d.top_destinations) {
     dests.appendChild(el("tr", {}, [
       el("td", {}, [hostCell(x.dst_addr, x.hostname, d.src_addr)]),
@@ -1647,7 +1670,7 @@ async function loadHost(addr, hours) {
 
   const ports = document.querySelector("#h-ports tbody");
   ports.replaceChildren();
-  if (!d.top_ports.length) emptyRow(ports, 4, "No ports recorded.");
+  if (!d.top_ports.length) emptyRow(ports, 4, "No ports recorded in this window — an empty window is not zero traffic.");
   for (const x of d.top_ports) {
     ports.appendChild(el("tr", {}, [
       el("td", { class: "mono", text: String(x.dst_port) }),
@@ -1661,7 +1684,7 @@ async function loadHost(addr, hours) {
   zeek.replaceChildren();
   if (!d.zeek_services.length) {
     // Not an error: the packet sensor may simply not be enabled here.
-    emptyRow(zeek, 3, "No Zeek service data (sensor disabled, or no connections seen).");
+    emptyRow(zeek, 3, "No Zeek service data in this window (the sensor may be disabled) — an empty window is not zero traffic.");
   } else {
     for (const s of d.zeek_services) {
       zeek.appendChild(el("tr", {}, [
@@ -1675,7 +1698,7 @@ async function loadHost(addr, hours) {
   const anoms = document.querySelector("#h-anoms tbody");
   anoms.replaceChildren();
   if (!d.anomalies.length) {
-    emptyRow(anoms, 5, `No anomalies for this host in the last ${d.hours}h.`);
+    emptyRow(anoms, 5, `No anomalies for this host in the last ${d.hours}h — an empty window is not zero traffic.`);
   }
   for (const a of d.anomalies) {
     anoms.appendChild(el("tr", {}, [
@@ -2184,6 +2207,96 @@ function wireInfoButtons() {
 /* SHOW ALL HELP -- one key ("?") or one click reveals every i-circle panel at once; the same
  * toggle puts them away. "Any open" means close: the key is a state switch, not a stack, and
  * the state is named in the pill (aria-pressed) and on the body (help-all). */
+/* ── THE FIRST RUN WALKS ITSELF THROUGH THE REAL FLOW ───────────────────────────────────────
+ * (BF-8; research: pfSense's wizard, escapable, batched into one apply.) Shown only while the
+ * fleet has never had a live sensor. Three steps; step two edits REAL settings through the
+ * REAL staging path -- so by step three the operator has already used the model the whole
+ * console runs on, and everything the wizard touched waits in the same reviewable plan as any
+ * other change. Skippable at every step; the skip rides sessionStorage, like the stage it
+ * protects: it dies with the tab and is never a server state. */
+const FIRSTRUN = { step: 1 };
+const FIRSTRUN_KEYS = [
+  { key: "BASE_THRESHOLD", why: "how far from normal a window must score before the ensemble may alert" },
+  { key: "DETECT_INTERVAL_S", why: "how often the ensemble scores the newest traffic" },
+];
+
+function firstrunDismissed() {
+  try { return window.sessionStorage.getItem("wv-firstrun") === "skip"; } catch (_e) { return false; }
+}
+function firstrunHide() {
+  const c = document.getElementById("firstrun-card");
+  if (c) c.classList.add("hidden");
+}
+function firstrunSkip() {
+  try { window.sessionStorage.setItem("wv-firstrun", "skip"); } catch (_e) { /* private mode */ }
+  firstrunHide();
+}
+function firstrunShow(step) {
+  const card = document.getElementById("firstrun-card");
+  if (!card) return;
+  FIRSTRUN.step = step || FIRSTRUN.step;
+  const stepper = document.getElementById("firstrun-step");
+  if (stepper) stepper.textContent = `step ${FIRSTRUN.step} of 3`;
+  card.classList.remove("hidden");
+  const body = document.getElementById("firstrun-body");
+  if (!body) return;
+  body.replaceChildren();
+  const para = (text) => el("p", { class: "muted", text });
+  const skipBtn = () => {
+    const b = el("button", { class: "firstrun-skip", text: "Skip for now", attrs: { type: "button" } });
+    b.addEventListener("click", () => firstrunSkip());
+    return b;
+  };
+  if (FIRSTRUN.step === 1) {
+    body.appendChild(para("A weirling is the sensor that watches your network: it captures " +
+      "traffic (or receives flows) and feeds this hub. Nothing here is watching yet — the rest " +
+      "of this console fills the moment one reports."));
+    body.appendChild(para("This walk-through sets up the two numbers worth setting on day one. " +
+      "Nothing is written until you apply — you will see every change first."));
+    const next = el("button", { class: "firstrun-next", text: "Next", attrs: { type: "button" } });
+    next.addEventListener("click", () => {
+      loadSettings().catch(() => {}).finally(() => firstrunShow(2));
+    });
+    body.appendChild(el("p", {}, [next, document.createTextNode(" "), skipBtn()]));
+  } else if (FIRSTRUN.step === 2) {
+    body.appendChild(para("Two settings, edited right here the same way every other setting " +
+      "is edited: change what you like — it is staged, not saved, until you apply."));
+    for (const spec of FIRSTRUN_KEYS) {
+      const row = SETTINGS_ROWS[spec.key] || {};
+      const input = el("input", { attrs: { type: "number", value: String(row.value || ""),
+                                           "aria-label": spec.key } });
+      input.addEventListener("change", () => {
+        stageChange(spec.key, input.value, row.value);
+      });
+      body.appendChild(el("label", {}, [
+        el("span", { text: spec.key + " — " + spec.why }),
+        el("br"),
+        input,
+      ]));
+    }
+    const next = el("button", { class: "firstrun-next", text: "Next", attrs: { type: "button" } });
+    next.addEventListener("click", () => firstrunShow(3));
+    body.appendChild(el("p", {}, [next, document.createTextNode(" "), skipBtn()]));
+  } else {
+    body.appendChild(para("Done. Anything you changed is staged like every other edit — " +
+      "the header chip counts it, the plan shows old → new, and nothing touches the deployment " +
+      "until you press Apply."));
+    const review = el("button", { class: "firstrun-review", text: "Review the plan",
+                                  attrs: { type: "button" } });
+    review.addEventListener("click", () => { firstrunHide(); showView("settings"); });
+    body.appendChild(el("p", {}, [review, document.createTextNode(" "), skipBtn()]));
+  }
+}
+
+function openHelpPanel(id) {
+  const panel = document.getElementById(id);
+  const btn = panel ? document.querySelector('[data-info="' + id + '"]') : null;
+  if (!panel || !btn) return;
+  panel.classList.remove("hidden");
+  btn.classList.add("open");
+  btn.setAttribute("aria-expanded", "true");
+}
+
 function toggleAllHelp(force) {
   const panels = [...document.querySelectorAll(".info-text")];
   const anyOpen = panels.some((p) => !p.classList.contains("hidden"));

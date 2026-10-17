@@ -104,7 +104,7 @@ function dcRenderHistogram(d) {
     reason: d.reason,
     series: { flows: (d.histogram || []).map((p) => ({ t: p.t, n: p.n })) },
   }, {
-    emptyText: "Nothing recorded in this window.",
+    emptyText: "Nothing recorded in this window — widen the range or clear a filter.",
     // THE CLICKABLE RULE: a bucket is a window. Clicking one narrows the range to that bucket
     // and stays on Discover -- the same drill-down the Netflow volume chart offers.
     onPoint: (pt) => {
