@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Weirvern</title>
-<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/logo.png">
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -17,7 +17,7 @@
 -->
 <div id="auth-gate" class="gate hidden">
   <div class="gate-card">
-    <img class="mark" src="/logo.png" alt="" width="36" height="36">
+    <img class="mark" src="/logo.svg" alt="" width="36" height="36">
     <h2>Weirvern</h2>
     <p class="muted" id="gate-note">Sign in to view this dashboard.</p>
     <form id="gate-form" autocomplete="off">
@@ -63,7 +63,7 @@
      account may call. -->
 <div id="pw-gate" class="gate hidden">
   <div class="gate-card">
-    <img class="mark" src="/logo.png" alt="" width="36" height="36">
+    <img class="mark" src="/logo.svg" alt="" width="36" height="36">
     <h2>Choose a new password</h2>
     <p class="muted">This account is still using the password it was created with. Pick your
       own before continuing — the dashboard stays locked until you do.</p>
@@ -85,7 +85,7 @@
 
 <header>
   <div class="brand">
-    <img class="mark" src="/logo.png" alt="" width="28" height="28">
+    <img class="mark" src="/logo.svg" alt="" width="28" height="28">
     <h1>Weirvern</h1>
   </div>
   <div class="status" id="statusline">
@@ -96,6 +96,7 @@
     <button class="pill hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
     <button class="pill" id="copy-link" type="button" title="copy a link to this exact view (tab, range, filters)">Copy link</button>
     <button class="pill" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
+    <button class="pill" id="auto-toggle" type="button" title="auto-refresh of the view you are looking at — click to pause or resume" aria-pressed="false">auto 15s</button>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
     <div class="timerange">
       <button id="tr-open" aria-expanded="false" title="The time range every tab answers to">Last 24 hours</button>
@@ -118,6 +119,7 @@
         </div>
         <div class="tr-sec" id="tr-recent-sec" hidden><span class="muted">Recent</span><div id="tr-recent" class="tr-row"></div></div>
         <p class="muted" id="tr-note">Applies to every tab. An absolute range is sent to the server as from/to and honoured exactly; each panel prints the rounded span.</p>
+        <p class="muted" id="tr-tz"></p>
       </div>
     </div>
     <button id="refresh" title="Reload now">Refresh</button>

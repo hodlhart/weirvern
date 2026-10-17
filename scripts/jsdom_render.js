@@ -102,7 +102,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
                      syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, toggleAllHelp,
-                     openHelpPanel, firstrunShow, anClearAllFilters,
+                     openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
@@ -3052,6 +3052,56 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     if (typeof H.discardStage === "function") H.discardStage();
     await H.loadWeirlings();
     await new Promise((r) => setTimeout(r, 150));
+  }
+
+  // ── THE REFRESH TELLS THE TRUTH, THE MARK IS A VECTOR (TH-1) ───────────────────────────────
+  {
+    const styleCss = require("fs").readFileSync(process.env.WEIRVERN_WEB + "/style.css", "utf8");
+    check("a heading never runs into its subtitle",
+          styleCss.includes("h2 > .muted:not(:empty)::before"),
+          "the separator rule is missing");
+    check("the range panel names its timezone",
+          !!doc.getElementById("tr-tz") && /timezone/i.test(doc.getElementById("tr-tz").textContent),
+          doc.getElementById("tr-tz") ? doc.getElementById("tr-tz").textContent : "no tr-tz line");
+    H.trApply({ mode: "absolute", from: "2026-10-16 05:00", to: "now" });
+    check("an absolute range freezes 'now' into a concrete minute",
+          /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(String(H.TIME_RANGE.to)),
+          String(H.TIME_RANGE.to));
+    check("...and the button says it is frozen",
+          /frozen/.test(doc.getElementById("tr-open").textContent),
+          doc.getElementById("tr-open").textContent);
+    H.trApply({ mode: "relative", hours: 24 });
+    await H.refreshAll();
+    check("the statusline says when the view last finished updating",
+          /updated \d\d:\d\d:\d\d/.test(doc.getElementById("fetched").textContent),
+          doc.getElementById("fetched").textContent);
+    // refreshAll follows the view you are on: spy on fetch
+    const spy = [];
+    const origFetch = window.fetch;
+    window.fetch = (u, o) => { spy.push(String(u)); return origFetch(u, o); };
+    H.showView("anomalies");
+    await new Promise((r) => setTimeout(r, 60));
+    spy.length = 0;
+    await H.refreshAll();
+    window.fetch = origFetch;
+    check("refreshAll refreshes the view you are looking at",
+          spy.some((u) => /api\/anomalies/.test(u)), spy.join(" | ").slice(0, 90));
+    const autoPill = doc.getElementById("auto-toggle");
+    check("the auto-refresh pill names its state",
+          !!autoPill && /auto 15s/.test(autoPill.textContent));
+    if (autoPill) {
+      autoPill.click();
+      await new Promise((r) => setTimeout(r, 30));
+      check("...pausing says so, in the pill and the statusline",
+            /paused/.test(autoPill.textContent) && /paused/.test(doc.getElementById("fetched").textContent),
+            autoPill.textContent);
+      autoPill.click();
+      await new Promise((r) => setTimeout(r, 30));
+      check("...resuming puts it back", /auto 15s/.test(autoPill.textContent));
+    }
+    check("the mark is a vector now",
+          doc.querySelector('link[rel="icon"]').getAttribute("href") === "/favicon.svg" &&
+          [...doc.querySelectorAll("img.mark")].every((i) => i.getAttribute("src") === "/logo.svg"));
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

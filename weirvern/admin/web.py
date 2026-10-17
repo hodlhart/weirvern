@@ -107,6 +107,10 @@ STATIC_FILES = {
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
     "/logo.png": ("logo.png", "image/png"),
+    # The crisp vector mark (TH-1): the raster was pixelated at header sizes; the SVG scales
+    # clean. logo.png stays served for apple-touch-icon, which wants a raster.
+    "/logo.svg": ("logo.svg", "image/svg+xml"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     # Browsers request /favicon.ico implicitly, so serving the PNG here (with the
     # right content type) avoids a 404 in the logs on every page load.
     "/favicon.ico": ("favicon.png", "image/png"),

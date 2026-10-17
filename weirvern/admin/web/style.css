@@ -399,6 +399,11 @@ tr.an-exp td { background: var(--panel2); }
 .spark .bar.zero { background: var(--border); }
 
 .empty { color: var(--muted); padding: 10px 0; font-style: italic; }
+/* A HEADING NEVER RUNS INTO ITS SUBTITLE. The vision pass found titles reading as one
+ * sentence ("Ingestion over time rows per bucket"); the separator belongs to the pattern,
+ * not to one repaired string, so every non-empty muted subtitle in a heading gets it.
+ * :not(:empty) -- a count span that has not loaded yet must not carry a floating dot. */
+h2 > .muted:not(:empty)::before { content: "· "; }
 .empty-act { margin-left: 8px; font-style: normal; }
 .firstrun-next, .firstrun-review, .firstrun-skip { margin-right: 6px; }
 .firstrun-next, .firstrun-review { border-color: var(--accent); color: var(--accent); }

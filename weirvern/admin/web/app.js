@@ -2478,14 +2478,57 @@ function showView(name) {
   if (name === "health") loadHealthDeep().then(clearError).catch(showError);
 }
 
+/* THE VIEW YOU ARE LOOKING AT IS WHAT AUTO-REFRESH REFRESHES (the comment always claimed
+ * this; the body previously reloaded only the health pill). Settings and drill-downs are
+ * never auto-touched: churning a form under a reader is the rudest thing an auto-refresh can
+ * do. The statusline carries the honesty: "updating…" while any of it is in flight, the
+ * finish time when it is whole, "paused" when the operator has paused it. */
+const VIEW_LOADERS = {
+  health: () => loadHealthDeep(), anomalies: () => loadAnomalies(),
+  netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
+  discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
+  weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
+  assets: () => loadAssets(),
+};
+let AUTO_PAUSED = false;
+
+function setAutoNote(text) {
+  const n = document.getElementById("fetched");
+  if (n) n.textContent = text;
+}
+
+function setAutoPaused(paused) {
+  AUTO_PAUSED = !!paused;
+  if (AUTO_PAUSED) {
+    if (timer) { clearInterval(timer); timer = null; }
+    setAutoNote("auto-refresh paused");
+  } else {
+    startAuto(15);
+    setAutoNote("");
+  }
+  const pill = document.getElementById("auto-toggle");
+  if (pill) {
+    pill.textContent = AUTO_PAUSED ? "auto paused" : "auto 15s";
+    pill.setAttribute("aria-pressed", AUTO_PAUSED ? "true" : "false");
+  }
+}
+
 async function refreshAll() {
-  // HEALTH, not Overview: the Overview tab is gone and Health is the landing view. Auto-refresh
-  // follows whatever is on screen rather than refreshing a view nobody is looking at.
+  if (AUTO_PAUSED) return;
+  setAutoNote("updating…");
   try {
     await loadHealthDeep();
+    const active = document.querySelector(".tab.active");
+    const loader = active && VIEW_LOADERS[active.dataset.view];
+    if (loader) await loader();
     clearError();
+    const now = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    setAutoNote("updated " + p(now.getHours()) + ":" + p(now.getMinutes()) + ":" +
+                p(now.getSeconds()));
   } catch (err) {
     showError(err);
+    setAutoNote("update failed — see the banner");
   }
 }
 
@@ -2527,6 +2570,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       } catch (_e) { done(false); }
     });
+  }
+  const autoPill = document.getElementById("auto-toggle");
+  if (autoPill && !window.__autoWired) {
+    window.__autoWired = true;
+    autoPill.addEventListener("click", () => setAutoPaused(!AUTO_PAUSED));
   }
   const helpPill = document.getElementById("all-help");
   if (helpPill && !window.__allHelpWired) {
@@ -3695,7 +3743,8 @@ function applyURLState() {
     if (btn) btn.textContent = trLabel();
   } else if (tr.includes("~")) {
     const parts = tr.split("~");
-    TIME_RANGE.mode = "absolute"; TIME_RANGE.from = parts[0]; TIME_RANGE.to = parts[1] || "now";
+    TIME_RANGE.mode = "absolute"; TIME_RANGE.from = parts[0];
+    TIME_RANGE.to = (parts[1] && parts[1] !== "now") ? parts[1] : trFormat(new Date());
     try { trPersist(); } catch (_e) { /* label below is best-effort too */ }
     const btn = document.getElementById("tr-open");
     if (btn) btn.textContent = trLabel();
@@ -3789,7 +3838,7 @@ function trPersist() {
   try { sessionStorage.setItem("weirvern-timerange", JSON.stringify(TIME_RANGE)); } catch (e) {}
 }
 function trLabel() {
-  if (TIME_RANGE.mode === "absolute") return TIME_RANGE.from + " → " + (TIME_RANGE.to || "now");
+  if (TIME_RANGE.mode === "absolute") return TIME_RANGE.from + " → " + (TIME_RANGE.to || "now") + " · frozen";
   const h = TIME_RANGE.hours;
   if (h < 1) return "Last " + Math.round(h * 60) + " minutes";
   if (h === 1) return "Last 1 hour";
@@ -3808,6 +3857,12 @@ function trApply(range) {
   TIME_RANGE.hours = Number(range.hours) > 0 ? Number(range.hours) : 24;
   TIME_RANGE.from = range.from || "";
   TIME_RANGE.to = range.to || "";
+  // AN ABSOLUTE RANGE IS FROZEN AT THE MOMENT IT IS APPLIED (research: Grafana's picker).
+  // "now" in the to-slot would keep sliding the window under the reader's cursor -- the
+  // opposite of what "absolute" promises -- so it becomes the concrete minute now.
+  if (TIME_RANGE.mode === "absolute" && (!TIME_RANGE.to || TIME_RANGE.to === "now")) {
+    TIME_RANGE.to = trFormat(new Date());
+  }
   trPersist();
   const btn = document.getElementById("tr-open");
   if (btn) btn.textContent = trLabel();
@@ -3880,6 +3935,15 @@ function trRenderRecent(list) {
     box.appendChild(b);
   });
 }
+function trZoneName() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+    const short = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+      .formatToParts(new Date()).find((p) => p.type === "timeZoneName");
+    return tz + (short && short.value ? " (" + short.value + ")" : "");
+  } catch (_e) { return "local time"; }
+}
+
 function trBoot() {
   trInit();
   const btn = document.getElementById("tr-open");
@@ -3915,6 +3979,12 @@ function trBoot() {
     catch (err) { trNote(String((err && err.message) || err), true); }
   });
   try { trRenderRecent(JSON.parse(sessionStorage.getItem("weirvern-timerange-recent") || "[]")); } catch (e) {}
+  // THE RANGE CONTROL NAMES ITS TIMEZONE (research: Grafana's picker) -- every timestamp in
+  // the console is rendered in the browser's own zone, and saying so removes the one
+  // ambiguity an operator on a call cannot resolve by looking harder.
+  const tzNote = document.getElementById("tr-tz");
+  if (tzNote) tzNote.textContent = "Times everywhere are shown in " + trZoneName() +
+    " \u2014 your browser's timezone.";
 }
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", trBoot);

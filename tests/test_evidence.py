@@ -293,12 +293,17 @@ def test_logo_assets_are_shipped_and_served():
     allow-list, or the dashboard renders a broken image."""
     from weirvern.admin.web import STATIC_DIR, STATIC_FILES
 
-    assert "/logo.png" in STATIC_FILES, "the logo is not served"
-    assert (STATIC_DIR / STATIC_FILES["/logo.png"][0]).exists(), "logo.png missing"
+    assert "/logo.svg" in STATIC_FILES, "the logo is not served"
+    assert (STATIC_DIR / STATIC_FILES["/logo.svg"][0]).exists(), "logo.svg missing"
+    assert "/favicon.svg" in STATIC_FILES, "the vector favicon is not served"
+    assert (STATIC_DIR / STATIC_FILES["/favicon.svg"][0]).exists(), "favicon.svg missing"
+    # logo.png stays for apple-touch-icon, and /favicon.ico stays for the browsers that
+    # ask for it unprompted -- neither may silently vanish.
+    assert "/logo.png" in STATIC_FILES and (STATIC_DIR / "logo.png").exists()
     assert "/favicon.ico" in STATIC_FILES, "no favicon route; browsers 404 on every load"
     assert (STATIC_DIR / STATIC_FILES["/favicon.ico"][0]).exists(), "favicon missing"
     html = (STATIC_DIR / "index.html").read_text()
-    assert 'src="/logo.png"' in html, "the header does not use the logo"
+    assert 'src="/logo.svg"' in html, "the header does not use the vector mark"
 
 
 # --- bugs found only by looking at the rendered page --------------------------
