@@ -438,6 +438,7 @@ def _build_handler(ctx: GuiContext):
             limit = _int_arg(query, "limit", 100, 1, 1000)
             min_score = _float_arg(query, "min_score", 0.0, 0.0, 1.0)
             unreviewed_only = (_query_bool(query, "unreviewed") is True)
+            watched_only = (_query_bool(query, "watched") is True)
             try:
                 with self._with_client() as client:
                     # REFUSED, NOT TRUNCATED (the house rule: a filter that cannot be read is a
@@ -466,6 +467,12 @@ def _build_handler(ctx: GuiContext):
                     # review window is marked unknowable rather than reading as "unreviewed".
                     # Without it, an analyst re-triages an alert that was already dispositioned.
                     status_mod.attach_group_reviews(rows, idx, rev_err, covered_since)
+                    # THE WATCH LIST rides the same way the reviews do: a separate small
+                    # read that degrades to an explicit "unavailable" marker instead of
+                    # failing the view.
+                    watch_set, watch_err = status_mod.watch_index(client)
+                    for r in rows:
+                        r["watched"] = (r.get("src_addr") in watch_set) if watch_err is None else None
                     # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
                     # state we could not read would answer "nothing is unreviewed" -- a
                     # confident claim built from a failed query. Better to return the rows
@@ -473,9 +480,14 @@ def _build_handler(ctx: GuiContext):
                     if unreviewed_only and rev_err is None:
                         # A group counts as unreviewed when ANY of its occurrences is.
                         rows = [r for r in rows if r.get("unreviewed_n", 0) > 0]
+                    # Same skip-on-failed-read rule as the reviews above: filtering on a
+                    # state we could not read would answer "nothing is watched".
+                    if watched_only and watch_err is None:
+                        rows = [r for r in rows if r.get("watched")]
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
-            self._json(web_api.anomalies_payload(rows, severity_counts=severity_counts))
+            self._json(web_api.anomalies_payload(
+                rows, severity_counts=severity_counts, watch_error=watch_err))
 
         def _models(self, query: dict) -> None:
             """Model overview: training history, score spread, agreement, deviations.
@@ -1982,6 +1994,11 @@ def _build_handler(ctx: GuiContext):
             # anyone on the LAN mark alerts as handled.
             if path == "/api/review":
                 return self._review()
+            # THE ALERT ACTION CELL'S WATCH TOGGLE. Gated like every other write: an
+            # unauthenticated port must not let anyone on the LAN rewrite the operator's
+            # tracking list.
+            if path == "/api/watch":
+                return self._watch()
             # ── SLUICE GATE writes ────────────────────────────────────────────────────────
             if path == "/api/sluice/block":
                 return self._sluice_block()
@@ -2346,6 +2363,38 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"could not record the review: {exc}")
             self._json({"ok": True, "state": state, "note": note})
+
+        def _watch(self) -> None:
+            """Toggle one host's place on the watch list (the alert action cell's Watch).
+
+            Body: {"src_addr": "...", "on": true}. Returns the state READ BACK from the
+            store so the caller renders what LANDED, not what it asked for -- the same
+            read-back rule _review follows for a disposition.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+
+            src_addr = str(body.get("src_addr") or "").strip()
+            if not src_addr:
+                return self._error(400, "'src_addr' is required")
+            on = body.get("on")
+            if not isinstance(on, bool):
+                return self._error(400, "'on' must be true or false")
+            try:
+                with self._with_client() as client:
+                    status_mod.write_watch(client, src_addr=src_addr, watching=on)
+                    watched, err = status_mod.watch_index(client)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"could not record the watch: {exc}")
+            if err is not None:
+                return self._error(503, f"the watch was written but could not be read back: {err}")
+            self._json({"ok": True, "watching": src_addr in watched, "src_addr": src_addr})
 
         def _settings_plan(self) -> None:
             """Validate and describe a proposed change WITHOUT touching anything.

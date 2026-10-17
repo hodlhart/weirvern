@@ -907,3 +907,10 @@ tbody tr:hover td { background: rgba(249,250,250,.025); }
 
 /* native controls join the palette (phase 2 follow-up, 2026-10-17) */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* ── the alert action cell: at most three one-click actions per row (BF-1) ─────────────── */
+.an-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.an-actions .gate-act { margin-top: 0; }
+.an-actions .watch-act { display: inline-flex; }
+.watch-mark { color: var(--accent); }
+.review-act.watched { border-color: var(--accent); color: var(--accent); }

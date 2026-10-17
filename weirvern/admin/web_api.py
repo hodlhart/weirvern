@@ -84,7 +84,8 @@ def health_payload(report) -> dict:
     }
 
 
-def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None) -> dict:
+def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None,
+                      watch_error: str | None = None) -> dict:
     """Serialise anomaly rows plus the severity tiles' counts.
 
     An OBJECT now, not a bare list (2026-10-16): the page's header needs how many anomalies carry
@@ -116,6 +117,7 @@ def anomalies_payload(rows: list[dict], *, severity_counts: dict | None = None) 
         row["hostname"] = _hostname(row.get("src_addr"))
         out.append(row)
     return {"rows": out,
+            "watch_error": watch_error,
             "severity_counts": severity_counts or {
                 "available": False, "reason": "severity counts were not read", "counts": []}}
 

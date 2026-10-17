@@ -19,6 +19,7 @@ const API = {
   anomalies: (min, limit, unreviewed) =>
     `/api/anomalies?min_score=${min}&limit=${limit}` + (unreviewed ? "&unreviewed=1" : ""),
   review: "/api/review",
+  watch: "/api/watch",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
@@ -1396,9 +1397,21 @@ async function loadAnomalies() {
   const limit = document.getElementById("f-limit").value || "100";
   const unrev = document.getElementById("f-unreviewed");
   const unreviewedOnly = !!(unrev && unrev.checked);
+  const wchk = document.getElementById("f-watched");
+  const watchedOnly = !!(wchk && wchk.checked);
   anRenderChips();
-  const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery());
+  const payload = await getJSON(API.anomalies(min, limit, unreviewedOnly) + anQuery()
+    + (watchedOnly ? "&watched=1" : ""));
   anRenderSeverity(payload.severity_counts);
+  // THE FILTER'S HONESTY RIDES THE PAYLOAD: when the watch store could not be read, the
+  // checkbox turns itself off, says why, and never filters on a state nobody read.
+  if (wchk) {
+    const watchErr = payload.watch_error;
+    wchk.disabled = !!watchErr;
+    if (watchErr) wchk.checked = false;
+    wchk.title = watchErr ? "the watch list is unavailable: " + watchErr
+                          : "only hosts on the watch list";
+  }
   const rows = payload.rows || [];
 
   const tbody = document.querySelector("#anomalies-table tbody");
@@ -1437,7 +1450,9 @@ async function loadAnomalies() {
                  } } }),
       el("td", { class: "dcell", attrs: { title: "filter the queue to this host" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("host", a.src_addr); } } },
-         [hostCell(a.src_addr, a.hostname)]),
+         [hostCell(a.src_addr, a.hostname),
+          a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
+                                   title: "on the watch list" }) : null]),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
       el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
@@ -1446,9 +1461,8 @@ async function loadAnomalies() {
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
-        gateAction(a),
       ]),
-      el("td", {}, [reviewCell(a)]),
+      el("td", {}, [anActions(a), reviewCell(a)]),
     ]));
   }
 }
@@ -1612,6 +1626,59 @@ function gateBlockableReason() {
   if (enforcement === "channel" || enforcement === "siphon") return "";
   return "nothing is enforcing: loch with no verified channel or live intercept means a block " +
          "would compile and stop nothing";
+}
+
+/* ── the row's action cell ────────────────────────────────────────────────────────────────
+ * At most three one-click actions per row, the shape the research converged on: Evidence
+ * opens the raw records, Block... is the gate form, Watch toggles this host on the
+ * operator's tracking list. The Review chip stays its own control -- a disposition is a
+ * STATE, not an action -- and the row click remains a quiet shortcut to Evidence.
+ */
+function anActions(a) {
+  return el("div", { class: "an-actions" }, [
+    el("button", { class: "review-act", text: "Evidence", attrs: { type: "button" },
+      title: "show the raw records behind this alert",
+      on: { click: (e) => { e.stopPropagation(); openEvidence(a); } } }),
+    gateAction(a),
+    watchAction(a),
+  ]);
+}
+
+/** The watch toggle for one alert's host: a button, or the reason there is none. */
+function watchAction(a) {
+  const wrap = el("div", { class: "watch-act" });
+  if (a.watched === null || a.watched === undefined) {
+    // The store could not be read (schema not migrated yet): say THAT, never an off
+    // state that claims nothing is being watched.
+    wrap.appendChild(el("span", { class: "gate-off",
+      title: "the watch list could not be read from the store",
+      text: "Watch unavailable" }));
+    return wrap;
+  }
+  const btn = el("button", {
+    class: "review-act" + (a.watched ? " watched" : ""),
+    text: a.watched ? "Watching \u2713" : "Watch",
+    attrs: { type: "button", "aria-pressed": a.watched ? "true" : "false" },
+    title: a.watched
+      ? "stop tracking this host"
+      : "track this host \u2014 find it again with the watched-only filter",
+    on: { click: async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        await postJSON(API.watch, { src_addr: a.src_addr, on: !a.watched });
+        await loadAnomalies();
+      } catch (err) {
+        // The list reloads from the server on success; on failure the button returns
+        // to its server-known state and the error is said out loud -- an optimistic
+        // flip would show a watch a failed write never recorded.
+        btn.disabled = false;
+        showError(err);
+      }
+    } },
+  });
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 /** The block control for one alert: a button, or the reason there is none. */

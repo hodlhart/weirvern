@@ -375,7 +375,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       primary_deviation_zscore: 5.2, deviation_magnitude: 3.1,
       feature_contributions: { unique_dst_ports: { z: 5.2 }, total_bytes: { z: 1.1 } },
       baseline_comparison: "unique_dst_ports is 5.2 sigma above this host's baseline",
-      review_state: "", review_note: "", reviewed_at: null },
+      review_state: "", review_note: "", reviewed_at: null, watched: true },
     { detected_at: "2026-01-02T08:00:00", window_start: "2026-01-02T07:55:00",
       window_end: "2026-01-02T08:00:00", src_addr: "192.0.2.40", hostname: "vault",
       anomaly_score: 0.72, confidence: 0.6, severity: "medium",
@@ -385,7 +385,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       primary_deviation_zscore: 3.4, deviation_magnitude: 2.0,
       feature_contributions: {}, baseline_comparison: "total_bytes is 3.4 sigma above baseline",
       review_state: "ack", review_note: "nightly backup job",
-      reviewed_at: "2026-01-02T08:05:00" },
+      reviewed_at: "2026-01-02T08:05:00", watched: false },
 
     // THE THREE-OCCURRENCE GROUP (issue #20): one anomaly detected in three windows, one row
     // in the queue. Its chip, its count tooltip and the unreviewed-only filter must tell ONE
@@ -2455,6 +2455,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             `src_addr=${body.src_addr} state=${body.state}`);
       check("the POST carries the window_start the server keyed the row by",
             !!body.window_start, String(body.window_start));
+    }
+  }
+
+  // ── THE ALERT ACTION CELL (BF-1) ───────────────────────────────────────────────────────────
+  // Every row carries its three one-click actions; Watch POSTs the toggle; Evidence opens the
+  // raw records; the watched row renders as watching without a local guess.
+  {
+    const actionRow = [...doc.querySelectorAll("#anomalies-table tbody tr")][0];
+    const actionsBox = actionRow && actionRow.querySelector(".an-actions");
+    check("the row's action cell offers Evidence, Block and Watch",
+          !!actionsBox
+          && !!actionsBox.querySelector("button[title*='raw records']")
+          && !!actionsBox.querySelector(".gate-act .gate-open")
+          && !!actionsBox.querySelector(".watch-act button"),
+          actionsBox ? actionsBox.textContent.replace(/\s+/g, " ") : "no .an-actions");
+    const watchBtn = actionsBox && actionsBox.querySelector(".watch-act button");
+    if (watchBtn) {
+      check("a watched host's toggle reads as Watching and pressed",
+            /Watching/.test(watchBtn.textContent)
+            && watchBtn.getAttribute("aria-pressed") === "true",
+            watchBtn.textContent);
+      const postedBeforeW = POSTED.length;
+      watchBtn.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const wreq = POSTED.slice(postedBeforeW).find((r) => r.url.includes("/api/watch"));
+      check("a Watch click POSTs the toggle to /api/watch", !!wreq,
+            POSTED.slice(postedBeforeW).map((r) => r.url).join(","));
+      if (wreq) {
+        let wbody = {};
+        try { wbody = JSON.parse(wreq.body || "{}"); } catch (_e) { wbody = {}; }
+        check("the Watch POST carries the host and the new state",
+              wbody.src_addr === "203.0.113.42" && wbody.on === false,
+              `src_addr=${wbody.src_addr} on=${wbody.on}`);
+      }
+    }
+    const evBtn = actionsBox && actionsBox.querySelector("button[title*='raw records']");
+    if (evBtn) {
+      evBtn.click();
+      await new Promise((r) => setTimeout(r, 150));
+      check("the Evidence button opens the evidence view",
+            doc.querySelector("#view-evidence").classList.contains("active"));
+      const backTab = [...doc.querySelectorAll(".tab")].find((t) => t.dataset.view === "anomalies");
+      if (backTab) backTab.click();
+      await new Promise((r) => setTimeout(r, 150));
     }
   }
 

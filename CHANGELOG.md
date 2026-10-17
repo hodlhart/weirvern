@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0 — 2026-10-17
+
+THE ALERT ACTION CELL. Every anomaly row now carries its three one-click actions -- Evidence
+(the raw records behind the alert), Block... (the Sluice Gate form: all traffic or one
+service), and Watch: a new persistent, server-side "track this host" list (schema
+021_host_watches, ReplacingMergeTree keyed by address) with a watched-only filter beside the
+existing queue filters. Watch follows the host across windows; it is not an anomaly
+disposition (that stays the Review chip, and the column is now labelled Actions). The watch
+read is fail-soft in the house style: a deployment whose schema job has not re-run shows
+"Watch unavailable" on the rows and disables the filter rather than claiming nothing is
+watched, and the filter is skipped entirely when the read failed.
+
 ## 0.14.4 — 2026-10-17
 
 Chips catch up, and native controls join the palette. The fleet's state chips

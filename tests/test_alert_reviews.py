@@ -267,7 +267,9 @@ def test_the_anomalies_route_merges_reviews_and_filters_only_when_readable():
 
 def test_the_gui_has_the_review_column_and_controls():
     html = (WEB / "index.html").read_text()
-    assert "<th>Review</th>" in html, "the Review column header is gone"
+    assert "<th>Actions</th>" in html, (
+        "the Actions column header is gone (the Review chip shares this column now)"
+    )
     assert 'id="f-unreviewed"' in html, "the unreviewed-only filter is gone"
     app = (WEB / "app.js").read_text()
     assert "reviewCell" in app and "postReview" in app

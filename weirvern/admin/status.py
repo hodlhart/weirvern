@@ -12,6 +12,7 @@ alarms.
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import json
 import logging
 import time
@@ -2652,6 +2653,43 @@ def _parse_stamp(value) -> datetime.datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def write_watch(client, *, src_addr: str, watching: bool) -> bool:
+    """Record the operator's watch state for one host (the alert action cell's Watch toggle).
+
+    A WRITE like write_review: validated here even though the route validates too, so a
+    future caller that skips the route still cannot store what the fleet cannot render.
+    """
+    addr = (src_addr or "").strip()
+    if not addr or len(addr) > 64:
+        raise ValueError(f"implausible src_addr {src_addr!r}")
+    try:
+        ipaddress.ip_address(addr)
+    except ValueError as exc:
+        raise ValueError(f"unreadable src_addr {addr!r}") from exc
+    client.insert(
+        "weirvern.host_watches",
+        [[addr, 1 if watching else 0, datetime.datetime.now()]],
+        column_names=["src_addr", "watching", "watched_at"],
+    )
+    return True
+
+
+def watch_index(client) -> tuple[set[str], str | None]:
+    """The set of watched hosts, for merging into anomaly rows and the watched filter.
+
+    Returns (addresses, error). The error string is the honest "cannot tell": a missing
+    host_watches table (schema job not re-run on this deployment) must not read as
+    "nothing is watched" -- that would silently empty the list the operator built.
+    """
+    try:
+        res = client.query(
+            "SELECT src_addr FROM weirvern.host_watches FINAL WHERE watching = 1"
+        )
+        return {row[0] for row in res.result_rows}, None
+    except Exception as exc:  # noqa: BLE001
+        return set(), str(exc)
 
 
 def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None, datetime.datetime | None]:
