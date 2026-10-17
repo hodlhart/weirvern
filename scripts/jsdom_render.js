@@ -1059,6 +1059,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     facets: { clients: [{ value: "198.51.100.77", count: 1, label: "198.51.100.77" }] },
   };
 
+  // AB-1: the adaptive-baseline card's payload, shaped like web_api.baselines_payload().
+  const BASELINES_PAYLOAD = {
+    available: true, host_count: 3, refreshed_at: "2026-10-17T15:24:53-05:00",
+    refreshed_age_s: 245, behavioural_hosts: 2, fingerprint_hosts: 1,
+    last_trained: "2026-10-17T15:24:53-05:00",
+    fired_24h: 4, last_fired: "2026-10-17T15:28:33-05:00",
+    hosts: [
+      { src_addr: "198.51.100.5", hostname: "host.example",
+        avg_bytes: 9394, stddev_bytes: 9258, avg_packets: 40,
+        avg_unique_dsts: 2.5, p95_bytes: 5000, p99_bytes: 12000, p999_bytes: 20000,
+        window_hours: 24, computed_at: "2026-10-17T15:24:53-05:00" },
+      { src_addr: "198.51.100.9", avg_bytes: 4421, stddev_bytes: 800, avg_packets: 12,
+        avg_unique_dsts: 1.0, p95_bytes: 2000, p99_bytes: 5000, p999_bytes: 9000,
+        window_hours: 24, computed_at: "2026-10-17T15:24:53-05:00" },
+      { src_addr: "203.0.113.7", avg_bytes: 60, stddev_bytes: 1, avg_packets: 2,
+        avg_unique_dsts: 1.0, p95_bytes: 50, p99_bytes: 60, p999_bytes: 70,
+        window_hours: 24, computed_at: "2026-10-17T15:24:53-05:00" },
+    ],
+    errors: null,
+  };
+
   const DNS_PAYLOAD = {
     available: true, reason: "", total: 12, limit: 100, offset: 0, bucket_s: 60,
     rows: [
@@ -1182,6 +1203,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/sluice", SLUICE_PAYLOAD],
     ["/api/fingerprints", FP_PAYLOAD],
     ["/api/models/retrain", RETRAIN_PAYLOAD],
+    ["/api/baselines", () => BASELINES_PAYLOAD],
 
     // WEIRLINGS. The DETAIL route is handled ABOVE this table because it must be
     // REQUEST-AWARE: it answers for the sensor asked about, like the real server. A static
@@ -1736,6 +1758,58 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.NF_FILTERS.pop();
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
+
+  // ── THE ADAPTIVE BASELINE CARD (AB-1) ───────────────────────────────────────────────────────
+  {
+    H.showView("models");
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 250));
+    const mbRows = [...doc.querySelectorAll("#mb-hosts tbody tr")];
+    check("the adaptive baseline card lists the hosts it learned", mbRows.length === 3,
+          "rows=" + mbRows.length);
+    const mbTxt = doc.getElementById("mb-hosts").textContent;
+    check("...with learned volumes in human units, not raw floats",
+          /9\.2 KB/.test(mbTxt) && /4\.3 KB/.test(mbTxt) && !/9394/.test(mbTxt),
+          mbTxt.slice(0, 120));
+    check("...and the reverse name beside the address it belongs to",
+          /host\.example/.test(mbTxt) && /198\.51\.100\.5/.test(mbTxt), mbTxt.slice(0, 80));
+    check("...and the freshness line reads the server's own age",
+          /Newest snapshot 4 min ago/.test(doc.getElementById("mb-note").textContent),
+          doc.getElementById("mb-note").textContent);
+    check("the summary counts the behavioural and fingerprint baselines",
+          /3 hosts carry a learned baseline/.test(doc.getElementById("mb-summary").textContent)
+          && /2 with behavioural \(Zeek\) baselines/.test(doc.getElementById("mb-summary").textContent)
+          && /1 with fingerprint history/.test(doc.getElementById("mb-summary").textContent),
+          doc.getElementById("mb-summary").textContent);
+    check("what it flagged is a count, stated plainly",
+          /Flagged 4 rows in the last 24h/.test(doc.getElementById("mb-fired").textContent),
+          doc.getElementById("mb-fired").textContent);
+    const mbFirst = mbRows[0] ? mbRows[0].querySelector("td") : null;
+    if (mbFirst) {
+      mbFirst.click();
+      await new Promise((r) => setTimeout(r, 220));
+      check("a baselined host opens its host view in one click",
+            doc.getElementById("view-host").classList.contains("active"));
+      H.showView("models");
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    // A store that cannot be read says so -- never "no baselines", which would read as a
+    // trainer that died.
+    fetchOverride = (u) => (String(u).includes("/api/baselines")
+      ? Promise.resolve({ ok: false, status: 500, statusText: "Boom", json: async () => ({}) })
+      : null);
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 220));
+    check("a baseline store that cannot be read says so, never 'no baselines'",
+          /Unavailable/.test(doc.getElementById("mb-note").textContent),
+          doc.getElementById("mb-note").textContent);
+    fetchOverride = null;
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 220));
+    // Back to the landing view: the load-state capture below reads it and a block that
+    // leaves the console somewhere else would break a check that is not about this card.
+    H.showView("health");
+  }
 
   // ── the Models staleness panel ─────────────────────────────────────────────────────────
   // The bug this guards: three detectors were 16h overdue against a 6h interval and the Models

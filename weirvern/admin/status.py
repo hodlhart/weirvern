@@ -1306,6 +1306,95 @@ def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
     return rows
 
 
+def baselines_overview(client) -> dict:
+    """The adaptive baseline, made visible.
+
+    WHY THIS EXISTS: the per-host baselines train every cycle and persist to
+    `baseline_history`, but nothing in the console showed them -- an operator could watch
+    every other detector's training history and staleness while the one detector whose
+    whole job is "what is normal for THIS host" had no surface at all, so "I have not
+    seen it work" was exactly true: it worked and was invisible.
+
+    Each panel is honest about its own failure: a store that cannot be read says why,
+    rather than rendering as "no baselines", which on this surface would be
+    indistinguishable from a trainer that died.
+    """
+    import json as _json
+
+    out: dict = {"available": True}
+    try:
+        rows = client.query(
+            "SELECT src_addr, avg_bytes, stddev_bytes, avg_packets, avg_unique_dsts, "
+            "p95_bytes, p99_bytes, p999_bytes, window_hours, computed_at "
+            "FROM weirvern.baseline_history "
+            "ORDER BY computed_at DESC LIMIT 1 BY src_addr"
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001 - a panel must not break the page
+        return {"available": False, "reason": f"baseline history query failed: {exc}"}
+
+    hosts: list[dict[str, Any]] = [{
+        "src_addr": str(r[0]),
+        "avg_bytes": float(r[1] or 0),
+        "stddev_bytes": float(r[2] or 0),
+        "avg_packets": float(r[3] or 0),
+        "avg_unique_dsts": float(r[4] or 0),
+        "p95_bytes": float(r[5] or 0),
+        "p99_bytes": float(r[6] or 0),
+        "p999_bytes": float(r[7] or 0),
+        "window_hours": int(r[8] or 0),
+        "computed_at": _iso(r[9]),
+    } for r in rows]
+    hosts.sort(key=lambda h: float(h["avg_bytes"]), reverse=True)
+    out["hosts"] = hosts
+    out["host_count"] = len(hosts)
+    out["refreshed_at"] = hosts[0]["computed_at"] if hosts else None
+    out["refreshed_age_s"] = _age_seconds(rows[0][9]) if rows else None
+
+    # The BEHAVIOURAL baselines (Zeek) live in the in-memory artifact; their durable record
+    # is the training metadata this detector writes after every refresh.
+    out["behavioural_hosts"] = None
+    out["fingerprint_hosts"] = None
+    out["last_trained"] = None
+    try:
+        mrows = client.query(
+            "SELECT argMax(metrics, trained_at) AS m, max(trained_at) AS t "
+            "FROM weirvern.ml_models WHERE model_type = 'Adaptive Baseline'"
+        ).result_rows
+        if mrows and mrows[0][0]:
+            m = _json.loads(mrows[0][0])
+            out["behavioural_hosts"] = int(m.get("zeek_baselined_hosts") or 0)
+            out["fingerprint_hosts"] = int(m.get("hosts_with_fp_history") or 0)
+            out["last_trained"] = _iso(mrows[0][1])
+    except Exception as exc:  # noqa: BLE001 - the card says so rather than guessing zero
+        out["errors"] = {"training": str(exc)}
+
+    # What it has actually FLAGGED -- "is it doing anything" answered with a count, not a
+    # hope. Zero is reported as zero; a failed read says it failed.
+    try:
+        frows = client.query(
+            "SELECT count() AS n, max(detected_at) AS last FROM weirvern.netflow_anomalies "
+            "WHERE detected_at >= %(since)s AND detected_at <= %(until)s AND baseline_score > 0",
+            parameters={**timewindow.w(24)},
+        ).result_rows
+        out["fired_24h"] = int(frows[0][0] or 0) if frows else 0
+        out["last_fired"] = _iso(frows[0][1]) if frows and frows[0][1] else None
+    except Exception as exc:  # noqa: BLE001
+        out.setdefault("errors", {})["fired"] = str(exc)
+        out["fired_24h"] = None
+        out["last_fired"] = None
+    return out
+
+
+def _age_seconds(when) -> int | None:
+    """Seconds since a datetimes.datetime, naive or aware -- None when it cannot be read."""
+    try:
+        from datetime import datetime as _dt
+        now = _dt.now(tz=when.tzinfo) if getattr(when, "tzinfo", None) else _dt.now()
+        return max(0, int((now - when).total_seconds()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def model_overview(client, hours: int = 72, settings=None) -> dict:
     """Everything the Models view needs, in one round trip per panel.
 

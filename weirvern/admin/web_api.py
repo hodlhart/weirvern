@@ -525,6 +525,33 @@ def gates_payload(fleet: dict, local_name: str, stale_after_s: int,
     }
 
 
+def baselines_payload(data: dict) -> dict:
+    """Serialise baselines_overview() for the frontend.
+
+    Passes `available`/`reason` through intact: "the store could not be read" and "no
+    host has a baseline yet" need different words on screen, and only the server knows
+    which is true.
+    """
+    if not data.get("available", True):
+        return {"available": False, "reason": data.get("reason", "unavailable")}
+    return {
+        "available": True,
+        "host_count": data.get("host_count", 0),
+        "refreshed_at": data.get("refreshed_at"),
+        "refreshed_age_s": data.get("refreshed_age_s"),
+        "behavioural_hosts": data.get("behavioural_hosts"),
+        "fingerprint_hosts": data.get("fingerprint_hosts"),
+        "last_trained": data.get("last_trained"),
+        "fired_24h": data.get("fired_24h"),
+        "last_fired": data.get("last_fired"),
+        # The reverse-map name beside the address, like every other host row in this console:
+        # the IP is the fact and the name is the convenience, never a replacement.
+        "hosts": [{**h, "hostname": _hostname(h.get("src_addr"))}
+                  for h in (data.get("hosts") or [])],
+        "errors": data.get("errors"),
+    }
+
+
 def models_payload(data: dict) -> dict:
     """Serialise model_overview() for the frontend.
 

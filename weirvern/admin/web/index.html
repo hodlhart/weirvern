@@ -600,6 +600,30 @@
       </table>
     </div>
 
+    <!--
+      THE ONE DETECTOR THAT HAD NO SURFACE (AB-1). The adaptive baseline trains every cycle
+      and persists its per-host statistics, but nothing showed them: the operator could not
+      see which hosts it had learned, what normal looked like for them, or what it had
+      flagged -- so a working feature read as a dead one. This card is that surface, and
+      every panel can say WHY it is missing rather than rendering as zero.
+    -->
+    <div class="card">
+      <h2>The adaptive baseline <span class="muted" id="mb-window"></span> <button class="info-btn" data-info="mb-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+<div class="info-text hidden" id="mb-info">
+  <p><strong>What it is.</strong> A per-host picture of normal: each host's own average and spread of bytes, packets and destinations over the training window. A fixed threshold cannot know that one host normally sends a hundred times more than another; this baseline does.</p>
+  <p><strong>What writes it.</strong> The Adaptive Baseline detector, refreshed every detection cycle; the table shows its latest snapshot per host. Behavioural (Zeek) baselines and fingerprint history join the volumetric ones when both sensors observe the same host.</p>
+  <p><strong>Last changed.</strong> Every refresh — the line above says how old the newest snapshot is. A stalled refresh count is visible here instead of silent.</p>
+  <p><strong>Where to see it.</strong> This table; and any anomaly the baseline helped score carries its name under Models on the row.</p>
+</div>
+      <p class="muted" id="mb-note">loading…</p>
+      <div class="muted" id="mb-summary"></div>
+      <table id="mb-hosts">
+        <thead><tr><th>Host</th><th>Bytes / window</th><th>p95</th><th>p99</th><th>Packets / window</th><th>Unique dsts</th><th>Learned from</th><th>Updated</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted" id="mb-fired"></p>
+    </div>
+
     <div class="card">
       <h2>Training history <span class="muted">samples per retrain</span> <button class="info-btn" data-info="m-history-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-history-info">

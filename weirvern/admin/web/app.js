@@ -3343,6 +3343,114 @@ function axisLabel(g, x, y, text, anchor = "middle") {
  * The server computes `stale` so every consumer cannot disagree, and the words here state
  * the remedy rather than only the verdict.
  */
+/** AB-1: the adaptive baseline's own read + card. */
+async function loadBaselinesCard() {
+  let bl = null;
+  try {
+    bl = await getJSON("/api/baselines");
+  } catch (err) {
+    bl = { available: false, reason: (err && err.message) || String(err) };
+  }
+  renderBaselines(bl);
+}
+
+/** Volume formatting for the baseline table; local so this file stands alone under the gate's
+ *  call scan (a bare call to another web file's helper would fail it). */
+function mbBytes(n) {
+  const v = Number(n) || 0;
+  if (v >= 1048576) return (v / 1048576).toFixed(1) + " MB";
+  if (v >= 1024) return (v / 1024).toFixed(1) + " KB";
+  return Math.round(v) + " B";
+}
+
+/** Seconds -> the words a person reads. The SERVER computes the age, so the card reads the
+ *  same in a check as it does in a browser. */
+function mbAgeText(s) {
+  if (s === null || s === undefined || s === "") return null;
+  const v = Number(s);
+  if (!Number.isFinite(v)) return null;
+  if (v < 90) return Math.round(v) + "s";
+  if (v < 5400) return Math.round(v / 60) + " min";
+  return Math.round(v / 3600) + "h";
+}
+
+function renderBaselines(bl) {
+  const note = document.getElementById("mb-note");
+  const sum = document.getElementById("mb-summary");
+  const fired = document.getElementById("mb-fired");
+  const win = document.getElementById("mb-window");
+  const body = document.querySelector("#mb-hosts tbody");
+  if (!body || !note) return;
+  body.innerHTML = "";
+  if (win) win.textContent = "";
+  if (!bl || !bl.available) {
+    note.textContent = "Unavailable: "
+      + ((bl && bl.reason) || "the baseline store could not be read")
+      + " \u2014 this is a read failure, not an empty baseline.";
+    if (sum) sum.textContent = "";
+    if (fired) fired.textContent = "";
+    return;
+  }
+  const age = mbAgeText(bl.refreshed_age_s);
+  note.textContent = age === null
+    ? "No snapshot time recorded."
+    : "Newest snapshot " + age + " ago \u2014 refreshed every detection cycle.";
+  const n = Number(bl.host_count || 0);
+  const parts = [n + " host" + (n === 1 ? "" : "s") + " carr" + (n === 1 ? "ies" : "y")
+                 + " a learned baseline"];
+  if (bl.behavioural_hosts !== null && bl.behavioural_hosts !== undefined) {
+    parts.push(bl.behavioural_hosts + " with behavioural (Zeek) baselines");
+  }
+  if (bl.fingerprint_hosts !== null && bl.fingerprint_hosts !== undefined) {
+    parts.push(bl.fingerprint_hosts + " with fingerprint history");
+  }
+  if (sum) sum.textContent = parts.join(" \u00b7 ") + ".";
+  if (fired) {
+    const err = bl.errors && bl.errors.fired;
+    if (err) fired.textContent = "Could not read what it flagged: " + err + ".";
+    else if (bl.fired_24h === null || bl.fired_24h === undefined) {
+      fired.textContent = "What it flagged could not be read.";
+    } else if (bl.fired_24h === 0) {
+      fired.textContent = "Nothing flagged in the last 24h of scored windows \u2014 a quiet "
+        + "baseline, stated as a fact, not rendered as an empty box.";
+    } else {
+      fired.textContent = "Flagged " + bl.fired_24h + " row" + (bl.fired_24h === 1 ? "" : "s")
+        + " in the last 24h" + (bl.last_fired ? " \u2014 most recently " + bl.last_fired : "") + ".";
+    }
+  }
+  const hosts = bl.hosts || [];
+  if (!hosts.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: 8 },
+                 text: "No host has a baseline yet \u2014 the first training window has not "
+                       + "filled. This says the store is EMPTY, not that the read failed." }),
+    ]));
+    return;
+  }
+  if (win) win.textContent = (Number(hosts[0].window_hours) || 24) + "h windows";
+  const show = hosts.slice(0, 12);
+  for (const h of show) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "dcell", attrs: { title: "open this host's view" },
+                 on: { click: () => { showView("host"); openHost(h.src_addr); } } },
+         [hostCell(h.src_addr, h.hostname)]),
+      el("td", { class: "num", text: mbBytes(h.avg_bytes) }),
+      el("td", { class: "num", text: mbBytes(h.p95_bytes) }),
+      el("td", { class: "num", text: mbBytes(h.p99_bytes) }),
+      el("td", { class: "num", text: Math.round(Number(h.avg_packets) || 0).toLocaleString() }),
+      el("td", { class: "num", text: String(Math.round((Number(h.avg_unique_dsts) || 0) * 10) / 10) }),
+      el("td", { class: "muted", text: (Number(h.window_hours) || 0) + "h of traffic" }),
+      el("td", { class: "muted", text: h.computed_at ? fmtTime(h.computed_at) : "\u2014" }),
+    ]));
+  }
+  if (hosts.length > show.length) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: 8 },
+                 text: "and " + (hosts.length - show.length) + " more host(s)" }),
+    ]));
+  }
+}
+
 function renderStaleness(rows, intervalH) {
   const body = document.querySelector("#m-stale tbody");
   const note = document.getElementById("m-stale-note");
@@ -3680,6 +3788,9 @@ function mKeepPoint(pt) {
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
+  // AB-1: the baseline card is its own read -- a models payload that failed must not take
+  // it down, and vice versa.
+  loadBaselinesCard().catch(showError);
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");

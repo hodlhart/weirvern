@@ -305,6 +305,10 @@ def _build_handler(ctx: GuiContext):
                 return self._fingerprints(query)
             if path == "/api/models":
                 return self._models(query)
+            # AB-1: the per-host adaptive baselines -- what each host normally does, and
+            # what the baseline has flagged. A read, like the rest of the monitoring data.
+            if path == "/api/baselines":
+                return self._baselines()
             # The operator's FORCED RETRAIN: the state of the last request and the report it
             # produced. The write that files one is on the POST side, admin-gated like every other
             # mutation -- but this GET is a read of the fleet's own record, so it stays open to
@@ -591,6 +595,18 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}"})
             self._json(web_api.models_payload(data))
+
+        def _baselines(self) -> None:
+            """The per-host baseline snapshot: the latest row per host, when it refreshed,
+            and what the detector has flagged lately. Every panel can say why it is
+            missing rather than rendering as an empty list."""
+            try:
+                with self._with_client() as client:
+                    data = status_mod.baselines_overview(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot reach ClickHouse: {exc}"})
+            self._json(web_api.baselines_payload(data))
 
         def _model_retrain(self) -> None:
             """The last forced retrain: what state it is in, and what it produced.
