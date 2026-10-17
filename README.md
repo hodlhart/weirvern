@@ -65,6 +65,18 @@ and exporters to reach it.
 
 A box can play more than one of these roles, and the placement is a **setting**, not an install:
 the same image runs the hub, and a sensor can move from `loch` to `channel` without being rebuilt.
+
+A fleet makes that a per-**sensor** question. **Each weirling carries its own intercept plan** —
+its mode, capture interface, segment, redirect address, gateway and targets — stored on its own
+registration in the hub's registry, because the hub cannot reach a remote box's manifest. The mode
+is toggled (and the plan edited) in that weirling's drill-down in the **Weirlings** view, with
+**Sonar** surveying *that sensor's* capture port first; the sensor's own agent reads its plan every
+refresh (about 30 seconds) and arms — or refuses — itself, inside its own deployment, through the
+same supervised intercept the hub runs. An in-cluster weirling needs the opt-in capability patch
+beside its unit manifest; one that has not been granted it refuses to arm and says so on its own
+heartbeat, with the mode it was asked for and zero mappings, rather than a control that claims to
+have worked.
+
 A channel is still a `loch` sensor in the sense that matters — it observes, and it only stops what
 a rule names.
 
@@ -96,7 +108,9 @@ or trash it · Discover (the raw flows themselves, filterable down to every fiel
 questions and answers, with a reverse lookup: which names pointed at an address recently, out of
 what DNS actually answered) · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes ·
 Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this
-stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed) ·
+stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed, and
+each weirling carries its own intercept plan — mode, segment, address, gateway, targets — which
+that sensor reads and applies itself) ·
 Sluice (rules, domain blocklists imported from the internet or your own names, and every gate that
 is enforcing, including the ones on other sensors) · **Blocked** (what has been caught — the
 recorded name hits — and what is doing the catching: the live rules split by whether they block

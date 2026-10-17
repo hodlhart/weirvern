@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.16.0 — 2026-10-17
+
+THE PER-WEIRLING INTERCEPT PLAN — siphon, per sensor.
+
+Until now the intercept plan was DEPLOYMENT-GLOBAL: `INTERCEPT_*` in `weirvern-env` describes
+exactly one sensor — the one whose worker reads that ConfigMap — so a second sensor had no way to
+say "my segment is this, my gateway is that", and the hub had no way to tell it. The plan now
+lives on the sensor's own registration in the hub's registry (`020_weirling_plan.sql`): mode
+(`loch` or `siphon`), capture interface, segment, redirect address, gateway and targets, each
+validated on write by the intercept's OWN rules (`intercept.parse_cidr`, the supervisor's target
+expansion), so a plan the hub accepts is a plan the intercept honours. An incomplete plan is a
+state, not an error: it is stored, and the sensor says what is missing.
+
+The sensor's own agent now supervises the intercept **in its own deployment**, driving the SAME
+`SiphonSupervisor` the hub's worker runs — same `weirvern intercept` child, same fail-open
+watchdog restore, same bounded runs and self-destruct deadline, same capability gate — reading
+its plan from its own registry row every 30 seconds. The hub's `SENSOR_MODE` is deliberately NOT
+consulted (a unit inherits it through `envFrom`; obeying it would arm every weirling at once). A
+failed plan read changes nothing, an unchanged plan is never rebuilt, and the one-writer rule for
+the `(sensor_id, 'siphon')` heartbeat row is the same rule the worker follows.
+
+The capability grant is opt-in per unit (`k8s/units/weirling-unit-siphon.yaml.template`: NET_RAW +
+NET_ADMIN on the agent, `runAsUser: 0` because Kubernetes drops added capabilities for non-root,
+and the privileged sysctl init container that saves the node's pre-change values under the unit's
+own path and refuses to start a unit that believes it is intercepting but cannot forward). A unit
+without the patch refuses to arm and says why on its own heartbeat.
+
+The fleet view is where a person flips it: a registered, non-local weirling's drill-down offers
+its own plan editor — mode, Sonar for that sensor's capture port, and the five plan fields —
+through the same staged-then-applied shape as Settings (`/api/weirlings/plan`, then
+`/api/weirlings/apply`): the preview validates with the write's own parser and carries the in-path
+cost on the mode change. Selecting `siphon` surveys that sensor's port first and stages what it
+measured. The reply says the sensor applies it within about 30 seconds — the panel never claims it
+armed, because only the sensor's heartbeat can say that, and a plan that cannot arm yet says what
+is missing on the row. Controls that could not mean anything are not rendered: this hub's own
+sensor keeps the Settings grid, and an undeclared sensor has to be adopted first.
+
 ## 0.15.0 — 2026-10-17
 
 THE ALERT ACTION CELL. Every anomaly row now carries its three one-click actions -- Evidence
