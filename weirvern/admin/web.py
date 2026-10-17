@@ -518,12 +518,12 @@ def _build_handler(ctx: GuiContext):
                     try:
                         fleet = fleet_store.build_fleet(client)
                         # THE STALENESS STAMP: the newest heartbeat is the data's own clock.
-                        hbs, _err = fleet_store.read_heartbeats(client)
-                        newest = ""
-                        for hb in hbs or []:
-                            ts = str(hb.get("last_seen") or "")
-                            if ts > newest:
-                                newest = ts
+                        # Read from the FLEET ROWS, which carry the parsed ISO timestamp --
+                        # the raw heartbeat rows are a different shape, and reading the wrong
+                        # one silently produced a page with no stamp at all (caught by the
+                        # box probe, 2026-10-17).
+                        newest = max((str(r.get("last_seen") or "")
+                                      for r in (fleet.get("sensors") or [])), default="")
                         if newest:
                             fleet["data_as_of"] = newest
                     except Exception:  # noqa: BLE001
