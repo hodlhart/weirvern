@@ -314,3 +314,40 @@ def test_the_sluice_toggle_accepts_booleans_only():
     with pytest.raises(cc.ConfigError):
         cc.validate("SLUICE_ENABLED", "sure-why-not")
     assert "OPEN" in cc.validate("SLUICE_ENABLED", "true")
+
+
+def test_every_editable_key_says_how_it_applies():
+    """BF-5: the settings-row badge is DERIVED from the writer's restart table, never
+    hand-written -- a badge that restates the apply path in prose is a badge that drifts
+    from it. Every editable key must yield a sentence, and the sentence must start with
+    the honest phrase."""
+    from weirvern.admin import cluster_config as cc
+
+    assert cc.apply_semantics("BASE_THRESHOLD") == \
+        "applies with Apply \u2014 restarts the detection worker"
+    assert "capture gap" in cc.apply_semantics("SENSOR_MODE")
+    assert cc.apply_semantics("WEIRVERN_REVERSE_DNS").startswith("applies with Apply \u2014 restarts the web UI")
+    assert cc.apply_semantics("  base_threshold  ") == cc.apply_semantics("BASE_THRESHOLD")
+    for key in cc.EDITABLE_KEYS:
+        sentence = cc.apply_semantics(key)
+        assert sentence.startswith("applies with Apply"), key
+
+
+def test_the_payload_rows_carry_how_they_apply():
+    """The badge is PAYLOAD-driven (BF-5 acceptance): the real settings_overview output must
+    carry `applies` on every editable row, worded from the writer's restart table."""
+    from tests.test_settings_tab import _Settings
+    from weirvern.admin import cluster_config as cc
+    from weirvern.admin import status
+
+    payload = status.settings_overview(settings=_Settings(), namespace="weirvern")
+    flat = {r["key"]: r for rows in payload["groups"].values() for r in rows}
+    editable = [k for k in flat if k.upper() in set(cc.EDITABLE_KEYS)]
+    assert editable, "the fixture carried no editable rows at all"
+    for key in editable:
+        row = flat[key]
+        assert "applies" in row, f"{key}: the row does not say how it applies"
+        assert row["applies"].startswith("applies with Apply"), key
+    base = flat.get("base_threshold")
+    if base is not None:
+        assert "restarts the detection worker" in base["applies"]

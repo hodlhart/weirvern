@@ -118,6 +118,18 @@ ROW_TO_CONFIGMAP: dict[str, str] = {
 }
 
 
+def apply_semantics(key: str) -> str:
+    """How a change to this key takes effect, in one sentence for the settings row's badge.
+
+    DERIVED FROM _RESTART_FOR, never hand-written: the badge and the apply path read the SAME
+    table, so a row can never promise "no restart" while the writer restarts something (BF-5;
+    research: pfSense's runtime-vs-boot tunables -- the one place OPNsense states this, and the
+    alternative is a documented trap). Every row applies WITH APPLY -- this console has no
+    live-on-save settings; what differs is what the apply restarts."""
+    _targets, blast = _RESTART_FOR.get(str(key).strip().upper(), ((), ""))
+    return "applies with Apply \u2014 " + blast if blast else "applies with Apply"
+
+
 def to_configmap_key(row_key: str) -> str:
     """The ConfigMap key an apply would write for a settings row key."""
     k = (row_key or "").strip()

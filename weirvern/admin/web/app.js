@@ -1110,6 +1110,14 @@ async function loadSettings() {
           el("span", { text: r.label }),
           srcTag ? el("span", { class: "setting-src", text: srcTag }) : null,
           isEditable ? null : el("span", { class: "setting-src", text: "read-only" }),
+          // HOW IT APPLIES (BF-5): no control leaves the operator guessing whether their
+          // change took effect. The sentence is the PAYLOAD's (derived from the writer's own
+          // restart table); the CSS keeps it small and quiet.
+          isEditable ? el("span", {
+            class: "setting-applies",
+            text: String(r.applies || "").replace("applies with Apply — ", "applies with Apply · "),
+            title: r.applies || "",
+          }) : null,
         ]),
         el("span", { class: "setting-ctl" }, [valueNode, helpBtn]),
         help,

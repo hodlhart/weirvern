@@ -1233,9 +1233,9 @@ def settings_overview(settings=None, namespace: str = "", backend=None,
             # without this the tab showed `loch` through a demonstrably running intercept
             # (measured, first live test). Secrets are exempt: their value is never carried
             # here either way, and a ConfigMap row for one does not exist.
-            if configmap is not None and source != "derived":
-                from weirvern.admin import cluster_config as _cc  # noqa: PLC0415
+            from weirvern.admin import cluster_config as _cc  # noqa: PLC0415
 
+            if configmap is not None and source != "derived":
                 cm_value = configmap.get(_cc.to_configmap_key(attr))
                 if cm_value is not None and not _is_secret(attr):
                     value = cm_value
@@ -1243,6 +1243,10 @@ def settings_overview(settings=None, namespace: str = "", backend=None,
             out.append({
                 "key": attr,
                 "label": label,
+                # HOW THIS ROW APPLIES (BF-5): the badge rides the payload, derived from the
+                # writer's own restart table -- the UI renders the server's answer instead of
+                # restating it (a restated rule is a rule that drifts).
+                "applies": _cc.apply_semantics(attr),
                 "value": _redact(attr, value),
                 # A secret is flagged so the UI can say WHY it shows no value, instead of leaving
                 # the reader to wonder whether the field is broken.

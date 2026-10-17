@@ -259,47 +259,62 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     groups: {
       detect: [
         { key: "retrain_every_h", label: "retrain every (h)", value: 6, secret: false,
-          source: "setting", help: "How often the detectors are retrained. Default 6 hours." },
+          source: "setting",
+          applies: "applies with Apply — restarts the detection worker", help: "How often the detectors are retrained. Default 6 hours." },
         { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false,
           source: "setting",
+          applies: "applies with Apply — restarts the detection worker",
           help: "The score a host-window must reach before it counts as an anomaly. Default 0.35." },
         { key: "sluice_auto_score", label: "auto-block at score", value: 0, secret: false,
           source: "setting",
+          applies: "applies with Apply — restarts the detection worker",
           help: "Any detection at or above this score is blocked automatically. 0 disables." },
       ],
       sensor: [
         { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting",
+          applies: "applies with Apply — restarts the detection worker",
           help: "loch watches passively; siphon puts this host in the traffic path. Default loch." },
         { key: "reverse_dns", label: "reverse DNS", value: "private", secret: false,
-          source: "derived", help: "Resolves only private addresses by default." },
+          source: "derived",
+          applies: "applies with Apply — restarts the detection worker", help: "Resolves only private addresses by default." },
         { key: "intercept_segment", label: "intercept segment", value: "(not set)",
-          secret: false, source: "env", help: "The segment the siphon intercept operates on." },
+          secret: false, source: "env",
+          applies: "applies with Apply — restarts the detection worker", help: "The segment the siphon intercept operates on." },
         { key: "intercept_addr", label: "intercept address", value: "(not set)",
           secret: false, source: "env",
+          applies: "applies with Apply — restarts the detection worker",
           help: "The address the intercept assumes; siphon refuses to start without it." },
         { key: "intercept_targets", label: "intercept targets", value: "(not set)",
           secret: false, source: "env",
+          applies: "applies with Apply — restarts the detection worker",
           help: "'*' means every host on the segment; empty means nothing is intercepted." },
         { key: "channel_netflow", label: "channel netflow", value: "off", secret: false,
           source: "env",
+          applies: "applies with Apply — restarts the detection worker",
           help: "Whether the traffic crossing the in-line channel is summarised into NetFlow." },
         // Deliberately ALREADY EQUAL to what the Sonar stub recommends: this row is how the
         // harness proves the staging dedupe (an unchanged recommendation stages nothing).
         { key: "intercept_gateway", label: "intercept gateway", value: "198.51.100.1",
-          secret: false, source: "env", help: "The gateway whose identity is forged." },
+          secret: false, source: "env",
+          applies: "applies with Apply — restarts the detection worker", help: "The gateway whose identity is forged." },
       ],
       runtime: [
         { key: "clickhouse_host", label: "ClickHouse host", value: "clickhouse", secret: false,
-          source: "setting", help: "Hostname of the ClickHouse service. Default clickhouse." },
+          source: "setting",
+          applies: "applies with Apply — restarts the detection worker", help: "Hostname of the ClickHouse service. Default clickhouse." },
         { key: "clickhouse_password", label: "ClickHouse password",
           value: `(set, ${SECRET_SENTINEL.length} chars)`, secret: true, source: "setting",
+          applies: "applies with Apply — restarts the detection worker",
           help: "Read from the weirvern-secrets Secret at startup. Never shown in value." },
         { key: "pushover_enabled", label: "Pushover", value: "disabled", secret: false,
           source: "setting",
+          applies: "applies with Apply — restarts the detection worker",
           help: "Whether real push notifications are sent. Off logs only." },
         { key: "pushover_api_token", label: "Pushover API token", value: "(not set)",
-          secret: true, source: "setting", help: "The Pushover application token." },
+          secret: true, source: "setting",
+          applies: "applies with Apply — restarts the detection worker", help: "The Pushover application token." },
         { key: "version", label: "version", value: "0.5.6", secret: false, source: "derived",
+          applies: "applies with Apply — restarts the detection worker",
           help: "The image tag the deployment is actually running." },
       ],
     },
@@ -2068,6 +2083,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a second edit stages again", Object.keys(H.STAGE.changes).length === 1);
   H.discardStage();
   check("discard clears the staged set", Object.keys(H.STAGE.changes).length === 0);
+
+  // HOW EVERY CONTROL APPLIES (BF-5): the badge is payload-driven from the writer's restart
+  // table, and every editable row shows it.
+  {
+    const rows = [...doc.querySelectorAll("#st-detect .setting, #st-sensor .setting, #st-runtime .setting")];
+    const editableRows = rows.filter((r) => {
+      const ctl = r.querySelector(".setting-ctl");
+      if (!ctl) return false;
+      return !!ctl.querySelector("input, select") ||
+        [...ctl.querySelectorAll("button")].some((b) => !b.classList.contains("setting-help-btn"));
+    });
+    const badge = (r) => r.querySelector(".setting-applies");
+    const naked = editableRows.filter((r) => !(badge(r) && /applies with Apply/.test(badge(r).textContent)));
+    check("every editable settings row says how it applies",
+          editableRows.length >= 3 && naked.length === 0,
+          naked.map((r) => r.dataset.key).join(", ") || `${editableRows.length} editable rows`);
+    const bt = rows.find((r) => r.dataset.key === "base_threshold");
+    check("...and the restart consequence is named, from the writer's own table",
+          !!bt && !!badge(bt) && /restarts the detection worker/.test(badge(bt).textContent),
+          bt && badge(bt) ? badge(bt).textContent : "no base_threshold badge");
+  }
 
   // ── SONAR: the survey button ──────────────────────────────────────────────────────────────
   // The button must exist with its help, a click must hit the sonar route, and the
