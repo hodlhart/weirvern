@@ -54,14 +54,25 @@ function dnCell(text, cls) { return el("td", { class: cls || "", text: String(te
 function dnRenderSummary(d) {
   const node = document.getElementById("dn-summary");
   if (!node) return;
+  // A FAILED READ IS NOT A MEASUREMENT (issue #38). The panels below say why they cannot
+  // draw or list; this line used to contradict them with "0 queries \u00b7 showing 1\u20130",
+  // which reads as "we looked and found none" -- the exact conflation #13 removed
+  // everywhere else. When the read failed, say so and stop there.
+  if (d.available === false) {
+    node.textContent = `DNS records unavailable: ${d.reason || "the query did not run"}`;
+    return;
+  }
   const n = d.total != null ? Number(d.total).toLocaleString() : "0";
   const nx = ((d.facets || {}).rcodes || []).find((r) => r.value === 3);
   const top = ((d.facets || {}).domains || [])[0];
   const bits = [`${n} quer${d.total === 1 ? "y" : "ies"}`];
   if (nx) bits.push(`${Number(nx.count).toLocaleString()} NXDOMAIN`);
   if (top) bits.push(`busiest ${top.value}`);
-  node.textContent = bits.join(" \u00b7 ") + ` \u00b7 showing ${Number(d.offset || 0) + 1}\u2013` +
-                     `${Number(d.offset || 0) + (d.rows || []).length}`;
+  // The range carries the same guard as blocked.js's pager: nothing shown reads 0\u20130,
+  // never the impossible "1\u20130".
+  const from = d.total ? Number(d.offset || 0) + 1 : 0;
+  const to = Number(d.offset || 0) + (d.rows || []).length;
+  node.textContent = bits.join(" \u00b7 ") + ` \u00b7 showing ${from}\u2013${to}`;
 }
 
 function dnRenderHistogram(d) {

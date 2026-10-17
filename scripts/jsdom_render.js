@@ -3757,6 +3757,34 @@ check("high capture loss is called out in the fleet",
           doc.getElementById("dn-domain").value);
     H.dnClear();
     check("clear empties the DNS filters", doc.getElementById("dn-domain").value === "", "");
+
+    // ISSUE #38: the summary line respects the payload state, the way the panels below it
+    // and blocked.js's pager already did. A failed read must not claim a count or a range;
+    // an empty successful read must not render the impossible "1\u20130".
+    const dnServe = (payload) => Promise.resolve(
+      { ok: true, status: 200, statusText: "OK", json: async () => payload });
+    fetchOverride = (u) => (String(u).includes("/api/dns")
+      ? dnServe({ available: false, reason: "cannot reach ClickHouse: OperationalError",
+                rows: [], total: 0, histogram: [], facets: {}, data_error: "x" })
+      : null);
+    await H.loadDns();
+    const failedSummary = doc.getElementById("dn-summary").textContent;
+    check("a FAILED dns read claims no query count and no range",
+          /unavailable: cannot reach ClickHouse/.test(failedSummary)
+          && !/\d+ quer/.test(failedSummary) && !/\d+\u2013\d+/.test(failedSummary),
+          failedSummary.slice(0, 110));
+    fetchOverride = (u) => (String(u).includes("/api/dns")
+      ? dnServe({ available: true, reason: "", total: 0, limit: 100, offset: 0,
+                 rows: [], histogram: [], facets: {}, bucket_s: 60 })
+      : null);
+    await H.loadDns();
+    const emptySummary = doc.getElementById("dn-summary").textContent;
+    check("an EMPTY successful dns read keeps its count and reads 0\u20130, never 1\u20130",
+          /0 quer/.test(emptySummary) && /showing 0\u20130/.test(emptySummary)
+          && !/1\u20130/.test(emptySummary),
+          emptySummary.slice(0, 110));
+    fetchOverride = null;
+    await H.loadDns();
   }
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
