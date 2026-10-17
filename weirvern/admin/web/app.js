@@ -129,9 +129,20 @@ function hostCell(addr, hostname, sameAs = null) {
   ]);
 }
 
+/* THE SEVERITY GRAMMAR -- colour + glyph + word (console research, cross-cutting #3: the label
+ * must survive colour-blindness and greyscale, so the SHAPE carries the rank and the hue only
+ * reinforces it). One map, one habit: every renderer of a tier goes through sevText(), never
+ * through a bare word. */
+const SEVERITY_GLYPHS = { critical: "\u25b2", high: "\u25c6", medium: "\u25cf", low: "\u25cb" };
+function sevText(sev) {
+  const s = String(sev || "").toLowerCase();
+  const glyph = SEVERITY_GLYPHS[s];
+  return glyph ? glyph + " " + s : s;
+}
+
 function sevCell(sev) {
   const s = String(sev || "").toLowerCase() || "unknown";
-  return el("span", { class: "sev-" + s, text: s });
+  return el("span", { class: "sev-" + s, text: sevText(s) });
 }
 
 function emptyRow(tbody, cols, message) {
@@ -3117,7 +3128,8 @@ async function loadModels() {
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "num", text: Number(pt.score || 0).toFixed(3) }),
       el("td", { class: "num", text: Number(pt.agreement || 0).toFixed(2) }),
-      el("td", {}, [el("span", { class: "sev-" + (pt.severity || "low"), text: pt.severity || "—" })]),
+      el("td", {}, [el("span", { class: "sev-" + (pt.severity || "low"),
+                              text: pt.severity ? sevText(pt.severity) : "\u2014" })]),
       el("td", { text: (pt.models || []).join(", ") || "—" }),
       el("td", { text: pt.primary || "—" }),
       el("td", { class: "num", text: Number(pt.magnitude || 0).toFixed(2) }),

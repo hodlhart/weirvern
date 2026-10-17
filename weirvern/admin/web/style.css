@@ -24,11 +24,19 @@
   --muted: #b7bcc2;             /* labels, secondary text */
   --dim: #737c87;               /* tertiary, disabled */
   --accent: #4797ff;  --accent-hover: #277ff1;  --accent-wash: #05254d;
+  /* ── THE SEVERITY GRAMMAR (2026-10-17, console research cross-cutting #3). Colour NEVER
+   * travels alone: every severity is colour + GLYPH + word, and the shape carries the rank so
+   * the label survives colour-blindness and greyscale (Carbon's 2-of-3 rule; WCAG 1.4.1).
+   * Glyphs live in app.js (SEVERITY_GLYPHS): ▲ critical · ◆ high (bad) · ● medium · ○ low.
+   * bad and crit are DISTINCT hues now -- they were the same hex, two tiers with one
+   * appearance; crit is its own louder magenta-red and bad keeps the softer red. All of
+   * --accent/--ok/--warn/--bad/--crit clear 4.5:1 on --surface-2, computed in
+   * tests/test_status_tokens.py, so a token edit that dims a label turns the gate red. ── */
   --ok: #37be5f;
   --warn: #e79613;
-  --bad: #ee6368;
-  --crit: #ee6368;
-  --danger: #ee6368;
+  --bad: #f06d72;
+  --crit: #ff4d8d;
+  --danger: var(--bad);
   --info: #4797ff;
   --offline: #737c87;           /* offline/disabled is NEUTRAL, never red */
   --wash-ok: #123f20;  --wash-bad: #3e1416;  --wash-info: #05254d;
@@ -87,7 +95,7 @@ h1 { font-size: 21px; font-weight: 400; margin: 0; }
 .pill.ok { background: var(--wash-ok); color: color-mix(in srgb, var(--ok) 78%, #fff); }
 .pill.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
   color: color-mix(in srgb, var(--warn) 82%, #fff); }
-.pill.bad { background: var(--wash-bad); color: color-mix(in srgb, var(--crit) 78%, #fff); }
+.pill.bad { background: var(--wash-bad); color: color-mix(in srgb, var(--bad) 78%, #fff); }
 
 button {
   background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-solid);

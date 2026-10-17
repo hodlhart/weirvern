@@ -2832,6 +2832,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   {
     H.showView("anomalies");
     await new Promise((r) => setTimeout(r, 150));
+    check("a severity cell wears its glyph and its word",
+          [...doc.querySelectorAll("#anomalies-table span")]
+            .some((n) => /^[\u25b2\u25c6\u25cf\u25cb] (critical|high|medium|low)$/.test(n.textContent.trim())),
+          "no glyph-bearing severity cell found");
     const sevTile = [...doc.querySelectorAll("#view-anomalies .tile")]
       .find((t) => /high/i.test(t.textContent));
     if (sevTile) {
