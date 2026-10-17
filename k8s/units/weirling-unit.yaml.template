@@ -26,6 +26,19 @@
 # THE MANAGEMENT NIC IS NEVER A CAPTURE PORT (Samuel's standing rule). Enforced twice: here
 # against MGMT_IFACE from the ConfigMap, and again in the agent against the host's live
 # default route — a container that cannot run python should still say no.
+#
+# IN-PATH UNITS ARE OPT-IN, PER UNIT: render the patch beside this file for the units that
+# should be able to intercept, and only those —
+#
+#   sed -e "s/__WEIRLING_ID__/weirvern-eth2/g" -e "s/__CAPTURE_IFACE__/eth2/g" \
+#       k8s/units/weirling-unit-siphon.yaml.template \
+#     | kubectl -n weirvern patch deploy weirling-weirvern-eth2 --patch-file /dev/stdin
+#
+# It grants the AGENT container NET_RAW + NET_ADMIN (the intercept runs there) and adds the
+# privileged sysctl init container the forwarding path needs. The unit's MODE still comes from
+# its own registry row (fleet.SensorPlan), never from this manifest: the operator toggles it in
+# the fleet view. A unit without the patch keeps every capability dropped and REFUSES to arm,
+# saying so on its own heartbeat.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
