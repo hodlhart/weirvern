@@ -3203,6 +3203,12 @@ const TR_RELOAD_LOADERS = () => [
   window.loadAnomalies, window.loadAssets, window.loadHealthDeep, window.loadIdentity,
   window.loadModels, window.loadNetflow, window.loadNetwork, window.loadSluice,
   window.loadSettings, window.loadWeirlings, window.loadZeek,
+  // THE THREE THAT WERE MISSING (issue #30). Discover, DNS and Blocked read trHours() only
+  // at fetch time, so a range change left the data on screen -- and Discover's own window
+  // pill -- on the OLD window while the header already read the new one: two windows on one
+  // screen, with nothing saying which the rows belonged to. There is no per-view reason for
+  // any of them to sit the control out; they are the same loaders the tab switcher calls.
+  window.loadDiscover, window.loadDns, window.loadBlocked,
 ].filter((fn) => typeof fn === "function");
 
 function trHours() {

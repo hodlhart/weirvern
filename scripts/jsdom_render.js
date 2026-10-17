@@ -646,6 +646,8 @@ const IDENTITY_PAYLOAD = {
   let BLOCKED_FETCHES = 0;
   // Recorded (issue #31): the checks assert the flow-detail request CARRIES the active chips.
   let FLOW_REQS = [];
+  // Recorded (issue #30): the checks assert the time control re-fetches Discover.
+  let DISCOVER_REQS = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
       const r = fetchOverride(String(url), opts || {});
@@ -1019,7 +1021,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/health", HEALTH_PAYLOAD],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
-    ["/api/discover", DISCOVER_PAYLOAD],
+    ["/api/discover", (u) => { DISCOVER_REQS.push(String(u)); return DISCOVER_PAYLOAD; }],
     // COUNTED (issue #15): the Sluice tab must be able to fetch this ON DEMAND, once.
     ["/api/blocked", () => { BLOCKED_FETCHES += 1; return BLOCKED_PAYLOAD; }],
     ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
@@ -3786,6 +3788,26 @@ check("high capture loss is called out in the fleet",
     fetchOverride = null;
     await H.loadDns();
   }
+  }
+  // ── THE TIME CONTROL REACHES DISCOVER TOO (issue #30) ───────────────────────────────────
+  {
+    H.showView("discover");
+    await H.loadDiscover();
+    check("Discover names the window it is showing",
+          /last 24 hours window/i.test(doc.getElementById("dc-window").textContent),
+          doc.getElementById("dc-window").textContent);
+    const dn0 = DISCOVER_REQS.length;
+    H.trApply({ mode: "relative", hours: 6 });
+    await new Promise((r) => setTimeout(r, 300));
+    const dnLast = DISCOVER_REQS[DISCOVER_REQS.length - 1] || "";
+    check("changing the range re-fetches Discover with the new hours",
+          DISCOVER_REQS.length > dn0 && /hours=6/.test(dnLast),
+          `requests=${DISCOVER_REQS.length - dn0}; last=${dnLast.slice(0, 70)}`);
+    check("and Discover's window pill follows the header",
+          /last 6 hours window/i.test(doc.getElementById("dc-window").textContent),
+          doc.getElementById("dc-window").textContent);
+    H.trApply({ mode: "relative", hours: 24 });
+    await new Promise((r) => setTimeout(r, 300));
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));
