@@ -2492,6 +2492,34 @@ const VIEW_LOADERS = {
 };
 let AUTO_PAUSED = false;
 
+/* THE AUTO-BLOCK IS LOUD WHEREVER THE FLEET IS (BF-3). The threshold that can stop traffic
+ * by itself gets a header pill that exists only while it is armed, carries the exact score,
+ * and lands on the controls that pause it. The value rides the settings payload; the sluice
+ * controls pass it in directly so the two surfaces can never disagree. */
+function refreshAutoBlockPill(autoScore) {
+  const pill = document.getElementById("auto-block-pill");
+  if (!pill) return;
+  if (autoScore == null) {
+    getJSON("/api/settings").then((d) => {
+      let found = "";
+      for (const rs of Object.values((d && d.groups) || {})) {
+        for (const r of rs || []) {
+          if (r && String(r.key).toUpperCase() === "SLUICE_AUTO_SCORE") {
+            found = String(r.value != null ? r.value : (r.current != null ? r.current : ""));
+          }
+        }
+      }
+      refreshAutoBlockPill(Number(found || "0") || 0);
+    }).catch(() => { /* the pill simply stays as it was; nothing claims a value nobody read */ });
+    return;
+  }
+  const v = Number(autoScore) || 0;
+  const on = v > 0;
+  pill.classList.toggle("hidden", !on);
+  pill.textContent = on ? `auto-block \u2265 ${v.toFixed(2)}` : "";
+  pill.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
 function setAutoNote(text) {
   const n = document.getElementById("fetched");
   if (n) n.textContent = text;
@@ -2569,6 +2597,16 @@ document.addEventListener("DOMContentLoaded", () => {
           done(false);
         }
       } catch (_e) { done(false); }
+    });
+  }
+  const abPill = document.getElementById("auto-block-pill");
+  if (abPill && !window.__abWired) {
+    window.__abWired = true;
+    abPill.addEventListener("click", () => {
+      showView("sluice");
+      loadBlockingControls().catch(() => {});
+      const input = document.getElementById("sl-bc-auto");
+      if (input && input.focus) input.focus();
     });
   }
   const autoPill = document.getElementById("auto-toggle");
@@ -2874,6 +2912,7 @@ async function bootAuthed() {
   showGate("");
   applyURLState();
   refreshAll();
+  refreshAutoBlockPill();   // quiet read; the pill appears only if the threshold is armed
   startAuto(15);
 }
 

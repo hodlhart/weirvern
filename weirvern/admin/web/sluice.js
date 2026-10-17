@@ -660,6 +660,26 @@ async function loadBlockingControls() {
     const v = String((autoInput && autoInput.value) || "0").trim();
     slApplyChange("SLUICE_AUTO_SCORE", v, autoSave, note);
   };
+  // THE ARMED STATE IS LOUD, HERE AND IN THE HEADER (BF-3). This is the one threshold that
+  // blocks without anyone looking at the detection first, so while it is on, the card says so
+  // in the alarm colour, the pause is offered in one click (two-stage confirm, like every
+  // other apply on this card), and the header carries a pill wherever the operator is.
+  const autoVal = Number(val("SLUICE_AUTO_SCORE") || "0") || 0;
+  const autoState = document.getElementById("sl-bc-auto-state");
+  if (autoState) {
+    autoState.textContent = autoVal > 0
+      ? `AUTO-BLOCK IS ON: any detection at or above score ${autoVal.toFixed(2)} is blocked ` +
+        `automatically, and every action is audited with the reason "auto: threshold ` +
+        `${autoVal.toFixed(2)}".`
+      : "Auto-block is off: detections are recorded and alerted, never blocked, until you set a score.";
+    autoState.classList.toggle("auto-on", autoVal > 0);
+  }
+  const autoPause = document.getElementById("sl-bc-autopause");
+  if (autoPause) {
+    autoPause.classList.toggle("hidden", !(autoVal > 0));
+    autoPause.onclick = () => slApplyChange("SLUICE_AUTO_SCORE", "0", autoPause, note);
+  }
+  if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(autoVal);
   if (help) {
     help.textContent = current
       ? `Policy ${current}: ${(policies && policies[current] && policies[current].description) || ""}`

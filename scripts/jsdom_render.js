@@ -117,7 +117,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
                    loadRetrain, retrainAction,
-                   loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
+                   loadSluice, wireSluice, renderSluicePolicies, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
@@ -242,13 +242,14 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     writes: { enabled: true, reason: "" },
     caller: { username: "", role: "", via: "" },
     editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "channel_netflow", "intercept_segment",
-                    "pushover_enabled"],
+                    "pushover_enabled", "sluice_auto_score"],
     // The control spec rides with the payload (see cluster_config.SETTING_CONTROLS): the browser
     // renders the natural control from the SERVER's rule -- bounds and options included -- so
     // what the control permits and what the write path accepts cannot drift apart.
     controls: {
       retrain_every_h: { control: "number", min: 1, max: 720, step: 1, unit: "hours" },
       base_threshold: { control: "number", min: 0, max: 1, step: 0.01, unit: "a score fraction" },
+      sluice_auto_score: { control: "number", min: 0, max: 1, step: 0.05, unit: "a score fraction (0 disables)" },
       sensor_mode: { control: "select", options: ["loch", "siphon"] },
       intercept_segment: { control: "text" },
       channel_netflow: { control: "toggle", on_value: "upstream", off_value: "off" },
@@ -262,6 +263,9 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
         { key: "base_threshold", label: "alert threshold", value: 0.35, secret: false,
           source: "setting",
           help: "The score a host-window must reach before it counts as an anomaly. Default 0.35." },
+        { key: "sluice_auto_score", label: "auto-block at score", value: 0, secret: false,
+          source: "setting",
+          help: "Any detection at or above this score is blocked automatically. 0 disables." },
       ],
       sensor: [
         { key: "sensor_mode", label: "mode", value: "loch", secret: false, source: "setting",
@@ -3105,6 +3109,64 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the mark is a vector now",
           doc.querySelector('link[rel="icon"]').getAttribute("href") === "/favicon.svg" &&
           [...doc.querySelectorAll("img.mark")].every((i) => i.getAttribute("src") === "/logo.svg"));
+  }
+
+  // ── THE AUTO-BLOCK IS LOUD AND PAUSABLE (BF-3) ──────────────────────────────────────────────
+  // The threshold that can stop traffic by itself is off by default, unmistakable when armed,
+  // and pausable in one click. The gate-rule behavior itself is pinned by tests/test_sluice.py
+  // (derive with auto_score=0 -> no rule; with 0.9 -> a rule reasoned "auto: threshold 0.90").
+  {
+    const autoRow = SETTINGS_PAYLOAD.groups.detect.find((r) => r.key === "sluice_auto_score");
+    const abPill = doc.getElementById("auto-block-pill");
+    check("the auto-block pill is absent while the threshold is off",
+          !!abPill && abPill.classList.contains("hidden"),
+          abPill ? abPill.textContent : "no pill in the markup");
+    autoRow.value = "0.9";
+    await H.loadBlockingControls();
+    await new Promise((r) => setTimeout(r, 120));
+    const state = doc.getElementById("sl-bc-auto-state");
+    check("an armed auto-block says so, in full, on the controls card",
+          !!state && /AUTO-BLOCK IS ON/.test(state.textContent) &&
+            /0\.90/.test(state.textContent) && /auto: threshold 0\.90/.test(state.textContent),
+          state ? state.textContent.slice(0, 110) : "no state line");
+    check("...and the header pill appears with the threshold",
+          !abPill.classList.contains("hidden") && /0\.90/.test(abPill.textContent),
+          abPill.textContent);
+    abPill.click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("...and clicking that pill lands on the controls",
+          doc.getElementById("view-sluice").classList.contains("active"));
+    const pause = doc.getElementById("sl-bc-autopause");
+    check("a pause control is offered while it is armed",
+          !!pause && !pause.classList.contains("hidden"));
+    if (pause) {
+      pause.click();   // arm the confirm (the house two-stage pattern)
+      await new Promise((r) => setTimeout(r, 30));
+      const armedText = pause.textContent;
+      // The mock does not echo a POST back into the fixture, so the landing alone cannot
+      // prove WHAT was posted -- spy the body to pin the value itself.
+      const posts = [];
+      const origFetch2 = window.fetch;
+      window.fetch = (u, o) => {
+        if (/settings\/apply/.test(String(u)) && o && o.body) posts.push(String(o.body));
+        return origFetch2(u, o);
+      };
+      autoRow.value = "0";   // the apply lands; the re-read after it sees zero
+      pause.click();   // confirm
+      await new Promise((r) => setTimeout(r, 250));
+      window.fetch = origFetch2;
+      // The note is a STATUS line -- the apply's own message is replaced by the re-read
+      // moments later, so the pin is on the landing itself, below.
+      check("...pausing asks for a confirm first", /Confirm/i.test(armedText), armedText);
+      check("...and the pause posts the zero, not a guess",
+            posts.some((b) => /SLUICE_AUTO_SCORE/.test(b) && /"0"/.test(b)),
+            posts.join(" | ").slice(0, 120));
+      check("...the state line reports it off",
+            /off/i.test((doc.getElementById("sl-bc-auto-state") || {}).textContent || ""));
+      check("...and the header pill is gone",
+            abPill.classList.contains("hidden") && abPill.textContent === "");
+    }
+    await H.loadBlockingControls();   // tidy: a clean re-read at zero
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

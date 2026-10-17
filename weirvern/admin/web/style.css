@@ -405,6 +405,9 @@ tr.an-exp td { background: var(--panel2); }
  * :not(:empty) -- a count span that has not loaded yet must not carry a floating dot. */
 h2 > .muted:not(:empty)::before { content: "· "; }
 .empty-act { margin-left: 8px; font-style: normal; }
+/* THE ONE SETTING THAT CAN STOP TRAFFIC ALONE WEARS THE ALARM COLOUR WHEN IT IS ARMED
+ * (BF-3; research: loud state for autonomous actions). */
+#sl-bc-auto-state.auto-on { color: var(--crit); font-weight: 600; }
 .firstrun-next, .firstrun-review, .firstrun-skip { margin-right: 6px; }
 .firstrun-next, .firstrun-review { border-color: var(--accent); color: var(--accent); }
 .firstrun-skip { color: var(--muted); }

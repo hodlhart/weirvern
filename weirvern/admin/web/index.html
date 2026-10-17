@@ -94,6 +94,7 @@
     <span class="muted" id="fetched"></span>
     <span class="muted" id="user-chip" title=""></span>
     <button class="pill hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
+    <button class="pill bad hidden" id="auto-block-pill" type="button" title="AUTO-BLOCK IS ARMED: detections at or above this score are blocked without anyone looking first — click for the controls that pause it" aria-pressed="false"></button>
     <button class="pill" id="copy-link" type="button" title="copy a link to this exact view (tab, range, filters)">Copy link</button>
     <button class="pill" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
     <button class="pill" id="auto-toggle" type="button" title="auto-refresh of the view you are looking at — click to pause or resume" aria-pressed="false">auto 15s</button>
@@ -949,7 +950,9 @@
         <button id="sl-bc-dom">…</button>
         <label>auto-block at score <input id="sl-bc-auto" type="number" min="0" max="1" step="0.05"></label>
         <button id="sl-bc-autosave">Save score</button>
+        <button id="sl-bc-autopause" class="hidden">Pause auto-block</button>
       </div>
+      <p class="muted" id="sl-bc-auto-state"></p>
       <p class="muted" id="sl-bc-help"></p>
     </div>
 
