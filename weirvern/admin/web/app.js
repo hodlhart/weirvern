@@ -1722,6 +1722,26 @@ function gateForm(a) {
   const ttl = el("select", { attrs: { "aria-label": "how long to block" } },
     [5, 15, 30, 60, 240, 0].map((m) => el("option", {
       value: String(m), text: m === 0 ? "until revoked" : `${m} min`, selected: m === 60 })));
+  // THE BLAST RADIUS, COMPUTED FROM STATE THE PAGE ALREADY HOLDS. The research asked for a
+  // confirmation that states exactly what the rule will cover -- the target, the scope, the
+  // duration, and the surface the gate enforces on. A confirmation that cannot state its own
+  // blast radius is decoration.
+  const blast = el("p", { class: "muted gate-blast" });
+  const refreshBlast = () => {
+    const g = (GATE_STATE && GATE_STATE.gate) || {};
+    const scopeTxt = scope.value === "port"
+      ? `${proto.value} port ${Number(port.value) || "\u2026"}`
+      : "all traffic";
+    const dur = ttl.value === "0" ? "until revoked" : `${ttl.value} min`;
+    blast.textContent = `Blast radius: ${scopeTxt} from ${a.src_addr} \u2014 enforced at the ` +
+      `gate${g.iface ? ` on ${g.iface}` : ""} (${g.rules_active || 0} rule(s) active) \u2014 ` +
+      `for ${dur}.`;
+  };
+  [scope, port, proto, ttl].forEach((c) => {
+    c.addEventListener("change", refreshBlast);
+  });
+  port.addEventListener("input", refreshBlast);
+  refreshBlast();
   const why = el("input", { class: "gate-why", attrs: { type: "text", "aria-label": "reason" },
     value: `alert score ${(a.anomaly_score ?? 0).toFixed(3)} on ${a.src_addr}, ` +
            `window ${fmtTime(a.window_start)}` });
@@ -1763,6 +1783,7 @@ function gateForm(a) {
   form.appendChild(el("div", { class: "gate-line" }, [
     el("span", { class: "muted", text: "for" }), ttl,
   ]));
+  form.appendChild(el("div", { class: "gate-line" }, [blast]));
   form.appendChild(el("div", { class: "gate-line" }, [why]));
   form.appendChild(el("div", { class: "gate-line" }, [submit, note]));
   // Show the port fields only in "one service" mode: a control that can never be used is the

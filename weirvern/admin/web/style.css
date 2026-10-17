@@ -914,3 +914,4 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .an-actions .watch-act { display: inline-flex; }
 .watch-mark { color: var(--accent); }
 .review-act.watched { border-color: var(--accent); color: var(--accent); }
+.gate-blast { margin: 6px 0 0; font-size: 12px; }

@@ -2711,12 +2711,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const portIn = gf.querySelector("input[type=number]");
       check("the port field is hidden until 'one service' is chosen",
             !!portIn && portIn.style.display === "none");
+      const blastAll = gf.querySelector(".gate-blast");
+      check("the confirm states the blast radius for all traffic before any switch",
+            !!blastAll && blastAll.textContent.includes("all traffic from 203.0.113.42"),
+            blastAll ? blastAll.textContent : "no .gate-blast");
       if (portIn) {
         const scopeSel = gf.querySelector("select");
         scopeSel.value = "port";
         scopeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
         check("choosing 'one service' reveals the port fields", portIn.style.display !== "none");
         portIn.value = "3389";
+        portIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+        const blastEl = gf.querySelector(".gate-blast");
+        check("the confirm re-states the target, scope, duration and enforcement surface",
+              !!blastEl
+              && blastEl.textContent.includes("203.0.113.42")
+              && blastEl.textContent.includes("tcp port 3389")
+              && blastEl.textContent.includes("eth1")
+              && blastEl.textContent.includes("60 min"),
+              blastEl ? blastEl.textContent : "no .gate-blast");
         const postedBefore = POSTED.length;
         gf.querySelector("button.review-act:not(.gate-open)").click();
         await new Promise((r) => setTimeout(r, 80));
