@@ -3205,6 +3205,105 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();   // tidy: a clean re-read at zero
   }
 
+  // ── THE FLEET IS A WORKLIST (BF-7) ──────────────────────────────────────────────────────────
+  {
+    try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}
+    H.showView("weirlings");
+    await new Promise((r) => setTimeout(r, 250));
+    const tiles = [...doc.querySelectorAll("#wl-summary .stat")];
+    check("the fleet's counts are filters, not decoration",
+          tiles.length >= 6 && tiles.every((t) => t.tagName === "BUTTON"),
+          `${tiles.length} tiles, first tag ${tiles[0] ? tiles[0].tagName : "none"}`);
+    const nsTile = tiles.find((t) => /never seen/.test(t.textContent));
+    nsTile.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const rowsNow = [...doc.querySelectorAll("#wl-table tbody tr")];
+    check("...clicking a count filters the worklist to exactly it",
+          rowsNow.length >= 1 &&
+            rowsNow.every((tr) => tr.classList.contains("wl-state-never_seen")),
+          rowsNow.map((t) => t.className).join(", ").slice(0, 120));
+    check("...and the filter rides the URL",
+          String(window.location.hash).includes("wl.f=never_seen"), String(window.location.hash));
+    nsTile.click();   // toggle off
+    await new Promise((r) => setTimeout(r, 250));
+    check("...and clicking it again clears the filter",
+          [...doc.querySelectorAll("#wl-table tbody tr")].length > 1,
+          String([...doc.querySelectorAll("#wl-table tbody tr")].length));
+    // bulk: select two rows, disable, prove every POST
+    const boxes = [...doc.querySelectorAll("#wl-table input.wl-sel")];
+    check("every registered row can be selected for bulk work", boxes.length >= 2,
+          String(boxes.length));
+    boxes[0].click();
+    boxes[1].click();
+    await new Promise((r) => setTimeout(r, 60));
+    const bar = doc.getElementById("wl-bulk");
+    check("...selecting rows raises the bulk bar with the count",
+          !bar.classList.contains("hidden") && /2/.test(doc.getElementById("wl-bulk-n").textContent),
+          doc.getElementById("wl-bulk-n").textContent);
+    const posts = [];
+    const origFetch7 = window.fetch;
+    window.fetch = (u, o) => {
+      if (/weirlings\/enable/.test(String(u)) && o && o.body) posts.push(String(o.body));
+      return origFetch7(u, o);
+    };
+    doc.getElementById("wl-bulk-disable").click();   // arms the confirm (two-stage)
+    await new Promise((r) => setTimeout(r, 40));
+    doc.getElementById("wl-bulk-disable").click();   // confirm
+    await new Promise((r) => setTimeout(r, 350));
+    window.fetch = origFetch7;
+    check("...and disabling acts on EVERY selected sensor, posting the inverse",
+          posts.length === 2 && posts.every((b) => /"enabled":false/.test(b)),
+          posts.join(" | ").slice(0, 150));
+    doc.getElementById("wl-bulk-clear").click();
+    await new Promise((r) => setTimeout(r, 60));
+    check("...clear drops the selection and the bar",
+          doc.getElementById("wl-bulk").classList.contains("hidden"));
+    // views: a default exists, switching applies filters, saving adds one
+    await H.loadWeirlings();
+    const viewSel = doc.getElementById("wl-view");
+    check("saved views exist, with a default",
+          !!viewSel && viewSel.options.length >= 3 && /All sensors/.test(viewSel.options[0].textContent),
+          viewSel ? [...viewSel.options].map((o) => o.textContent).join(" | ") : "no select");
+    viewSel.value = "needs-action";
+    viewSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+    check("...switching to Needs action drives the problems filter",
+          doc.getElementById("wl-problems-only").checked === true,
+          String(doc.getElementById("wl-problems-only").checked));
+    viewSel.value = "all";
+    viewSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 250));
+    const before = viewSel.options.length;
+    doc.getElementById("wl-view-save").click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("...and the current filters save as a view",
+          viewSel.options.length === before + 1, `${before} -> ${viewSel.options.length}`);
+    check("...which persists for the tab",
+          (() => {
+            try {
+              const v = JSON.parse(window.sessionStorage.getItem("wv-wl-views") || "[]");
+              return Array.isArray(v) && v.length >= 1;
+            } catch (_e) { return false; }
+          })(),
+          String(window.sessionStorage.getItem("wv-wl-views")).slice(0, 80));
+    // inline toggle: one click posts the inverse
+    const posts2 = [];
+    const origFetch7b = window.fetch;
+    window.fetch = (u, o) => {
+      if (/weirlings\/enable/.test(String(u)) && o && o.body) posts2.push(String(o.body));
+      return origFetch7b(u, o);
+    };
+    const tog = doc.querySelector("#wl-table .wl-inline-toggle");
+    if (tog) tog.click();
+    await new Promise((r) => setTimeout(r, 300));
+    window.fetch = origFetch7b;
+    check("a row's inline toggle switches that sensor in one click",
+          posts2.length === 1 && /"sensor_id"/.test(posts2[0]),
+          posts2.join(" | ").slice(0, 110));
+    try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}
+    await H.loadWeirlings();
+  }
+
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
   {
     H.showView("sluice");

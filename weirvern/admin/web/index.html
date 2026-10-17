@@ -1087,9 +1087,22 @@
     <div class="card">
       <h2>Fleet <span id="wl-count" class="muted"></span></h2>
       <div class="controls">
-        
-        <label class="muted"><input id="wl-problems-only" type="checkbox"> problems only</label>
+        <!-- SAVED VIEWS (BF-7): the worklist's filter sets; the built-ins never disappear, the
+             operator's ride sessionStorage like the stage they sit beside. The problems
+             checkbox stays in the DOM -- the Needs-action view drives it -- while the tiles
+             and views are the visible controls. -->
+        <label class="muted">view <select id="wl-view"></select></label>
+        <button id="wl-view-save" class="small">Save view</button>
+        <label class="muted hidden"><input id="wl-problems-only" type="checkbox"> problems only</label>
         <label class="muted"><input id="wl-revoked" type="checkbox"> include revoked</label>
+      </div>
+      <div id="wl-bulk" class="controls hidden">
+        <span class="muted" id="wl-bulk-n"></span>
+        <button id="wl-bulk-enable" class="small">Enable selected</button>
+        <button id="wl-bulk-disable" class="small">Disable selected</button>
+        <button id="wl-bulk-reapply" class="small">Re-apply plans</button>
+        <button id="wl-bulk-revoke" class="small danger">Revoke selected</button>
+        <button id="wl-bulk-clear" class="small">Clear</button>
       </div>
       <table id="wl-table">
         <thead>

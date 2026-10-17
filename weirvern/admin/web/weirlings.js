@@ -113,20 +113,34 @@ async function loadWeirlings() {
   const s = d.summary || {};
   // THE THIRD ELEMENT IS THE TILE'S MEANING, not its number: a count of zero needs no colour,
   // and a problem nobody can spot at a glance is a problem reported in sixpt grey.
+  const problemsOnly = document.getElementById("wl-problems-only").checked;
   const items = [
-    ["weirlings", String(s.total ?? "—"), ""],
-    ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : ""],
-    ["problems", String(s.problems ?? "—"), (s.problems ?? 0) > 0 ? "bad" : ""],
-    ["never seen", String(s.never_seen ?? "—"), (s.never_seen ?? 0) > 0 ? "warn" : ""],
-    ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : ""],
-    ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : ""],
+    ["weirlings", String(s.total ?? "—"), "", ""],
+    ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : "", "alive"],
+    ["problems", String(s.problems ?? "—"), (s.problems ?? 0) > 0 ? "bad" : "", "problem"],
+    ["stale", String(s.stale ?? "—"), (s.stale ?? 0) > 0 ? "warn" : "", "stale"],
+    ["never seen", String(s.never_seen ?? "—"), (s.never_seen ?? 0) > 0 ? "warn" : "", "never_seen"],
+    ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : "", "unregistered"],
+    ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : "", "disabled"],
   ];
-  for (const [k, v, cls] of items) {
-    summaryBox.appendChild(el("div", { class: cls ? `stat ${cls}` : "stat" }, [
+  // THE COUNTS ARE FILTERS (BF-7; research: Security Onion's grid grammar). Clicking a count
+  // narrows the worklist to exactly it; the active filter is visibly the active one.
+  for (const [k, v, cls, state] of items) {
+    const active = state === "problem"
+      ? problemsOnly
+      : (state ? WL_FILTERS.state === state : (!WL_FILTERS.state && !problemsOnly));
+    const tile = el("button", {
+      class: (cls ? `stat clickable ${cls}` : "stat clickable") + (active ? " active" : ""),
+      attrs: { type: "button", "data-state": state,
+               title: state ? `show ${k} only` : "clear every filter" },
+      on: { click: () => wlSetState(state) },
+    }, [
       el("div", { class: "v", text: v }),
       el("div", { class: "k", text: k }),
-    ]));
+    ]);
+    summaryBox.appendChild(tile);
   }
+  wlRenderViews();
 
   // The server's own sentences, verbatim: it knows whether the heartbeat read degraded, and
   // paraphrasing would lose the reason an operator acts on.
@@ -145,6 +159,7 @@ async function loadWeirlings() {
 
   // ── the rows
   renderWeirlings(d.sensors || [], d.revoked || [], d.revoked_reason || "");
+  wlRenderBulk();
 
   // THE FIRST RUN APPEARS ONLY WHILE THE FLEET HAS NEVER HAD A LIVE SENSOR -- onboarding, not
   // decoration; the moment one reports, it is gone for good (or for this tab, if skipped).
@@ -166,30 +181,168 @@ async function loadWeirlings() {
   }
 }
 
+/* ── THE WORKLIST'S STATE (BF-7) ────────────────────────────────────────────────────────────
+ * The fleet is a triage list, not a table: counts are filters, filters ride the URL, rows are
+ * selectable, and filter sets are saved views (one built-in default: All sensors). All of it
+ * is tab-local state -- the same rule as the stage: nothing here is a server state. */
+const WL_FILTERS = { state: "" };
+const WL_SELECTED = new Set();
+
+const WL_BUILTIN_VIEWS = [
+  { id: "all", label: "All sensors", state: "", problems: false },
+  { id: "needs-action", label: "Needs action", state: "", problems: true },
+  { id: "stale", label: "Stale", state: "stale", problems: false },
+  { id: "never-seen", label: "Never seen", state: "never_seen", problems: false },
+  { id: "unregistered", label: "Unregistered", state: "unregistered", problems: false },
+];
+
+function wlCustomViews() {
+  try {
+    const v = JSON.parse(window.sessionStorage.getItem("wv-wl-views") || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch (_e) { return []; }
+}
+function wlPersistViews(views) {
+  try { window.sessionStorage.setItem("wv-wl-views", JSON.stringify(views)); }
+  catch (_e) { /* private mode: views live only in this page's memory then */ }
+}
+function wlRenderViews() {
+  const sel = document.getElementById("wl-view");
+  if (!sel) return;
+  const current = sel.value;
+  sel.replaceChildren();
+  for (const v of WL_BUILTIN_VIEWS.concat(wlCustomViews())) {
+    sel.appendChild(el("option", { text: v.label, attrs: { value: v.id } }));
+  }
+  if ([...sel.options].some((o) => o.value === current)) sel.value = current;
+}
+function wlApplyView(id) {
+  const v = WL_BUILTIN_VIEWS.concat(wlCustomViews()).find((x) => x.id === id);
+  if (!v) return;
+  WL_FILTERS.state = v.state || "";
+  const box = document.getElementById("wl-problems-only");
+  if (box) box.checked = Boolean(v.problems);
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
+  loadWeirlings().then(clearError).catch(showError);
+}
+function wlSaveView() {
+  const label = (WL_FILTERS.state ? WL_FILTERS.state.replace("_", " ") : "all sensors") +
+    (document.getElementById("wl-problems-only").checked ? " · needs action" : "");
+  const views = wlCustomViews();
+  views.push({ id: "custom-" + Date.now(), label,
+               state: WL_FILTERS.state,
+               problems: document.getElementById("wl-problems-only").checked });
+  wlPersistViews(views);
+  wlRenderViews();
+}
+
+function wlSetState(state) {
+  if (state === "problem") {
+    const box = document.getElementById("wl-problems-only");
+    if (box) box.checked = !box.checked;
+  } else if (state) {
+    WL_FILTERS.state = WL_FILTERS.state === state ? "" : state;
+  } else {
+    WL_FILTERS.state = "";
+    const box = document.getElementById("wl-problems-only");
+    if (box) box.checked = false;
+  }
+  if (typeof scheduleURLSync === "function") scheduleURLSync();
+  loadWeirlings().then(clearError).catch(showError);
+}
+
+function wlRenderBulk() {
+  const bar = document.getElementById("wl-bulk");
+  const n = document.getElementById("wl-bulk-n");
+  if (!bar) return;
+  const count = WL_SELECTED.size;
+  bar.classList.toggle("hidden", count === 0);
+  if (n) n.textContent = count === 1 ? "1 selected" : `${count} selected`;
+  const revoke = document.getElementById("wl-bulk-revoke");
+  if (revoke && count === 0) {
+    delete revoke.dataset.armed;
+    revoke.textContent = "Revoke selected";
+  }
+}
+
+async function wlBulk(kind, btn) {
+  const ids = [...WL_SELECTED];
+  if (!ids.length) return;
+  // DESTRUCTIVE OR PATH-TOUCHING ACTIONS ASK TWICE -- the same contract as every other
+  // apply in this console (research: Security Onion's accept/deny with confirm).
+  if ((kind === "revoke" || kind === "disable") && !btn.dataset.armed) {
+    btn.dataset.armed = "1";
+    btn.textContent = `Confirm: ${kind} ${ids.length}`;
+    return;
+  }
+  delete btn.dataset.armed;
+  const note = document.getElementById("wl-bulk-n");
+  if (note) note.textContent = `working on ${ids.length}…`;
+  let ok = 0;
+  const failures = [];
+  let skipped = 0;
+  for (const id of ids) {
+    const row = (window.__wlRows || []).find((r) => r.sensor_id === id);
+    try {
+      if (kind === "enable" || kind === "disable") {
+        await postJSON("/api/weirlings/enable", { sensor_id: id, enabled: kind === "enable" });
+      } else if (kind === "revoke") {
+        await postJSON("/api/weirlings/revoke", { sensor_id: id });
+      } else if (kind === "reapply") {
+        // RE-APPLY = RE-PUSH THE SENSOR'S STORED PLAN. The apply route refuses an empty
+        // `changes` on purpose (a write path with nothing to write is a lie); the sensor's
+        // own plan values are what a re-apply means, so those are what is sent.
+        if (!row || !row.registered || !row.plan ||
+            !Object.values(row.plan).some((v) => String(v || "").trim())) {
+          skipped += 1;
+          continue;
+        }
+        await postJSON("/api/weirlings/apply", { sensor_id: id, changes: row.plan });
+      }
+      ok += 1;
+    } catch (err) { failures.push(id); }
+  }
+  if (note) {
+    note.textContent = `${kind === "reapply" ? "re-applied" : kind + "d"}: ${ok}` +
+      (skipped ? `, skipped ${skipped} (no stored plan)` : "") +
+      (failures.length ? ` — failed: ${failures.join(", ")}` : "");
+  }
+  WL_SELECTED.clear();
+  await loadWeirlings();
+  wlRenderBulk();
+}
+
 function renderWeirlings(rows, revoked, revokedReason) {
+  window.__wlRows = rows;   // the bulk actions re-read the selected rows' own values
   const tbody = document.querySelector("#wl-table tbody");
   const empty = document.getElementById("wl-empty");
   tbody.replaceChildren();
   empty.textContent = "";
 
   const showRevoked = document.getElementById("wl-revoked").checked;
+  const stateFilter = WL_FILTERS.state;
+  const visible = rows.filter((r) => !stateFilter || r.state === stateFilter);
 
-  if (!rows.length) {
+  if (!visible.length) {
     const problemsOnly = document.getElementById("wl-problems-only").checked;
     emptyRow(tbody, 2,
-      problemsOnly
-        ? "No weirling has a problem right now."
-        : "No sensors yet. Point a sensor's exporter at this hub — it appears here to adopt.",
-      problemsOnly
+      stateFilter
+        ? `No sensor is in state "${stateFilter.replace("_", " ")}" right now.`
+        : problemsOnly
+          ? "No weirling has a problem right now."
+          : "No sensors yet. Point a sensor's exporter at this hub — it appears here to adopt.",
+      stateFilter || problemsOnly
         ? { label: "Show all", fn: () => {
+              WL_FILTERS.state = "";
               const box = document.getElementById("wl-problems-only");
               if (box) box.checked = false;
+              if (typeof scheduleURLSync === "function") scheduleURLSync();
               loadWeirlings().then(clearError).catch(showError);
             } }
         : { label: "How adding works", fn: () => openHelpPanel("wl-info") });
   }
 
-  for (const r of rows) {
+  for (const r of visible) {
     // The state on the ROW, not only in the chip: a scanning eye reads the row's edge before it
     // reads any word (see the .wl-state-* rules in style.css).
     const tr = el("tr", { class: `wl-state-${r.state || "unknown"}` +
@@ -198,6 +351,21 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // The sensor id is the drill-down affordance AND stays a plain text label -- a button inside
     // a table cell is the accessible form of "the row is clickable".
     tr.appendChild(el("td", {}, [
+      // A CHECKBOX PER ROW (BF-7): the worklist's selection is the operator's; it survives
+      // reloads within the tab (WL_SELECTED is a tab-local set, like every other UI state).
+      r.registered
+        ? el("input", {
+            class: "wl-sel",
+            attrs: { type: "checkbox", "data-id": r.sensor_id,
+                     title: "select for bulk actions",
+                     "aria-label": `select ${r.sensor_id}` },
+            on: { change: (ev) => {
+              if (ev.target.checked) WL_SELECTED.add(r.sensor_id);
+              else WL_SELECTED.delete(r.sensor_id);
+              wlRenderBulk();
+            } },
+          })
+        : null,
       el("button", {
         class: "link",
         text: r.sensor_id,
@@ -206,6 +374,10 @@ function renderWeirlings(rows, revoked, revokedReason) {
       }),
       r.note ? el("div", { class: "muted", text: r.note }) : null,
     ].filter(Boolean)));
+    if (r.registered && WL_SELECTED.has(r.sensor_id)) {
+      const cb = tr.querySelector("input.wl-sel");
+      if (cb) cb.checked = true;
+    }
 
     // EACH SENSOR AND ITS STATUS -- the operator, 2026-10-17 ("I don't need all the extra
     // info... just each sensor and their status"). The chip carries the state and its colour;
@@ -213,8 +385,28 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // Everything else -- address, segments, modes, loss, findings -- is one click away in the
     // drill-down, which was always where the full story lived.
     tr.appendChild(el("td", {}, [
-      wlStateChip(r.state),
+      (() => {
+        // LAST-SEEN WITH ITS DETAIL ON HOVER (BF-7; research: multi-axis status): the chip
+        // carries the verdict, the title carries the measurement behind it.
+        const chip = wlStateChip(r.state);
+        chip.title = r.registered && r.last_seen
+          ? `last heard ${fmtTime(new Date(r.last_seen))} (${wlAge(r.age_s)})` +
+            (r.stale_after_s ? `; marked stale after ${r.stale_after_s}s of silence` : "")
+          : "never heard from since registration";
+        return chip;
+      })(),
       el("span", { class: "muted", text: " " + wlAge(r.age_s) }),
+      // THE INLINE ENABLE TOGGLE (BF-7): the one routine action a sensor needs, in its row --
+      // single click like the drill-down (switching off is reversible; revoking is not, and
+      // that one stays behind its confirm).
+      r.registered
+        ? el("button", {
+            class: "link wl-inline-toggle",
+            text: r.enabled ? "Disable" : "Enable",
+            attrs: { title: r.enabled ? "switch this sensor off" : "switch this sensor on" },
+            on: { click: (ev) => { ev.stopPropagation(); wlToggle(r, ev.target); } },
+          })
+        : null,
       // ONE-CLICK ADOPTION, the network-appliance pattern (operator, 2026-10-17: "New
       // weirlings should be that easy" -- the way appliances adopt new hardware). A sensor
       // the hub is hearing but nobody has
@@ -424,6 +616,34 @@ async function openWeirling(sensorId) {
  */
 
 function wireWeirlings() {
+  const viewSel = document.getElementById("wl-view");
+  if (viewSel && !viewSel.dataset.wired) {
+    viewSel.dataset.wired = "1";
+    viewSel.addEventListener("change", () => wlApplyView(viewSel.value));
+  }
+  const viewSave = document.getElementById("wl-view-save");
+  if (viewSave && !viewSave.dataset.wired) {
+    viewSave.dataset.wired = "1";
+    viewSave.addEventListener("click", () => wlSaveView());
+  }
+  for (const [id, kind] of [["wl-bulk-enable", "enable"], ["wl-bulk-disable", "disable"],
+                            ["wl-bulk-reapply", "reapply"], ["wl-bulk-revoke", "revoke"]]) {
+    const b = document.getElementById(id);
+    if (b && !b.dataset.wired) {
+      b.dataset.wired = "1";
+      b.addEventListener("click", () => wlBulk(kind, b));
+    }
+  }
+  const bulkClear = document.getElementById("wl-bulk-clear");
+  if (bulkClear && !bulkClear.dataset.wired) {
+    bulkClear.dataset.wired = "1";
+    bulkClear.addEventListener("click", () => {
+      WL_SELECTED.clear();
+      for (const cb of document.querySelectorAll("#wl-table input.wl-sel")) cb.checked = false;
+      wlRenderBulk();
+    });
+  }
+
   const reload = document.getElementById("wl-reload");
   if (reload) reload.addEventListener("click", () => loadWeirlings().catch(showError));
 
@@ -842,6 +1062,26 @@ async function registerWeirling() {
   }
   await openWeirling(sensor.sensor_id);
   note.textContent = `Registered ${sensor.sensor_id}.`;
+  await loadWeirlings();
+}
+
+async function wlToggle(r, btn) {
+  btn.disabled = true;
+  try {
+    const d = await postJSON("/api/weirlings/enable",
+                             { sensor_id: r.sensor_id, enabled: !r.enabled });
+    if (!d || d.ok !== true) {
+      const note = document.getElementById("wl-summary-note");
+      if (note) note.textContent =
+        `Refused: ${(d && d.error) || "the server did not accept the change"}`;
+      return;
+    }
+  } catch (err) {
+    const note = document.getElementById("wl-summary-note");
+    if (note) note.textContent = `Could not change it: ${(err && err.message) || err}`;
+  } finally {
+    btn.disabled = false;
+  }
   await loadWeirlings();
 }
 

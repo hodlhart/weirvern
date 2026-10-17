@@ -3755,6 +3755,7 @@ function syncURL() {
   if (typeof wlDetail !== "undefined" && wlDetail) {
     p.set("wl", String(wlDetail.sensor_id || ""));
   }
+  if (typeof WL_FILTERS !== "undefined" && WL_FILTERS.state) p.set("wl.f", WL_FILTERS.state);
   const dv = (id) => {
     const e = document.getElementById(id);
     return e ? String(e.value || "").trim() : "";
@@ -3830,6 +3831,9 @@ function applyURLState() {
   if (p.get("wl")) {
     showView("weirlings");
     PENDING_WL = p.get("wl");
+    if (typeof WL_FILTERS !== "undefined") {
+      WL_FILTERS.state = p.get("wl.f") || "";
+    }
   }
   // The most specific target first: an evidence drill-down outranks its plain tab.
   if (v === "evidence" || p.get("ev.host")) {

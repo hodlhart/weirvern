@@ -408,6 +408,11 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 /* THE ONE SETTING THAT CAN STOP TRAFFIC ALONE WEARS THE ALARM COLOUR WHEN IT IS ARMED
  * (BF-3; research: loud state for autonomous actions). */
 #sl-bc-auto-state.auto-on { color: var(--crit); font-weight: 600; }
+/* THE FLEET'S COUNT TILES ARE FILTERS (BF-7): clickable, and the active filter is visible. */
+.stat.clickable { cursor: pointer; border: 1px solid transparent; }
+.stat.clickable:hover { border-color: var(--border-solid); }
+.stat.clickable.active { border-color: var(--accent); }
+.wl-sel { margin-right: 8px; }
 .firstrun-next, .firstrun-review, .firstrun-skip { margin-right: 6px; }
 .firstrun-next, .firstrun-review { border-color: var(--accent); color: var(--accent); }
 .firstrun-skip { color: var(--muted); }
