@@ -160,7 +160,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
   if (!rows.length) {
     emptyRow(tbody, 2, (document.getElementById("wl-problems-only").checked
       ? "No weirling has a problem."
-      : "No sensors yet. Register one above, or point a sensor's exporter at this hub."));
+      : "No sensors yet. Point a sensor's exporter at this hub — it appears here to adopt."));
   }
 
   for (const r of rows) {
@@ -189,7 +189,21 @@ function renderWeirlings(rows, revoked, revokedReason) {
     tr.appendChild(el("td", {}, [
       wlStateChip(r.state),
       el("span", { class: "muted", text: " " + wlAge(r.age_s) }),
-    ]));
+      // ONE-CLICK ADOPTION, the network-appliance pattern (operator, 2026-10-17: "New
+      // weirlings should be that easy" -- the way appliances adopt new hardware). A sensor
+      // the hub is hearing but nobody has
+      // declared offers the ONE action it needs, right in its row -- no drill-down, no form.
+      // The button exists only while the action does; a registered sensor's row stays a
+      // status line, which is the "each sensor and its status" contract from the same day.
+      !r.registered
+        ? el("button", {
+            class: "link wl-adopt",
+            text: "Adopt",
+            attrs: { title: "adopt this sensor: declare it, from its own reports" },
+            on: { click: (ev) => { ev.stopPropagation(); adoptWeirling(r, ev.target); } },
+          })
+        : null,
+    ].filter(Boolean)));
 
     tbody.appendChild(tr);
   }
@@ -339,9 +353,9 @@ async function openWeirling(sensorId) {
     // produced was "where do i get the sensor id". One click files the declaration from the
     // sensor's own reports; the button is offered ONLY here, while the sensor reads as undeclared.
     registerBtn.classList.remove("hidden");
-    registerBtn.textContent = "Register this sensor";
+    registerBtn.textContent = "Adopt this weirling";
     note.textContent = "This sensor is not registered, so there is nothing to enable or retire. "
-      + "Register it here — one click, from its own reports — or add its address to the flow "
+      + "Adopt it here — one click, from its own reports — or add its address to the flow "
       + "exporter allow-list if it should be ignored.";
   } else if (!r.enabled) {
     enableBtn.classList.remove("hidden");
@@ -491,6 +505,37 @@ async function saveWeirling() {
   }
   note.textContent = `Registered ${body.sensor_id}.`;
   clearWeirlingForm();
+  await loadWeirlings();
+}
+
+/** ONE-CLICK ADOPTION, the network-appliance pattern. The row already hears the sensor; this files the
+ * declaration from the sensor's own reports -- the same register call the drill-down makes,
+ * minus the drill-down. Progress shows in the button itself; the row re-reads after, so the
+ * state change is visible immediately. A refusal goes to the summary line verbatim. */
+async function adoptWeirling(row, btn) {
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Adopting…"; }
+  const body = {
+    sensor_id: row.sensor_id,
+    address: row.address || "",
+    // The DECLARED segment stays empty ON PURPOSE, exactly as in registerWeirling: the
+    // declaration is the operator's word, and copying the reported one would manufacture a
+    // declaration nobody made.
+    segment: "",
+    expected_mode: row.reported_mode || "loch",
+    note: "adopted from the fleet view while it was feeding unregistered",
+  };
+  try {
+    const d = await postJSON("/api/weirlings/register", body);
+    if (!d || d.ok !== true) {
+      throw new Error((d && d.error) || "the server did not accept this registration");
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    const note = document.getElementById("wl-summary-note");
+    if (note) note.textContent = `Could not adopt ${row.sensor_id}: ${(err && err.message) || err}`;
+    return;
+  }
   await loadWeirlings();
 }
 

@@ -3368,9 +3368,9 @@ check("high capture loss is called out in the fleet",
       await new Promise((r) => setTimeout(r, 20));
     }
     const regBtn = H.document.getElementById("wl-detail-register");
-    check("an undeclared sensor offers a REGISTER button, not only prose",
+    check("an undeclared sensor offers an ADOPT button, not only prose",
           !!regBtn && !regBtn.classList.contains("hidden")
-          && (regBtn.textContent || "").includes("Register"),
+          && (regBtn.textContent || "").includes("Adopt"),
           "the id the hub is already hearing should not have to be retyped from the row into the "
           + "form below");
     const before = POSTED.length;
@@ -3478,6 +3478,37 @@ check("high capture loss is called out in the fleet",
           "offering controls that cannot reach the sensor would be a lie in pixels");
   }
   doc.getElementById("wl-detail-close").click();
+}
+
+// ── gateway-STYLE ADOPTION: one click, in the row (operator, 2026-10-17) ──────────────────────
+{
+  // The earlier drill-down click already adopted ghost-box in the stub (its register call
+  // flips the fixture row); reset it so THIS check's subject is an unadopted sensor again.
+  const ghostFix = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === "ghost-box");
+  if (ghostFix) { ghostFix.registered = false; ghostFix.state = "unregistered"; ghostFix.enabled = false; }
+  await H.loadWeirlings();
+  const rows = [...doc.querySelectorAll("#wl-table tbody tr")];
+  const rowFor = (id) => rows.find((tr) => (tr.textContent || "").includes(id));
+  const ghost = rowFor("ghost-box");
+  const alive = rowFor("edge-alive");
+  const adopt = ghost && ghost.querySelector("button.wl-adopt");
+  check("an unregistered sensor offers one-click Adopt in its ROW",
+        !!adopt && !(alive && alive.querySelector("button.wl-adopt")),
+        "the action must be where the sensor is, and only while it is needed");
+  if (adopt) {
+    const before = POSTED.length;
+    adopt.click();
+    for (let i = 0; i < 60 && POSTED.length === before; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const post = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/register"));
+    let sent = {};
+    try { sent = JSON.parse((post || {}).body || "{}"); } catch (_e) { sent = {}; }
+    check("Adopt files the declaration from the sensor's own reports -- no form, no drill-down",
+          !!post && sent.sensor_id === "ghost-box" && sent.expected_mode === "loch"
+          && (sent.segment === "" || sent.segment === undefined),
+          (post || {}).body || "no register POST");
+  }
 }
 
 // ── no content-less cards on the Settings tab (audit 2026-10-17) ─────────────────────────────
