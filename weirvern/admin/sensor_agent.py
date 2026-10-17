@@ -49,6 +49,7 @@ import os
 import signal
 import threading
 import time
+from typing import Any
 
 from weirvern import db
 from weirvern.config import get_settings
@@ -228,7 +229,11 @@ class InterceptController:
     def __init__(self, sid: str, *, supervisor_factory=None) -> None:
         self.sid = sid
         self._factory = supervisor_factory or self._default_factory
-        self._supervisor = None
+        # `Any` on purpose: the factory is injectable (the tests build the REAL supervisor with
+        # faked spawn/readiness hooks), so the attribute's type is "whatever the factory builds"
+        # -- annotating it `SiphonSupervisor | None` would be a claim the injection point makes
+        # false.
+        self._supervisor: Any = None
         # The plan the current supervisor was built from. Rebuilding on an unchanged plan would
         # interrupt a healthy intercept for nothing (every rebuild is a restore/poison seam).
         self._built_from: dict | None = None

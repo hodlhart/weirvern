@@ -329,6 +329,38 @@ def _find(client: Client, sensor_id: str) -> Registration | None:
     return None
 
 
+def plan_subject(client: Client, sensor_id: str) -> tuple[Registration | None, str]:
+    """The live registration a per-sensor plan write targets, or a refusal sentence.
+
+    WHY THIS READS THE REGISTRY AND NOT THE FLEET PAYLOAD. The GUI's plan routes need to know
+    whether a sensor is declared before they will hold a plan for it. Reading that out of the
+    fleet VIEW's rows would mean parsing a presentation payload with string keys -- and the
+    schema audit rightly flagged exactly that ("plan" and "registered" are produced by the
+    payload builder, not by any table), because a write path that reads its own storage back out
+    of a payload breaks silently the first time a field is renamed for the browser. The registry
+    is the typed source; this returns it.
+
+    A REVOKED registration is `None` here: `read_registrations` returns live ones only, and a
+    retired sensor has to be registered again before it can be given a plan -- the same rule
+    `set_enabled` enforces, for the same reason.
+    """
+    try:
+        sid = validate_sensor_id(sensor_id)
+    except FleetError as exc:
+        return None, str(exc)
+    try:
+        registrations = read_registrations(client)
+    except FleetStoreError as exc:
+        return None, f"the sensor could not be read: {exc}"
+    for reg in registrations:
+        if reg.sensor_id == sid:
+            return reg, ""
+    return None, (
+        f"no sensor named {sid!r} is registered, so there is nothing to hold a plan. Adopt it "
+        f"in the fleet view first -- one click in its row."
+    )
+
+
 def read_heartbeats(client: Client) -> tuple[list[dict], str | None]:
     """Every `sensor_status` row, or (empty, reason). Never raises.
 
@@ -488,6 +520,7 @@ __all__ = [
     "build_fleet",
     "classify",
     "classify_one",
+    "plan_subject",
     "read_heartbeats",
     "read_registrations",
     "register",
