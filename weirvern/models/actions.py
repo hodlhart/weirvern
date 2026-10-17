@@ -145,14 +145,25 @@ def reap_running(client: Client, *, note: str = "", before=None) -> int:
     # orphaned then); the cycle passes the worker's start time, so a race can only delay the verdict.
     where = "state = %(s)s" if before is None else "state = %(s)s AND ts < %(before)s"
     for state in (RUNNING,):
-        rows = client.query(
-            f"SELECT action_id FROM {ACTIONS_TABLE} FINAL WHERE {where} LIMIT 50",
-            parameters={"s": state, "before": before} if before is not None else {"s": state},
-        ).result_rows
-        for (action_id,) in rows:
-            finish(client, str(action_id), FAILED,
-                   note=note or "the worker restarted while this was running; file it again")
-            reaped += 1
+        # BATCHED IN A LOOP (issue #29): the single LIMIT 50 pass stranded everything past
+        # the 50th row until the NEXT call -- at startup, that meant a mass failure above 50
+        # rows needed several restarts to clear. Batches of 50 are reaped until one comes
+        # back short; the batch bound stays so one query never materialises a giant result.
+        # The 200-batch ceiling (10k rows) only guards against a `finish` that silently
+        # fails to change state, which would otherwise spin forever.
+        for _batch in range(200):
+            rows = client.query(
+                f"SELECT action_id FROM {ACTIONS_TABLE} FINAL WHERE {where} LIMIT 50",
+                parameters={"s": state, "before": before} if before is not None else {"s": state},
+            ).result_rows
+            for (action_id,) in rows:
+                finish(client, str(action_id), FAILED,
+                       note=note or "the worker restarted while this was running; file it again")
+                reaped += 1
+            if len(rows) < 50:
+                break
+        else:
+            logger.warning("model actions: reap hit its 200-batch ceiling; some rows may remain")
     if reaped:
         logger.warning("model actions: %d orphaned row(s) marked failed at startup", reaped)
     return reaped

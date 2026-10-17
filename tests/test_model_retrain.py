@@ -371,3 +371,41 @@ def test_the_summary_never_sums_counts_that_count_different_things():
     assert "590" not in summary and "690" not in summary and "9840" not in summary, (
         f"numbers from different units were summed: {summary}"
     )
+
+def test_a_mass_failure_is_DRAINED_past_the_old_fifty_row_bound():
+    """Issue #29: one LIMIT 50 pass left everything past the 50th row stranded until the next
+    start (the cycle form runs per retrain cadence), so a mass failure above 50 rows needed
+    several passes to clear. The reap now loops in batches until one comes back short."""
+    from weirvern.models import actions
+
+    finished: list[str] = []
+
+    class _C:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self, sql, parameters=None, **_kw):
+            self.calls += 1
+            if self.calls == 1:
+                rows = [("r-" + str(i),) for i in range(50)]
+            elif self.calls == 2:
+                rows = [("r-" + str(i),) for i in range(50, 60)]
+            else:
+                raise AssertionError("the loop kept querying after a short batch")
+
+            class R:
+                result_rows = rows
+
+            return R()
+
+    import weirvern.models.actions as mod
+
+    real_finish = mod.finish
+    mod.finish = lambda c, aid, state, **kw: (finished.append(aid), True)[1]
+    try:
+        n = actions.reap_running(_C())
+    finally:
+        mod.finish = real_finish
+
+    assert n == 60, f"the second batch (rows 50-59) was stranded: reaped {n}"
+    assert len(finished) == 60
