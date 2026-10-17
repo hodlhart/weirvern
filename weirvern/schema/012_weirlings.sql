@@ -62,7 +62,25 @@ CREATE TABLE IF NOT EXISTS weirvern.weirlings
     updated_at  DateTime DEFAULT now(),
 
     -- NULL while live. Set when retired, and the row is kept.
-    revoked_at  Nullable(DateTime)
+    revoked_at  Nullable(DateTime),
+
+    -- THE SENSOR'S OWN INTERCEPT PLAN (020_weirling_plan.sql carries the full reasoning).
+    -- The deployment-global INTERCEPT_* keys describe exactly one sensor -- the one whose
+    -- worker reads that ConfigMap. These fields let EVERY weirling carry its own: the
+    -- operator writes them from the fleet view, and the sensor's own agent reads its OWN
+    -- row, because ClickHouse is the one rendezvous a hub and a remote sensor share.
+    --
+    -- Kept in step with `expected_mode` on write (`fleet_store.register`), so the operator
+    -- sees ONE mode per sensor: the declaration the fleet view compares against reports.
+    --
+    -- All '' = no plan declared, which is the pre-existing behaviour for a sensor that was
+    -- registered before this existed.
+    plan_mode    LowCardinality(String) DEFAULT '',
+    plan_iface   LowCardinality(String) DEFAULT '',
+    plan_segment String DEFAULT '',
+    plan_addr    String DEFAULT '',
+    plan_gateway String DEFAULT '',
+    plan_targets String DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (sensor_id);

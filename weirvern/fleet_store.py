@@ -21,16 +21,19 @@ incapable of ever reporting `unregistered`.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from clickhouse_connect.driver.client import Client
 
 from weirvern.fleet import (
     HEARTBEAT_STALE_S,
+    PLAN_FIELDS,
     STATE_UNKNOWN,
     FleetError,
     Registration,
     SensorHealth,
+    SensorPlan,
     classify,
     fleet,
     make_registration,
@@ -48,8 +51,13 @@ TABLE = "weirvern.weirlings"
 # Every column, in one place, so the insert order cannot drift from the select order. A
 # positional list is the classic way these diverge: a column added to the table and to the
 # SELECT but not to the positional insert shifts every value by one, silently.
+#
+# THE PLAN COLUMNS GO LAST, as the heartbeat's new columns do (see status.heartbeat): the
+# registry row is also read positionally by fixtures and by the stub client's zip, and appending
+# is what keeps a pre-plan reader aligned instead of shifted.
 COLUMNS = ["sensor_id", "address", "segment", "expected_mode", "enabled", "note",
-           "added_at", "updated_at", "revoked_at"]
+           "added_at", "updated_at", "revoked_at",
+           *[f"plan_{f}" for f in PLAN_FIELDS]]
 
 
 class FleetStoreError(RuntimeError):
@@ -78,6 +86,9 @@ def _row_to_registration(row: dict) -> Registration:
         note=str(row.get("note") or ""),
         added_at=added,
         revoked_at=revoked,
+        # Same defensive read as the timestamps: a row from before the plan columns existed
+        # (or from a stub fixture that predates them) reads as NO PLAN rather than raising.
+        plan=SensorPlan.from_row(row),
     )
 
 
@@ -161,6 +172,7 @@ def write_registration(client: Client, reg: Registration) -> None:
 
 def _write_registration_row(client: Client, reg: Registration, now: datetime) -> None:
     """The raw insert, separated so the caller can wrap it in the module's error type."""
+    plan = reg.plan.as_dict()
     client.insert(
         TABLE,
         [[reg.sensor_id, reg.address, reg.segment, reg.expected_mode,
@@ -171,14 +183,18 @@ def _write_registration_row(client: Client, reg: Registration, now: datetime) ->
           # reset it on every edit. Taking the earliest of the two keeps the fact honest.
           reg.added_at or now,
           now,
-          reg.revoked_at or None]],
+          reg.revoked_at or None,
+          # Positional, in COLUMNS order -- which is why the plan's fields are appended last
+          # and enumerated from PLAN_FIELDS rather than typed out here.
+          *[plan[f] for f in PLAN_FIELDS]],
+        ],
         column_names=COLUMNS,
     )
 
 
 def register(client: Client, sensor_id: str, *, address: str = "", segment: str = "",
              expected_mode: str = "loch", note: str = "", now: datetime | None = None,
-             clear: set[str] | None = None) -> Registration:
+             clear: set[str] | None = None, plan: SensorPlan | None = None) -> Registration:
     """Create or update a registration. Raises FleetError on bad input, FleetStoreError on a
     storage failure.
 
@@ -226,6 +242,25 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
         # `expected_mode` is not merged: it defaults to a real value ("loch"), so an absent argument
         # is indistinguishable from "loch" and merging it would make the mode unchangeable.
         reg = Registration(**merged)
+        # ── THE PLAN FOLLOWS THE SAME RULE, WITH ONE DIFFERENCE: IT ARRIVES AS A GROUP ────────
+        #
+        # `plan=None` means "the caller said nothing about the plan" -- an ordinary edit keeps
+        # whatever was declared. A plan handed in is the whole group and REPLACES it, because
+        # its fields are interdependent (a segment without its address arms nothing) and every
+        # caller that sets one -- the fleet view's form, the CLI -- sends all six. Field-wise
+        # merging here would let a form that only knows some fields blank the rest.
+        reg = replace(reg, plan=existing.plan if plan is None else plan)
+    elif plan is not None:
+        reg = replace(reg, plan=plan)
+    # ── ONE OPERATOR-FACING MODE PER SENSOR ──────────────────────────────────────────────────
+    #
+    # `expected_mode` is the declaration the fleet view compares against the sensor's reports;
+    # the plan's `mode` is what the sensor's agent runs. Kept in step ON WRITE, so the two can
+    # never present an operator with two modes that disagree -- the failure this project keeps
+    # finding one layer up (one fact, two readers). A plan with no mode set leaves the
+    # registration's mode as the caller gave it.
+    if reg.plan.mode in ("loch", "siphon"):
+        reg = replace(reg, expected_mode=reg.plan.mode)
     write_registration(client, reg)
     return reg
 
@@ -407,6 +442,11 @@ def _health_to_json(h: SensorHealth) -> dict:
         "reported_segment": h.reported_segment,
         "expected_mode": h.expected_mode,
         "reported_mode": h.reported_mode,
+        # THE DECLARED PLAN, as plain strings, always present. The drill-down renders one
+        # control per field from THIS payload, so a missing key would kill the panel at the
+        # first formatter call -- and an absent key is exactly how a per-sensor control ends
+        # up silently editing nothing.
+        "plan": h.plan.as_dict(),
         "interfaces": list(h.interfaces),
         "enabled": h.enabled,
         "registered": h.registered,
@@ -444,6 +484,7 @@ __all__ = [
     "COLUMNS",
     "TABLE",
     "FleetStoreError",
+    "SensorPlan",
     "build_fleet",
     "classify",
     "classify_one",

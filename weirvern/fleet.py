@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
@@ -103,6 +104,235 @@ SENSOR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 # recording one.
 KNOWN_MODES = ("loch", "siphon")
 
+# The intercept plan's fields, in one place. Every reader (the store's column mapping, the
+# API's per-field view, the GUI's controls) iterates THIS tuple, so a field cannot be added
+# to one of them and forgotten in another -- the drift this project keeps finding.
+PLAN_FIELDS = ("mode", "iface", "segment", "addr", "gateway", "targets")
+
+
+# ── the per-sensor intercept plan ────────────────────────────────────────────────────────────
+#
+# WHY THIS TYPE EXISTS, AND WHY IT IS IN THE REGISTRY RATHER THAN IN A DEPLOYMENT'S ENV.
+#
+# `INTERCEPT_SEGMENT` / `INTERCEPT_ADDR` / `INTERCEPT_GATEWAY` / `INTERCEPT_TARGETS` in
+# `weirvern-env` describe ONE sensor: the one whose worker reads that ConfigMap. A fleet of
+# weirlings has one plan per sensor, and the hub cannot reach a remote box's manifest (the GUI's
+# ServiceAccount deliberately cannot patch Deployments) -- so the plan is stored where the two
+# sides already meet: the hub's own database, the same rendezvous the heartbeat uses. The
+# operator writes it through the fleet view; the sensor's own agent reads its OWN row and arms
+# (or refuses, with a reason) inside its own deployment.
+#
+# THE VALIDATION IS NOT A SECOND OPINION. Every shape check here is the check the intercept
+# itself makes -- `intercept.parse_cidr` for the segment and its address cap, the supervisor's
+# target expansion for a targets list -- imported and reused, never retyped. A plan this module
+# accepts must be a plan the intercept can honour; when the two could disagree, the refusals
+# here would be the lie.
+#
+# AN INCOMPLETE PLAN IS NOT AN ERROR, IT IS A STATE. An operator may stage a segment now and the
+# address tomorrow. `problems()` states what is still missing, and the sensor's supervisor turns
+# that into a refused-to-arm NOTE on the heartbeat -- visible, attributed, and never a silent
+# no-op. That is why `make_plan` validates SHAPES only.
+
+
+@dataclass(frozen=True)
+class SensorPlan:
+    """One weirling's declared intercept plan. All fields default to '' = not set."""
+
+    mode: str = ""
+    iface: str = ""
+    segment: str = ""
+    addr: str = ""
+    gateway: str = ""
+    targets: str = ""
+
+    @property
+    def configured(self) -> bool:
+        """Whether ANY field is set. False is the pre-existing state of a registration."""
+        return any(str(getattr(self, f) or "").strip() for f in PLAN_FIELDS)
+
+    @property
+    def armed_mode(self) -> str:
+        """The mode a sensor's agent should RUN. Empty plan -> `loch`, the safe resting state."""
+        return self.mode if self.mode in KNOWN_MODES else ""
+
+    def as_dict(self) -> dict[str, str]:
+        """The plan as plain strings, for JSON and for the per-field GUI controls."""
+        return {f: str(getattr(self, f) or "") for f in PLAN_FIELDS}
+
+    def to_intercept_config(self):
+        """The supervisor's own config object, built from this plan.
+
+        THE ADAPTER IS THE POINT: the sensor agent hands this to the SAME `SiphonSupervisor`
+        (and thus the same `weirvern intercept` child) the hub worker runs, so the safety
+        contract -- watchdog restore, bounded runs, self-destruct deadline -- cannot fork
+        between a hub sensor and a weirling.
+        """
+        from weirvern.admin import siphon_supervisor  # noqa: PLC0415 -- adapter, kept local
+
+        return siphon_supervisor.InterceptConfig(
+            mode=self.armed_mode, iface=self.iface, segment=self.segment,
+            our_ip=self.addr, gateway=self.gateway, targets=self.targets,
+        )
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, object]) -> SensorPlan:
+        """A plan read back from a stored registry row (`plan_*` columns).
+
+        Missing keys read as "" rather than raising: an upgraded deployment's rows predate
+        the columns, and a plan that cannot be read must not take the fleet view down.
+        """
+        return cls(**{f: str(row.get(f"plan_{f}") or "") for f in PLAN_FIELDS})
+
+    def problems(self) -> list[str]:
+        """What stops this plan from arming RIGHT NOW, in the supervisor's own words.
+
+        Empty when the plan is complete (or when the mode is not siphon, where nothing has to
+        be complete). Used by the fleet view to warn at staging time and by the sensor agent's
+        supervisor at arm time -- one source for one fact.
+        """
+        if self.armed_mode != "siphon":
+            return []
+        cfg = self.to_intercept_config()
+        out = list(cfg.missing())
+        out += list(cfg.target_problems())
+        if not cfg.target_args():
+            out.append(
+                "no intercept targets: an empty target list diverts no traffic, so the "
+                "sensor will refuse to arm until hosts (or '*') are named"
+            )
+        return out
+
+    def warnings(self) -> list[str]:
+        """Cost warnings, phrased for the operator (not refusals)."""
+        out: list[str] = []
+        if self.armed_mode == "siphon":
+            out.append(
+                "siphon is IN-PATH: while the sensor intercepts, its hosts depend on the "
+                "sensor's forwarding, so a stopped sensor is an outage for exactly the "
+                "hosts this plan names (loch cannot see them until it is switched back)"
+            )
+        return out
+
+
+def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str = "",
+              gateway: str = "", targets: str = "") -> SensorPlan:
+    """A validated plan, or FleetError naming the field that is wrong.
+
+    SHAPES ONLY -- see the block comment above: a half-filled plan is stored, and the sensor
+    says what is missing when it tries to arm.
+    """
+    from weirvern.admin import intercept as ic_mod  # noqa: PLC0415 -- the intercept's own rules
+    from weirvern.admin import mode as mode_mod  # noqa: PLC0415
+    from weirvern.admin import siphonnet  # noqa: PLC0415
+
+    raw_mode = str(mode or "").strip()
+    m = ""
+    if raw_mode:
+        normalised = mode_mod.normalise(raw_mode)
+        if normalised not in KNOWN_MODES:
+            raise FleetError(
+                f"mode {raw_mode!r} is not one this hub knows: expected "
+                f"{', '.join(KNOWN_MODES)}, or empty for 'not set'."
+            )
+        m = normalised
+
+    iface = str(iface or "").strip()
+    if iface:
+        why = siphonnet.iface_name_error(iface)
+        if why:
+            raise FleetError(f"capture interface {iface!r} is not usable: {why}")
+
+    segment = str(segment or "").strip()
+    if segment:
+        try:
+            # The intercept's OWN parser, so the cap and the v4-only rule cannot drift.
+            ic_mod.parse_cidr(segment)
+        except ValueError as exc:
+            raise FleetError(f"segment {segment!r} cannot be intercepted: {exc}") from exc
+
+    for label, value in (("intercept address", addr), ("gateway", gateway)):
+        value = str(value or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise FleetError(
+                f"{label} {value!r} is not an IP address. The sensor needs a real one: the "
+                f"address is assigned to the capture port and the gateway's MAC is needed to "
+                f"restore the mappings."
+            ) from exc
+        if parsed.version != 4:
+            raise FleetError(
+                f"{label} {value!r} is IPv6; siphon mode is IPv4-only (the ARP frames, the "
+                f"forwarding sysctls and the relay are all v4), so it can never match."
+            )
+
+    targets = str(targets or "").strip()
+    if targets:
+        why = _targets_problem(targets)
+        if why:
+            raise FleetError(why)
+
+    return SensorPlan(mode=m, iface=iface, segment=segment,
+                      addr=str(addr or "").strip(), gateway=str(gateway or "").strip(),
+                      targets=targets)
+
+
+def _targets_problem(targets: str) -> str:
+    """Why this target list cannot be honoured, or "" when it can.
+
+    Mirrors the supervisor's expansion rules EXACTLY (it runs the same `target_problems` call
+    at arm time) plus the two shapes the supervisor would pass through to the CLI, where they
+    would intercept less than asked rather than fail: a mixing of '*' with named hosts, and a
+    token that is neither an address, a CIDR, nor '*'.
+    """
+    from weirvern.admin import siphon_supervisor  # noqa: PLC0415
+
+    tokens = [t.strip() for t in targets.split(",") if t.strip()]
+    if not tokens:
+        return ""
+    stars = [t for t in tokens if t.lower() in ("*", "all")]
+    if stars and len(tokens) > 1:
+        return (
+            f"targets mix {stars[0]!r} with named hosts; '*' already means every host on the "
+            f"segment, so the list is contradictory rather than broader."
+        )
+    if stars:
+        return ""
+    for token in tokens:
+        try:
+            ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            return (
+                f"target {token!r} is neither an address, a CIDR, nor '*'. The intercept "
+                f"expands named targets itself; a token it cannot parse would be reported as "
+                f"a host that did not answer, which reads as a quiet network instead of a typo."
+            )
+    problems = siphon_supervisor.InterceptConfig(targets=targets).target_problems()
+    return "; ".join(problems)
+
+
+def plan_from_changes(current: SensorPlan, changes: Mapping[str, object]) -> SensorPlan:
+    """`changes` (row-keyed, partial) applied over `current`, validated as one plan.
+
+    The merge-then-validate order is deliberate: a change is judged in the context of the plan
+    it will produce, so a refusal names the value that is actually wrong rather than a field
+    that is merely absent from the request. Unknown keys are REFUSED, never dropped -- a
+    silently ignored field is a control that does nothing while looking applied.
+    """
+    unknown = sorted(set(changes) - set(PLAN_FIELDS))
+    if unknown:
+        raise FleetError(
+            f"unknown plan field(s): {', '.join(unknown)}. Known fields: "
+            f"{', '.join(PLAN_FIELDS)}."
+        )
+    values = current.as_dict()
+    for name in PLAN_FIELDS:
+        if name in changes:
+            values[name] = str(changes[name] if changes[name] is not None else "").strip()
+    return make_plan(**values)
+
 
 class FleetError(ValueError):
     """A rejected fleet operation, with a message written for the operator.
@@ -131,6 +361,10 @@ class Registration:
     note: str = ""
     added_at: datetime | None = None
     revoked_at: datetime | None = None
+    # THE SENSOR'S OWN INTERCEPT PLAN (see SensorPlan above). Defaulting to an empty plan is
+    # what keeps this additive: a registration made before the field existed behaves exactly
+    # as it did, and the plan only exists for a sensor somebody declared one for.
+    plan: SensorPlan = field(default_factory=SensorPlan)
 
     @property
     def live(self) -> bool:
@@ -205,6 +439,9 @@ def validate_mode(mode: str) -> str:
     return m
 
 
+
+
+
 def make_registration(sensor_id: str, *, address: str = "", segment: str = "",
                       expected_mode: str = "loch", note: str = "",
                       now: datetime | None = None) -> Registration:
@@ -262,6 +499,9 @@ class SensorHealth:
     reported_address: str = ""
     expected_mode: str = ""
     reported_mode: str = ""
+    # THE SENSOR'S DECLARED INTERCEPT PLAN, carried on the row so the drill-down can show and
+    # edit it without a second read that could disagree with the list it was opened from.
+    plan: SensorPlan = field(default_factory=SensorPlan)
     # THE SENSOR'S OWN NICS, from its heartbeat (its netns view, filtered of software
     # interfaces). Empty means not reported; the reader renders a dash, never a guess.
     interfaces: list[str] = field(default_factory=list)
@@ -346,6 +586,7 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         reported_segment=str((newest or {}).get("segment") or ""),
         expected_mode=(reg.expected_mode if reg else ""),
         reported_mode=reported_mode,
+        plan=(reg.plan if reg else SensorPlan()),
         interfaces=list((newest or {}).get("interfaces") or []),
         enabled=(reg.enabled if reg else False),
         registered=bool(reg is not None),
@@ -378,6 +619,29 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
     if not h.address and newest:
         # A registration whose address was never recorded learns it from the first heartbeat.
         h.address = h.reported_address
+
+    # ── THE PLAN'S OWN COMPLETENESS, ON THE ROW THAT WILL LIVE OR DIE BY IT ──────────────────
+    #
+    # A siphon plan that is missing its segment, address or gateway does not half-work: the
+    # sensor's own supervisor REFUSES to arm (nothing is intercepted, which is the safe
+    # direction) and writes the reason on ITS heartbeat. Without this, the only place that
+    # reason is visible is the sensor's own findings -- after the sensor has noticed. Stating
+    # it here, from the declaration itself, is what lets the fleet view say "this cannot arm
+    # yet, here is what is missing" BEFORE the operator goes looking, and it is computed from
+    # the same `problems()` the supervisor's refusal comes from.
+    #
+    # Computed BEFORE the state branches, because it is a fact about the DECLARATION, not about
+    # the sensor's health: it is equally true of a sensor that has never reported and one that
+    # is reporting happily in loch with an unrunnable plan staged.
+    if h.plan.armed_mode == "siphon":
+        gaps = h.plan.problems()
+        if gaps:
+            h.findings.append(
+                "this sensor's siphon plan cannot arm as declared, so nothing is being "
+                "intercepted: " + "; ".join(gaps) + ". The sensor refuses rather than "
+                "intercepting less than declared, and it will arm by itself once the plan is "
+                "complete."
+            )
 
     # ── Classify, most specific first.
     if reg is None:
