@@ -28,6 +28,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_S = 15
 
 
+_INTERFACES_CACHE: list[str] | None = None
+# Software interfaces are not "a sensor's NICs" to any operator: veth pairs, cni/flannel/docker
+# plumbing and bridges are noise on every box that runs containers. Everything else is kept as
+# reported -- the sensor's own network namespace is what it can actually see.
+_SOFTWARE_IFACE_PREFIXES = ("veth", "cni", "flannel", "docker", "br-", "cali", "tunl", "virbr")
+
+
+def _sensor_interfaces() -> list[str]:
+    """The interfaces this process can see, cached. Never raises: a sensor that cannot
+    report its NICs must still capture traffic."""
+    global _INTERFACES_CACHE
+    if _INTERFACES_CACHE is None:
+        try:
+            import socket
+            names = {name for _, name in socket.if_nameindex()}
+            _INTERFACES_CACHE = sorted(n for n in names
+                                       if n != "lo" and not n.startswith(_SOFTWARE_IFACE_PREFIXES))
+        except Exception:  # noqa: BLE001
+            _INTERFACES_CACHE = []
+    return _INTERFACES_CACHE
+
+
 def sensor_id() -> str:
     """A stable name for this sensor -- the SAME precedence `worker._sensor_name` uses.
 
@@ -75,7 +97,8 @@ class HeartbeatLoop:
             logger.debug("heartbeat state unavailable: %s", exc)
             self.failures += 1
             return False
-        ok = status.heartbeat(self.client, sensor_id=self.sensor_id, **fields)
+        ok = status.heartbeat(self.client, sensor_id=self.sensor_id,
+                              interfaces=_sensor_interfaces(), **fields)
         if ok:
             self.writes += 1
         else:

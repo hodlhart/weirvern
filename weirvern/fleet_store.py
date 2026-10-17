@@ -407,6 +407,7 @@ def _health_to_json(h: SensorHealth) -> dict:
         "reported_segment": h.reported_segment,
         "expected_mode": h.expected_mode,
         "reported_mode": h.reported_mode,
+        "interfaces": list(h.interfaces),
         "enabled": h.enabled,
         "registered": h.registered,
         "age_s": h.age_s,

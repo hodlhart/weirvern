@@ -1126,45 +1126,6 @@
       <p id="wl-summary-note" class="muted"></p>
     </div>
 
-    <div class="card">
-      <h2>Register a weirling <span id="wl-form-mode" class="muted"></span> <button class="info-btn" data-info="wl-register-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button> <button class="info-btn" data-info="wl-address-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-<div class="info-text hidden" id="wl-register-info">
-        Registering records the <strong>expectation</strong>, so a weirling that never comes up can
-        be reported as missing rather than being invisible. It does not configure the remote box:
-        nothing here can reach it, and a weirling begins reporting when its own exporter or Zeek
-        instance points at this hub.
-      </div>
-      <div class="grid2">
-        <label>weirling id (required)
-          <input id="wl-id" type="text" placeholder="floor3-idf">
-        </label>
-        <label>segment (optional)
-          <input id="wl-segment" type="text" placeholder="third floor IDF, in the operator's words">
-        </label>
-        <label>address (optional, often unknown yet)
-          <input id="wl-address" type="text" placeholder="198.51.100.7 &mdash; leave empty if not known">
-        </label>
-        <label>expected mode
-          <select id="wl-mode">
-            <option value="loch" selected>loch &mdash; passive (SPAN port or tap)</option>
-            <option value="siphon">siphon &mdash; in the traffic path</option>
-          </select>
-        </label>
-      </div>
-      <label>note (optional)
-        <input id="wl-note" type="text" placeholder="who to ask about this box">
-      </label>
-      <div class="controls">
-        <button id="wl-save" class="primary">Register</button>
-        <button id="wl-cancel" class="hidden">Cancel edit</button>
-        <span id="wl-save-note" class="muted"></span>
-      </div>
-<div class="info-text hidden" id="wl-address-info">
-        An address is refused rather than guessed: registering a network instead of one box would
-        put a weirling at an address it does not have. Empty means <em>not known yet</em>, and the
-        first heartbeat fills it in for display.
-      </div>
-    </div>
 
     <div class="card">
       <h2>Fleet <span id="wl-count" class="muted"></span></h2>
@@ -1176,8 +1137,7 @@
       <table id="wl-table">
         <thead>
           <tr>
-            <th>weirling</th><th>state</th><th>address</th><th>segment</th>
-            <th>last heard</th><th>loss</th><th></th>
+            <th>weirling</th><th>status</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -1189,14 +1149,42 @@
          not say whether "stale" means the box is powered off or its capture died. -->
     <div class="card hidden" id="wl-detail-card">
       <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <div class="controls sonar-row hidden" id="wl-runtime">
+        <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
+        <button id="st-sonar" type="button">Sonar</button>
+        <button class="setting-help-btn" id="st-sonar-help" type="button"
+                aria-label="explain Sonar" aria-expanded="false"
+                title="what Sonar does">i</button>
+        <button id="st-test" type="button">Test run (30s)</button>
+        <button class="setting-help-btn" id="st-test-help" type="button"
+                aria-label="explain the test run" aria-expanded="false"
+                title="what the test run does">i</button>
+      </div>
+      <div id="st-sonar-note" class="muted sonar-note"></div>
+      <div id="st-sonar-help-text" class="setting-help hidden">
+        Sonar surveys the network this sensor's capture interface is on — it reads the
+        segment, sends one ARP sweep to find which addresses answer and which are free, checks
+        the gateway — and reports what it measured. Nothing is written; enabling siphon uses
+        what Sonar found when it runs.
+      </div>
+      <div id="st-test-note" class="muted sonar-note"></div>
+      <div id="st-test-help-text" class="setting-help hidden">
+        A test run switches the sensor to siphon mode for 30 seconds, lets the worker run the
+        real intercept, then switches back to loch — the mappings are restored on the worker's
+        normal shutdown path. It needs the siphon capabilities on the sensor node and a
+        complete plan. The result below says which hosts were intercepted, and that the mode
+        was put back.
+      </div>
       <div id="wl-detail-body"></div>
-
-      <p class="muted">Runtime settings for a weirling live in <strong>Settings</strong> → <strong>Weirling settings</strong>, where you pick the weirling first — a runtime can only be changed on the box that runs it.</p>
+      <details id="wl-advanced">
+        <summary>Advanced</summary>
+        <div id="st-sensor" class="grid-inline"></div>
+      </details>
       <div class="info-text hidden" id="wl-detail-info">
-        One weirling's live state, and the actions that change its fleet membership (register,
-        enable/disable, revoke). Runtime settings live on the box that runs the sensor; what
-        this hub can set for any weirling — the segment and mode it is expected to run, its
-        address and a note — is under Settings → Weirling settings.
+        One weirling's live state, its NICs, and the actions that change its fleet membership
+        (register, enable/disable, revoke). A sensor's runtime — mode, Sonar, the test run —
+        can only be changed on the box that runs it, so those controls appear when the
+        selected sensor is this hub's own.
       </div>
 
       <div class="controls">
@@ -1211,94 +1199,6 @@
   </section>
 
   <section id="view-settings" class="view">
-    <div class="card">
-      <h2>Weirling settings <button class="info-btn" data-info="st-wl-info" aria-label="whose settings these are and why only some can change" aria-expanded="false" title="whose settings these are and why only some can change">i</button></h2>
-      <div class="info-text hidden" id="st-wl-info">
-        Pick a weirling, then read or change its settings. Every weirling has an
-        EXPECTATION this hub holds it to — its segment, the mode it should run, and a note —
-        which is what you set below for any selection. A RUNTIME can only be changed on the
-        box that runs the sensor, so only the weirling this hub runs gets live runtime
-        controls here; for every other, the expectation is the layer this page owns. Changes
-        stage and apply like every other settings edit.
-      </div>
-      <div class="controls">
-        <label>weirling <select id="st-wl-select"><option value="">loading…</option></select></label>
-        <span class="muted" id="st-wl-note"></span>
-      </div>
-      <div id="wl-expectation" class="hidden">
-        <h3>Expectation <span class="muted" id="st-wl-exp-head"></span></h3>
-        <p class="muted">What this hub HOLDS the weirling to; a sensor that reports otherwise
-          shows the difference on the Weirlings tab. This sets the expectation, not the
-          sensor's own runtime.</p>
-        <div class="controls">
-          <label>segment <input id="st-wl-segment" type="text" placeholder="the segment this weirling covers, in your words" spellcheck="false" autocomplete="off"></label>
-          <label>expected mode <select id="st-wl-mode"><option value="loch">loch</option><option value="siphon">siphon</option></select></label>
-          <label>address <input id="st-wl-address" type="text" placeholder="where it reports from, when known" spellcheck="false" autocomplete="off"></label>
-          <label>note <input id="st-wl-decl-note" type="text" placeholder="anything the next reader should know" spellcheck="false" autocomplete="off"></label>
-          <button id="st-wl-save">Save expectation</button>
-          <span class="muted" id="st-wl-save-result"></span>
-        </div>
-      </div>
-      <div id="wl-sensor-config" class="hidden">
-        <h3>Runtime settings <span id="st-wl-head" class="muted"></span></h3>
-        <div id="st-sensor" class="grid-inline"></div>
-        <p class="muted hidden" id="st-sensor-req"></p>
-        <!--
-          SONAR: the one-click setup for siphon mode. The survey itself is read-only (ARP
-          requests only, nothing changed); its recommendations become ordinary PENDING
-          CHANGES, reviewed and applied like any other edit. The "?" explains that, because
-          a button that sweeps the network deserves the explanation up front -- and the
-          explanation is part of the button, not a separate doc.
-        -->
-        <div class="controls sonar-row">
-          <button id="st-sonar" type="button">Sonar</button>
-          <button class="setting-help-btn" id="st-sonar-help" type="button"
-                  aria-label="explain Sonar" aria-expanded="false"
-                  title="what Sonar does">i</button>
-        </div>
-        <div id="st-sonar-note" class="muted sonar-note"></div>
-        <div id="st-sonar-help-text" class="setting-help hidden">
-          Sonar surveys the network the capture interface is ON and pre-fills the siphon
-          settings for you: it reads the interface's segment, sends one ARP sweep (the same
-          "who has this address?" question every host on your LAN asks constantly) to find
-          which addresses are alive and which are free, checks the gateway, and stages the
-          result as pending changes below — segment, address, gateway, and targets. Nothing
-          is written and nothing is intercepted: the recommendations are ordinary staged
-          changes you can edit or discard, and they apply only when you press Apply.
-        </div>
-        <!--
-          TEST RUN: the siphon probe. Runs the REAL intercept for 30 seconds through the
-          worker's own supervision, then reverts the mode to loch. It needs siphon
-          capabilities (the sensor overlay), which the note area states before anything
-          happens. The "?" explains exactly what runs and exactly what it costs, because
-          this is the one button on the page that briefly puts the sensor in the path.
-        -->
-        <div class="controls">
-          <button id="st-test" type="button">Test run (30s)</button>
-          <button class="setting-help-btn" id="st-test-help" type="button"
-                  aria-label="explain the test run" aria-expanded="false"
-                  title="what the test run does">i</button>
-        </div>
-        <div id="st-test-note" class="muted sonar-note"></div>
-        <div id="st-test-help-text" class="setting-help hidden">
-          A test run switches the sensor to siphon mode for 30 seconds, lets the worker
-          run the real intercept (the same ARP-forge-and-relay your traffic would see),
-          then switches back to loch and stops it — the mappings are restored on the
-          worker's normal shutdown path. It is a probe, not a commitment: while it runs,
-          Weirvern is genuinely in the traffic path for the hosts the plan names. It
-          needs the siphon capabilities on the sensor node (the overlay), and a complete
-          plan (segment, address, gateway, targets). The result below says which hosts
-          were intercepted and that the mode was put back.
-        </div>
-      </div>
-      <div id="wl-sensor-remote" class="hidden">
-        <p class="muted">Runtime settings live on the box that runs this sensor. What this hub
-          can hold it to — the segment it covers and the mode it should run — is the
-          expectation above.</p>
-        <p class="muted">To change the runtime of the hub's OWN sensor — mode, plan, Sonar and
-          the test run — pick it above; those controls appear in place of this note.</p>
-      </div>
-    </div>
 
     <div class="card">
       <h2>Settings <span class="muted" id="st-window"></span> <button class="info-btn" data-info="st-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>

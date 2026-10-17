@@ -279,27 +279,28 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert '"/api/settings"' in src, "there is no /api/settings route"
 
 
-def test_the_sensor_settings_live_on_the_settings_page_behind_a_selector():
-    """The operator, 2026-10-16: "move weirling setting back to the settings page. Create a
-    section where you select the wierling and then set setting. The wierling tab should be
-    status and performance and registration."
+def test_the_sensor_controls_live_in_the_weirlings_drill_down():
+    """The operator, 2026-10-17: "Pull weirling settings out of settings tab... I want the
+    weirlings tab to have each sensor its nics, a sonar button, and a mode selection. And
+    status." This SUPERSEDES the 2026-10-16 "settings page behind a selector" design.
 
-    The honest boundary is unchanged -- a runtime can only be changed on the box that runs it --
-    so the selector mounts the live controls for the LOCAL row and the sentence for every other;
-    the Weirlings tab keeps status, performance and registration, and points here.
+    The honest boundary is unchanged -- a runtime can only be changed on the box that runs the
+    sensor -- so the drill-down shows the controls for the LOCAL row (the runtime's own box)
+    and hides them, rather than lying, for every other selection.
     """
     index = (WEB / "index.html").read_text()
     settings = index.split('id="view-settings"')[1].split("</section>")[0]
     weirlings = index.split('id="view-weirlings"')[1].split("</section>")[0]
-    for element in ("st-sensor", "st-sonar", "st-test"):
-        assert f'id="{element}"' in settings, f"#{element} is not on the Settings page"
-        assert f'id="{element}"' not in weirlings, (
-            f"#{element} is still mounted in the Weirlings view; the settings moved back to "
-            f"the Settings page"
+    for element in ("st-sensor", "st-sonar", "st-test", "wl-mode-select", "wl-runtime"):
+        assert f'id="{element}"' in weirlings, f"#{element} is not in the Weirlings view"
+        assert f'id="{element}"' not in settings, (
+            f"#{element} is still mounted on the Settings page; the panel moved to the "
+            f"sensor's drill-down"
         )
-    assert 'id="st-wl-select"' in settings, "the Settings page has no weirling selector"
-    assert "Weirling settings" in weirlings, (
-        "the Weirlings drill-down must point at Settings -> Weirling settings")
+    assert 'id="st-wl-select"' not in settings, "the scrapped weirling selector survives"
+    assert 'id="wl-id"' not in index, "the standalone register card survives"
+    # The NICs must render per sensor -- the operator asked for them by name.
+    assert "NICs" in (WEB / "weirlings.js").read_text()
 
 
 # ── the version row, which reported a version the deployment was not running ───────────────

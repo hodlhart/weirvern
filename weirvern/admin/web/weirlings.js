@@ -102,7 +102,7 @@ async function loadWeirlings() {
     summaryBox.appendChild(el("p", { class: "empty",
       text: `Fleet unknown — ${d.reason || "the registry did not answer"}.` }));
     document.getElementById("wl-count").textContent = "";
-    emptyRow(document.querySelector("#wl-table tbody"), 7,
+    emptyRow(document.querySelector("#wl-table tbody"), 2,
       "The fleet cannot be shown while the registry is unreadable.");
     return;
   }
@@ -158,7 +158,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
   const showRevoked = document.getElementById("wl-revoked").checked;
 
   if (!rows.length) {
-    emptyRow(tbody, 7, (document.getElementById("wl-problems-only").checked
+    emptyRow(tbody, 2, (document.getElementById("wl-problems-only").checked
       ? "No weirling has a problem."
       : "No sensors yet. Register one above, or point a sensor's exporter at this hub."));
   }
@@ -181,43 +181,15 @@ function renderWeirlings(rows, revoked, revokedReason) {
       r.note ? el("div", { class: "muted", text: r.note }) : null,
     ].filter(Boolean)));
 
-    tr.appendChild(el("td", {}, [wlStateChip(r.state)]));
-
-    // The address, plus what the sensor REPORTED for its segment when the two disagree -- the
-    // declaration and the observation are different facts.
+    // EACH SENSOR AND ITS STATUS -- the operator, 2026-10-17 ("I don't need all the extra
+    // info... just each sensor and their status"). The chip carries the state and its colour;
+    // the age rides beside it because "stale" without "for how long" is half the fact.
+    // Everything else -- address, segments, modes, loss, findings -- is one click away in the
+    // drill-down, which was always where the full story lived.
     tr.appendChild(el("td", {}, [
-      el("span", { class: "mono", text: r.address || "—" }),
+      wlStateChip(r.state),
+      el("span", { class: "muted", text: " " + wlAge(r.age_s) }),
     ]));
-
-    tr.appendChild(el("td", {}, [
-      el("span", { text: r.segment || (r.reported_segment || "—") }),
-      (r.segment && r.reported_segment
-        && r.segment.toLowerCase() !== r.reported_segment.toLowerCase())
-        ? el("div", { class: "muted", text: `reports: ${r.reported_segment}` }) : null,
-    ].filter(Boolean)));
-
-    tr.appendChild(el("td", { class: "mono", text: wlAge(r.age_s) }));
-    tr.appendChild(el("td", { class: "mono", text: wlLoss(r.capture_loss_pct) }));
-
-    // THE ROW SHOWS THE MOST IMPORTANT FINDING, NOT THE FIRST ONE -- and the difference is a real
-    // defect this harness caught. The server appends findings in classification order, so for a
-    // never-seen in-path sensor the first is the generic "registered but has never reported",
-    // while the URGENT one ("this segment may be waiting on an intercept that has never run")
-    // is second. Showing only the first meant the most consequential sentence in the fleet never
-    // reached the screen until the operator happened to click, which inverts the point of the
-    // view: the row is what tells them whether to click at all.
-    //
-    // So the row prefers an IN-PATH finding when there is one, falling back to the first. The
-    // remaining findings are counted, not hidden: "and 2 more" is what sends someone to the
-    // drill-down rather than leaving them to assume the row said everything.
-    const findings = r.findings || [];
-    const urgent = findings.find((f) => /in-path|IN-PATH/.test(f)) || findings[0] || "";
-    const shown = urgent.length > 90 ? urgent.slice(0, 88) + "…" : urgent;
-    const rest = findings.length - (urgent ? 1 : 0);
-    tr.appendChild(el("td", { class: "muted" }, [
-      el("span", { text: shown }),
-      rest > 0 ? el("div", { class: "muted", text: `and ${rest} more — open the sensor` }) : null,
-    ].filter(Boolean)));
 
     tbody.appendChild(tr);
   }
@@ -237,12 +209,11 @@ function renderWeirlings(rows, revoked, revokedReason) {
           el("span", { class: "mono", text: r.sensor_id }),
           el("span", { class: "muted", text: " (revoked)" }),
         ]));
-        tr.appendChild(el("td", {}, [el("span", { class: "chip muted", text: "revoked" })]));
-        tr.appendChild(el("td", { class: "mono", text: r.address || "—" }));
-        tr.appendChild(el("td", { text: r.segment || "—" }));
-        tr.appendChild(el("td", { class: "mono", text: "—" }));
-        tr.appendChild(el("td", { class: "mono", text: "—" }));
-        tr.appendChild(el("td", { class: "muted", text: r.revoked_at ? `retired ${r.revoked_at}` : "" }));
+        tr.appendChild(el("td", {}, [
+          el("span", { class: "chip muted", text: "revoked" }),
+          el("span", { class: "muted",
+                       text: r.revoked_at ? ` retired ${r.revoked_at}` : "" }),
+        ]));
         tbody.appendChild(tr);
       }
     }
@@ -295,6 +266,26 @@ async function openWeirling(sensorId) {
   wlDetail = r;
   body.replaceChildren();
 
+  // THE RUNTIME CONTROLS: only where they mean something (a runtime can only be changed on
+  // the box that runs the sensor); hidden -- never lying -- for every other selection.
+  const runtime = document.getElementById("wl-runtime");
+  if (runtime) runtime.classList.toggle("hidden", !r.local);
+  const wlSel = document.getElementById("wl-mode-select");
+  if (wlSel) {
+    wlSel.value = (String(r.reported_mode || "").toLowerCase() === "siphon")
+      ? "siphon" : "loch";
+  }
+  const wlSonarNote = document.getElementById("st-sonar-note");
+  if (wlSonarNote) wlSonarNote.textContent = "";
+  const wlTestNote = document.getElementById("st-test-note");
+  if (wlTestNote) wlTestNote.textContent = "";
+  const wlAdv = document.getElementById("wl-advanced");
+  if (wlAdv) wlAdv.open = false;   // each sensor's panel starts collapsed
+  if (r.local && !document.querySelector("#st-sensor .setting")) {
+    // The Advanced grid is filled by the settings machinery; open it on demand.
+    try { await loadSettings(); } catch (_e) { /* the grid simply stays empty */ }
+  }
+
   // The findings FIRST, because they are the reason the operator opened this. A state word alone
   // does not say whether "stale" means the box is off or its capture died.
   const findings = r.findings || [];
@@ -306,6 +297,8 @@ async function openWeirling(sensorId) {
 
   const facts = [
     ["state", wlStateChip(r.state)],
+    ["NICs", el("span", { class: "mono",
+      text: (r.interfaces || []).join(", ") || "— (not reported)" })],
     ["address", el("span", { class: "mono", text: r.address || "— (not known yet)" })],
     ["declared segment", el("span", { text: r.segment || "— (not declared)" })],
     ["reported segment", el("span", { text: r.reported_segment || "— (not reported)" })],
@@ -330,11 +323,6 @@ async function openWeirling(sensorId) {
     dl.appendChild(el("dd", {}, [v]));
   }
   body.appendChild(dl);
-
-  body.appendChild(el("p", { class: "muted",
-    text: "Runtime settings for this weirling live in Settings \u2192 Weirling settings, " +
-          "where you pick the weirling first \u2014 only the one this hub runs can be " +
-          "changed here." }));
 
   // ── the controls, only where they MEAN something.
   const registerBtn = document.getElementById("wl-detail-register");
@@ -382,98 +370,10 @@ async function openWeirling(sensorId) {
  * shown -- the weirling this hub runs gets the live controls, every other selection gets the
  * sentence saying where its runtime actually lives. The choice is remembered per session.
  */
-async function wlPopulateSelector() {
-  const sel = document.getElementById("st-wl-select");
-  if (!sel || sel.dataset.filled) return;
-  let rows = [];
-  try {
-    const d = await getJSON("/api/weirlings");
-    rows = d.sensors || [];
-  } catch (err) {
-    const note = document.getElementById("st-wl-note");
-    if (note) note.textContent = `could not read the fleet: ${(err && err.message) || err}`;
-    return;
-  }
-  // REGISTERED ROWS ONLY. A heartbeat under a name nobody declared ("Weirvern" beside the
-  // registered "weirvern", measured live) is a fact for the Weirlings tab -- where it shows as
-  // unregistered and can be registered -- not a choice on a settings page: there is no weirling
-  // there to configure, and offering it would suggest there is.
-  const registered = rows.filter((r) => r.registered);
-  sel.replaceChildren(el("option", { value: "",
-    text: registered.length ? "pick a weirling" : "none registered" }));
-  let localId = "";
-  for (const r of registered) {
-    sel.appendChild(el("option", { value: r.sensor_id,
-      text: r.sensor_id + (r.local ? " (this hub)" : "") }));
-    if (r.local) localId = r.sensor_id;
-  }
-  const keep = sessionStorage.getItem("weirvern-wl-settings") || localId
-    || (registered[0] || {}).sensor_id || "";
-  if (keep) sel.value = keep;
-  sel.dataset.filled = "1";
-  await wlSettingsFor(sel.value);
-}
-
-async function wlSettingsFor(sensorId) {
-  const cfg = document.getElementById("wl-sensor-config");
-  const remote = document.getElementById("wl-sensor-remote");
-  const head = document.getElementById("st-wl-head");
-  const note = document.getElementById("st-wl-note");
-  if (!cfg || !remote) return;
-  if (!sensorId) {
-    cfg.classList.add("hidden");
-    remote.classList.add("hidden");
-    const exp = document.getElementById("wl-expectation");
-    if (exp) exp.classList.add("hidden");
-    return;
-  }
-  sessionStorage.setItem("weirvern-wl-settings", sensorId);
-  try {
-    const d = await getJSON(`/api/weirlings/detail?sensor=${encodeURIComponent(sensorId)}`);
-    const r = (d && d.sensor) || {};
-    if (head) head.textContent = `\u2014 ${sensorId}${r.local ? " (runs on this hub)" : ""}`;
-    // THE EXPECTATION IS EDITABLE FOR EVERY WEIRLING (2026-10-17). The hub cannot reach a
-    // remote runtime -- but it ALWAYS holds an expectation, and that layer is what this page
-    // can set. Before this, a non-local selection was a sentence with no fields: an operator
-    // reported twice that the page "can't change the weirlings settings".
-    const exp = document.getElementById("wl-expectation");
-    if (exp) {
-      exp.classList.remove("hidden");
-      const expHead = document.getElementById("st-wl-exp-head");
-      if (expHead) expHead.textContent = `\u2014 ${sensorId}`;
-      const seg = document.getElementById("st-wl-segment");
-      const mode = document.getElementById("st-wl-mode");
-      const addr = document.getElementById("st-wl-address");
-      const dnote = document.getElementById("st-wl-decl-note");
-      if (seg) seg.value = r.segment || "";
-      if (mode) mode.value = (r.expected_mode === "siphon") ? "siphon" : "loch";
-      if (addr) addr.value = r.address || "";
-      if (dnote) dnote.value = r.note || "";
-      const res = document.getElementById("st-wl-save-result");
-      if (res) res.textContent = "";
-    }
-    if (r.local) {
-      cfg.classList.remove("hidden");
-      remote.classList.add("hidden");
-      if (note) note.textContent = "Changes stage and apply like every settings edit.";
-    } else {
-      cfg.classList.add("hidden");
-      remote.classList.remove("hidden");
-      if (note) note.textContent = "";
-    }
-  } catch (err) {
-    cfg.classList.add("hidden");
-    remote.classList.add("hidden");
-    if (note) note.textContent = `could not read ${sensorId}: ${(err && err.message) || err}`;
-  }
-}
 
 function wireWeirlings() {
   const reload = document.getElementById("wl-reload");
   if (reload) reload.addEventListener("click", () => loadWeirlings().catch(showError));
-
-  const pick = document.getElementById("st-wl-select");
-  if (pick) pick.addEventListener("change", () => wlSettingsFor(pick.value));
 
   for (const id of ["wl-problems-only", "wl-revoked"]) {
     const box = document.getElementById(id);
@@ -483,8 +383,8 @@ function wireWeirlings() {
   const save = document.getElementById("wl-save");
   if (save) save.addEventListener("click", () => saveWeirling());
 
-  const saveExp = document.getElementById("st-wl-save");
-  if (saveExp) saveExp.addEventListener("click", () => saveWeirlingExpectation().catch(showError));
+  const modeSel = document.getElementById("wl-mode-select");
+  if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
   const cancel = document.getElementById("wl-cancel");
   if (cancel) cancel.addEventListener("click", () => clearWeirlingForm());
@@ -519,39 +419,46 @@ function clearWeirlingForm() {
   document.getElementById("wl-save-note").textContent = "";
 }
 
-async function saveWeirlingExpectation() {
-  // THE EXPECTATION LAYER'S WRITE (2026-10-17). Posts the same fields the register form does;
-  // the store MERGES, so an empty field keeps what was declared before rather than blanking it.
-  const res = document.getElementById("st-wl-save-result");
-  const sid = (document.getElementById("st-wl-select") || {}).value || "";
-  if (!sid) {
-    if (res) res.textContent = "Pick a weirling first.";
-    return;
-  }
-  const body = {
-    sensor_id: sid,
-    segment: ((document.getElementById("st-wl-segment") || {}).value || "").trim(),
-    address: ((document.getElementById("st-wl-address") || {}).value || "").trim(),
-    expected_mode: ((document.getElementById("st-wl-mode") || {}).value || "loch"),
-    note: ((document.getElementById("st-wl-decl-note") || {}).value || "").trim(),
-  };
-  if (res) res.textContent = "saving…";
-  let d;
+/** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...
+ * and a sonar button" per sensor, "as easy as clicking sonar and enabling it"). Selecting
+ * siphon runs Sonar first when this session has not surveyed yet, stages what it found plus
+ * the mode, and applies through the ordinary plan-and-apply path (the server's gates
+ * included). Selecting loch applies the mode alone. The select reverts if refused. */
+async function wlApplyMode() {
+  const sel = document.getElementById("wl-mode-select");
+  if (!sel || sel.disabled) return;
+  const want = sel.value === "siphon" ? "siphon" : "loch";
+  const prev = (wlDetail && String(wlDetail.reported_mode || "").toLowerCase() === "siphon")
+    ? "siphon" : "loch";
+  sel.disabled = true;
   try {
-    d = await postJSON("/api/weirlings/register", body);
-  } catch (err) {
-    if (res) res.textContent = `Could not save: ${(err && err.message) || err}`;
-    return;
+    if (want === "siphon") {
+      if (!SONAR_STATE.result || SONAR_STATE.result.ok !== true) {
+        const res = await runSonar();
+        if (!res || res.ok !== true) { sel.value = prev; return; }
+      }
+      stageSonarRecommendations(SONAR_STATE.result);
+    }
+    const row = SETTINGS_ROWS["sensor_mode"];
+    if (String(row ? row.value : "").toLowerCase() !== want) {
+      stageChange("sensor_mode", want, row ? String(row.value) : "");
+    }
+    if (!Object.keys(STAGE.changes).length) {
+      const n = document.getElementById("wl-detail-note");
+      if (n) n.textContent = "Nothing to change — already " + want + ".";
+      return;
+    }
+    await applyStage(true);
+    const msg = LAST_APPLY.text || "applied.";
+    if (wlDetail && wlDetail.sensor_id) {
+      await openWeirling(wlDetail.sensor_id).catch(() => {});
+    }
+    // AFTER the re-open: it clears the note while rebuilding the panel.
+    const note2 = document.getElementById("wl-detail-note");
+    if (note2) note2.textContent = msg;
+  } finally {
+    sel.disabled = false;
   }
-  if (!d || d.ok !== true) {
-    // The server's own refusal, verbatim: it names the fix.
-    if (res) res.textContent = `Refused: ${(d && d.error) || "the server did not accept this"}`;
-    return;
-  }
-  await wlSettingsFor(sid);
-  if (res) res.textContent = `Saved ${sid}: this hub now holds it to ${body.expected_mode}.`;
-  // The fleet list shows expectations against reports; keep it current for the next glance.
-  await loadWeirlings().catch(() => {});
 }
 
 async function saveWeirling() {

@@ -2433,7 +2433,7 @@ def _sensor_rows(client) -> tuple[list[dict], str | None]:
         rows = list(client.query(
             "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
               "restores, refreshes, failures, ts, "
-              "capture_loss_pct, packets_recv, packets_dropped "
+              "capture_loss_pct, packets_recv, packets_dropped, interfaces "
             "FROM weirvern.sensor_status FINAL "
             "ORDER BY ts DESC"
         ).named_results())
@@ -2764,7 +2764,8 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
               failures: list[str] | None = None,
               capture_loss_pct: float | None = None,
               packets_recv: int | None = None,
-              packets_dropped: int | None = None) -> bool:
+              packets_dropped: int | None = None,
+              interfaces: list[str] | None = None) -> bool:
     """Write one heartbeat row. Returns whether it landed.
 
     Never raises: a sensor that cannot report its status must still capture traffic. The
@@ -2781,13 +2782,14 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
               # means "measured, nothing lost", so a sensor with no capture_loss.log would
               # read as a perfect one.
               None if capture_loss_pct is None else float(capture_loss_pct),
-              _opt_count(packets_recv), _opt_count(packets_dropped)]],
+              _opt_count(packets_recv), _opt_count(packets_dropped),
+              [str(n) for n in (interfaces or [])]]],
             column_names=["sensor_id", "mode", "iface", "segment", "hosts", "mappings",
                           "running", "uptime_s", "restores", "refreshes", "failures",
                           "ts",
                           # NEW COLUMNS GO LAST, so the positional list above cannot
                           # misalign against a reader or table that predates them.
-                          "capture_loss_pct", "packets_recv", "packets_dropped"],
+                          "capture_loss_pct", "packets_recv", "packets_dropped", "interfaces"],
         )
         return True
     except Exception as exc:  # noqa: BLE001

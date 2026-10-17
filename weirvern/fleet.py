@@ -262,6 +262,9 @@ class SensorHealth:
     reported_address: str = ""
     expected_mode: str = ""
     reported_mode: str = ""
+    # THE SENSOR'S OWN NICS, from its heartbeat (its netns view, filtered of software
+    # interfaces). Empty means not reported; the reader renders a dash, never a guess.
+    interfaces: list[str] = field(default_factory=list)
     enabled: bool = True
     registered: bool = False
     age_s: float | None = None
@@ -343,6 +346,7 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         reported_segment=str((newest or {}).get("segment") or ""),
         expected_mode=(reg.expected_mode if reg else ""),
         reported_mode=reported_mode,
+        interfaces=list((newest or {}).get("interfaces") or []),
         enabled=(reg.enabled if reg else False),
         registered=bool(reg is not None),
         age_s=age,

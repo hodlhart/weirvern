@@ -443,7 +443,16 @@ function settingControl(row, shown, spec) {
       if (["false", "0", "no", "off", "disabled"].includes(t)) return "false";
       return String(v);
     };
-    const on = canon(shown) === "true";
+    // A VALUED TOGGLE (netflow, 2026-10-17): some switches stage a domain value rather than a
+    // boolean -- "off" / "upstream" for the flow probe. The spec carries the two values; the
+    // checkbox stays one box, and everything OFF-spelled ("off", "", "0") reads as unchecked.
+    const onV = s.on_value !== undefined ? String(s.on_value) : "true";
+    const offV = s.off_value !== undefined ? String(s.off_value) : "false";
+    const valued = s.on_value !== undefined || s.off_value !== undefined;
+    const on = valued ? (String(shown).toLowerCase() !== offV
+                         && String(shown).toLowerCase() !== "off"
+                         && String(shown) !== "")
+                      : canon(shown) === "true";
     // The state word beside the box: "checked means enabled, right?" must not be a guess, so the
     // switch says on/off in words and the word follows the box.
     const stateWord = el("span", { class: "setting-toggle-state", text: on ? "on" : "off" });
@@ -453,7 +462,7 @@ function settingControl(row, shown, spec) {
       on: { change: (ev) => {
         const now = ev.target.checked;
         stateWord.textContent = now ? "on" : "off";
-        stageChange(key, now ? "true" : "false", canon(row.value));
+        stageChange(key, now ? onV : offV, valued ? String(row.value) : canon(row.value));
       } },
     });
     box.checked = on;
@@ -524,36 +533,6 @@ function effectiveValue(key) {
   return row ? String(row.value) : "";
 }
 
-/** THE PLAN'S OWN REQUIREMENTS, stated where the plan is edited (2026-10-17).
- *
- * Siphon refuses to run without a complete plan, and `SENSOR_MODE=siphon` with fields missing
- * is a sensor that believes it is intercepting while nothing is diverted. The row help texts
- * carry the pieces; nothing assembled them into one sentence, which is what an operator
- * checking "did I set everything?" actually needs. Effective values (staged overrides count),
- * so the sentence tracks what an Apply would write.
- */
-function updateSensorRequirements() {
-  const node = document.getElementById("st-sensor-req");
-  if (!node) return;
-  const mode = effectiveValue("sensor_mode");
-  const missing = ["intercept_segment", "intercept_addr", "intercept_gateway", "intercept_targets"]
-    .filter((k) => {
-      const v = effectiveValue(k).trim();
-      return !v || v === "(not set)";
-    });
-  if (mode === "siphon" && missing.length) {
-    const names = { intercept_segment: "segment", intercept_addr: "address",
-                    intercept_gateway: "gateway", intercept_targets: "targets" };
-    node.textContent = "Siphon is set but the plan is incomplete (missing: "
-      + missing.map((k) => names[k] || k).join(", ")
-      + ") — the intercept refuses to run until every field is set. Sonar can fill them in.";
-    node.classList.remove("hidden");
-  } else {
-    node.textContent = "";
-    node.classList.add("hidden");
-  }
-}
-
 function stageChange(key, value, original) {
   // A new edit supersedes the previous apply's message: leaving a stale "saved" line next to a
   // fresh staged change would claim a state that no longer holds.
@@ -586,8 +565,6 @@ function renderStage() {
   if (count) count.textContent = keys.length ? `${keys.length} staged` : "";
   if (apply) apply.disabled = keys.length === 0;
   if (discard) discard.disabled = keys.length === 0;
-  // The sensor panel's requirement sentence tracks staged edits too (see the function).
-  updateSensorRequirements();
 
   list.replaceChildren();
   if (!keys.length) {
@@ -644,8 +621,12 @@ async function planStage() {
   return STAGE.plan;
 }
 
-/** Apply, then report exactly what happened. */
-async function applyStage() {
+/** Apply, then report exactly what happened.
+ *
+ * skipWarnConfirm is for the ONE-CLICK enable (operator, 2026-10-17: the user just enables
+ * it): the enable already IS the confirmation -- the button says what it does. The manual
+ * Apply keeps its warned-change dialog. */
+async function applyStage(skipWarnConfirm) {
   const note = document.getElementById("st-stage-note");
   const keys = Object.keys(STAGE.changes);
   if (!keys.length) return;
@@ -660,7 +641,7 @@ async function applyStage() {
     const stagedKeys = new Set(Object.keys(STAGE.changes));
     const warns = (STAGE.plan.proposals || [])
       .filter((p) => p.warning && stagedKeys.has(p.key));
-    if (warns.length) {
+    if (warns.length && !skipWarnConfirm) {
       const ok = window.confirm(
         "This change is allowed but costly:\n\n" +
         warns.map((p) => `${p.key}: ${p.warning}`).join("\n\n") +
@@ -789,7 +770,6 @@ async function runSonar() {
   try {
     const res = await postJSON("/api/settings/sonar", {});
     SONAR_STATE.result = res;
-    stageSonarRecommendations(res);
     renderSonarNote(res);
     return res;
   } catch (err) {
@@ -958,6 +938,9 @@ async function loadSettings() {
     // enforces this on Apply -- the UI is rendering the server's answer, not deciding policy.
     const canWrite = Boolean(data.writes && data.writes.enabled);
     for (const r of rows) {
+      // The mode's control is the weirlings drill-down's selector; a raw row here would be a
+      // second, differently-named control for one value.
+      if (r.key === "sensor_mode") continue;
       // Provenance, so a blank is not ambiguous. "The setting does not exist" and "the setting is
       // unset" used to render identically -- three rows for non-existent fields survived review
       // that way. An env-only key is legitimate (the CLI reads it) and is labelled as such.
@@ -2131,9 +2114,6 @@ function showView(name) {
   }
   if (name === "settings") {
     loadSettings().then(clearError).catch(showError);
-    // The weirling selector lives on this page now; populate it (idempotent) and show the
-    // chosen weirling's panel.
-    wlPopulateSelector().catch(() => {});
   }
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on

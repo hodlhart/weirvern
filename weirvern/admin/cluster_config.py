@@ -312,7 +312,12 @@ SETTING_CONTROLS: dict[str, dict] = {
     "INTERCEPT_GATEWAY": {"control": "text"},
     "CHANNEL_UPSTREAM": {"control": "text"},
     "CHANNEL_DOWNSTREAM": {"control": "text"},
-    "CHANNEL_NETFLOW": {"control": "select", "options": ["off", "upstream", "downstream"]},
+    # A CHECKBOX, NOT A THREE-WAY SELECT (operator, 2026-10-17: "I need a check box for
+    # enabling netflow"). The fine print -- which port the probe samples -- is a distinction
+    # without a difference (either port sees every frame crossing the box); off/on is the
+    # real decision. The staged values stay in the validator's vocabulary ("upstream"/"off"),
+    # so nothing downstream learns a new spelling.
+    "CHANNEL_NETFLOW": {"control": "toggle", "on_value": "upstream", "off_value": "off"},
     "SLUICE_ENABLED": {"control": "toggle"},
     # Step is part of the spec (browsers round float inputs without one); bounds mirror
     # NUMERIC_RANGES, which the validator enforces -- a control that can offer a value the

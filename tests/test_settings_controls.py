@@ -173,8 +173,8 @@ def test_select_options_match_what_the_validator_accepts():
     sluice policy and the channel flow selection joined the set later, and a hand-written list
     would have missed exactly those two."""
     selects = {k: v for k, v in cc.SETTING_CONTROLS.items() if v["control"] == "select"}
-    assert {"SENSOR_MODE", "WEIRVERN_REVERSE_DNS", "SLUICE_CRITICALITY",
-            "CHANNEL_NETFLOW"} <= set(selects), "a select control disappeared from the registry"
+    assert {"SENSOR_MODE", "WEIRVERN_REVERSE_DNS",
+            "SLUICE_CRITICALITY"} <= set(selects), "a select control disappeared from the registry"
     for key, spec in selects.items():
         for option in spec["options"]:
             cc.validate(key, option)  # raises if the dropdown offers an illegal value
@@ -182,6 +182,15 @@ def test_select_options_match_what_the_validator_accepts():
         # not a suggestion list.
         with pytest.raises(cc.ConfigError):
             cc.validate(key, "nonsense-mode")
+    # A VALUED TOGGLE (the netflow checkbox, operator 2026-10-17: "a check box for enabling
+    # netflow"): both values it can stage must be values the validator accepts -- a checkbox
+    # that can produce an illegal value is the same trap a bad dropdown would be.
+    valued = {k: v for k, v in cc.SETTING_CONTROLS.items()
+              if v["control"] == "toggle" and ("on_value" in v or "off_value" in v)}
+    assert "CHANNEL_NETFLOW" in valued, "the netflow checkbox disappeared from the registry"
+    for key, spec in valued.items():
+        cc.validate(key, spec["on_value"])
+        cc.validate(key, spec["off_value"])
 
 
 def test_the_mode_dropdown_covers_exactly_the_implemented_modes():

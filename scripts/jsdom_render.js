@@ -101,13 +101,13 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
-                     runSonar, stageSonarRecommendations, renderSonarNote,
+                     runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                    NF_FILTERS, nfSetFilter, nfRemoveChip,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
-                   loadDns, dnClear, dnApply, loadBlocked, wlPopulateSelector, wlSettingsFor,
+                   loadDns, dnClear, dnApply, loadBlocked,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
@@ -116,7 +116,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadRetrain, retrainAction,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
-                   wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, saveWeirlingExpectation,
+                   wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    document,
                    document };
@@ -236,7 +236,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
     available: true, reason: "",
     writes: { enabled: true, reason: "" },
     caller: { username: "", role: "", via: "" },
-    editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "intercept_segment",
+    editable_keys: ["retrain_every_h", "base_threshold", "sensor_mode", "channel_netflow", "intercept_segment",
                     "pushover_enabled"],
     // The control spec rides with the payload (see cluster_config.SETTING_CONTROLS): the browser
     // renders the natural control from the SERVER's rule -- bounds and options included -- so
@@ -246,6 +246,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       base_threshold: { control: "number", min: 0, max: 1, step: 0.01, unit: "a score fraction" },
       sensor_mode: { control: "select", options: ["loch", "siphon"] },
       intercept_segment: { control: "text" },
+      channel_netflow: { control: "toggle", on_value: "upstream", off_value: "off" },
       pushover_enabled: { control: "toggle" },
     },
     titles: { detect: "Detection", sensor: "Sensor", runtime: "Storage and runtime" },
@@ -270,6 +271,9 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
         { key: "intercept_targets", label: "intercept targets", value: "(not set)",
           secret: false, source: "env",
           help: "'*' means every host on the segment; empty means nothing is intercepted." },
+        { key: "channel_netflow", label: "channel netflow", value: "off", secret: false,
+          source: "env",
+          help: "Whether the traffic crossing the in-line channel is summarised into NetFlow." },
         // Deliberately ALREADY EQUAL to what the Sonar stub recommends: this row is how the
         // harness proves the staging dedupe (an unchanged recommendation stages nothing).
         { key: "intercept_gateway", label: "intercept gateway", value: "198.51.100.1",
@@ -835,6 +839,7 @@ const WEIRLINGS_PAYLOAD = {
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
       local: true,
       age_s: 4.0, last_seen: "2026-09-23T12:00:00+00:00",
+      interfaces: ["eth1", "eth2"],
       capture_loss_pct: 0.0, packets_recv: 900000, packets_dropped: 0, hosts: 12,
       note: "ops owns this one", stale_after_s: 45,
       findings: ["reporting normally, last heard 4s ago."],
@@ -846,6 +851,7 @@ const WEIRLINGS_PAYLOAD = {
       age_s: 900.0, last_seen: "2026-09-23T11:45:00+00:00",
       capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
       note: "", stale_after_s: 45,
+      interfaces: ["eth0"],
       findings: ["last reported 900s ago, past the 45s freshness window, so it has stopped. It ran "
         + "and then stopped, which is different from never starting: look for why it died rather "
         + "than why it never came up.",
@@ -1927,7 +1933,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // The button must exist with its help, a click must hit the sonar route, and the
   // recommendations must land as STAGED changes (the pending-changes review step) rather
   // than being applied straight away.
-  check("the Sonar button exists with the sensor's settings",
+  check("the Sonar button exists (in the sensor drill-down panel)",
         !!doc.getElementById("st-sonar"));
   check("the Sonar button carries its own ? explanation",
         !!doc.getElementById("st-sonar-help") &&
@@ -1936,10 +1942,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the Sonar explanation starts hidden",
         doc.getElementById("st-sonar-help-text").classList.contains("hidden"));
   const sonarBefore = POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length;
+  H.discardStage();
   await H.runSonar();
   check("Sonar POSTs to the sonar route",
         POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length === sonarBefore + 1,
         POSTED.map((r) => r.url).join(","));
+  // A standalone survey surveys and REPORTS; it stages nothing by itself (the mode selector's
+  // enable is what stages, from the same result).
+  check("a standalone survey stages nothing",
+        Object.keys(H.STAGE.changes).length === 0, JSON.stringify(H.STAGE.changes));
+  H.stageSonarRecommendations(H.SONAR_STATE.result);
   check("Sonar stages its recommendations as pending changes (not applied)",
         H.STAGE.changes && H.STAGE.changes.sensor_mode === "siphon"
         && H.STAGE.changes.intercept_segment === "198.51.100.0/24"
@@ -1990,34 +2002,28 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           note.textContent.slice(0, 220));
     H.discardStage();
   }
+  // ── NETFLOW AS A CHECKBOX (operator, 2026-10-17) ──────────────────────────────────────────
   {
-    const modeRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "sensor_mode");
-    const segRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_segment");
-    const addrRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_addr");
-    const tgtRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_targets");
-    const gwRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_gateway");
-    const restore = () => { modeRow.value = "loch"; segRow.value = "(not set)";
-                            addrRow.value = "(not set)"; tgtRow.value = "(not set)";
-                            gwRow.value = "198.51.100.1"; };
-    await H.loadSettings();
-    modeRow.value = "siphon";
-    await H.loadSettings();
-    const req = doc.getElementById("st-sensor-req");
-    check("siphon with an incomplete plan states the REQUIREMENT and names what is missing",
-          !req.classList.contains("hidden") && /incomplete/i.test(req.textContent)
-          && /segment/.test(req.textContent) && /address/.test(req.textContent)
-          && /targets/.test(req.textContent),
-          req.textContent.slice(0, 190));
-    segRow.value = "198.51.100.0/24";
-    addrRow.value = "198.51.100.250";
-    tgtRow.value = "*";
-    await H.loadSettings();
-    check("a complete plan under siphon drops the note", req.classList.contains("hidden"),
-          req.textContent.slice(0, 140));
-    restore();
-    await H.loadSettings();
-    check("loch hides it regardless of the plan", req.classList.contains("hidden"),
-          req.textContent.slice(0, 140));
+    const nfRow = doc.querySelector("#st-sensor .setting[data-key='channel_netflow']");
+    const box = nfRow && nfRow.querySelector(".setting-toggle");
+    check("netflow renders as a single checkbox, off",
+          !!box && box.type === "checkbox" && !box.checked,
+          nfRow ? nfRow.textContent.slice(0, 80) : "no channel_netflow row");
+    H.discardStage();
+    if (box) {
+      box.checked = true;
+      box.dispatchEvent(new window.Event("change", { bubbles: true }));
+      check("ticking netflow stages the probe's port value, not a boolean string",
+            H.STAGE.changes.channel_netflow === "upstream", JSON.stringify(H.STAGE.changes));
+      H.discardStage();
+      box.checked = false;
+      box.dispatchEvent(new window.Event("change", { bubbles: true }));
+      // "off" equal to what is running stages NOTHING (the dedupe every control uses);
+      // the check asserts that semantic, not a phantom change.
+      check("unticking netflow stages nothing (off is what is running)",
+            !("channel_netflow" in H.STAGE.changes), JSON.stringify(H.STAGE.changes));
+    }
+    H.discardStage();
   }
 
   // ── TEST RUN: the siphon probe ────────────────────────────────────────────────────────────
@@ -2281,9 +2287,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // it drifted the moment a group gained a row (rendered 9 against a hardcoded 10).
   const expectedRows = Object.values(SETTINGS_PAYLOAD.groups)
     .reduce((n, rows) => n + rows.length, 0);
+  // ONE payload row renders as a CONTROL, not a grid row: the sensor mode is the weirlings
+  // drill-down's selector (operator restructure, 2026-10-17), so the grid covers expected - 1.
   check("every setting renders as a key/value row, not a JSON blob",
-        vals.length === expectedRows,
-        `rendered ${vals.length} rows, payload has ${expectedRows}`);
+        vals.length === expectedRows - 1,
+        `rendered ${vals.length} rows, payload has ${expectedRows} (one is the mode selector)`);
 
   // Provenance must be visible, so a blank cannot be confused with a field that does not exist.
   const srcs = [...doc.querySelectorAll(".setting-src")].map(n => n.textContent);
@@ -2349,36 +2357,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   retrainRow.querySelector(".setting-help-btn").click();
   check("clicking ? again hides the explanation", firstHelp.classList.contains("hidden"));
 
-  // And the MOVED row's "?" works in its new home: the sensor's own explanation is still the
-  // server's text for that row, revealed by that row's button.
-  const modeRow = doc.querySelector(".setting[data-key='sensor_mode']");
-  modeRow.querySelector(".setting-help-btn").click();
-  check("the moved sensor row's ? still explains THAT row from its new home",
-        modeRow.querySelector(".setting-help").textContent.includes("loch watches"),
-        modeRow.querySelector(".setting-help").textContent.slice(0, 90));
-  modeRow.querySelector(".setting-help-btn").click();
-
-  // A choice setting is a DROPDOWN carrying the server's options. sensor_mode's row now lives
-  // with the sensor (the weirling drill-down), so the query is document-wide: the control must
-  // be the same control wherever its row renders.
-  const modeSel = doc.querySelector('select[data-key="sensor_mode"]');
-  check("a choice setting renders as a dropdown", !!modeSel);
-  const modeOpts = modeSel ? [...modeSel.options].map((o) => o.value) : [];
-  check("the dropdown carries the server's option list",
-        modeOpts.includes("loch") && modeOpts.includes("siphon"), modeOpts.join(","));
-  const postsBeforeChoice = POSTED.length;
-  if (modeSel) {
-    modeSel.value = "siphon";
-    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
-  }
-  check("choosing from the dropdown stages the choice without writing",
-        POSTED.length === postsBeforeChoice, `${POSTED.length - postsBeforeChoice} request(s) sent`);
-  check("the staged choice is the chosen value", H.STAGE.changes.sensor_mode === "siphon",
-        JSON.stringify(H.STAGE.changes));
-  if (modeSel) {
-    modeSel.value = "loch";   // back to the running value: un-stages it again
-    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
-  }
+  // THE MODE IS NOT A GRID ROW ANY MORE (operator restructure, 2026-10-17): it is the
+  // weirlings drill-down's selector -- one control for one value. Its per-sensor behavior
+  // (survey + apply) is checked in the weirlings section.
+  const wlModeSel = doc.getElementById("wl-mode-select");
+  check("the sensor mode renders as the drill-down's selector, not a grid row",
+        !doc.querySelector(".setting[data-key='sensor_mode']") && !!wlModeSel,
+        "a second control for one value is the duplication this restructure removed");
+  const wlModeOpts = wlModeSel ? [...wlModeSel.options].map((o) => o.value) : [];
+  check("the selector carries loch and siphon",
+        wlModeOpts.includes("loch") && wlModeOpts.includes("siphon"), wlModeOpts.join(","));
 
   // A numeric setting is a NUMBER input carrying the server's own bounds.
   const btNum = doc.querySelector('#view-settings input[data-key="base_threshold"]');
@@ -3302,8 +3290,12 @@ check("a NEVER-SEEN sensor is distinguishable from a STALE one",
       "both render as 'no fresh heartbeat'; collapsing them sends an operator to the logs of a "
       + "sensor that never wrote any");
 
-check("a never-seen IN-PATH sensor says the segment may be waiting",
-      wlText().includes("IN-PATH") || wlText().includes("in-path"),
+// The findings moved to the drill-down with the row strip (sensor + status only): the claim
+// still has to REACH the operator, so open the sensor and read it there.
+await H.openWeirling("edge-promised");
+const wlDetailText = () => (doc.getElementById("wl-detail-body") || {}).textContent || "";
+check("a never-seen IN-PATH sensor says the segment may be waiting (drill-down)",
+      wlDetailText().toLowerCase().includes("in-path"),
       "an in-path sensor that never came up is more urgent than a passive one and must say why");
 
 check("an UNDECLARED sensor is reported as unregistered",
@@ -3315,30 +3307,27 @@ check("a DISABLED sensor is shown as disabled, not as a fault",
       wlText().includes("disabled"),
       "switched-off sensors are not problems; raising them trains the reader to ignore the column");
 
-// ── measured-zero vs not-measured, at the DOM ────────────────────────────────────────────────
+// ── measured-zero vs not-measured, IN THE DRILL-DOWN (the rows carry sensor + status now) ───
 // The em dash is what an unmeasured value renders as. Asserting the DASH and not merely
 // "something rendered": 0.0% for a sensor that measured nothing would read as a perfect sensor.
-{
-  const rows = [...H.document.querySelectorAll("#wl-table tbody tr")];
-  const rowFor = (id) => rows.find((tr) => (tr.textContent || "").includes(id));
-  const stopped = rowFor("edge-stopped");
-  const alive = rowFor("edge-alive");
-  check("an UNMEASURED capture loss renders as a dash, not as 0.0%",
-        stopped && /\u2014|—/.test(stopped.textContent || ""),
-        "an unmeasured value rendered as 0.0% reports a sensor that has measured nothing as a "
-        + "perfect one");
-  check("a MEASURED zero loss renders as a real figure",
-        alive && (alive.textContent || "").includes("0.0%"),
-        "0.0% is 'we looked, nothing was lost' and must stay a measurement");
-}
+await H.openWeirling("edge-stopped");
+check("an UNMEASURED capture loss renders as a dash, not as 0.0%",
+      wlDetailText().includes("capture loss") && /\u2014|—/.test(wlDetailText()),
+      "an unmeasured value rendered as 0.0% reports a sensor that has measured nothing as a "
+      + "perfect one");
+await H.openWeirling("edge-alive");
+check("a MEASURED zero loss renders as a real figure",
+      wlDetailText().includes("0.0%"),
+      "0.0% is 'we looked, nothing was lost' and must stay a measurement");
 
+await H.openWeirling("edge-moved");
 check("a segment the sensor CONTRADICTS is surfaced, not silently overwritten",
-      wlText().includes("sixth floor"),
+      wlDetailText().includes("sixth floor"),
       "the declared segment and the observed one are different facts; letting the declaration "
       + "win makes a sensor covering the wrong segment look correctly placed");
 
 check("high capture loss is called out in the fleet",
-      wlText().includes("62.5"),
+      wlDetailText().includes("62.5"),
       "capture loss is the only field showing a sensor is blind to most of what is on the wire");
 
 // ── the drill-down ───────────────────────────────────────────────────────────────────────────
@@ -3420,113 +3409,75 @@ check("high capture loss is called out in the fleet",
     check("the detail's Close is WIRED, not decorative",
           H.document.getElementById("wl-detail-card").classList.contains("hidden"),
           "a control that renders and does nothing is this project's most-repeated defect class");
-    const saveBtn = H.document.getElementById("wl-save");
-    const saveNote = H.document.getElementById("wl-save-note");
-    if (saveBtn) saveBtn.click();
-    for (let i = 0; i < 40 && !(saveNote.textContent || "").includes("required"); i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    check("the register form's own Register button is WIRED too",
-          !!saveBtn && (saveNote.textContent || "").includes("required"),
-          "an empty id is refused client-side; silence here would mean the form's button is "
-          + "decorative for the same reason");
+    // The register FORM is gone (operator restructure, 2026-10-17): registration is the
+    // drill-down's one-click button (checked above), not a standalone card.
+    check("the standalone register form is gone with its card",
+          !H.document.getElementById("wl-save") && !H.document.getElementById("wl-id"));
   }
 }
 
-// ── weirling settings live on the SETTINGS page, behind a weirling SELECTOR (2026-10-16) ─────
-// The operator: "move weirling setting back to the settings page. Create a section where you
-// select the wierling and then set setting. The wierling tab should be status and performance
-// and registration." The honest boundary is unchanged -- a runtime can only be changed on the
-// box that runs it -- so the selector mounts the live controls for the LOCAL row and the
-// "where its settings live" sentence for every other; the drill-down keeps status and actions.
+// ── THE PER-SENSOR PANEL: status, NICs, mode, Sonar (operator restructure, 2026-10-17) ─────
+// "Pull weirling settings out of settings tab... I want the weirlings tab to have each sensor
+// its nics, a sonar button, and a mode selection. And status."
 {
-  const cfgHost = doc.getElementById("st-sensor");
-  check("the sensor settings grid lives inside the Settings view now",
-        !!(cfgHost && cfgHost.closest("#view-settings")),
-        "moving the panel without moving the element would leave loadSettings rendering into a "
-        + "node no operator ever opens");
-  check("Sonar and the test run moved with it",
-        !!(doc.getElementById("st-sonar") || {}).closest
-        && !!doc.getElementById("st-sonar").closest("#view-settings")
-        && !!doc.getElementById("st-test").closest("#view-settings"),
-        "half a sensor section in one view is the two-surfaces defect");
-  await H.wlPopulateSelector();
-  const sel = doc.getElementById("st-wl-select");
-  check("the Settings view carries the weirling selector",
-        !!(sel && sel.closest("#view-settings")),
-        "the ask was a section where you select the weirling first");
-  const localOption = sel ? [...sel.options].find((o) => /\(this hub\)/.test(o.textContent)) : null;
-  check("the selector names the weirling this hub runs", !!localOption,
-        sel ? [...sel.options].map((o) => o.textContent).join("|") : "no select");
-  if (localOption) {
-    sel.value = localOption.value;
-    await H.wlSettingsFor(localOption.value);
-    check("picking the local weirling mounts the live controls with its mode row",
-          !doc.getElementById("wl-sensor-config").classList.contains("hidden")
-          && (doc.getElementById("st-sensor").textContent || "").includes("mode"),
-          "the weirling on this hub is the one this hub can actually configure");
-    check("and no 'settings live elsewhere' note on it",
-          doc.getElementById("wl-sensor-remote").classList.contains("hidden"));
-  }
-  const remoteOption = sel ? [...sel.options].find((o) => o.value && !/\(this hub\)/.test(o.textContent)) : null;
-  if (remoteOption) {
-    sel.value = remoteOption.value;
-    await H.wlSettingsFor(remoteOption.value);
-    check("a weirling elsewhere gets no runtime knobs aimed at a machine this hub cannot reach",
-          doc.getElementById("wl-sensor-config").classList.contains("hidden")
-          && !doc.getElementById("wl-sensor-remote").classList.contains("hidden"),
-          "the hub cannot reach a remote runtime; the panel must say where those settings live");
-  }
-  const aliveRow = [...doc.querySelectorAll("#wl-table button")]
-    .find((b) => (b.textContent || "") === "edge-alive");
-  if (aliveRow) {
-    aliveRow.click();
-    for (let i = 0; i < 40 && !(doc.getElementById("wl-detail-body").textContent || "")
+  check("the Weirling settings card is gone from the Settings tab",
+        !doc.getElementById("st-wl-select") && !doc.getElementById("wl-sensor-config"),
+        "the scrapped card's elements are still in the document");
+  check("the standalone Register-a-weirling card is gone (the drill-down registers)",
+        !doc.getElementById("wl-id") && !!doc.getElementById("wl-detail-register"),
+        "the register path must stay reachable from the sensor's own panel");
+  check("the drill-down's Advanced disclosure holds the sensor grid",
+        !!doc.getElementById("wl-advanced")
+        && !!doc.querySelector("#wl-advanced #st-sensor"));
+
+  const openRow = (id) => [...doc.querySelectorAll("#wl-table button")]
+    .find((b) => (b.textContent || "") === id);
+  const localBtn = openRow("edge-alive");
+  const remoteBtn = openRow("edge-stopped");
+  if (localBtn) {
+    localBtn.click();
+    for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
          .includes("reporting normally"); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    check("the drill-down points at the settings page instead of owning the controls",
-          /Weirling settings/.test(doc.getElementById("wl-detail-body").textContent || ""));
-    doc.getElementById("wl-detail-close").click();
+    check("the local sensor's panel shows the runtime controls",
+          !doc.getElementById("wl-runtime").classList.contains("hidden"),
+          "mode + Sonar must be reachable for the sensor this hub runs");
+    check("the mode selector carries the sensor's reported mode",
+          doc.getElementById("wl-mode-select").value === "loch",
+          doc.getElementById("wl-mode-select").value);
+    check("the panel shows the sensor's NICs from its own report",
+          /eth1, eth2/.test(doc.getElementById("wl-detail-body").textContent || ""),
+          doc.getElementById("wl-detail-body").textContent.slice(0, 200));
+    const t0 = POSTED.length;
+    H.SONAR_STATE.result = null;
+    const modeSel = doc.getElementById("wl-mode-select");
+    modeSel.value = "siphon";
+    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    for (let i = 0; i < 100 && !POSTED.slice(t0).some((r) => r.url.includes("/api/settings/apply")); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const sonarPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/sonar"));
+    const applyPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/apply"));
+    check("selecting siphon surveys first (no survey this session), then applies",
+          !!sonarPost && !!applyPost,
+          "posts since the select: " + POSTED.slice(t0).map((r) => r.url).join(","));
+    check("the applied changes carry the mode and the survey's plan",
+          !!applyPost && /"sensor_mode":"siphon"/.test(applyPost.body || "")
+          && /"intercept_segment":"198\.51\.100\.0\/24"/.test(applyPost.body || ""),
+          (applyPost || {}).body || "no apply");
   }
-}
-
-// ── THE EXPECTATION FORM: every weirling gets its settable layer (2026-10-17) ───────────────
-{
-  H.showView("settings");
-  await H.wlPopulateSelector();
-  const sel = doc.getElementById("st-wl-select");
-  const nonHub = sel ? [...sel.options].find((o) => o.value && !/\(this hub\)/.test(o.textContent)) : null;
-  check("the selector offers a non-hub weirling to drive", !!nonHub,
-        sel ? [...sel.options].map((o) => o.textContent).join("|") : "no select");
-  if (nonHub) {
-    sel.value = nonHub.value;
-    await H.wlSettingsFor(nonHub.value);
-    const exp = doc.getElementById("wl-expectation");
-    check("picking a weirling elsewhere mounts the expectation fields it CAN change",
-          !!exp && !exp.classList.contains("hidden")
-          && !!doc.getElementById("st-wl-segment") && !!doc.getElementById("st-wl-mode"),
-          "the section was fields-free again -- the dead end the operator reported twice");
-    const row = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === nonHub.value) || {};
-    check("the expectation fields arrive PREFILLED with what this hub holds",
-          doc.getElementById("st-wl-segment").value === (row.segment || "")
-          && doc.getElementById("st-wl-mode").value === (row.expected_mode || "loch")
-          && doc.getElementById("st-wl-address").value === (row.address || ""),
-          "segment=" + String(doc.getElementById("st-wl-segment").value)
-          + " mode=" + String(doc.getElementById("st-wl-mode").value));
-    const posted0 = POSTED.length;
-    doc.getElementById("st-wl-mode").value = "siphon";
-    doc.getElementById("st-wl-save").click();
-    await new Promise((r) => setTimeout(r, 150));
-    const posted = POSTED.slice(posted0).find((p) => p.url.includes("/api/weirlings/register"));
-    check("saving posts the expectation to the registry (the write this hub CAN make)",
-          !!posted && /"expected_mode":"siphon"/.test(posted.body)
-          && posted.body.includes('"sensor_id":"' + nonHub.value + '"'),
-          posted ? posted.body.slice(0, 130) : "no register POST");
-    check("and the result line names what was saved",
-          /Saved /.test(doc.getElementById("st-wl-save-result").textContent),
-          doc.getElementById("st-wl-save-result").textContent);
+  if (remoteBtn) {
+    remoteBtn.click();
+    for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
+         .includes("edge-stopped"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("a remote sensor's panel hides the runtime controls",
+          doc.getElementById("wl-runtime").classList.contains("hidden"),
+          "offering controls that cannot reach the sensor would be a lie in pixels");
   }
+  doc.getElementById("wl-detail-close").click();
 }
 
 // ── no content-less cards on the Settings tab (audit 2026-10-17) ─────────────────────────────
