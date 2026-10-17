@@ -103,6 +103,9 @@ STATIC_FILES = {
     "/discover.js": ("discover.js", "application/javascript; charset=utf-8"),
     "/dnsview.js": ("dnsview.js", "application/javascript; charset=utf-8"),
     "/blocked.js": ("blocked.js", "application/javascript; charset=utf-8"),
+    # The command palette (BF-11). Its own file for the same reason as the others -- and
+    # because the shortcut grammar is code a reader should find in one place.
+    "/palette.js": ("palette.js", "application/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     # The logo, so the dashboard is branded rather than a generic admin page. Served
     # from the same allow-list as everything else; the image is read-only and static.
