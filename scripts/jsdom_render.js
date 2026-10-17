@@ -107,6 +107,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
+                     loadHost, loadEvidence, loadAudit, loadDetectors,
+                     registryHighlight, sluiceHighlightRule,
                    NF_FILTERS, nfSetFilter, nfRemoveChip,
                    trApply, trHours, TIME_RANGE,
                    loadDiscover, dcClear, discoverDrill,
@@ -811,7 +813,8 @@ const IDENTITY_PAYLOAD = {
                         return { ok: true, state: sent.state || "", note: sent.note || "" };
                       })()
                   : u.includes("/api/sluice/block")
-                    ? { ok: true, note: "the rule is filed; the gate re-checks within a minute" }
+                    ? { ok: true, rule_id: "r-filed-1", describes: "from 198.51.100.44/32",
+                        note: "the rule is filed; the gate re-checks within a minute" }
                   : u.includes("/api/models/retrain")
                     ? { ok: true, action: sent.action || "retrain",
                         action_id: sent.action_id || "r124",
@@ -1260,13 +1263,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           fix: { view: "weirlings", sensor: "edge-alive", label: "open the sensor" } },
         { class: "expired_rule", severity: "info", subject: "r-2026-10-14-1",
           detail: "domain rule for ads.example", elapsed_s: 259200,
-          fix: { view: "sluice", label: "adjust or revoke on Sluice" } },
+          fix: { view: "sluice", rule_id: "r-2026-10-14-1", label: "adjust or revoke on Sluice" } },
         { class: "stuck_rule", severity: "warn", subject: "r-2026-09-01-2",
           detail: "firing without a quiet week since 46d (400 hits in 30d) \u2014 still wanted?",
-          elapsed_s: 3974400, fix: { view: "blocked", label: "read the hits on Blocked" } },
+          elapsed_s: 3974400,
+          fix: { view: "blocked", rule_id: "r-2026-09-01-2", label: "read the hits on Blocked" } },
         { class: "unowned_detector", severity: "warn", subject: "Mystery Net",
           detail: "unregistered \u2014 no owner, no runbook: it cannot page", elapsed_s: null,
-          fix: { view: "anomalies", label: "register it (registry strip)" } },
+          fix: { view: "anomalies", detector: "Mystery Net", label: "register it (registry strip)" } },
       ],
       counts: { silent_sensor: 1, expired_rule: 1, stuck_rule: 1, unowned_detector: 1 },
       errors: {} })],
@@ -1419,7 +1423,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   doc.querySelectorAll("#as-table tbody tr")[0]
      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   check("a plain click on a row drills down", drilled === "203.0.113.42", `drilled=${drilled}`);
-  H.openHost = realOpenHost;
+  // BARE `openHost(...)` calls in the page resolve the GLOBAL PROPERTY, not the __H export:
+  // restoring only H.openHost left the spy armed for the entire run (measured: every later
+  // host drill silently no-opped while its check, asserting only the view, kept passing).
+  window.openHost = realOpenHost;
 
   // ── the asset inventory pager ──────────────────────────────────────────────────────────
   // The bug this guards: 245 hosts rendered as one scroll. Pages of 15 give a stable viewport,
@@ -5462,6 +5469,274 @@ check("high capture loss is called out in the fleet",
     }
   }
 
+  // ── NO DEAD ENDS: the way back, the way forward, and the receipt (US-3) ─────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // THE 15s AUTO-REFRESH TICK: the console refreshes on by default; here it re-renders the
+    // active view mid-click and detaches the very row a check is holding (measured: a tick
+    // wiped a flashed row and a dn-detail). The checks below are about CLICK CONTRACTS, not
+    // about the timer -- which has its own checks calling refreshAll directly -- so the timer
+    // is stopped for the rest of the run.
+    const arBox = doc.getElementById("autorefresh");
+    if (arBox && arBox.checked) {
+      arBox.checked = false;
+      arBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    }
+    // 1. Evidence is two-way: a crumb back (filters intact) and a Copy-link that carries it.
+    fetchOverride = (u) => (String(u).includes("/api/evidence")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5",
+          window_start: "2026-01-01T00:15:00", window_end: "2026-01-01T00:20:00",
+          anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "IF",
+                     baseline_comparison: "", attack_techniques: "" },
+          flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
+          flows: [], errors: null }) })
+      : null);
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(250);
+    const sevCell = [...doc.querySelectorAll("#anomalies-table tbody tr td")]
+      .find((td) => /severity/.test(td.title || ""));
+    if (sevCell) { sevCell.click(); await sleep(250); }
+    const chipsBefore = (doc.getElementById("an-chips") || {}).textContent || "";
+    const anRowE = doc.querySelector("#anomalies-table tbody tr");
+    check("an anomaly row opens Evidence", !!anRowE);
+    if (anRowE) {
+      anRowE.click();
+      await sleep(250);
+      const crumbs = doc.getElementById("crumbs") || { textContent: "" };
+      check("...and Evidence shows a labeled crumb back",
+            doc.getElementById("view-evidence").classList.contains("active")
+            && /Anomalies/.test(crumbs.textContent), crumbs.textContent.slice(0, 60));
+      H.syncURL();
+      check("a Copy-link carries the drill (v=evidence + ev.host)",
+            /v=evidence/.test(window.location.hash) && /ev\.host=/.test(window.location.hash),
+            window.location.hash.slice(0, 130));
+      const crumbBtn = doc.querySelector("#crumbs button.crumb");
+      if (crumbBtn) {
+        crumbBtn.click();
+        await sleep(250);
+        check("the crumb returns to Anomalies with its filters intact",
+              doc.getElementById("view-anomalies").classList.contains("active")
+              && ((doc.getElementById("an-chips") || {}).textContent || "") === chipsBefore,
+              "chips now: " + ((doc.getElementById("an-chips") || {}).textContent || "").slice(0, 60));
+      }
+    }
+    // 2. the host drill acts, and it DISMISSES.
+    fetchOverride = (u) => (String(u).includes("/api/evidence")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5",
+          window_start: "2026-01-01T00:15:00", window_end: "2026-01-01T00:20:00",
+          anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "IF",
+                     baseline_comparison: "", attack_techniques: "" },
+          flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
+          flows: [], errors: null }) })
+      : String(u).includes("/api/host")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5", hours: 24,
+          totals: { bytes: 1234567, packets: 900, flows: 42, unique_destinations: 7,
+                    unique_ports: 9, last_seen: "2026-01-01T00:30:00" },
+          timeline: [{ hour: "2026-01-01T00:00:00", bytes: 100, flows: 1 }],
+          top_destinations: [
+            { dst_addr: "198.51.100.9", hostname: "peer.example", bytes: 9000, flows: 9, ports: 3 }],
+          top_ports: [{ dst_port: 443, proto: "tcp", bytes: 8000, flows: 8 }],
+          zeek_services: [{ service: "ssl", conns: 5, bytes: 7000 }],
+          anomalies: [{ detected_at: "2026-01-01T00:20:00", anomaly_score: 0.91,
+                        severity: "high", detected_by_models: "IsolationForest",
+                        window_start: "2026-01-01T00:15:00", window_end: "2026-01-01T00:20:00",
+                        baseline_comparison: "3.4x the host's normal" }],
+          errors: null }) })
+      : null);
+    await H.loadHost("198.51.100.5", 24);
+    await sleep(220);
+    const destCell = doc.querySelector("#h-dests tbody td.dcell");
+    check("host-drill destinations open their host view",
+          !!destCell && /open this destination/.test(destCell.title || ""), destCell ? destCell.title : "missing");
+    const portRow = doc.querySelector("#h-ports tbody tr.clickable");
+    if (portRow) {
+      portRow.click();
+      await sleep(220);
+      check("a host-drill port row lands in Netflow filtered to the port",
+            doc.getElementById("view-netflow").classList.contains("active")
+            && H.NF_FILTERS.some((f) => f.field === "dport"));
+      try { H.nfRemoveChip("dport"); } catch (_e) { /* chip shape changed; the filter check stands */ }
+    }
+    const zRow = doc.querySelector("#h-zeek tbody tr.clickable");
+    if (zRow) {
+      zRow.click();
+      await sleep(250);
+      check("a host-drill service opens that log in the Zeek view",
+            doc.getElementById("view-zeek").classList.contains("active"));
+    }
+    const aRow = doc.querySelector("#h-anoms tbody tr.clickable");
+    if (aRow) {
+      aRow.click();
+      await sleep(250);
+      check("a host-drill anomaly row opens its evidence",
+            doc.getElementById("view-evidence").classList.contains("active")
+            && /198\.51\.100\.5/.test((doc.getElementById("ev-title") || {}).textContent || ""),
+            (doc.getElementById("ev-title") || {}).textContent || "");
+    }
+    H.showView("host");
+    await sleep(120);
+    doc.getElementById("h-close").click();
+    await sleep(120);
+    check("the host drill DISMISSES with its Close",
+          doc.getElementById("h-results").classList.contains("hidden"));
+    fetchOverride = null;
+    // 3. the identity detail's exits.
+    H.showView("identity");
+    await H.loadIdentity();
+    await sleep(180);
+    const idRowE = [...doc.querySelectorAll("#id-table tbody tr")]
+      .find((tr) => /203\.0\.113\.10/.test(tr.textContent));
+    if (idRowE) {
+      idRowE.click();
+      await sleep(120);
+      check("the identity detail carries its exits",
+            !!doc.getElementById("id-detail-open") && !!doc.getElementById("id-detail-close"));
+      doc.getElementById("id-detail-close").click();
+      check("...and Close dismisses it",
+            doc.getElementById("id-detail-card").classList.contains("hidden"));
+      idRowE.click();
+      await sleep(80);
+      doc.getElementById("id-detail-open").click();
+      await sleep(220);
+      check("...and 'Open host view' lands on the host's view",
+            doc.getElementById("view-host").classList.contains("active"));
+    }
+    // 4. the post-block receipt keeps the id and lands on the rule.
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(250);
+    const anRowF = doc.querySelector("#anomalies-table tbody tr");
+    const gateBtn = anRowF
+      ? (anRowF.querySelector("button.gate-open")
+         || [...anRowF.querySelectorAll("button")].find((b) => /Block/.test(b.textContent)))
+      : null;
+    check("the anomaly row offers its gate form", !!gateBtn);
+    if (gateBtn) {
+      gateBtn.click();
+      await sleep(150);
+      const form = anRowF.querySelector(".gate-form");
+      const submit = form
+        ? [...form.querySelectorAll("button")].find((b) => /File block/.test(b.textContent))
+        : null;
+      check("...and the form can be filed", !!submit);
+      if (submit) {
+        submit.click();
+        await sleep(300);
+        const receipt = [...form.querySelectorAll("button")]
+          .find((b) => /Open the filed rule/.test(b.textContent));
+        check("a filed block's receipt links to the rule it created", !!receipt);
+        if (receipt) {
+          receipt.click();
+          await sleep(300);
+          check("...and clicking it lands on that rule's card",
+                doc.getElementById("view-blocked").classList.contains("active")
+                && !doc.getElementById("bl-rule-card").classList.contains("hidden")
+                && /r-filed-1/.test(doc.getElementById("bl-rule-id").textContent)
+                && doc.getElementById("bl-rule-card").classList.contains("flash-hit"),
+                "rule id=" + doc.getElementById("bl-rule-id").textContent);
+        }
+      }
+    }
+    // 5. audit fixes keep their ids.
+    fetchOverride = (u) => (String(u).includes("/api/audit")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, reason: "", now: "2026-10-17T12:00:00+00:00",
+          findings: [
+            { class: "expired_rule", severity: "info", subject: "r-live-1",
+              detail: "domain rule for ads.example", elapsed_s: 300,
+              fix: { view: "sluice", rule_id: "r-live-1", label: "adjust or revoke on Sluice" } },
+            { class: "stuck_rule", severity: "warn", subject: "r1",
+              detail: "firing without a quiet week", elapsed_s: 460,
+              fix: { view: "blocked", rule_id: "r1", label: "read the hits on Blocked" } },
+            { class: "unowned_detector", severity: "warn", subject: "DBSCAN",
+              detail: "console-only: no owner", elapsed_s: null,
+              fix: { view: "anomalies", detector: "DBSCAN", label: "register it (registry strip)" } },
+          ],
+          counts: { expired_rule: 1, stuck_rule: 1, unowned_detector: 1 }, errors: {} }) })
+      : null);
+    H.showView("health");
+    await H.loadAudit();
+    await sleep(220);
+    const fixBtns = [...doc.querySelectorAll("#audit-table tbody button")];
+    check("the audit renders its fix buttons", fixBtns.length === 3, "buttons=" + fixBtns.length);
+    const slFix = fixBtns.find((b) => /Sluice/.test(b.textContent));
+    if (slFix) {
+      H.showView("sluice");
+      await H.loadSluice();
+      await sleep(200);
+      slFix.click();
+      await sleep(300);
+      const slRow = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
+        .find((r) => r.getAttribute("data-rule-id") === "r-live-1");
+      check("an expired-rule fix lands ON the rule's row in Sluice",
+            doc.getElementById("view-sluice").classList.contains("active")
+            && !!slRow && slRow.classList.contains("flash-hit"),
+            "row=" + !!slRow + " cls=" + (slRow ? slRow.className : "n/a"));
+    }
+    const blFix = fixBtns.find((b) => /Blocked/.test(b.textContent));
+    if (blFix) {
+      blFix.click();
+      await sleep(300);
+      check("a stuck-rule fix lands on the rule's card on Blocked",
+            doc.getElementById("view-blocked").classList.contains("active")
+            && /r1/.test(doc.getElementById("bl-rule-id").textContent)
+            && doc.getElementById("bl-rule-card").classList.contains("flash-hit"),
+            "id=" + doc.getElementById("bl-rule-id").textContent);
+    }
+    const detFix = fixBtns.find((b) => /registry/.test(b.textContent));
+    if (detFix) {
+      H.showView("anomalies");
+      await H.loadAnomalies();
+      await sleep(200);
+      detFix.click();
+      await sleep(250);
+      const detRow = [...doc.querySelectorAll("#detectors-table tbody tr")]
+        .find((r) => r.getAttribute("data-detector") === "DBSCAN");
+      check("a registry fix lands ON the detector's row",
+            doc.getElementById("view-anomalies").classList.contains("active")
+            && !!detRow && detRow.classList.contains("flash-hit"),
+            "row=" + !!detRow + " cls=" + (detRow ? detRow.className : "n/a")
+            + " btn=" + detFix.textContent.slice(0, 24));
+    }
+    fetchOverride = null;
+    // 6. a revoked registration still opens its sheet.
+    fetchOverride = (u) => (String(u).includes("/api/weirlings") && !String(u).includes("/detail")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, reason: null, heartbeats_available: true, heartbeat_reason: null,
+          summary: { total: 2, registered: 1, problems: 0, alive: 1, stale: 0, never_seen: 0,
+                     unregistered: 0, disabled: 0 },
+          sensors: [WEIRLINGS_PAYLOAD.sensors[0]],
+          revoked: [{ sensor_id: "edge-retired", revoked_at: "2026-09-01T00:00:00+00:00" }],
+          revoked_reason: "" }) })
+      : null);
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    const revBox = doc.getElementById("wl-revoked");
+    revBox.checked = true;
+    await H.loadWeirlings();
+    await sleep(180);
+    const revSpan = [...doc.querySelectorAll("#wl-table tbody .dcell")]
+      .find((s) => /edge-retired/.test(s.textContent));
+    check("a revoked id is an entity, not inert text", !!revSpan && /sheet/.test(revSpan.title || ""));
+    if (revSpan) {
+      revSpan.click();
+      await sleep(250);
+      check("...and it opens that sensor's sheet",
+            doc.getElementById("view-weirlings").classList.contains("active")
+            && /edge-retired/.test((doc.getElementById("wl-detail-id") || {}).textContent || ""),
+            (doc.getElementById("wl-detail-id") || {}).textContent || "");
+    }
+    revBox.checked = false;
+    fetchOverride = null;
+    H.showView("health");
+    await H.loadAudit();
+    await sleep(150);
+  }
+
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────
   {
     H.showView("discover");
@@ -5644,7 +5919,7 @@ check("high capture loss is called out in the fleet",
           /NXDOMAIN/.test(doc.getElementById("dn-summary").textContent),
           doc.getElementById("dn-summary").textContent.slice(0, 90));
     rows[0].click();
-    await new Promise((r) => setTimeout(r, 90));
+    await new Promise((r) => setTimeout(r, 150));
     const detail = doc.querySelector("tr.dn-detail");
     check("a row opens the full answers and the reverse map",
           !!detail && /ads\.example\.com/.test(detail.textContent),

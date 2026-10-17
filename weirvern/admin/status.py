@@ -2779,7 +2779,10 @@ def pipeline_audit(client, *, now=None) -> dict:
                 "detail": ("domain rule for " + str(domain)) if domain
                           else ("block of " + str(dst)),
                 "elapsed_s": int(elapsed) if elapsed is not None else None,
-                "fix": {"view": "sluice", "label": "adjust or revoke on Sluice"},
+                # US-3: the fix carries the rule id, so the landing is the RULE (its row on
+                # Sluice), not the top of a page the operator then has to search.
+                "fix": {"view": "sluice", "rule_id": str(rid),
+                        "label": "adjust or revoke on Sluice"},
             })
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit: expired rules failed: %s", exc)
@@ -2809,7 +2812,8 @@ def pipeline_audit(client, *, now=None) -> dict:
                           f"— still wanted?",
                 "elapsed_s": int((now.replace(tzinfo=None) - first).total_seconds())
                              if first is not None else None,
-                "fix": {"view": "blocked", "label": "read the hits on Blocked"},
+                "fix": {"view": "blocked", "rule_id": str(rid),
+                        "label": "read the hits on Blocked"},
             })
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit: stuck rules failed: %s", exc)
@@ -2829,14 +2833,16 @@ def pipeline_audit(client, *, now=None) -> dict:
                         "class": "unowned_detector", "severity": "warn", "subject": d["name"],
                         "detail": "unregistered — no owner, no runbook: it cannot page",
                         "elapsed_s": None,
-                        "fix": {"view": "anomalies", "label": "register it (registry strip)"},
+                        "fix": {"view": "anomalies", "detector": d["name"],
+                                "label": "register it (registry strip)"},
                     })
                 elif not d["loud"] or not d["owner"]:
                     findings.append({
                         "class": "unowned_detector", "severity": "warn", "subject": d["name"],
                         "detail": "console-only: no owner or loud permission yet",
                         "elapsed_s": None,
-                        "fix": {"view": "anomalies", "label": "register it (registry strip)"},
+                        "fix": {"view": "anomalies", "detector": d["name"],
+                                "label": "register it (registry strip)"},
                     })
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit: detectors failed: %s", exc)

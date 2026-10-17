@@ -218,7 +218,8 @@ async function loadSluice() {
     pick.addEventListener("change", slBulkRefresh);
 
     const tr = el("tr", { class: "sl-rule-row",
-                          attrs: { title: "click to open and edit this rule" } }, [
+                          attrs: { title: "click to open and edit this rule",
+                                   "data-rule-id": r.rule_id } }, [
       el("td", { class: "pick" }, [pick]),
       el("td", { class: "mono", text: r.describes || r.src_cidr || "—" }),
       el("td", {}, [stateCell]),
@@ -256,6 +257,8 @@ async function loadSluice() {
   }
   slBulkWire();
   slBulkRefresh();
+  // US-3: a receipt/audit that named a rule fires its flash on THIS fresh render.
+  sluiceApplyFlash();
 
   renderSluicePolicies(d);
 }
@@ -317,6 +320,46 @@ async function slRuleSetDisabled(r, want) {
 
 function slSelected() {
   return [...document.querySelectorAll("#sl-table .sl-pick:checked")].map((c) => c.value);
+}
+
+/** US-3: scroll to a rule's row and say "you are here" once (fix receipts + audit landings).
+ *  TOP-LEVEL on purpose: auditGo in app.js calls it across files, and a nested copy is
+ *  invisible to every caller outside its enclosure. */
+let SL_FLASH_PENDING = "";
+let SL_FLASH_TIMER = null;
+function sluiceHighlightRule(ruleId) {
+  SL_FLASH_PENDING = String(ruleId);
+  // Immediate attempt (the receipt case: the row is already on screen, no render coming).
+  sluiceFlashRow(SL_FLASH_PENDING);
+  // The audit-fix case: showView() fires a re-render within the fetch round trip that REPLACES
+  // the row just flashed. The pending id survives it and fires again on the fresh render (see
+  // sluiceApplyFlash at the end of the table build). The timer bounds the wait so a pending
+  // flash can never resurface on some later, unrelated render.
+  if (SL_FLASH_TIMER) clearTimeout(SL_FLASH_TIMER);
+  SL_FLASH_TIMER = setTimeout(() => { SL_FLASH_PENDING = ""; }, 2500);
+}
+
+/** Flash one row if it is present. Returns whether it landed. Never throws. */
+function sluiceFlashRow(ruleId) {
+  const tr = [...document.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
+    .find((r) => r.getAttribute("data-rule-id") === String(ruleId));
+  if (!tr) return false;
+  if (typeof tr.scrollIntoView === "function") {
+    try { tr.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
+  }
+  tr.classList.remove("flash-hit");
+  void tr.offsetWidth;
+  tr.classList.add("flash-hit");
+  return true;
+}
+
+/** Called at the close of every rules-table build: a pending receipt lands on the FRESH rows. */
+function sluiceApplyFlash() {
+  if (!SL_FLASH_PENDING) return;
+  if (sluiceFlashRow(SL_FLASH_PENDING)) {
+    SL_FLASH_PENDING = "";
+    if (SL_FLASH_TIMER) { clearTimeout(SL_FLASH_TIMER); SL_FLASH_TIMER = null; }
+  }
 }
 
 function slBulkRefresh() {
@@ -441,6 +484,15 @@ function wireSluice() {
         note.textContent = out.note || "recorded";
         document.getElementById("sl-reason").value = "";
         await loadSluice();
+        // US-3: the receipt KEEPS ITS ID -- one click scrolls to the rule it just created.
+        if (out.rule_id) {
+          note.appendChild(document.createTextNode(" "));
+          note.appendChild(el("button", {
+            class: "small", text: "Show the filed rule \u2192", attrs: { type: "button" },
+            title: "scroll to the rule this block created",
+            on: { click: () => sluiceHighlightRule(out.rule_id) },
+          }));
+        }
       } else {
         // The server's refusal text is the deliverable: it names the fix.
         note.textContent = (out && out.error) || "the rule was refused";
@@ -747,6 +799,20 @@ document.addEventListener("DOMContentLoaded", () => {
           + "Blocked page. A rule with no expiry lasts until revoked.";
         if (typeof loadSluice === "function") loadSluice().catch(() => {});
         if (typeof loadBlocked === "function") loadBlocked().catch(() => {});
+        // US-3: "it appears under Rules" was a sentence; now it is a button. One click closes
+        // the composer and lands on the rule's card on the Blocked page.
+        if (out.rule_id) {
+          note.appendChild(document.createTextNode(" "));
+          note.appendChild(el("button", {
+            class: "small", text: "Show the rule \u2192", attrs: { type: "button" },
+            title: "open this rule on the Blocked page",
+            on: { click: () => {
+              if (typeof closeModal === "function") closeModal(document.getElementById("rule-composer"));
+              showView("blocked");
+              if (typeof blOpenRuleById === "function") blOpenRuleById(out.rule_id).catch(() => {});
+            } },
+          }));
+        }
       } else {
         note.textContent = (out && out.error) || "the rule was refused.";
       }

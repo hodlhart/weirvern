@@ -1563,6 +1563,20 @@ function auditGo(fix) {
   if (fix.sensor && typeof openWeirling === "function") {
     openWeirling(fix.sensor).catch(() => {});
   }
+  // US-3: the fix KEEPS ITS ID. A rule fix lands on the RULE -- the blocked rule card, or its
+  // row in the sluice table -- and a registry fix lands on the detector's own row. Every one
+  // of these used to land at the top of a page, leaving the operator to search for the thing
+  // the button had just named.
+  if (fix.rule_id) {
+    if (fix.view === "blocked" && typeof blOpenRuleById === "function") {
+      blOpenRuleById(fix.rule_id).catch(() => {});
+    } else if (typeof sluiceHighlightRule === "function") {
+      sluiceHighlightRule(fix.rule_id);
+    }
+  }
+  if (fix.detector && typeof registryHighlight === "function") {
+    registryHighlight(fix.detector);
+  }
 }
 
 async function loadAudit() {
@@ -1634,6 +1648,36 @@ function anRenderDiscipline(d) {
     (open > 0 ? ` \u00b7 ${open} still open` : "");
 }
 
+/** US-3: a registry fix lands ON the detector's row -- scrolled to and said once. The pending
+ *  id survives the re-render showView() fires on selection (see sluiceApplyFlash). */
+let REG_FLASH_PENDING = "";
+let REG_FLASH_TIMER = null;
+function registryHighlight(name) {
+  REG_FLASH_PENDING = String(name);
+  registryFlashRow(REG_FLASH_PENDING);
+  if (REG_FLASH_TIMER) clearTimeout(REG_FLASH_TIMER);
+  REG_FLASH_TIMER = setTimeout(() => { REG_FLASH_PENDING = ""; }, 2500);
+}
+function registryFlashRow(name) {
+  const tr = [...document.querySelectorAll("#detectors-table tbody tr")]
+    .find((r) => r.getAttribute("data-detector") === String(name));
+  if (!tr) return false;
+  if (typeof tr.scrollIntoView === "function") {
+    try { tr.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
+  }
+  tr.classList.remove("flash-hit");
+  void tr.offsetWidth;
+  tr.classList.add("flash-hit");
+  return true;
+}
+function registryApplyFlash() {
+  if (!REG_FLASH_PENDING) return;
+  if (registryFlashRow(REG_FLASH_PENDING)) {
+    REG_FLASH_PENDING = "";
+    if (REG_FLASH_TIMER) { clearTimeout(REG_FLASH_TIMER); REG_FLASH_TIMER = null; }
+  }
+}
+
 /** The registry strip: who owns each detector and who may page, with its catch counts. */
 async function loadDetectors() {
   const tbody = document.querySelector("#detectors-table tbody");
@@ -1654,7 +1698,7 @@ async function loadDetectors() {
     return;
   }
   for (const det of d.detectors || []) {
-    tbody.appendChild(el("tr", {}, [
+    tbody.appendChild(el("tr", { attrs: { "data-detector": det.name } }, [
       el("td", {}, [
         el("span", { class: "mono", text: det.name }),
         det.known ? null : el("span", { class: "chip warn", text: " unregistered",
@@ -1672,6 +1716,8 @@ async function loadDetectors() {
       el("td", { class: "num", text: String(det.acted ?? "—") }),
     ]));
   }
+  // US-3: a fix that named a detector fires its flash on THIS fresh render.
+  registryApplyFlash();
 }
 
 function anRenderSeverity(sc) {
@@ -1715,7 +1761,7 @@ function anClearAllFilters() {
 }
 
 async function loadAnomalies() {
-  scheduleURLSync();
+    scheduleURLSync();
   // The gate's state rides along with the list, so every row's block control can say whether it
   // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
   // shape is worse than one that appears a beat late.
@@ -1920,7 +1966,9 @@ async function loadHost(addr, hours) {
   if (!d.top_destinations.length) emptyRow(dests, 4, "No destinations recorded in this window — an empty window is not zero traffic.");
   for (const x of d.top_destinations) {
     dests.appendChild(el("tr", {}, [
-      el("td", {}, [hostCell(x.dst_addr, x.hostname, d.src_addr)]),
+      el("td", { class: "dcell", attrs: { title: "open this destination's host view" },
+                 on: x.dst_addr === d.src_addr ? {} : { click: () => openHost(x.dst_addr) } },
+         [hostCell(x.dst_addr, x.hostname, d.src_addr)]),
       el("td", { class: "mono", text: fmtBytes(x.bytes) }),
       el("td", { class: "mono", text: String(x.flows ?? "—") }),
       el("td", { class: "mono", text: String(x.ports ?? "—") }),
@@ -1931,7 +1979,14 @@ async function loadHost(addr, hours) {
   ports.replaceChildren();
   if (!d.top_ports.length) emptyRow(ports, 4, "No ports recorded in this window — an empty window is not zero traffic.");
   for (const x of d.top_ports) {
-    ports.appendChild(el("tr", {}, [
+    ports.appendChild(el("tr", { class: "clickable",
+                                 attrs: { title: "show flows to this port in the Netflow view" },
+                                 on: { click: () => {
+                                   showView("netflow");
+                                   if (typeof nfSetFilter === "function") {
+                                     nfSetFilter("dport", x.dst_port, ":" + x.dst_port);
+                                   }
+                                 } } }, [
       el("td", { class: "mono", text: String(x.dst_port) }),
       el("td", { class: "mono", text: String(x.proto) }),
       el("td", { class: "mono", text: fmtBytes(x.bytes) }),
@@ -1946,7 +2001,14 @@ async function loadHost(addr, hours) {
     emptyRow(zeek, 3, "No Zeek service data in this window (the sensor may be disabled) — an empty window is not zero traffic.");
   } else {
     for (const s of d.zeek_services) {
-      zeek.appendChild(el("tr", {}, [
+      zeek.appendChild(el("tr", { class: "clickable",
+                                  attrs: { title: "open this service's log in the Zeek view" },
+                                  on: { click: () => {
+                                    showView("zeek");
+                                    if (typeof loadZeekLog === "function") {
+                                      loadZeekLog(s.service).catch(showError);
+                                    }
+                                  } } }, [
         el("td", { text: s.service }),
         el("td", { class: "mono", text: String(s.conns ?? "—") }),
         el("td", { class: "mono", text: fmtBytes(s.bytes) }),
@@ -1960,7 +2022,10 @@ async function loadHost(addr, hours) {
     emptyRow(anoms, 5, `No anomalies for this host in the last ${d.hours}h — an empty window is not zero traffic.`);
   }
   for (const a of d.anomalies) {
-    anoms.appendChild(el("tr", {}, [
+    anoms.appendChild(el("tr", { class: "clickable",
+                                 attrs: { title: "open the evidence for this anomaly" },
+                                 on: { click: () => openEvidence(Object.assign({}, a,
+                                                                              { src_addr: d.src_addr })) } }, [
       el("td", { class: "mono", text: fmtTime(a.detected_at) }),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
       el("td", {}, [sevCell(a.severity)]),
@@ -2165,6 +2230,19 @@ function gateForm(a) {
         // interface, a port with no protocol, a missing reason, an unknown host).
         note.textContent = (out && (out.ok ? (out.note || "recorded") : out.error))
           || "the rule was refused";
+        if (out && out.ok && out.rule_id) {
+          // US-3: the receipt KEEPS ITS ID -- one click lands on the rule card this block
+          // just created, on the Blocked page, with the card saying "you are here" once.
+          note.appendChild(document.createTextNode(" "));
+          note.appendChild(el("button", {
+            class: "small", text: "Open the filed rule \u2192", attrs: { type: "button" },
+            title: "the rule this block created",
+            on: { click: () => {
+              showView("blocked");
+              if (typeof blOpenRuleById === "function") blOpenRuleById(out.rule_id).catch(() => {});
+            } },
+          }));
+        }
       } catch (err) {
         note.textContent = String(err.message || err);
       } finally {
@@ -2239,6 +2317,7 @@ async function lookupFingerprint(ja4) {
  * minutes the detector scored, which is the only thing that verdict is about. */
 function openEvidence(a) {
   if (!a || !a.src_addr) return;
+  EVIDENCE_FROM = CURRENT_VIEW || "anomalies";
   showView("evidence");
   const start = a.window_start || a.detected_at;
   loadEvidence(a.src_addr, start, a.window_end).catch(showError);
@@ -2255,6 +2334,12 @@ async function loadEvidence(addr, start, end) {
   document.getElementById("ev-sub").textContent =
     `Detection window ${fmtTime(d.window_start)} → ${fmtTime(d.window_end)}. ` +
     `These are the individual records the detector scored — not aggregates.`;
+  // US-3: the way back. Evidence is a drill, not a destination: one labeled crumb returns to
+  // wherever it was opened from (Anomalies, the Host view), filters and all.
+  const fromView = EVIDENCE_FROM || "anomalies";
+  const fromTab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === fromView);
+  setCrumbs([{ label: fromTab ? fromTab.textContent : "Back", run: () => showView(fromView),
+               title: "back where this drill was opened" }]);
 
   // The verdict, so the evidence is read in context rather than cold.
   const verdict = document.getElementById("ev-verdict");
@@ -2333,7 +2418,9 @@ async function loadEvidence(addr, start, end) {
     for (const f of d.flows) {
       fl.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(f.time_flow_start) }),
-        el("td", {}, [hostCell(f.dst_addr, f.hostname, d.src_addr)]),
+        el("td", { class: "dcell", attrs: { title: "open this destination's host view" },
+                   on: { click: () => openHost(f.dst_addr) } },
+           [hostCell(f.dst_addr, f.hostname, d.src_addr)]),
         el("td", { class: "mono", text: String(f.dst_port ?? "—") }),
         el("td", { class: "mono", text: String(f.proto ?? "—") }),
         el("td", { class: "mono", text: fmtBytes(f.bytes) }),
@@ -2779,11 +2866,18 @@ function setCrumbs(items) {
 }
 function clearCrumbs() { setCrumbs([]); }
 
+/* US-3: a DRILL VIEW keeps its family's tab lit (Evidence belongs to Anomalies), and the URL
+ * follows the VIEW NAME rather than whichever tab happens to match: `v=evidence` was
+ * previously unwritable because no tab carried it, so a shared link lost the drill. */
+const TAB_FOR_DRILL = { evidence: "anomalies" };
+let CURRENT_VIEW = "";
 function showView(name) {
+  CURRENT_VIEW = name;
   clearCrumbs();       // a view change always leaves every drill-down behind
   scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
+  const tabName = TAB_FOR_DRILL[name] || name;
   for (const t of document.querySelectorAll(".tab")) {
-    t.classList.toggle("active", t.dataset.view === name);
+    t.classList.toggle("active", t.dataset.view === tabName);
   }
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === "view-" + name);
@@ -2847,6 +2941,11 @@ const VIEW_LOADERS = {
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
   assets: () => loadAssets(),
+  // US-3: Evidence joins the refreshable views -- it is the view most likely to be re-read
+  // while an operator watches a live incident.
+  evidence: () => (CURRENT_EVIDENCE && CURRENT_EVIDENCE.addr
+    ? loadEvidence(CURRENT_EVIDENCE.addr, CURRENT_EVIDENCE.start, CURRENT_EVIDENCE.end)
+    : Promise.resolve()),
 };
 let AUTO_PAUSED = false;
 
@@ -2910,7 +3009,10 @@ async function refreshAll() {
   try {
     await loadHealthDeep();
     const active = document.querySelector(".tab.active");
-    const loader = active && VIEW_LOADERS[active.dataset.view];
+    // US-3: follow the VIEW, not the tab -- Evidence has no tab and used to be skipped by
+    // auto-refresh without a word.
+    const viewName = CURRENT_VIEW || (active && active.dataset.view);
+    const loader = viewName && VIEW_LOADERS[viewName];
     if (loader) await loader();
     clearError();
     const now = new Date();
@@ -3003,6 +3105,26 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("h-addr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("h-go").click();
   });
+  // US-3: the drill-down DISMISSES. The lookup stays in the box, so "close" hides the panel
+  // without throwing away the address that was just used.
+  const hClose = document.getElementById("h-close");
+  if (hClose) {
+    hClose.addEventListener("click", () => {
+      document.getElementById("h-results").classList.add("hidden");
+    });
+  }
+  const idClose = document.getElementById("id-detail-close");
+  if (idClose) {
+    idClose.addEventListener("click", () => {
+      document.getElementById("id-detail-card").classList.add("hidden");
+    });
+  }
+  const idOpen = document.getElementById("id-detail-open");
+  if (idOpen) {
+    idOpen.addEventListener("click", () => {
+      if (CURRENT_ID_HOST) openHost(CURRENT_ID_HOST);
+    });
+  }
   for (const id of ["f-min-score", "f-limit", "f-unreviewed", "f-watched"]) {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
@@ -4122,7 +4244,11 @@ function confidenceChip(conf) {
   return el("span", { class: cls, text: c });
 }
 
+/** The host the identity detail is showing RIGHT NOW (the escalate button reads it). */
+let CURRENT_ID_HOST = "";
+
 function showIdentityDetail(h) {
+  CURRENT_ID_HOST = h.host || "";
   const card = document.getElementById("id-detail-card");
   card.classList.remove("hidden");
   document.getElementById("id-detail-host").textContent = h.hostname
@@ -4222,6 +4348,9 @@ const TIME_RANGE = { mode: "relative", hours: 24, from: "", to: "" };
  * setters the UI uses. */
 let urlSyncTimer = null;
 let CURRENT_EVIDENCE = null;
+// US-3: the view Evidence was OPENED FROM -- the crumb goes back there, and its filters are
+// untouched because nothing ever resets them (the controls still hold what was set).
+let EVIDENCE_FROM = "";
 let PENDING_WL = "";   // a sensor drill-down a link asked for, opened once the fleet loads
 
 function scheduleURLSync() {
@@ -4233,7 +4362,10 @@ function syncURL() {
   if (urlSyncTimer) { clearTimeout(urlSyncTimer); urlSyncTimer = null; }
   const p = new URLSearchParams();
   const active = document.querySelector(".tab.active");
-  if (active) p.set("v", active.dataset.view);
+  // US-3: the view NAME is the source of truth (a tab may be lit for a drill view's family);
+  // the tab is only a fallback for the first sync before any view has been shown.
+  const viewForURL = CURRENT_VIEW || (active && active.dataset.view);
+  if (viewForURL) p.set("v", viewForURL);
   if (TIME_RANGE.mode === "absolute" && TIME_RANGE.from) {
     p.set("tr", TIME_RANGE.from + "~" + (TIME_RANGE.to || "now"));
   } else if (Number(TIME_RANGE.hours) !== 24) {
@@ -4269,7 +4401,7 @@ function syncURL() {
   for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
     if (dv(id)) p.set(id.replace("dn-", "dn."), dv(id));
   }
-  if (active && active.dataset.view === "evidence" && CURRENT_EVIDENCE) {
+  if (viewForURL === "evidence" && CURRENT_EVIDENCE) {
     if (CURRENT_EVIDENCE.addr) p.set("ev.host", CURRENT_EVIDENCE.addr);
     if (CURRENT_EVIDENCE.start) p.set("ev.start", String(CURRENT_EVIDENCE.start));
     if (CURRENT_EVIDENCE.end) p.set("ev.end", String(CURRENT_EVIDENCE.end));

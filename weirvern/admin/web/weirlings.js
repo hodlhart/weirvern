@@ -459,7 +459,14 @@ function renderWeirlings(rows, revoked, revokedReason) {
       for (const r of revoked) {
         const tr = el("tr", { class: "muted" });
         tr.appendChild(el("td", {}, [
-          el("span", { class: "mono", text: r.sensor_id }),
+          // US-3: a revoked registration is not a terminus -- the id still opens its sheet,
+          // which carries the state and the actions. Inert text was the dead end.
+          el("span", { class: "mono dcell",
+                       attrs: { title: "open this sensor's sheet" },
+                       on: { click: () => {
+                         if (typeof openWeirling === "function") openWeirling(r.sensor_id).catch(() => {});
+                       } } },
+             [el("span", { text: r.sensor_id })]),
           el("span", { class: "muted", text: " (revoked)" }),
         ]));
         tr.appendChild(el("td", {}, [

@@ -593,6 +593,12 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .chip.act:hover { border-color: var(--accent); }
 /* US-2: the sensor sheet's onward links -- buttons to the surfaces filterable to that sensor. */
 .wl-go { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+/* US-3: an element that was just jumped TO says so once (fix receipts, audit landings). */
+.flash-hit { animation: flashhit 1.8s ease-out 1; }
+@keyframes flashhit {
+  0% { box-shadow: 0 0 0 3px rgba(255, 200, 80, 0.85); }
+  100% { box-shadow: 0 0 0 3px rgba(255, 200, 80, 0); }
+}
 .chip .x { color: var(--muted); font-weight: 700; }
 .chip .x:hover { color: var(--danger); }
 /* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a

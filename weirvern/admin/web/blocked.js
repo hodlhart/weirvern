@@ -81,6 +81,11 @@ async function blOpenRuleById(ruleId, hit) {
 function blOpenRule(r) {
   const els = blRuleEls();
   if (!els.card) return;
+  // US-3: show the card, and when a receipt or an audit fix just LANDED here, say so once.
+  els.card.classList.remove("hidden");
+  els.card.classList.remove("flash-hit");
+  void els.card.offsetWidth;
+  els.card.classList.add("flash-hit");
   els.id.textContent = r.rule_id || "";
   els.body.replaceChildren();
   const covers = r.resolved_error
