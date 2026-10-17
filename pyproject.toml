@@ -29,7 +29,7 @@ dev = [
     # failure appears after the push rather than before it.
     #
     # A linter is a build tool: its version is part of the build, so it is pinned like any other.
-    "ruff==0.16.7",
+    "ruff==0.17.0",
     "mypy>=1.10,<2",
 ]
 
