@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.2 — 2026-10-17
+
+THE VISUAL THEME, PHASE 1 — the console stops looking like a code host. Palette: one neutral
+ramp on near-black (canvas #131416 -> surface #1c1e21 -> raised #282b2f), hairline dividers,
+one accent spent only on active/selected/primary, offline/disabled neutral (never red),
+statuses re-tuned. Typography: a 13px UI on the Inter stack, 19/28 page title at weight 400,
+15/24 sentence-case card titles, uppercase retired everywhere, metric values the one loud
+number (27/36, tabular). Cards: shadow + hairline ring instead of drawn borders. New:
+docs/theme.md — the authoritative spec (principles, tokens, recipes, phases, deliberate
+refusals).
+
 ## 0.14.1 — 2026-10-17
 
 EVERY HEARTBEAT WRITER REPORTS INTERFACES. The weirling agents' own beat path

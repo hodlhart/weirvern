@@ -4,6 +4,8 @@
  * view, so moving between tabs does not require re-learning the layout.
  * Colours are semantic only — severity and pass/fail — never decorative, because
  * on a monitoring surface a colour that carries no meaning is noise.
+ *
+ * The token system and the principles behind every value: docs/theme.md.
  */
 :root {
   /* ── THE VISUAL-THEME PALETTE (2026-10-17). A neutral single ramp on near-black; depth via
