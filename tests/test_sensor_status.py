@@ -678,3 +678,25 @@ def test_an_empty_result_and_a_failure_are_distinguishable():
     assert empty == [], f"an empty result should be an empty list, got {empty!r}"
     with _pytest.raises(Exception):  # noqa: B017, PT011
         status_mod.anomalies_detailed(_BoomClient())
+
+
+def test_the_intercept_heartbeat_uses_the_SAME_identity_the_worker_does(monkeypatch):
+    """A live report (2026-10-17): the hub's intercept heartbeat wrote under `Weirvern` -- the
+    NODE's hostname, which a hostNetwork pod sees -- while the worker's heartbeat and the GUI's
+    gate name derive from NODE_NAME `weirvern`. One hub, two ids differing only in case: the
+    registered row read stale while fresh rows appeared under an undeclared name (a phantom
+    sensor), and the local sensor could never be matched. sensor_id() must mirror
+    worker._sensor_name's precedence: SENSOR_ID, then NODE_NAME, then the hostname."""
+    monkeypatch.setenv("SENSOR_ID", "explicit-unit")
+    monkeypatch.setenv("NODE_NAME", "weirvern")
+    monkeypatch.setenv("HOSTNAME", "Weirvern")
+    assert hb.sensor_id() == "explicit-unit"
+
+    monkeypatch.delenv("SENSOR_ID")
+    assert hb.sensor_id() == "weirvern", (
+        "NODE_NAME must win over the hostname: in a hostNetwork pod the hostname is the "
+        "NODE's own, and an id differing from every other writer by case alone splits the "
+        "sensor into a stale registered row plus a phantom unregistered one")
+
+    monkeypatch.delenv("NODE_NAME")
+    assert hb.sensor_id() == "Weirvern", "a non-cluster run: the hostname IS the box"

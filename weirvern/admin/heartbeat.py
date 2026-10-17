@@ -29,8 +29,23 @@ DEFAULT_INTERVAL_S = 15
 
 
 def sensor_id() -> str:
-    """A stable name for this sensor. The pod name, which is unique per replica."""
-    return (os.environ.get("HOSTNAME") or socket.gethostname() or "sensor")[:64]
+    """A stable name for this sensor -- the SAME precedence `worker._sensor_name` uses.
+
+    MEASURED LIVE (2026-10-17): this read HOSTNAME / gethostname first, and on the deployed hub
+    -- a hostNetwork pod -- that is the NODE's hostname, `Weirvern` (capital W: the LXC's own
+    `hostname`). Every other writer (the worker's heartbeat, the GUI's gate name, the sluice
+    state) derives from NODE_NAME, `weirvern`. One hub therefore produced TWO sensor ids
+    differing only in case: fresh rows under `Weirvern` -- an UNDECLARED name, so the fleet
+    view grew a phantom unregistered sensor -- while the REGISTERED `weirvern` row read STALE
+    for as long as an intercept owned the heartbeat (the worker suppresses its own beat then).
+    The operator sees a hub that looks dead beside its own fresh traffic.
+
+    SENSOR_ID first (a deployment that names its sensors), then NODE_NAME (stable across pod
+    restarts and equal in every pod on the node -- what the rest of the system uses), then the
+    hostname (a non-cluster run, where it IS the box).
+    """
+    return (os.environ.get("SENSOR_ID") or os.environ.get("NODE_NAME")
+            or os.environ.get("HOSTNAME") or socket.gethostname() or "sensor")[:64]
 
 
 class HeartbeatLoop:
