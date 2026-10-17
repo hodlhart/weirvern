@@ -1888,6 +1888,10 @@ async function loadAnomalies() {
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
+        // US-9: the STABLE reason code. The why-sentence reads; this one is greppable.
+        a.reason_code ? el("div", { class: "reason-code mono",
+          attrs: { title: "stable reason code: detector initials + the measurement that moved" },
+          text: a.reason_code }) : null,
       ]),
       el("td", {}, [anActions(a), reviewCell(a)]),
     ]));
@@ -2171,6 +2175,13 @@ function anActions(a) {
       on: { click: (e) => { e.stopPropagation(); openEvidence(a); } } }),
     gateAction(a),
     watchAction(a),
+    // US-9: TUNE DETECTION, PER ROW -- where the detector is shown, not a page-level dial.
+    el("button", { class: "review-act", text: "Tune", attrs: { type: "button" },
+      title: "tune detection \u2014 open the settings that decide what fires",
+      on: { click: (e) => {
+        e.stopPropagation();
+        if (typeof openSettingKey === "function") openSettingKey("base_threshold");
+      } } }),
   ]);
 }
 
@@ -2951,6 +2962,27 @@ function clearCrumbs() { setCrumbs([]); }
 /* US-6: the return trip. showView fires the origin view's loader, which replaces the DOM a
  * beat later, so the scroll is applied after that render (twice: cheap insurance for slow
  * loads -- the second call is a no-op once the first has consumed PENDING_SCROLL). */
+/** US-9 (with US-8): LAND ON a settings row. Every settings card boots collapsed, so this
+ *  expands the row's own card FIRST, then scrolls and flashes. ONE implementation -- the
+ *  palette and the per-row Tune verb both call it (a second copy would drift). */
+function openSettingKey(key) {
+  showView("settings");
+  setTimeout(() => {
+    const row = document.querySelector(`#view-settings [data-key="${key}"]`);
+    if (!row) return;
+    const card = row.closest(".card");
+    if (card && card.classList.contains("collapsed")) {
+      const head = card.querySelector(":scope > h2.acc");
+      if (head) head.click();
+    }
+    if (typeof row.scrollIntoView === "function") {
+      try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
+    }
+    row.classList.add("row-flash");
+    setTimeout(() => row.classList.remove("row-flash"), 1600);
+  }, 160);
+}
+
 function returnWithScroll(view, scroll) {
   PENDING_SCROLL = Number(scroll) || 0;
   showView(view || "health");

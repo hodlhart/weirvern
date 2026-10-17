@@ -184,6 +184,37 @@ async function loadSluice() {
   if (liveOnly) rules = rules.filter((r) => r.live);
   document.getElementById("sl-count").textContent = rules.length ? `(${rules.length})` : "";
 
+  // US-9: THE REACH. A rule only bites where a sensor has a verified in-path channel (the same
+  // test the gate form uses before it offers Block). Say the number beside the rules, and make
+  // each sensor a door into its fleet sheet.
+  const reachBox = document.getElementById("sl-reach");
+  if (reachBox) {
+    reachBox.replaceChildren();
+    if (!d.gates_available) {
+      reachBox.appendChild(el("span", { class: "muted",
+        text: "Reach unavailable \u2014 the fleet's gate state could not be read." }));
+    } else {
+      const reach = (d.gates || [])
+        .filter((g) => g.enforcement && !g.stale).map((g) => g.sensor);
+      if (reach.length) {
+        reachBox.appendChild(el("span", { class: "muted",
+          text: `can act on ${reach.length} sensor${reach.length === 1 ? "" : "s"}: ` }));
+        for (const sen of reach) {
+          const chip = el("button", { class: "dc-chip", text: sen,
+                                      attrs: { type: "button", title: `open ${sen}'s sheet` } });
+          chip.addEventListener("click", () => {
+            if (typeof openWeirling === "function") openWeirling(sen);
+          });
+          reachBox.appendChild(chip);
+        }
+      } else {
+        reachBox.appendChild(el("span", { class: "muted",
+          text: "can act on 0 sensors \u2014 no sensor has a verified in-path channel; "
+              + "a rule filed now compiles and counts, but bites nothing." }));
+      }
+    }
+  }
+
   const tbody = document.querySelector("#sl-table tbody");
   tbody.replaceChildren();
   const empty = document.getElementById("sl-empty");

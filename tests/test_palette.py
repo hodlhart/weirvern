@@ -47,14 +47,16 @@ def test_recents_are_recorded_and_marked():
         "views reached without the palette no longer become recents"
 
 
-def test_a_setting_expands_its_card_before_it_shows():
+def test_a_setting_lands_through_the_one_shared_helper():
+    """US-9 moved the expand-then-flash logic into openSettingKey (one implementation shared
+    with the per-row Tune verb). The palette must CALL it -- a second copy is how this drifts.
+    The expand-before-scroll order itself is pinned in tests/test_reason_code.py."""
     src = (WEB / "palette.js").read_text()
-    seg = src.split('label: `Open setting ${r.label}`', 1)[1].split("},\n", 1)[0]
-    assert 'classList.contains("collapsed")' in seg, \
-        "the settings cards boot collapsed -- scrolling to a hidden row is a dead end"
-    assert "h2.acc" in seg
-    assert seg.index("collapsed") < seg.index("scrollIntoView"), \
-        "the card must expand BEFORE the scroll (this order is the whole fix)"
+    seg = src.split("label: `Open setting ${r.label}`", 1)[1].split("},\n", 1)[0]
+    assert "openSettingKey(r.key)" in seg, \
+        "the palette no longer lands settings through the shared helper"
+    assert "scrollIntoView" not in seg, \
+        "the palette grew its own settings landing again (two implementations drift)"
 
 
 def test_the_retrain_states_its_unavailability():

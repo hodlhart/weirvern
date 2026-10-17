@@ -589,6 +589,8 @@ td.num { font-family: var(--mono); text-align: right; }
   border-bottom: 1px dotted var(--accent);
 }
 .dcell:hover, .link:hover { border-bottom-style: solid; }
+/* US-9: the stable reason code on an alert row -- quiet, mono, greppable. */
+.reason-code { font-size: 11px; color: var(--muted); margin-top: 2px; }
 /* US-4: the occurrence expansion announces itself -- a chevron at rest that flips when open. */
 .expander { cursor: pointer; }
 .expander::after {

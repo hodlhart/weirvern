@@ -15,6 +15,7 @@ import datetime
 import ipaddress
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1845,6 +1846,27 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
 
 
+def reason_code(detected_by_models: str, feature: str = "") -> str:
+    """A STABLE code for one verdict: the detectors' initials plus the measurement that moved.
+
+    "IF+DBSCAN:bytes_z" -- stable for identical inputs, short enough for a table row, and
+    greppable in a ticket. Detector names become initials (an all-caps name like DBSCAN stays
+    whole); an unnamed feature reads "score". Deduped, order preserved (the ensemble's order).
+    """
+    parts: list[str] = []
+    for name in str(detected_by_models or "").split(","):
+        clean = name.strip()
+        if not clean:
+            continue
+        abbrev = clean if clean.isupper() else "".join(
+            word[0].upper() for word in re.split(r"[^A-Za-z0-9]+", clean) if word)
+        if abbrev and abbrev not in parts:
+            parts.append(abbrev)
+    det = "+".join(parts) or "?"
+    feat = str(feature or "").strip() or "score"
+    return f"{det}:{feat}"
+
+
 def anomalies_total_count(client, min_score: float = 0.0) -> int:
     """The UNFILTERED count under the same min-score -- the Y in "showing X of Y".
 
@@ -1908,6 +1930,10 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         # The newest window headlines the row; the rest live in the expansion.
         row["window_start"] = row["windows"][-1] if row["windows"] else None
         row["n"] = int(row.get("n") or 1)
+        # US-9: every alert carries a STABLE reason code -- derived from fields in the GROUP BY,
+        # so identical verdicts always read identically.
+        row["reason_code"] = reason_code(str(row.get("detected_by_models") or ""),
+                                         str(row.get("primary_deviation_feature") or ""))
         rows.append(row)
     return rows
 

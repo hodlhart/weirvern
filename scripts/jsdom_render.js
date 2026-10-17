@@ -453,6 +453,18 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
   // a state we cannot read is not work left undone). A stub that forgets would let the
   // agreement checks below pass while the view still rendered the pre-write state.
   const ANOMALIES_STATE = JSON.parse(JSON.stringify(ANOMALIES_PAYLOAD));
+  // US-9: the server derives a stable reason code per row (status.reason_code); the fixture
+  // payload must carry it or the row's code cell has nothing to show. Same derivation shape as
+  // the server: detector initials + the moved measurement.
+  {
+    const abbr = (name) => (name === name.toUpperCase() ? name
+      : name.split(/[^A-Za-z0-9]+/).filter(Boolean).map((w) => w[0].toUpperCase()).join(""));
+    for (const row of ANOMALIES_STATE) {
+      const parts = String(row.detected_by_models || "").split(",").map((x) => x.trim())
+        .filter(Boolean).map(abbr).filter((v, i, a) => v && a.indexOf(v) === i);
+      row.reason_code = `${parts.join("+") || "?"}:${String(row.primary_deviation_feature || "").trim() || "score"}`;
+    }
+  }
   function anRecompute() {
     for (const row of ANOMALIES_STATE) {
       if (!row.windows) {
@@ -6389,6 +6401,51 @@ check("high capture loss is called out in the fleet",
     await sleep(200);
     window.location.hash = "";
 
+    H.showView("health");
+    await sleep(150);
+  }
+
+  // ── PROVENANCE + REACH (US-9) ──────────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 1) every alert row carries a STABLE reason code and its own Tune verb.
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await sleep(300);
+    const codeEl = doc.querySelector("#anomalies-table tbody .reason-code");
+    check("US-9: an alert row carries its stable reason code",
+          !!codeEl && /^[A-Z+]+:[\w.-]+$/.test((codeEl.textContent || "").trim()),
+          codeEl ? codeEl.textContent.trim() : "none");
+    const tuneBtn = [...doc.querySelectorAll("#anomalies-table .an-actions .review-act")]
+      .find((b) => b.textContent === "Tune");
+    check("US-9: the row offers Tune detection (per row, not per page)", !!tuneBtn);
+    if (tuneBtn) { tuneBtn.click(); }
+    await sleep(550);
+    const thrRow = doc.querySelector('#view-settings [data-key="base_threshold"]');
+    const thrCard = thrRow && thrRow.closest(".card");
+    check("...and Tune lands on the detection threshold with its card expanded",
+          doc.getElementById("view-settings").classList.contains("active")
+          && !!thrCard && !thrCard.classList.contains("collapsed"),
+          thrCard ? `collapsed=${thrCard.classList.contains("collapsed")}` : "no threshold row");
+    // 2) the rule surface states its reach, and each sensor opens its fleet sheet.
+    H.showView("sluice");
+    await H.loadSluice();
+    await sleep(400);
+    const reach = doc.getElementById("sl-reach");
+    check("US-9: the rules surface states its reach",
+          !!reach && /can act on \d+ sensor/.test(reach.textContent || ""),
+          (reach && reach.textContent || "").slice(0, 130));
+    const reachChip = reach && reach.querySelector("button.dc-chip");
+    check("...with a sensor chip for a reachable sensor", !!reachChip,
+          reachChip ? reachChip.textContent : "none");
+    if (reachChip) { reachChip.click(); }
+    await sleep(550);
+    check("...and the chip opens that sensor's fleet sheet",
+          !doc.getElementById("wl-detail-card").classList.contains("hidden")
+          && ((doc.getElementById("wl-detail-id") || {}).textContent || "")
+               === (reachChip ? reachChip.textContent : ""),
+          `id=${(doc.getElementById("wl-detail-id") || {}).textContent || ""}`);
+    if (typeof H.closeWeirling === "function") H.closeWeirling();
     H.showView("health");
     await sleep(150);
   }

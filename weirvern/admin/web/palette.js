@@ -118,25 +118,10 @@ function paletteCommands() {
     cmds.push({
       label: `Open setting ${r.label}`, path: `settings \u203a ${r.group} \u203a ${r.key}`,
       run: () => {
-        showView("settings");
-        setTimeout(() => {
-          const row = document.querySelector(`#view-settings [data-key="${r.key}"]`);
-          if (!row) return;
-          // US-8: EVERY settings card boots COLLAPSED, so the old scroll landed on an invisible
-          // row. Expand the row's own card first -- a "go to the setting" that shows nothing is
-          // a dead end with extra steps.
-          const card = row.closest(".card");
-          if (card && card.classList.contains("collapsed")) {
-            const head = card.querySelector(":scope > h2.acc");
-            if (head) head.click();
-          }
-          // jsdom has no scrollIntoView; the flash is the part that must survive there.
-          if (typeof row.scrollIntoView === "function") {
-            try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
-          }
-          row.classList.add("row-flash");
-          setTimeout(() => row.classList.remove("row-flash"), 1600);
-        }, 160);
+        // US-9: ONE settings-landing implementation (expand the card, then scroll and flash);
+        // the per-row Tune verb calls the same helper.
+        if (typeof openSettingKey === "function") openSettingKey(r.key);
+        else showView("settings");
       },
     });
   }
