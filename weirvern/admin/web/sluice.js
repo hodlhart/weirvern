@@ -153,7 +153,17 @@ async function loadSluice() {
       for (const g of gates) {
         gateBody.appendChild(el("tr", {}, [
           el("td", {}, [
-            el("span", { class: "mono", text: g.sensor || "—" }),
+            g.sensor
+              // US-2: a gate's sensor is an ENTITY -- one click to its fleet sheet.
+              ? el("span", { class: "mono dcell",
+                             attrs: { title: "open this sensor's fleet sheet" },
+                             on: { click: () => {
+                               if (typeof openWeirling === "function") {
+                                 openWeirling(g.sensor).catch(showError);
+                               }
+                             } } },
+                  [el("span", { text: g.sensor })])
+              : el("span", { class: "mono", text: "—" }),
             g.local ? el("span", { class: "muted", text: "  (this hub)" }) : null,
           ]),
           el("td", {}, [sluiceStateChip(g.state)]),

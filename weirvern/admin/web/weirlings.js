@@ -495,6 +495,10 @@ function closeWeirling() {
 }
 
 async function openWeirling(sensorId) {
+  // US-2: the sheet lives on THIS view, and callers now arrive from other views (a sluice
+  // gate's sensor, the palette, an audit fix). A sheet opened onto an inactive view is an
+  // invisible dead end; ensure the view first, for every caller.
+  if (typeof showView === "function") showView("weirlings");
   const card = document.getElementById("wl-detail-card");
   const body = document.getElementById("wl-detail-body");
   const note = document.getElementById("wl-detail-note");
@@ -621,6 +625,32 @@ async function openWeirling(sensorId) {
     dl.appendChild(el("dd", {}, [v]));
   }
   body.appendChild(dl);
+
+  // ── US-2: the onward links. A sheet that only describes is a dead end; every sensor gets
+  // buttons to the surfaces that can be filtered TO it. Anomalies are deliberately absent:
+  // the anomaly store has no sensor dimension server-side, and a link that lands on an
+  // unfiltered list would be the silent-lie this console bans.
+  const goBox = el("div", { class: "wl-go" });
+  if (typeof discoverDrill === "function") {
+    const b = el("button", { class: "review-act", text: "Its flows (Discover)",
+                             attrs: { type: "button" } });
+    b.addEventListener("click", () => discoverDrill({ sensor: r.sensor_id }));
+    goBox.appendChild(b);
+  }
+  if (typeof showView === "function") {
+    const hb = el("button", { class: "review-act", text: "Health audit",
+                              attrs: { type: "button" } });
+    hb.addEventListener("click", () => showView("health"));
+    goBox.appendChild(hb);
+    const gb = el("button", { class: "review-act", text: "Gate state",
+                              attrs: { type: "button" } });
+    gb.addEventListener("click", () => showView("sluice"));
+    goBox.appendChild(gb);
+  }
+  if (goBox.children.length) {
+    body.appendChild(el("h3", { text: "Go to" }));
+    body.appendChild(goBox);
+  }
 
   // ── the controls, only where they MEAN something.
   const registerBtn = document.getElementById("wl-detail-register");

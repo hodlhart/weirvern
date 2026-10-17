@@ -306,10 +306,12 @@ async function loadNetflow() {
   renderBars("nf-talkers", { available: tk.available !== false, reason: tk.reason,
                              points: (tk.points || []).map((t) => ({ ...t, label: t.src_addr, value: t.bytes })) },
              { label: (r) => r.src_addr, value: (r) => r.bytes, format: fmtBytes,
-               // CLICK = FILTER THE WHOLE VIEW (the operator's ask). The host detail is one
-               // chip away in Assets; the dashboard answering "just this host" is the point.
-               onClick: (r) => nfSetFilter("src", r.src_addr, r.hostname || r.src_addr),
-               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} \u2014 ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to filter this view to it.`,
+               // US-2: a talker is an ENTITY -- one click to its home (the Host view), where
+               // its traffic, destinations and anomalies live together. This comment used to
+               // concede the host was "one chip away in Assets"; now it is the click.
+               // The view's chips still filter; an entity value navigates.
+               onClick: (r) => { showView("host"); openHost(r.src_addr); },
+               title: (r) => `${r.hostname ? r.hostname + " \u00b7 " : ""}${r.src_addr} \u2014 ${fmtBytes(r.bytes)} / ${r.flows} flows. Click to open this host.`,
                emptyText: "No talkers in this window." });
 
   renderBars("nf-proto", d.protocols,

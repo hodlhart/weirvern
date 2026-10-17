@@ -1781,8 +1781,8 @@ async function loadAnomalies() {
                      anToggleOccurrences(e.target.closest("tr"), a);
                    }
                  } } }),
-      el("td", { class: "dcell", attrs: { title: "filter the queue to this host" },
-                 on: { click: (e) => { e.stopPropagation(); anSetFilter("host", a.src_addr); } } },
+      el("td", { class: "dcell", attrs: { title: "open this host's view" },
+                 on: { click: (e) => { e.stopPropagation(); showView("host"); openHost(a.src_addr); } } },
          [hostCell(a.src_addr, a.hostname),
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
                                    title: "on the watch list" }) : null]),
@@ -4093,7 +4093,11 @@ async function loadIdentity() {
   for (const h of shown) {
     const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "";
     const tr = el("tr", { class: "clickable" }, [
-      el("td", { class: "mono", text: h.hostname ? `${h.hostname} (${h.host})` : h.host }),
+      // US-2: the host is an ENTITY -- its cell opens the host's own view (traffic,
+      // destinations, anomalies together); the row's own click still opens the identity detail.
+      el("td", { class: "mono dcell", attrs: { title: "open this host's view" },
+                 on: { click: (e) => { e.stopPropagation(); showView("host"); openHost(h.host); } } },
+         [el("span", { text: h.hostname ? `${h.hostname} (${h.host})` : h.host })]),
       el("td", { class: "dcell", attrs: { title: "filter the list to this identity" },
                  on: { click: (e) => { e.stopPropagation();
                    idSetFilter("os", h.os_label || h.os || "unknown"); } } },
@@ -4176,7 +4180,23 @@ function showIdentityDetail(h) {
   for (const [label, values] of raw) {
     box.appendChild(el("h3", { text: `Observed ${label}` }));
     const ul = el("ul");
-    for (const v of values) ul.appendChild(el("li", { class: "mono", text: String(v) }));
+    for (const v of values) {
+      if (label === "JA4") {
+        // US-2: a fingerprint is an ENTITY with a home right here -- the lookup panel this
+        // view already has. One click runs it for this value and shows which hosts wear it.
+        const li = el("li", { class: "mono dcell",
+                              attrs: { title: "look this fingerprint up" } },
+                      [el("span", { text: String(v) })]);
+        li.addEventListener("click", () => {
+          const inp = document.getElementById("fp-input");
+          if (inp) inp.value = String(v);
+          lookupFingerprint(String(v)).catch(showError);
+        });
+        ul.appendChild(li);
+      } else {
+        ul.appendChild(el("li", { class: "mono", text: String(v) }));
+      }
+    }
     box.appendChild(ul);
   }
 }

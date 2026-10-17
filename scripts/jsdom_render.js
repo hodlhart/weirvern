@@ -890,7 +890,13 @@ const IDENTITY_PAYLOAD = {
       const m = /[?&]sensor=([^&]+)/.exec(u);
       const sid = m ? decodeURIComponent(m[1]) : "";
       const row = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === sid);
-      const payload = row ? { available: true, reason: null, sensor: row } : WEIRLINGS_DETAIL_PAYLOAD;
+      // Answers for ANY id, like the real server: an unknown sensor gets its own row shape
+      // rather than another sensor's data under the wrong name.
+      const payload = row
+        ? { available: true, reason: null, sensor: row }
+        : { available: true, reason: null,
+            sensor: Object.assign({}, (WEIRLINGS_DETAIL_PAYLOAD || {}).sensor || {},
+                                  { sensor_id: sid }) };
       return Promise.resolve({ ok: true, status: 200, statusText: "OK",
                                json: async () => payload });
     }
@@ -1080,6 +1086,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     errors: null,
   };
 
+  // US-2: the discover Zeek feed -- logs, not rows (soc.discover_zeek's own shape).
+  const DISCOVER_ZEEK_PAYLOAD = {
+    available: true, reason: "", feed: "zeek", rows: [], total: 12,
+    logs: [
+      { log: "conn", rows: 12, total: 99, last_ts: "2026-10-17T15:00:00" },
+      { log: "ssl", rows: 0, total: 5, last_ts: "2026-10-17T14:00:00" },
+    ],
+  };
+
   const DNS_PAYLOAD = {
     available: true, reason: "", total: 12, limit: 100, offset: 0, bucket_s: 60,
     rows: [
@@ -1189,13 +1204,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
     ["/api/discover", (u) => {
       DISCOVER_REQS.push(String(u));
-      return String(u).includes("feed=dns") ? DISCOVER_DNS_PAYLOAD : DISCOVER_PAYLOAD;
+      const s = String(u);
+      if (s.includes("feed=dns")) return DISCOVER_DNS_PAYLOAD;
+      if (s.includes("feed=zeek")) return DISCOVER_ZEEK_PAYLOAD;
+      return DISCOVER_PAYLOAD;
     }],
     // COUNTED (issue #15): the Sluice tab must be able to fetch this ON DEMAND, once.
     ["/api/blocked", () => { BLOCKED_FETCHES += 1; return BLOCKED_PAYLOAD; }],
     ["/api/dns/reverse", DNS_REVERSE_PAYLOAD],
     ["/api/dns", DNS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
+    ["/api/zeeklog", () => ({ available: true, points: [{ addr: "198.51.100.20", n: 5 }] })],
     ["/api/zeek", ZEEK_PAYLOAD],
     ["/api/session", SESSION_STUB],
     ["/api/users", USERS_PAYLOAD],
@@ -5316,6 +5335,131 @@ check("high capture loss is called out in the fleet",
           && ownerAt > -1 && matchedAt > -1,
           "owner head=" + head.indexOf("owner") + " cell=" + ownerAt
           + "; matched head=" + head.indexOf("matched rule") + " cell=" + matchedAt);
+  }
+
+  // ── ENTITY LINKS: every entity one click from its home (US-2) ───────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 1. the anomaly row's host cell -> the Host view (was: filter the queue)
+    H.showView("anomalies");
+    await sleep(250);
+    const anRow1 = doc.querySelector("#anomalies-table tbody tr");
+    const hostCellEl = anRow1
+      ? [...anRow1.querySelectorAll("td")].find((td) => /open this host's view/.test(td.title || ""))
+      : null;
+    check("the anomaly row's host cell names its destination", !!hostCellEl);
+    if (hostCellEl) {
+      hostCellEl.click();
+      await sleep(220);
+      check("...and it opens the Host view", doc.getElementById("view-host").classList.contains("active"));
+    }
+    // 2. a netflow talker -> its host (was: filter-only, the audit's runner-up)
+    fetchOverride = (u) => (String(u).includes("/api/netflow")
+      ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true, reason: "", hours: 24,
+          talkers: { available: true, reason: "", points: [
+            { src_addr: "198.51.100.20", hostname: "host.example", bytes: 123456, flows: 9 }] },
+        }) })
+      : null);
+    await H.loadNetflow();
+    await sleep(150);
+    const tkBar = doc.querySelector("#nf-talkers .bar-row");
+    check("the talkers chart offers its click targets", !!tkBar);
+    if (tkBar) {
+      tkBar.click();
+      await sleep(220);
+      check("a talker opens its host, not just a filter",
+            doc.getElementById("view-host").classList.contains("active"));
+    }
+    fetchOverride = null;
+    // 3. a Discover Zeek log row -> that log's drill in the Zeek view
+    H.showView("discover");
+    const feedSel = doc.getElementById("dc-feed");
+    if (feedSel) {
+      feedSel.value = "zeek";
+      feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+      await sleep(220);
+      const zrows = doc.querySelectorAll("#dc-rows tr.dc-row");
+      check("the Zeek feed lists its logs", zrows.length >= 2, "rows=" + zrows.length);
+      if (zrows[0]) {
+        zrows[0].querySelector("td").click();
+        await sleep(250);
+        check("a Zeek log row drills into that log's rows in the Zeek view",
+              doc.getElementById("view-zeek").classList.contains("active")
+              && (doc.getElementById("zk-drill-title").textContent || "").includes("conn.log"),
+              doc.getElementById("zk-drill-title").textContent);
+      }
+      feedSel.value = "netflow";
+      feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+      await sleep(200);
+    }
+    // 4. the sensor sheet -> its flows, filtered to the sensor in Discover
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    await H.openWeirling("edge-alive");
+    await sleep(180);
+    const goBtn = [...doc.querySelectorAll("#wl-detail-card button")]
+      .find((b) => /Its flows/.test(b.textContent));
+    check("the sensor sheet carries its onward links", !!goBtn);
+    if (goBtn) {
+      const beforeDc = DISCOVER_REQS.length;
+      goBtn.click();
+      await sleep(280);
+      check("...and 'Its flows' lands in Discover filtered to exactly this sensor",
+            doc.getElementById("view-discover").classList.contains("active")
+            && doc.getElementById("dc-sensor").value === "edge-alive"
+            && DISCOVER_REQS.slice(beforeDc).some((u) => u.includes("sensor=edge-alive")),
+            "sensor=" + doc.getElementById("dc-sensor").value);
+    }
+    // 5. a sluice gate's sensor -> that sensor's fleet sheet
+    H.showView("sluice");
+    await H.loadSluice();
+    await sleep(150);
+    const gateCell = doc.querySelector('#sl-gates [title^="open this sensor"]');
+    check("a gate's sensor cell names its destination", !!gateCell);
+    if (gateCell) {
+      gateCell.click();
+      await sleep(280);
+      check("...and it opens that sensor's fleet sheet",
+            doc.getElementById("view-weirlings").classList.contains("active")
+            && !doc.getElementById("wl-detail-card").classList.contains("hidden")
+            && /weirvern-dual/.test(doc.getElementById("wl-detail-id").textContent),
+            "detail id=" + doc.getElementById("wl-detail-id").textContent);
+    }
+    // 6. an identity row's host -> the Host view; its JA4 -> the lookup
+    H.showView("identity");
+    await H.loadIdentity();
+    await sleep(180);
+    const idRow = [...doc.querySelectorAll("#id-table tbody tr")]
+      .find((tr) => /203\.0\.113\.10/.test(tr.textContent));
+    const idHost = idRow ? idRow.querySelector("td") : null;
+    check("the identity list offers its host cells", !!idHost && /open this host's view/.test(idHost.title || ""));
+    if (idHost) {
+      idHost.click();
+      await sleep(220);
+      check("...and the host cell opens the Host view", doc.getElementById("view-host").classList.contains("active"));
+    }
+    H.showView("identity");
+    await H.loadIdentity();
+    await sleep(180);
+    const idRow2 = [...doc.querySelectorAll("#id-table tbody tr")]
+      .find((tr) => /203\.0\.113\.10/.test(tr.textContent));
+    if (idRow2) {
+      idRow2.click();
+      await sleep(120);
+      const ja4li = [...doc.querySelectorAll("#id-detail li")]
+        .find((li) => /t13d1516h2_8daaf6152771_02713d6af862/.test(li.textContent));
+      check("identity detail lists its JA4 with a click affordance",
+            !!ja4li && /look this fingerprint up/.test(ja4li.title || ""));
+      if (ja4li) {
+        ja4li.click();
+        await sleep(280);
+        check("...and clicking it runs the fingerprint lookup in place",
+              /presented this fingerprint/.test((doc.getElementById("fp-note") || {}).textContent || "")
+              || /presented this fingerprint/.test((doc.getElementById("fp-results") || {}).textContent || ""),
+              ((doc.getElementById("fp-note") || {}).textContent || "").slice(0, 80));
+      }
+    }
   }
 
   // ── DISCOVER: the raw-flow browser (the operator's ask, 2026-10-16) ────────────────────────

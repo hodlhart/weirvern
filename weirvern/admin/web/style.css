@@ -591,6 +591,8 @@ td.link:hover, .link:hover { text-decoration: underline; }
  * at rest means clickable. Interactive chips opt in with .act. */
 .chip.act { cursor: pointer; }
 .chip.act:hover { border-color: var(--accent); }
+/* US-2: the sensor sheet's onward links -- buttons to the surfaces filterable to that sensor. */
+.wl-go { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
 .chip .x { color: var(--muted); font-weight: 700; }
 .chip .x:hover { color: var(--danger); }
 /* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a

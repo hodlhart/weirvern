@@ -139,6 +139,13 @@ function dcRenderFacets(d) {
       sensorSel.appendChild(el("option", {
         value: s.value, text: (s.label || s.value) + " \u00b7 " + Number(s.count).toLocaleString() }));
     });
+    // US-2: a selection SET BY A CALLER (the sensor sheet's "its flows") must survive this
+    // rebuild. The facet only carries sensors with flows in the window; a sensor whose rows
+    // aged out of the window is exactly the one being investigating, and silently
+    // un-selecting it would be the filter-drop this console bans.
+    if (keep && ![...sensorSel.options].some((o) => o.value === keep)) {
+      sensorSel.appendChild(el("option", { value: keep, text: keep }));
+    }
     sensorSel.value = keep;
   }
 }
@@ -242,8 +249,17 @@ function dcRenderRows(d) {
       const tr = el("tr", { class: "dc-row" });
       const name = row.log || row.label || "?";
       const nm = dcCell(name, "dcell");
-      nm.title = "open the Zeek tab";
-      nm.addEventListener("click", (e) => { e.stopPropagation(); showView("zeek"); });
+      nm.title = "open this log's rows in the Zeek view";
+      nm.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showView("zeek");
+        // US-2: the Zeek view already owns the per-log drill; a log WITH rows drills straight
+        // into them (assets.js's loadZeekLog). A zero-row log just opens the tab -- a drill
+        // offered into nothing is the dead end the Zeek view's own bars refuse.
+        if (Number(row.rows || row.in_window || 0) > 0 && typeof loadZeekLog === "function") {
+          loadZeekLog(name).catch(showError);
+        }
+      });
       tr.appendChild(nm);
       tr.appendChild(dcCell(Number(row.rows || row.in_window || 0).toLocaleString()));
       tr.appendChild(dcCell(Number(row.total || 0).toLocaleString()));
@@ -368,6 +384,18 @@ function discoverDrill(opts) {
   set("dc-addr", opts.addr);
   set("dc-port", opts.port);
   set("dc-proto", opts.proto);
+  // US-2: drill to ONE SENSOR (a weirling's sheet says "show me this sensor's flows"). The
+  // option is ensured first: selecting a value that is not in the list yet silently selects
+  // nothing, which is the filter-drop this console bans.
+  if (opts.sensor !== undefined) {
+    const sel = document.getElementById("dc-sensor");
+    if (sel) {
+      if (![...sel.options].some((o) => o.value === String(opts.sensor))) {
+        sel.appendChild(el("option", { value: String(opts.sensor), text: String(opts.sensor) }));
+      }
+      sel.value = String(opts.sensor);
+    }
+  }
   DC_STATE.offset = 0;
   showView("discover");
   loadDiscover().then(clearError).catch(showError);
