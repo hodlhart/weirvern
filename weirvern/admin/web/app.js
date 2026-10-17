@@ -2181,6 +2181,25 @@ function wireInfoButtons() {
   }
 }
 
+/* SHOW ALL HELP -- one key ("?") or one click reveals every i-circle panel at once; the same
+ * toggle puts them away. "Any open" means close: the key is a state switch, not a stack, and
+ * the state is named in the pill (aria-pressed) and on the body (help-all). */
+function toggleAllHelp(force) {
+  const panels = [...document.querySelectorAll(".info-text")];
+  const anyOpen = panels.some((p) => !p.classList.contains("hidden"));
+  const open = typeof force === "boolean" ? force : !anyOpen;
+  for (const btn of document.querySelectorAll(".info-btn")) {
+    const panel = document.getElementById(btn.dataset.info || "");
+    if (!panel) continue;
+    panel.classList.toggle("hidden", !open);
+    btn.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  document.body.classList.toggle("help-all", open);
+  const pill = document.getElementById("all-help");
+  if (pill) pill.setAttribute("aria-pressed", open ? "true" : "false");
+}
+
 /**
  * Give every table in <main> its own horizontal scroll box (the responsive section in
  * style.css explains why). The table elements are static markup, so once at boot is enough:
@@ -2394,6 +2413,21 @@ document.addEventListener("DOMContentLoaded", () => {
           done(false);
         }
       } catch (_e) { done(false); }
+    });
+  }
+  const helpPill = document.getElementById("all-help");
+  if (helpPill && !window.__allHelpWired) {
+    window.__allHelpWired = true;
+    helpPill.addEventListener("click", () => toggleAllHelp());
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "?" && !(e.key === "/" && e.shiftKey)) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+                t.tagName === "SELECT" || t.isContentEditable)) {
+        return;   // a question mark typed into a field is just a question mark
+      }
+      e.preventDefault();
+      toggleAllHelp();
     });
   }
   document.getElementById("refresh").addEventListener("click", refreshAll);

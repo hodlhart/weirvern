@@ -101,7 +101,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
-                     syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS,
+                     syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, toggleAllHelp,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
                      runSiphonTest, renderTestNote,
@@ -2915,6 +2915,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     if (blInput) blInput.value = "";
     H.trApply({ mode: "relative", hours: 24 });
     await new Promise((r) => setTimeout(r, 250));
+  }
+
+  // ── HELP ANSWERED FOUR WAYS (BF-10) ─────────────────────────────────────────────────────────
+  // Every i-circle answers what it is / what writes it / when it last changed / where to see
+  // its effect -- provenance, not just a definition -- and one key ("?") shows them all.
+  {
+    const missing = [];
+    for (const id of ["an-info", "wl-info", "sl-info", "bl-info", "dc-info", "nw-info", "hp-info"]) {
+      const p = doc.getElementById(id);
+      if (!p) { missing.push(id + ":gone"); continue; }
+      const t = p.textContent;
+      for (const label of ["What it is", "What writes it", "Last changed", "Where to see it"]) {
+        if (!t.includes(label)) missing.push(id + ":" + label);
+      }
+    }
+    check("every sampled help panel answers the four questions", missing.length === 0,
+          missing.slice(0, 4).join(", "));
+    const nwRefs = [...doc.querySelectorAll("[data-info]")].map((b) => b.dataset.info);
+    check("the doubled Network panels are one panel, one story",
+          !nwRefs.includes("nw-edges-info") && nwRefs.includes("nw-info") &&
+          !doc.getElementById("nw-edges-info"),
+          nwRefs.filter((r) => r.startsWith("nw")).join(", "));
+    H.toggleAllHelp(false);   // deterministic start: everything closed
+    await new Promise((r) => setTimeout(r, 40));
+    const anPanel = doc.getElementById("an-info");
+    const helpPill = doc.getElementById("all-help");
+    helpPill.click();
+    await new Promise((r) => setTimeout(r, 40));
+    check("the all-help toggle opens every panel at once",
+          [...doc.querySelectorAll(".info-text")].every((p) => !p.classList.contains("hidden")) &&
+          helpPill.getAttribute("aria-pressed") === "true");
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    check("...and the ? key puts them all away again",
+          anPanel.classList.contains("hidden") && helpPill.getAttribute("aria-pressed") === "false");
+    helpPill.click();   // open all again, then prove a field's question mark is inert
+    await new Promise((r) => setTimeout(r, 40));
+    const addrBox = doc.getElementById("h-addr");
+    addrBox.dispatchEvent(new window.KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    check("...while a question mark typed into a field is just a question mark",
+          !anPanel.classList.contains("hidden"));
+    H.toggleAllHelp(false);   // tidy for whatever follows
+    await new Promise((r) => setTimeout(r, 40));
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────

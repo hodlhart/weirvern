@@ -95,6 +95,7 @@
     <span class="muted" id="user-chip" title=""></span>
     <button class="pill hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
     <button class="pill" id="copy-link" type="button" title="copy a link to this exact view (tab, range, filters)">Copy link</button>
+    <button class="pill" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
     <div class="timerange">
       <button id="tr-open" aria-expanded="false" title="The time range every tab answers to">Last 24 hours</button>
@@ -164,7 +165,7 @@
   -->
   <section id="view-network" class="view">
     <div class="card">
-      <h2>Connection graph <button class="info-btn" data-info="nw-info" aria-label="how to read and use this map" aria-expanded="false" title="how to read and use this map">i</button> <span class="muted" id="nw-window"></span> <button class="info-btn" data-info="nw-edges-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Connection graph <button class="info-btn" data-info="nw-info" aria-label="how to read this map, and what clicking does" aria-expanded="false" title="how to read this map, and what clicking does">i</button> <span class="muted" id="nw-window"></span></h2>
       <div class="controls">
         <label>minimum edges
           <input type="number" id="nw-min" value="1" min="1" max="100">
@@ -175,29 +176,17 @@
         <button id="nw-settle">Re-settle</button>
       </div>
       <div class="info-text hidden" id="nw-info">
-        A dot is a host both weirlings saw traffic for; a line is a conversation between two hosts,
-        thickness by bytes. The dashed rings are hop distance from the weirling, drawn from the
-        reported IP TTL — no ring means the TTL was not measured, never that a host sits outside
-        the network. A central dot with many thin lines is a host talking to everything: a scanner,
-        a backup server, or something worth clicking. Click a dot to focus that host's
-        conversations, a line for its exact source → destination, and use the tables below when the
-        answer needs to go into a ticket.
-      
-
-        Every host-to-host edge in the window, sized by bytes. Click a node to
-        select it; click more to widen the selection. Only the selected hosts' connections are
-        drawn — clear the selection to see everything again. The map is force-directed: it
-        settles on its own, drag a dot to pull it around (Re-settle puts it back), and where
-        IP TTL is reported the hosts sit in hop-distance rings from the weirling.</div>
+  <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
+  <p><strong>What writes it.</strong> Netflow edges from every weirling in the window; Zeek enriches them where it runs.</p>
+  <p><strong>Last changed.</strong> Redraws with each refresh; the window pill above names the range.</p>
+  <p><strong>Where to see it.</strong> Click a dot for that host's conversations, a line for its exact source → destination, and use the tables below when the answer needs to go into a ticket.</p>
+</div>
 
       <p class="muted" id="nw-caption">loading…</p>
       <div id="nw-selected" class="chips"></div>
       <div id="nw-graph" class="graph"></div>
       <div id="nw-legend" class="legend"></div>
-<div class="info-text hidden" id="nw-edges-info">
-        Click a <strong>line</strong> to see that connection's source and
-        destination, or a <strong>dot</strong> to see everything that host talked to.
-      </div>
+
     </div>
 
     <!--
@@ -232,9 +221,11 @@
     <div class="card">
       <h2>Edges as a table <button class="info-btn" data-info="nw-tables-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="nw-tables-info">
-        The same data the graph is drawn from. A graph that cannot be read as
-        text is a graph an analyst cannot paste into a ticket.
-      </div>
+  <p><strong>What it is.</strong> The same edges the graph is drawn from, as text — a graph that cannot be read as text is a graph an analyst cannot paste into a ticket.</p>
+  <p><strong>What writes it.</strong> The same store the graph uses; one source, two views.</p>
+  <p><strong>Last changed.</strong> Follows the window pill and each refresh.</p>
+  <p><strong>Where to see it.</strong> Sort and click rows here for the version that goes into a ticket.</p>
+</div>
       <table id="nw-table">
         <thead><tr><th>Source</th><th>Target</th><th>Bytes</th><th>Flows</th><th></th></tr></thead>
         <tbody></tbody>
@@ -247,12 +238,11 @@
       <h2>Discover <button class="info-btn" data-info="dc-info" aria-label="what Discover is and how to filter it" aria-expanded="false" title="what Discover is and how to filter it">i</button> <span class="muted" id="dc-window"></span></h2>
       <p class="muted" id="dc-summary">loading…</p>
       <div class="info-text hidden" id="dc-info">
-        The flows themselves, not a summary of them. Pick a weirling or a flow type, type an
-        address or a port, and read the rows; click any row to see every field it carries and to
-        filter the view down to that host, port or flow type. The histogram is the same filter
-        over time — click a bucket to narrow the window to it. Everything here answers the
-        global time control in the header.
-      </div>
+  <p><strong>What it is.</strong> The raw flows themselves, not a summary of them.</p>
+  <p><strong>What writes it.</strong> Flow records as exported to this hub by your weirlings.</p>
+  <p><strong>Last changed.</strong> Re-reads every time a filter changes or the window moves.</p>
+  <p><strong>Where to see it.</strong> Click any row for every field it carries; the histogram is the same filter over time — click a bucket to narrow the window to it.</p>
+</div>
       <div class="controls">
         <label>flow type <select id="dc-feed">
           <option value="netflow">NetFlow</option>
@@ -288,13 +278,11 @@
            the whole view re-reads with it applied, and removing the chip widens it back. -->
       <div id="nf-chips"></div>
       <div class="info-text hidden" id="nf-info">
-        NetFlow is the router's own summary of every conversation — who talked to whom, how many
-        bytes, how many packets. It is sampled, so read the volumes as a strong estimate rather
-        than an audit. This tab is the raw ground truth: click any bar in Talkers, Protocol mix or
-        Top ports and the Flow detail table below fills with the exact host-to-host pairs behind
-        it. For what a host was DOING, the Zeek tab knows services and names; for what looked
-        WRONG, the Anomalies tab has the scores.
-      </div>
+  <p><strong>What it is.</strong> The router's own summary of every conversation — who talked to whom, bytes, packets. It is sampled: read the volumes as a strong estimate, not an audit.</p>
+  <p><strong>What writes it.</strong> NetFlow export from the router.</p>
+  <p><strong>Last changed.</strong> Buckets land continuously; the window pill above names the range.</p>
+  <p><strong>Where to see it.</strong> Click a bar in Talkers, Protocol mix or Top ports and the Flow detail table below fills with the exact rows.</p>
+</div>
 
       <div class="controls">
         
@@ -347,10 +335,11 @@
     <div class="card">
       <h2>DNS <button class="info-btn" data-info="dn-info" aria-label="what the DNS view shows and how to drill in" aria-expanded="false" title="what the DNS view shows and how to drill in">i</button></h2>
       <div class="info-text hidden" id="dn-info">
-        Every DNS question and answer the sensor saw on port 53. Filters are optional; click a row
-        for the full answers and the reverse lookup &mdash; which names have pointed at that address
-        recently. That reverse map is what a domain block resolves through.
-      </div>
+  <p><strong>What it is.</strong> Every DNS question and answer the sensor saw on port 53.</p>
+  <p><strong>What writes it.</strong> Zeek DNS logs.</p>
+  <p><strong>Last changed.</strong> Appends as queries happen on the wire.</p>
+  <p><strong>Where to see it.</strong> Click a row for the full answers and the reverse lookup — that reverse map is what a domain block resolves through.</p>
+</div>
       <p class="muted" id="dn-summary">loading&hellip;</p>
       <div class="controls">
         <label>domain <input id="dn-domain" type="text" placeholder="e.g. example.com" /></label>
@@ -383,19 +372,11 @@
         
       </div>
       <div class="info-text hidden" id="zk-info">
-        Zeek records what flows cannot: the services hosts offer, TLS handshakes (with JA4
-        fingerprints), DNS answers, file transfers, authentication. Log volume shows which of
-        those streams is carrying traffic — click a bar to see every host that appears in that
-        log and how often. The DNS chart hides single-label names (NetBIOS and mDNS chatter would
-        bury the real lookups); they are still in the table below. A table that is empty means the
-        log has no rows yet, which is a different fact from a query that failed — and the page
-        says which.
-      
-
-        Zeek sees what NetFlow cannot: services, TLS, DNS answers, file
-        transfers, authentication. A table that is empty here is a log nothing has written
-        yet — which is a different state from a query that failed, and they are stated
-        differently below.</div>
+  <p><strong>What it is.</strong> What flows cannot record: the services hosts offer, TLS handshakes with JA4 fingerprints, DNS answers, file transfers, authentication.</p>
+  <p><strong>What writes it.</strong> Zeek logs shipped to this hub.</p>
+  <p><strong>Last changed.</strong> Log volume refreshes per window; click a bar to see every host inside that log and how often.</p>
+  <p><strong>Where to see it.</strong> The tables below — the DNS chart hides single-label NetBIOS and mDNS names on purpose.</p>
+</div>
 
     </div>
     <div class="card">
@@ -459,22 +440,11 @@
       </div>
       <div id="fp-results"></div>
       <div class="info-text hidden" id="id-info">
-        Nothing is probed and nothing is sent — every identity here was derived from traffic the
-        weirling already saw. Confidence counts how many INDEPENDENT sources agree (a banner, a DHCP
-        lease, a NIC vendor, a TLS fingerprint); one weak signal is never presented as an answer.
-        Click any host for each signal with its source and weight, and note that contradicting
-        signals are shown rather than averaged — a host with two operating systems is a finding
-        (dual-boot, a renamed machine, or a spoof), not a rounding error.
-      
-
-        Every host's operating-system family, derived from traffic the weirling already saw.
-        Nothing is probed and nothing is sent: the evidence is application banners
-        (software.log), DHCP leases, NIC vendors and TLS ClientHello fingerprints.
-        Confidence reflects how many <em>independent</em> sources agree, so a hostname
-        alone is never presented as an answer.
-
-        A host showing contradicting signals is a finding rather than an error: it can be a
-        renamed machine, a dual-boot host, or a spoofed hostname.</div>
+  <p><strong>What it is.</strong> Passive identities: nothing is probed and nothing is sent — every fact here was derived from traffic the weirling already saw.</p>
+  <p><strong>What writes it.</strong> Independent sources agreeing — a banner, a DHCP lease, a NIC vendor, a TLS fingerprint. Confidence counts how many agree; one weak signal is never presented as an answer.</p>
+  <p><strong>Last changed.</strong> Rebuilt as new signals arrive in the window.</p>
+  <p><strong>Where to see it.</strong> Click any host for each signal with its source and weight.</p>
+</div>
 
     </div>
 
@@ -523,16 +493,11 @@
         <span id="an-filters"></span>
       </div>
       <div class="info-text hidden" id="an-info">
-        Each row is a host-window the ensemble flagged: the score that crossed the line, and
-        which detectors AGREED on it — one model alone is usually noise, so agreement is the
-        signal worth reading first. Click any row to open its evidence: the raw flows, Zeek
-        sessions and DNS queries inside the window, which is what the models actually saw. The
-        chips record your disposition, so a recurring benign alert stays triaged instead of
-        demanding the same decision every week. Sort your work with the minimum-score and
-        unreviewed-only filters above.
-      
-
-        Click any row to see the raw flows, Zeek sessions and DNS queries inside that alert's window. Mark a row with ack / resolve / FP to record what you did about it — a recurring benign alert stays cleared that way. Reviews need the operator token (same write gate as Settings).</div>
+  <p><strong>What it is.</strong> Host-windows the ensemble flagged: the score that crossed the line, and which detectors agreed on it — one model alone is usually noise, so agreement is the signal worth reading first.</p>
+  <p><strong>What writes it.</strong> The detector ensemble, every scan window.</p>
+  <p><strong>Last changed.</strong> New rows land as windows complete; a reviewed row keeps its verdict.</p>
+  <p><strong>Where to see it.</strong> Click any row for its evidence — the raw flows, Zeek sessions and DNS queries inside the window.</p>
+</div>
 
       <table id="anomalies-table">
         <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th><th>Actions</th></tr></thead>
@@ -569,18 +534,11 @@
       <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span> <span id="m-filters"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
-        Four detectors watch the same traffic with different methods: Isolation Forest (outliers
-        in feature space), Gradient Boosting (learned patterns from this deployment's own
-        history), DBSCAN (dense-crowd clustering), and an adaptive per-host baseline. The ensemble
-        asks how many of them AGREE before a score is believed. Check freshness first — a model
-        scored against a stale baseline is still confident, just confident about the wrong
-        traffic. The near-miss table is the honest way to judge a threshold: it lists the windows
-        that almost alerted and why they did not.
-      
-
-        When each detector last retrained, and whether that is overdue. A model
-        scored against an old baseline is still confident; it is just confident about the wrong
-        traffic.</div>
+  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and the ensemble asks how many of them agree before a score is believed.</p>
+  <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
+  <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
+  <p><strong>Where to see it.</strong> Training history, score distribution, agreement, features and near misses all live below.</p>
+</div>
 
       <div class="controls">
         
@@ -606,9 +564,11 @@
     <div class="card">
       <h2>Training history <span class="muted">samples per retrain</span> <button class="info-btn" data-info="m-history-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-history-info">
-        Each line is one detector. Rising sample counts mean the training
-      window is filling; a flat line means the window is already full.
-      </div>
+  <p><strong>What it is.</strong> Each line is one detector over time.</p>
+  <p><strong>What writes it.</strong> Retrains, as samples accumulate.</p>
+  <p><strong>Last changed.</strong> A rising line means the training window is filling; flat means it is already full.</p>
+  <p><strong>Where to see it.</strong> This chart, and the freshness note on the Models card above.</p>
+</div>
       <div id="m-history" class="chart"></div>
       <div id="m-history-legend" class="legend"></div>
     </div>
@@ -617,17 +577,21 @@
       <div class="card">
         <h2>Score distribution <span class="muted">every anomaly, including sub-threshold</span> <button class="info-btn" data-info="m-scores-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-scores-info">
-        Where the alert threshold sits, and how much data falls below it.
-        A threshold in an empty region is doing nothing.
-      </div>
+  <p><strong>What it is.</strong> Where the alert threshold sits, and how much data falls below it — a threshold in an empty region is doing nothing.</p>
+  <p><strong>What writes it.</strong> Every anomaly score, including sub-threshold ones.</p>
+  <p><strong>Last changed.</strong> Refreshes with the window.</p>
+  <p><strong>Where to see it.</strong> Set the threshold in Settings → Detection; judge it against this shape and the near misses.</p>
+</div>
         <div id="m-scores" class="chart"></div>
       </div>
       <div class="card">
         <h2>Model agreement <span class="muted">which detectors fired together</span> <button class="info-btn" data-info="m-agree-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-agree-info">
-        Agreement between independent detectors is the strongest signal
-        the ensemble produces. One model alone is usually noise.
-      </div>
+  <p><strong>What it is.</strong> Which detectors fired together.</p>
+  <p><strong>What writes it.</strong> Ensemble verdicts per scored window.</p>
+  <p><strong>Last changed.</strong> Follows the window.</p>
+  <p><strong>Where to see it.</strong> Agreement between independent detectors is the strongest signal the ensemble produces.</p>
+</div>
         <div id="m-agreement" class="chart"></div>
       </div>
     </div>
@@ -635,21 +599,22 @@
     <div class="card">
       <h2>Feature deviations <span class="muted">mean |z| against each host's own baseline</span> <button class="info-btn" data-info="m-features-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-features-info">
-        Which features the models keep flagging, and how far from normal
-      they sit. Features that never deviate are not earning their place.
-      </div>
+  <p><strong>What it is.</strong> Which features the models keep flagging, and how far from normal they sit (mean |z| against each host's own baseline).</p>
+  <p><strong>What writes it.</strong> The feature pipeline, per retrain.</p>
+  <p><strong>Last changed.</strong> Follows the window.</p>
+  <p><strong>Where to see it.</strong> Here — features that never deviate are not earning their place.</p>
+</div>
       <div id="m-features" class="chart"></div>
     </div>
 
     <div class="card">
       <h2>Near misses <span class="muted">what almost alerted, and why it did not</span> <button class="info-btn" data-info="m-near-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-near-info">
-        Windows that scored close to the bar, or that cleared it and were
-      stopped by the agreement gate. The anomalies list can only show what was flagged;
-      this is the other half — the surface a threshold change should be judged against.
-      An empty list with the table unavailable message below means the feature has not
-      been deployed yet, not that nothing nearly alerted.
-      </div>
+  <p><strong>What it is.</strong> Windows that scored close to the bar, or that cleared it and were stopped by the agreement gate — the anomalies list can only show what was flagged, and this is the other half.</p>
+  <p><strong>What writes it.</strong> Ensemble scores, sub-threshold included.</p>
+  <p><strong>Last changed.</strong> Follows the window.</p>
+  <p><strong>Where to see it.</strong> Judge a threshold change against this list; an empty list with a 'table unavailable' note means the feature is not deployed yet.</p>
+</div>
       <div id="m-near-note"></div>
       <table id="m-near">
         <thead><tr><th>Window</th><th>Host</th><th>Score</th><th>Threshold</th>
@@ -661,8 +626,11 @@
     <div class="card">
       <h2>Anomalies <button class="info-btn" data-info="ev-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="ev-info">
-        Click a row to open its evidence.
-      </div>
+  <p><strong>What it is.</strong> Every anomaly this host raised inside the window.</p>
+  <p><strong>What writes it.</strong> The anomaly store.</p>
+  <p><strong>Last changed.</strong> Follows the header window.</p>
+  <p><strong>Where to see it.</strong> Click a row to open its evidence.</p>
+</div>
       <table id="m-points">
         <thead><tr><th>Score</th><th>Agreement</th><th>Severity</th><th>Models</th>
         <th>Primary feature</th><th>Magnitude</th><th>Host</th></tr></thead>
@@ -732,15 +700,11 @@
         
       </div>
       <div class="info-text hidden" id="as-info">
-        Every host either weirling saw in the window. Sort by anomalies to start with the
-        interesting ones, or search an address, a name, or a service. Click any row to drill down:
-        volume over time, Zeek services, top destinations and ports, and every anomaly that host
-        ever raised — usually the fastest route from "what is this box" to "what did it do".
-      
-
-        Every host seen in the window, from both weirlings. Click any row to drill
-        down. A host with zero bytes was seen by Zeek but moved no volume in this window — it is
-        still an asset, so it is listed rather than hidden.</div>
+  <p><strong>What it is.</strong> Every host either weirling saw in the window.</p>
+  <p><strong>What writes it.</strong> Flow, Zeek and identity records together.</p>
+  <p><strong>Last changed.</strong> Follows the window.</p>
+  <p><strong>Where to see it.</strong> Click any row to drill down — volume, services, top destinations and every anomaly — usually the fastest route from 'what is this box' to 'what has it done'.</p>
+</div>
 
       <div id="as-note"></div>
       <table id="as-table">
@@ -806,18 +770,11 @@
         
       </div>
       <div class="info-text hidden" id="hp-info">
-        Ingestion over time is the pulse: rows arriving from each pipeline stage. The alert audit
-        lists EVERY decision the worker made — sent, suppressed by cooldown, capped, or log-only —
-        because "nothing fired" and "it fired and was withheld" must never look alike; if an alert
-        you expected is missing, this is where it went. Checks is each probe with its state and
-        latency; Table sizes shows which store is growing; and the weirling panel reports the last
-        heartbeat per weirling, so a dead capture is visible before the data gap is.
-      
-
-        This is the DEEP check — it reads ClickHouse, so it answers "is data
-        flowing". The Kubernetes liveness probe deliberately does not, because a probe that
-        fails when the database is slow would restart the GUI and hide the real problem.
-        The two are different questions and        this page asks the first one.</div>
+  <p><strong>What it is.</strong> The pipeline's own health: the ingestion pulse, the alert audit, and the checks.</p>
+  <p><strong>What writes it.</strong> Each stage's own counters, and every decision the worker made — sent, suppressed by cooldown, capped, or log-only.</p>
+  <p><strong>Last changed.</strong> Refreshes on this page's own cadence.</p>
+  <p><strong>Where to see it.</strong> An alert you expected is missing? The audit table says which decision ate it; 'nothing fired' and 'it fired and was withheld' never look alike here.</p>
+</div>
 
     </div>
     <div class="card">
@@ -841,10 +798,11 @@
     <div class="card">
       <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span> <button class="info-btn" data-info="hp-audit-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="hp-audit-info">
-        The worker records every decision it makes, not just the deliveries.
-      An alert eaten by a cooldown or dropped at the rate cap leaves a row here — which is
-      the only way to tell "nothing fired" apart from "it fired and was withheld".
-      </div>
+  <p><strong>What it is.</strong> Every alerting decision the worker made, not just the deliveries.</p>
+  <p><strong>What writes it.</strong> The worker, at decision time.</p>
+  <p><strong>Last changed.</strong> Appends every alerting cycle.</p>
+  <p><strong>Where to see it.</strong> Here — a cooldown-eaten or rate-capped alert leaves a row, which is the only way to tell 'nothing fired' apart from 'it fired and was withheld'.</p>
+</div>
       <div id="hp-alerts-note"><p class="muted">loading…</p></div>
       <div class="grid">
         <div>
@@ -886,19 +844,11 @@
     <div class="card">
       <h2>Sluice Gate <button class="info-btn" data-info="sl-info" aria-label="what the gate does and how it fails" aria-expanded="false" title="what the gate does and how it fails">i</button></h2>
       <div class="info-text hidden" id="sl-info">
-        The gate is the part of this system that can STOP traffic, so it is built to fail open:
-        if its supervisor dies, the gate OPENS rather than taking your network down — a tool that
-        drops a production network when it has a bad day is a tool nobody deploys twice. The
-        panel above always says which enforcement path is actually live, verified from the
-        kernel, not from configuration. Rules are bounded by their duration and every block
-        states its reason. Blocking on detections is off until you enable it in
-        Settings → Sluice Gate.
-      
-
-        Block traffic by address, port or direction. Every rule is bounded -- this system does not
-        create permanent blocks, so a rule that has lapsed shows here as lapsed rather than silently
-        continuing to enforce. Blocking runs in the kernel on the weirling, so it does not slow the
-        traffic it inspects.</div>
+  <p><strong>What it is.</strong> The part of this system that can stop traffic, built to fail open: if its supervisor dies the gate OPENS rather than taking your network down — a tool that drops a production network when it has a bad day is a tool nobody deploys twice.</p>
+  <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
+  <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
+  <p><strong>Where to see it.</strong> The status panel above always says which enforcement path is actually live; the rules are below it.</p>
+</div>
 
       <!-- THE GATE'S OWN STATE, FIRST AND LARGEST. An operator's first question is "is this
            actually blocking anything", and the answer is not the rule count. -->
@@ -973,10 +923,11 @@
         <span id="sl-block-note" class="muted"></span>
       </div>
 <div class="info-text hidden" id="sl-refuse-info">
-        Refused on purpose: a rule with no address, a port without a protocol, the management
-        interface, this weirling's own address, and anything covering the whole internet. Each refusal
-        names the fix.
-      </div>
+  <p><strong>What it is.</strong> The safety refusals — on purpose: a rule with no address, a port without a protocol, the management interface, this weirling's own address, and anything covering the whole internet.</p>
+  <p><strong>What writes it.</strong> The gate's validator, at submit time.</p>
+  <p><strong>Last changed.</strong> Nothing is stored — a refusal happens before anything exists.</p>
+  <p><strong>Where to see it.</strong> The message right here when a rule is refused; each refusal names its fix.</p>
+</div>
     </div>
 
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
@@ -1029,11 +980,11 @@
     <div class="card">
       <h2>Blocking on detections <button class="info-btn" data-info="sl-policy-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="sl-policy-info">
-        Whether the ensemble's own verdicts may block. Off by default: a tool that starts blocking on
-        model output the moment it is installed would surprise anyone who installed it to watch
-        first. The policy below is the operator's trust boundary, and each level states what it
-        costs.
-      </div>
+  <p><strong>What it is.</strong> Whether the ensemble's own verdicts may block. Off by default: a tool that starts blocking on model output the moment it is installed would surprise anyone who installed it to watch first.</p>
+  <p><strong>What writes it.</strong> The operator — this policy is the trust boundary.</p>
+  <p><strong>Last changed.</strong> Each change is an audit row, and each level states what it costs.</p>
+  <p><strong>Where to see it.</strong> Blocks made this way appear in Blocked and the audit with the threshold as their reason.</p>
+</div>
       <div id="sl-policies"></div>
       <p id="sl-criticality-note" class="muted"></p>
     </div>
@@ -1044,10 +995,11 @@
     <div class="card">
       <h2>Blocked <button class="info-btn" data-info="bl-info" aria-label="what this tab shows" aria-expanded="false" title="what this tab shows">i</button></h2>
       <div class="info-text hidden" id="bl-info">
-        What has been caught and what is doing the catching: the recorded hits (a device asked
-        for a name a rule or a list watches), the live rules split by what they do right now,
-        and the gate's own counters. A hit is not a block &mdash; read the what column.
-      </div>
+  <p><strong>What it is.</strong> What has been caught and what is doing the catching: the recorded hits, the live rules split by what they do right now, and the gate's own counters.</p>
+  <p><strong>What writes it.</strong> DNS rules and imported lists, plus the DNS traffic that meets them.</p>
+  <p><strong>Last changed.</strong> Hits append as devices ask for listed names.</p>
+  <p><strong>Where to see it.</strong> Here — and remember a hit is not a block; read the what column.</p>
+</div>
       <p class="muted" id="bl-summary">loading&hellip;</p>
       <div class="controls">
         <label>domain <input id="bl-domain" type="text" placeholder="filter the hits" /></label>
@@ -1107,21 +1059,11 @@
     <div class="card">
       <h2>Weirlings <button class="info-btn" data-info="wl-info" aria-label="what a weirling is and what registering means" aria-expanded="false" title="what a weirling is and what registering means">i</button></h2>
       <div class="info-text hidden" id="wl-info">
-        A weirling is any sensor feeding this hub — a box running its own capture, or one
-        exporting flows here. Registering records the EXPECTATION, so "the sensor you added never
-        reported" can be told apart from "you have no sensors": two opposite facts that would
-        otherwise look identical. Registration is a ledger, not an ingest switch — the hub always
-        listens, and enforcement lives at the gate. The row marked local is this hub's own
-        sensor; its runtime settings mount in its drill-down, because a sensor can only be
-        configured on the box that runs it.
-      
-
-        The fleet: every weirling this hub expects to hear from, compared against what it has
-        actually heard. A weirling is any additional capture point elsewhere in the network feeding this
-        hub &mdash; a Zeek capture on another segment, or a box exporting flows to the collector.
-        This view exists to tell <strong>you registered one and it never said anything</strong>
-        apart from <strong>you have no weirlings</strong>, which are opposite facts that look
-        identical everywhere else.</div>
+  <p><strong>What it is.</strong> A weirling is any sensor feeding this hub — a box running its own capture, or one exporting flows here. Registering records the expectation, so 'the sensor you added never reported' can be told apart from 'you have no sensors'.</p>
+  <p><strong>What writes it.</strong> Registrations made here; heartbeats sent by each sensor.</p>
+  <p><strong>Last changed.</strong> Heartbeat age updates continuously on the fleet table.</p>
+  <p><strong>Where to see it.</strong> The state column — register, enable, revoke on each row.</p>
+</div>
 
       <!-- THE FLEET'S OWN STATE, FIRST. An operator's first question is "is anything broken", and
            the answer is not the sensor count. -->
@@ -1203,27 +1145,22 @@
         </div>
         <p id="wl-plan-note" class="muted sonar-note"></p>
         <div class="info-text hidden" id="wl-plan-info">
-          This is the plan THE SENSOR ITSELF will run, stored on its own registration: its mode
-          (loch, or siphon for in-path), and for siphon the capture interface, the segment, the
-          address it borrows on that segment, the gateway whose hosts are relayed, and the
-          targets. The sensor reads its own row every half-minute and arms or disarms itself;
-          nothing here restarts this hub. <strong>Sonar</strong> surveys the sensor's own capture
-          port first and stages what it measured. Applying siphon is in-path: for as long as the
-          sensor intercepts, the hosts you name depend on it forwarding, so a stopped sensor is
-          their outage — start with one or two targets, not the whole segment.
-        </div>
+  <p><strong>What it is.</strong> The plan the sensor itself will run, stored on its own registration: its mode (loch, or siphon for in-path), and for siphon the capture interface, the segment, the address it borrows, the gateway whose hosts are relayed, and the targets.</p>
+  <p><strong>What writes it.</strong> The operator, here.</p>
+  <p><strong>Last changed.</strong> The sensor reads its own row every half-minute and arms or disarms itself.</p>
+  <p><strong>Where to see it.</strong> The sensor's own state column, and its log.</p>
+</div>
       </div>
       <details id="wl-advanced">
         <summary>Advanced</summary>
         <div id="st-sensor" class="grid-inline"></div>
       </details>
       <div class="info-text hidden" id="wl-detail-info">
-        One weirling's live state, its NICs, and the actions that change its fleet membership
-        (register, enable/disable, revoke). A sensor's RUNTIME is changed where it runs: this
-        hub's own sensor is configured on the Settings tab, and every other weirling gets its
-        own intercept plan here — mode, segment, address, gateway and targets — which the
-        sensor reads from its own registry row and applies itself.
-      </div>
+  <p><strong>What it is.</strong> One weirling's live state, its NICs, and the actions that change its fleet membership.</p>
+  <p><strong>What writes it.</strong> Heartbeats from the sensor, plus the registrations held here.</p>
+  <p><strong>Last changed.</strong> Heartbeat freshness updates at every check-in.</p>
+  <p><strong>Where to see it.</strong> This hub's own sensor is configured on the Settings tab; every other weirling's intercept plan lives below.</p>
+</div>
 
       <div class="controls">
         <button id="wl-detail-register" class="hidden"></button>
@@ -1242,16 +1179,11 @@
       <h2>Settings <span class="muted" id="st-window"></span> <button class="info-btn" data-info="st-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <p class="muted" id="st-summary">loading…</p>
 <div class="info-text hidden" id="st-info">
-        These are the values the running deployment is using, read from the
-        cluster. Each setting is shown as the control that changes it — a toggle for on/off, a
-        dropdown for a choice, a bounded number for a number — with an <strong>i</strong> in a
-        circle beside every row explaining what it does and what happens when it moves. Who may change a
-        setting depends on the account you signed in with: <strong>admins</strong> can stage and
-        apply changes, and <strong>viewers</strong> see every value read-only. Secrets
-        show as <code>(set, N chars)</code> or <code>(not set)</code>, never in value. To change
-        values without a web account, use <code>weirvern config set</code>, then
-        apply.
-      </div>
+  <p><strong>What it is.</strong> The values the running deployment is using, read from the cluster — each shown as the control that changes it, with an i in a circle beside every row explaining what it does and what happens when it moves.</p>
+  <p><strong>What writes it.</strong> Operators with admin rights here — staged and then applied; from a shell, <code>weirvern config set</code> on the hub itself.</p>
+  <p><strong>Last changed.</strong> Plan → review → Apply; the header chip counts anything pending.</p>
+  <p><strong>Where to see it.</strong> Changes appear in the audit; who may change what is per-role.</p>
+</div>
     </div>
 
     <!--
@@ -1296,10 +1228,11 @@
       </div>
       <p class="muted" id="st-user-result"></p>
 <div class="info-text hidden" id="st-users-info">
-        A new account must change its password at first sign-in. There is no
-        email on this deployment — to help someone who lost theirs, use
-        <strong>Reset password</strong> on their row and hand them the temporary one.
-      </div>
+  <p><strong>What it is.</strong> Who may sign in, and as what: admins edit everything, viewers read.</p>
+  <p><strong>What writes it.</strong> Reset password on a row — there is no email on this deployment, so hand the temporary password over directly.</p>
+  <p><strong>Last changed.</strong> A new account must change its password at first sign-in.</p>
+  <p><strong>Where to see it.</strong> The row's own state, and the audit for resets.</p>
+</div>
     </div>
 
     <!--
@@ -1318,30 +1251,30 @@
         <button id="st-token-clear">Forget token</button>
       </div>
 <div class="info-text hidden" id="st-token-info">
-        The token is kept in this browser tab only (sessionStorage) and is sent as
-        the <code>X-Weirvern-Token</code> header. It grants admin rights without an account —
-        use it to recover a lost admin password or from scripts, not for day-to-day reading.
-        This page is served over plain HTTP with no TLS, so anyone who can read the network
-        between you and the sensor can read it — use it on a trusted network, and treat the
-        token as a LAN credential rather than a secret of record.
-      </div>
+  <p><strong>What it is.</strong> Break-glass access: a token that grants admin rights without an account, kept in this browser tab only and sent as the X-Weirvern-Token header.</p>
+  <p><strong>What writes it.</strong> You, from the sign-in page, when the accounts cannot help.</p>
+  <p><strong>Last changed.</strong> It lives until the tab closes or you sign out.</p>
+  <p><strong>Where to see it.</strong> Use it to recover a lost admin password or from scripts, not for day-to-day reading — and never over an untrusted network: this page is plain HTTP with no TLS.</p>
+</div>
     </div>
 
     <div class="card">
       <h2>Detection <button class="info-btn" data-info="st-model-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="st-model-info">
-        Thresholds and cadence. A model scored against a stale baseline is still
-        confident — see the Models tab for freshness.
-      </div>
+  <p><strong>What it is.</strong> Thresholds and cadence for the detectors.</p>
+  <p><strong>What writes it.</strong> Operators, applied with the settings plan.</p>
+  <p><strong>Last changed.</strong> A model scored against a stale baseline is still confident — see the Models tab for freshness.</p>
+  <p><strong>Where to see it.</strong> Threshold changes land on the anomalies queue; cadence changes land in Training history.</p>
+</div>
       <div id="st-detect" class="grid-inline"></div>
     </div>
 
 <div class="info-text hidden" id="st-sensor-info">
-      Live sensor status comes from the heartbeat: what this hub's capture is doing right now.
-      To CHANGE what a sensor runs, use <strong>Weirling settings</strong> above — a runtime can
-      only be changed on the box that runs it, and what this hub holds each weirling to
-      (segment, expected mode) is set there as well.
-    </div>
+  <p><strong>What it is.</strong> What this hub's capture is doing right now, from the sensor's own heartbeat.</p>
+  <p><strong>What writes it.</strong> The sensor daemon on the box that runs it.</p>
+  <p><strong>Last changed.</strong> Every heartbeat.</p>
+  <p><strong>Where to see it.</strong> To change what a sensor runs, use its Weirling settings — a runtime can only be changed on the box that runs it.</p>
+</div>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
          the blast radius comes from the same code that will perform the write, not from a second
@@ -1365,11 +1298,11 @@
       <div class="card">
       <h2>Domain blocklists <button class="info-btn" data-info="sl-bl-info" aria-label="what the blocklists do" aria-expanded="false" title="what the blocklists do">i</button></h2>
       <div class="info-text hidden" id="sl-bl-info">
-        Lists imported from the internet, plus your own names. A hit is recorded when a device
-        asks for a listed name &mdash; importing and recording block nothing; a domain rule is
-        what blocks what a name resolves to. Each row says when it was fetched and, if the last
-        sync failed, why.
-      </div>
+  <p><strong>What it is.</strong> Lists imported from the internet, plus your own names.</p>
+  <p><strong>What writes it.</strong> Scheduled imports, and rules you add.</p>
+  <p><strong>Last changed.</strong> Each row says when it was fetched, and if the last sync failed, why.</p>
+  <p><strong>Where to see it.</strong> Hits are recorded here when a device asks for a listed name — importing and recording block nothing; a domain rule is what blocks what a name resolves to.</p>
+</div>
       <table>
         <thead><tr><th>source</th><th>state</th><th>domains</th><th>fetched</th><th>error</th></tr></thead>
         <tbody id="sl-bl-rows"></tbody>
