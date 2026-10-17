@@ -274,10 +274,19 @@ def test_the_apply_step_writes_the_plan_and_keeps_the_declaration_in_step(unit_c
     out = _post(_ctx(unit_ch), "_weirlings_apply", {
         "sensor_id": "unit-a",
         "changes": {"mode": "siphon", "iface": "eth2", "segment": "198.51.100.0/24",
-                    "addr": "198.51.100.250", "gateway": "198.51.100.1", "targets": "*"}})
+                    "addr": "198.51.100.250", "gateway": "198.51.100.1", "targets": "*"},
+        # BF-9: putting a sensor in path demands a reason; the trace records it
+        "reason": "unit test: proving the in-path write"})
     assert out["ok"] is True and out["applied"]["mode"] == "siphon", out
-    written = unit_ch.inserted[-1]
+    # TWO rows land now: the plan write and its BF-9 audit row. The plan row is the one that
+    # carries plan_mode; the audit row is asserted on its own, below.
+    written = next(r for r in reversed(unit_ch.inserted) if "plan_mode" in r)
     assert written["plan_mode"] == "siphon" and written["plan_targets"] == "*"
+    trail = [r for r in unit_ch.inserted if r.get("scope") == "fleet"]
+    assert trail and trail[-1]["action"] == "plan" and trail[-1]["target"] == "unit-a", \
+        "the in-path write left no audit row"
+    assert "proving the in-path write" in trail[-1]["reason"], \
+        "the audit row does not carry the reason the caller gave"
     assert written["expected_mode"] == "siphon", (
         "the declaration the fleet view compares against must not disagree with the plan")
     assert written["segment"] == "third floor", (

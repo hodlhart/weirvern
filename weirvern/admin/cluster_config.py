@@ -807,8 +807,12 @@ class ClusterConfig:
         except urllib.error.URLError as exc:
             raise ConfigError(f"could not reach the cluster API: {exc.reason}") from exc
 
-    def apply(self, changes: dict[str, str]) -> dict[str, str]:
+    def apply(self, changes: dict[str, str], *, reason: str = "",
+              by: str = "") -> dict[str, str]:
         """Merge the changes in, then READ BACK and prove they landed.
+
+        BF-9: `reason`/`by` ride into the per-key provenance record when given -- the write
+        trail answers who changed this and why, next to the value and the time.
 
         THE READ-BACK IS THE POINT. A merge-patch that matches nothing returns 200 with the
         original content, so a successful call is not evidence the configuration changed. This
@@ -855,7 +859,12 @@ class ClusterConfig:
             if previous == value:
                 records[key]["at"] = stamp
                 continue
-            records[key] = {"value": value, "at": stamp}
+            record = {"value": value, "at": stamp}
+            if by:
+                record["by"] = by
+            if reason:
+                record["reason"] = reason
+            records[key] = record
 
         self._request("PATCH", {"data": want, "metadata": {"annotations": {
             GUI_WRITE_ANNOTATION: json.dumps(records, sort_keys=True),

@@ -192,6 +192,43 @@ def _write_registration_row(client: Client, reg: Registration, now: datetime) ->
     )
 
 
+def write_audit(client: Client, *, scope: str, action: str, target: str,
+                reason: str = "", actor: str = "") -> None:
+    """Append one row to the write trail. Never raises on its own: the CALLER decides whether a
+    failed audit write should fail the action (for the destructive ones it should surface; for
+    the informational ones the store's degradation rules apply)."""
+    client.insert(
+        "weirvern.fleet_audit",
+        [[str(scope), str(action), str(target), str(reason or ""), str(actor or "")]],
+        column_names=["scope", "action", "target", "reason", "actor"],
+    )
+
+
+def read_audit(client: Client, *, scope: str = "", target: str = "",
+               limit: int = 20) -> tuple[list[dict], str]:
+    """The trail, newest first, or ([], reason). Never raises -- a store outage must not take
+    the surface down with it (the store's own degradation pattern)."""
+    try:
+        where = []
+        params: dict[str, object] = {"lim": int(limit)}
+        if scope:
+            where.append("scope = %(scope)s")
+            params["scope"] = scope
+        if target:
+            where.append("target = %(target)s")
+            params["target"] = target
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = client.query(
+            f"SELECT at, scope, action, target, reason, actor FROM weirvern.fleet_audit"
+            f"{clause} ORDER BY at DESC LIMIT %(lim)s",
+            parameters=params,
+        ).result_rows
+        return ([{"at": str(r[0]), "scope": r[1], "action": r[2], "target": r[3],
+                  "reason": r[4], "actor": r[5]} for r in rows], "")
+    except Exception as exc:  # noqa: BLE001
+        return [], str(exc)
+
+
 def register(client: Client, sensor_id: str, *, address: str = "", segment: str = "",
              expected_mode: str = "loch", note: str = "", now: datetime | None = None,
              clear: set[str] | None = None, plan: SensorPlan | None = None) -> Registration:

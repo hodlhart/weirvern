@@ -279,6 +279,25 @@ async function wlBulk(kind, btn) {
   }
   delete btn.dataset.armed;
   const note = document.getElementById("wl-bulk-n");
+  // BF-9: the second click (the confirm step) opens the ECHO -- the exact targets, the blast
+  // radius, and the reason every revoke row records.
+  let bulkReason = "";
+  if (kind === "revoke") {
+    if (typeof confirmDestructive !== "function") return;
+    const verdict = await confirmDestructive({
+      title: `Revoke ${ids.length} registration${ids.length === 1 ? "" : "s"}: the hub stops `
+             + "expecting them.",
+      target: ids.join(", "),
+      blast: "their heartbeats stop being raised as missing; the records stay readable and a "
+             + "revoked sensor can be registered again later",
+      reasonHint: "why these are being retired",
+    });
+    if (!verdict.ok) {
+      if (note) note.textContent = "nothing revoked — you declined the confirmation";
+      return;
+    }
+    bulkReason = verdict.reason;
+  }
   if (note) note.textContent = `working on ${ids.length}…`;
   let ok = 0;
   const failures = [];
@@ -289,7 +308,7 @@ async function wlBulk(kind, btn) {
       if (kind === "enable" || kind === "disable") {
         await postJSON("/api/weirlings/enable", { sensor_id: id, enabled: kind === "enable" });
       } else if (kind === "revoke") {
-        await postJSON("/api/weirlings/revoke", { sensor_id: id });
+        await postJSON("/api/weirlings/revoke", { sensor_id: id, reason: bulkReason });
       } else if (kind === "reapply") {
         // RE-APPLY = RE-PUSH THE SENSOR'S STORED PLAN. The apply route refuses an empty
         // `changes` on purpose (a write path with nothing to write is a lie); the sensor's
@@ -968,9 +987,26 @@ async function wlApplyPlanChanges(changes, { confirmed = false } = {}) {
       + "\n\nApply anyway?");
     if (!ok) { wlRenderPlanStage("not applied — you declined the warning"); return false; }
   }
+  // BF-9: a plan that lands IN PATH gets the echo; the reason rides the write and the trail.
+  let planReason = "";
+  if (String(changes.mode || "").toLowerCase() === "siphon") {
+    if (typeof confirmDestructive !== "function") return false;
+    const verdict = await confirmDestructive({
+      title: "Putting this weirling IN PATH makes it a cut point.",
+      target: `${sid} — mode = siphon`,
+      blast: "its segment's traffic moves through the sensor (mappings=2); while enabled, an "
+             + "outage or a bad rule takes that traffic down with it",
+      reasonHint: "why this sensor is going in-path",
+    });
+    if (!verdict.ok) {
+      wlRenderPlanStage("not applied — you declined the siphon confirmation");
+      return false;
+    }
+    planReason = verdict.reason;
+  }
   let res;
   try {
-    res = await postJSON("/api/weirlings/apply", { sensor_id: sid, changes });
+    res = await postJSON("/api/weirlings/apply", { sensor_id: sid, changes, reason: planReason });
   } catch (err) {
     wlRenderPlanStage(`not applied — ${(err && err.message) || err}`);
     return false;
@@ -986,6 +1022,25 @@ async function wlApplyPlanChanges(changes, { confirmed = false } = {}) {
   await loadWeirlings();
   const note = document.getElementById("wl-plan-note");
   if (note) note.textContent = said;
+  // THE READ-BACK (BF-9): "saved" is the SERVER's word for the write; the plan is not applied
+  // until the sensor's own plan READS BACK as the new mode. Until then: pending. If the window
+  // passes without the read agreeing: NOT APPLIED — a different, actionable word.
+  if (String(changes.mode || "").toLowerCase() === "siphon" && note) {
+    await withReadBack({
+      note,
+      label: "applied to the hub's plan",
+      carry: "the sensor picks it up on its next refresh (≤30s)",
+      check: "check the sensor",
+      tries: 3,
+      delayMs: 500,
+      read: () => getJSON(`/api/weirlings/detail?sensor=${encodeURIComponent(sid)}`),
+      ok: (d) => {
+        const s = d && d.sensor;
+        const mode = String((s && (s.plan_mode || (s.plan && s.plan.mode) || s.reported_mode)) || "").toLowerCase();
+        return mode === "siphon";
+      },
+    });
+  }
   return true;
 }
 

@@ -416,6 +416,12 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 .stat.clickable:hover { border-color: var(--border-solid); }
 .stat.clickable.active { border-color: var(--accent); }
 .wl-sel { margin-right: 8px; }
+/* BF-9: the destructive echo -- target, blast radius, and the required reason. */
+.dest-confirm p { margin: 6px 0; }
+.dest-field { display: block; margin: 10px 0 4px; }
+.dest-field span { display: block; font-size: 13px; margin-bottom: 4px; }
+.dest-reason, .dest-type { width: 100%; box-sizing: border-box; }
+.dest-acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 /* TH-5: the micro sparkline -- past buckets in the chart's own area colour, the CURRENT
    bucket in accent. Same two colours every chart uses, so a sparkline reads as a tiny echo
    of the full chart above it, not as a third palette. */

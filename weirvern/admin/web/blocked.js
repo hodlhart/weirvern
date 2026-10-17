@@ -155,9 +155,24 @@ function blOpenRule(r) {
     }
   };
   els.revoke.onclick = async () => {
+    // BF-9: revoking a rule stops enforcement and keeps the record -- but "why" is what the
+    // review will read, so the echo comes first and the reason rides the write. (Standalone
+    // renders without the dialog machinery fall through to the plain post below.)
+    let reason = "";
+    if (typeof confirmDestructive === "function") {
+      const verdict = await confirmDestructive({
+        title: "Revoke this rule: enforcement stops at the next gate cycle.",
+        target: `${r.rule_id}${r.domain ? " (" + r.domain + ")" : ""}`,
+        blast: "whatever this rule was holding stops being dropped; the hits and the record "
+               + "stay readable",
+        reasonHint: "why this rule is being retired",
+      });
+      if (!verdict.ok) return;
+      reason = verdict.reason;
+    }
     els.revoke.disabled = true;
     try {
-      const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id });
+      const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id, reason });
       els.note.textContent = (out && out.ok === false)
         ? ((out.error) || "the revoke was refused")
         : "Revoked. The record stays readable; enforcement stops at the next gate cycle.";

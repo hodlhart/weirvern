@@ -768,7 +768,28 @@ async function applyStage(skipWarnConfirm) {
         "\n\nApply anyway?");
       if (!ok) { if (note) note.textContent = "not applied — you declined the warning"; return; }
     }
-    const res = await postJSON("/api/settings/apply", { changes: STAGE.changes, confirmed: true });
+    // BF-9: a staged set that puts this deployment in path gets the echo first -- target,
+    // blast radius, and a reason that is recorded with the actor and the time.
+    let applyReason = "";
+    const siphonStaged = Object.entries(STAGE.changes || {}).some(
+      ([k, v]) => String(k).toLowerCase() === "sensor_mode" && String(v).toLowerCase() === "siphon");
+    if (siphonStaged) {
+      const verdict = await confirmDestructive({
+        title: "Enabling siphon puts this deployment IN THE TRAFFIC PATH.",
+        target: "sensor_mode = siphon",
+        blast: "the capture host becomes a cut point for its segment; while enabled, an outage "
+               + "or a bad rule takes that segment's traffic down with it. The gate's own "
+               + "checks still run at apply time.",
+        reasonHint: "why this box is going in-path",
+      });
+      if (!verdict.ok) {
+        if (note) note.textContent = "not applied — you declined the siphon confirmation";
+        return;
+      }
+      applyReason = verdict.reason;
+    }
+    const res = await postJSON("/api/settings/apply", { changes: STAGE.changes, confirmed: true,
+                                                         reason: applyReason });
 
     // Report the outcome in the server's terms. A saved-but-not-restarted change is INERT, so it
     // is shown as a problem rather than folded into a success line.
@@ -2616,6 +2637,77 @@ function modalWiring() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTop(); });
 }
 
+// ── DESTRUCTIVE ACTIONS: THE ECHO AND THE READ-BACK (BF-9) ───────────────────────────────────
+// WHENCE: the containment_pending lesson -- a console that says "done" before the world says
+// so is a console that lies during the one minute it matters. Three rules, one dialog:
+//   1. the confirm names the EXACT TARGET and the computed BLAST RADIUS -- not "are you sure?"
+//   2. the reason is REQUIRED and is recorded with the actor and the time (the write trail)
+//   3. afterwards the surface says pending, then APPLIED AT HH:MM once a READ-BACK agrees --
+//      or NOT APPLIED, which is a different word on purpose.
+// Type-the-target appears only for the truly irreversible (blocklist replace); dialogs stay
+// rare for everything else.
+function confirmDestructive(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    const reason = el("input", { class: "dest-reason", attrs: { type: "text",
+      placeholder: o.reasonHint || "why — recorded with your name and the time" } });
+    const typeBox = o.typeToConfirm ? el("input", { class: "dest-type", attrs: { type: "text",
+      placeholder: `type ${o.target} to confirm` } }) : null;
+    const go = el("button", { class: "primary", text: o.confirmLabel || "Do it", attrs: { disabled: "1" } });
+    const cancel = el("button", { text: "Cancel" });
+    const sync = () => {
+      const hasReason = reason.value.trim().length > 0;
+      const typed = !typeBox || typeBox.value.trim() === String(o.target);
+      if (hasReason && typed) go.removeAttribute("disabled");
+      else go.setAttribute("disabled", "1");
+    };
+    reason.addEventListener("input", sync);
+    if (typeBox) typeBox.addEventListener("input", sync);
+    const box = el("div", { class: "dest-confirm" }, [
+      el("p", { text: o.title || "This action is destructive." }),
+      el("p", { class: "muted" }, [el("span", { text: "target: " }),
+        el("span", { class: "mono", text: String(o.target || "?") })]),
+      el("p", { class: "muted" }, [el("span", { text: "blast radius: " }),
+        el("span", { text: o.blast || "unknown" })]),
+      el("label", { class: "dest-field" }, [
+        el("span", { class: "muted", text: "reason" }), reason]),
+    ]);
+    if (typeBox) {
+      box.appendChild(el("label", { class: "dest-field" }, [
+        el("span", { class: "muted", text: "confirmation" }), typeBox]));
+    }
+    box.appendChild(el("div", { class: "dest-acts" }, [cancel, go]));
+    const done = (ok) => { closeModal(box); box.remove(); resolve(ok ? { ok: true, reason: reason.value.trim() } : { ok: false }); };
+    cancel.addEventListener("click", () => done(false));
+    go.addEventListener("click", () => done(true));
+    openModal(box);
+    reason.focus();
+  });
+}
+
+/** pending -> APPLIED AT HH:MM (read-back) or NOT APPLIED. The note element is where the
+ *  operator is already looking; the label names what was applied. */
+async function withReadBack(opts) {
+  const o = opts || {};
+  const note = o.note || null;
+  const carry = o.carry ? ` — ${o.carry}` : "";
+  const say = (text) => { if (note) note.textContent = text; };
+  say(carry ? `pending — ${o.carry}` : "pending…");
+  for (let i = 0; i < (o.tries || 5); i++) {
+    await new Promise((r) => setTimeout(r, (o.delayMs || 800)));
+    try {
+      const d = await o.read();
+      if (o.ok(d)) {
+        const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        say(`${o.label || "applied"} at ${t}${carry}`);
+        return true;
+      }
+    } catch (_e) { /* a failed read inside the window is just a retry */ }
+  }
+  say(`NOT APPLIED — ${o.check || "check the sensor"}`);
+  return false;
+}
+
 function settingsAccordion() {
   const view = document.getElementById("view-settings");
   if (!view) return;
@@ -3749,9 +3841,27 @@ async function loadRetrain() {
 
 async function retrainAction(action) {
   const note = document.getElementById("mr-note");
+  // BF-9: keep and trash decide what this deployment SERVES; they echo the target and require
+  // the note the server records on the action row (with the actor and the time).
+  let why = "";
+  if (action === "keep" || action === "trash") {
+    const cand = (RETRAIN_STATE && (RETRAIN_STATE.candidate_id || RETRAIN_STATE.action_id)) || "this candidate";
+    const verdict = await confirmDestructive({
+      title: action === "trash"
+        ? "Trash this candidate: it is discarded and the model in service keeps running."
+        : "Keep this candidate: it becomes the model this deployment serves.",
+      target: String(cand),
+      blast: action === "trash"
+        ? "the candidate's artifacts are discarded; scoring continues on the current model set"
+        : "the candidate's artifacts become the served model; the previous candidate is retired",
+      reasonHint: action === "trash" ? "why this candidate is not wanted" : "why this one is",
+    });
+    if (!verdict.ok) { note.textContent = "not filed — you declined the confirmation"; return; }
+    why = verdict.reason;
+  }
   const body = action === "retrain"
     ? { action }
-    : { action, target_id: (RETRAIN_STATE && RETRAIN_STATE.action_id) || "" };
+    : { action, target_id: (RETRAIN_STATE && RETRAIN_STATE.action_id) || "", note: why };
   note.textContent = "filing…";
   try {
     const out = await postJSON("/api/models/retrain", body);

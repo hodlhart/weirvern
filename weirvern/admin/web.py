@@ -637,8 +637,16 @@ def _build_handler(ctx: GuiContext):
             if action not in (actions.RETRAIN, actions.KEEP, actions.TRASH):
                 return self._error(400, "action must be retrain, keep or trash")
 
+            # BF-9: choosing the model this deployment will serve (or discarding the candidate)
+            # is a decision like any other -- the note is required for keep and trash and is
+            # recorded with the actor and the time on the same row.
             ident = self._identity()
             by = ident.username if ident else "operator"
+            note_in = str(body.get("note") or "").strip()
+            if action in (actions.KEEP, actions.TRASH) and not note_in:
+                return self._error(400, "choosing the model to serve is a decision; a note is "
+                                        "required for keep and trash and is recorded with your "
+                                        "name")
             try:
                 with self._with_client() as client:
                     if action == actions.RETRAIN:
@@ -1578,6 +1586,12 @@ def _build_handler(ctx: GuiContext):
             ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
             if not rule_id and not ids:
                 return self._error(400, "rule_id (or rule_ids, for a bulk revoke) is required")
+            # BF-9: unblocking what the gate was holding is a destructive decision; the reason
+            # is required and lands in the write trail with the actor and the time.
+            reason = str(body.get("reason") or "").strip()
+            if not reason:
+                return self._error(400, "a reason is required to revoke a rule; it is recorded "
+                                        "with your name and the time")
             from weirvern import sluice_store  # noqa: PLC0415
             try:
                 with self._with_client() as client:
@@ -1944,6 +1958,15 @@ def _build_handler(ctx: GuiContext):
             except fleet_mod.FleetError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
 
+            # BF-9: a plan that lands in-path needs a reason; every plan write is recorded.
+            reason = str(body.get("reason") or "").strip()
+            if merged.mode == "siphon" and not reason:
+                return self._json({
+                    "ok": False,
+                    "error": "putting this sensor in path is irreversible enough to deserve a "
+                             "reason; it is recorded with your name and the time",
+                }, code=400)
+
             applied = {k: v for k, v in merged.as_dict().items()
                        if k in changes and v != current.as_dict()[k]}
             # THE WRITE IS THE ONE THE PREVIEW VALIDATED: `register(plan=...)` replaces the plan
@@ -1960,6 +1983,16 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("weirling plan apply failed: %s", exc)
                 return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
                                   code=500)
+            # THE TRAIL: what changed, on which sensor, why, by whom. A failed audit write does
+            # not fail the plan (the plan IS saved); it is logged so the gap is findable.
+            try:
+                ident = self._identity()
+                with self._with_client() as client:
+                    fleet_store.write_audit(
+                        client, scope="fleet", action="plan", target=sensor_id,
+                        reason=reason, actor=(ident.username if ident else "operator"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fleet audit write failed: %s", exc)
             self._json({
                 "ok": True,
                 "sensor_id": sensor_id,
@@ -2041,10 +2074,19 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
+            # BF-9: retires a registration is irreversible for this deployment's memory of the
+            # sensor; the reason rides the same rule as the other destructive actions.
+            reason = str(body.get("reason") or "").strip()
+            sensor_id = str(body.get("sensor_id") or "")
+            if not reason:
+                return self._json({
+                    "ok": False,
+                    "error": "revoking a registration is a decision, not a cleanup; a reason is "
+                             "required and is recorded with your name and the time",
+                }, code=400)
             try:
                 with self._with_client() as client:
-                    reg = fleet_store.revoke_registration(
-                        client, str(body.get("sensor_id") or ""))
+                    reg = fleet_store.revoke_registration(client, sensor_id)
             except fleet_store.FleetError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
             except fleet_store.FleetStoreError as exc:
@@ -2053,6 +2095,14 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("weirling revoke failed: %s", exc)
                 return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
                                   code=500)
+            try:
+                ident = self._identity()
+                with self._with_client() as client:
+                    fleet_store.write_audit(
+                        client, scope="fleet", action="revoke", target=reg.sensor_id,
+                        reason=reason, actor=(ident.username if ident else "operator"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fleet audit write failed: %s", exc)
             self._json({"ok": True, "sensor_id": reg.sensor_id})
 
 
@@ -2725,6 +2775,21 @@ def _build_handler(ctx: GuiContext):
             if not isinstance(changes, dict) or not changes:
                 return self._error(400, "a non-empty 'changes' object is required")
             confirmed = bool(body.get("confirmed"))
+            reason = str(body.get("reason") or "").strip()
+
+            # BF-9: A DESTRUCTIVE SETTING NEEDS A REASON, AND THE REASON IS RECORDED. Enabling
+            # siphon moves the sensor IN PATH -- it becomes a cut point for its segment -- and
+            # the write trail must answer who took it in-path and why. The refusal names the
+            # requirement so a caller cannot miss it.
+            siphon_now = any(
+                str(k).strip().lower() == "sensor_mode" and str(v).strip().lower() == "siphon"
+                for k, v in changes.items())
+            if siphon_now and not reason:
+                return self._json({
+                    "ok": False,
+                    "error": "enabling siphon puts this deployment in the traffic path; a reason "
+                             "is required and is recorded with your name and the time",
+                }, 400)
 
             client = ctx.config_client or cc.ClusterConfig()
             try:
@@ -2779,8 +2844,10 @@ def _build_handler(ctx: GuiContext):
                     "summary": checks.get("summary") or "",
                 }, 409)
 
+            ident = self._identity()
             try:
-                landed = client.apply({k: str(v) for k, v in changes.items()})
+                landed = client.apply({k: str(v) for k, v in changes.items()}, reason=reason,
+                                      by=(ident.username if ident else "operator"))
             except cc.ConfigError as exc:
                 # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT. The apply's read-back raised, but
                 # a fresh read can still say which values ARE there -- "failed, and here is the

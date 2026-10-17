@@ -121,6 +121,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
                    setCrumbs, clearCrumbs, closeWeirling, sparkSvg, statCells,
+                   confirmDestructive, withReadBack,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
@@ -1237,6 +1238,22 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   );
 
   const H = window.__H;
+
+  // BF-9: fill and submit the destructive echo (the modal every destructive action opens now).
+  // Returns whether the echo was actually there -- a missing echo IS a failing condition in
+  // the checks that call this, not something to paper over.
+  const confirmEcho = async (reason) => {
+    const box = doc.querySelector("#modal-body .dest-confirm");
+    if (!box) return false;
+    const rIn = box.querySelector(".dest-reason");
+    rIn.value = reason || "the check said so";
+    rIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    const go = [...box.querySelectorAll(".dest-acts button")].find((b) => /Do it/i.test(b.textContent));
+    if (!go || go.hasAttribute("disabled")) return false;
+    go.click();
+    await new Promise((r) => setTimeout(r, 60));
+    return true;
+  };
 
   // jsdom does NOT implement window.confirm: calling it raises a jsdomError, which the "no
   // JavaScript errors" check below would (correctly) flag. The plan editor uses it exactly the
@@ -3739,6 +3756,122 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && applyRes.getAttribute("role") === "status");
   }
 
+  // ── DESTRUCTIVE ACTIONS: THE ECHO AND THE READ-BACK (BF-9) ─────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // (1) the echo's contents and the required reason -- asserted exactly, on the dialog itself
+    const pend = H.confirmDestructive({ title: "Retire it.", target: "edge-alive",
+                                        blast: "the segment loses its cut point" });
+    await sleep(40);
+    const box = doc.querySelector("#modal-body .dest-confirm");
+    check("the echo names the exact target and the blast radius",
+          !!box && /edge-alive/.test(box.textContent) && /loses its cut point/.test(box.textContent),
+          box ? box.textContent.slice(0, 140) : "no dialog");
+    const goBtn = [...box.querySelectorAll(".dest-acts button")].find((b) => /Do it/i.test(b.textContent));
+    check("...and Do it stays disabled until a reason is written",
+          !!goBtn && goBtn.hasAttribute("disabled"));
+    const rIn = box.querySelector(".dest-reason");
+    rIn.value = "it is being retired";
+    rIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("...and enables the moment one exists", !goBtn.hasAttribute("disabled"));
+    const cancelBtn = [...box.querySelectorAll(".dest-acts button")].find((b) => /Cancel/.test(b.textContent));
+    cancelBtn.click();
+    check("Cancel answers {ok: false} -- the caller writes nothing",
+          (await pend).ok === false);
+    // (2) type-the-target: only for the truly irreversible (blocklist replace)
+    const pend2 = H.confirmDestructive({ title: "Replace the list.", target: "hagezi-light",
+                                         blast: "every name the list was watching is replaced",
+                                         typeToConfirm: true });
+    await sleep(40);
+    const box2 = doc.querySelector("#modal-body .dest-confirm");
+    const go2 = [...box2.querySelectorAll(".dest-acts button")].find((b) => /Do it/i.test(b.textContent));
+    const rIn2 = box2.querySelector(".dest-reason");
+    const tIn2 = box2.querySelector(".dest-type");
+    rIn2.value = "the list moved upstream";
+    rIn2.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("type-the-target: a reason alone is not enough", go2.hasAttribute("disabled"));
+    tIn2.value = "hagezi-light";
+    tIn2.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("...the exact target unlocks it", !go2.hasAttribute("disabled"));
+    go2.click();
+    const verdict2 = await pend2;
+    check("...and the verdict carries the reason for the write", verdict2.ok === true
+          && verdict2.reason === "the list moved upstream");
+    // (3) the read-back: pending -> applied (a reader that agrees inside the window)
+    const noteEl = doc.createElement("span");
+    doc.body.appendChild(noteEl);
+    let agrees = false;
+    const p1 = H.withReadBack({ note: noteEl, read: async () => ({}), ok: () => agrees,
+                                tries: 3, delayMs: 40, label: "applied",
+                                carry: "the sensor picks it up on its next refresh" });
+    await sleep(50);
+    check("...pending says what happens next while the world catches up",
+          /pending/.test(noteEl.textContent) && /next refresh/.test(noteEl.textContent),
+          noteEl.textContent);
+    agrees = true;
+    await p1;
+    check("...APPLIED AT a time once the read-back agrees",
+          /applied at \d\d?:\d\d/.test(noteEl.textContent), noteEl.textContent);
+    // (4) the read-back: NOT APPLIED -- a different word, on purpose
+    const p2 = H.withReadBack({ note: noteEl, read: async () => ({}), ok: () => false,
+                                tries: 2, delayMs: 40, check: "check the sensor" });
+    await p2;
+    check("...and a stuck change escalates to NOT APPLIED, never to a false done",
+          /^NOT APPLIED/.test(noteEl.textContent) && /check the sensor/.test(noteEl.textContent),
+          noteEl.textContent);
+    noteEl.remove();
+    // (5) the APPLIED side end-to-end: this stub DOES flip the fixture on an apply, so the
+    //     same flow's read-back must land on applied.
+    await H.openWeirling("edge-stopped");
+    await sleep(120);
+    const appliedRun = H.wlApplyPlanChanges({ mode: "siphon" });
+    for (let i = 0; i < 200 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
+      await sleep(20);
+    }
+    await confirmEcho("proving the applied path");
+    await appliedRun;
+    check("a siphon apply whose plan moves reads back as APPLIED",
+          /applied to the hub's plan at/.test(doc.getElementById("wl-plan-note").textContent),
+          doc.getElementById("wl-plan-note").textContent);
+    // (5b) the ESCALATION: force the detail read to keep reporting the old mode -- the
+    //      read-back cannot agree, and the note must say NOT APPLIED, not a false done.
+    fetchOverride = (u) => (String(u).includes("/api/weirlings/detail")
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({
+          available: true, sensor: Object.assign({}, (window.__wlRows || []).find((x) => x.sensor_id === "edge-stopped") || {},
+          { reported_mode: "loch", plan_mode: "loch" }) }) })
+      : null);
+    await H.openWeirling("edge-stopped");
+    await sleep(120);
+    const stuckRun = H.wlApplyPlanChanges({ mode: "siphon" });
+    for (let i = 0; i < 200 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
+      await sleep(20);
+    }
+    await confirmEcho("proving the escalation path");
+    await stuckRun;
+    fetchOverride = null;
+    check("a siphon apply whose plan does NOT move escalates NOT APPLIED",
+          /NOT APPLIED/.test(doc.getElementById("wl-plan-note").textContent),
+          doc.getElementById("wl-plan-note").textContent);
+    // (6) bulk revoke: the echo's reason rides EVERY posted revoke
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    await sleep(150);
+    const boxes = [...doc.querySelectorAll("#wl-table tbody input.wl-sel")];
+    if (boxes[0]) { boxes[0].checked = true; boxes[0].dispatchEvent(new window.Event("change", { bubbles: true })); }
+    await sleep(80);
+    const before6 = POSTED.length;
+    doc.getElementById("wl-bulk-revoke").click();   // arm
+    await sleep(40);
+    doc.getElementById("wl-bulk-revoke").click();   // confirm -> the echo
+    await sleep(80);
+    await confirmEcho("decommissioned after the move");
+    await sleep(200);
+    const rvs = POSTED.slice(before6).filter((r) => r.url.includes("/api/weirlings/revoke"));
+    check("a bulk revoke posts the echo's reason on every id",
+          rvs.length >= 1 && rvs.every((r) => /decommissioned after the move/.test(r.body)),
+          rvs.map((r) => r.body).join(" | ").slice(0, 160));
+  }
+
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
   {
     H.showView("sluice");
@@ -3836,9 +3969,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const postedBefore = POSTED.length;
       keepBtn.click();
       await new Promise((r) => setTimeout(r, 120));
+      check("Keep opens the destructive echo first (target + a required reason)",
+            !!doc.querySelector("#modal-body .dest-confirm"),
+            doc.getElementById("mr-note").textContent.slice(0, 80));
+      await confirmEcho("the candidate's precision held up");
+      await new Promise((r) => setTimeout(r, 120));
       const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/models/retrain"));
-      check("Keep is a WRITE carrying the action and the candidate's own id",
-            !!req && /keep/.test(req.body) && /r123/.test(req.body),
+      check("Keep is a WRITE carrying the action, the candidate's own id and the reason",
+            !!req && /keep/.test(req.body) && /r123/.test(req.body)
+            && /precision held up/.test(req.body),
             req ? req.body.slice(0, 180)
                 : POSTED.slice(postedBefore).map((r) => r.url).join(","));
     }
@@ -4551,6 +4690,12 @@ check("high capture loss is called out in the fleet",
     const modeSel = doc.getElementById("wl-mode-select");
     modeSel.value = "siphon";
     modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    // BF-9: going in-path opens the echo; the check confirms it (with its reason) and the
+    // apply then carries that reason into the write.
+    for (let i = 0; i < 150 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("going in-path opens the destructive echo", await confirmEcho("the cut point is on purpose"));
     for (let i = 0; i < 100 && !POSTED.slice(t0).some((r) => r.url.includes("/api/settings/apply")); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -4726,6 +4871,8 @@ check("high capture loss is called out in the fleet",
     const realConfirm = window.confirm;
     window.confirm = () => false;
     const before = POSTED.length;
+    // The WARN path declines via window.confirm BEFORE the BF-9 echo is reached; this check
+    // still pins that path (the echo's own decline is pinned in the BF-9 block).
     await H.wlApplyPlanChanges({ mode: "siphon" });
     check("DECLINING the in-path warning writes NOTHING and says so",
           !POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply"))
@@ -4765,6 +4912,12 @@ check("high capture loss is called out in the fleet",
     const sel = planModeSel();
     sel.value = "siphon";
     sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    // BF-9: the one-click enable still runs the survey first, then the ECHO; confirming it is
+    // what releases the plan write (with the reason it recorded).
+    for (let i = 0; i < 150 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check("the remote enable opens the echo too", await confirmEcho("edge-stopped goes in path"));
     await waitFor(() => POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply")), 200);
     const sonarPost = POSTED.slice(before).find((r) => r.url.includes("/api/settings/sonar"));
     const applyPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/apply"));
