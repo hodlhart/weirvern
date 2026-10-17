@@ -1,0 +1,195 @@
+# THE OPT-IN SIPHON PATCH FOR ONE WEIRLING UNIT — what in-path intercept needs, and nothing more.
+#
+# WHY A PATCH RATHER THAN PART OF THE UNIT TEMPLATE. A unit ships as a PASSIVE capture by
+# default: all capabilities dropped, no root, no ability to touch node networking. Siphon needs
+# strictly more (an AF_PACKET ARP socket, `ip addr`/`ip route` on the host's namespace, and three
+# kernel sysctls), and more privilege is not something to add to every unit because SOME unit
+# might want it. So the grant is per weirling and explicit:
+#
+#     # a passive unit
+#     sed -e "s/__WEIRLING_ID__/weirvern-eth2/g" -e "s/__CAPTURE_IFACE__/eth2/g" \
+#         -e "s/__ZEEK_SITE_CONFIGMAP__/$SITE/g" \
+#         k8s/units/weirling-unit.yaml.template | kubectl -n weirvern apply -f -
+#
+#     # the same unit, in-path capable
+#     sed -e "s/__WEIRLING_ID__/weirvern-eth2/g" -e "s/__CAPTURE_IFACE__/eth2/g" \
+#         k8s/units/weirling-unit-siphon.yaml.template \
+#       | kubectl -n weirvern patch deploy weirling-weirvern-eth2 --patch-file /dev/stdin
+#
+# WHAT THE CAPABILITIES ARE FOR (the hub's own overlay carries the measurements):
+#   NET_RAW    to send the forged ARP frames. Without it the intercept reports a socket error
+#              and nothing is redirected, while every config surface reads "siphon".
+#   NET_ADMIN  to assign the intercept address, install the policy route, and read the
+#              forwarding sysctls. It does NOT imply NET_RAW: both are needed.
+#   runAsUser: 0  AND NOT AN OVERSIGHT. Kubernetes DROPS added capabilities for a non-root
+#              container, and this image runs as uid 10001 — measured on the hub's worker
+#              (CapBnd had bits 12/13, CapEff was 0000000000000000, so the `add:` silently
+#              granted nothing). The hub's overlay sets the same on its worker for the same
+#              reason; this is that finding applied per unit.
+#
+# WHY THE MODE IS NOT SET HERE. A unit's mode and plan are ITS OWN registry row (see
+# 020_weirling_plan.sql and sensor_agent.InterceptController): the operator toggles it in the
+# fleet view, the unit's agent reads its own row, and the hub's SENSOR_MODE — which this pod
+# inherits through envFrom — is deliberately NOT obeyed. Setting SENSOR_MODE in this patch would
+# re-introduce exactly the single-global-mode defect the per-weirling plan exists to remove.
+#
+# WHY THE SYSCtls ARE AN initContainer, WITH THE HUB'S OWN REASONING. A pod cannot declare these
+# sysctls for itself (the API server refuses pod-level sysctls when hostNetwork is true), and
+# CAP_NET_ADMIN is not enough because /proc/sys is mounted read-only for an ordinary container.
+# A privileged initContainer gets a writable /proc — and because the pod shares the node's
+# network namespace, writing there configures the NODE, from inside the manifest, with no manual
+# step. It runs before every container start, so a node reboot cannot leave a unit believing it
+# is intercepting with forwarding disabled.
+#
+# THE THREE VALUES, EACH WITH ITS OWN FAILURE SYMPTOM:
+#   net.ipv4.ip_forward=1            without it the mapping is forged and the traffic is DROPPED
+#   net.ipv4.conf.all.rp_filter=0    reverse-path filtering discards the relayed packets
+#   net.ipv4.conf.all.send_redirects=0  the kernel tells the victim to send directly
+#
+# PER-UNIT SAVE PATHS, DELIBERATELY. The hub's overlay records the node's pre-siphon values in
+# /var/lib/weirvern/flows and generates one restore script from them. A unit writes ITS OWN pair
+# under the unit's directory (the same per-unit hostPath layout as its logs and flows) so
+# `units/<id>/siphon-sysctls.restore.sh` reverts exactly what THIS unit changed and two units
+# cannot overwrite each other's record. First run wins, like the overlay: the first recording of
+# a value is the one worth keeping, and a later run records post-change state.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirling-__WEIRLING_ID__
+  namespace: weirvern
+spec:
+  template:
+    spec:
+      volumes:
+        - name: siphon-state
+          hostPath:
+            path: /var/lib/weirvern/units/__WEIRLING_ID__/state
+            type: DirectoryOrCreate
+      initContainers:
+        - name: siphon-sysctls
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              read_sysctl() {
+                if [ ! -r "/proc/sys/$1" ]; then
+                  echo "[siphon-init] FATAL: cannot read /proc/sys/$1" >&2
+                  exit 1
+                fi
+                tr -d '\n' < "/proc/sys/$1"
+              }
+
+              CAPTURE_IFACE="${CAPTURE_IFACE:-}"
+              if [ -z "$CAPTURE_IFACE" ]; then
+                echo "[siphon-init] FATAL: no capture interface was rendered into this patch" >&2
+                exit 1
+              fi
+              if [ ! -e "/sys/class/net/$CAPTURE_IFACE" ]; then
+                echo "[siphon-init] FATAL: '$CAPTURE_IFACE' does not exist on this node." >&2
+                exit 1
+              fi
+
+              echo "[siphon-init] configuring forwarding for this unit's in-path intercept"
+              SAVE=/state/siphon-sysctls.saved
+              RESTORE=/state/siphon-sysctls.restore.sh
+              if [ -s "$SAVE" ]; then
+                echo "[siphon-init] originals already recorded at $SAVE; keeping them"
+              else
+                {
+                  echo "# Written by the Weirvern unit patch for __WEIRLING_ID__ at $(date -u +%FT%TZ)"
+                  echo "# Kernel networking values on this node BEFORE this unit changed them."
+                  echo "# Restore with:  sh $RESTORE"
+                  echo "ip_forward=$(read_sysctl net/ipv4/ip_forward)"
+                  echo "all_rp_filter=$(read_sysctl net/ipv4/conf/all/rp_filter)"
+                  echo "all_send_redirects=$(read_sysctl net/ipv4/conf/all/send_redirects)"
+                  echo "default_rp_filter=$(read_sysctl net/ipv4/conf/default/rp_filter)"
+                  echo "default_send_redirects=$(read_sysctl net/ipv4/conf/default/send_redirects)"
+                  echo "capture_iface=$CAPTURE_IFACE"
+                  echo "capture_rp_filter=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/rp_filter")"
+                  echo "capture_send_redirects=$(read_sysctl "net/ipv4/conf/$CAPTURE_IFACE/send_redirects")"
+                } > "$SAVE" 2>/dev/null || echo "[siphon-init] WARNING: could not save originals"
+              fi
+
+              {
+                echo "#!/bin/sh"
+                echo "# Restores the kernel networking THIS UNIT changed on its node."
+                echo "set -eu"
+                echo "SAVE=$SAVE"
+                echo 'if [ ! -r "$SAVE" ]; then'
+                echo '  echo "FATAL: $SAVE is missing; refusing to guess the originals." >&2'
+                echo '  exit 1'
+                echo "fi"
+                echo '. "$SAVE"'
+                echo 'w() { if [ -w "$1" ]; then echo "$2" > "$1" && echo "  set $1=$2"; fi; }'
+                echo 'echo "restoring pre-siphon kernel networking:"'
+                echo 'w /proc/sys/net/ipv4/ip_forward "$ip_forward"'
+                echo 'w /proc/sys/net/ipv4/conf/all/rp_filter "$all_rp_filter"'
+                echo 'w /proc/sys/net/ipv4/conf/all/send_redirects "$all_send_redirects"'
+                echo 'w /proc/sys/net/ipv4/conf/default/rp_filter "$default_rp_filter"'
+                echo 'w /proc/sys/net/ipv4/conf/default/send_redirects "$default_send_redirects"'
+                echo 'w /proc/sys/net/ipv4/conf/$capture_iface/rp_filter "$capture_rp_filter"'
+                echo 'w /proc/sys/net/ipv4/conf/$capture_iface/send_redirects "$capture_send_redirects"'
+              } > "$RESTORE" 2>/dev/null && chmod +x "$RESTORE" 2>/dev/null \
+                || echo "[siphon-init] WARNING: could not write $RESTORE"
+
+              echo 1 > /proc/sys/net/ipv4/ip_forward
+              echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
+              echo 0 > /proc/sys/net/ipv4/conf/default/rp_filter
+              if [ -w "/proc/sys/net/ipv4/conf/$CAPTURE_IFACE/rp_filter" ]; then
+                echo 0 > "/proc/sys/net/ipv4/conf/$CAPTURE_IFACE/rp_filter"
+              fi
+              echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects
+              echo 0 > /proc/sys/net/ipv4/conf/default/send_redirects
+              if [ -w "/proc/sys/net/ipv4/conf/$CAPTURE_IFACE/send_redirects" ]; then
+                echo 0 > "/proc/sys/net/ipv4/conf/$CAPTURE_IFACE/send_redirects"
+              fi
+
+              ipf=$(read_sysctl net/ipv4/ip_forward)
+              rpf=$(read_sysctl net/ipv4/conf/all/rp_filter)
+              srd=$(read_sysctl net/ipv4/conf/all/send_redirects)
+              echo "[siphon-init] ip_forward=$ipf rp_filter=$rpf send_redirects=$srd"
+              if [ "$ipf" != "1" ] || [ "$rpf" != "0" ] || [ "$srd" != "0" ]; then
+                echo "[siphon-init] FATAL: sysctls did not take; refusing to start a unit that" >&2
+                echo "[siphon-init] FATAL: believes it is intercepting but cannot forward." >&2
+                exit 1
+              fi
+              echo "[siphon-init] forwarding path configured for $CAPTURE_IFACE"
+          # RENDERED, NOT READ FROM THE CONFIGMAP: the capture port belongs to THIS unit, and
+          # weirvern-env's ZEEK_IFACE is the HUB's port -- reading it here would narrow the
+          # sweep onto the wrong interface and report the unit as healthy.
+          env:
+            - name: CAPTURE_IFACE
+              value: "__CAPTURE_IFACE__"
+          volumeMounts:
+            - name: siphon-state
+              mountPath: /state
+          securityContext:
+            # Privileged because it edits node-wide networking; NET_ADMIN alone cannot
+            # (measured: /proc/sys is mounted read-only without it). The privilege is scoped to
+            # this step -- a few writes, then exit -- and the long-running containers on this
+            # unit stay unprivileged. `allowPrivilegeEscalation: false` is deliberately ABSENT:
+            # the API server rejects that combination with `privileged: true` outright.
+            privileged: true
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: "100m"
+              memory: 64Mi
+      containers:
+        # THE AGENT CONTAINER RUNS THE INTERCEPT (it supervises `weirvern intercept` as a child
+        # of its own process, see sensor_agent.InterceptController), so the capabilities belong
+        # HERE and not on the capture container: the sniffer parses untrusted input from the wire
+        # continuously and is the process worth keeping unprivileged.
+        - name: agent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_RAW", "NET_ADMIN"]
