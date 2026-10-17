@@ -17,7 +17,10 @@ const PALETTE_TAB_KEYS = {
   host: "o", settings: "s",
 };
 
-let PALETTE = { open: false, rows: [], active: 0, gArmedAt: 0, sensors: null, settings: null };
+let PALETTE = { open: false, rows: [], active: 0, gArmedAt: 0, sensors: null, settings: null,
+                // US-8: the last commands this session ran (views and actions), newest first.
+                recents: [] };
+const PALETTE_RECENT_MAX = 6;
 
 function paletteEl() {
   let pal = document.getElementById("palette");
@@ -32,12 +35,17 @@ function paletteEl() {
   const input = document.createElement("input");
   input.id = "palette-input";
   input.type = "text";
-  input.placeholder = "type a command, a sensor, a setting\u2026";
+  input.placeholder = "type a command, an address, a domain, a rule, a setting\u2026 (Ctrl+K)";
   input.setAttribute("autocomplete", "off");
   const results = document.createElement("div");
   results.id = "palette-results";
+  // US-8: the palette teaches its own keys. Small, muted, always there.
+  const hint = document.createElement("div");
+  hint.className = "palette-hint muted";
+  hint.textContent = "\u2191\u2193 move \u00b7 Enter run \u00b7 Esc close \u00b7 Ctrl+K toggles";
   box.appendChild(input);
   box.appendChild(results);
+  box.appendChild(hint);
   pal.appendChild(box);
   pal.addEventListener("click", (e) => { if (e.target === pal) paletteClose(); });
   input.addEventListener("input", () => { PALETTE.active = 0; paletteRender(); });
@@ -113,12 +121,22 @@ function paletteCommands() {
         showView("settings");
         setTimeout(() => {
           const row = document.querySelector(`#view-settings [data-key="${r.key}"]`);
-          if (row) {
-            row.scrollIntoView({ block: "center" });
-            row.classList.add("row-flash");
-            setTimeout(() => row.classList.remove("row-flash"), 1600);
+          if (!row) return;
+          // US-8: EVERY settings card boots COLLAPSED, so the old scroll landed on an invisible
+          // row. Expand the row's own card first -- a "go to the setting" that shows nothing is
+          // a dead end with extra steps.
+          const card = row.closest(".card");
+          if (card && card.classList.contains("collapsed")) {
+            const head = card.querySelector(":scope > h2.acc");
+            if (head) head.click();
           }
-        }, 120);
+          // jsdom has no scrollIntoView; the flash is the part that must survive there.
+          if (typeof row.scrollIntoView === "function") {
+            try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
+          }
+          row.classList.add("row-flash");
+          setTimeout(() => row.classList.remove("row-flash"), 1600);
+        }, 160);
       },
     });
   }
@@ -130,7 +148,25 @@ function paletteCommands() {
   cmds.push({ label: "Run the siphon probe (30s, in-path)", path: "actions \u203a settings \u203a test run",
               run: clickWhen("st-test", "settings", 160) });
   cmds.push({ label: "Force a model retrain", path: "actions \u203a models \u203a retrain",
-              run: clickWhen("mr-force", "models") });
+              run: () => {
+                showView("models");
+                setTimeout(() => {
+                  const b = document.getElementById("mr-force");
+                  if (!b) return;
+                  // US-8: state-aware. A disabled button swallows the click silently; the panel
+                  // already says WHY (the standing line), so the palette says it out loud.
+                  if (b.disabled) {
+                    const stand = document.getElementById("mr-stand");
+                    const why = (stand && stand.textContent || "").trim()
+                      || "the retrain is not available right now";
+                    if (typeof showError === "function") {
+                      showError(new Error(`retrain unavailable \u2014 ${why}`));
+                    }
+                    return;
+                  }
+                  b.click();
+                }, 160);
+              } });
   cmds.push({ label: "Blocked: filter the hits by domain", path: "actions \u203a blocked \u203a filter",
               run: () => { showView("blocked");
                            setTimeout(() => { const el2 = document.getElementById("bl-domain"); if (el2) el2.focus(); }, 120); } });
@@ -139,10 +175,64 @@ function paletteCommands() {
   return cmds;
 }
 
+/** US-8: ENTITIES FROM THE QUERY ITSELF. A palette that only knows commands makes the
+ *  operator translate an address into a command; typing the address IS the navigation.
+ *  The entity's home is its own view, and the filter is active when it lands. */
+function paletteEntityCommands(q) {
+  const s = String(q || "").trim();
+  const out = [];
+  if (!s) return out;
+  const octets = s.split(".");
+  const isIP = octets.length === 4
+    && octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255);
+  const isRule = /^r-[0-9a-z][0-9a-z-]*$/i.test(s);
+  const isName = !isIP && /^[a-z0-9]([a-z0-9_-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+$/i.test(s);
+  if (isIP) {
+    out.push({ label: `Open host ${s} \u2014 traffic, services, anomalies`, path: "entity \u203a host",
+               run: () => openHost(s) });
+    out.push({ label: `Anomalies for ${s}`, path: "entity \u203a anomalies",
+               run: () => { showView("anomalies"); anSetFilter("host", s); } });
+  }
+  if (isName) {
+    out.push({ label: `DNS records for ${s}`, path: "entity \u203a dns",
+               run: () => { showView("dns"); if (typeof dnApply === "function") dnApply([["dn-domain", s]]); } });
+  }
+  if (isRule) {
+    out.push({ label: `Open rule ${s}`, path: "entity \u203a sluice",
+               run: () => { showView("sluice");
+                            if (typeof sluiceHighlightRule === "function") sluiceHighlightRule(s); } });
+  }
+  return out;
+}
+
+/** A subsequence match ("anml" -> "Anomalies"): the cheap fuzzy that still ranks behind
+ *  substring hits. Only consulted when no substring match exists, so it can never displace
+ *  an exact one. */
+function paletteScatter(needle, hay) {
+  let i = 0;
+  for (const ch of hay) {
+    if (ch === needle[i]) i += 1;
+    if (i >= needle.length) return true;
+  }
+  return false;
+}
+
 function paletteMatch(q) {
   const needle = String(q || "").trim().toLowerCase();
+  const entities = paletteEntityCommands(needle ? String(q).trim() : "");
   const all = paletteCommands();
-  if (!needle) return all.slice(0, 12);
+  if (!needle) {
+    // US-8: RECENTS first -- repeat work is one keystroke. Deduped against the list below.
+    const seen = new Set();
+    const out = [];
+    for (const c of [...PALETTE.recents, ...all]) {
+      if (seen.has(c.label)) continue;
+      seen.add(c.label);
+      out.push(c);
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
   const scored = [];
   for (const c of all) {
     const label = c.label.toLowerCase();
@@ -153,7 +243,31 @@ function paletteMatch(q) {
     scored.push([li === 0 ? 0 : (li > 0 ? 1 : 2), c]);
   }
   scored.sort((a, b) => a[0] - b[0]);
-  return scored.map((x) => x[1]).slice(0, 12);
+  let rows = scored.map((x) => x[1]);
+  if (!rows.length) {
+    rows = all.filter((c) => paletteScatter(needle, c.label.toLowerCase()));
+  }
+  // Entity rows lead: they are the query's own reading of what the operator typed.
+  return [...entities, ...rows].slice(0, 12);
+}
+
+/** Remember a command as the newest recent (by label, so repeats move rather than duplicate). */
+function paletteRemember(c) {
+  if (!c || !c.label) return;
+  // Marked so the row SAYS it is a recent (its own path follows the marker).
+  const marked = (c.path || "").startsWith("recent ")
+    ? c : { ...c, path: `recent \u203a ${c.path || ""}` };
+  PALETTE.recents = [marked, ...PALETTE.recents.filter((r) => r.label !== c.label)]
+    .slice(0, PALETTE_RECENT_MAX);
+}
+
+/** US-8: views navigated ANY way become recents ("Go to Anomalies"), so the list reflects the
+ *  session's actual last views, not only the ones the palette happened to run. */
+function paletteNoteView(view) {
+  const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === view);
+  const label = `Go to ${tab ? tab.textContent.trim()
+    : view.charAt(0).toUpperCase() + view.slice(1)}`;
+  paletteRemember({ label, path: "recent \u203a view", run: () => showView(view) });
 }
 
 function paletteRender() {
@@ -184,6 +298,7 @@ function paletteRun(i) {
   const c = PALETTE.rows[i];
   if (!c) return;
   paletteClose();
+  paletteRemember(c);
   try {
     c.run();
   } catch (err) {

@@ -2970,6 +2970,8 @@ const TAB_FOR_DRILL = { evidence: "anomalies" };
 let CURRENT_VIEW = "";
 function showView(name) {
   CURRENT_VIEW = name;
+  // US-8: the session's last views become palette recents, however they were reached.
+  if (typeof paletteNoteView === "function") paletteNoteView(name);
   clearCrumbs();       // a view change always leaves every drill-down behind
   scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
   const tabName = TAB_FOR_DRILL[name] || name;

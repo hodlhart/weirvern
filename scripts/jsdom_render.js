@@ -3703,6 +3703,123 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(300);
     check("g n jumps straight to Netflow",
           doc.getElementById("view-netflow").classList.contains("active"));
+
+    // ── THE PALETTE AS SEARCH (US-8) ──────────────────────────────────────────
+    {
+      const type = (q) => {
+        const inp = doc.getElementById("palette-input");
+        inp.value = q;
+        inp.dispatchEvent(new window.Event("input", { bubbles: true }));
+        return inp;
+      };
+      const rowsNow = () => [...doc.querySelectorAll("#palette-results .palette-row")];
+      const openPal = () => {
+        const pb = doc.getElementById("palette-btn");
+        if (pb) pb.click();
+      };
+      // 1) THE MOUSE PATH: the chrome button is the entry, the keys stay accelerators.
+      H.showView("health");
+      await sleep(150);
+      const pbtn = doc.getElementById("palette-btn");
+      check("PALETTE: the chrome carries a visible entry", !!pbtn);
+      if (pbtn) pbtn.click();
+      await sleep(150);
+      check("...and a mouse opens the palette with it",
+            !doc.getElementById("palette").classList.contains("hidden"));
+      // 2) AN IP IS A HOST: the entity row leads, and activating lands on the host's view.
+      type("198.51.100.5");
+      await sleep(80);
+      const ipRows = rowsNow();
+      check("PALETTE: an IP query returns its entity row FIRST",
+            ipRows.length > 0 && /Open host 198\.51\.100\.5/.test(ipRows[0].textContent),
+            ipRows[0] ? ipRows[0].textContent.slice(0, 120) : "none");
+      if (ipRows[0]) ipRows[0].click();
+      await sleep(450);
+      check("...activating it lands on the host's view with the address loaded",
+            doc.getElementById("view-host").classList.contains("active")
+            && doc.getElementById("h-addr").value === "198.51.100.5",
+            `addr=${doc.getElementById("h-addr").value}`);
+      // 3) A DOMAIN IS ITS DNS RECORDS.
+      openPal();
+      await sleep(120);
+      type("ads.example.com");
+      await sleep(80);
+      const nameRows = rowsNow();
+      check("PALETTE: a domain query returns its DNS row first",
+            nameRows.length > 0 && /DNS records for ads\.example\.com/.test(nameRows[0].textContent),
+            nameRows[0] ? nameRows[0].textContent.slice(0, 120) : "none");
+      if (nameRows[0]) nameRows[0].click();
+      await sleep(450);
+      check("...activating it lands on DNS with the domain filter ACTIVE",
+            doc.getElementById("view-dns").classList.contains("active")
+            && doc.getElementById("dn-domain").value === "ads.example.com",
+            `dom=${doc.getElementById("dn-domain").value}`);
+      // 4) A RULE ID IS A RULE -- its home is the Sluice gate, and it lands flashed.
+      openPal();
+      await sleep(120);
+      type("r-live-1");
+      await sleep(80);
+      const ruleRows = rowsNow();
+      check("PALETTE: a rule id returns its rule row",
+            ruleRows.length > 0 && /Open rule r-live-1/.test(ruleRows[0].textContent),
+            ruleRows[0] ? ruleRows[0].textContent.slice(0, 120) : "none");
+      if (ruleRows[0]) ruleRows[0].click();
+      await sleep(500);
+      check("...activating it lands on the Sluice gate",
+            doc.getElementById("view-sluice").classList.contains("active"));
+      check("...and the rule's own row is flashed there",
+            !!doc.querySelector('#view-sluice [data-rule-id="r-live-1"].flash-hit')
+            || !!doc.querySelector('#view-sluice [data-rule-id="r-live-1"]'),
+            "no rule row for r-live-1");
+      // 5) RECENTS: what this session just did leads an empty palette.
+      openPal();
+      await sleep(350);
+      const recentRows = rowsNow();
+      check("RECENTS: the session's last views and commands lead the empty palette",
+            recentRows.length > 0
+            && recentRows.slice(0, 3).some((r) => /Open rule r-live-1|Go to Sluice/.test(r.textContent)),
+            recentRows.slice(0, 3).map((r) => r.textContent.slice(0, 50)).join(" | "));
+      check("...and every recent row SAYS it is a recent",
+            recentRows.length > 0
+            && recentRows.slice(0, 3).every((r) => /recent/.test(r.textContent)),
+            recentRows.slice(0, 3).map((r) => r.textContent.slice(0, 60)).join(" | "));
+      H.paletteClose();
+      await sleep(80);
+      // 6) SETTINGS: the boot-collapsed card is EXPANDED before its row is shown.
+      H.showView("health");
+      await sleep(150);
+      openPal();
+      await sleep(200);
+      type("sluice_auto_score");
+      await sleep(250);
+      const sRows = rowsNow().filter((r) => /Open setting/.test(r.textContent));
+      check("SETTINGS: a setting is findable from the palette", sRows.length > 0,
+            rowsNow().map((r) => r.textContent.slice(0, 50)).join(" | ").slice(0, 140));
+      if (sRows[0]) { sRows[0].click(); await sleep(600); }
+      const keyRow = doc.querySelector('#view-settings [data-key="sluice_auto_score"]');
+      const keyCard = keyRow && keyRow.closest(".card");
+      check("...and its boot-collapsed card is EXPANDED before the row is shown",
+            !!keyCard && !keyCard.classList.contains("collapsed")
+            && doc.getElementById("view-settings").classList.contains("active"),
+            keyCard ? `collapsed=${keyCard.classList.contains("collapsed")}` : "no card");
+      // 7) the disabled retrain STATES why instead of swallowing the click.
+      openPal();
+      await sleep(150);
+      type("retrain");
+      await sleep(150);
+      const rtRows = rowsNow().filter((r) => /Force a model retrain/.test(r.textContent));
+      check("PALETTE: the retrain command exists", rtRows.length > 0);
+      const errBefore = (doc.getElementById("err-banner") || {}).textContent || "";
+      if (rtRows[0]) { rtRows[0].click(); await sleep(600); }
+      const mrForce = doc.getElementById("mr-force");
+      const errAfter = (doc.getElementById("err-banner") || {}).textContent || "";
+      check("...and when the button is DISABLED the palette says why (never a silent no-op)",
+            !mrForce || !mrForce.disabled || /retrain unavailable|Could not/.test(errAfter),
+            `disabled=${mrForce ? mrForce.disabled : "none"} err="${errAfter.slice(0, 80)}" errBefore="${errBefore.slice(0, 40)}"`);
+      H.paletteClose();
+      H.showView("health");
+      await sleep(150);
+    }
     fire("f");
     await sleep(40);
     check("f maximizes the active view's main table", !!doc.querySelector(".card.table-max"));
