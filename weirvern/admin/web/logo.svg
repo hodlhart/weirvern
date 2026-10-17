@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Weirvern">
   <!-- The mark: flow passing through a gate, in the console's own palette. Geometric,
-       two-colour, crisp at any size -- replaces the pixelated 36px raster (TH-1). -->
+       two-colour, crisp at any size. Replaces the pixelated 36px raster (TH-1). -->
   <rect width="64" height="64" rx="14" fill="#131416"/>
   <path d="M13 22h38M13 42h38" stroke="#dee0e3" stroke-width="4" stroke-linecap="round" opacity=".5"/>
   <path d="M13 32h11M40 32h11" stroke="#dee0e3" stroke-width="4" stroke-linecap="round" opacity=".5"/>

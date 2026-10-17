@@ -3099,6 +3099,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       await new Promise((r) => setTimeout(r, 30));
       check("...resuming puts it back", /auto 15s/.test(autoPill.textContent));
     }
+    check("the title is the name, not an emoji",
+          !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(doc.title) && /Weirvern/.test(doc.title),
+          doc.title);
     check("the mark is a vector now",
           doc.querySelector('link[rel="icon"]').getAttribute("href") === "/favicon.svg" &&
           [...doc.querySelectorAll("img.mark")].every((i) => i.getAttribute("src") === "/logo.svg"));

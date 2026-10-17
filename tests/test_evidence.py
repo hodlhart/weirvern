@@ -304,6 +304,12 @@ def test_logo_assets_are_shipped_and_served():
     assert (STATIC_DIR / STATIC_FILES["/favicon.ico"][0]).exists(), "favicon missing"
     html = (STATIC_DIR / "index.html").read_text()
     assert 'src="/logo.svg"' in html, "the header does not use the vector mark"
+    # AN SVG THAT DOES NOT PARSE RENDERS AS THE BROKEN-IMAGE GLYPH (found by looking at the
+    # rendered page: an ASCII double hyphen inside a comment makes the XML malformed). The
+    # vectors must parse as XML, every byte of them.
+    import xml.dom.minidom
+    for name in ("logo.svg", "favicon.svg"):
+        xml.dom.minidom.parse(str(STATIC_DIR / name))
 
 
 # --- bugs found only by looking at the rendered page --------------------------
