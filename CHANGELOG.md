@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0 — 2026-10-17
+
+ONE SENSOR, ONE PANEL. The weirlings drill-down now owns the sensor's runtime surface: status,
+its NICs (reported by the sensor's own heartbeat — new `sensor_status.interfaces` column,
+schema 019), a mode selector that enables siphon in one action (Sonar first when needed, then
+the ordinary plan-and-apply path with every server-side gate), the Sonar survey and the test
+run — with the full settings grid under ``Advanced``. The Settings page no longer carries a
+Weirling-settings card, and the standalone Register card is gone: registration is the sensor
+panel's one-click button, from the sensor's own reports. Netflow renders as a single checkbox
+(``channel_netflow`` as a valued toggle staging ``upstream``/``off``). Also: the heartbeat's
+sensor identity mirrors the worker's (``SENSOR_ID → NODE_NAME → HOSTNAME``), so a host name
+that differs from the node name can no longer split one sensor into two rows.
+
+
 ## Unreleased — flow records from wherever the traffic is
 
 TWO WAYS A SENSOR CAN BECOME A FLOW SOURCE, both of them gated on evidence rather than on
