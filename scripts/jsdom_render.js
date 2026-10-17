@@ -80,7 +80,7 @@ async function main() {
   check("index.html loads the scripts in the required order",
         JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
-                                                 "/dnsview.js", "/blocked.js"]),
+                                                 "/dnsview.js", "/blocked.js", "/palette.js"]),
         JSON.stringify(order));
 
   // EVALUATE THE THREE FILES AS ONE UNIT, which is what a browser effectively does: <script>
@@ -119,6 +119,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadRetrain, retrainAction,
                    loadSluice, wireSluice, renderSluicePolicies, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
+                   paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
                    WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
@@ -3474,6 +3475,97 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           /1 passed, 1 skipped/.test(resOk), resOk.slice(0, 180));
     check("...and the stage clears when the write lands",
           Object.keys(H.STAGE.changes).length === 0);
+  }
+
+  // ── THE COMMAND PALETTE AND ITS SHORTCUTS (BF-11) ───────────────────────────────────────────
+  {
+    const fire = (key, opts) => window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", Object.assign({ key, bubbles: true, cancelable: true }, opts || {})));
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    H.showView("health");
+    await sleep(200);
+    fire("k", { ctrlKey: true });
+    await sleep(300);
+    const pal = doc.getElementById("palette");
+    const palInput = doc.getElementById("palette-input");
+    // NB: `pal` may be created on first open -- that IS the check.
+    check("Ctrl-K opens the palette", !!doc.getElementById("palette")
+          && !doc.getElementById("palette").classList.contains("hidden"));
+    check("...with the input focused for typing", !!palInput);
+    palInput.value = "zeek";
+    palInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await sleep(60);
+    let rows = [...doc.querySelectorAll("#palette-results .palette-row")];
+    check("...typing filters the commands to the match",
+          rows.length >= 1 && rows.every((r) => /zeek/i.test(r.textContent)),
+          rows.map((r) => r.textContent).join(" | ").slice(0, 140));
+    check("...and every result carries its path as a breadcrumb",
+          rows.length > 0 && /\u203a/.test(rows[0].textContent),
+          rows[0] ? rows[0].textContent.slice(0, 140) : "none");
+    palInput.dispatchEvent(new window.KeyboardEvent("keydown",
+      { key: "Enter", bubbles: true, cancelable: true }));
+    await sleep(300);
+    check("...Enter executes the command",
+          doc.getElementById("view-zeek").classList.contains("active"));
+    check("...and the palette closes behind it",
+          doc.getElementById("palette").classList.contains("hidden"));
+    fire("/");
+    await sleep(60);
+    check("slash opens the palette for a search",
+          !doc.getElementById("palette").classList.contains("hidden"));
+    fire("Escape");
+    await sleep(40);
+    check("escape closes it again",
+          doc.getElementById("palette").classList.contains("hidden"));
+    fire("g");
+    fire("n");
+    await sleep(300);
+    check("g n jumps straight to Netflow",
+          doc.getElementById("view-netflow").classList.contains("active"));
+    fire("f");
+    await sleep(40);
+    check("f maximizes the active view's main table", !!doc.querySelector(".card.table-max"));
+    fire("f");
+    await sleep(40);
+    check("...and f puts it back", !doc.querySelector(".card.table-max"));
+    H.showView("health");
+    await sleep(250);
+    fire("h");
+    await sleep(60);
+    check("h toggles help for whatever is on screen",
+          !!doc.querySelector("#view-health .info-text:not(.hidden)"));
+    fire("h");
+    await sleep(60);
+    check("...and h toggles it back",
+          !doc.querySelector("#view-health .info-text:not(.hidden)"));
+    // A SENSOR COMMAND: the palette reaches into the fleet.
+    await H.loadWeirlings();
+    fire("k", { ctrlKey: true });
+    await sleep(300);
+    const pIn = doc.getElementById("palette-input");
+    pIn.value = "edge-alive";
+    pIn.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await sleep(60);
+    rows = [...doc.querySelectorAll("#palette-results .palette-row")];
+    check("a sensor appears as its own commands", rows.length >= 2
+          && rows.some((r) => /Open sensor edge-alive/.test(r.textContent))
+          && rows.some((r) => /Select edge-alive/.test(r.textContent)),
+          rows.map((r) => r.textContent.replace(/\s+/g, " ")).join(" | ").slice(0, 180));
+    fire("Escape");
+    await sleep(40);
+    // TYPING IN A FIELD MUST NOT TRIGGER ANY OF IT
+    H.showView("settings");
+    await sleep(250);
+    const sIn = [...doc.querySelectorAll("#view-settings .setting-input")][0];
+    if (sIn) {
+      sIn.focus();
+      sIn.dispatchEvent(new window.KeyboardEvent("keydown", { key: "g", bubbles: true }));
+      sIn.dispatchEvent(new window.KeyboardEvent("keydown", { key: "n", bubbles: true }));
+      await sleep(60);
+      check("shortcuts stay quiet while a field is being typed into",
+            doc.getElementById("palette").classList.contains("hidden")
+            && !doc.getElementById("view-netflow").classList.contains("active"));
+    }
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
