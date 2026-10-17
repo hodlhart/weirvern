@@ -33,6 +33,14 @@ tails what a LOCAL collector (goflow2, the same image and the same arguments the
 and inserts it into the hub's `flows` table. WEIRLING_FLOW_FILE names that file (default
 /flows/flows.jsonl); an exporter on that segment then has somewhere to send, without an exporter on
 the hub's own segment and without a second transport to secure. See _flow_shipper.
+
+A UNIT CAN ALSO BE IN-PATH (siphon), SUPERVISED FROM ITS OWN DEPLOYMENT. Its mode and plan live in
+ITS OWN registry row (see fleet.SensorPlan and 020_weirling_plan.sql): this loop reads its own row
+and drives the SAME `SiphonSupervisor` the hub's worker runs -- same `weirvern intercept` child,
+same fail-open watchdog, same bounded runs and self-destruct deadline, same capability gate -- so
+the safety contract cannot fork between the hub's sensor and a weirling's. The mode this unit runs
+is NEVER the hub's `SENSOR_MODE` (which describes the hub's own sensor): one plan per sensor is the
+entire point, and an env var inherited through `envFrom` is exactly the leak that would defeat it.
 """
 from __future__ import annotations
 
@@ -40,6 +48,7 @@ import logging
 import os
 import signal
 import threading
+import time
 
 from weirvern import db
 from weirvern.config import get_settings
@@ -171,25 +180,186 @@ def sensor_identity() -> str:
     return sid
 
 
-def beat(client, sid: str, iface: str) -> bool:
-    """One heartbeat from observation. Never raises; returns whether it landed."""
+# ── the intercept this unit runs, from ITS OWN plan ──────────────────────────────────────────
+#
+# HOW LONG BETWEEN PLAN READS. The plan is a database row the operator edits from the fleet
+# view, so "picked up within half a minute" is the contract the GUI states. A tighter loop
+# would be a second heartbeat's worth of queries for no operator-visible gain; a looser one
+# makes a toggle feel broken.
+PLAN_REFRESH_S = 30.0
+
+
+def plan_for(client, sid: str) -> tuple[object | None, str]:
+    """(plan, reason-it-could-not-be-read). The unit's OWN row, or None when unregistered.
+
+    THE TWO EMPTY ANSWERS ARE DIFFERENT AND MUST NOT BE COLLAPSED. `(None, "")` means the
+    registry was read and this sensor has no plan -- so `loch` is the truth and any running
+    intercept should stop. `(None, reason)` means the read FAILED, which says nothing about
+    the plan and must leave a running intercept alone: disarming a live intercept because
+    ClickHouse blipped is the in-path equivalent of a self-inflicted outage.
+    """
+    from weirvern import fleet_store  # noqa: PLC0415
+
+    try:
+        for reg in fleet_store.read_registrations(client):
+            if reg.sensor_id == sid:
+                return reg.plan, ""
+        return None, ""
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)[:200]
+
+
+class InterceptController:
+    """Runs (or refuses to run) this unit's intercept, from its declared plan.
+
+    THE SUPERVISOR IS THE HUB'S OWN, VERBATIM. `SiphonSupervisor` is imported and driven exactly
+    as the worker drives it: a `weirvern intercept` child with a bounded `--seconds`, the
+    fail-open watchdog that restores the forged mappings on any exit, the readiness gate that
+    re-reads capabilities and sysctls before every spawn, and the shutdown path that SIGTERMs
+    the child so the restore rides the ordinary signal contract. A second supervision scheme
+    here would be a second safety contract, and the one nobody exercises is the one that fails.
+
+    NO CAPABILITIES, NO ARMING -- SAID OUT LOUD. When this container has not been granted
+    NET_ADMIN/NET_RAW (the unit manifest's opt-in patch does that), the supervisor refuses and
+    its note rides this unit's heartbeat, so the fleet row explains why nothing is in-path
+    instead of a toggle that appears to have worked.
+    """
+
+    def __init__(self, sid: str, *, supervisor_factory=None) -> None:
+        self.sid = sid
+        self._factory = supervisor_factory or self._default_factory
+        self._supervisor = None
+        # The plan the current supervisor was built from. Rebuilding on an unchanged plan would
+        # interrupt a healthy intercept for nothing (every rebuild is a restore/poison seam).
+        self._built_from: dict | None = None
+        # The mode this unit is RUNNING with, for the heartbeat. It follows the DECLARED plan
+        # even while a refusal is outstanding -- which is exactly how the hub's worker reports a
+        # configured-but-unarmed siphon sensor, and what lets the fleet view say "declared
+        # siphon, reporting siphon, zero mappings".
+        self.mode = "loch"
+
+    @staticmethod
+    def _default_factory(cfg):
+        from weirvern.admin import siphon_supervisor  # noqa: PLC0415
+
+        return siphon_supervisor.SiphonSupervisor(cfg)
+
+    def apply(self, plan) -> None:
+        """Make reality match the declared plan. Never raises."""
+        want = plan.armed_mode if plan is not None else ""
+        key = plan.as_dict() if plan is not None else None
+        if want != "siphon":
+            self.stop(why="the plan does not ask for an intercept")
+            self.mode = "loch"
+            return
+        if self._supervisor is not None and key == self._built_from:
+            self.mode = "siphon"
+            return
+        self.stop(why="the plan changed")
+        # THE REPORTED MODE FOLLOWS THE DECLARATION, EVEN IF ARMING FAILS (measured: a factory
+        # that raised left the unit reporting `loch` while its plan said siphon -- which reads
+        # as "this sensor is passive" instead of "this sensor is declared in-path and could not
+        # arm", the same collapse the hub's worker avoids). The refusal itself rides `failures`.
+        self.mode = "siphon"
+        try:
+            self._supervisor = self._factory(plan.to_intercept_config())
+            self._supervisor.start()
+            self._built_from = key
+            logger.info("intercept: supervising this unit's siphon intercept from its own plan")
+        except Exception as exc:  # noqa: BLE001 -- a monitoring feature must not kill capture
+            self._supervisor = None
+            self._built_from = None
+            logger.error("intercept: could not start the supervisor: %s", exc)
+
+    @property
+    def intercept_running(self) -> bool:
+        return bool(self._supervisor is not None and self._supervisor.intercept_running)
+
+    @property
+    def should_publish(self) -> bool:
+        """May THIS agent write its heartbeat row right now?
+
+        THE SAME ONE-WRITER RULE THE WORKER FOLLOWS (`worker_should_publish`): `sensor_status`
+        is keyed `(sensor_id, mode)`, and a live intercept child publishes its own row under
+        this same id with the authoritative numbers. If the agent wrote too, the row would flip
+        between "20 mappings" and "0 mappings" and the fleet would flicker between live and
+        not-live. The rule lives on the supervisor -- it knows whether a child is running,
+        whether one just crashed, and whether a clean re-arm is seconds away.
+        """
+        return self._supervisor is None or self._supervisor.worker_should_publish
+
+    def failures(self) -> list[str]:
+        """Supervision problems, for the heartbeat's `failures` -- never raises."""
+        try:
+            from weirvern.admin import siphon_supervisor  # noqa: PLC0415
+
+            return list(siphon_supervisor.notes())
+        except Exception:  # noqa: BLE001
+            return []
+
+    def stop(self, *, why: str = "") -> None:
+        """Orderly shutdown: SIGTERM the child so it RESTORES, and wait for it.
+
+        Called on every path that stops being in-path -- a plan that says loch, a plan change,
+        and process shutdown. The child's fail-open watchdog would cover a SIGKILL too, but the
+        signal path is the one that restores in milliseconds instead of on ARP expiry, so it is
+        the path this always takes first.
+        """
+        if self._supervisor is None:
+            return
+        sup, self._supervisor, self._built_from = self._supervisor, None, None
+        try:
+            sup.stop()
+        except Exception:  # noqa: BLE001
+            logger.error("intercept: supervisor shutdown failed", exc_info=True)
+        if why:
+            logger.info("intercept: stopped (%s)", why)
+
+
+def refresh_plan(client, sid: str, controller: InterceptController) -> None:
+    """One plan refresh: this unit's row -> the controller. Never raises.
+
+    A READ FAILURE CHANGES NOTHING. `plan_for` tells the two empty answers apart precisely so
+    this can leave a running intercept alone when the registry is unreachable -- the failure
+    direction here is "keep the current state", never "disarm because we could not ask".
+    """
+    plan, why = plan_for(client, sid)
+    if why:
+        logger.warning(
+            "intercept: this unit's plan could not be read (%s); keeping the current "
+            "intercept state until the registry is readable again", why)
+        return
+    controller.apply(plan)
+
+
+def beat(client, sid: str, iface: str, *, mode: str = "loch",
+         failures: list[str] | None = None) -> bool:
+    """One heartbeat from observation. Never raises; returns whether it landed.
+
+    `mode` is what this unit is RUNNING (its plan's mode, via the controller) -- never the
+    hub's `SENSOR_MODE`: one plan per sensor is the point of the per-weirling plan. The
+    supervisor's own refusal notes ride along in `failures`, so a unit that cannot arm says
+    why on its own row rather than in a log nobody reads.
+    """
     from weirvern.admin import sensorwatch, status  # noqa: PLC0415
 
-    fields = sensorwatch.observe(mode="loch", iface=iface)
+    fields = sensorwatch.observe(mode=mode, iface=iface)
+    if failures:
+        fields["failures"] = list(fields.get("failures") or []) + list(failures)
     # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
     # carried [] while the hub's carried its NICs -- this call site predated the column).
     fields.setdefault("interfaces", status.sensor_interfaces())
     return status.heartbeat(client, sensor_id=sid, **fields)
 
 
-def _final_beat(client, sid: str, iface: str) -> None:
+def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
     """A last row saying running=False, so the fleet reads "stopped cleanly" immediately
     instead of "stale" minutes later. Best-effort: a kill -9 gets no such courtesy and
     staleness covers it."""
     try:
         from weirvern.admin import sensorwatch, status  # noqa: PLC0415
 
-        fields = sensorwatch.observe(mode="loch", iface=iface)
+        fields = sensorwatch.observe(mode=mode, iface=iface)
         fields["running"] = False
         fields.setdefault("interfaces", status.sensor_interfaces())
         status.heartbeat(client, sensor_id=sid, **fields)
@@ -224,12 +394,30 @@ def main() -> None:
         logger.info("netflow: not enabled on this unit (WEIRLING_NETFLOW is unset) -- an exporter "
                     "here has nowhere to land")
 
+    # THE UNIT'S OWN INTERCEPT, FROM ITS OWN PLAN. Nothing is armed until a plan says so: this
+    # object starts inert and `refresh_plan` (below, once per PLAN_REFRESH_S) is the only thing
+    # that can change that. The mode it reports is the plan's, and it stays `loch` until a plan
+    # declares otherwise -- the hub's SENSOR_MODE is deliberately not consulted (it describes
+    # the HUB's sensor; the units inherit it through envFrom and must not obey it).
+    controller = InterceptController(sid)
+    last_plan_read = 0.0
+
     client = None
     while not stop.is_set():
         try:
             if client is None:
                 client = db.connect(settings, retries=1, delay_s=2)
-            if not beat(client, sid, iface):
+            now = time.monotonic()
+            if now - last_plan_read >= PLAN_REFRESH_S:
+                last_plan_read = now
+                refresh_plan(client, sid, controller)
+            if not controller.should_publish:
+                # A live intercept child owns this sensor's `(sensor_id, 'siphon')` row with the
+                # authoritative numbers (see `should_publish`); writing here would clobber it.
+                stop.wait(interval)
+                continue
+            if not beat(client, sid, iface, mode=controller.mode,
+                        failures=controller.failures()):
                 # The write failed; drop the client so the next cycle reconnects rather than
                 # hammering a dead connection.
                 logger.warning("heartbeat write failed; will reconnect and retry")
@@ -239,10 +427,16 @@ def main() -> None:
             client = None
         stop.wait(interval)
 
+    # ORDERLY SIPHON SHUTDOWN, BEFORE ANYTHING ELSE HERE. SIGTERM the supervised intercept while
+    # this container still has a network stack to send the restore frames from: the unit's stop
+    # would otherwise SIGKILL the child at the end of the grace period, and the forged mappings
+    # would wait on ARP expiry instead. Same order as the worker's own shutdown.
+    controller.stop(why="the unit is shutting down")
+
     try:
         if client is None:
             client = db.connect(settings, retries=1, delay_s=2)
-        _final_beat(client, sid, iface)
+        _final_beat(client, sid, iface, mode=controller.mode)
     except Exception:  # noqa: BLE001
         pass
     logger.info("sensor unit %r: stopped", sid)
