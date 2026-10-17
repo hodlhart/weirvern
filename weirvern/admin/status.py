@@ -2758,6 +2758,29 @@ def _json_safe_stamp(value):
     return value
 
 
+_INTERFACES_CACHE: list[str] | None = None
+# Software interfaces are not "a sensor's NICs" to any operator: veth pairs, cni/flannel/docker
+# plumbing and bridges are noise on every box that runs containers. Everything else is kept as
+# reported -- the sensor's own network namespace is what it can actually see.
+_SOFTWARE_IFACE_PREFIXES = ("veth", "cni", "flannel", "docker", "br-", "cali", "tunl", "virbr")
+
+
+def sensor_interfaces() -> list[str]:
+    """The interfaces this process can see, cached. Every heartbeat writer calls this (the
+    hub's worker, the weirling agents, the final beats) so no writer can silently blank a
+    sensor's NICs. Never raises: a sensor that cannot report its NICs must still capture."""
+    global _INTERFACES_CACHE
+    if _INTERFACES_CACHE is None:
+        try:
+            import socket as _socket
+            names = {name for _, name in _socket.if_nameindex()}
+            _INTERFACES_CACHE = sorted(n for n in names
+                                       if n != "lo" and not n.startswith(_SOFTWARE_IFACE_PREFIXES))
+        except Exception:  # noqa: BLE001
+            _INTERFACES_CACHE = []
+    return _INTERFACES_CACHE
+
+
 def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: str = "",
               hosts: int = 0, mappings: int = 0, running: bool = False,
               uptime_s: float = 0.0, restores: int = 0, refreshes: int = 0,

@@ -1845,6 +1845,7 @@ def _heartbeat_thread(settings, siphon=None) -> None:
                     fields["failures"] = list(fields.get("failures") or []) + extra
             except Exception:  # noqa: BLE001
                 logger.debug("siphon supervisor notes unavailable", exc_info=True)
+            fields.setdefault("interfaces", status.sensor_interfaces())
             with db.connect(settings, retries=1, delay_s=1) as client:
                 status.heartbeat(client, sensor_id=sid, **fields)
         except Exception as exc:  # noqa: BLE001

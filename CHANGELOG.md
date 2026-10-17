@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1 — 2026-10-17
+
+EVERY HEARTBEAT WRITER REPORTS INTERFACES. The weirling agents' own beat path
+(`sensor_agent.py`) and two more call sites predated the interfaces column, so their rows
+carried `[]` while the hub's carried its NICs — found on the box, where the panel showed
+one sensor with NICs and its siblings without. The interface list now comes from one shared
+`status.sensor_interfaces()` that every writer (hub worker, agents, final beats) calls.
+
 ## 0.14.0 — 2026-10-17
 
 ONE SENSOR, ONE PANEL. The weirlings drill-down now owns the sensor's runtime surface: status,

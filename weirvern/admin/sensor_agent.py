@@ -176,6 +176,9 @@ def beat(client, sid: str, iface: str) -> bool:
     from weirvern.admin import sensorwatch, status  # noqa: PLC0415
 
     fields = sensorwatch.observe(mode="loch", iface=iface)
+    # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
+    # carried [] while the hub's carried its NICs -- this call site predated the column).
+    fields.setdefault("interfaces", status.sensor_interfaces())
     return status.heartbeat(client, sensor_id=sid, **fields)
 
 
@@ -188,6 +191,7 @@ def _final_beat(client, sid: str, iface: str) -> None:
 
         fields = sensorwatch.observe(mode="loch", iface=iface)
         fields["running"] = False
+        fields.setdefault("interfaces", status.sensor_interfaces())
         status.heartbeat(client, sensor_id=sid, **fields)
     except Exception:  # noqa: BLE001
         pass
