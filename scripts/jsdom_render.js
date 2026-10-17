@@ -1945,6 +1945,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the staged change is listed for review",
         doc.getElementById("st-stage-list").textContent.includes("base_threshold"));
   check("the staged count is stated", /1 staged/.test(doc.getElementById("st-stage-count").textContent));
+  check("the header chip states the staged count from every tab",
+        /1 staged/.test(doc.getElementById("stage-pill").textContent)
+        && !doc.getElementById("stage-pill").classList.contains("hidden"),
+        doc.getElementById("stage-pill").textContent);
+  check("the staged change is saved to the tab's own storage until applied",
+        (window.sessionStorage.getItem("wv-stage") || "").includes("base_threshold"),
+        String(window.sessionStorage.getItem("wv-stage")).slice(0, 80));
+  doc.getElementById("stage-pill").click();
+  await new Promise((r) => setTimeout(r, 40));
+  check("clicking the chip lands on the review list without writing anything",
+        doc.getElementById("view-settings").classList.contains("active"));
   check("Apply is enabled once something is staged",
         doc.getElementById("st-stage-apply").disabled === false);
 
@@ -1959,6 +1970,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         JSON.stringify(planBody));
   check("the blast radius is shown BEFORE apply",
         /restart/i.test(doc.getElementById("st-stage-list").textContent),
+        doc.getElementById("st-stage-list").textContent.slice(0, 160));
+  check("each plan row states the value it would replace",
+        /\(was /.test(doc.getElementById("st-stage-list").textContent),
         doc.getElementById("st-stage-list").textContent.slice(0, 160));
 
   // APPLY: the request must carry the token header and the staged values.
@@ -1977,6 +1991,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("st-stage-note").textContent.slice(0, 140));
   check("staging is cleared after a successful apply",
         Object.keys(H.STAGE.changes).length === 0);
+  check("the chip hides again once the stage is empty",
+        doc.getElementById("stage-pill").classList.contains("hidden"));
 
   // DISCARD: staged changes are dropped and the view reloads from the server's values.
   const bt2 = [...doc.querySelectorAll("#view-settings .setting-input")]

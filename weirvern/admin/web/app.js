@@ -400,6 +400,35 @@ async function postJSON(path, body) {
  */
 const STAGE = { changes: {}, plan: null };
 
+/* THE STAGE SURVIVES A RELOAD (sessionStorage). The ranked #3 loudest OPNsense complaint in the
+ * research: pending changes that vanish when you look away. This session's stage rides the tab's
+ * own storage, so a reload lands back on the same review list -- and it dies with the tab, not on
+ * the server: nothing staged is ever a server state. */
+try {
+  const savedStage = JSON.parse(window.sessionStorage.getItem("wv-stage") || "{}");
+  if (savedStage && typeof savedStage === "object") Object.assign(STAGE.changes, savedStage);
+} catch (_e) { /* a corrupt saved stage is not worth a broken console */ }
+
+function persistStage() {
+  try {
+    if (Object.keys(STAGE.changes).length) {
+      window.sessionStorage.setItem("wv-stage", JSON.stringify(STAGE.changes));
+    } else {
+      window.sessionStorage.removeItem("wv-stage");
+    }
+  } catch (_e) { /* private mode: the stage simply does not survive a reload */ }
+  renderStagePill();
+}
+
+/** The header chip: how many settings changes are staged, visible from EVERY tab. */
+function renderStagePill() {
+  const pill = document.getElementById("stage-pill");
+  if (!pill) return;
+  const n = Object.keys(STAGE.changes).length;
+  pill.classList.toggle("hidden", n === 0);
+  pill.textContent = n ? `${n} staged` : "";
+}
+
 /* The last settings payload's rows, keyed by row key. SONAR stages its recommendations
  * through the SAME dedupe the manual controls use (stageChange needs each key's CURRENT
  * value to decide "staged or unchanged"), and the rows are the only place that value
@@ -541,12 +570,14 @@ function stageChange(key, value, original) {
   if (value === original) delete STAGE.changes[key];
   else STAGE.changes[key] = value;
   STAGE.plan = null;   // any edit invalidates a previously fetched plan
+  persistStage();
   renderStage();
 }
 
 function discardStage() {
   STAGE.changes = {};
   STAGE.plan = null;
+  persistStage();
   // Re-render from the server's values so the inputs and the table agree again.
   loadSettings().catch(showError);
 }
@@ -594,6 +625,10 @@ function renderStage() {
     ]);
     if (STAGE.plan) {
       const p = (STAGE.plan.proposals || []).find((x) => x.key === key);
+      // WHAT IT REPLACES, not just what it becomes: a diff the operator cannot read is not a review.
+      if (p && p.current !== undefined) {
+        row.appendChild(el("span", { class: "stage-was", text: `(was ${p.current || "empty"})` }));
+      }
       if (p && p.warning) {
         row.appendChild(el("div", { class: "stage-warn", text: "⚠ " + p.warning }));
         bad.push(key);
@@ -655,6 +690,7 @@ async function applyStage(skipWarnConfirm) {
     // is shown as a problem rather than folded into a success line.
     STAGE.changes = {};
     STAGE.plan = null;
+    persistStage();
     const parts = ["saved: " + Object.entries(res.applied || {}).map(([k, v]) => `${k}=${v || "(empty)"}`).join(", ")];
     if ((res.restarted || []).length) parts.push("restarted " + res.restarted.join(", "));
     if ((res.restart_errors || []).length) {
@@ -2253,6 +2289,19 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const t of document.querySelectorAll(".tab")) {
     t.addEventListener("click", () => showView(t.dataset.view));
   }
+  const stagePill = document.getElementById("stage-pill");
+  if (stagePill) {
+    stagePill.addEventListener("click", () => {
+      // THE CHIP IS A DOOR TO THE REVIEW, NEVER A COMMIT BUTTON: it lands on the same staged
+      // list every other path uses. Nothing here can write.
+      showView("settings");
+      const card = document.getElementById("st-stage-card");
+      if (card && card.scrollIntoView) {
+        try { card.scrollIntoView({ block: "center" }); } catch (_e) { /* jsdom has none */ }
+      }
+    });
+  }
+  renderStagePill();
   document.getElementById("refresh").addEventListener("click", refreshAll);
   document.getElementById("autorefresh").addEventListener("change", (e) => {
     if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
