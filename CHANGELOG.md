@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.4 — 2026-10-17
+
+Chips catch up, and native controls join the palette. The fleet's state chips
+(alive/stale/never seen/unregistered/disabled) rendered neutral since the fleet shipped -- the
+state colour lived only in the row's left bar; they now wear the same wash fills as every
+other chip, so word and colour arrive together. The review dispositions follow (ack/resolved
+washed; "review unavailable" keeps its deliberately-different dashed edge). Native
+checkboxes and radios adopt the accent via accent-color.
+
 ## 0.14.3 — 2026-10-17
 
 THE VISIBLE LAYER — the theme becomes unmistakable. Filled accent buttons (a primary action

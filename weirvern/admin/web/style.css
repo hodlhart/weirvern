@@ -169,8 +169,10 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   white-space: nowrap;
 }
 .review-none { color: var(--muted); }
-.review-ack { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-.review-resolved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
+.review-ack { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
+  color: color-mix(in srgb, var(--warn) 82%, #fff); }
+.review-resolved { background: var(--wash-ok); border-color: transparent;
+  color: color-mix(in srgb, var(--ok) 78%, #fff); }
 .review-fp { color: var(--muted); text-decoration: line-through; }
 .review-unavailable { color: var(--danger, #e05c5c); border-style: dashed; }
 .review-remain {
@@ -500,6 +502,15 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .chip:hover { border-color: var(--accent); }
 .chip .x { color: var(--muted); font-weight: 700; }
 .chip .x:hover { color: var(--danger, #e05c5c); }
+/* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a
+ * state modifier. The modifiers existed since the fleet shipped but rendered neutral -- the
+ * colour lived only in the row's left bar. They now wear the same wash fills as .pill, so the
+ * word and the colour arrive together (phase 2 follow-up). */
+.chip.ok { background: var(--wash-ok); border-color: transparent; color: color-mix(in srgb, var(--ok) 78%, #fff); }
+.chip.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
+  color: color-mix(in srgb, var(--warn) 82%, #fff); }
+.chip.bad { background: var(--wash-bad); border-color: transparent; color: color-mix(in srgb, var(--crit) 78%, #fff); }
+.chip.muted { background: var(--surface-2); border-color: transparent; color: var(--muted); }
 
 /* ── the connection graph canvas ───────────────────────────────────────────
  * A fixed viewport height with the SVG filling it, so the layout has real bounds to work
@@ -893,3 +904,6 @@ html { scrollbar-width: thin; scrollbar-color: var(--hover) transparent; }
 
 /* ── the visible layer (phase 2, 2026-10-17): rows answer the cursor, the login card floats ── */
 tbody tr:hover td { background: rgba(249,250,250,.025); }
+
+/* native controls join the palette (phase 2 follow-up, 2026-10-17) */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
