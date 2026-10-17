@@ -30,7 +30,7 @@ dev = [
     #
     # A linter is a build tool: its version is part of the build, so it is pinned like any other.
     "ruff==0.16.7",
-    "mypy>=1.10,<2",
+    "mypy>=1.10,<3",
 ]
 
 [project.scripts]
