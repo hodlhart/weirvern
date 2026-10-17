@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.17.0 — 2026-10-17
+
+THE THEME AND BUTTONOLOGY PROGRAM — all twenty cards, shipped and evidenced.
+
+The console was studied against production consoles (Elastic, Security Onion, OPNsense/pfSense,
+the commercial fleet tools) and rebuilt around what those products got right: one vocabulary,
+flows that survive an outage, and destructive actions that cannot lie.
+
+WHAT SHIPPED, BY CARD:
+
+- Settings: a full audit of every control; a runtime-vs-apply semantics badge derived from the
+  writer's own table (a row cannot promise "no restart" while the writer restarts);
+  apply-time checks that BLOCK a write and name themselves (plan completeness via the fleet's
+  own validator, capture-interface vs live heartbeats, threshold vs the last 24h baseline),
+  with skips that carry their reasons; a no-JS panic page for the outage the console must
+  help fix.
+- Sluice Gate: the auto-block is loud wherever the fleet is and pausable in one click.
+- Weirlings: the fleet is a triage worklist (counts ARE filters, filters ride the URL, built-in
+  and saved views, bulk actions, inline enable/disable) with a right-edge slide-in sheet for
+  the drill-down (one exit, four doors; focus moves in).
+- Alerts: a detector registry where names are load-bearing, `may_page` gates the pager FIRST,
+  and a budget line says the open difference aloud.
+- Health: a pipeline self-audit whose classes read INDEPENDENTLY ("nothing found" and "the
+  check did not run" can never look alike), each finding next to its one-click fix.
+- Navigation: fourteen tabs become six labelled groups in one row (nothing hidden, no
+  sub-menus), breadcrumbs carry a drill-down's path back, and a command palette (Ctrl/Cmd-K or
+  /) reaches tabs, sensors, settings and actions by DRIVING the real controls.
+- Tiles and charts: label-above-value metric tiles with micro sparklines only where a series
+  exists (current bucket in accent, the past in the chart's area colour, a stub for zero).
+- Accessibility: color-scheme dark, aria-live on staged/apply status, a 2px focus ring with no
+  holes, reduced motion honoured everywhere, themed scrollbars; the theme's token rule ("no
+  hex outside the root block") is now a test.
+- Destructive actions: an echo naming the exact target and blast radius with a REQUIRED reason
+  recorded with the actor and the time (append-only `fleet_audit` trail), and a read-back that
+  says pending until the world agrees — or "NOT APPLIED — check the sensor", a different word
+  on purpose.
+
+Underneath: a jsdom harness grown from 452 to 626 checks, mutation proofs for every behavioural
+change, and a gate that has caught real defects on nearly every card.
+
 ## 0.16.0 — 2026-10-17
 
 THE PER-WEIRLING INTERCEPT PLAN — siphon, per sensor.
