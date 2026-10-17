@@ -118,6 +118,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
+                   WL_PLAN, wlRenderPlan, wlRunPlanSonar, wlApplyPlanChanges,
+                   wlPlanChangesFromSurvey, wlPlanModeChanged,
                    document,
                    document };
 
@@ -698,7 +700,19 @@ const IDENTITY_PAYLOAD = {
                   : u.includes("/api/settings/apply")
                     ? { ok: true, applied: sent.changes || {}, restarted: ["deploy/weirvern-worker"],
                         restart_errors: [], note: "restarted deploy/weirvern-worker" }
-                  : u.includes("/api/settings/sonar") ? SONAR_REPLY
+                  : u.includes("/api/settings/sonar")
+                    // REQUEST-AWARE like the real route: a survey FOR a named weirling
+                    // comes back stamped with that sensor, and reports the interface that
+                    // sensor's own row resolves to -- so the panel can only stage the
+                    // result against the weirling it belongs to.
+                    ? (() => {
+                        const sensor = sent.sensor || "";
+                        const row = sensor
+                          ? WEIRLINGS_PAYLOAD.sensors.find((x) => x.sensor_id === sensor) : null;
+                        const iface = (row && row.plan && row.plan.iface)
+                          || (row && (row.interfaces || [])[0]) || "eth1";
+                        return Object.assign({}, SONAR_REPLY, { sensor, interface: iface });
+                      })()
                   : u.includes("/api/settings/test")
                     ? { ok: true, seconds: 30, mode_before: "loch", mode_after: "loch",
                         reverted: true,
@@ -739,6 +753,40 @@ const IDENTITY_PAYLOAD = {
                     ? { ok: true, action: sent.action || "retrain",
                         action_id: sent.action_id || "r124",
                         note: "filed; the worker acts on its next cycle" }
+                  : u.includes("/api/weirlings/plan")
+                    // SHAPED LIKE THE REAL SERVER: proposals for the changes REQUESTED, with the
+                    // in-path cost riding on the mode change (that warning is what the confirm
+                    // dialog exists for), and a warning list when the merged plan cannot arm.
+                    ? (() => {
+                        const row = WEIRLINGS_PAYLOAD.sensors.find(
+                          (x) => x.sensor_id === (sent.sensor_id || ""));
+                        const proposals = Object.entries(sent.changes || {}).map(([key, value]) => ({
+                          key, value: String(value), warning: (key === "mode" && value === "siphon")
+                            ? "this puts " + sent.sensor_id + " IN THE TRAFFIC PATH" : "",
+                        }));
+                        const merged = Object.assign({}, (row && row.plan) || {}, sent.changes || {});
+                        const warnings = (merged.mode === "siphon" && !merged.targets)
+                          ? ["the plan cannot arm yet: no intercept targets"] : [];
+                        return { ok: true, sensor_id: sent.sensor_id || "", proposals,
+                                 restart_targets: [], warnings,
+                                 note: (sent.sensor_id || "") + " reads its own plan on every refresh" };
+                      })()
+                  : u.includes("/api/weirlings/apply")
+                    // STATEFUL, like the real store: the write PERSISTS into the fixture row, so
+                    // the re-read after the click shows the plan the server now holds. A stub
+                    // that forgot would let "applied" checks pass while the panel still showed
+                    // the old plan.
+                    ? (() => {
+                        const row = WEIRLINGS_PAYLOAD.sensors.find(
+                          (x) => x.sensor_id === (sent.sensor_id || ""));
+                        if (row) {
+                          row.plan = Object.assign({}, row.plan || {}, sent.changes || {});
+                          if (row.plan.mode) row.expected_mode = row.plan.mode;
+                        }
+                        return { ok: true, sensor_id: sent.sensor_id || "",
+                                 applied: sent.changes || {}, restart_targets: [],
+                                 note: "saved. " + (sent.sensor_id || "") + " applies it within 30s" };
+                      })()
                   : u.includes("/api/weirlings/register")
                     ? (() => {
                         // STATEFUL, like the real store: a registration PERSISTS, so the
@@ -838,6 +886,7 @@ const WEIRLINGS_PAYLOAD = {
       address: "198.51.100.7", segment: "third floor", reported_segment: "third floor",
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
       local: true,
+      plan: { mode: "", iface: "", segment: "", addr: "", gateway: "", targets: "" },
       age_s: 4.0, last_seen: "2026-09-23T12:00:00+00:00",
       interfaces: ["eth1", "eth2"],
       capture_loss_pct: 0.0, packets_recv: 900000, packets_dropped: 0, hosts: 12,
@@ -846,6 +895,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-stopped", state: "stale", is_problem: true,
+      plan: { mode: "", iface: "", segment: "", addr: "", gateway: "", targets: "" },
       address: "", segment: "second floor", reported_segment: "",
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
       age_s: 900.0, last_seen: "2026-09-23T11:45:00+00:00",
@@ -859,6 +909,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-promised", state: "never_seen", is_problem: true,
+      plan: { mode: "siphon", iface: "eth2", segment: "198.51.100.0/24", addr: "", gateway: "198.51.100.1", targets: "*" },
       address: "198.51.100.9", segment: "fourth floor IDF", reported_segment: "",
       expected_mode: "siphon", reported_mode: "", enabled: true, registered: true,
       age_s: null, last_seen: null,
@@ -870,6 +921,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "ghost-box", state: "unregistered", is_problem: true,
+      plan: { mode: "", iface: "", segment: "", addr: "", gateway: "", targets: "" },
       address: "198.51.100.44", segment: "", reported_segment: "",
       expected_mode: "", reported_mode: "loch", enabled: false, registered: false,
       age_s: 2.0, last_seen: "2026-09-23T12:00:00+00:00",
@@ -879,6 +931,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-off", state: "disabled", is_problem: false,
+      plan: { mode: "loch", iface: "", segment: "", addr: "", gateway: "", targets: "" },
       address: "", segment: "spare", reported_segment: "",
       expected_mode: "loch", reported_mode: "", enabled: false, registered: true,
       age_s: 90000.0, last_seen: "2026-09-22T11:00:00+00:00",
@@ -888,6 +941,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-moved", state: "alive", is_problem: false,
+      plan: { mode: "siphon", iface: "eth3", segment: "203.0.113.0/24", addr: "203.0.113.250", gateway: "203.0.113.1", targets: "203.0.113.7" },
       address: "198.51.100.60", segment: "fifth floor", reported_segment: "sixth floor",
       expected_mode: "loch", reported_mode: "siphon", enabled: true, registered: true,
       age_s: 9.0, last_seen: "2026-09-23T12:00:00+00:00",
@@ -1069,6 +1123,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   );
 
   const H = window.__H;
+
+  // jsdom does NOT implement window.confirm: calling it raises a jsdomError, which the "no
+  // JavaScript errors" check below would (correctly) flag. The plan editor uses it exactly the
+  // way the Settings tab's Apply does -- for a warned-but-allowed change -- so the harness
+  // answers it here. Individual checks flip the answer to prove the DECLINE path too.
+  window.confirm = () => true;
   if (!H) {
     console.log("  FATAL: the harness epilogue did not run -- cannot assert anything");
     process.exit(2);
@@ -3509,6 +3569,209 @@ check("high capture loss is called out in the fleet",
           && (sent.segment === "" || sent.segment === undefined),
           (post || {}).body || "no register POST");
   }
+}
+
+// ── THE PER-SENSOR INTERCEPT PLAN (operator, 2026-10-17: "On adopt can the sensor run sonar
+//    and the user toggles between or sets siphon or loch?") ──────────────────────────────────
+//
+// WHAT IS BEING HELD HERE, and why each half matters:
+//   * a REGISTERED, non-local weirling gets a plan editor whose values come from the SERVER's
+//     plan -- not from the mode the sensor happens to report;
+//   * this hub's OWN sensor gets none (its runtime is the Settings tab's ConfigMap) and an
+//     UNDECLARED sensor gets none (nothing a plan could belong to). Both are the "no lying
+//     controls" rule: the panel shows the mechanism that can actually reach that sensor;
+//   * the enable path surveys THE SENSOR's port first, writes THAT sensor's row, and never
+//     posts the hub's ConfigMap route;
+//   * a refused survey reverts the toggle and says why; a declined warning writes nothing.
+{
+  // RESET THE FIXTURES THIS BLOCK DEPENDS ON. The plan/apply stubs are stateful (like the real
+  // store) and the blocks above have already clicked through them, so a check that only works
+  // after another one ran is exactly the state-leak class this file has been bitten by.
+  const reset = (id, plan) => {
+    const row = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === id);
+    if (!row) return null;
+    row.plan = Object.assign({}, plan);
+    row.registered = true;
+    row.enabled = true;
+    return row;
+  };
+  const moved = reset("edge-moved", { mode: "siphon", iface: "eth3", segment: "203.0.113.0/24",
+                                      addr: "203.0.113.250", gateway: "203.0.113.1",
+                                      targets: "203.0.113.7" });
+  moved.reported_mode = "siphon";
+  moved.expected_mode = "siphon";
+  const stopped = reset("edge-stopped", { mode: "", iface: "", segment: "", addr: "",
+                                          gateway: "", targets: "" });
+  stopped.reported_mode = "loch";
+  stopped.expected_mode = "loch";
+  await H.loadWeirlings();
+
+  const planBox = () => doc.getElementById("wl-plan");
+  const planNote = () => (doc.getElementById("wl-plan-note") || {}).textContent || "";
+  const planModeSel = () => doc.getElementById("wl-plan-mode");
+  const waitFor = async (predicate, tries = 120) => {
+    for (let i = 0; i < tries; i++) {
+      if (predicate()) return true;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return false;
+  };
+
+  // ── (1) which panels get an editor, and which must not
+  await H.openWeirling("edge-alive");
+  check("the LOCAL sensor's panel offers no per-sensor plan (its runtime is the Settings tab)",
+        planBox().classList.contains("hidden"),
+        "a plan stored for this hub's own sensor would be a second source its worker never reads");
+
+  // The undeclared sensor: temporarily undeclared (the adoption block registered it in the
+  // stub), because a plan needs a declaration to belong to.
+  const ghost = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === "ghost-box");
+  if (ghost) { ghost.registered = false; ghost.state = "unregistered"; }
+  await H.openWeirling("ghost-box");
+  check("an UNDECLARED sensor offers no plan editor -- adopt it first",
+        planBox().classList.contains("hidden"),
+        "a plan for a sensor nobody declared would be a declaration about a declaration");
+  if (ghost) { ghost.registered = true; ghost.state = "alive"; }
+
+  await H.openWeirling("edge-moved");
+  check("a registered remote weirling's drill-down OFFERS its plan editor",
+        !planBox().classList.contains("hidden"),
+        "the sensor's own plan is the only control that can reach it");
+  check("the editor shows the DECLARED plan, not the mode the sensor reports",
+        planModeSel().value === "siphon"
+        && doc.getElementById("wl-plan-segment").value === "203.0.113.0/24"
+        && doc.getElementById("wl-plan-targets").value === "203.0.113.7",
+        planModeSel().value + " / " + doc.getElementById("wl-plan-segment").value);
+  check("the editor states declared versus reported on the same line",
+        /declared: siphon/.test(doc.getElementById("wl-plan-state").textContent || "")
+        && /last reported: siphon/.test(doc.getElementById("wl-plan-state").textContent || ""),
+        doc.getElementById("wl-plan-state").textContent);
+
+  // ── (2) staging a field writes NOTHING; Apply goes plan -> apply, for THAT sensor
+  {
+    const before = POSTED.length;
+    const input = doc.getElementById("wl-plan-targets");
+    input.value = "203.0.113.7,203.0.113.8";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    check("editing a plan field STAGES it and writes nothing",
+          POSTED.length === before && /staged for edge-moved/.test(planNote()),
+          `${POSTED.length - before} request(s) sent on edit; note: ${planNote()}`);
+    check("the Apply button is enabled only while something is staged",
+          !doc.getElementById("wl-plan-apply").disabled);
+
+    doc.getElementById("wl-plan-apply").click();
+    await waitFor(() => POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply")));
+    const planPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/plan"));
+    const applyPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/apply"));
+    let planBody = {}; let applyBody = {};
+    try { planBody = JSON.parse((planPost || {}).body || "{}"); } catch (_e) { planBody = {}; }
+    try { applyBody = JSON.parse((applyPost || {}).body || "{}"); } catch (_e) { applyBody = {}; }
+    check("Apply PREVIEWS through the server before writing anything",
+          !!planPost && planBody.sensor_id === "edge-moved"
+          && planBody.changes && planBody.changes.targets === "203.0.113.7,203.0.113.8",
+          (planPost || {}).body || "no plan POST");
+    check("...then writes THAT sensor's plan, not the hub's ConfigMap",
+          !!applyPost && applyBody.sensor_id === "edge-moved"
+          && applyBody.changes.targets === "203.0.113.7,203.0.113.8"
+          && !POSTED.slice(before).some((r) => r.url.includes("/api/settings/apply")),
+          (applyPost || {}).body || "no apply POST");
+    await waitFor(() => /saved/.test(planNote()));
+    check("the outcome reported is the SERVER's, including who applies it and when",
+          /saved/.test(planNote()) && /30s|30 seconds|refresh/.test(planNote()),
+          planNote());
+    check("the panel re-reads the server's plan, so the edit cannot linger locally",
+          doc.getElementById("wl-plan-targets").value === "203.0.113.7,203.0.113.8",
+          doc.getElementById("wl-plan-targets").value);
+  }
+
+  // ── (3) the warn-then-decline path writes nothing
+  {
+    const realConfirm = window.confirm;
+    window.confirm = () => false;
+    const before = POSTED.length;
+    await H.wlApplyPlanChanges({ mode: "siphon" });
+    check("DECLINING the in-path warning writes NOTHING and says so",
+          !POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply"))
+          && /declined/.test(planNote()),
+          planNote());
+    window.confirm = realConfirm;
+    await H.openWeirling("edge-moved");
+  }
+
+  // ── (4) a refused survey: the toggle reverts, the reason is the server's
+  {
+    await H.openWeirling("edge-stopped");
+    fetchOverride = (u) => (String(u).includes("/api/settings/sonar")
+      ? Promise.resolve({ ok: false, status: 422, statusText: "Refused",
+                          json: async () => ({ ok: false, sensor: "edge-stopped",
+                            error: "no such interface 'eth9' on this node; interfaces present: eth0, eth1" }) })
+      : null);
+    const before = POSTED.length;
+    const sel = planModeSel();
+    sel.value = "siphon";
+    sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await waitFor(() => /could not survey/.test(planNote()));
+    check("a REFUSED survey says why and writes nothing",
+          /could not survey/.test(planNote()) && /no such interface/.test(planNote())
+          && !POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply")),
+          planNote());
+    check("the mode control REVERTS when the enable could not run (never a dead toggle)",
+          planModeSel().value === "",
+          planModeSel().value);
+    fetchOverride = null;
+    await H.openWeirling("edge-stopped");
+  }
+
+  // ── (5) the one-click enable: Sonar for THIS sensor, then its plan
+  {
+    const before = POSTED.length;
+    const sel = planModeSel();
+    sel.value = "siphon";
+    sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await waitFor(() => POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply")), 200);
+    const sonarPost = POSTED.slice(before).find((r) => r.url.includes("/api/settings/sonar"));
+    const applyPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/apply"));
+    let sonarBody = {}; let applyBody = {};
+    try { sonarBody = JSON.parse((sonarPost || {}).body || "{}"); } catch (_e) { sonarBody = {}; }
+    try { applyBody = JSON.parse((applyPost || {}).body || "{}"); } catch (_e) { applyBody = {}; }
+    check("switching a weirling into the path surveys THE SENSOR's own port first",
+          !!sonarPost && sonarBody.sensor === "edge-stopped",
+          (sonarPost || {}).body || "no sonar POST");
+    check("...and then writes that weirling's plan from what the survey measured",
+          !!applyPost && applyBody.sensor_id === "edge-stopped"
+          && applyBody.changes && applyBody.changes.mode === "siphon"
+          && applyBody.changes.segment === "198.51.100.0/24",
+          (applyPost || {}).body || "no apply POST");
+    check("the hub's OWN ConfigMap is never touched for another weirling",
+          !POSTED.slice(before).some((r) => r.url.includes("/api/settings/apply")
+                                     || r.url.includes("/api/settings/plan")),
+          POSTED.slice(before).map((r) => r.url).join(","));
+    check("the panel states what happens next rather than claiming the sensor armed",
+          /30s|30 seconds|refresh/.test(planNote()),
+          planNote());
+  }
+
+  // ── (6) an apply the SERVER refuses: the control reverts, the reason is the server's
+  {
+    await H.openWeirling("edge-moved");      // plan mode siphon, so loch is a change
+    fetchOverride = (u) => (String(u).includes("/api/weirlings/apply")
+      ? Promise.resolve({ ok: false, status: 503, statusText: "Unavailable",
+                          json: async () => ({ ok: false,
+                            error: "the registration for 'edge-moved' could not be written" }) })
+      : null);
+    const sel = planModeSel();
+    sel.value = "loch";
+    sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await waitFor(() => /could not be written/.test(planNote()));
+    check("an apply the server REFUSES is reported in the server's words",
+          /could not be written/.test(planNote()), planNote());
+    check("and the mode control reverts to the DECLARED plan, not to what was clicked",
+          planModeSel().value === "siphon",
+          planModeSel().value);
+    fetchOverride = null;
+  }
+
+  doc.getElementById("wl-detail-close").click();
 }
 
 // ── no content-less cards on the Settings tab (audit 2026-10-17) ─────────────────────────────

@@ -1176,15 +1176,50 @@
         was put back.
       </div>
       <div id="wl-detail-body"></div>
+      <!-- THE SENSOR'S OWN INTERCEPT PLAN (loch/siphon + what to intercept). Shown for every
+           REGISTERED sensor except this hub's own: the plan travels to the sensor in its own
+           registry row, its agent reads it there, and the sensor reports back the mode it
+           ended up running. A control that could not reach the sensor is never rendered --
+           this hub's own sensor uses the Settings tab, and an unregistered row has nothing a
+           plan could belong to. -->
+      <div id="wl-plan" class="hidden">
+        <h3>Intercept plan for this weirling <span class="muted" id="wl-plan-state"></span>
+          <button class="info-btn" data-info="wl-plan-info" aria-label="how to read the plan editor" aria-expanded="false" title="how to read the plan editor">i</button>
+        </h3>
+        <div class="controls">
+          <label>mode <select id="wl-plan-mode"></select></label>
+          <button id="wl-plan-sonar" type="button">Sonar for this weirling</button>
+          <button id="wl-plan-apply" type="button" disabled>Apply to this weirling</button>
+        </div>
+        <div class="controls">
+          <label>capture iface <input id="wl-plan-iface" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
+          <label>segment <input id="wl-plan-segment" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
+          <label>redirect address <input id="wl-plan-addr" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
+          <label>gateway <input id="wl-plan-gateway" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
+          <label>targets <input id="wl-plan-targets" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
+        </div>
+        <p id="wl-plan-note" class="muted sonar-note"></p>
+        <div class="info-text hidden" id="wl-plan-info">
+          This is the plan THE SENSOR ITSELF will run, stored on its own registration: its mode
+          (loch, or siphon for in-path), and for siphon the capture interface, the segment, the
+          address it borrows on that segment, the gateway whose hosts are relayed, and the
+          targets. The sensor reads its own row every half-minute and arms or disarms itself;
+          nothing here restarts this hub. <strong>Sonar</strong> surveys the sensor's own capture
+          port first and stages what it measured. Applying siphon is in-path: for as long as the
+          sensor intercepts, the hosts you name depend on it forwarding, so a stopped sensor is
+          their outage — start with one or two targets, not the whole segment.
+        </div>
+      </div>
       <details id="wl-advanced">
         <summary>Advanced</summary>
         <div id="st-sensor" class="grid-inline"></div>
       </details>
       <div class="info-text hidden" id="wl-detail-info">
         One weirling's live state, its NICs, and the actions that change its fleet membership
-        (register, enable/disable, revoke). A sensor's runtime — mode, Sonar, the test run —
-        can only be changed on the box that runs it, so those controls appear when the
-        selected sensor is this hub's own.
+        (register, enable/disable, revoke). A sensor's RUNTIME is changed where it runs: this
+        hub's own sensor is configured on the Settings tab, and every other weirling gets its
+        own intercept plan here — mode, segment, address, gateway and targets — which the
+        sensor reads from its own registry row and applies itself.
       </div>
 
       <div class="controls">

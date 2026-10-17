@@ -284,6 +284,17 @@ async function openWeirling(sensorId) {
   // the box that runs the sensor); hidden -- never lying -- for every other selection.
   const runtime = document.getElementById("wl-runtime");
   if (runtime) runtime.classList.toggle("hidden", !r.local);
+  // THE SENSOR'S OWN PLAN: for every REGISTERED weirling except this hub's own. An undeclared
+  // sensor has nothing a plan could belong to (adopt it first), and this hub's own sensor is
+  // configured through the Settings tab's ConfigMap -- the two mechanisms are different on
+  // purpose, and each panel shows only the one that can actually reach its sensor.
+  const planBox = document.getElementById("wl-plan");
+  if (planBox) {
+    const showPlan = !!r.registered && !r.local;
+    planBox.classList.toggle("hidden", !showPlan);
+    if (showPlan) wlRenderPlan(r);
+    else { WL_PLAN.sensor_id = ""; WL_PLAN.changes = {}; WL_PLAN.survey = null; }
+  }
   const wlSel = document.getElementById("wl-mode-select");
   if (wlSel) {
     wlSel.value = (String(r.reported_mode || "").toLowerCase() === "siphon")
@@ -400,6 +411,23 @@ function wireWeirlings() {
   const modeSel = document.getElementById("wl-mode-select");
   if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
+  // ── the per-sensor intercept plan's own controls ─────────────────────────────────────────
+  // Its listeners are separate from the local sensor's (`wl-mode-select` above): one value,
+  // one control, and each control writes through the mechanism that can reach ITS sensor.
+  const planMode = document.getElementById("wl-plan-mode");
+  if (planMode) planMode.addEventListener("change", () => wlPlanModeChanged().catch(showError));
+  const planSonar = document.getElementById("wl-plan-sonar");
+  if (planSonar) planSonar.addEventListener("click", () => wlRunPlanSonar().catch(showError));
+  const planApply = document.getElementById("wl-plan-apply");
+  if (planApply) planApply.addEventListener("click", () => {
+    if (!Object.keys(WL_PLAN.changes).length) return;
+    wlApplyPlanChanges({ ...WL_PLAN.changes }).catch(showError);
+  });
+  for (const f of WL_PLAN_FIELDS) {
+    const input = wlPlanInput(f);
+    if (input) input.addEventListener("input", () => wlStagePlanField(f));
+  }
+
   const cancel = document.getElementById("wl-cancel");
   if (cancel) cancel.addEventListener("click", () => clearWeirlingForm());
 
@@ -473,6 +501,223 @@ async function wlApplyMode() {
   } finally {
     sel.disabled = false;
   }
+}
+
+// ── the sensor's own intercept plan ──────────────────────────────────────────────────────────
+//
+// WHY THIS IS NOT THE SETTINGS GRID (the operator's ask, 2026-10-17: "On adopt can the sensor
+// run sonar and the user toggles between or sets siphon or loch?"). The Settings tab writes ONE
+// deployment's ConfigMap -- this hub's sensor. Every OTHER weirling needs its own plan, and the
+// only channel the hub and a remote sensor share is the sensor's registry row: the operator
+// writes the plan here, the sensor's own agent reads it and arms itself, and the sensor reports
+// the mode it ended up in. Two facts this panel must never blur:
+//
+//   * THE SENSOR OWNS WHEN IT APPLIES. The reply says "about 30 seconds", because that is the
+//     sensor's own refresh; claiming "armed" here would be a claim only the sensor can make,
+//     and its heartbeat is where that claim lives (declared vs reported, on the row).
+//   * A CONTROL THAT CANNOT MEAN ANYTHING IS NOT RENDERED. No plan editor for an unregistered
+//     sensor (nothing a plan could belong to) and none for this hub's own (its runtime is the
+//     ConfigMap, edited on the Settings tab) -- in both cases the panel says where the control
+//     does live rather than offering a toggle that writes into a drawer.
+//
+// THE STAGED-THEN-APPLIED SHAPE IS THE SETTINGS ONE, reused: `plan` validates server-side and
+// returns per-key warnings (the in-path cost rides on the mode change), and only then does
+// `apply` write. The browser never decides what is legal.
+
+// The sensor whose plan is loaded in the panel, what has been edited, and the survey this
+// session ran for it. One object, so a click can never act on the PREVIOUS sensor's row.
+const WL_PLAN = { sensor_id: "", changes: {}, survey: null };
+
+const WL_PLAN_FIELDS = ["iface", "segment", "addr", "gateway", "targets"];
+
+function wlPlanInput(field) {
+  return document.getElementById(`wl-plan-${field}`);
+}
+
+/** Populate the editor from a detail row. Called on every open, so it always shows the SERVER. */
+function wlRenderPlan(r) {
+  const box = document.getElementById("wl-plan");
+  if (!box) return;
+  const plan = r.plan || {};
+  WL_PLAN.sensor_id = r.sensor_id;
+  WL_PLAN.changes = {};
+  WL_PLAN.survey = null;
+
+  // The mode control: the DECLARED mode, and an explicit "not set" when there is none --
+  // rendering an undeclared plan as "loch" would invent a declaration nobody made.
+  const sel = document.getElementById("wl-plan-mode");
+  sel.replaceChildren();
+  const opts = [["", "— not set —"], ["loch", "loch — passive"], ["siphon", "siphon — in traffic path"]];
+  for (const [value, label] of opts) {
+    const o = el("option", { value, text: label });
+    if (String(plan.mode || "") === value) o.selected = true;
+    sel.appendChild(o);
+  }
+  for (const f of WL_PLAN_FIELDS) {
+    const input = wlPlanInput(f);
+    if (input) input.value = String(plan[f] || "");
+  }
+  const state = document.getElementById("wl-plan-state");
+  if (state) {
+    const declared = plan.mode || "(no mode declared)";
+    const reported = r.reported_mode || "(not reported)";
+    state.textContent = `declared: ${declared} · last reported: ${reported}`;
+  }
+  const note = document.getElementById("wl-plan-note");
+  if (note) {
+    note.textContent = plan.mode === "" || plan.mode === undefined
+      ? "No plan is declared for this weirling, so it runs as a passive capture. Sonar will "
+        + "survey its capture port, or set the fields below and apply."
+      : "";
+  }
+  wlRenderPlanStage();
+}
+
+/** One input edit: staged against the SERVER's value, so reverting un-stages it. */
+function wlStagePlanField(field) {
+  const input = wlPlanInput(field);
+  if (!input) return;
+  const original = String((wlDetail && wlDetail.plan && wlDetail.plan[field]) || "");
+  const value = (input.value || "").trim();
+  if (value === original) delete WL_PLAN.changes[field];
+  else WL_PLAN.changes[field] = value;
+  wlRenderPlanStage();
+}
+
+function wlRenderPlanStage(message) {
+  const apply = document.getElementById("wl-plan-apply");
+  const note = document.getElementById("wl-plan-note");
+  const keys = Object.keys(WL_PLAN.changes);
+  if (apply) apply.disabled = keys.length === 0;
+  if (!note) return;
+  if (message) { note.textContent = message; return; }
+  if (!keys.length) return;
+  note.textContent = "staged for " + WL_PLAN.sensor_id + ": "
+    + keys.map((k) => `${k}=${WL_PLAN.changes[k] || "(empty)"}`).join(", ")
+    + " — not applied.";
+}
+
+/** The survey's recommendations, as PLAN changes. The row keys the survey speaks
+ * (intercept_segment, sensor_mode...) are the SETTINGS' vocabulary; the plan's fields are its
+ * own, and translating at this boundary is what keeps the two from drifting. */
+function wlPlanChangesFromSurvey(res) {
+  const rec = res.recommended || {};
+  const changes = {};
+  if (res.interface) changes.iface = String(res.interface);
+  const segment = rec.intercept_segment || res.segment || "";
+  if (segment) changes.segment = String(segment);
+  if (rec.intercept_addr) changes.addr = String(rec.intercept_addr);
+  const gateway = rec.intercept_gateway || res.gateway || "";
+  if (gateway) changes.gateway = String(gateway);
+  if (rec.intercept_targets) changes.targets = String(rec.intercept_targets);
+  return changes;
+}
+
+/** Sonar, FOR THIS SENSOR: the survey runs against its capture port, not the hub's. */
+async function wlRunPlanSonar() {
+  const sid = WL_PLAN.sensor_id;
+  const btn = document.getElementById("wl-plan-sonar");
+  if (!sid) return null;
+  if (btn) { btn.disabled = true; btn.textContent = "Surveying…"; }
+  wlRenderPlanStage(`surveying ${sid}'s capture port — this sends ARP requests on its segment…`);
+  try {
+    const res = await postJSON("/api/settings/sonar", { sensor: sid });
+    // A refusal INSIDE the job (it ran and said no) is passed through with the server's own
+    // reason, verbatim: those sentences name the fix.
+    if (!res || res.ok !== true) {
+      wlRenderPlanStage(`Sonar could not survey ${sid}: ${(res && res.error) || "no result"}`);
+      return null;
+    }
+    WL_PLAN.survey = res;
+    const staged = wlPlanChangesFromSurvey(res);
+    for (const [k, v] of Object.entries(staged)) WL_PLAN.changes[k] = v;
+    for (const f of WL_PLAN_FIELDS) {
+      const input = wlPlanInput(f);
+      if (input && staged[f] !== undefined) input.value = staged[f];
+    }
+    const parts = [`Sonar surveyed ${res.interface || "the capture port"}`];
+    if (res.segment) parts.push(`${res.segment} (${res.segment_derivation || "measured"})`);
+    if (res.gateway) parts.push(`gateway ${res.gateway}`);
+    if (res.notes && res.notes.length) parts.push(res.notes.join(" "));
+    parts.push(Object.keys(staged).length
+      ? "staged from the survey — press Apply to send it to this weirling."
+      : "nothing new to stage from this survey.");
+    wlRenderPlanStage(parts.join(" · "));
+    return res;
+  } catch (err) {
+    wlRenderPlanStage(`Sonar could not survey ${sid}: ${(err && err.message) || err}`);
+    return null;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Sonar for this weirling"; }
+  }
+}
+
+/** Plan, then apply -- against THIS sensor's row. Returns whether it landed. */
+async function wlApplyPlanChanges(changes, { confirmed = false } = {}) {
+  const sid = WL_PLAN.sensor_id;
+  if (!sid || !Object.keys(changes).length) return false;
+  let plan;
+  try {
+    plan = await postJSON("/api/weirlings/plan", { sensor_id: sid, changes });
+  } catch (err) {
+    wlRenderPlanStage(`not applied — ${(err && err.message) || err}`);
+    return false;
+  }
+  if (!plan || plan.ok !== true) {
+    wlRenderPlanStage(`refused: ${(plan && plan.error) || "the server did not accept this plan"}`);
+    return false;
+  }
+  const warns = (plan.proposals || []).filter((p) => p.warning && p.key in changes);
+  if (warns.length && !confirmed) {
+    const ok = window.confirm(
+      "This change is allowed but costly:\n\n"
+      + warns.map((p) => `${p.key}: ${p.warning}`).join("\n\n")
+      + "\n\nApply anyway?");
+    if (!ok) { wlRenderPlanStage("not applied — you declined the warning"); return false; }
+  }
+  let res;
+  try {
+    res = await postJSON("/api/weirlings/apply", { sensor_id: sid, changes });
+  } catch (err) {
+    wlRenderPlanStage(`not applied — ${(err && err.message) || err}`);
+    return false;
+  }
+  if (!res || res.ok !== true) {
+    wlRenderPlanStage(`refused: ${(res && res.error) || "the server did not accept the plan"}`);
+    return false;
+  }
+  const said = [res.note || "saved."].concat(plan.warnings || []).join(" ");
+  WL_PLAN.changes = {};
+  // RE-READ: the panel must show the SERVER's plan, never the browser's memory of the edit.
+  await openWeirling(sid);
+  await loadWeirlings();
+  const note = document.getElementById("wl-plan-note");
+  if (note) note.textContent = said;
+  return true;
+}
+
+/** THE MODE TOGGLE: one action, Sonar first when switching a sensor INTO the path. */
+async function wlPlanModeChanged() {
+  const sel = document.getElementById("wl-plan-mode");
+  if (!sel || !WL_PLAN.sensor_id) return;
+  const want = sel.value;
+  const prev = String((wlDetail && wlDetail.plan && wlDetail.plan.mode) || "");
+  if (want === prev) return;
+  const changes = {};
+  if (want) changes.mode = want;
+  if (want === "siphon") {
+    // SONAR FIRST, because a plan with no segment/address cannot arm: the survey is what
+    // turns "make it in-path" into a plan the sensor can actually run.
+    if (!WL_PLAN.survey) {
+      const res = await wlRunPlanSonar();
+      if (!res) { sel.value = prev; return; }
+    }
+    Object.assign(changes, wlPlanChangesFromSurvey(WL_PLAN.survey));
+    delete changes.mode;                       // re-added below, after the survey's fields
+    changes.mode = "siphon";
+  }
+  const landed = await wlApplyPlanChanges(changes, { confirmed: want === "siphon" });
+  if (!landed) sel.value = prev;
 }
 
 async function saveWeirling() {

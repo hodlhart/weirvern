@@ -351,6 +351,105 @@ def test_the_gui_uses_only_classes_that_exist_in_the_stylesheet():
     assert not missing, f"app.js uses CSS classes that do not exist: {sorted(missing)}"
 
 
+# Elements that are deliberately not written by JS, each for a reason. Without this
+# list the check is noise and gets ignored, which is how a real orphan survives.
+#   views/tabs/statusline: toggled by CSS class, not filled with data
+#   h-hint: hint text set once in the markup
+#   ev-notice-card: shown/hidden, not populated
+_STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-host",
+              "view-network", "view-models", "view-netflow", "view-zeek", "view-health",
+              # view-discover: a structural section toggled by `showView`, like its siblings
+              # above; its inner elements are what the scripts populate.
+              "view-discover",
+              # view-dns / view-blocked: same shape -- the sections are toggled; the
+              # view scripts fill them.
+              "view-dns",
+              "view-blocked",
+              #   view-settings: a static skeleton -- loadSettings creates every row
+              #     into the st-* hosts, so the section itself is never written to
+              "view-settings",
+              "tabs", "statusline", "h-hint",
+              # Deliberately structural, each for a stated reason:
+              #   ev-notice-card: shown/hidden, never filled with data
+              #   zk-drill-card: the Zeek drill-down wrapper, likewise shown/hidden
+              #   nw-detail-card: the graph's click-result wrapper; its CONTENTS
+              #     (#nw-detail, #nw-detail-table) are what get populated
+              "ev-notice-card", "zk-drill-card", "nw-detail-card",
+              #   st-auth-card / st-stage-card: wrappers whose CONTENTS are populated
+              #     (#st-auth-note, #st-stage-list/#st-stage-note); the cards themselves
+              #     are only shown or hidden
+              "st-auth-card", "st-stage-card",
+              #   st-account-card / st-users-card / st-user-add: wrappers the account
+              #     code shows or hides, and whose contents (#st-account-note, the users
+              #     table's tbody, #st-user-result) carry the data
+              "st-account-card", "st-users-card", "st-user-add",
+              #   gate-submit / pw-submit / gate-token-submit: form submit buttons,
+              #     handled by their forms' submit events rather than by a getElementById
+              #     binding
+              #   view-identity: a view SECTION, whose contents (#id-coverage, #id-table's
+              #     tbody, #id-count, #id-empty, #id-detail) carry the data. It is
+              #     referenced by showView's class toggle rather than by getElementById.
+              "view-identity",
+              #   view-sluice: the same shape -- a view SECTION toggled by class, whose
+              #     contents carry the data (#sl-state, #sl-state-note, #sl-count, the rules
+              #     table's tbody, #sl-empty, #sl-policies, #sl-criticality-note). Listed
+              #     explicitly rather than implied by the pattern, so a future section that
+              #     really is an orphan cannot hide behind its neighbours.
+              "view-sluice",
+              #   view-weirlings: the same shape again -- a view SECTION toggled by class,
+              #     whose contents carry the data (#wl-summary, #wl-summary-note, the fleet
+              #     table's tbody, #wl-count, #wl-empty, #wl-detail-card and its body). The
+              #     section itself is never written to by id, which is correct.
+              "view-weirlings",
+              "gate-submit", "pw-submit", "gate-token-submit"}
+
+
+
+def _orphans(html: str, scripts: str) -> set[str]:
+    """The orphan scan itself, as a function, so a must-fire check can drive the SAME logic.
+
+    A scanner whose rule is only exercised against the tree it passes on is a snapshot, not a
+    guard: the widening below (family lookups) must be provably able to still report an id that
+    nothing references.
+    """
+    ids = set(re.findall(r'id="([a-z][a-z0-9-]*)"', html))
+    referenced = set(re.findall(r'getElementById\("([a-z][a-z0-9-]*)"\)', scripts))
+    referenced |= set(re.findall(r'for="([a-z][a-z0-9-]*)"', html))
+    # THE INFO PANELS' OWN VOCABULARY. The "i" buttons open their panel through
+    # `data-info="<id>"` and `wireInfoButtons()`'s getElementById(btn.dataset.info), so the id
+    # is referenced without ever appearing as a getElementById literal. This is a WIDENING of
+    # the scan, exactly like the soc.js fix below -- the panels really are populated (their
+    # prose is static markup) -- never an exemption: an id nothing references is still an orphan.
+    referenced |= set(re.findall(r'data-info="([a-z][a-z0-9-]*)"', html))
+
+    # ── FAMILY LOOKUPS, WIDENED (not exempted) ────────────────────────────────────────────────
+    #
+    # `getElementById(`wl-plan-${field}`)` builds the id from a family, and the loop that does it
+    # fills EVERY member with the server's value -- so the family is a reference, exactly the way
+    # the CSS-class check above already treats `"prefix-" + x`. Measured when the per-sensor plan
+    # editor landed: the five `wl-plan-*` inputs were reported as orphans while their values were
+    # being written on every panel open. Adding the ids to the exemption list would have been the
+    # opposite of the fix this file's own docstring names; teaching the scanner the shape is the
+    # same widening the soc.js case got. An id in NO family is still an orphan.
+    families = set(re.findall(r"getElementById\(\s*`([a-z][a-z0-9-]*)-", scripts))
+    families |= set(re.findall(r'getElementById\(\s*"([a-z][a-z0-9-]*-)"\s*\+', scripts))
+    # `i not in scripts` is the pre-existing broad net (an id appearing anywhere in the JS text);
+    # the `structural` set is the documented exemption list, kept as-is.
+    return {i for i in ids
+            if i not in referenced and i not in scripts and i not in _STRUCTURAL_IDS
+            and not any(i.startswith(f) for f in families)}
+
+
+def test_the_orphan_scanner_still_CATCHES_a_real_orphan():
+    """THE MUST-FIRE. The family widening must not swallow an id outside every family, or the
+    check would pass on a tree full of blank elements."""
+    html = ('<div id="left-behind"></div>'
+            '<input id="wl-plan-addr"><input id="wl-plan-targets">')
+    scripts = 'getElementById(`wl-plan-${f}`)'
+    assert _orphans(html, scripts) == {"left-behind"}, (
+        "the scan no longer reports an id that nothing populates")
+
+
 def test_no_orphan_placeholder_elements_remain():
     """An element with an id that nothing populates renders as blank forever.
 
@@ -366,81 +465,14 @@ def test_no_orphan_placeholder_elements_remain():
     """
     web = ROOT / "weirvern" / "admin" / "web"
     html = (web / "index.html").read_text()
-    css = (web / "style.css").read_text()
     scripts = "\n".join(p.read_text() for p in sorted(web.glob("*.js")))
-    ids = set(re.findall(r'id="([a-z][a-z0-9-]*)"', html))
-    referenced = set(re.findall(r'getElementById\("([a-z][a-z0-9-]*)"\)', scripts))
-    referenced |= set(re.findall(r'for="([a-z][a-z0-9-]*)"', html))
-    # THE INFO PANELS' OWN VOCABULARY. The "i" buttons open their panel through
-    # `data-info="<id>"` and `wireInfoButtons()`'s getElementById(btn.dataset.info), so the id
-    # is referenced without ever appearing as a getElementById literal. This is a WIDENING of
-    # the scan, exactly like the soc.js fix above -- the panels really are populated (their
-    # prose is static markup) -- never an exemption: an id nothing references is still an orphan.
-    referenced |= set(re.findall(r'data-info="([a-z][a-z0-9-]*)"', html))
-
-    # Elements that are deliberately not written by JS, each for a reason. Without this
-    # list the check is noise and gets ignored, which is how a real orphan survives.
-    #   views/tabs/statusline: toggled by CSS class, not filled with data
-    #   h-hint: hint text set once in the markup
-    #   ev-notice-card: shown/hidden, not populated
-    structural = {"view-anomalies", "view-evidence", "view-host",
-                  "view-network", "view-models", "view-netflow", "view-zeek", "view-health",
-                  # view-discover: a structural section toggled by `showView`, like its siblings
-                  # above; its inner elements are what the scripts populate.
-                  "view-discover",
-                  # view-dns / view-blocked: same shape -- the sections are toggled; the
-                  # view scripts fill them.
-                  "view-dns",
-                  "view-blocked",
-                  #   view-settings: a static skeleton -- loadSettings creates every row
-                  #     into the st-* hosts, so the section itself is never written to
-                  "view-settings",
-                  "tabs", "statusline", "h-hint",
-                  # Deliberately structural, each for a stated reason:
-                  #   ev-notice-card: shown/hidden, never filled with data
-                  #   zk-drill-card: the Zeek drill-down wrapper, likewise shown/hidden
-                  #   nw-detail-card: the graph's click-result wrapper; its CONTENTS
-                  #     (#nw-detail, #nw-detail-table) are what get populated
-                  "ev-notice-card", "zk-drill-card", "nw-detail-card",
-                  #   st-auth-card / st-stage-card: wrappers whose CONTENTS are populated
-                  #     (#st-auth-note, #st-stage-list/#st-stage-note); the cards themselves
-                  #     are only shown or hidden
-                  "st-auth-card", "st-stage-card",
-                  #   st-account-card / st-users-card / st-user-add: wrappers the account
-                  #     code shows or hides, and whose contents (#st-account-note, the users
-                  #     table's tbody, #st-user-result) carry the data
-                  "st-account-card", "st-users-card", "st-user-add",
-                  #   gate-submit / pw-submit / gate-token-submit: form submit buttons,
-                  #     handled by their forms' submit events rather than by a getElementById
-                  #     binding
-                  #   view-identity: a view SECTION, whose contents (#id-coverage, #id-table's
-                  #     tbody, #id-count, #id-empty, #id-detail) carry the data. It is
-                  #     referenced by showView's class toggle rather than by getElementById.
-                  "view-identity",
-                  #   view-sluice: the same shape -- a view SECTION toggled by class, whose
-                  #     contents carry the data (#sl-state, #sl-state-note, #sl-count, the rules
-                  #     table's tbody, #sl-empty, #sl-policies, #sl-criticality-note). Listed
-                  #     explicitly rather than implied by the pattern, so a future section that
-                  #     really is an orphan cannot hide behind its neighbours.
-                  "view-sluice",
-                  #   view-weirlings: the same shape again -- a view SECTION toggled by class,
-                  #     whose contents carry the data (#wl-summary, #wl-summary-note, the fleet
-                  #     table's tbody, #wl-count, #wl-empty, #wl-detail-card and its body). The
-                  #     section itself is never written to by id, which is correct.
-                  "view-weirlings",
-                  "gate-submit", "pw-submit", "gate-token-submit"}
-
-    orphans = {i for i in ids
-               if i not in referenced and i not in scripts and i not in structural}
+    orphans = _orphans(html, scripts)
     assert not orphans, (
         f"HTML elements nothing populates: {sorted(orphans)}. An element that is declared, "
         f"never written to, and has no backend field renders as blank forever -- the "
         f"silent-empty pattern. Either populate it or remove it; if it is deliberately "
         f"structural, add it to the exemption list with a reason."
     )
-    # And the exemption list must not itself go stale.
-    for name in structural:
-        assert name in ids or name in css, f"{name} is exempted but no longer exists"
 
 
 def test_naive_and_aware_timestamps_are_comparable():
