@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 PUSHOVER_ENDPOINT = "https://api.pushover.net/1/messages.json"
 DEFAULT_SOUND = "siren"
 
+# The per-source cooldown map only has to remember sources within the longest cooldown the
+# settings can carry -- hours, not days -- so a day is a generous horizon for eviction. See
+# AlertState.prune_hourly (issue #29).
+LAST_SENT_MAX_AGE_S = 24 * 3600
+
 
 @dataclass
 class AlertState:
@@ -40,6 +45,15 @@ class AlertState:
         now = now or time.time()
         cutoff = now - 3600
         self.hourly_events = [t for t in self.hourly_events if t > cutoff]
+        # BOUNDED (issue #29): last_sent had no eviction and grew for the process lifetime
+        # (a review measured 10k entries). An entry older than LAST_SENT_MAX_AGE_S cannot
+        # change any cooldown decision -- every configured cooldown is well under an hour --
+        # so it is dropped here, on the same cadence as the hourly list this already rides
+        # (prune_hourly runs on every send decision). The map stays bounded by the addresses
+        # recently alerted on, not by every address ever seen.
+        if self.last_sent:
+            stale = now - LAST_SENT_MAX_AGE_S
+            self.last_sent = {s: t for s, t in self.last_sent.items() if t > stale}
 
     def can_send(self, src: str, settings: Settings, now: float | None = None) -> tuple[bool, str]:
         """Return (allowed, reason-if-denied)."""

@@ -62,3 +62,27 @@ def test_format_message_compact():
     assert "medium" in msg.lower()
     assert "IF:0.60" in msg
     assert len(msg) < 1024  # Pushover limit
+
+def test_the_last_sent_map_is_PRUNED_not_left_to_grow():
+    """Issue #29: the per-source cooldown map was never pruned and grew for the process
+    lifetime (a review measured it at 10k entries). Eviction rides prune_hourly, which runs
+    on every send decision: entries older than the horizon cannot affect any cooldown, and a
+    recent one survives with its cooldown intact."""
+    import time
+
+    from weirvern.alerts import LAST_SENT_MAX_AGE_S
+
+    st = AlertState()
+    now = time.time()
+    for i in range(10_000):
+        st.last_sent["198.51.100." + str(i % 250) + "-" + str(i)] = now - LAST_SENT_MAX_AGE_S - 60
+    fresh = "203.0.113.7"
+    st.last_sent[fresh] = now - 30
+    st.prune_hourly(now)
+    assert len(st.last_sent) == 1, "stale entries survived the prune"
+    assert fresh in st.last_sent
+    assert st.cooldown_remaining(fresh, cooldown_s=300, now=now) > 0, (
+        "a fresh entry lost its cooldown -- eviction must not cut into the live window")
+    # an hour later the fresh entry is beyond the horizon too and goes
+    st.prune_hourly(now + LAST_SENT_MAX_AGE_S + 1)
+    assert not st.last_sent
