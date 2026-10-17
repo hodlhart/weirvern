@@ -3903,9 +3903,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const groups = [...doc.querySelectorAll("#tabs .tab-group")];
     check("the nav holds at most seven groups", groups.length <= 7 && groups.length >= 2,
           String(groups.length));
-    check("...every group is labelled and carries tabs",
-          groups.every((g) => !!g.querySelector(".tab-group-label") && !!g.querySelector(".tab")),
-          groups.map((g) => (g.querySelector(".tab-group-label") || {}).textContent).join(", "));
+    check("...every group carries tabs and none carries an inert label",
+          groups.every((g) => g.querySelectorAll(".tab").length >= 1)
+          && doc.querySelectorAll("#tabs .tab-group-label").length === 0,
+          groups.map((g) => g.querySelectorAll(".tab").length + " tab(s)").join(", "));
     const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
     check("...and all fourteen tabs survive the regrouping",
           views.length === 14 && new Set(views).size === 14

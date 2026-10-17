@@ -440,12 +440,10 @@ svg.spark rect.cur { fill: var(--accent); }
 .sheet-close { float: right; font-size: 12px; padding: 2px 10px; background: none;
   border: 1px solid var(--border-solid); color: var(--muted); border-radius: 4px; cursor: pointer; }
 .sheet-close:hover { color: var(--fg); }
-/* TH-3: the grouped nav -- one row, labelled clusters, nothing hidden or collapsing. */
+/* TH-3: the grouped nav -- one row, clusters spaced apart, nothing hidden or collapsing. */
 #tabs { display: flex; align-items: center; flex-wrap: nowrap; }
 .tab-group { display: flex; align-items: center; gap: 2px; flex: none; }
 .tab-group + .tab-group { margin-left: 16px; }
-.tab-group-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
-                   color: var(--muted); margin-right: 6px; user-select: none; }
 #crumbs { padding: 5px 18px 7px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 #crumbs.hidden { display: none; }
 .crumb { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
