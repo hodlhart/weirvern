@@ -264,6 +264,12 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
           source: "derived", help: "Resolves only private addresses by default." },
         { key: "intercept_segment", label: "intercept segment", value: "(not set)",
           secret: false, source: "env", help: "The segment the siphon intercept operates on." },
+        { key: "intercept_addr", label: "intercept address", value: "(not set)",
+          secret: false, source: "env",
+          help: "The address the intercept assumes; siphon refuses to start without it." },
+        { key: "intercept_targets", label: "intercept targets", value: "(not set)",
+          secret: false, source: "env",
+          help: "'*' means every host on the segment; empty means nothing is intercepted." },
         // Deliberately ALREADY EQUAL to what the Sonar stub recommends: this row is how the
         // harness proves the staging dedupe (an unchanged recommendation stages nothing).
         { key: "intercept_gateway", label: "intercept gateway", value: "198.51.100.1",
@@ -1953,6 +1959,66 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.discardStage();
   check("discarding Sonar's recommendations clears them like any other staged change",
         Object.keys(H.STAGE.changes).length === 0);
+
+  // ── SONAR'S COUNTS AND THE PLAN'S REQUIREMENTS (2026-10-17) ──────────────────────────────
+  // The live report: "Sonar doesn't work". Measured live: 5 recommendations, 2 staged, and the
+  // panel read "Staged 5" over a two-row list -- the note claimed changes the dedupe had
+  // (correctly) refused to stage. It now counts what actually staged and says so when nothing did.
+  {
+    H.discardStage();
+    const note = doc.getElementById("st-sonar-note");
+    const base = { ok: true, interface: "eth0", segment: "198.51.100.0/24",
+                   address: "198.51.100.5/24", hosts_answered: 3, swept: 254,
+                   free_addresses: ["198.51.100.250"], gateway: "198.51.100.1",
+                   gateway_source: "assumed", notes: [] };
+    const allMatch = Object.assign({}, base,
+      { recommended: { sensor_mode: "loch", intercept_gateway: "198.51.100.1" } });
+    H.stageSonarRecommendations(allMatch);
+    H.renderSonarNote(allMatch);
+    check("a survey whose recommendations ALL match says nothing was staged, not 'staged 2'",
+          /nothing to stage/i.test(note.textContent)
+          && Object.keys(H.STAGE.changes).length === 0,
+          note.textContent.slice(0, 170));
+    const mixed = Object.assign({}, base,
+      { recommended: { sensor_mode: "siphon", intercept_gateway: "198.51.100.1" } });
+    H.stageSonarRecommendations(mixed);
+    H.renderSonarNote(mixed);
+    check("a MIXED survey counts only what staged and names the rest as already in effect",
+          /Staged 1 change/.test(note.textContent)
+          && /already match/.test(note.textContent)
+          && Object.keys(H.STAGE.changes).join(",") === "sensor_mode",
+          note.textContent.slice(0, 220));
+    H.discardStage();
+  }
+  {
+    const modeRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "sensor_mode");
+    const segRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_segment");
+    const addrRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_addr");
+    const tgtRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_targets");
+    const gwRow = SETTINGS_PAYLOAD.groups.sensor.find((r) => r.key === "intercept_gateway");
+    const restore = () => { modeRow.value = "loch"; segRow.value = "(not set)";
+                            addrRow.value = "(not set)"; tgtRow.value = "(not set)";
+                            gwRow.value = "198.51.100.1"; };
+    await H.loadSettings();
+    modeRow.value = "siphon";
+    await H.loadSettings();
+    const req = doc.getElementById("st-sensor-req");
+    check("siphon with an incomplete plan states the REQUIREMENT and names what is missing",
+          !req.classList.contains("hidden") && /incomplete/i.test(req.textContent)
+          && /segment/.test(req.textContent) && /address/.test(req.textContent)
+          && /targets/.test(req.textContent),
+          req.textContent.slice(0, 190));
+    segRow.value = "198.51.100.0/24";
+    addrRow.value = "198.51.100.250";
+    tgtRow.value = "*";
+    await H.loadSettings();
+    check("a complete plan under siphon drops the note", req.classList.contains("hidden"),
+          req.textContent.slice(0, 140));
+    restore();
+    await H.loadSettings();
+    check("loch hides it regardless of the plan", req.classList.contains("hidden"),
+          req.textContent.slice(0, 140));
+  }
 
   // ── TEST RUN: the siphon probe ────────────────────────────────────────────────────────────
   // The button must exist next to Apply with its own "?" help, a click must POST to the test

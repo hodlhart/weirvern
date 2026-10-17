@@ -516,6 +516,44 @@ function settingControl(row, shown, spec) {
   });
 }
 
+/** The value an Apply would write for a key: a staged override, else the running value. */
+function effectiveValue(key) {
+  const staged = STAGE.changes[key];
+  if (staged !== undefined) return String(staged);
+  const row = SETTINGS_ROWS[key];
+  return row ? String(row.value) : "";
+}
+
+/** THE PLAN'S OWN REQUIREMENTS, stated where the plan is edited (2026-10-17).
+ *
+ * Siphon refuses to run without a complete plan, and `SENSOR_MODE=siphon` with fields missing
+ * is a sensor that believes it is intercepting while nothing is diverted. The row help texts
+ * carry the pieces; nothing assembled them into one sentence, which is what an operator
+ * checking "did I set everything?" actually needs. Effective values (staged overrides count),
+ * so the sentence tracks what an Apply would write.
+ */
+function updateSensorRequirements() {
+  const node = document.getElementById("st-sensor-req");
+  if (!node) return;
+  const mode = effectiveValue("sensor_mode");
+  const missing = ["intercept_segment", "intercept_addr", "intercept_gateway", "intercept_targets"]
+    .filter((k) => {
+      const v = effectiveValue(k).trim();
+      return !v || v === "(not set)";
+    });
+  if (mode === "siphon" && missing.length) {
+    const names = { intercept_segment: "segment", intercept_addr: "address",
+                    intercept_gateway: "gateway", intercept_targets: "targets" };
+    node.textContent = "Siphon is set but the plan is incomplete (missing: "
+      + missing.map((k) => names[k] || k).join(", ")
+      + ") — the intercept refuses to run until every field is set. Sonar can fill them in.";
+    node.classList.remove("hidden");
+  } else {
+    node.textContent = "";
+    node.classList.add("hidden");
+  }
+}
+
 function stageChange(key, value, original) {
   // A new edit supersedes the previous apply's message: leaving a stale "saved" line next to a
   // fresh staged change would claim a state that no longer holds.
@@ -548,6 +586,8 @@ function renderStage() {
   if (count) count.textContent = keys.length ? `${keys.length} staged` : "";
   if (apply) apply.disabled = keys.length === 0;
   if (discard) discard.disabled = keys.length === 0;
+  // The sensor panel's requirement sentence tracks staged edits too (see the function).
+  updateSensorRequirements();
 
   list.replaceChildren();
   if (!keys.length) {
@@ -797,11 +837,29 @@ function renderSonarNote(res) {
   for (const n of (res.notes || [])) {
     note.appendChild(el("div", { class: "sonar-note-item", text: "• " + n }));
   }
-  const staged = Object.keys((res.recommended) || {});
-  if (staged.length) {
-    note.appendChild(el("div", { class: "sonar-note-item",
-      text: `Staged ${staged.length} recommendation(s) as pending changes below — review, `
-        + `edit or discard them, then Apply. Nothing has been written yet.` }));
+  // HONEST COUNTS (live report 2026-10-17). This used to claim one staged change PER
+  // RECOMMENDATION -- but staging goes through the same dedupe as the manual controls, so a
+  // recommendation that already matches the running value stages NOTHING. Measured live: 5
+  // recommendations, 2 staged, and the panel read "Staged 5" over a two-row list. Say what
+  // actually happened, and say it plainly when nothing did.
+  const rec = (res.recommended) || {};
+  const keys = Object.keys(rec);
+  const changed = keys.filter((k) => {
+    const row = SETTINGS_ROWS[k];
+    return String(rec[k]) !== (row ? String(row.value) : "");
+  });
+  if (keys.length) {
+    if (changed.length) {
+      const same = keys.length - changed.length;
+      note.appendChild(el("div", { class: "sonar-note-item",
+        text: `Staged ${changed.length} change(s) as pending changes below`
+          + (same ? ` (${same} recommendation(s) already match what is running and were not `
+                    + `staged again)` : "")
+          + ` — review, edit or discard them, then Apply. Nothing has been written yet.` }));
+    } else {
+      note.appendChild(el("div", { class: "sonar-note-item",
+        text: "Every recommendation already matches what is running — nothing to stage." }));
+    }
   }
 }
 
