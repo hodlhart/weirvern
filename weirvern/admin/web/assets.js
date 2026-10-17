@@ -385,7 +385,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => { toggleTracked(r.edge.source); },
-    colour: () => "#4ea1ff",
+    colour: () => "#4797ff",
     format: (v) => fmtBytes(v),
     title: (r) => `track ${r.edge.source}`,
   });
@@ -397,7 +397,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => toggleTracked(r.node.id),
-    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "#5ec26a" : "#8899aa"),
+    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "#37be5f" : "#8899aa"),
     format: (v) => `${v} peers`,
     title: (r) => (ASSETS_STATE.tracked.includes(r.node.id)
       ? `stop tracking ${r.node.id}` : `track ${r.node.id}`),
@@ -849,7 +849,7 @@ function drawGraph(host, nodes, edges, truncated) {
     });
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
-      fill: selected ? "#5ec26a" : "#4ea1ff",
+      fill: selected ? "#37be5f" : "#4797ff",
       opacity: selected ? "1" : "0.78",
     }));
     // Labels only when asked for, or for a selected node: 250 labels in a circle is a smear.
@@ -886,8 +886,8 @@ function drawGraph(host, nodes, edges, truncated) {
   if (legend) {
     legend.replaceChildren();
     const items = [
-      ["#4ea1ff", "host (size = bytes)"],
-      ["#5ec26a", "tracked"],
+      ["#4797ff", "host (size = bytes)"],
+      ["#37be5f", "tracked"],
       ["edge width", "log of bytes"],
     ];
     if (layout.rings.length) {
@@ -1178,7 +1178,7 @@ function loadFlowDetail(params) {
       }, {
         onClick: (r) => openHost(r.row.src_addr),
         format: (v) => fmtBytes(v),
-        colour: () => "#4ea1ff",
+        colour: () => "#4797ff",
         title: (r) => `drill into ${r.row.src_addr}`,
       });
       table.replaceChildren(...rows.map((r) => {

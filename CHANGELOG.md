@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.3 — 2026-10-17
+
+THE VISIBLE LAYER — the theme becomes unmistakable. Filled accent buttons (a primary action
+is a blue button now, not an outlined one), status chips wear soft wash fills instead of
+outlines, severity tiles are raised and rounded, headers/nav/tables breathe (bigger type,
+more space, hover states), the login card floats like every other surface, and the chart
+series are retinted onto the palette. Phase 1 changed the tokens; this pass changes what the
+eye lands on.
+
 ## 0.14.2 — 2026-10-17
 
 THE VISUAL THEME, PHASE 1 — the console stops looking like a code host. Palette: one neutral

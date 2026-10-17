@@ -24,13 +24,13 @@
 // log families. Kept separate from MODEL_COLORS so a colour change to one cannot silently
 // recolour the other.
 const SOC_COLORS = {
-  conn: "#4ea1ff", dns: "#5ec26a", ssl: "#e0a34a", http: "#c07ad6",
-  ssh: "#e05c5c", notice: "#8899aa",
-  flows: "#4ea1ff", windows: "#5ec26a", anomalies: "#e05c5c", models: "#c07ad6",
+  conn: "#4797ff", dns: "#37be5f", ssl: "#e79613", http: "#a78bfa",
+  ssh: "#ee6368", notice: "#8899aa",
+  flows: "#4797ff", windows: "#37be5f", anomalies: "#ee6368", models: "#a78bfa",
 };
 
-const SOC_PALETTE = ["#4ea1ff", "#5ec26a", "#e0a34a", "#c07ad6", "#e05c5c", "#8899aa",
-                     "#6fd3c7", "#d98cb3", "#a8b545", "#7f8cff"];
+const SOC_PALETTE = ["#4797ff", "#37be5f", "#e79613", "#a78bfa", "#ee6368", "#8899aa",
+                     "#53c4d4", "#d98cb3", "#a8b545", "#7f8cff"];
 
 /** A panel that states which of the three states it is in, in words. */
 function socPanel(hostId, res, emptyText) {
