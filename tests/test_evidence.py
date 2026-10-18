@@ -303,7 +303,14 @@ def test_logo_assets_are_shipped_and_served():
     assert "/favicon.ico" in STATIC_FILES, "no favicon route; browsers 404 on every load"
     assert (STATIC_DIR / STATIC_FILES["/favicon.ico"][0]).exists(), "favicon missing"
     html = (STATIC_DIR / "index.html").read_text()
-    assert 'src="/logo.svg"' in html, "the header does not use the vector mark"
+    # THE HEADER WEARS THE README'S MARK (operator, 2026-10-18: "the top left icon on the
+    # platform should be the same as the one in the readme"). It is the supplied raster emblem,
+    # cropped above the wordmark -- the header already carries the word "Weirvern" beside it, so
+    # a second wordmark at 28px would be an illegible smudge. The geometric vector mark stays
+    # served (and still parses) but is no longer the chrome's identity: one brand, one source.
+    assert 'src="/logo.png"' in html, "the header does not use the README's mark"
+    assert 'src="/logo.svg"' not in html, "the retired geometric mark is still in the chrome"
+    assert 'href="/logo.png"' in html, "the tab icon is not the same mark as the header"
     # AN SVG THAT DOES NOT PARSE RENDERS AS THE BROKEN-IMAGE GLYPH (found by looking at the
     # rendered page: an ASCII double hyphen inside a comment makes the XML malformed). The
     # vectors must parse as XML, every byte of them.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.2 — 2026-10-18
+
+THE CONSOLE WEARS THE README'S MARK.
+
+- The header, the sign-in gate, the forced-password gate and the tab icon now use the supplied
+  raster emblem from `docs/logo.png`, cropped above the wordmark. The header already renders the
+  name beside it, so a second wordmark at 28px would only be an illegible smudge. The asset is
+  180×180 (Apple's touch-icon size) and is drawn at 28/36 CSS pixels.
+- The geometric "flow through a gate" SVG is retired from the chrome — it was a placeholder for
+  the real mark, not a second identity. The file stays served so no route breaks; the pins that
+  required it in the header are inverted, and a new harness check requires the README mark in
+  every slot.
+
 ## 0.17.1 — 2026-10-18
 
 THREE FIXES ON THE WEIRLINGS TAB, all from the operator's own reading of the live fleet.

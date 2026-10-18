@@ -3560,9 +3560,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the title is the name, not an emoji",
           !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(doc.title) && /Weirvern/.test(doc.title),
           doc.title);
-    check("the mark is a vector now",
-          doc.querySelector('link[rel="icon"]').getAttribute("href") === "/favicon.svg" &&
-          [...doc.querySelectorAll("img.mark")].every((i) => i.getAttribute("src") === "/logo.svg"));
+    // THE MARK WEARS THE README'S ART (operator, 2026-10-18: "the top left icon on the platform
+    // should be the same as the one in the readme"). Every mark slot -- the tab icon and each
+    // img.mark (header, sign-in, forced-password gate) -- points at the supplied raster emblem.
+    check("the mark is the README's mark everywhere",
+          doc.querySelector('link[rel="icon"]').getAttribute("href") === "/logo.png" &&
+          [...doc.querySelectorAll("img.mark")].every((i) => i.getAttribute("src") === "/logo.png"),
+          [...doc.querySelectorAll("img.mark")].map((i) => i.getAttribute("src")).join(","));
   }
 
   // ── THE AUTO-BLOCK IS LOUD AND PAUSABLE (BF-3) ──────────────────────────────────────────────
