@@ -69,7 +69,11 @@ def test_the_payload_attaches_evidence_and_remote_zeek_is_unknown():
     src = (PY / "admin" / "web.py").read_text()
     seg = src.split("def _weirlings(self, query: dict) -> None:", 1)[1].split("def _weirlings_", 1)[0]
     assert "flow_evidence(" in seg and "flow_series(" in seg and "zeek_evidence(" in seg
-    assert 'row["flow_series"] = series.get(addr) or []' in seg
+    # A row's exporter is its own address; the LOCAL sensor's exporter writes loopback and its
+    # heartbeat carries none, so the local row looks up the loopback samplers.
+    assert 'exporters[sid] = [addr]' in seg
+    assert '["127.0.0.1", "::1"]' in seg
+    assert 'row["flow_series"] = merged_series' in seg
     assert "only the hub runs Zeek" in seg, \
         "a remote weirling's Zeek must be unknown, never falsely dark"
 
