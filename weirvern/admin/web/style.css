@@ -158,7 +158,13 @@ main { padding: 24px; max-width: 1500px; margin: 0 auto; }
 .view { display: none; }
 .view.active { display: block; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px;
+  /* A GRID TRACK MAY NOT BE WIDENED BY ITS CONTENT (US-D2, found on a phone). `1fr` means
+   * minmax(auto, 1fr), so a wide child -- a raw-record table -- pushed the track to 904px and
+   * the whole page scrolled sideways. The tables belong to a scroll container inside the card;
+   * the card may not grow to fit them. */
+  grid-auto-columns: minmax(0, 1fr); }
+.grid > * { min-width: 0; }
 .card {
   background: var(--surface); border: 0; border-radius: 8px;
   padding: 22px; margin-bottom: 18px; box-shadow: var(--shadow-low);
@@ -1025,7 +1031,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
   .status { flex-wrap: wrap; gap: 8px; font-size: 12px; }
   h1 { font-size: 15px; }
   .card { padding: 12px; margin-bottom: 12px; }
-  .grid { grid-template-columns: 1fr; gap: 12px; }
+  .grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .grid2 { gap: 8px 12px; }
 
   /* 16px FORM CONTROLS. iOS Safari zooms the whole page when a focused field's text is under
