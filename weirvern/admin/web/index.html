@@ -137,6 +137,7 @@
   <div class="tab-group" data-group="operations">
     <button class="tab active" data-view="health">Health</button>
     <button class="tab" data-view="anomalies">Anomalies</button>
+    <button class="tab" data-view="logs">Logs</button>
   </div>
   <div class="tab-group" data-group="network">
     <button class="tab" data-view="network">Network</button>
@@ -186,6 +187,40 @@
     no randomness and the tick count is fixed, so the same window of data settles to the same
     map and the comparable-view property survives the layout change.
   -->
+  <section id="view-logs" class="view">
+    <!-- THE LOGS TAB (the operator, 2026-10-18): everything that changed the system and
+         everything wrong with it, in ONE place. The write trail left the Weirlings and
+         Settings cards; the self-audit left Health -- a log is read where logs live. -->
+    <div class="card">
+      <h2>Setting changes <span class="muted">who changed what, why, and when</span>
+        <button class="info-btn" data-info="lg-trail-info" aria-label="what the write trail is"
+                aria-expanded="false" title="what the write trail is">i</button></h2>
+      <div class="info-text hidden" id="lg-trail-info">
+  <p><strong>What it is.</strong> The append-only record of writes: sensor plans, revokes, settings applies and reverts — who, what, why, when, newest first.</p>
+  <p><strong>What writes it.</strong> Every write path, beside the write itself.</p>
+  <p><strong>Last changed.</strong> Each write appends a row.</p>
+  <p><strong>Where to see it.</strong> Filter by scope or action; a settings row's trail link lands here.</p>
+</div>
+      <div id="lg-changes"></div>
+    </div>
+    <div class="card">
+      <h2>Issues <span class="muted">the pipeline, checked against its own promises</span>
+        <button class="info-btn" data-info="lg-issues-info" aria-label="what the issues list is"
+                aria-expanded="false" title="what the issues list is">i</button></h2>
+      <div class="info-text hidden" id="lg-issues-info">
+  <p><strong>What it is.</strong> Silent sensors, expired rules, rules that fire without being acted on, detectors nobody owns — each finding names its fix, and the fix is a button.</p>
+  <p><strong>What writes it.</strong> The pipeline's own checks, run when this tab is read.</p>
+  <p><strong>Last changed.</strong> Re-read each time the tab opens or the auto-refresh fires.</p>
+  <p><strong>Where to see it.</strong> A check that could not run says so — 'nothing found' and 'the check did not run' never look alike here.</p>
+</div>
+      <table id="audit-table">
+        <thead><tr><th>what</th><th>detail</th><th>how long</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted" id="audit-note"></p>
+    </div>
+  </section>
+
   <section id="view-network" class="view">
     <div class="card">
       <h2>Connection graph <button class="info-btn" data-info="nw-info" aria-label="how to read this map, and what clicking does" aria-expanded="false" title="how to read this map, and what clicking does">i</button> <span class="muted" id="nw-window"></span></h2>
@@ -830,17 +865,6 @@
 
   <!-- ── Health ───────────────────────────────────────────────────────── -->
   <section id="view-health" class="view active">
-    <!-- THE SELF-AUDIT (BF-13): the pipeline checked against its own promises. Every finding
-         names its fix and the fix is one click -- the fix sits next to the finding, which is
-         the whole point (Datadog monitor-quality, Splunk content management). -->
-    <div class="card">
-      <h2>Self-audit <span class="muted">the pipeline, checked against its own promises</span></h2>
-      <table id="audit-table">
-        <thead><tr><th>what</th><th>detail</th><th>how long</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <p class="muted" id="audit-note"></p>
-    </div>
     <div class="card">
       <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks and what the audit means" aria-expanded="false" title="what this page checks and what the audit means">i</button> <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
@@ -1199,32 +1223,6 @@
     <div class="card sheet hidden" id="wl-detail-card" tabindex="-1">
       <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
         <button id="wl-sheet-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
-      <div class="controls sonar-row hidden" id="wl-runtime">
-        <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
-        <button id="st-sonar" type="button">Sonar</button>
-        <button class="setting-help-btn" id="st-sonar-help" type="button"
-                aria-label="explain Sonar" aria-expanded="false"
-                title="what Sonar does">i</button>
-        <button id="st-test" type="button">Test run (30s)</button>
-        <button class="setting-help-btn" id="st-test-help" type="button"
-                aria-label="explain the test run" aria-expanded="false"
-                title="what the test run does">i</button>
-      </div>
-      <div id="st-sonar-note" class="muted sonar-note"></div>
-      <div id="st-sonar-help-text" class="setting-help hidden">
-        Sonar surveys the network this sensor's capture interface is on — it reads the
-        segment, sends one ARP sweep to find which addresses answer and which are free, checks
-        the gateway — and reports what it measured. Nothing is written; enabling siphon uses
-        what Sonar found when it runs.
-      </div>
-      <div id="st-test-note" class="muted sonar-note"></div>
-      <div id="st-test-help-text" class="setting-help hidden">
-        A test run switches the sensor to siphon mode for 30 seconds, lets the worker run the
-        real intercept, then switches back to loch — the mappings are restored on the worker's
-        normal shutdown path. It needs the siphon capabilities on the sensor node and a
-        complete plan. The result below says which hosts were intercepted, and that the mode
-        was put back.
-      </div>
       <div id="wl-detail-body"></div>
       <!-- THE SENSOR'S OWN INTERCEPT PLAN (loch/siphon + what to intercept). Shown for every
            REGISTERED sensor except this hub's own: the plan travels to the sensor in its own
@@ -1256,10 +1254,6 @@
   <p><strong>Where to see it.</strong> The sensor's own state column, and its log.</p>
 </div>
       </div>
-      <details id="wl-advanced">
-        <summary>Advanced</summary>
-        <div id="st-sensor" class="grid-inline"></div>
-      </details>
       <div class="info-text hidden" id="wl-detail-info">
   <p><strong>What it is.</strong> One weirling's live state, its NICs, and the actions that change its fleet membership.</p>
   <p><strong>What writes it.</strong> Heartbeats from the sensor, plus the registrations held here.</p>
@@ -1275,20 +1269,6 @@
         <button id="wl-detail-close">Close</button>
         <span id="wl-detail-note" class="muted"></span>
       </div>
-    </div>
-
-    <!-- US-10: the write trail, where the fleet's own writes land. -->
-    <div class="card">
-      <h2>Write trail <span class="muted">who changed what, why, and when</span>
-        <button class="info-btn" data-info="wl-audit-info" aria-label="what the write trail is"
-                aria-expanded="false" title="what the write trail is">i</button></h2>
-      <div class="info-text hidden" id="wl-audit-info">
-  <p><strong>What it is.</strong> The append-only record of writes: sensor plans, revokes, settings applies and reverts — who, what, why, when, newest first. Nothing here is edited or deleted.</p>
-  <p><strong>What writes it.</strong> Every write path, beside the write itself.</p>
-  <p><strong>Last changed.</strong> Each write appends a row.</p>
-  <p><strong>Where to see it.</strong> Here and on Settings; filter by scope or action.</p>
-</div>
-      <div id="wl-audit"></div>
     </div>
   </section>
 
@@ -1388,12 +1368,44 @@
       <div id="st-detect" class="grid-inline"></div>
     </div>
 
-<div class="info-text hidden" id="st-sensor-info">
-  <p><strong>What it is.</strong> What this hub's capture is doing right now, from the sensor's own heartbeat.</p>
-  <p><strong>What writes it.</strong> The sensor daemon on the box that runs it.</p>
-  <p><strong>Last changed.</strong> Every heartbeat.</p>
-  <p><strong>Where to see it.</strong> To change what a sensor runs, use its Weirling settings — a runtime can only be changed on the box that runs it.</p>
+    <div class="card">
+      <h2>Sensor <span class="muted">this hub's own capture</span>
+        <button class="info-btn" data-info="st-sensor-info" aria-label="what this card controls"
+                aria-expanded="false" title="what this card controls">i</button></h2>
+      <div class="info-text hidden" id="st-sensor-info">
+  <p><strong>What it is.</strong> This hub's own capture: its mode and the settings its daemon reads. Every OTHER sensor's plan lives in its own Weirling sheet — this card only ever writes the box this console runs beside.</p>
+  <p><strong>What writes it.</strong> The settings plan (Apply), and Sonar or the test run through the same write gates.</p>
+  <p><strong>Last changed.</strong> Each Apply; the fleet row's reported mode is what the sensor says it is running.</p>
+  <p><strong>Where to see it.</strong> The Weirlings tab for what it reports, this card for what it is configured to do.</p>
 </div>
+      <div class="controls sonar-row">
+        <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
+        <button id="st-sonar" type="button">Sonar</button>
+        <button class="setting-help-btn" id="st-sonar-help" type="button"
+                aria-label="explain Sonar" aria-expanded="false"
+                title="what Sonar does">i</button>
+        <button id="st-test" type="button">Test run (30s)</button>
+        <button class="setting-help-btn" id="st-test-help" type="button"
+                aria-label="explain the test run" aria-expanded="false"
+                title="what the test run does">i</button>
+      </div>
+      <div id="st-sonar-note" class="muted sonar-note"></div>
+      <div id="st-sonar-help-text" class="setting-help hidden">
+        Sonar surveys the network this sensor's capture interface is on — it reads the
+        segment, sends one ARP sweep to find which addresses answer and which are free, checks
+        the gateway — and reports what it measured. Nothing is written; enabling siphon uses
+        what Sonar found when it runs.
+      </div>
+      <div id="st-test-note" class="muted sonar-note"></div>
+      <div id="st-test-help-text" class="setting-help hidden">
+        A test run switches the sensor to siphon mode for 30 seconds, lets the worker run the
+        real intercept, then switches back to loch — the mappings are restored on the worker's
+        normal shutdown path. It needs the siphon capabilities on the sensor node and a
+        complete plan. The result below says which hosts were intercepted, and that the mode
+        was put back.
+      </div>
+      <div id="st-sensor" class="grid-inline"></div>
+    </div>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
          the blast radius comes from the same code that will perform the write, not from a second
@@ -1432,20 +1444,6 @@
         <button id="sl-bl-add">Add</button>
         <span id="sl-bl-note" class="muted"></span>
       </div>
-    </div>
-
-    <!-- US-10: the same trail, beside the settings it mainly records. -->
-    <div class="card">
-      <h2>Write trail <span class="muted">who changed what, why, and when</span>
-        <button class="info-btn" data-info="st-audit-info" aria-label="what the write trail is"
-                aria-expanded="false" title="what the write trail is">i</button></h2>
-      <div class="info-text hidden" id="st-audit-info">
-  <p><strong>What it is.</strong> The append-only record of writes: sensor plans, revokes, settings applies and reverts — who, what, why, when, newest first. Nothing here is edited or deleted.</p>
-  <p><strong>What writes it.</strong> Every write path, beside the write itself.</p>
-  <p><strong>Last changed.</strong> Each write appends a row.</p>
-  <p><strong>Where to see it.</strong> Here and on Settings; filter by scope or action.</p>
-</div>
-      <div id="st-audit"></div>
     </div>
 </section>
 </main>

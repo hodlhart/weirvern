@@ -571,10 +571,6 @@ async function openWeirling(sensorId) {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   body.replaceChildren();
 
-  // THE RUNTIME CONTROLS: only where they mean something (a runtime can only be changed on
-  // the box that runs the sensor); hidden -- never lying -- for every other selection.
-  const runtime = document.getElementById("wl-runtime");
-  if (runtime) runtime.classList.toggle("hidden", !r.local);
   // THE SENSOR'S OWN PLAN: for every REGISTERED weirling except this hub's own. An undeclared
   // sensor has nothing a plan could belong to (adopt it first), and this hub's own sensor is
   // configured through the Settings tab's ConfigMap -- the two mechanisms are different on
@@ -585,21 +581,6 @@ async function openWeirling(sensorId) {
     planBox.classList.toggle("hidden", !showPlan);
     if (showPlan) wlRenderPlan(r);
     else { WL_PLAN.sensor_id = ""; WL_PLAN.changes = {}; WL_PLAN.survey = null; }
-  }
-  const wlSel = document.getElementById("wl-mode-select");
-  if (wlSel) {
-    wlSel.value = (String(r.reported_mode || "").toLowerCase() === "siphon")
-      ? "siphon" : "loch";
-  }
-  const wlSonarNote = document.getElementById("st-sonar-note");
-  if (wlSonarNote) wlSonarNote.textContent = "";
-  const wlTestNote = document.getElementById("st-test-note");
-  if (wlTestNote) wlTestNote.textContent = "";
-  const wlAdv = document.getElementById("wl-advanced");
-  if (wlAdv) wlAdv.open = false;   // each sensor's panel starts collapsed
-  if (r.local && !document.querySelector("#st-sensor .setting")) {
-    // The Advanced grid is filled by the settings machinery; open it on demand.
-    try { await loadSettings(); } catch (_e) { /* the grid simply stays empty */ }
   }
 
   // The findings FIRST, because they are the reason the operator opened this. A state word alone
@@ -826,7 +807,9 @@ async function wlApplyMode() {
   const sel = document.getElementById("wl-mode-select");
   if (!sel || sel.disabled) return;
   const want = sel.value === "siphon" ? "siphon" : "loch";
-  const prev = (wlDetail && String(wlDetail.reported_mode || "").toLowerCase() === "siphon")
+  // The select lives on the Settings page now; the current value is the settings row's.
+  const prevRow = SETTINGS_ROWS["sensor_mode"];
+  const prev = String(prevRow ? prevRow.value : "").toLowerCase() === "siphon"
     ? "siphon" : "loch";
   sel.disabled = true;
   try {
@@ -842,17 +825,16 @@ async function wlApplyMode() {
       stageChange("sensor_mode", want, row ? String(row.value) : "");
     }
     if (!Object.keys(STAGE.changes).length) {
-      const n = document.getElementById("wl-detail-note");
+      const n = document.getElementById("st-sonar-note");
       if (n) n.textContent = "Nothing to change — already " + want + ".";
       return;
     }
     await applyStage(true);
     const msg = LAST_APPLY.text || "applied.";
-    if (wlDetail && wlDetail.sensor_id) {
-      await openWeirling(wlDetail.sensor_id).catch(() => {});
-    }
-    // AFTER the re-open: it clears the note while rebuilding the panel.
-    const note2 = document.getElementById("wl-detail-note");
+    // The settings page shows the result where the control lives; the rows re-read after
+    // Apply, so the select's value follows the server rather than the click.
+    await loadSettings().catch(() => {});
+    const note2 = document.getElementById("st-sonar-note");
     if (note2) note2.textContent = msg;
   } finally {
     sel.disabled = false;

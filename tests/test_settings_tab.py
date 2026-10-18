@@ -282,27 +282,28 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert '"/api/settings"' in src, "there is no /api/settings route"
 
 
-def test_the_sensor_controls_live_in_the_weirlings_drill_down():
-    """The operator, 2026-10-17: "Pull weirling settings out of settings tab... I want the
-    weirlings tab to have each sensor its nics, a sonar button, and a mode selection. And
-    status." This SUPERSEDES the 2026-10-16 "settings page behind a selector" design.
-
-    The honest boundary is unchanged -- a runtime can only be changed on the box that runs the
-    sensor -- so the drill-down shows the controls for the LOCAL row (the runtime's own box)
-    and hides them, rather than lying, for every other selection.
+def test_the_sensor_controls_live_on_settings_and_nowhere_else():
+    """The operator, 2026-10-18: "Weirling control is still conflated... duplicate settings and
+    advanced. It's not clean." The 2026-10-17 arrangement put a runtime row, a Sonar button and
+    a second copy of the sensor grid inside the weirling sheet -- and left Settings' Sensor
+    card empty, with its grid rendering into the sheet's "Advanced". ONE control surface per
+    value: the sensor's own settings, its mode, Sonar and the test run live on Settings; the
+    sheet keeps status, NICs, membership and (for a remote sensor) its plan.
     """
     index = (WEB / "index.html").read_text()
     settings = index.split('id="view-settings"')[1].split("</section>")[0]
     weirlings = index.split('id="view-weirlings"')[1].split("</section>")[0]
-    for element in ("st-sensor", "st-sonar", "st-test", "wl-mode-select", "wl-runtime"):
-        assert f'id="{element}"' in weirlings, f"#{element} is not in the Weirlings view"
-        assert f'id="{element}"' not in settings, (
-            f"#{element} is still mounted on the Settings page; the panel moved to the "
-            f"sensor's drill-down"
+    for element in ("st-sensor", "st-sonar", "st-test", "wl-mode-select"):
+        assert f'id="{element}"' in settings, f"#{element} is not on the Settings page"
+        assert f'id="{element}"' not in weirlings, (
+            f"#{element} is still mounted in the Weirlings view; the control surface was "
+            f"supposed to consolidate onto Settings"
         )
+    assert 'id="wl-advanced"' not in index, "the duplicate Advanced disclosure survives"
+    assert 'id="wl-runtime"' not in index, "the sheet's runtime wrapper survives"
     assert 'id="st-wl-select"' not in settings, "the scrapped weirling selector survives"
     assert 'id="wl-id"' not in index, "the standalone register card survives"
-    # The NICs must render per sensor -- the operator asked for them by name.
+    # The NICs must still render per sensor -- the operator asked for them by name.
     assert "NICs" in (WEB / "weirlings.js").read_text()
 
 

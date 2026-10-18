@@ -3616,9 +3616,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
   }
 
-  // ── THE PIPELINE AUDITS ITSELF (BF-13) ──────────────────────────────────────────────────────
+  // ── THE PIPELINE AUDITS ITSELF (BF-13; now read on the Logs tab) ────────────────────────────
   {
-    H.showView("health");
+    H.showView("logs");
     await new Promise((r) => setTimeout(r, 350));
     const auditRows = [...doc.querySelectorAll("#audit-table tbody tr")];
     const auditText = auditRows.map((r) => r.textContent).join(" || ");
@@ -3908,10 +3908,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && doc.querySelectorAll("#tabs .tab-group-label").length === 0,
           groups.map((g) => g.querySelectorAll(".tab").length + " tab(s)").join(", "));
     const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
-    check("...and all fourteen tabs survive the regrouping",
-          views.length === 14 && new Set(views).size === 14
-          && ["health", "anomalies", "network", "netflow", "discover", "dns", "zeek", "identity",
-              "sluice", "blocked", "weirlings", "models", "host", "settings"]
+    check("...and all fifteen tabs survive the regrouping",
+          views.length === 15 && new Set(views).size === 15
+          && ["health", "anomalies", "logs", "network", "netflow", "discover", "dns", "zeek",
+              "identity", "sluice", "blocked", "weirlings", "models", "host", "settings"]
              .every((v) => views.includes(v)),
           views.join(","));
     check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
@@ -3929,7 +3929,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           crumbs.textContent.trim());
     check("...and the nav stays on screen inside the detail view",
           !doc.getElementById("tabs").classList.contains("hidden")
-          && doc.querySelectorAll("#tabs .tab").length === 14);
+          && doc.querySelectorAll("#tabs .tab").length === 15);
     const back = [...crumbs.querySelectorAll("button.crumb")].find((b) => /Weirlings/.test(b.textContent));
     check("...with a real, clickable way back out of the drill", !!back);
     if (back) back.click();
@@ -4942,74 +4942,104 @@ check("high capture loss is called out in the fleet",
   }
 }
 
-// ── THE PER-SENSOR PANEL: status, NICs, mode, Sonar (operator restructure, 2026-10-17) ─────
-// "Pull weirling settings out of settings tab... I want the weirlings tab to have each sensor
-// its nics, a sonar button, and a mode selection. And status."
+// ── ONE PANEL, ONE JOB: the weirling sheet is STATUS + MEMBERSHIP + ITS OWN PLAN ─────────────
+// The operator, 2026-10-18: "Weirling control is still conflated... duplicate settings and
+// advanced. It's not clean." The sheet had grown a runtime row (mode/Sonar/test run), a
+// second copy of the sensor settings grid under "Advanced", and the settings page's own
+// state notes. All of it is Settings' -- ONE control surface per value, the rule the console
+// already lives by. The sheet keeps what only a sensor can answer: its state, its NICs, the
+// actions that change its fleet membership, and (for a remote registered sensor) its plan.
 {
-  check("the Weirling settings card is gone from the Settings tab",
-        !doc.getElementById("st-wl-select") && !doc.getElementById("wl-sensor-config"),
-        "the scrapped card's elements are still in the document");
-  check("the standalone Register-a-weirling card is gone (the drill-down registers)",
-        !doc.getElementById("wl-id") && !!doc.getElementById("wl-detail-register"),
-        "the register path must stay reachable from the sensor's own panel");
-  check("the drill-down's Advanced disclosure holds the sensor grid",
-        !!doc.getElementById("wl-advanced")
-        && !!doc.querySelector("#wl-advanced #st-sensor"));
-
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const openRow = (id) => [...doc.querySelectorAll("#wl-table button")]
     .find((b) => (b.textContent || "") === id);
+
+  // THE SETTINGS SENSOR CARD really holds the controls (they are not orphaned by the move).
+  H.showView("settings");
+  await H.loadSettings();
+  await sleep(300);
+  const sensorGrid = doc.querySelector("#view-settings #st-sensor");
+  check("Settings' Sensor card holds the sensor's own settings grid",
+        !!sensorGrid && sensorGrid.querySelectorAll(".setting").length >= 1,
+        sensorGrid ? `${sensorGrid.querySelectorAll(".setting").length} row(s)` : "no grid");
+  check("...and the mode, Sonar and test-run controls sit IN that card",
+        !!doc.querySelector("#view-settings .sonar-row #wl-mode-select")
+        && !!doc.querySelector("#view-settings .sonar-row #st-sonar")
+        && !!doc.querySelector("#view-settings .sonar-row #st-test"));
+  const modeSel = doc.getElementById("wl-mode-select");
+  check("...the mode selector carries the configured mode, disabled for viewers only",
+        !!modeSel && modeSel.value === "loch", modeSel ? modeSel.value : "no select");
+
+  // THE MODE CHANGE still runs the real path: siphon surveys first, opens the echo, applies.
+  // (A killed selector FAILS the checks below rather than crashing the run -- crash-safe.)
+  const t0 = POSTED.length;
+  H.SONAR_STATE.result = null;
+  if (modeSel) {
+    modeSel.value = "siphon";
+    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  for (let i = 0; i < 150 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
+    await sleep(20);
+  }
+  check("going in-path opens the destructive echo", await confirmEcho("the cut point is on purpose"));
+  for (let i = 0; i < 100 && !POSTED.slice(t0).some((r) => r.url.includes("/api/settings/apply")); i++) {
+    await sleep(20);
+  }
+  const sonarPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/sonar"));
+  const applyPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/apply"));
+  check("selecting siphon surveys first (no survey this session), then applies",
+        !!sonarPost && !!applyPost,
+        "posts since the select: " + POSTED.slice(t0).map((r) => r.url).join(","));
+  check("the applied changes carry the mode and the survey's plan",
+        !!applyPost && /"sensor_mode":"siphon"/.test(applyPost.body || "")
+        && /"intercept_segment":"198\.51\.100\.0\/24"/.test(applyPost.body || ""),
+        (applyPost || {}).body || "no apply");
+
+  // THE SHEET: no settings machinery of any kind, and no second copy of anything.
+  H.showView("weirlings");
+  await H.loadWeirlings();
   const localBtn = openRow("edge-alive");
-  const remoteBtn = openRow("edge-stopped");
   if (localBtn) {
     localBtn.click();
     for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
          .includes("reporting normally"); i++) {
-      await new Promise((r) => setTimeout(r, 20));
+      await sleep(20);
     }
-    check("the local sensor's panel shows the runtime controls",
-          !doc.getElementById("wl-runtime").classList.contains("hidden"),
-          "mode + Sonar must be reachable for the sensor this hub runs");
-    check("the mode selector carries the sensor's reported mode",
-          doc.getElementById("wl-mode-select").value === "loch",
-          doc.getElementById("wl-mode-select").value);
-    check("the panel shows the sensor's NICs from its own report",
-          /eth1, eth2/.test(doc.getElementById("wl-detail-body").textContent || ""),
-          doc.getElementById("wl-detail-body").textContent.slice(0, 200));
-    const t0 = POSTED.length;
-    H.SONAR_STATE.result = null;
-    const modeSel = doc.getElementById("wl-mode-select");
-    modeSel.value = "siphon";
-    modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
-    // BF-9: going in-path opens the echo; the check confirms it (with its reason) and the
-    // apply then carries that reason into the write.
-    for (let i = 0; i < 150 && !doc.querySelector("#modal-body .dest-confirm"); i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    check("going in-path opens the destructive echo", await confirmEcho("the cut point is on purpose"));
-    for (let i = 0; i < 100 && !POSTED.slice(t0).some((r) => r.url.includes("/api/settings/apply")); i++) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    const sonarPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/sonar"));
-    const applyPost = POSTED.slice(t0).find((r) => r.url.includes("/api/settings/apply"));
-    check("selecting siphon surveys first (no survey this session), then applies",
-          !!sonarPost && !!applyPost,
-          "posts since the select: " + POSTED.slice(t0).map((r) => r.url).join(","));
-    check("the applied changes carry the mode and the survey's plan",
-          !!applyPost && /"sensor_mode":"siphon"/.test(applyPost.body || "")
-          && /"intercept_segment":"198\.51\.100\.0\/24"/.test(applyPost.body || ""),
-          (applyPost || {}).body || "no apply");
+    const sheet = doc.getElementById("wl-detail-card");
+    check("the weirling sheet carries NO settings controls (their home is Settings)",
+          !sheet.querySelector("#st-sensor") && !sheet.querySelector(".sonar-row")
+          && !sheet.querySelector("#wl-mode-select") && !sheet.querySelector("#st-sonar")
+          && !sheet.querySelector("#st-test"),
+          "a settings control is still in the sheet");
+    check("...and no Advanced disclosure doubling the settings page",
+          !doc.getElementById("wl-advanced"));
+    check("...while it still answers what a sensor can: state and its own NICs",
+          /reporting normally/.test(sheet.textContent || "")
+          && /eth1, eth2/.test(doc.getElementById("wl-detail-body").textContent || ""),
+          (doc.getElementById("wl-detail-body").textContent || "").slice(0, 160));
+    check("...and keeps its membership actions",
+          !!doc.getElementById("wl-detail-enable") || !!doc.getElementById("wl-detail-disable"));
   }
+  if (localBtn) doc.getElementById("wl-detail-close").click();
+  await sleep(60);
+
+  // A REMOTE sensor gets its OWN plan editor (the mechanism that can reach it), nothing else.
+  const remoteBtn = openRow("edge-stopped");
   if (remoteBtn) {
     remoteBtn.click();
     for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
          .includes("edge-stopped"); i++) {
-      await new Promise((r) => setTimeout(r, 20));
+      await sleep(20);
     }
-    check("a remote sensor's panel hides the runtime controls",
-          doc.getElementById("wl-runtime").classList.contains("hidden"),
-          "offering controls that cannot reach the sensor would be a lie in pixels");
+    check("a remote sensor's sheet offers its own intercept plan",
+          !doc.getElementById("wl-plan").classList.contains("hidden"),
+          "the plan editor is the one per-sensor control that is not Settings'");
+    check("...and never the hub's runtime controls",
+          !doc.getElementById("wl-detail-card").querySelector("#wl-mode-select")
+          && !doc.getElementById("wl-detail-card").querySelector("#st-sonar"));
+    doc.getElementById("wl-detail-close").click();
+    await sleep(60);
   }
-  doc.getElementById("wl-detail-close").click();
 }
 
 // ── gateway-STYLE ADOPTION: one click, in the row (operator, 2026-10-17) ──────────────────────
@@ -6433,11 +6463,10 @@ check("high capture loss is called out in the fleet",
       if (String(u).includes("/api/write-trail")) trailing.push(String(u));
       return null;
     };
-    // 1) the trail is a readable surface: who / what / why / when.
-    H.showView("settings");
-    await H.loadSettings();
+    // 1) the trail is a readable surface: who / what / why / when -- on its OWN tab now.
+    H.showView("logs");
     await sleep(450);
-    const stTrail = doc.getElementById("st-audit");
+    const stTrail = doc.getElementById("lg-changes");
     const trailRows = stTrail ? [...stTrail.querySelectorAll("tbody tr")] : [];
     check("US-10: the write trail lists its entries",
           trailRows.length >= 3,
@@ -6447,11 +6476,15 @@ check("high capture loss is called out in the fleet",
           /admin/.test(rowText) && /tighten after the scanner/.test(rowText)
           && /base_threshold/.test(rowText) && /edge-alive/.test(rowText),
           rowText.slice(0, 160));
+    const firstSel = stTrail ? stTrail.querySelector("select") : null;
     check("...and the filter menus are the table's own scopes and actions",
-          stTrail && stTrail.querySelectorAll("select").length === 2
-          && /settings/.test(stTrail.querySelector("select").textContent),
-          stTrail ? stTrail.querySelector("select").textContent : "none");
+          !!firstSel && stTrail.querySelectorAll("select").length === 2
+          && /settings/.test(firstSel.textContent),
+          firstSel ? firstSel.textContent : "none");
     // 2) the settings provenance line links to the entry.
+    H.showView("settings");
+    await H.loadSettings();
+    await sleep(300);
     const provRow = doc.querySelector('#view-settings [data-key="base_threshold"] .setting-prov');
     check("US-10: a GUI-written setting says who set it, when, and why",
           !!provRow && /set via GUI/.test(provRow.textContent)
@@ -6466,7 +6499,7 @@ check("high capture loss is called out in the fleet",
     check("...which lands on the trail FILTERED to that key",
           trailing.some((u) => /scope=settings/.test(u) && /target=base_threshold/.test(u)),
           trailing.slice(-1)[0] || "no request");
-    const hit = doc.querySelector("#st-audit tr.wtl-hit");
+    const hit = doc.querySelector("#lg-changes tr.wtl-hit");
     check("...with the matching entry standing out", !!hit && /base_threshold/.test(hit.textContent),
           hit ? hit.textContent.slice(0, 100) : "none");
     // 3) REVERT: the BF-9 echo demands its reason; the write posts revert with it.

@@ -368,6 +368,9 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-host",
               #   view-settings: a static skeleton -- loadSettings creates every row
               #     into the st-* hosts, so the section itself is never written to
               "view-settings",
+              #   view-logs: the same shape -- a structural section toggled by showView;
+              #     its trail and audit tables are what the scripts fill.
+              "view-logs",
               "tabs", "statusline", "h-hint",
               # Deliberately structural, each for a stated reason:
               #   ev-notice-card: shown/hidden, never filled with data

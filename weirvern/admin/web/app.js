@@ -1087,6 +1087,16 @@ async function loadSettings() {
   if (sonarBtn) sonarBtn.disabled = !Boolean(data.writes && data.writes.enabled);
   const testBtn = document.getElementById("st-test");
   if (testBtn) testBtn.disabled = !Boolean(data.writes && data.writes.enabled);
+  // THE MODE SELECT IS A SETTINGS CONTROL (it stages sensor_mode through the ordinary plan).
+  // Its row is skipped in the grid below -- one control, one value -- so the select carries it.
+  const modeRow = (groups.sensor || []).find((r) => r.key === "sensor_mode");
+  const modeSel = document.getElementById("wl-mode-select");
+  if (modeSel) {
+    if (modeRow) {
+      modeSel.value = String(modeRow.value).toLowerCase() === "siphon" ? "siphon" : "loch";
+    }
+    modeSel.disabled = !Boolean(data.writes && data.writes.enabled);
+  }
   const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
   if (sum) sum.textContent = `${total} settings in effect`;
 
@@ -2993,7 +3003,9 @@ function wtlQuery() {
 }
 
 function refreshWriteTrails() {
-  for (const [id, def] of [["wl-audit", "fleet"], ["st-audit", "settings"]]) {
+  // US-10's two in-view cards are gone (the operator, 2026-10-18: the trail has its own tab);
+  // one mount, the Logs tab's Setting-changes card.
+  for (const [id, def] of [["lg-changes", ""]]) {
     if (document.getElementById(id)) {
       loadWriteTrail(id, def).catch(showError);
     }
@@ -3090,8 +3102,10 @@ function openSettingTrail(key) {
   WTL_STATE.action = "";
   WTL_STATE.target = key;
   scheduleURLSync();
+  // The trail lives on its own tab now: the link travels there, then filters and flashes.
+  showView("logs");
   refreshWriteTrails();
-  const card = document.getElementById("st-audit");
+  const card = document.getElementById("lg-changes");
   if (card) {
     if (typeof card.scrollIntoView === "function") {
       try { card.scrollIntoView({ block: "center" }); } catch (_e) { /* fine without it */ }
@@ -3172,10 +3186,6 @@ function showView(name) {
   CURRENT_VIEW = name;
   // US-8: the session's last views become palette recents, however they were reached.
   if (typeof paletteNoteView === "function") paletteNoteView(name);
-  // US-10: the trail mounts read their card when their view arrives (a stale trail is a lie).
-  if ((name === "weirlings" || name === "settings") && typeof refreshWriteTrails === "function") {
-    refreshWriteTrails();
-  }
   clearCrumbs();       // a view change always leaves every drill-down behind
   scheduleURLSync();   // the URL follows the view; the timer lets this call finish first
   const tabName = TAB_FOR_DRILL[name] || name;
@@ -3194,6 +3204,11 @@ function showView(name) {
       typeof activeTab.scrollIntoView === "function") {
     try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); }
     catch (_e) { /* older browsers: the tab stays wherever it is */ }
+  }
+  if (name === "logs") {
+    // THE LOGS TAB: the write trail and the pipeline's self-audit, read together.
+    if (typeof refreshWriteTrails === "function") refreshWriteTrails();
+    loadAudit().then(clearError).catch(showError);
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") {
@@ -3239,7 +3254,8 @@ function showView(name) {
  * do. The statusline carries the honesty: "updating…" while any of it is in flight, the
  * finish time when it is whole, "paused" when the operator has paused it. */
 const VIEW_LOADERS = {
-  health: () => Promise.all([loadHealthDeep(), loadAudit()]), anomalies: () => loadAnomalies(),
+  health: () => loadHealthDeep(), anomalies: () => loadAnomalies(),
+  logs: () => Promise.all([refreshWriteTrails(), loadAudit()]),
   netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
