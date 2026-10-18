@@ -266,7 +266,7 @@ async def run(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Responsive audit for the weirvern console")
-    ap.add_argument("--url", default="http://weirvern.home:30088")
+    ap.add_argument("--url", default="http://sensor.example:30088")
     ap.add_argument("--token-file", default="")
     ap.add_argument("--out", default="/tmp/wv-responsive-audit")
     ap.add_argument("--chrome", default="")

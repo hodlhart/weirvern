@@ -1,13 +1,13 @@
 # Responsive audit — 2026-10-18
 
-**Box:** `weirvern.home:30088`, build `sha-0f299a62d` · **Method:** `scripts/responsive_audit.py`
+**Box:** `sensor.example:30088`, build `sha-0f299a62d` · **Method:** `scripts/responsive_audit.py`
 (headless Chrome 151 over CDP, touch emulation at ≤720px, `X-Weirvern-Token` from a 0600 file)
 **Pairs measured:** 15 views × 4 viewports = **60** · **Screenshots:** 60 PNGs (`/tmp/audit_full/shots`)
 
 Reproduce:
 
 ```
-scripts/responsive_audit.py --url http://weirvern.home:30088 \
+scripts/responsive_audit.py --url http://sensor.example:30088 \
     --token-file ~/.weirvern_token --out /tmp/audit_full
 ```
 
