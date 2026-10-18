@@ -47,6 +47,12 @@ DEFAULT_CHROME = os.environ.get(
 AUDIT_JS = r"""
 (() => {
   const vis = (el) => {
+    // checkVisibility() understands content-visibility (a closed <details> hides its body with
+    // it in current Chrome, and getBoundingClientRect still reports boxes for those children --
+    // which made an earlier run count 600 controls nobody can see).
+    if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+      return false;
+    }
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
@@ -109,16 +115,26 @@ AUDIT_JS = r"""
     if (r.width < 36 || r.height < 36) verySmall.push(sel(el) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
   }
 
+  const controlsTotal = document.querySelectorAll(
+    'button, a, input, select, textarea, summary').length;
+  const detailsOpen = document.querySelectorAll('details[open]').length;
   const hoverOnly = [], unnamed = [];
+  let hoverOnlyTotal = 0;
+  let unnamedCount = 0;
   for (const el of document.querySelectorAll('[title]')) {
     if (!vis(el)) continue;
     const label = name(el);
-    if (!label) hoverOnly.push(sel(el) + ' :: ' + (el.getAttribute('title') || '').slice(0, 50));
-    if (hoverOnly.length >= 8) break;
+    if (!label) {
+      hoverOnlyTotal++;
+      if (hoverOnly.length < 8)
+        hoverOnly.push(sel(el) + ' :: ' + (el.getAttribute('title') || '').slice(0, 50));
+    }
   }
   for (const el of controls) {
-    if (!name(el) && !el.getAttribute('placeholder')) unnamed.push(sel(el));
-    if (unnamed.length >= 8) break;
+    if (!name(el) && !el.getAttribute('placeholder')) {
+      unnamedCount++;
+      if (unnamed.length < 8) unnamed.push(sel(el));
+    }
   }
 
   const wideGrids = [...document.querySelectorAll('table, .tablewrap')]
@@ -133,8 +149,9 @@ AUDIT_JS = r"""
                ? document.querySelector('#tabs .tab.active').getAttribute('data-view') : ''),
     overflow, clipped, small: small.slice(0, 8), smallCount: small.length,
     verySmall: verySmall.slice(0, 8), verySmallCount: verySmall.length,
-    widest,
-    hoverOnly, hoverOnlyCount: hoverOnly.length, unnamed: unnamed.slice(0, 8),
+    widest, controlsTotal, detailsOpen,
+    hoverOnly, hoverOnlyCount: hoverOnlyTotal, unnamed: unnamed.slice(0, 8),
+    unnamedCount,
     wideGrids, dom: document.querySelectorAll('*').length, api,
     errors: (window.__auditErr || []).slice(0, 5),
   });

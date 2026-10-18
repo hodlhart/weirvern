@@ -41,6 +41,15 @@
    * appearance; crit is its own louder magenta-red and bad keeps the softer red. All of
    * --accent/--ok/--warn/--bad/--crit clear 4.5:1 on --surface-2, computed in
    * tests/test_status_tokens.py, so a token edit that dims a label turns the gate red. ── */
+  /* ── THE SEVERITY RAMP (operator, 2026-10-18: "This should be red, orange, yellow and the
+   * same grey/white info is already using"). Four tiers, four appearances, in rank order:
+   * critical red, high orange, medium yellow, low the neutral that carries information
+   * everywhere else. These are their own tokens, not --crit/--bad/--warn: those mean
+   * "bad thing" and "warning" in status and error copy, and a severity rank is a different
+   * job. Every value clears 4.5:1 on --surface-2 (tests/test_status_tokens.py computes it). */
+  --sev-critical: #ff5a5a;
+  --sev-high: #f76b15;
+  --sev-medium: #eab308;
   --ok: #37be5f;
   --warn: #e79613;
   --bad: #f06d72;
@@ -175,9 +184,9 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .mono { font-family: var(--mono); font-size: 12px; }
 
 .muted { color: var(--muted); }
-.sev-critical { color: var(--crit); font-weight: 600; }
-.sev-high { color: var(--warn); font-weight: 600; }
-.sev-medium { color: var(--warn); }
+.sev-critical { color: var(--sev-critical); font-weight: 600; }
+.sev-high { color: var(--sev-high); font-weight: 600; }
+.sev-medium { color: var(--sev-medium); }
 .sev-low { color: var(--muted); }
 .ok { color: var(--ok); }
 .bad { color: var(--crit); }

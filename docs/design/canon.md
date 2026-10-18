@@ -40,6 +40,11 @@ Every colour is a token with a job (`--canvas`, `--surface`, `--surface-2`, `--h
 Two standing rules:
 
 - **One accent.** Accent is spent on active/selected/primary, nowhere else.
+- **Severity is a four-step ramp, not a mood:** critical red, high orange, medium yellow, low the
+  neutral that carries information everywhere else (`--sev-critical` / `--sev-high` /
+  `--sev-medium` / `--muted`). Two ranks may never wear one appearance — that was the defect
+  (`high` and `medium` both read `--warn` until 2026-10-18). The ramp tokens are separate from
+  `--crit` / `--bad` / `--warn`, which say "this is bad" in status copy; a rank is a different job.
 - **Severity never travels alone** — colour + glyph + word, so rank survives greyscale and
   colour-blindness (`tests/test_status_tokens.py` pins contrast).
 

@@ -81,10 +81,14 @@
       "--wash-bad",
       "--wash-info",
       "--chart-grid",
-      "--chart-axis"
+      "--chart-axis",
+      "--sev-critical",
+      "--sev-high",
+      "--sev-medium"
     ],
     "rule": "Colour is spent by role. A hex outside :root is debt; a role that is not a token is a defect.",
-    "contrast": "Every text token clears 4.5:1 on its surface (pinned by tests/test_status_tokens.py)."
+    "contrast": "Every text token clears 4.5:1 on its surface (pinned by tests/test_status_tokens.py).",
+    "severity_ramp": "critical red -> high orange -> medium yellow -> low neutral; each token clears 4.5:1 on --surface-2; colour never travels alone"
   },
   "frame": {
     "header_per_view": "title + count + exactly one primary verb",
