@@ -223,7 +223,7 @@ def new_target(port: int) -> str:
 
 
 async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, shot: Path,
-                    idx: int = 0, css: str = "") -> dict:
+                    idx: int = 0, css: str = "", open_sheet: str = "") -> dict:
     mobile = width <= 720
     await cdp.call("Emulation.setDeviceMetricsOverride",
                    {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": mobile})
@@ -232,6 +232,26 @@ async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, sho
     # previous view on screen and every row would silently measure the same page.
     await cdp.call("Page.navigate", {"url": f"{base}/?qa={idx}#v={view}"})
     await asyncio.sleep(2.4)
+    if open_sheet:
+        # THE SHEET IS A MEASUREMENT SURFACE TOO (WSM-8). A hash deep-link may not have opened it
+        # by the time the page settles, so open it explicitly and let its detail + settings reads
+        # finish; measuring the fleet with the sheet closed would silently audit the wrong DOM.
+        opened = await cdp.call("Runtime.evaluate", {
+            "expression": "openWeirling(" + json.dumps(open_sheet) + ")",
+            "awaitPromise": True, "returnByValue": True})
+        if opened.get("exceptionDetails"):
+            print("  !! open-sheet failed:", opened["exceptionDetails"].get("text"),
+                  (opened["exceptionDetails"].get("exception") or {}).get("description", ""),
+                  file=sys.stderr)
+        await asyncio.sleep(1.2)
+        probe = await cdp.call("Runtime.evaluate", {
+            "expression": "(() => { const c=document.getElementById('wl-detail-card');"
+                          " if (!c) return null; const r=c.getBoundingClientRect();"
+                          " return {hidden: c.classList.contains('hidden'), width: r.width,"
+                          " body: (document.getElementById('wl-detail-body').textContent||'').slice(0,60),"
+                          " rows: document.querySelectorAll('#st-sensor .setting').length}; })()",
+            "returnByValue": True})
+        print("  sheet probe:", probe.get("result", {}).get("value"), file=sys.stderr)
     if css:
         # Measure a CANDIDATE stylesheet before it ships: append it after the served one, which
         # wins on equal specificity, then measure exactly as if it were deployed.
@@ -243,8 +263,8 @@ async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, sho
         await asyncio.sleep(0.3)
     res = await cdp.call("Runtime.evaluate", {"expression": AUDIT_JS, "returnByValue": True})
     data = json.loads(res["result"]["value"])
-    data["wanted"] = view
-    data["mismatch"] = data.get("activeId") != view
+    data["wanted"] = view + (f" wl={open_sheet}" if open_sheet else "")
+    data["mismatch"] = data.get("activeId") != view.split("&")[0]
     png = await cdp.call("Page.captureScreenshot", {"format": "png"})
     shot.parent.mkdir(parents=True, exist_ok=True)
     shot.write_bytes(base64.b64decode(png["data"]))
@@ -297,7 +317,8 @@ async def run(args) -> int:
                 for w, h in args.widths:
                     idx += 1
                     shot = Path(args.out) / "shots" / f"{view}-{w}.png"
-                    row = await audit_one(cdp, args.url.rstrip("/"), view, w, h, shot, idx, css)
+                    row = await audit_one(cdp, args.url.rstrip("/"), view, w, h, shot, idx, css,
+                                          args.open_sheet)
                     results.append(row)
                     flag = "  !! measured " + str(row.get("activeId")) if row.get("mismatch") else ""
                     print(f"  {view:11s} {w:4d}  overflow={row['overflow']:3d}  clipped={len(row['clipped']):2d}"
@@ -333,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
                                        "sluice,blocked,identity,weirlings,host,models,settings")
     ap.add_argument("--widths", default="1440x900,820x1180,390x844,320x640")
     ap.add_argument("--css", default="", help="measure a candidate stylesheet before it ships")
+    ap.add_argument("--open-sheet", default="",
+                    help="sensor id whose drill-down sheet to open before measuring")
     args = ap.parse_args(argv)
     views = [v.strip() for v in args.views.split(",") if v.strip()]
     widths: list[tuple[int, int]] = []
