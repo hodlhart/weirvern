@@ -1222,7 +1222,7 @@
          TH-4: it is a SLIDE-IN SHEET now -- fixed to the right edge, over the view, so the
          fleet list underneath never reflows while you read one sensor. -->
     <div class="card sheet hidden" id="wl-detail-card" tabindex="-1">
-      <h2>Weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
+      <h2>Change this weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
         <button id="wl-sheet-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
       <div id="wl-detail-body"></div>
       <!-- THE SENSOR'S OWN INTERCEPT PLAN (loch/siphon + what to intercept). Shown for every
@@ -1256,10 +1256,10 @@
 </div>
       </div>
       <div class="info-text hidden" id="wl-detail-info">
-  <p><strong>What it is.</strong> One weirling's live state, its NICs, and the actions that change its fleet membership.</p>
-  <p><strong>What writes it.</strong> Heartbeats from the sensor, plus the registrations held here.</p>
-  <p><strong>Last changed.</strong> Heartbeat freshness updates at every check-in.</p>
-  <p><strong>Where to see it.</strong> This hub's own sensor is configured on the Settings tab; every other weirling's intercept plan lives below.</p>
+  <p><strong>What it is.</strong> The controls that CHANGE this weirling: its intercept plan, Sonar, and its fleet membership.</p>
+  <p><strong>What writes it.</strong> The operator, here; the sensor's own agent reads its plan and reports back the mode it ended up running.</p>
+  <p><strong>Last changed.</strong> The plan travels in the sensor's registry row; the sensor picks it up on its own refresh.</p>
+  <p><strong>Where to see the state.</strong> The fleet row carries it (mode, networks, flow trend, taps); issues live on the Logs tab; this hub's own sensor is configured on Settings.</p>
 </div>
 
       <div class="controls">

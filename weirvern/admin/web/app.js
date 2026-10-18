@@ -1589,6 +1589,9 @@ const AUDIT_CLASS_LABELS = {
   expired_rule: "expired rule",
   stuck_rule: "stuck rule",
   unowned_detector: "unowned detector",
+  // WL-2: the facts that left the weirling sheet's fact list land here, where issues live.
+  capture_loss: "capture loss",
+  segment_mismatch: "segment mismatch",
 };
 
 function anAgeShort(sec) {

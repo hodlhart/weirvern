@@ -333,6 +333,33 @@ async function wlBulk(kind, btn) {
   wlRenderBulk();
 }
 
+/** WL-2: ONE SENTENCE ABOUT THE CHANGE, not a fact sheet. It names the state (and the first
+ *  finding, when there is one) because a control whose situation is hidden is a control you
+ *  press blind; everything else moved to the row, the Logs tab and the Settings page. */
+function wlSituation(r) {
+  const state = String(r.state || "unknown").replace(/_/g, " ");
+  const bits = [`state: ${state}` + (r.registered ? "" : " (not adopted)")];
+  if (r.reported_mode) bits.push(`reported ${r.reported_mode}`);
+  const box = el("div", { class: "wl-situation" }, [
+    el("p", { class: "muted", text: bits.join(" · ") + "." }),
+  ]);
+  const first = (r.findings || [])[0];
+  if (first) box.appendChild(el("p", { class: "muted", text: first }));
+  if (r.local) {
+    box.appendChild(el("p", { class: "muted",
+      text: "This is the hub's own sensor — its mode, Sonar and settings live on the Settings tab." }));
+    const open = el("button", { class: "quiet", text: "Open Settings",
+                               attrs: { type: "button" } });
+    open.addEventListener("click", () => {
+      if (typeof showView === "function") showView("settings");
+    });
+    box.appendChild(el("div", { class: "controls" }, [open]));
+  } else if (!r.registered) {
+    box.appendChild(el("p", { class: "muted", text: "Adopt it below, then give it a plan." }));
+  }
+  return box;
+}
+
 /** WL-1: a twelve-bucket flow sparkline. NO SERIES IS NOT AN IDLE LINE: no samples means
  *  "not observed" and says so; a measured idle hour is a series of real zeroes. */
 function wlSparkline(r) {
@@ -489,7 +516,18 @@ function renderWeirlings(rows, revoked, revokedReason) {
     ]));
 
     // 4) FLOW -- the last hour as a sparkline (see wlSparkline for the empty contract).
-    tr.appendChild(el("td", {}, [wlSparkline(r)]));
+    // The trend IS the pivot to this sensor's flows: a chart you cannot open is a picture of
+    // a fact you cannot act on, and the sheet is change-only, so the pivot lives here.
+    const flowCell = el("td", { class: "wl-flow-cell" }, [wlSparkline(r)]);
+    if (typeof discoverDrill === "function") {
+      flowCell.classList.add("clickable");
+      flowCell.title = "open this sensor's flows in Discover";
+      flowCell.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        discoverDrill({ sensor: r.sensor_id });
+      });
+    }
+    tr.appendChild(flowCell);
 
     // 5) NETFLOW / 6) ZEEK -- evidence, not decoration.
     tr.appendChild(el("td", {}, [wlTap("netflow", r.netflow)]));
@@ -627,69 +665,11 @@ async function openWeirling(sensorId) {
     else { WL_PLAN.sensor_id = ""; WL_PLAN.changes = {}; WL_PLAN.survey = null; }
   }
 
-  // The findings FIRST, because they are the reason the operator opened this. A state word alone
-  // does not say whether "stale" means the box is off or its capture died.
-  const findings = r.findings || [];
-  if (findings.length) {
-    const ul = el("ul", { class: "findings" });
-    for (const f of findings) ul.appendChild(el("li", { text: f }));
-    body.appendChild(ul);
-  }
-
-  const facts = [
-    ["state", wlStateChip(r.state)],
-    ["NICs", el("span", { class: "mono",
-      text: (r.interfaces || []).join(", ") || "— (not reported)" })],
-    ["address", el("span", { class: "mono", text: r.address || "— (not known yet)" })],
-    ["declared segment", el("span", { text: r.segment || "— (not declared)" })],
-    ["reported segment", el("span", { text: r.reported_segment || "— (not reported)" })],
-    ["declared mode", el("span", { class: "mono", text: r.expected_mode || "—" })],
-    ["reported mode", el("span", { class: "mono", text: r.reported_mode || "—" })],
-    ["registered", el("span", { text: r.registered ? "yes" : "NO — this sensor is undeclared" })],
-    ["enabled", el("span", { text: r.enabled ? "yes" : "no" })],
-    ["last heard", el("span", { class: "mono", text: wlAge(r.age_s) })],
-    ["capture loss", el("span", { class: "mono", text: wlLoss(r.capture_loss_pct) })],
-    ["packets received", el("span", { class: "mono",
-      text: r.packets_recv === null || r.packets_recv === undefined ? "— (not measured)"
-        : String(r.packets_recv) })],
-    ["packets dropped", el("span", { class: "mono",
-      text: r.packets_dropped === null || r.packets_dropped === undefined ? "— (not measured)"
-        : String(r.packets_dropped) })],
-    ["hosts seen", el("span", { class: "mono", text: String(r.hosts ?? 0) })],
-    ["note", el("span", { text: r.note || "—" })],
-  ];
-  const dl = el("dl", { class: "kv" });
-  for (const [k, v] of facts) {
-    dl.appendChild(el("dt", { text: k }));
-    dl.appendChild(el("dd", {}, [v]));
-  }
-  body.appendChild(dl);
-
-  // ── US-2: the onward links. A sheet that only describes is a dead end; every sensor gets
-  // buttons to the surfaces that can be filtered TO it. Anomalies are deliberately absent:
-  // the anomaly store has no sensor dimension server-side, and a link that lands on an
-  // unfiltered list would be the silent-lie this console bans.
-  const goBox = el("div", { class: "wl-go" });
-  if (typeof discoverDrill === "function") {
-    const b = el("button", { class: "review-act", text: "Its flows (Discover)",
-                             attrs: { type: "button" } });
-    b.addEventListener("click", () => discoverDrill({ sensor: r.sensor_id }));
-    goBox.appendChild(b);
-  }
-  if (typeof showView === "function") {
-    const hb = el("button", { class: "review-act", text: "Health audit",
-                              attrs: { type: "button" } });
-    hb.addEventListener("click", () => showView("health"));
-    goBox.appendChild(hb);
-    const gb = el("button", { class: "review-act", text: "Gate state",
-                              attrs: { type: "button" } });
-    gb.addEventListener("click", () => showView("sluice"));
-    goBox.appendChild(gb);
-  }
-  if (goBox.children.length) {
-    body.appendChild(el("h3", { text: "Go to" }));
-    body.appendChild(goBox);
-  }
+  // WL-2: THE SHEET IS FOR CHANGES. One situation line explains what is being changed (a
+  // state word alone does not say whether "stale" means the box is off or its capture died),
+  // and the facts it used to list live where they belong: the row (state, mode, networks,
+  // trend, taps), the Logs tab (issues), and the Settings page (this hub's own sensor).
+  body.appendChild(wlSituation(r));
 
   // ── the controls, only where they MEAN something.
   const registerBtn = document.getElementById("wl-detail-register");
@@ -920,6 +900,26 @@ function wlPlanInput(field) {
 function wlRenderPlan(r) {
   const box = document.getElementById("wl-plan");
   if (!box) return;
+  // WL-2: the NICs left the sheet's fact list; here is where they become ACTIONABLE -- the
+  // capture interface field offers the sensor's own reported interfaces as candidates.
+  const ifaceInput = document.getElementById("wl-plan-iface");
+  if (ifaceInput) {
+    const nics = (r.interfaces || []).filter(Boolean);
+    if (nics.length) {
+      const listId = "wl-plan-iface-list";
+      let dl = document.getElementById(listId);
+      if (!dl) {
+        dl = el("datalist", { attrs: { id: listId } });
+        box.appendChild(dl);
+      }
+      dl.replaceChildren();
+      for (const nic of nics) dl.appendChild(el("option", { attrs: { value: nic } }));
+      ifaceInput.setAttribute("list", listId);
+      ifaceInput.title = "candidates from this sensor's own report: " + nics.join(", ");
+    } else {
+      ifaceInput.removeAttribute("list");
+    }
+  }
   const plan = r.plan || {};
   WL_PLAN.sensor_id = r.sensor_id;
   WL_PLAN.changes = {};

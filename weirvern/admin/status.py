@@ -2766,6 +2766,49 @@ def _audit_humanize(sec: float) -> str:
     return f"{int(sec / 86400)}d"
 
 
+# WL-2: THE PER-SENSOR PROBLEMS AS ISSUE FINDINGS.
+#
+# These used to be prose in the weirling drill-down: "capture loss is 62.5%", "registered for
+# segment 'fifth floor' but reporting 'sixth floor'". The operator's 2026-10-18 direction makes
+# the sheet change-only, so the problems move to the surface that already owns issues (Logs) --
+# extracted here as a PURE function over one fleet row, so the classes are unit-testable without
+# a database and the audit cannot quietly stop emitting them.
+CAPTURE_LOSS_WARN_PCT = 5.0
+
+
+def sensor_issues(row: dict) -> list[dict]:
+    """Findings for one sensor row: measured capture loss, and a contradicted segment."""
+    out: list[dict] = []
+    sid = str(row.get("sensor_id") or "")
+    fix = {"view": "weirlings", "sensor": sid, "label": "open the sensor"}
+    loss = row.get("capture_loss_pct")
+    if loss is not None:
+        try:
+            pct = float(loss)
+        except (TypeError, ValueError):
+            pct = None
+        # MEASURED ONLY. An unmeasured loss (NULL) is not an issue and must never be reported
+        # as 0%: "not measured" and "measured, nothing lost" are different facts.
+        if pct is not None and pct >= CAPTURE_LOSS_WARN_PCT:
+            out.append({
+                "class": "capture_loss", "severity": "warn", "subject": sid,
+                "detail": (f"dropping {pct:g}% of packets "
+                           f"({int(row.get('packets_recv') or 0)} received, "
+                           f"{int(row.get('packets_dropped') or 0)} dropped): this sensor is "
+                           f"blind to most of what is on the wire"),
+                "fix": fix,
+            })
+    declared = str(row.get("segment") or "").strip()
+    reported = str(row.get("reported_segment") or "").strip()
+    if declared and reported and declared != reported:
+        out.append({
+            "class": "segment_mismatch", "severity": "info", "subject": sid,
+            "detail": f"registered for segment '{declared}' but reporting '{reported}'",
+            "fix": fix,
+        })
+    return out
+
+
 def pipeline_audit(client, *, now=None) -> dict:
     """The pipeline auditing itself (BF-13; Datadog's monitor-quality, Splunk's content
     management, Hurricane Labs' hygiene lists). Four classes, each read INDEPENDENTLY: a
@@ -2794,7 +2837,10 @@ def pipeline_audit(client, *, now=None) -> dict:
                 if (r.get("registered") and r.get("enabled")
                         and r.get("state") in ("stale", "never_seen")):
                     age = r.get("age_s")
+                    in_path = str(r.get("expected_mode") or "").lower() == "siphon"
                     detail = ("declared and enabled but never heard from"
+                              + (" — in-path, so its segment may be waiting for it"
+                                 if in_path else "")
                               if r.get("state") == "never_seen" or age is None
                               else f"silent for {_audit_humanize(age)}"
                                    f" (stale after {r.get('stale_after_s', '?')}s)")
@@ -2805,6 +2851,8 @@ def pipeline_audit(client, *, now=None) -> dict:
                         "fix": {"view": "weirlings", "sensor": str(r.get("sensor_id") or ""),
                                 "label": "open the sensor"},
                     })
+                # WL-2: the per-sensor problems (loss, segment) ride the same fleet pass.
+                findings.extend(sensor_issues(r))
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit: silent sensors failed: %s", exc)
         errors["silent_sensors"] = type(exc).__name__

@@ -247,6 +247,9 @@ def main() -> int:
         "filtered", "revoked", "revoked_reason",
         # row fields pipeline_audit reads
         "registered", "enabled", "state", "age_s", "stale_after_s", "sensor_id", "note",
+        # WL-2: the segment facts the per-sensor issue findings compare (declared vs observed)
+        "segment", "reported_segment", "expected_mode", "capture_loss_pct",
+        "packets_recv", "packets_dropped",
         # the self-audit's own finding records (pipeline_audit -> panic_page)
         "class", "severity", "subject", "detail", "elapsed_s", "fix",
     }

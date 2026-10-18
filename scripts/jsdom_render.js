@@ -1336,8 +1336,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         { class: "unowned_detector", severity: "warn", subject: "Mystery Net",
           detail: "unregistered \u2014 no owner, no runbook: it cannot page", elapsed_s: null,
           fix: { view: "anomalies", detector: "Mystery Net", label: "register it (registry strip)" } },
+        { class: "silent_sensor", severity: "warn", subject: "edge-promised",
+          detail: "declared and enabled but never heard from \u2014 in-path, so its segment may be waiting for it",
+          elapsed_s: null,
+          fix: { view: "weirlings", sensor: "edge-promised", label: "open the sensor" } },
+        { class: "capture_loss", severity: "warn", subject: "edge-moved",
+          detail: "dropping 62.5% of packets (400 received, 250 dropped): this sensor is blind to most of what is on the wire",
+          elapsed_s: null,
+          fix: { view: "weirlings", sensor: "edge-moved", label: "open the sensor" } },
+        { class: "segment_mismatch", severity: "info", subject: "edge-moved",
+          detail: "registered for segment 'fifth floor' but reporting 'sixth floor'",
+          elapsed_s: null,
+          fix: { view: "weirlings", sensor: "edge-moved", label: "open the sensor" } },
       ],
-      counts: { silent_sensor: 1, expired_rule: 1, stuck_rule: 1, unowned_detector: 1 },
+      counts: { silent_sensor: 2, expired_rule: 1, stuck_rule: 1, unowned_detector: 1,
+                capture_loss: 1, segment_mismatch: 1 },
       errors: {} })],
     ["/api/detectors", () => ({ available: true, reason: "", detectors: [
       { name: "Isolation Forest", owner: "ops", runbook: "read the evidence first",
@@ -3670,9 +3683,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const auditRows = [...doc.querySelectorAll("#audit-table tbody tr")];
     const auditText = auditRows.map((r) => r.textContent).join(" || ");
     check("every audit class renders a finding with its name",
-          auditRows.length === 4 &&
-            ["silent sensor", "expired rule", "stuck rule", "unowned detector"]
-              .every((c) => auditText.includes(c)),
+          auditRows.length === 7 &&
+            ["silent sensor", "expired rule", "stuck rule", "unowned detector",
+             "capture loss", "segment mismatch"].every((c) => auditText.includes(c)),
           auditText.slice(0, 200));
     check("...and the elapsed column says how long",
           auditText.includes("3d") && auditText.includes("1h"),
@@ -4877,13 +4890,17 @@ check("a NEVER-SEEN sensor is distinguishable from a STALE one",
       "both render as 'no fresh heartbeat'; collapsing them sends an operator to the logs of a "
       + "sensor that never wrote any");
 
-// The findings moved to the drill-down with the row strip (sensor + status only): the claim
-// still has to REACH the operator, so open the sensor and read it there.
+// WL-2: THE SHEET IS CHANGE-ONLY. The facts it used to list live on the ISSUES list (Logs),
+// where a problem belongs beside its fix -- so the claims are checked THERE, and the sheet is
+// checked for having no fact dump at all.
+H.showView("logs");
+await new Promise((r) => setTimeout(r, 400));
+const auditTextNow = () => (doc.getElementById("audit-table") || {}).textContent || "";
+check("a never-seen IN-PATH sensor says the segment may be waiting (issues)",
+      /in-path/i.test(auditTextNow()),
+      "an in-path sensor that never came up is more urgent than a passive one and must say why");
 await H.openWeirling("edge-promised");
 const wlDetailText = () => (doc.getElementById("wl-detail-body") || {}).textContent || "";
-check("a never-seen IN-PATH sensor says the segment may be waiting (drill-down)",
-      wlDetailText().toLowerCase().includes("in-path"),
-      "an in-path sensor that never came up is more urgent than a passive one and must say why");
 
 check("an UNDECLARED sensor is reported as unregistered",
       wlText().includes("unregistered"),
@@ -4894,28 +4911,48 @@ check("a DISABLED sensor is shown as disabled, not as a fault",
       wlText().includes("disabled"),
       "switched-off sensors are not problems; raising them trains the reader to ignore the column");
 
-// ── measured-zero vs not-measured, IN THE DRILL-DOWN (the rows carry sensor + status now) ───
-// The em dash is what an unmeasured value renders as. Asserting the DASH and not merely
-// "something rendered": 0.0% for a sensor that measured nothing would read as a perfect sensor.
-await H.openWeirling("edge-stopped");
-check("an UNMEASURED capture loss renders as a dash, not as 0.0%",
-      wlDetailText().includes("capture loss") && /\u2014|—/.test(wlDetailText()),
-      "an unmeasured value rendered as 0.0% reports a sensor that has measured nothing as a "
-      + "perfect one");
-await H.openWeirling("edge-alive");
-check("a MEASURED zero loss renders as a real figure",
-      wlDetailText().includes("0.0%"),
-      "0.0% is 'we looked, nothing was lost' and must stay a measurement");
-
-await H.openWeirling("edge-moved");
-check("a segment the sensor CONTRADICTS is surfaced, not silently overwritten",
-      wlDetailText().includes("sixth floor"),
+// ── measured-zero vs not-measured: the DISTINCTION is pinned at the unit level
+// (tests/test_capture_loss.py), and the sheet no longer renders a loss figure at all -- so it
+// cannot print 0.0% for an unmeasured sensor. What the operator must still SEE is the measured
+// problem, and that lives on the issues list with its fix.
+check("WL-2: the sheet carries no capture-loss figure (the issues list owns it)",
+      !/capture loss|62\.5%|0\.0%/i.test(wlDetailText()),
+      wlDetailText().slice(0, 120));
+check("...a measured high loss is called out on the issues list, with the number",
+      auditTextNow().includes("62.5"),
+      "capture loss is the only field showing a sensor is blind to most of what is on the wire");
+check("...a contradicted segment names BOTH segments on the issues list",
+      auditTextNow().includes("fifth floor") && auditTextNow().includes("sixth floor"),
       "the declared segment and the observed one are different facts; letting the declaration "
       + "win makes a sensor covering the wrong segment look correctly placed");
 
-check("high capture loss is called out in the fleet",
-      wlDetailText().includes("62.5"),
-      "capture loss is the only field showing a sensor is blind to most of what is on the wire");
+// ── THE SHEET ITSELF: changes only ───────────────────────────────────────────────────────────
+{
+  await H.openWeirling("edge-alive");
+  const sheet = doc.getElementById("wl-detail-card");
+  const bodyNow = doc.getElementById("wl-detail-body");
+  check("WL-2: the sheet has NO fact dump (no dl, no findings list, no table)",
+        !sheet.querySelector("dl") && !sheet.querySelector("ul.findings")
+        && !sheet.querySelector("table"),
+        "a read-only fact list survived in the sheet");
+  check("...it says its purpose in the heading",
+        /Change this weirling/.test(sheet.querySelector("h2").textContent || ""),
+        sheet.querySelector("h2").textContent);
+  check("...and explains the change in a short situation, not a fact sheet",
+        !!bodyNow.querySelector(".wl-situation")
+        && bodyNow.querySelectorAll(".wl-situation p").length <= 3,
+        String(bodyNow.querySelectorAll(".wl-situation p").length) + " paragraph(s)");
+  const openSettings = [...bodyNow.querySelectorAll("button")]
+    .find((b) => (b.textContent || "") === "Open Settings");
+  check("...this hub's own sensor points at the surface that changes it",
+        !!openSettings, "no pointer to Settings for the local sensor");
+  await H.openWeirling("edge-moved");
+  check("...a remote sensor's sheet offers its plan, and nothing else to read",
+        !doc.getElementById("wl-plan").classList.contains("hidden")
+        && !!doc.getElementById("wl-plan").querySelector("input, select"),
+        "the plan editor is the change surface for a remote weirling");
+  doc.getElementById("wl-detail-close").click();
+}
 
 // ── the drill-down ───────────────────────────────────────────────────────────────────────────
 {
@@ -4932,8 +4969,12 @@ check("high capture loss is called out in the fleet",
     check("the drill-down shows the REASON, not just the state word",
           body.includes("why it died"),
           "a state word alone cannot tell the operator whether the box is off or its capture died");
-    check("the drill-down separates DECLARED from REPORTED",
-          body.includes("declared") && body.includes("reported"),
+    check("DECLARED and REPORTED are both visible where the mode is (the row)",
+          (() => {
+            const r = [...H.document.querySelectorAll("#wl-table tbody tr")]
+              .find((tr) => (tr.textContent || "").includes("edge-moved"));
+            return !!r && /siphon/.test(r.textContent) && /declared loch/.test(r.textContent);
+          })(),
           "one is a claim somebody made and the other is a fact the sensor produced");
     H.document.getElementById("wl-detail-close").click();
   }
@@ -5074,10 +5115,17 @@ check("high capture loss is called out in the fleet",
           "a settings control is still in the sheet");
     check("...and no Advanced disclosure doubling the settings page",
           !doc.getElementById("wl-advanced"));
-    check("...while it still answers what a sensor can: state and its own NICs",
-          /reporting normally/.test(sheet.textContent || "")
-          && /eth1, eth2/.test(doc.getElementById("wl-detail-body").textContent || ""),
-          (doc.getElementById("wl-detail-body").textContent || "").slice(0, 160));
+    await H.openWeirling("edge-stopped");
+    check("...the plan offers the sensor's own reported NICs as iface candidates",
+          (() => {
+            const inp = doc.getElementById("wl-plan-iface");
+            const id = inp && inp.getAttribute("list");
+            const dl = id ? doc.getElementById(id) : null;
+            const vals = dl ? [...dl.querySelectorAll("option")]
+              .map((o) => o.getAttribute("value")) : [];
+            return vals.includes("eth0");
+          })(),
+          "the NICs were a read-only row; the plan's iface field is where they matter");
     check("...and keeps its membership actions",
           !!doc.getElementById("wl-detail-enable") || !!doc.getElementById("wl-detail-disable"));
   }
@@ -5662,19 +5710,19 @@ check("high capture loss is called out in the fleet",
       feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
       await sleep(200);
     }
-    // 4. the sensor sheet -> its flows, filtered to the sensor in Discover
+    // 4. the sensor's flow trend -> its flows, filtered to the sensor in Discover
     H.showView("weirlings");
     await H.loadWeirlings();
-    await H.openWeirling("edge-alive");
-    await sleep(180);
-    const goBtn = [...doc.querySelectorAll("#wl-detail-card button")]
-      .find((b) => /Its flows/.test(b.textContent));
-    check("the sensor sheet carries its onward links", !!goBtn);
-    if (goBtn) {
+    await sleep(200);
+    const flowCell = [...doc.querySelectorAll("#wl-table tbody tr")]
+      .find((tr) => (tr.textContent || "").includes("edge-alive"))
+      ?.querySelector(".wl-flow-cell.clickable");
+    check("the flow trend is the pivot to that sensor's flows", !!flowCell);
+    if (flowCell) {
       const beforeDc = DISCOVER_REQS.length;
-      goBtn.click();
+      flowCell.click();
       await sleep(280);
-      check("...and 'Its flows' lands in Discover filtered to exactly this sensor",
+      check("...and the trend lands in Discover filtered to exactly this sensor",
             doc.getElementById("view-discover").classList.contains("active")
             && doc.getElementById("dc-sensor").value === "edge-alive"
             && DISCOVER_REQS.slice(beforeDc).some((u) => u.includes("sensor=edge-alive")),
