@@ -398,6 +398,13 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .view-head { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; }
 .view-head h2 { margin: 0; }
+/* The gate's status line (2026-10-18): state first, one control, nothing else. */
+.sl-status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+.sl-status-item { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.sl-status-item strong { font-weight: 600; }
+.sl-status-item .sl-on { color: var(--ok); }
+.sl-status-item .sl-off { color: var(--offline); }
+#sl-dom-line { margin: 6px 0 10px; }
 .sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 /* The occurrence expansion under a counted anomaly row (2026-10-16). */
 /* The Zeek feed's bar list: one bar per log, click opens the Zeek tab. */

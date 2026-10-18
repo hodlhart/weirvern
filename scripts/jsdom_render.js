@@ -3519,6 +3519,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();   // tidy: a clean re-read at zero
   }
 
+  // ── THE GATE'S STATUS LINE AND THE DOMAIN SWITCH (2026-10-18) ──────────────────────────────
+  // The operator removed the duplicate "Blocking controls" card -- a second policy strip, a
+  // second arm button, an auto-block score field and three notes -- and asked for the state in
+  // one line plus a domain-blocking setting with enabled/disabled.
+  {
+    check("the duplicate blocking-controls card is gone",
+          !doc.getElementById("sl-criticality") && !doc.getElementById("sl-bc-auto"),
+          "a strip or score field is still in the DOM");
+    await H.loadBlockingControls();
+    await new Promise((r) => setTimeout(r, 80));
+    const gateState = doc.getElementById("sl-gate-state");
+    check("the status line states the gate's state in words",
+          !!gateState && /^(armed|off)/i.test(gateState.textContent.trim()),
+          gateState ? gateState.textContent : "no state");
+    check("...and offers exactly one control to change it",
+          !!doc.getElementById("sl-bc-gate")
+          && doc.querySelectorAll("#view-sluice #sl-bc-gate").length === 1);
+    const domLine = doc.getElementById("sl-dom-line");
+    const domState = doc.getElementById("sl-dom-state");
+    check("the domain-blocking card states on/off and what it costs",
+          !!domState && /^(on|off)$/i.test(domState.textContent.trim())
+          && !!domLine && domLine.textContent.length > 40,
+          domState ? domState.textContent : "no state");
+    const domToggle = doc.getElementById("sl-dom-toggle");
+    check("...with one toggle", !!domToggle && /domain blocking/i.test(domToggle.textContent));
+    if (domToggle) {
+      const before = POSTED.length;
+      const spy = [];
+      const origFetch3 = window.fetch;
+      window.fetch = (u, o) => {
+        if (/settings\/apply/.test(String(u)) && o && o.body) spy.push(String(o.body));
+        return origFetch3(u, o);
+      };
+      domToggle.click();   // arm the confirm
+      await new Promise((r) => setTimeout(r, 30));
+      domToggle.click();   // confirm
+      await new Promise((r) => setTimeout(r, 200));
+      window.fetch = origFetch3;
+      check("the domain toggle posts SLUICE_BLOCK_DOMAINS through the apply path",
+            spy.some((b) => /SLUICE_BLOCK_DOMAINS/.test(b)),
+            spy.join(" | ").slice(0, 140) || `${POSTED.length - before} request(s), none to apply`);
+    }
+  }
+
   // ── THE FLEET IS A WORKLIST (BF-7) ──────────────────────────────────────────────────────────
   {
     try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}

@@ -685,32 +685,30 @@ async function slApplyChange(key, value, btn, note) {
 }
 
 async function loadBlockingControls() {
-  const note = document.getElementById("sl-bc-note");
-  const strip = document.getElementById("sl-criticality");
+  // THE GATE'S STATUS, ONE LINE (2026-10-18). The duplicate "Blocking controls" card is gone:
+  // this reads the same settings and paints the state, the one master control, the domain
+  // switch's state (its toggle lives in the domain card), and the auto-block line + pause,
+  // which stay because an armed threshold must be visible and stoppable from here.
+  const gateState = document.getElementById("sl-gate-state");
+  const domState = document.getElementById("sl-dom-state");
   const gateBtn = document.getElementById("sl-bc-gate");
-  const domBtn = document.getElementById("sl-bc-dom");
-  const autoInput = document.getElementById("sl-bc-auto");
-  const autoSave = document.getElementById("sl-bc-autosave");
-  const help = document.getElementById("sl-bc-help");
-  if (!note || !strip || !gateBtn || !domBtn) return;
+  const note = document.getElementById("sl-bc-note");
+  if (!gateState || !gateBtn) return;
   let settings;
   let gate;
   try {
     settings = await getJSON("/api/settings");
   } catch (err) {
-    note.textContent = "the controls could not be read: " + ((err && err.message) || err);
+    note.textContent = "the gate state could not be read: " + ((err && err.message) || err);
     return;
   }
   try {
     gate = await getJSON("/api/sluice");
   } catch (err) {
-    gate = null;   // the policy strip still renders from the settings row's options below
+    gate = null;
   }
   const rows = {};
   for (const rs of Object.values((settings && settings.groups) || {})) {
-    // Row keys arrive in ROW vocabulary (lowercase: sluice_block_domains), while the apply
-    // path speaks ConfigMap keys (uppercase). Normalize on the way in; the apply path keeps
-    // the upper-case key because that is what the settings writer expects.
     for (const r of rs || []) if (r && r.key) rows[String(r.key).toLowerCase()] = r;
   }
   const val = (k) => {
@@ -718,45 +716,43 @@ async function loadBlockingControls() {
     const v = r ? String(r.value != null ? r.value : (r.current != null ? r.current : "")) : "";
     return v;
   };
-  const policies = (gate && gate.policies) || null;
-  const current = val("SLUICE_CRITICALITY") || (gate && gate.criticality) || "";
-  strip.replaceChildren();
-  if (policies) {
-    for (const [key, p] of Object.entries(policies)) {
-      const active = key === current;
-      const tile = el("button", { class: "tile" + (active ? " active" : ""),
-        attrs: { title: (p.description || "") + (active ? " (current)" : " — click to switch") } }, [
-        el("div", { class: "v", text: p.label || key }),
-        el("div", { class: "k", text: p.ttl_minutes ? `${Math.round(p.ttl_minutes / 60)}h blocks`
-                                                     : "no auto-blocks" }),
-      ]);
-      if (!active) {
-        tile.addEventListener("click", () => slApplyChange("SLUICE_CRITICALITY", key, tile, note));
-      }
-      strip.appendChild(tile);
-    }
-  } else {
-    strip.appendChild(el("span", { class: "muted",
-      text: "The policy list could not be read; set it on the Settings tab instead." }));
-  }
-  // The payload RENDERS booleans as enabled/disabled while the reader stores 1/true/on/yes --
-  // read both vocabularies, write the storage one (below).
   const onVals = /^(1|true|on|yes|enabled|armed)$/i;
   const gateOn = onVals.test(val("SLUICE_ENABLED"));
-  gateBtn.textContent = gateOn ? "Take the gate off (disarm)" : "Turn the gate on (arm)";
-  gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
   const domOn = onVals.test(val("SLUICE_BLOCK_DOMAINS"));
-  domBtn.textContent = domOn ? "Domain blocking: on — turn off" : "Domain blocking: off — turn on";
-  domBtn.onclick = () => slApplyChange("SLUICE_BLOCK_DOMAINS", domOn ? "0" : "1", domBtn, note);
-  if (autoInput) autoInput.value = val("SLUICE_AUTO_SCORE") || "0";
-  if (autoSave) autoSave.onclick = () => {
-    const v = String((autoInput && autoInput.value) || "0").trim();
-    slApplyChange("SLUICE_AUTO_SCORE", v, autoSave, note);
-  };
+  const gateLive = gate && gate.gate ? gate.gate : null;
+  const live = Number(gateLive && gateLive.rules_active) || 0;
+
+  gateState.textContent = gateOn
+    ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced` : "armed \u00b7 nothing enforced")
+    : "off";
+  gateState.className = gateOn ? "sl-on" : "sl-off";
+  gateBtn.textContent = gateOn ? "Disarm the gate" : "Arm the gate";
+  gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
+
+  if (domState) {
+    domState.textContent = domOn ? "on" : "off";
+    domState.className = domOn ? "sl-on" : "sl-off";
+  }
+  const domLine = document.getElementById("sl-dom-line");
+  const domToggle = document.getElementById("sl-dom-toggle");
+  const domNote = document.getElementById("sl-dom-note");
+  if (domLine) {
+    domLine.textContent = domOn
+      ? "On: a rule whose match is a name may drop traffic, and every drop is recorded with the name that matched."
+      : "Off: domain rules still record and alert, but nothing is dropped for them; address rules are unaffected.";
+  }
+  if (domToggle) {
+    domToggle.textContent = domOn ? "Disable domain blocking" : "Enable domain blocking";
+    domToggle.onclick = () => slApplyChange("SLUICE_BLOCK_DOMAINS", domOn ? "0" : "1", domToggle,
+      domNote || note);
+  }
+  if (domNote) {
+    domNote.textContent = domOn ? "enabled \u2014 domain rules may drop" : "disabled \u2014 domain rules only record";
+  }
+
   // THE ARMED STATE IS LOUD, HERE AND IN THE HEADER (BF-3). This is the one threshold that
-  // blocks without anyone looking at the detection first, so while it is on, the card says so
-  // in the alarm colour, the pause is offered in one click (two-stage confirm, like every
-  // other apply on this card), and the header carries a pill wherever the operator is.
+  // blocks without anyone looking at the detection first, so while it is on, the line says so
+  // in the alarm colour, the pause is offered in one click, and the header carries a pill.
   const autoVal = Number(val("SLUICE_AUTO_SCORE") || "0") || 0;
   const autoState = document.getElementById("sl-bc-auto-state");
   if (autoState) {
@@ -773,14 +769,7 @@ async function loadBlockingControls() {
     autoPause.onclick = () => slApplyChange("SLUICE_AUTO_SCORE", "0", autoPause, note);
   }
   if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(autoVal);
-  if (help) {
-    help.textContent = current
-      ? `Policy ${current}: ${(policies && policies[current] && policies[current].description) || ""}`
-      : "";
-  }
-  note.textContent = gateOn
-    ? "The gate is armed; block-mode rules and the policy above decide what drops."
-    : "The gate is off; every rule records and alerts but nothing drops until it is armed.";
+  note.textContent = "";
 }
 
 function openRuleComposer(domain) {

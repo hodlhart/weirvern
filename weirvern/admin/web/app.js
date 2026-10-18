@@ -3419,8 +3419,12 @@ document.addEventListener("DOMContentLoaded", () => {
     abPill.addEventListener("click", () => {
       showView("sluice");
       loadBlockingControls().catch(() => {});
-      const input = document.getElementById("sl-bc-auto");
-      if (input && input.focus) input.focus();
+      // The score field moved to Settings with the duplicate card; land the operator on the
+      // state line instead, and on the pause when the threshold is actually armed.
+      const pause = document.getElementById("sl-bc-autopause");
+      const line = document.getElementById("sl-bc-auto-state");
+      const target = (pause && !pause.classList.contains("hidden")) ? pause : line;
+      if (target && target.focus) { target.setAttribute("tabindex", "-1"); target.focus(); }
     });
   }
   const autoPill = document.getElementById("auto-toggle");
