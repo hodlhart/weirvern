@@ -327,6 +327,20 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
  * carries the same fact to a scanning eye -- box-shadow inset rather than border-left, which
  * would shift the row's columns. Same palette as the chips: green alive, amber stale /
  * unregistered, red never-seen, grey disabled. */
+/* ── WL-1: the list's own small charts and tap indicators ────────────────────
+ * The trend is a sparkline, the taps are word+colour chips. Neither is a link; the row is
+ * the affordance, so nothing in these cells takes a pointer. */
+.wl-spark-wrap { display: inline-flex; }
+.wl-spark { width: 88px; height: 22px; color: var(--accent); display: block; }
+.wl-spark-empty { font-size: 12px; }
+.tap { display: inline-block; font-size: 11px; line-height: 1; padding: 3px 7px;
+       border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.tap.on { color: var(--accent); border-color: var(--accent);
+          background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tap.off { border-style: dashed; opacity: .8; }
+.wl-problem-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warn); margin-left: 6px; vertical-align: middle; }
+
 tr.wl-state-alive { box-shadow: inset 3px 0 0 var(--ok); }
 tr.wl-state-stale { box-shadow: inset 3px 0 0 var(--warn); }
 tr.wl-state-never_seen { box-shadow: inset 3px 0 0 var(--bad); }

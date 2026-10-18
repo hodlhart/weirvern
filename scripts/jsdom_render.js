@@ -990,6 +990,10 @@ const WEIRLINGS_PAYLOAD = {
       capture_loss_pct: 0.0, packets_recv: 900000, packets_dropped: 0, hosts: 12,
       note: "ops owns this one", stale_after_s: 45,
       findings: ["reporting normally, last heard 4s ago."],
+      flow_series: [3, 5, 0, 8, 12, 4, 0, 0, 6, 9, 2, 1],
+      netflow: { known: true, observed: true, flows: 120,
+                 last_at: "2026-09-23T12:00:00+00:00", why: "" },
+      zeek: { known: true, observed: true, last_at: "2026-09-23T11:59:00+00:00", why: "" },
     },
     {
       sensor_id: "edge-stopped", state: "stale", is_problem: true,
@@ -1000,6 +1004,11 @@ const WEIRLINGS_PAYLOAD = {
       capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
       note: "", stale_after_s: 45,
       interfaces: ["eth0"],
+      flow_series: [],
+      netflow: { known: false, observed: false, flows: 0, last_at: "",
+                 why: "the sensor has not reported an address yet" },
+      zeek: { known: false, observed: false, last_at: "",
+              why: "only the hub runs Zeek; a remote weirling does not report one" },
       findings: ["last reported 900s ago, past the 45s freshness window, so it has stopped. It ran "
         + "and then stopped, which is different from never starting: look for why it died rather "
         + "than why it never came up.",
@@ -1009,6 +1018,11 @@ const WEIRLINGS_PAYLOAD = {
       sensor_id: "edge-promised", state: "never_seen", is_problem: true,
       plan: { mode: "siphon", iface: "eth2", segment: "198.51.100.0/24", addr: "", gateway: "198.51.100.1", targets: "*" },
       address: "198.51.100.9", segment: "fourth floor IDF", reported_segment: "",
+      flow_series: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      netflow: { known: true, observed: false, flows: 0, last_at: "",
+                 why: "no flows from this sensor's address in 24h" },
+      zeek: { known: false, observed: false, last_at: "",
+              why: "only the hub runs Zeek; a remote weirling does not report one" },
       expected_mode: "siphon", reported_mode: "", enabled: true, registered: true,
       age_s: null, last_seen: null,
       capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
@@ -3552,22 +3566,55 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             } catch (_e) { return false; }
           })(),
           String(window.sessionStorage.getItem("wv-wl-views")).slice(0, 80));
-    // inline toggle: one click posts the inverse
-    const posts2 = [];
-    const origFetch7b = window.fetch;
-    window.fetch = (u, o) => {
-      if (/weirlings\/enable/.test(String(u)) && o && o.body) posts2.push(String(o.body));
-      return origFetch7b(u, o);
-    };
-    const tog = doc.querySelector("#wl-table .wl-inline-toggle");
-    if (tog) tog.click();
-    await new Promise((r) => setTimeout(r, 300));
-    window.fetch = origFetch7b;
-    check("a row's inline toggle switches that sensor in one click",
-          posts2.length === 1 && /"sensor_id"/.test(posts2[0]),
-          posts2.join(" | ").slice(0, 110));
+    // THE ROW'S VERBS ARE MINIMAL (WL-1): membership changes live in the sheet; the list's
+    // only row-level action is Adopt, and only while a sensor is undeclared.
+    check("a row carries NO verbs except Adopt (the sheet owns membership)",
+          !doc.querySelector("#wl-table .wl-inline-toggle")
+          && doc.querySelectorAll("#wl-table button.wl-adopt").length >= 1,
+          String(doc.querySelectorAll("#wl-table .wl-inline-toggle").length));
     try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}
     await H.loadWeirlings();
+  }
+
+  // ── THE SCANNABLE LIST (WL-1) ──────────────────────────────────────────────────────────────
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    H.showView("weirlings");
+    await H.loadWeirlings();
+    await sleep(300);
+    const heads = [...doc.querySelectorAll("#wl-table thead th")]
+      .map((t) => t.textContent.trim());
+    check("WL-1: the columns are name / mode / networks / flow / netflow / zeek",
+          heads.join("|") === "weirling|mode|networks|flow|netflow|zeek",
+          heads.join("|"));
+    const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr")]
+      .find((tr) => (tr.textContent || "").includes(id));
+    const alive = row("edge-alive");
+    const spark = alive && alive.querySelector("svg.wl-spark polyline");
+    const pts = spark ? (spark.getAttribute("points") || "").trim().split(/\s+/).length : 0;
+    check("...a sensor with flow draws its trend from the series", pts >= 3,
+          spark ? spark.getAttribute("points") : "no sparkline");
+    const taps = alive ? [...alive.querySelectorAll(".tap")] : [];
+    check("...the taps LIGHT on evidence", taps.length === 2
+          && taps.every((t) => t.classList.contains("on")),
+          taps.map((t) => `${t.className}:${t.textContent}`).join(" "));
+    const promised = row("edge-promised");
+    const dark = promised ? promised.querySelector(".tap.off") : null;
+    check("...and SUBDUE with the reason when there is none",
+          !!dark && /no flows/.test(dark.getAttribute("title") || ""),
+          dark ? dark.getAttribute("title") : "none");
+    const stopped = row("edge-stopped");
+    check("...no series is an explicit absence, never a flat zero line",
+          !!stopped && !!stopped.querySelector(".wl-spark-empty")
+          && !stopped.querySelector("svg.wl-spark"),
+          stopped ? stopped.textContent.slice(0, 80) : "no row");
+    const cidrCell = promised && promised.querySelector("td:nth-child(3)");
+    check("...networks carries the subnet with CIDR",
+          !!cidrCell && /198\.51\.100\.0\/24/.test(cidrCell.textContent || ""),
+          cidrCell ? cidrCell.textContent : "none");
+    check("...and no findings prose leaks into the list",
+          !/reporting normally, last heard/.test(
+            doc.getElementById("wl-table").textContent || ""));
   }
 
   // ── ALERT DISCIPLINE (BF-12) ────────────────────────────────────────────────────────────────

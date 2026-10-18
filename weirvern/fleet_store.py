@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from clickhouse_connect.driver.client import Client
 
@@ -422,6 +422,92 @@ def read_heartbeats(client: Client) -> tuple[list[dict], str | None]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("heartbeat read failed: %s", exc)
         return [], "sensor heartbeats are unavailable, so this shows registrations only"
+
+
+# ── WL-1: PER-SENSOR FLOW EVIDENCE, FROM THE FLOWS THEMSELVES ────────────────────────────────
+#
+# The Weirlings list shows a weirling's flow trend and two tap indicators. The honest source is
+# the `flows` table's own `sampler_address` -- the exporter's address, which is the sensor's
+# reported address -- so no agent change is needed to know whether a sensor's flows are being
+# observed. Absence is a fact too: zero flows from an address in the window is "not observed"
+# and must never render as a flat zero line that reads as measured idle traffic.
+
+
+def flow_evidence(client: Client, addresses: list[str], *, hours: int = 24,
+                  now: datetime | None = None) -> tuple[dict[str, dict], str]:
+    """Per exporter address: how many flows in the window and when the last one landed."""
+    addrs = sorted({str(a).strip() for a in (addresses or []) if str(a or "").strip()})
+    if not addrs:
+        return {}, ""
+    now = now or datetime.now(UTC)
+    since = now.replace(tzinfo=None) - timedelta(hours=int(hours))
+    try:
+        rows = client.query(
+            "SELECT sampler_address, count(), max(timestamp) FROM weirvern.flows "
+            "WHERE timestamp > %(since)s AND sampler_address IN %(addrs)s "
+            "GROUP BY sampler_address",
+            parameters={"since": since, "addrs": addrs},
+        ).result_rows
+        out = {str(addr): {"flows": int(n or 0), "last_at": str(last) if last else ""}
+               for addr, n, last in rows}
+        return out, ""
+    except Exception as exc:  # noqa: BLE001
+        return {}, str(exc)
+
+
+def flow_series(client: Client, addresses: list[str], *, minutes: int = 60, buckets: int = 12,
+                now: datetime | None = None) -> tuple[dict[str, list[int]], str]:
+    """Flows per bucket per exporter, for a sparkline. Zero-filled only when the exporter has
+    at least one flow in the window; no flows at all returns NO series (the caller says
+    "not observed"), so an empty trend and an idle one never look alike."""
+    addrs = sorted({str(a).strip() for a in (addresses or []) if str(a or "").strip()})
+    if not addrs:
+        return {}, ""
+    now = now or datetime.now(UTC)
+    minutes, buckets = max(1, int(minutes)), max(1, int(buckets))
+    since = now.replace(tzinfo=None) - timedelta(minutes=minutes)
+    try:
+        rows = client.query(
+            "SELECT sampler_address, toStartOfMinute(timestamp) AS m, count() "
+            "FROM weirvern.flows "
+            "WHERE timestamp > %(since)s AND sampler_address IN %(addrs)s "
+            "GROUP BY sampler_address, m ORDER BY m",
+            parameters={"since": since, "addrs": addrs},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        return {}, str(exc)
+    span = minutes * 60.0
+    out: dict[str, list[int]] = {}
+    for addr, minute, n in rows:
+        a = str(addr)
+        series = out.get(a)
+        if series is None:
+            series = out[a] = [0] * buckets
+        try:
+            offset = max(0.0, (minute - since).total_seconds())
+        except Exception:  # noqa: BLE001
+            continue
+        idx = min(buckets - 1, int(offset / span * buckets))
+        series[idx] += int(n or 0)
+    return out, ""
+
+
+def zeek_evidence(client: Client, *, hours: int = 24,
+                  now: datetime | None = None) -> tuple[dict, str]:
+    """Whether this DEPLOYMENT's Zeek is writing. Only the hub runs Zeek -- a remote weirling
+    does not report one, and the caller says so rather than inventing a dark indicator."""
+    now = now or datetime.now(UTC)
+    since = now.replace(tzinfo=None) - timedelta(hours=int(hours))
+    try:
+        rows = client.query(
+            "SELECT count(), max(ts) FROM weirvern.zeek_conn WHERE ts > %(since)s",
+            parameters={"since": since},
+        ).result_rows
+        n, last = (rows[0] if rows else (0, None))
+        return ({"observed": bool(n), "rows": int(n or 0), "last_at": str(last) if last else "",
+                 "why": "" if n else "the hub's Zeek has written nothing in the last 24h"}, "")
+    except Exception as exc:  # noqa: BLE001
+        return {"observed": False, "rows": 0, "last_at": "", "why": str(exc)}, str(exc)
 
 
 def build_fleet(client: Client, *, now: datetime | None = None,

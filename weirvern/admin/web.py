@@ -1322,6 +1322,43 @@ def _build_handler(ctx: GuiContext):
             for row in payload.get("sensors") or []:
                 row["local"] = (row.get("sensor_id") == local_name)
 
+            # WL-1: the flow trend and the tap indicators, from the flows' own exporter
+            # address. One query each for the whole fleet; a failure leaves the fields ABSENT
+            # (the list renders "not observed" with its reason) -- never a fabricated zero.
+            addresses = [str(r.get("address") or "") for r in payload.get("sensors") or []]
+            try:
+                with self._with_client() as ev_client:
+                    evidence, ev_err = fleet_store.flow_evidence(ev_client, addresses)
+                    series, _series_err = fleet_store.flow_series(ev_client, addresses)
+                    zeek, _zeek_err = fleet_store.zeek_evidence(ev_client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("fleet flow evidence unavailable: %s", exc)
+                evidence, series = {}, {}
+                zeek = {"observed": False, "rows": 0, "last_at": "", "why": str(exc)[:120]}
+                ev_err = str(exc)[:120]
+            for row in payload.get("sensors") or []:
+                addr = str(row.get("address") or "")
+                ev = evidence.get(addr) or {}
+                row["flow_series"] = series.get(addr) or []
+                row["netflow"] = {
+                    "known": bool(addr),
+                    "observed": bool(ev.get("flows")),
+                    "flows": int(ev.get("flows") or 0),
+                    "last_at": ev.get("last_at") or "",
+                    "why": ("" if ev else
+                            ("no flows from this sensor's address in 24h" if addr
+                             else ("the sensor has not reported an address yet"
+                                   if ev_err else "no address reported yet"))),
+                }
+                row["zeek"] = (
+                    {"known": True, "observed": bool(zeek.get("observed")),
+                     "last_at": zeek.get("last_at") or "",
+                     "why": zeek.get("why") or ""}
+                    if row.get("local") else
+                    {"known": False, "observed": False, "last_at": "",
+                     "why": "only the hub runs Zeek; a remote weirling does not report one"}
+                )
+
             if include_revoked:
                 # Revoked rows are shown on request, for the audit question ("was this ever
                 # covered?"). Fetched separately and appended, so the normal view cannot

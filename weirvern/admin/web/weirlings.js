@@ -333,6 +333,53 @@ async function wlBulk(kind, btn) {
   wlRenderBulk();
 }
 
+/** WL-1: a twelve-bucket flow sparkline. NO SERIES IS NOT AN IDLE LINE: no samples means
+ *  "not observed" and says so; a measured idle hour is a series of real zeroes. */
+function wlSparkline(r) {
+  const vals = Array.isArray(r.flow_series) ? r.flow_series : [];
+  const ev = r.netflow || {};
+  if (!vals.length) {
+    const why = !ev.known ? "no address reported yet"
+      : (ev.flows ? "no flows in the last hour" : "no flows observed in 24h");
+    return el("span", { class: "muted mono wl-spark-empty", text: "—",
+                        attrs: { title: why } });
+  }
+  const w = 88, h = 22, pad = 2;
+  const max = Math.max(1, ...vals);
+  const step = vals.length > 1 ? (w - pad * 2) / (vals.length - 1) : 0;
+  const total = vals.reduce((a, b) => a + b, 0);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "wl-spark");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label",
+    `${total} flows from this weirling in the last hour, by five-minute bucket`);
+  const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  poly.setAttribute("points",
+    vals.map((v, i) => `${pad + i * step},${h - pad - (v / max) * (h - pad * 2)}`).join(" "));
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", "currentColor");
+  poly.setAttribute("stroke-width", "1.5");
+  svg.appendChild(poly);
+  const wrap = el("span", { class: "wl-spark-wrap",
+    attrs: { title: `${total} flows in the last hour` } });
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+/** WL-1: a tap indicator. LIT only on evidence; SUBDUED with its reason otherwise. The word
+ *  is always present -- colour is never the only signal. */
+function wlTap(kind, info) {
+  const i = info || {};
+  const label = kind === "netflow" ? "netflow" : "zeek";
+  if (i.observed) {
+    return el("span", { class: "tap on", text: label,
+      attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") } });
+  }
+  return el("span", { class: "tap off", text: label,
+    attrs: { title: `${label} not observed — ${i.why || "no evidence"}` } });
+}
+
 function renderWeirlings(rows, revoked, revokedReason) {
   window.__wlRows = rows;   // the bulk actions re-read the selected rows' own values
   const tbody = document.querySelector("#wl-table tbody");
@@ -346,7 +393,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
   if (!visible.length) {
     const problemsOnly = document.getElementById("wl-problems-only").checked;
-    emptyRow(tbody, 2,
+    emptyRow(tbody, 6,
       stateFilter
         ? `No sensor is in state "${stateFilter.replace("_", " ")}" right now.`
         : problemsOnly
@@ -364,21 +411,17 @@ function renderWeirlings(rows, revoked, revokedReason) {
   }
 
   for (const r of visible) {
-    // The state on the ROW, not only in the chip: a scanning eye reads the row's edge before it
-    // reads any word (see the .wl-state-* rules in style.css).
-    // US-4: rows on this table highlight on hover, and now they OPEN -- a hover wash over a
-    // row that does nothing is the false-affordance the grammar bans.
+    // The row's LEFT EDGE carries the state (the .wl-state-* rules); the words below carry
+    // only what a reader scans for. Findings prose stays out of the list: the Logs tab owns
+    // issues, and the problem dot's title carries the first sentence.
     const tr = el("tr", { class: `wl-state-${r.state || "unknown"} clickable` +
                                  (r.is_problem ? " row-problem" : "") });
     tr.addEventListener("click", () => {
       if (typeof openWeirling === "function") openWeirling(r.sensor_id);
     });
 
-    // The sensor id is the drill-down affordance AND stays a plain text label -- a button inside
-    // a table cell is the accessible form of "the row is clickable".
+    // 1) WEIRLING -- the name is the open affordance; the checkbox is the worklist's.
     tr.appendChild(el("td", {}, [
-      // A CHECKBOX PER ROW (BF-7): the worklist's selection is the operator's; it survives
-      // reloads within the tab (WL_SELECTED is a tab-local set, like every other UI state).
       r.registered
         ? el("input", {
             class: "wl-sel",
@@ -396,51 +439,15 @@ function renderWeirlings(rows, revoked, revokedReason) {
         class: "link",
         text: r.sensor_id,
         attrs: { title: "open this sensor" },
-        // US-4: the row now opens on its own; the name cell stops bubbling so the sheet
-        // is not opened twice by one click.
         on: { click: (ev) => { ev.stopPropagation(); openWeirling(r.sensor_id); } },
       }),
-      r.note ? el("div", { class: "muted", text: r.note }) : null,
-    ].filter(Boolean)));
-    if (r.registered && WL_SELECTED.has(r.sensor_id)) {
-      const cb = tr.querySelector("input.wl-sel");
-      if (cb) cb.checked = true;
-    }
-
-    // EACH SENSOR AND ITS STATUS -- the operator, 2026-10-17 ("I don't need all the extra
-    // info... just each sensor and their status"). The chip carries the state and its colour;
-    // the age rides beside it because "stale" without "for how long" is half the fact.
-    // Everything else -- address, segments, modes, loss, findings -- is one click away in the
-    // drill-down, which was always where the full story lived.
-    tr.appendChild(el("td", {}, [
-      (() => {
-        // LAST-SEEN WITH ITS DETAIL ON HOVER (BF-7; research: multi-axis status): the chip
-        // carries the verdict, the title carries the measurement behind it.
-        const chip = wlStateChip(r.state);
-        chip.title = r.registered && r.last_seen
-          ? `last heard ${fmtTime(new Date(r.last_seen))} (${wlAge(r.age_s)})` +
-            (r.stale_after_s ? `; marked stale after ${r.stale_after_s}s of silence` : "")
-          : "never heard from since registration";
-        return chip;
-      })(),
-      el("span", { class: "muted", text: " " + wlAge(r.age_s) }),
-      // THE INLINE ENABLE TOGGLE (BF-7): the one routine action a sensor needs, in its row --
-      // single click like the drill-down (switching off is reversible; revoking is not, and
-      // that one stays behind its confirm).
-      r.registered
-        ? el("button", {
-            class: "link wl-inline-toggle",
-            text: r.enabled ? "Disable" : "Enable",
-            attrs: { title: r.enabled ? "switch this sensor off" : "switch this sensor on" },
-            on: { click: (ev) => { ev.stopPropagation(); wlToggle(r, ev.target); } },
-          })
+      r.is_problem
+        ? el("span", { class: "wl-problem-dot",
+            attrs: { title: (r.findings || [])[0] || "needs attention",
+                     "aria-label": "needs attention" } })
         : null,
-      // ONE-CLICK ADOPTION, the network-appliance pattern (operator, 2026-10-17: "New
-      // weirlings should be that easy" -- the way appliances adopt new hardware). A sensor
-      // the hub is hearing but nobody has
-      // declared offers the ONE action it needs, right in its row -- no drill-down, no form.
-      // The button exists only while the action does; a registered sensor's row stays a
-      // status line, which is the "each sensor and its status" contract from the same day.
+      // ONE-CLICK ADOPTION stays in the row: a sensor the hub can hear but nobody declared
+      // offers the one action it needs, and only while that is true.
       !r.registered
         ? el("button", {
             class: "link wl-adopt",
@@ -450,6 +457,43 @@ function renderWeirlings(rows, revoked, revokedReason) {
           })
         : null,
     ].filter(Boolean)));
+    if (r.registered && WL_SELECTED.has(r.sensor_id)) {
+      const cb = tr.querySelector("input.wl-sel");
+      if (cb) cb.checked = true;
+    }
+
+    // 2) MODE -- what the sensor REPORTS running; the declaration rides beside it only when
+    // the two disagree, because a declaration that matches is not information.
+    const reported = String(r.reported_mode || "").toLowerCase();
+    const declared = String(r.expected_mode || "").toLowerCase();
+    tr.appendChild(el("td", {}, [
+      el("span", { class: "mono" + (reported ? "" : " muted"),
+                   text: reported || "—",
+                   attrs: { title: reported ? "the mode the sensor reports running"
+                                            : "the sensor has not reported a mode" } }),
+      declared && declared !== reported
+        ? el("span", { class: "muted", text: ` declared ${declared}`,
+                       attrs: { title: "the mode the registry declares for it" } })
+        : null,
+    ].filter(Boolean)));
+
+    // 3) NETWORKS -- the subnet with CIDR: the plan's segment, else the declaration, else the
+    // sensor's own report, and an explicit "no segment declared" rather than a blank.
+    const plan = r.plan || {};
+    const cidr = String(plan.segment || r.segment || r.reported_segment || "").trim();
+    tr.appendChild(el("td", {}, [
+      el("span", { class: "mono" + (cidr ? "" : " muted"),
+                   text: cidr || "— no segment declared",
+                   attrs: { title: cidr ? "the subnet this weirling captures"
+                                        : "no plan, declaration or report carries a CIDR" } }),
+    ]));
+
+    // 4) FLOW -- the last hour as a sparkline (see wlSparkline for the empty contract).
+    tr.appendChild(el("td", {}, [wlSparkline(r)]));
+
+    // 5) NETFLOW / 6) ZEEK -- evidence, not decoration.
+    tr.appendChild(el("td", {}, [wlTap("netflow", r.netflow)]));
+    tr.appendChild(el("td", {}, [wlTap("zeek", r.zeek)]));
 
     tbody.appendChild(tr);
   }
@@ -476,7 +520,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
              [el("span", { text: r.sensor_id })]),
           el("span", { class: "muted", text: " (revoked)" }),
         ]));
-        tr.appendChild(el("td", {}, [
+        tr.appendChild(el("td", { attrs: { colspan: "5" } }, [
           el("span", { class: "chip muted", text: "revoked" }),
           el("span", { class: "muted",
                        text: r.revoked_at ? ` retired ${r.revoked_at}` : "" }),
