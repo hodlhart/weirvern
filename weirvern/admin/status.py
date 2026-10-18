@@ -857,11 +857,17 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         # The other in-line source: a live siphon intercept relays through this box too, and its
         # traffic can be metered the same way. One tap per box -- see the tooltip.
         ("siphon_netflow", "intercept flow capture"),
-        ("reverse_dns", "reverse DNS"),
         # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
         # thing an operator needs to respond to without a redeploy.
         ("exclude_cidrs", "exclude from learning"),
         ("capture_exclude_cidrs", "exclude at capture"),
+    ]),
+    # DNS-VIEW BEHAVIOUR, NOT A SENSOR'S (WSM-1, 2026-10-18). reverse_dns used to sit in the
+    # Weirling group, which made "weirling settings" mean the capture AND the DNS view. It is
+    # read by the resolver, not by a capture process, so it owns a group the weirling sheet
+    # never renders.
+    ("dns", "DNS", [
+        ("reverse_dns", "reverse DNS"),
     ]),
     ("sluice", "Sluice Gate", [
         ("sluice_block_domains", "domain blocking"),

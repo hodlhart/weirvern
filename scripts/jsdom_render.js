@@ -5279,10 +5279,11 @@ check("...a contradicted segment names BOTH segments on the issues list",
         !!bodyNow.querySelector(".wl-situation")
         && bodyNow.querySelectorAll(".wl-situation p").length <= 3,
         String(bodyNow.querySelectorAll(".wl-situation p").length) + " paragraph(s)");
-  const openSettings = [...bodyNow.querySelectorAll("button")]
-    .find((b) => (b.textContent || "") === "Open Settings");
+  const localSettings = doc.getElementById("wl-local-settings");
   check("...this hub's own sensor points at the surface that changes it",
-        !!openSettings, "no pointer to Settings for the local sensor");
+        !!localSettings && !localSettings.classList.contains("hidden")
+        && !!localSettings.querySelector("#st-sensor"),
+        "the local sheet does not mount the settings");
   await H.openWeirling("edge-moved");
   check("...a remote sensor's sheet offers its plan, and nothing else to read",
         !doc.getElementById("wl-plan").classList.contains("hidden")
@@ -5393,18 +5394,20 @@ check("...a contradicted segment names BOTH segments on the issues list",
   const openRow = (id) => [...doc.querySelectorAll("#wl-table button")]
     .find((b) => (b.textContent || "") === id);
 
-  // THE SETTINGS SENSOR CARD really holds the controls (they are not orphaned by the move).
-  H.showView("settings");
-  await H.loadSettings();
-  await sleep(300);
-  const sensorGrid = doc.querySelector("#view-settings #st-sensor");
-  check("Settings' Sensor card holds the sensor's own settings grid",
-        !!sensorGrid && sensorGrid.querySelectorAll(".setting").length >= 1,
-        sensorGrid ? `${sensorGrid.querySelectorAll(".setting").length} row(s)` : "no grid");
-  check("...and the mode, Sonar and test-run controls sit IN that card",
-        !!doc.querySelector("#view-settings .sonar-row #wl-mode-select")
-        && !!doc.querySelector("#view-settings .sonar-row #st-sonar")
-        && !!doc.querySelector("#view-settings .sonar-row #st-test"));
+  // THE LOCAL WEIRLING'S SHEET really holds the controls (moved from Settings, not copied).
+  H.showView("weirlings");
+  await H.loadWeirlings();
+  await H.openWeirling("edge-alive");
+  await sleep(250);
+  const localBox = doc.getElementById("wl-local-settings");
+  check("the local weirling's sheet holds the sensor's own settings grid",
+        !!localBox && !localBox.classList.contains("hidden")
+        && localBox.querySelectorAll("#st-sensor .setting").length >= 1,
+        localBox ? `${localBox.querySelectorAll("#st-sensor .setting").length} row(s)` : "no grid");
+  check("...and the mode, Sonar and test-run controls sit IN that section",
+        !!localBox.querySelector(".sonar-row #wl-mode-select")
+        && !!localBox.querySelector(".sonar-row #st-sonar")
+        && !!localBox.querySelector(".sonar-row #st-test"));
   const modeSel = doc.getElementById("wl-mode-select");
   check("...the mode selector carries the configured mode, disabled for viewers only",
         !!modeSel && modeSel.value === "loch", modeSel ? modeSel.value : "no select");
@@ -5434,7 +5437,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         && /"intercept_segment":"198\.51\.100\.0\/24"/.test(applyPost.body || ""),
         (applyPost || {}).body || "no apply");
 
-  // THE SHEET: no settings machinery of any kind, and no second copy of anything.
+  // THE SHEET: the local weirling's controls are here; Settings has no second copy.
   H.showView("weirlings");
   await H.loadWeirlings();
   const localBtn = openRow("edge-alive");
@@ -5444,12 +5447,36 @@ check("...a contradicted segment names BOTH segments on the issues list",
          .includes("reporting normally"); i++) {
       await sleep(20);
     }
-    const sheet = doc.getElementById("wl-detail-card");
-    check("the weirling sheet carries NO settings controls (their home is Settings)",
-          !sheet.querySelector("#st-sensor") && !sheet.querySelector(".sonar-row")
-          && !sheet.querySelector("#wl-mode-select") && !sheet.querySelector("#st-sonar")
-          && !sheet.querySelector("#st-test"),
-          "a settings control is still in the sheet");
+    const localSection = doc.getElementById("wl-local-settings");
+    check("the local weirling's sheet carries the settings controls",
+          !!localSection && !localSection.classList.contains("hidden")
+          && !!localSection.querySelector("#st-sensor .setting")
+          && !!localSection.querySelector(".sonar-row #wl-mode-select"),
+          "the controls did not move with their section");
+    check("...and Settings no longer holds a copy",
+          !doc.querySelector("#view-settings #st-sensor")
+          && !doc.querySelector("#view-settings .sonar-row #wl-mode-select"));
+    // WSM-2: the sheet's pending bar renders the SAME STAGE that it applies.
+    H.discardStage();
+    await sleep(80);
+    const nfBox = localSection.querySelector(
+      "#st-sensor .setting[data-key='channel_netflow'] .setting-toggle");
+    if (nfBox) {
+      nfBox.checked = true;
+      nfBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+      await sleep(40);
+      check("a change staged in the sheet appears in the sheet's pending bar",
+            !doc.getElementById("wl-stage").classList.contains("hidden")
+            && (doc.getElementById("wl-stage-list").textContent || "").includes("channel_netflow"),
+            "the mirror did not follow STAGE");
+      check("...and in Settings' pending list -- one STAGE, not a second",
+            (doc.getElementById("st-stage-list").textContent || "").includes("channel_netflow"));
+      doc.getElementById("wl-stage-discard").click();
+      await sleep(80);
+      check("...and Discard from the sheet clears both surfaces",
+            doc.getElementById("wl-stage").classList.contains("hidden")
+            && !(doc.getElementById("st-stage-list").textContent || "").includes("channel_netflow"));
+    }
     check("...and no Advanced disclosure doubling the settings page",
           !doc.getElementById("wl-advanced"));
     await H.openWeirling("edge-stopped");
@@ -5481,8 +5508,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !doc.getElementById("wl-plan").classList.contains("hidden"),
           "the plan editor is the one per-sensor control that is not Settings'");
     check("...and never the hub's runtime controls",
-          !doc.getElementById("wl-detail-card").querySelector("#wl-mode-select")
-          && !doc.getElementById("wl-detail-card").querySelector("#st-sonar"));
+          doc.getElementById("wl-local-settings").classList.contains("hidden"));
     doc.getElementById("wl-detail-close").click();
     await sleep(60);
   }

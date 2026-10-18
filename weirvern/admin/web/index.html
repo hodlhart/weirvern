@@ -898,7 +898,13 @@
       </div>
     </div>
     <div class="card">
-      <h2>Weirling <button class="info-btn" data-info="st-sensor-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Weirling <button class="info-btn" data-info="hp-sensor-info" aria-label="how to read this card" aria-expanded="false">i</button></h2>
+      <div class="info-text hidden" id="hp-sensor-info">
+  <p><strong>What it is.</strong> This host's sensor: the interfaces it can capture on, the mode it reports, and whether the tap is alive.</p>
+  <p><strong>What writes it.</strong> The sensor's own heartbeat; nothing here is editable.</p>
+  <p><strong>Last changed.</strong> Each heartbeat.</p>
+  <p><strong>Where to see it.</strong> Here for the host's view; the Weirlings tab for the fleet and, for this hub, its settings.</p>
+</div>
       <div id="hp-sensor"><p class="muted">loading…</p></div>
     </div>
     <div class="card">
@@ -1251,6 +1257,63 @@
       <h2>Change this weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
         <button id="wl-sheet-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
       <div id="wl-detail-body"></div>
+      <!-- THIS HUB'S OWN WEIRLING (WSM-3, 2026-10-18): the settings its daemon reads, MOVED
+           here from Settings. One control per value, one apply route: these inputs stage into
+           the same STAGE the Settings tab uses, and #wl-stage applies it. A remote weirling
+           never shows this section: its capture is configured on its own box. -->
+      <div id="wl-local-settings" class="hidden">
+        <h3>Settings for this hub's weirling <span class="muted" id="wl-local-state"></span>
+          <button class="info-btn" data-info="wl-local-info" aria-label="what these settings control" aria-expanded="false">i</button>
+        </h3>
+        <div class="info-text hidden" id="wl-local-info">
+  <p><strong>What it is.</strong> This hub's own capture: its mode and the settings its daemon reads. A remote weirling's capture is configured on its own box; its sheet shows only the plan this hub can send it.</p>
+  <p><strong>What writes it.</strong> The settings plan (Apply), and Sonar or the test run through the same write gates. A change stages into the same pending set as the Settings tab.</p>
+  <p><strong>Last changed.</strong> Each Apply; the fleet row above reports the mode the sensor says it is running.</p>
+  <p><strong>Where to see it.</strong> The row above for what it reports; these controls for what it is configured to do.</p>
+</div>
+        <div class="controls sonar-row">
+          <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
+          <button id="st-sonar" type="button">Sonar</button>
+          <button class="setting-help-btn" id="st-sonar-help" type="button"
+                  aria-label="explain Sonar" aria-expanded="false"
+                  title="what Sonar does">i</button>
+          <button id="st-test" type="button">Test run (30s)</button>
+          <button class="setting-help-btn" id="st-test-help" type="button"
+                  aria-label="explain the test run" aria-expanded="false"
+                  title="what the test run does">i</button>
+        </div>
+        <div id="st-sonar-note" class="muted sonar-note"></div>
+        <div id="st-sonar-help-text" class="setting-help hidden">
+          Sonar surveys the network this sensor's capture interface is on — it reads the
+          segment, sends one ARP sweep to find which addresses answer and which are free, checks
+          the gateway — and reports what it measured. Nothing is written; enabling siphon uses
+          what Sonar found when it runs.
+        </div>
+        <div id="st-test-note" class="muted sonar-note"></div>
+        <div id="st-test-help-text" class="setting-help hidden">
+          A test run switches the sensor to siphon mode for 30 seconds, lets the worker run the
+          real intercept, then switches back to loch — the mappings are restored on the worker's
+          normal shutdown path. It needs the siphon capabilities on the sensor node and a
+          complete plan. The result below says which hosts were intercepted, and that the mode
+          was put back.
+        </div>
+        <div id="st-sensor" class="grid-inline"></div>
+        <!-- THE SAME PENDING SET, WHERE THE CONTROLS ARE (WSM-2). It renders the one STAGE; it
+             never keeps a second copy of a staged value. Includes Detection changes staged on
+             the Settings tab, because the operator is about to apply them from here. -->
+        <div id="wl-stage" class="hidden">
+          <h3>Pending changes <span class="muted" id="wl-stage-count"></span></h3>
+          <p class="muted" id="wl-stage-note" role="status" aria-live="polite">No changes staged.</p>
+          <div id="wl-stage-list"></div>
+          <div class="controls">
+            <button id="wl-stage-apply" class="primary" disabled>Apply changes</button>
+            <button id="wl-stage-discard" disabled>Discard</button>
+          </div>
+        </div>
+        <!-- THE RECEIPT OUTLIVES THE STAGE: Apply clears the pending set, and the answer to
+             "did it work?" must not disappear with it. -->
+        <div id="wl-apply-results" role="status" aria-live="polite"></div>
+      </div>
       <!-- THE SENSOR'S OWN INTERCEPT PLAN (loch/siphon + what to intercept). Shown for every
            REGISTERED sensor except this hub's own: the plan travels to the sensor in its own
            registry row, its agent reads it there, and the sensor reports back the mode it
@@ -1399,42 +1462,14 @@
     </div>
 
     <div class="card">
-      <h2>Sensor <span class="muted">this hub's own capture</span>
-        <button class="info-btn" data-info="st-sensor-info" aria-label="what this card controls"
-                aria-expanded="false" title="what this card controls">i</button></h2>
-      <div class="info-text hidden" id="st-sensor-info">
-  <p><strong>What it is.</strong> This hub's own capture: its mode and the settings its daemon reads. Every OTHER sensor's plan lives in its own Weirling sheet — this card only ever writes the box this console runs beside.</p>
-  <p><strong>What writes it.</strong> The settings plan (Apply), and Sonar or the test run through the same write gates.</p>
-  <p><strong>Last changed.</strong> Each Apply; the fleet row's reported mode is what the sensor says it is running.</p>
-  <p><strong>Where to see it.</strong> The Weirlings tab for what it reports, this card for what it is configured to do.</p>
+      <h2>DNS <button class="info-btn" data-info="st-dns-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <div class="info-text hidden" id="st-dns-info">
+  <p><strong>What it is.</strong> How the DNS view names the addresses it shows.</p>
+  <p><strong>What writes it.</strong> Operators, applied with the settings plan.</p>
+  <p><strong>Last changed.</strong> Each Apply. The resolver reads it, not a capture process.</p>
+  <p><strong>Where to see it.</strong> The Names column of the DNS view.</p>
 </div>
-      <div class="controls sonar-row">
-        <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
-        <button id="st-sonar" type="button">Sonar</button>
-        <button class="setting-help-btn" id="st-sonar-help" type="button"
-                aria-label="explain Sonar" aria-expanded="false"
-                title="what Sonar does">i</button>
-        <button id="st-test" type="button">Test run (30s)</button>
-        <button class="setting-help-btn" id="st-test-help" type="button"
-                aria-label="explain the test run" aria-expanded="false"
-                title="what the test run does">i</button>
-      </div>
-      <div id="st-sonar-note" class="muted sonar-note"></div>
-      <div id="st-sonar-help-text" class="setting-help hidden">
-        Sonar surveys the network this sensor's capture interface is on — it reads the
-        segment, sends one ARP sweep to find which addresses answer and which are free, checks
-        the gateway — and reports what it measured. Nothing is written; enabling siphon uses
-        what Sonar found when it runs.
-      </div>
-      <div id="st-test-note" class="muted sonar-note"></div>
-      <div id="st-test-help-text" class="setting-help hidden">
-        A test run switches the sensor to siphon mode for 30 seconds, lets the worker run the
-        real intercept, then switches back to loch — the mappings are restored on the worker's
-        normal shutdown path. It needs the siphon capabilities on the sensor node and a
-        complete plan. The result below says which hosts were intercepted, and that the mode
-        was put back.
-      </div>
-      <div id="st-sensor" class="grid-inline"></div>
+      <div id="st-dns" class="grid-inline"></div>
     </div>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so

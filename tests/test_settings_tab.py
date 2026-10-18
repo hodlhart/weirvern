@@ -282,27 +282,38 @@ def test_the_settings_tab_is_in_the_nav_and_is_its_own_section():
     assert '"/api/settings"' in src, "there is no /api/settings route"
 
 
-def test_the_sensor_controls_live_on_settings_and_nowhere_else():
-    """The operator, 2026-10-18: "Weirling control is still conflated... duplicate settings and
-    advanced. It's not clean." The 2026-10-17 arrangement put a runtime row, a Sonar button and
-    a second copy of the sensor grid inside the weirling sheet -- and left Settings' Sensor
-    card empty, with its grid rendering into the sheet's "Advanced". ONE control surface per
-    value: the sensor's own settings, its mode, Sonar and the test run live on Settings; the
-    sheet keeps status, NICs, membership and (for a remote sensor) its plan.
+def test_the_local_weirlings_sheet_owns_its_settings_and_settings_does_not():
+    """The operator, 2026-10-18: "remove weirling settings from the settings tab and move it to
+    the weirling pop out on the weirling tab. Selecting a weirling opens the settings for that
+    specific one."
+
+    This REVERSES the pin that stood here earlier the same day, which said Settings owned the
+    sensor controls. The 2026-10-17 attempt failed by DUPLICATING the grid into the sheet and
+    leaving Settings' Sensor card empty; the answer is a MOVE -- the controls exist once, in the
+    local weirling's sheet, and Settings keeps only what is not a weirling's (Detection, DNS,
+    Sluice, Blocklists, Storage).
     """
     index = (WEB / "index.html").read_text()
     settings = index.split('id="view-settings"')[1].split("</section>")[0]
     weirlings = index.split('id="view-weirlings"')[1].split("</section>")[0]
     for element in ("st-sensor", "st-sonar", "st-test", "wl-mode-select"):
-        assert f'id="{element}"' in settings, f"#{element} is not on the Settings page"
-        assert f'id="{element}"' not in weirlings, (
-            f"#{element} is still mounted in the Weirlings view; the control surface was "
-            f"supposed to consolidate onto Settings"
+        assert f'id="{element}"' in weirlings, f"#{element} is not in the local weirling's sheet"
+        assert f'id="{element}"' not in settings, (
+            f"#{element} is still mounted on Settings; the controls were supposed to move, "
+            f"not be copied"
         )
+    # The moved controls live in the LOCAL section, never in the plan editor for a remote sensor.
+    local = weirlings.split('id="wl-local-settings"')[1].split('id="wl-plan"')[0]
+    for element in ("st-sensor", "st-sonar", "st-test", "wl-mode-select", "wl-stage-apply"):
+        assert f'id="{element}"' in local, f"#{element} is outside the local settings section"
+    # The duplicate disclosure and the standalone register card are still gone.
     assert 'id="wl-advanced"' not in index, "the duplicate Advanced disclosure survives"
     assert 'id="wl-runtime"' not in index, "the sheet's runtime wrapper survives"
     assert 'id="st-wl-select"' not in settings, "the scrapped weirling selector survives"
     assert 'id="wl-id"' not in index, "the standalone register card survives"
+    # DNS-view behaviour moved out of the sensor group and off the weirlings view.
+    assert 'id="st-dns"' in settings, "the DNS group has no card on Settings"
+    assert 'id="st-dns"' not in weirlings, "the DNS group leaked onto the weirlings view"
     # The NICs must still render per sensor -- the operator asked for them by name.
     assert "NICs" in (WEB / "weirlings.js").read_text()
 

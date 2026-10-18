@@ -365,7 +365,7 @@ async function wlBulk(kind, btn) {
 
 /** WL-2: ONE SENTENCE ABOUT THE CHANGE, not a fact sheet. It names the state (and the first
  *  finding, when there is one) because a control whose situation is hidden is a control you
- *  press blind; everything else moved to the row, the Logs tab and the Settings page. */
+ *  press blind; everything else moved to the row, the Logs tab and this sheet's settings. */
 function wlSituation(r) {
   const state = String(r.state || "unknown").replace(/_/g, " ");
   const bits = [`state: ${state}` + (r.registered ? "" : " (not adopted)")];
@@ -376,14 +376,15 @@ function wlSituation(r) {
   const first = (r.findings || [])[0];
   if (first) box.appendChild(el("p", { class: "muted", text: first }));
   if (r.local) {
+    // THE SETTINGS ARE BELOW, NOT ON ANOTHER TAB (WSM-3, 2026-10-18). The old "Open Settings"
+    // button led to a card that no longer exists; the sentence points at this sheet's section.
     box.appendChild(el("p", { class: "muted",
-      text: "This is the hub's own sensor — its mode, Sonar and settings live on the Settings tab." }));
-    const open = el("button", { class: "quiet", text: "Open Settings",
-                               attrs: { type: "button" } });
-    open.addEventListener("click", () => {
-      if (typeof showView === "function") showView("settings");
-    });
-    box.appendChild(el("div", { class: "controls" }, [open]));
+      text: "This is the hub's own weirling — its mode, Sonar and capture settings are below." }));
+    if (!r.registered) {
+      box.appendChild(el("p", { class: "muted",
+        text: "It has not been adopted into the fleet yet; adopt it below. Its settings are "
+          + "available either way." }));
+    }
   } else if (!r.registered) {
     box.appendChild(el("p", { class: "muted", text: "Adopt it below, then give it a plan." }));
   }
@@ -696,10 +697,35 @@ async function openWeirling(sensorId) {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   body.replaceChildren();
 
+  // THIS HUB'S OWN WEIRLING OWNS ITS SETTINGS HERE (WSM-3, 2026-10-18). The controls moved out
+  // of Settings; the payload that fills them is the same /api/settings. Shown for the local row
+  // whether or not it has been adopted -- adoption declares it to the fleet, it does not decide
+  // whether the box this console runs beside can be configured.
+  const localBox = document.getElementById("wl-local-settings");
+  if (localBox) {
+    const showLocal = Boolean(r.local);
+    localBox.classList.toggle("hidden", !showLocal);
+    const localState = document.getElementById("wl-local-state");
+    if (localState) localState.textContent = showLocal && !r.registered ? "not yet adopted" : "";
+    if (showLocal && typeof loadSettings === "function") {
+      // Load on open: never render values from a page the operator may not have visited, and
+      // show a change made elsewhere the next time this sheet opens.
+      try {
+        await loadSettings();
+      } catch (err) {
+        const detailNote = document.getElementById("wl-detail-note");
+        if (detailNote) {
+          detailNote.textContent = "Settings could not be read: "
+            + (err && err.message ? err.message : err);
+        }
+      }
+    }
+  }
+
   // THE SENSOR'S OWN PLAN: for every REGISTERED weirling except this hub's own. An undeclared
   // sensor has nothing a plan could belong to (adopt it first), and this hub's own sensor is
-  // configured through the Settings tab's ConfigMap -- the two mechanisms are different on
-  // purpose, and each panel shows only the one that can actually reach its sensor.
+  // configured in its sheet's settings section -- the two mechanisms are different on purpose,
+  // and each panel shows only the one that can actually reach its sensor.
   const planBox = document.getElementById("wl-plan");
   if (planBox) {
     const showPlan = !!r.registered && !r.local;

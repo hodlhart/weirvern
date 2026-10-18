@@ -193,7 +193,7 @@
       "renderer": "weirlings.js",
       "status": "owned",
       "duplicates": [
-        "Settings declares it; the row reports it. Declaration vs report is a distinction, not a duplicate."
+        "The weirling sheet declares it (a remote sensor's plan, or this hub's own ConfigMap row); the row reports it. Declaration vs report is a distinction, not a duplicate."
       ]
     },
     {

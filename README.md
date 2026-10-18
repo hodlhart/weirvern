@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 baselines, flags the deviations that match real attack shapes, and shows a human *why*, with the
 measurements that fired.
 
-Current release: **0.17.2** · Runs on any conformant Kubernetes · No payload inspection · Alerts
+Current release: **0.17.3** · Runs on any conformant Kubernetes · No payload inspection · Alerts
 via [Pushover](https://pushover.net), or log-only.
 
 ## What it does
@@ -110,12 +110,14 @@ what DNS actually answered) · Netflow (volume, protocols, ports, fan-out) · Ze
 Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this
 stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed, and
 each weirling carries its own intercept plan — mode, segment, address, gateway, targets — which
-that sensor reads and applies itself) ·
+that sensor reads and applies itself; this hub's own weirling carries its capture settings in the
+same sheet) ·
 Sluice (rules, domain blocklists imported from the internet or your own names, and every gate that
 is enforcing, including the ones on other sensors) · **Blocked** (what has been caught — the
 recorded name hits — and what is doing the catching: the live rules split by whether they block
-or only alert, with the addresses a domain's name currently resolves to) · Settings (every knob
-with bounds, help, and the restart it costs).
+or only alert, with the addresses a domain's name currently resolves to) · Settings (the
+deployment's knobs — detection, Sluice, blocklists, storage — with bounds, help, and the restart
+it costs).
 
 **Detection — what the models conclude.** Four independently trained detectors — Isolation Forest,
 Gradient Boosting, DBSCAN and a per-host Adaptive Baseline — fused into one score with a

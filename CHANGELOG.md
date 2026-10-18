@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.17.3 — 2026-10-18
+
+A WEIRLING'S SETTINGS LIVE IN ITS OWN SHEET.
+
+The operator, 2026-10-18: "remove weirling settings from the settings tab and move it to the
+weirling pop out on the weirling tab. Selecting a weirling opens the settings for that specific
+one."
+
+- The Settings tab's Sensor card is gone. This hub's own weirling now carries its mode, Sonar,
+  the 30-second test run and its capture settings in the sheet that opens when you select it.
+  It is a MOVE: every control exists once, and the retired pin
+  `test_the_sensor_controls_live_on_settings_and_nowhere_else` is replaced by its inverse with
+  the operator's instruction in the docstring.
+- The sheet's pending-changes bar is the same `STAGE` Settings uses: one key, one plan, one
+  `/api/settings/apply`, one receipt. A Detection change staged on Settings can be applied from
+  the sheet, the result is shown in both places, and Discard clears both.
+- `reverse_dns` leaves the Weirling group for a new **DNS** card on Settings: it changes how the
+  DNS view names addresses, not what a sensor captures.
+- A remote weirling's sheet keeps its registry plan and one sentence naming what this hub cannot
+  reach. An unadopted local weirling shows its settings and Adopt together, because adoption is
+  a fleet declaration, not a prerequisite for configuring the box this console runs beside.
+- The host-health "Weirling" card's explainer now describes itself instead of pointing at the
+  deleted Settings panel.
+
+Harness 817 → 821 checks; the full suite passes; design of record: `docs/design/weirling-settings.md`.
+
 ## 0.17.2 — 2026-10-18
 
 THE CONSOLE WEARS THE README'S MARK.

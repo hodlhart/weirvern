@@ -601,6 +601,39 @@ function stageChange(key, value, original) {
   renderStage();
 }
 
+/** ONE PENDING SET, TWO SURFACES (WSM-2). The note follows the controls: Settings' Pending
+ *  changes card and the weirling sheet's. Two messages would be two truths. */
+function setStageNote(text) {
+  for (const id of ["st-stage-note", "wl-stage-note"]) {
+    const n = document.getElementById(id);
+    if (n) n.textContent = text;
+  }
+}
+
+/** The sheet's mirror of the same STAGE: the keys and their staged values, never a copy of
+ *  them. Includes Detection changes staged on Settings, because Apply here writes them too. */
+function renderStageMirror(keys) {
+  const box = document.getElementById("wl-stage");
+  if (!box) return;
+  const count = document.getElementById("wl-stage-count");
+  const apply = document.getElementById("wl-stage-apply");
+  const discard = document.getElementById("wl-stage-discard");
+  const list = document.getElementById("wl-stage-list");
+  box.classList.toggle("hidden", !keys.length);
+  if (count) count.textContent = keys.length ? `${keys.length} staged` : "";
+  if (apply) apply.disabled = keys.length === 0;
+  if (discard) discard.disabled = keys.length === 0;
+  if (!list) return;
+  list.replaceChildren();
+  for (const key of keys) {
+    list.appendChild(el("div", { class: "stage-row" }, [
+      el("span", { class: "stage-key mono", text: key }),
+      el("span", { class: "stage-arrow", text: "→" }),
+      el("span", { class: "stage-val mono", text: STAGE.changes[key] || "(empty)" }),
+    ]));
+  }
+}
+
 function discardStage() {
   STAGE.changes = {};
   STAGE.from = {};
@@ -622,8 +655,10 @@ const LAST_APPLY = { text: "", results: null };
 
 function renderStage() {
   const keys = Object.keys(STAGE.changes);
+  // THE SHEET SEES THE SAME SET (WSM-2). Rendered before the early return so the mirror is
+  // never stale just because Settings' list host is absent.
+  renderStageMirror(keys);
   const count = document.getElementById("st-stage-count");
-  const note = document.getElementById("st-stage-note");
   const list = document.getElementById("st-stage-list");
   const apply = document.getElementById("st-stage-apply");
   const discard = document.getElementById("st-stage-discard");
@@ -638,16 +673,11 @@ function renderStage() {
     // THE RESULT OF THE LAST APPLY OUTLIVES THE RELOAD. loadSettings() runs after an apply and
     // calls this function, which would otherwise erase the confirmation an operator just waited
     // for -- they would see "no changes staged" and have to guess whether it worked.
-    if (note) {
-      note.textContent = LAST_APPLY.text
-        || "No changes staged. Edit a value above to stage one.";
-    }
+    setStageNote(LAST_APPLY.text || "No changes staged. Edit a value above to stage one.");
     return;
   }
-  if (note) {
-    note.textContent = "Staged, not applied. Apply will write the cluster configuration and "
-      + "restart whatever reads it.";
-  }
+  setStageNote("Staged, not applied. Apply will write the cluster configuration and "
+    + "restart whatever reads it.");
 
   // A staged edit whose value the server would reject is shown BEFORE apply, so nobody discovers
   // a typo by pressing the button.
@@ -697,8 +727,16 @@ function renderStage() {
  * the server's own reason -- and, when anything failed, one button that stages the failed items
  * again and applies just those. "It said error" is not a result; this is. */
 function renderApplyResults() {
-  const out = document.getElementById("st-apply-results");
-  if (!out) return;
+  // THE RECEIPT FOLLOWS THE CONTROLS (WSM-2): the same LAST_APPLY renders on Settings and in
+  // the weirling sheet, so an apply from the sheet is not a result the operator has to go
+  // looking for on another tab.
+  for (const id of ["st-apply-results", "wl-apply-results"]) {
+    const host = document.getElementById(id);
+    if (host) renderApplyInto(host);
+  }
+}
+
+function renderApplyInto(out) {
   out.replaceChildren();
   const R = LAST_APPLY.results;
   if (!R) return;
@@ -781,10 +819,9 @@ async function planStage() {
  * it): the enable already IS the confirmation -- the button says what it does. The manual
  * Apply keeps its warned-change dialog. */
 async function applyStage(skipWarnConfirm) {
-  const note = document.getElementById("st-stage-note");
   const keys = Object.keys(STAGE.changes);
   if (!keys.length) return;
-  if (note) note.textContent = "applying…";
+  setStageNote("applying…");
   try {
     // Plan first, always: the server may insist on explicit confirmation, and a plan the operator
     // never saw is not consent. This also surfaces a rejected value before anything is written.
@@ -800,7 +837,7 @@ async function applyStage(skipWarnConfirm) {
         "This change is allowed but costly:\n\n" +
         warns.map((p) => `${p.key}: ${p.warning}`).join("\n\n") +
         "\n\nApply anyway?");
-      if (!ok) { if (note) note.textContent = "not applied — you declined the warning"; return; }
+      if (!ok) { setStageNote("not applied — you declined the warning"); return; }
     }
     // BF-9: a staged set that puts this deployment in path gets the echo first -- target,
     // blast radius, and a reason that is recorded with the actor and the time.
@@ -817,7 +854,7 @@ async function applyStage(skipWarnConfirm) {
         reasonHint: "why this box is going in-path",
       });
       if (!verdict.ok) {
-        if (note) note.textContent = "not applied — you declined the siphon confirmation";
+        setStageNote("not applied — you declined the siphon confirmation");
         return;
       }
       applyReason = verdict.reason;
@@ -843,11 +880,11 @@ async function applyStage(skipWarnConfirm) {
       parts.push("NOT APPLIED — " + res.restart_errors.join("; "));
     }
     LAST_APPLY.text = parts.join(" · ");
-    if (note) note.textContent = LAST_APPLY.text;
+    setStageNote(LAST_APPLY.text);
     await loadSettings();
   } catch (err) {
     // A refused write states the server's reason: a missing token, an RBAC gap, a bad value.
-    if (note) note.textContent = "not applied — " + (err.message || err);
+    setStageNote("not applied — " + (err.message || err));
     if (err.status === 401) { setToken(""); await refreshAuthNote(); }
     // A REFUSED WRITE STILL GETS ITS RECEIPT: the server's per-item verdicts ride the refusal,
     // and the failed items can be re-staged in one click.
@@ -857,7 +894,7 @@ async function applyStage(skipWarnConfirm) {
       // every check that ran (and every skip with its reason) is one hover away, and the
       // stage is deliberately NOT cleared -- the fix is to adjust the staged value.
       LAST_APPLY.text = "BLOCKED \u2014 " + (p.error || "an apply-time check refused this change");
-      if (note) note.textContent = LAST_APPLY.text;
+      setStageNote(LAST_APPLY.text);
       LAST_APPLY.results = { at: "", items: [], restarted: [], restart_errors: [],
                              tests: p.tests || [], blocked: true };
       renderApplyResults();
@@ -1095,7 +1132,7 @@ async function loadSettings() {
   if (!data || data.available === false) {
     if (win) win.textContent = "";
     if (sum) sum.textContent = "Unavailable: " + ((data && data.reason) || "no data");
-    for (const id of ["st-detect", "st-sensor", "st-runtime"]) {
+    for (const id of ["st-detect", "st-sensor", "st-dns", "st-runtime"]) {
       const n = document.getElementById(id);
       if (n) { n.replaceChildren(); n.appendChild(chartEmpty("Unavailable.")); }
     }
@@ -1135,7 +1172,7 @@ async function loadSettings() {
   const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
   if (sum) sum.textContent = `${total} settings in effect`;
 
-  for (const key of ["detect", "sensor", "runtime"]) {
+  for (const key of ["detect", "sensor", "dns", "runtime"]) {
     const host = document.getElementById(`st-${key}`);
     if (!host) continue;
     host.replaceChildren();
@@ -3586,7 +3623,11 @@ document.addEventListener("DOMContentLoaded", () => {
       await loadSettings();
     }],
     ["st-stage-apply", () => applyStage().catch(showError)],
-    ["st-stage-discard", () => discardStage()],
+    ["st-stage-discard", async () => discardStage()],
+    // THE SHEET'S APPLY IS THE SAME APPLY (WSM-2): same STAGE, same plan, same write route,
+    // same receipt. Nothing here is a second settings mechanism.
+    ["wl-stage-apply", () => applyStage().catch(showError)],
+    ["wl-stage-discard", async () => discardStage()],
     // SONAR: the survey button. Disabled for callers without write access (loadSettings
     // sets that from the server's answer) -- a viewer sees it with its help text, which
     // teaches what it does; it is not hidden.
