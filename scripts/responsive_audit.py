@@ -100,7 +100,13 @@ AUDIT_JS = r"""
   const clipped = [];
   for (const el of document.querySelectorAll('td, th, .cell, .kv dd, .kv dt, span, div')) {
     if (!vis(el) || !(el.innerText || '').trim()) continue;
-    if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflow !== 'visible') {
+    // A SCROLL CONTAINER IS NOT CLIPPED TEXT. `.tablewrap` scrolls its table on purpose at phone
+    // widths; counting it said "clipped" about content the reader can reach by scrolling. Only
+    // content the element hides with no way to reach it counts.
+    const cs = getComputedStyle(el);
+    if ((cs.overflowX === 'auto' || cs.overflowX === 'scroll')
+        && el.scrollWidth > el.clientWidth + 1) continue;
+    if (el.scrollWidth > el.clientWidth + 1 && cs.overflow !== 'visible') {
       clipped.push(sel(el));
       if (clipped.length >= 8) break;
     }
