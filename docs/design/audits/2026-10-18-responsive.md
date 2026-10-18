@@ -35,6 +35,21 @@ Every view at 1440 is clean on overflow. Every view at 390 and 320 is clean on *
 the phone layout holds. Clipped text: Network and Zeek clip ≥8 elements at every width; Models,
 Netflow, Blocked, Identity and Sluice clip at ≤390.
 
+## Update, same day — US-A1 fixed
+
+The tablet overflow was one root cause and is closed. The sticky header and its status line were
+flex rows that could not wrap, so they set a page minimum of ~1077px above the 720 breakpoint.
+`header` and `.status` now wrap (canon C-8: *the shell wraps, it does not widen*).
+
+Re-measured on the deployed build (`sha-175352d9f`), same method, no candidate stylesheet:
+
+- **820:** overflow **0 on all fifteen views** (was 257 on every one).
+- **1440 / 390 / 320:** 0 on the spot-checked views (Weirlings, Anomalies, Settings), unchanged.
+- Everything else in the table above still stands — 632 sub-44px controls on Anomalies, Models at
+  8,635 DOM, Sluice's five unnamed controls, the clipboard on Network/Zeek.
+
+The numbers above are kept as the baseline the defect was diagnosed from.
+
 ## Findings
 
 - **A-1 (systemic, severity 1) — the tablet width has no plan.** All fifteen views overflow by
