@@ -12,16 +12,16 @@ not treat as settled). Change the document, not the memory.
 
 ## 1. The ambition
 
-**Be more useful and more visually coherent than UniFi, and visibly more truthful than every
-console in this space.**
+**Be more useful and more visually coherent than the reference console, and visibly more
+truthful than every console in this space.**
 
-Not "look like UniFi". UniFi owns one thing completely — a single visual language applied without
+Not "look like the reference console". It owns one thing completely — a single visual language applied without
 exception — and is weak at exactly the thing weirvern is for: evidence, provenance and recovery.
 The target is therefore stated in axes, not adjectives:
 
 | axis | the peer that owns it | the bar we must clear |
 |---|---|---|
-| visual coherence | UniFi | one primitive, one spacing scale, one accent, every view |
+| visual coherence | the reference console | one primitive, one spacing scale, one accent, every view |
 | fleet legibility | Tailscale admin | one row answers what · mode · network · is it flowing |
 | alert → decision → action | Security Onion | fewer clicks, measured, than the peer path |
 | depth without a query bar | Elastic Security | forensic depth with no KQL on screen |
@@ -167,7 +167,7 @@ One board, `weirvern-usability`, four card families:
 
 The gate has teeth: **no open severity-1; canon lint green against the ratchet; responsive audit
 green at 390 and 820; no dimension may silently drop against the last committed scorecard**
-(`docs/design/scorecards/YYYY-MM-DD.md`).
+(`docs/design/scorecards/`, one file per date — see its README).
 
 **The judge does not fix.** Review and critique run as read-only subagents; the verdict comes back
 to the parent, which files cards. A reviewer that fixes grades its own work.
@@ -194,7 +194,8 @@ consequence in clicks or seconds. "Feels cluttered" is rejected by the skill its
 ## 10. Locked decisions (2026-10-18)
 
 - Signature: **the evidence chain** (this document, §2).
-- Standard: **match UniFi on coherence, beat it on truth and speed**, don't chase icon craft.
+- Standard: **match the reference console on coherence, beat it on truth and speed**, don't chase
+  icon craft.
 - Seats: **novice** for entry/flow/vocabulary, **operator** for density/recovery.
 - Verdict: **numeric scorecard with hard blockers**, baseline committed per release.
 - Mobile: **four jobs**, "open on desktop" allowed for bulk config, **44/36px** targets.

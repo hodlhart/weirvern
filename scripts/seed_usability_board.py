@@ -151,7 +151,7 @@ CARDS: list[dict] = [
         "whence": "vision.md §3: the blind-swap test needs the peer's screenshot for the same job. We have "
                   "notes, not pictures.",
         "accept": "* references/peers/<peer>.md for Elastic Security, Security Onion, Wazuh, OPNsense/pfSense,\n"
-                  "  UniFi Network, Grafana, Cloudflare Zero Trust, Tailscale admin.\n"
+                  "  the reference console, Grafana, Cloudflare Zero Trust, Tailscale admin.\n"
                   "* Each: the three jobs (fleet, alert, change) with what they do, what to steal, what NOT to copy,\n"
                   "  and a screenshot or a precise description where a screenshot is not permissible.\n"
                   "* Every rubric dimension cites at least one peer lesson.",
@@ -160,9 +160,10 @@ CARDS: list[dict] = [
         "key": "US-R2", "priority": 2, "status": "blocked",
         "title": "The pilot scorecard: all fifteen tabs, two seats, both viewports",
         "goal": "Produce the first honest baseline verdict so design work sequences by axis, not by screen.",
-        "whence": "vision.md §9. Nothing in the plan can be called 'better than UniFi' until the baseline "
-                  "says where we are.",
-        "accept": "* A scorecard in docs/design/scorecards/2026-10-XX.md: nine dimensions x fifteen views,\n"
+        "whence": "vision.md §9. Nothing in the plan can be called 'better than the reference console' "
+                  "until the baseline says where we are.",
+        "accept": "* A scorecard in docs/design/scorecards/ (one file per date; the README states the shape):\n"
+                  "  nine dimensions x fifteen views,\n"
                   "  scored 0-3 with the novice seat for entry/flow/vocabulary and the operator seat "
                   "for density/recovery.\n"
                   "* Every score carries evidence (screenshot + measured fact); no score without evidence.\n"
