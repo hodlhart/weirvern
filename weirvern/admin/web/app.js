@@ -4134,7 +4134,7 @@ function renderAgreement(counts) {
     const colour = MODEL_COLORS[name] || "#888";
     const pct = (c / max) * 100;
     host.appendChild(el("div", { class: "bar-row" }, [
-      el("span", { class: "bar-name", text: name, title: name }),
+      el("span", { class: "bar-name", text: name }),
       el("span", { class: "bar-track" }, [
         el("span", { class: "bar-fill", attrs: { style: `width:${pct}%;background:${colour}` } }),
       ]),

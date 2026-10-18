@@ -80,7 +80,7 @@ function renderBars(hostId, res, opts = {}) {
     const pct = Math.max(2, Math.round((v / max) * 100));
     const colour = opts.colour ? opts.colour(r, idx) : SOC_PALETTE[idx % SOC_PALETTE.length];
     const row = el("div", { class: "bar-row" + (opts.onClick ? " clickable" : "") }, [
-      el("span", { class: "bar-name", text: label(r), title: label(r) }),
+      el("span", { class: "bar-name", text: label(r) }),
       el("span", { class: "bar-track" }, [
         el("span", { class: "bar-fill", attrs: { style: `width:${pct}%;background:${colour}` } }),
       ]),

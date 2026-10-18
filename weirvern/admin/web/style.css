@@ -603,7 +603,10 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 .bar-row { display: grid; grid-template-columns: 160px 1fr 64px;
   align-items: center; gap: 10px; margin: 5px 0; }
 .bar-name { font-family: var(--mono); font-size: 12px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* US-A5: a name that does not fit WRAPS. It used to be clipped with an ellipsis and the full
+   * value was reachable only by hovering -- a meaning-only title, which the canon forbids. The
+   * label column is fixed, so wrapping is the honest way to keep the whole name readable. */
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }
 .bar-track { background: var(--panel2); border: 1px solid var(--border-solid);
   border-radius: 3px; height: 14px; position: relative; overflow: hidden; }
 .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; display: block; }

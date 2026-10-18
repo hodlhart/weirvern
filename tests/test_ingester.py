@@ -943,7 +943,15 @@ def _run_tail_forever(path, seconds=1.2, interval=0.2):
     deadline = time.time() + seconds
     while time.time() < deadline and client.inserts == 0:
         time.sleep(0.05)
-    time.sleep(interval * 1.5)  # let a second pass complete, which is what checkpoints
+    # WAIT FOR THE CHECKPOINT ITSELF, NOT FOR THE CLOCK. A fixed `interval * 1.5` assumed the
+    # second beat lands on time; under a loaded suite it does not, and the checkpoint assertion
+    # failed intermittently -- a flaky gate is worse than a slow one. The loop is already running;
+    # poll for the file it is supposed to write.
+    from weirvern.ingester import _tail_state_path
+    cp = pathlib.Path(_tail_state_path(str(path)))
+    cp_deadline = time.time() + 10.0
+    while time.time() < cp_deadline and not cp.exists():
+        time.sleep(0.05)
     stop.set()
     th.join(timeout=5)
     assert not th.is_alive(), (
