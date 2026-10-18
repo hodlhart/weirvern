@@ -1325,7 +1325,21 @@ def _build_handler(ctx: GuiContext):
             # WL-1: the flow trend and the tap indicators, from the flows' own exporter
             # address. One query each for the whole fleet; a failure leaves the fields ABSENT
             # (the list renders "not observed" with its reason) -- never a fabricated zero.
-            addresses = [str(r.get("address") or "") for r in payload.get("sensors") or []]
+            # A row's exporter is its own address. THIS DEPLOYMENT'S OWN SENSOR exports over
+            # LOOPBACK on its node, and its heartbeat carries no address, so the local row
+            # looks up the loopback samplers instead -- without that, the one sensor the hub can
+            # see exporting would show an empty trend while nine thousand flows sit in the table.
+            exporters: dict[str, list[str]] = {}
+            for r in payload.get("sensors") or []:
+                sid = str(r.get("sensor_id") or "")
+                addr = str(r.get("address") or "").strip()
+                if addr:
+                    exporters[sid] = [addr]
+                elif r.get("local"):
+                    exporters[sid] = ["127.0.0.1", "::1"]
+                else:
+                    exporters[sid] = []
+            addresses = sorted({a for group in exporters.values() for a in group})
             try:
                 with self._with_client() as ev_client:
                     evidence, ev_err = fleet_store.flow_evidence(ev_client, addresses)
@@ -1337,16 +1351,28 @@ def _build_handler(ctx: GuiContext):
                 zeek = {"observed": False, "rows": 0, "last_at": "", "why": str(exc)[:120]}
                 ev_err = str(exc)[:120]
             for row in payload.get("sensors") or []:
-                addr = str(row.get("address") or "")
-                ev = evidence.get(addr) or {}
-                row["flow_series"] = series.get(addr) or []
+                sid = str(row.get("sensor_id") or "")
+                keys = exporters.get(sid) or []
+                evs = [evidence.get(k) or {} for k in keys]
+                flows = sum(int(e.get("flows") or 0) for e in evs)
+                last = max((str(e.get("last_at") or "") for e in evs if e.get("last_at")),
+                           default="")
+                merged_series = [0] * 12
+                has_series = False
+                for k in keys:
+                    vals = series.get(k) or []
+                    if vals:
+                        has_series = True
+                    for i, v in enumerate(vals[:12]):
+                        merged_series[i] += int(v or 0)
+                row["flow_series"] = merged_series if has_series else []
                 row["netflow"] = {
-                    "known": bool(addr),
-                    "observed": bool(ev.get("flows")),
-                    "flows": int(ev.get("flows") or 0),
-                    "last_at": ev.get("last_at") or "",
-                    "why": ("" if ev else
-                            ("no flows from this sensor's address in 24h" if addr
+                    "known": bool(keys),
+                    "observed": flows > 0,
+                    "flows": flows,
+                    "last_at": last,
+                    "why": ("" if flows else
+                            ("no flows from this sensor's exporter in 24h" if keys
                              else ("the sensor has not reported an address yet"
                                    if ev_err else "no address reported yet"))),
                 }
