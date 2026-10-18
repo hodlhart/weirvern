@@ -439,14 +439,17 @@ def flow_evidence(client: Client, addresses: list[str], *, hours: int = 24,
     addrs = sorted({str(a).strip() for a in (addresses or []) if str(a or "").strip()})
     if not addrs:
         return {}, ""
-    now = now or datetime.now(UTC)
-    since = now.replace(tzinfo=None) - timedelta(hours=int(hours))
+    # NOW() IS THE DATABASE'S OWN CLOCK. Measured live: flows are stored in the server's
+    # local time (America/Chicago) while a Python UTC-naive `since` is five hours ahead of it,
+    # so a 60-minute window matched nothing beside 7,100 stored flows. Comparing in the DB's
+    # timezone removes the skew without guessing anyone's offset.
     try:
         rows = client.query(
             "SELECT sampler_address, count(), max(timestamp) FROM weirvern.flows "
-            "WHERE timestamp > %(since)s AND sampler_address IN %(addrs)s "
+            f"WHERE timestamp > now() - INTERVAL {int(hours)} HOUR "
+            "AND sampler_address IN %(addrs)s "
             "GROUP BY sampler_address",
-            parameters={"since": since, "addrs": addrs},
+            parameters={"addrs": addrs},
         ).result_rows
         out = {str(addr): {"flows": int(n or 0), "last_at": str(last) if last else ""}
                for addr, n, last in rows}
@@ -463,32 +466,44 @@ def flow_series(client: Client, addresses: list[str], *, minutes: int = 60, buck
     addrs = sorted({str(a).strip() for a in (addresses or []) if str(a or "").strip()})
     if not addrs:
         return {}, ""
-    now = now or datetime.now(UTC)
     minutes, buckets = max(1, int(minutes)), max(1, int(buckets))
-    since = now.replace(tzinfo=None) - timedelta(minutes=minutes)
+    # Same clock rule as flow_evidence: the window is the database's, and the buckets are
+    # aligned to the DATA's own newest minute -- so a timezone difference cannot push every
+    # flow into bucket zero, and a series that stopped three hours ago still draws its shape.
     try:
         rows = client.query(
             "SELECT sampler_address, toStartOfMinute(timestamp) AS m, count() "
             "FROM weirvern.flows "
-            "WHERE timestamp > %(since)s AND sampler_address IN %(addrs)s "
+            f"WHERE timestamp > now() - INTERVAL {int(minutes)} MINUTE "
+            "AND sampler_address IN %(addrs)s "
             "GROUP BY sampler_address, m ORDER BY m",
-            parameters={"since": since, "addrs": addrs},
+            parameters={"addrs": addrs},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         return {}, str(exc)
     span = minutes * 60.0
-    out: dict[str, list[int]] = {}
+    bucket_s = span / buckets
+    by_addr: dict[str, list[tuple]] = {}
+    last_minute = None
     for addr, minute, n in rows:
         a = str(addr)
-        series = out.get(a)
-        if series is None:
-            series = out[a] = [0] * buckets
-        try:
-            offset = max(0.0, (minute - since).total_seconds())
-        except Exception:  # noqa: BLE001
-            continue
-        idx = min(buckets - 1, int(offset / span * buckets))
-        series[idx] += int(n or 0)
+        by_addr.setdefault(a, []).append((minute, n))
+        if last_minute is None or minute > last_minute:
+            last_minute = minute
+    if last_minute is None:
+        return {}, ""
+    out: dict[str, list[int]] = {}
+    for a, points in by_addr.items():
+        series = out[a] = [0] * buckets
+        for minute, n in points:
+            try:
+                back = (last_minute - minute).total_seconds()
+            except Exception:  # noqa: BLE001
+                continue
+            if back < 0 or back >= span:
+                continue      # older than the window (or clock skew): not this sparkline
+            idx = min(buckets - 1, buckets - 1 - int(back / bucket_s))
+            series[idx] += int(n or 0)
     return out, ""
 
 
