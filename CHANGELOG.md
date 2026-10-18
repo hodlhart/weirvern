@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.17.1 — 2026-10-18
+
+THREE FIXES ON THE WEIRLINGS TAB, all from the operator's own reading of the live fleet.
+
+- An UNADOPTED weirling is listed only while it is online and still talking. `sensor_status`
+  keeps seven days of heartbeats, so a sensor identity that stopped -- a pod name from an
+  earlier rollout, a decommissioned unit, a host renamed once -- kept producing `unregistered`
+  rows that no operator could act on. Measured on the box: a stale `Weirvern` identity 78,403s
+  old sat beside the sensors that were feeding the hub. The view now applies the same
+  `HEARTBEAT_STALE_S` window every other panel uses, before the header is counted, so the rows
+  and the counts cannot disagree. Registered sensors are untouched: `stale` still says a
+  declared sensor went quiet.
+- Selecting a row no longer opens it. The checkbox's click bubbled to the row's own drill-down
+  handler, so the one control meant to be a quiet selection also opened the sensor sheet.
+- Every row carries a checkbox, including an undeclared one, and the bulk bar offers only what
+  the selection can do: `Adopt selected` for undeclared sensors, the declared-only verbs
+  (enable, disable, re-apply, revoke) for adopted ones.
+
 ## 0.17.0 — 2026-10-17
 
 THE THEME AND BUTTONOLOGY PROGRAM — all twenty cards, shipped and evidenced.

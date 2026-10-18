@@ -585,3 +585,72 @@ def test_the_summary_PUBLISHES_the_unknown_count_even_when_it_is_zero():
     broken.state = U
     s2 = summarise([healthy, broken])
     assert s2[U] == 1, s2
+
+
+# ── THE TAB SHOWS AN UNADOPTED WEIRLING ONLY WHILE IT IS TALKING ───────────────────────────────
+#
+# `sensor_status` keeps seven days of heartbeats, so a sensor identity that stopped -- a pod name
+# from an earlier rollout, a decommissioned unit -- keeps producing `unregistered` rows long after
+# anything is on the wire. They cannot be adopted (the sensor that wrote them is gone) and they
+# bury the one undeclared row that IS feeding the hub. The operator's rule (2026-10-18): an
+# unadopted weirling appears in the tab only while it is online and still talking.
+#
+# The filter lives in `build_fleet` (the VIEW payload), not in `fleet()` (the semantics), so the
+# classification tests above keep pinning what an unregistered row MEANS while this pins what the
+# tab SHOWS. The distinction matters: `fleet()` still returns the ghost with its state, which is
+# what makes the rule testable in one place and honest in the other.
+
+
+def test_the_fleet_payload_HIDES_an_undeclared_sensor_that_stopped_talking():
+    """The live defect: a stale `Weirvern` identity (78,403s old) sat in the list beside the two
+    sensors that were actually feeding the hub, and there was nothing an operator could do with it.
+    """
+    from weirvern import fleet_store
+
+    client = _StubClient({"sensor_status": [hb("gone-box", age_s=HEARTBEAT_STALE_S * 20)]})
+    payload = fleet_store.build_fleet(client, now=NOW)
+
+    assert payload["available"] is True
+    assert payload["sensors"] == [], (
+        f"a stale undeclared sensor is still in the tab: "
+        f"{[s['sensor_id'] for s in payload['sensors']]}"
+    )
+    assert payload["summary"]["total"] == 0, payload["summary"]
+    assert payload["summary"]["unregistered"] == 0, (
+        f"the header still counts the hidden ghost, so the count and the rows disagree: "
+        f"{payload['summary']}"
+    )
+
+
+def test_the_fleet_payload_KEEPS_an_undeclared_sensor_that_is_still_talking():
+    """The row the tab exists for: something is feeding the hub and nobody declared it."""
+    from weirvern import fleet_store
+
+    client = _StubClient({"sensor_status": [hb("live-undeclared", age_s=1)]})
+    payload = fleet_store.build_fleet(client, now=NOW)
+
+    ids = [s["sensor_id"] for s in payload["sensors"]]
+    assert ids == ["live-undeclared"], ids
+    row = payload["sensors"][0]
+    assert row["state"] == STATE_UNREGISTERED, row["state"]
+    assert row["is_problem"] is True, "a fresh undeclared sensor must still ask for a decision"
+    assert payload["summary"]["unregistered"] == 1, payload["summary"]
+
+
+def test_the_hide_rule_does_not_touch_a_REGISTERED_sensor_that_went_quiet():
+    """Only UNADOPTED rows are filtered. A declared sensor going quiet is the `stale` state, whose
+    whole job is to tell the operator it ran and stopped -- hiding it would delete that answer.
+    """
+    from weirvern import fleet_store
+
+    client = _StubClient({
+        "weirlings": [{"sensor_id": "edge-quiet", "address": "", "segment": "",
+                       "expected_mode": "loch", "enabled": 1, "note": "",
+                       "added_at": NOW, "updated_at": NOW, "revoked_at": None}],
+        "sensor_status": [hb("edge-quiet", age_s=HEARTBEAT_STALE_S * 20)],
+    })
+    payload = fleet_store.build_fleet(client, now=NOW)
+
+    ids = [s["sensor_id"] for s in payload["sensors"]]
+    assert ids == ["edge-quiet"], f"a registered stale sensor was hidden: {ids}"
+    assert payload["sensors"][0]["state"] == STATE_STALE, payload["sensors"][0]["state"]

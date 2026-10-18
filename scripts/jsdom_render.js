@@ -3513,7 +3513,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // ── THE REFRESH TELLS THE TRUTH, THE MARK IS A VECTOR (TH-1) ───────────────────────────────
   {
-    const styleCss = require("fs").readFileSync(process.env.WEIRVERN_WEB + "/style.css", "utf8");
+    const styleCss = require("fs").readFileSync(path.join(WEB, "style.css"), "utf8");
     check("a heading never runs into its subtitle",
           styleCss.includes("h2 > .muted:not(:empty)::before"),
           "the separator rule is missing");
@@ -3791,6 +3791,47 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 60));
     check("...clear drops the selection and the bar",
           doc.getElementById("wl-bulk").classList.contains("hidden"));
+    // THE UNADOPTED ROW IS SELECTABLE, AND SELECTING IT IS NOT OPENING IT (operator, 2026-10-18).
+    // Both defects were in one control: the checkbox existed only on declared rows, and clicking
+    // it bubbled to the row's own click handler, which opened the drill-down sheet over the list.
+    const ghostBox = doc.querySelector('#wl-table input.wl-sel[data-id="ghost-box"]');
+    check("an undeclared weirling carries a checkbox too", !!ghostBox,
+          ghostBox ? "present" : "missing");
+    const detailCard = doc.getElementById("wl-detail-card");
+    if (detailCard) detailCard.classList.add("hidden");
+    ghostBox.click();
+    await new Promise((r) => setTimeout(r, 120));
+    check("...and selecting it does not open the sensor sheet",
+          !!detailCard && detailCard.classList.contains("hidden"),
+          detailCard ? detailCard.className : "no card");
+    check("...while the click still selects the row",
+          /1 selected/.test(doc.getElementById("wl-bulk-n").textContent),
+          doc.getElementById("wl-bulk-n").textContent);
+    check("...and the bar offers Adopt, not the declared-only verbs",
+          !doc.getElementById("wl-bulk-adopt").classList.contains("hidden") &&
+            doc.getElementById("wl-bulk-enable").classList.contains("hidden") &&
+            doc.getElementById("wl-bulk-revoke").classList.contains("hidden"),
+          `adopt=${!doc.getElementById("wl-bulk-adopt").classList.contains("hidden")} ` +
+            `enable=${!doc.getElementById("wl-bulk-enable").classList.contains("hidden")}`);
+    const beforeAdopt = POSTED.length;
+    doc.getElementById("wl-bulk-adopt").click();
+    await new Promise((r) => setTimeout(r, 300));
+    const adopted = POSTED.slice(beforeAdopt)
+      .filter((r) => r.url.includes("/api/weirlings/register"));
+    check("...and Adopt selected declares every undeclared row it was given",
+          adopted.length === 1 && /"sensor_id":"ghost-box"/.test(adopted[0].body),
+          adopted.map((r) => r.body).join(" | ").slice(0, 160));
+    // The stub is stateful, so put the fixture back: a later check must not inherit a
+    // registration this one made.
+    const ghostFixture = WEIRLINGS_PAYLOAD.sensors
+      .find((x) => x.sensor_id === "ghost-box");
+    if (ghostFixture) {
+      ghostFixture.registered = false;
+      ghostFixture.enabled = false;
+      ghostFixture.state = "unregistered";
+    }
+    await H.loadWeirlings();
+    await new Promise((r) => setTimeout(r, 80));
     // views: a default exists, switching applies filters, saving adds one
     await H.loadWeirlings();
     const viewSel = doc.getElementById("wl-view");

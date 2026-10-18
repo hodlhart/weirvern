@@ -260,6 +260,19 @@ function wlRenderBulk() {
   const count = WL_SELECTED.size;
   bar.classList.toggle("hidden", count === 0);
   if (n) n.textContent = count === 1 ? "1 selected" : `${count} selected`;
+  // THE BAR ONLY OFFERS WHAT THE SELECTION CAN DO. An undeclared sensor can be ADOPTED and
+  // nothing else -- enable, disable, re-apply and revoke all refuse it server-side -- while a
+  // declared one cannot be adopted again. Showing both groups for every selection is how a
+  // button that always fails teaches the operator to stop reading the bar.
+  const selected = (window.__wlRows || []).filter((r) => WL_SELECTED.has(r.sensor_id));
+  const hasDeclared = selected.some((r) => r.registered);
+  const hasUndeclared = selected.some((r) => !r.registered);
+  for (const id of ["wl-bulk-enable", "wl-bulk-disable", "wl-bulk-reapply", "wl-bulk-revoke"]) {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle("hidden", !hasDeclared);
+  }
+  const adopt = document.getElementById("wl-bulk-adopt");
+  if (adopt) adopt.classList.toggle("hidden", !hasUndeclared);
   const revoke = document.getElementById("wl-bulk-revoke");
   if (revoke && count === 0) {
     delete revoke.dataset.armed;
@@ -305,9 +318,24 @@ async function wlBulk(kind, btn) {
   for (const id of ids) {
     const row = (window.__wlRows || []).find((r) => r.sensor_id === id);
     try {
-      if (kind === "enable" || kind === "disable") {
+      if (kind === "adopt") {
+        // ADOPTION IS THE ONE BULK ACTION AN UNDECLARED SENSOR HAS. The declaration is filed
+        // from the sensor's OWN reports -- id, address and reported mode -- and the declared
+        // segment stays empty on purpose, exactly as the single-row Adopt does: copying a
+        // reported value into the declaration would manufacture a fact nobody stated.
+        if (!row || row.registered) { skipped += 1; continue; }
+        await postJSON("/api/weirlings/register", {
+          sensor_id: row.sensor_id,
+          address: row.address || "",
+          segment: "",
+          expected_mode: row.reported_mode || "loch",
+          note: "adopted from the fleet view while it was feeding unregistered",
+        });
+      } else if (kind === "enable" || kind === "disable") {
+        if (!row || !row.registered) { skipped += 1; continue; }
         await postJSON("/api/weirlings/enable", { sensor_id: id, enabled: kind === "enable" });
       } else if (kind === "revoke") {
+        if (!row || !row.registered) { skipped += 1; continue; }
         await postJSON("/api/weirlings/revoke", { sensor_id: id, reason: bulkReason });
       } else if (kind === "reapply") {
         // RE-APPLY = RE-PUSH THE SENSOR'S STORED PLAN. The apply route refuses an empty
@@ -324,8 +352,10 @@ async function wlBulk(kind, btn) {
     } catch (err) { failures.push(id); }
   }
   if (note) {
-    note.textContent = `${kind === "reapply" ? "re-applied" : kind + "d"}: ${ok}` +
-      (skipped ? `, skipped ${skipped} (no stored plan)` : "") +
+    // A VERB PER ACTION, not a suffix: `${kind}d` produced "adoptd".
+    const verb = { adopt: "adopted", reapply: "re-applied" }[kind] || `${kind}d`;
+    note.textContent = `${verb}: ${ok}` +
+      (skipped ? `, skipped ${skipped}` : "") +
       (failures.length ? ` — failed: ${failures.join(", ")}` : "");
   }
   WL_SELECTED.clear();
@@ -409,6 +439,14 @@ function wlTap(kind, info) {
 
 function renderWeirlings(rows, revoked, revokedReason) {
   window.__wlRows = rows;   // the bulk actions re-read the selected rows' own values
+  // A SELECTION THAT NO LONGER EXISTS MUST NOT LINGER. A row can disappear between loads --
+  // an undeclared sensor stops talking and the server stops sending it, a registration is
+  // revoked -- and a count for a row the operator cannot see would make the bulk bar act on
+  // something invisible. Pruned here, where the new row set first becomes known.
+  const present = new Set(rows.map((r) => r.sensor_id));
+  for (const id of [...WL_SELECTED]) {
+    if (!present.has(id)) WL_SELECTED.delete(id);
+  }
   const tbody = document.querySelector("#wl-table tbody");
   const empty = document.getElementById("wl-empty");
   tbody.replaceChildren();
@@ -449,19 +487,24 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
     // 1) WEIRLING -- the name is the open affordance; the checkbox is the worklist's.
     tr.appendChild(el("td", {}, [
-      r.registered
-        ? el("input", {
-            class: "wl-sel",
-            attrs: { type: "checkbox", "data-id": r.sensor_id,
-                     title: "select for bulk actions",
-                     "aria-label": `select ${r.sensor_id}` },
-            on: { change: (ev) => {
-              if (ev.target.checked) WL_SELECTED.add(r.sensor_id);
-              else WL_SELECTED.delete(r.sensor_id);
-              wlRenderBulk();
-            } },
-          })
-        : null,
+      el("input", {
+        class: "wl-sel",
+        attrs: { type: "checkbox", "data-id": r.sensor_id,
+                 title: "select for bulk actions",
+                 "aria-label": `select ${r.sensor_id}` },
+        on: {
+          // SELECTING IS NOT OPENING (operator, 2026-10-18). The row's own click opens the
+          // drill-down; without this the checkbox did BOTH -- it selected the row and opened a
+          // sheet over the list -- so the one control meant to be a quiet selection behaved
+          // like a link.
+          click: (ev) => ev.stopPropagation(),
+          change: (ev) => {
+            if (ev.target.checked) WL_SELECTED.add(r.sensor_id);
+            else WL_SELECTED.delete(r.sensor_id);
+            wlRenderBulk();
+          },
+        },
+      }),
       el("button", {
         class: "link",
         text: r.sensor_id,
@@ -484,7 +527,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
           })
         : null,
     ].filter(Boolean)));
-    if (r.registered && WL_SELECTED.has(r.sensor_id)) {
+    if (WL_SELECTED.has(r.sensor_id)) {
       const cb = tr.querySelector("input.wl-sel");
       if (cb) cb.checked = true;
     }
@@ -740,7 +783,8 @@ function wireWeirlings() {
     viewSave.dataset.wired = "1";
     viewSave.addEventListener("click", () => wlSaveView());
   }
-  for (const [id, kind] of [["wl-bulk-enable", "enable"], ["wl-bulk-disable", "disable"],
+  for (const [id, kind] of [["wl-bulk-adopt", "adopt"],
+                            ["wl-bulk-enable", "enable"], ["wl-bulk-disable", "disable"],
                             ["wl-bulk-reapply", "reapply"], ["wl-bulk-revoke", "revoke"]]) {
     const b = document.getElementById(id);
     if (b && !b.dataset.wired) {

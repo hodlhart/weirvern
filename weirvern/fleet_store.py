@@ -30,6 +30,7 @@ from weirvern.fleet import (
     HEARTBEAT_STALE_S,
     PLAN_FIELDS,
     STATE_UNKNOWN,
+    STATE_UNREGISTERED,
     FleetError,
     Registration,
     SensorHealth,
@@ -585,6 +586,27 @@ def build_fleet(client: Client, *, now: datetime | None = None,
             )
     else:
         health = fleet(regs, heartbeats, now=now)
+    # ── AN UNADOPTED WEIRLING IS SHOWN ONLY WHILE IT IS TALKING ─────────────────────────────────
+    #
+    # `sensor_status` keeps seven days of heartbeats, so an identity that stopped -- a pod name
+    # from an earlier rollout, a decommissioned unit, a host renamed once -- keeps producing
+    # `unregistered` rows long after anything is on the wire. Those rows cannot be adopted (the
+    # sensor that wrote them is gone), they can never become alive, and every one of them buries
+    # the row that IS feeding the hub and needs a decision. The operator's rule (2026-10-18): an
+    # undeclared sensor appears in this tab only while it is online and still talking.
+    #
+    # The test is the SAME freshness window every other panel uses -- `HEARTBEAT_STALE_S`,
+    # imported, never re-invented -- and it is applied to the OBJECTS before `summarise`, so the
+    # header counts and the rows cannot disagree about how many sensors the view is showing.
+    #
+    # An unreadable timestamp is NOT evidence of talking, so it is hidden with the ghosts: the
+    # claim this filter makes is "this sensor is reporting now", and a row that cannot support
+    # that claim has no business in the list. REGISTERED sensors are untouched, whatever their
+    # age: `stale` is the state that exists precisely to tell an operator a declared sensor has
+    # gone quiet, and hiding it would delete the answer to "where did my sensor go?".
+    health = [h for h in health
+              if h.state != STATE_UNREGISTERED
+              or (h.age_s is not None and h.age_s <= HEARTBEAT_STALE_S)]
     # THE FILTER IS APPLIED TO THE OBJECTS, NOT TO THE SERIALISED ROWS. Filtering on a payload key
     # would read a DERIVED field as though it were a database column -- the schema auditor flagged
     # exactly that, and it was right to: `is_problem` is computed here, not stored anywhere.
