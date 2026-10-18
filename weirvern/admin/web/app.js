@@ -4324,7 +4324,12 @@ async function loadModels() {
     ]));
     return;
   }
-  for (const pt of pts) {
+  // THE TABLE IS A WORKLIST, NOT AN EXPORT (US-A4). The window can hold thousands of points;
+  // rendering every one put this view at 8,650 elements against a 6,000 budget, and the operator
+  // reads the top of the list first anyway. Render a page of rows, say how many are held back,
+  // and offer the rest in one click -- never a silent truncation.
+  const PAGE = 100;
+  const renderPoint = (pt) => {
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "num", text: Number(pt.score || 0).toFixed(3) }),
       el("td", { class: "num", text: Number(pt.agreement || 0).toFixed(2) }),
@@ -4340,7 +4345,24 @@ async function loadModels() {
     if (pt.src_addr) {
       tr.addEventListener("click", () => { openHost(pt.src_addr); });
     }
-    body.appendChild(tr);
+    return tr;
+  };
+  for (const pt of pts.slice(0, PAGE)) body.appendChild(renderPoint(pt));
+  if (pts.length > PAGE) {
+    const held = pts.length - PAGE;
+    const more = el("button", { class: "quiet",
+      text: `Show all ${pts.length} rows (${held} more)`, attrs: { type: "button" } });
+    more.addEventListener("click", () => {
+      for (const pt of pts.slice(PAGE)) body.appendChild(renderPoint(pt));
+      footer.remove();
+    });
+    const footer = el("tr", { class: "show-more" }, [
+      el("td", { attrs: { colspan: 7 }, class: "muted" }, [
+        el("span", { text: `Showing the first ${PAGE} of ${pts.length} rows. ` }),
+        more,
+      ]),
+    ]);
+    body.appendChild(footer);
   }
 }
 

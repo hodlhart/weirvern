@@ -398,6 +398,11 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .view-head { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; }
 .view-head h2 { margin: 0; }
+/* The paged table's footer (US-A4): the held-back rows are named, and the way to see them is
+   one button in the same row. */
+tr.show-more td { padding: 10px 8px 2px; }
+tr.show-more button { margin-left: 6px; }
+
 /* At-a-glance chips: a number and its noun, never a bare count (US-SL1). */
 .stat-chip {
   display: inline-flex; align-items: baseline; gap: 2px;

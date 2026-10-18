@@ -1863,6 +1863,46 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
 
+  // ── THE POINTS TABLE IS PAGED (US-A4) ──────────────────────────────────────────────────────
+  // The window can hold thousands of points. Rendering every one put this view at 8,650 elements
+  // against a 6,000 budget; the table now renders a page, says how many it holds back, and offers
+  // the rest. A held-back row is NAMED, never silently dropped.
+  {
+    const big = [];
+    for (let i = 0; i < 250; i++) {
+      big.push({ score: 0.5 + i / 1000, agreement: 0.8, severity: "low", models: ["m1"],
+                 primary: "m1", magnitude: 1.2, src_addr: "198.51.100." + (i % 200) });
+    }
+    const origFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (/\/api\/models\?/.test(String(u)))
+        return Promise.resolve({ ok: true, json: async () => ({
+          available: true, summary: "250 points", points: big, staleness: [],
+          training_history: {}, scores: {}, model_counts: {}, feature_deviations: [],
+          baselines: {}, retrain_interval_h: 24 }) });
+      return origFetch(u, o);
+    };
+    H.showView("models");
+    await H.loadModels();
+    await new Promise((r) => setTimeout(r, 120));
+    window.fetch = origFetch;
+
+    const rows = [...doc.querySelectorAll("#m-points tbody tr")];
+    const footer = doc.querySelector("#m-points tbody tr.show-more");
+    check("a huge window renders one page of rows, not every row",
+          rows.length === 101 && !!footer, `rows=${rows.length}`);
+    check("...and the page says how many it is holding back",
+          !!footer && /250/.test(footer.textContent) && /150 more/.test(footer.textContent),
+          footer ? footer.textContent : "no footer");
+    if (footer) {
+      footer.querySelector("button").click();
+      await new Promise((r) => setTimeout(r, 120));
+      check("...and one click reveals the rest",
+            doc.querySelectorAll("#m-points tbody tr").length === 250
+            && !doc.querySelector("#m-points tbody tr.show-more"));
+    }
+  }
+
   // ── THE ADAPTIVE BASELINE CARD (AB-1) ───────────────────────────────────────────────────────
   {
     H.showView("models");
