@@ -28,6 +28,29 @@ so the command construction is verified without one.
 Model artifacts are versioned and persisted to `MODEL_DIR` — a worker restart
 **does not** lose learned baselines or models (this was a legacy failure mode).
 
+### Every change starts as a card
+
+No update or improvement begins in code. The work is described on a Kanban board first, so the
+intent, its evidence and its acceptance test survive the session that did it.
+
+- **One board per programme; one card per change.** Small fixes and improvements go on the
+  standing `weirvern` board. A multi-card programme gets its own board named `weirvern-<topic>`
+  (the settings merge is `weirvern-settings-merge`; UX audit work lives on `weirvern-usability`).
+- **A card is a work order, not a title.** GOAL (what changes), WHENCE (the files, routes, pins
+  and prior decisions it must respect), ACCEPT (a checkable success condition — a test that can
+  go red, a live probe, a counter), NOTES (the traps).
+- **Parked work is blocked.** `hermes kanban block` is the brake: a blocked card is never
+  dispatched. Unblock a card when its turn comes, and work one card at a time on overlapping
+  files.
+- **A comment is not completion.** Put the evidence (commit sha, test counts, the live check) in
+  a comment, then `hermes kanban complete <id> --result "<sha + what was verified>"`. A bare
+  complete is refused, and a batch of comments leaves every card exactly where it was.
+- **The card names the running artifact.** Completion of a shipped change includes the deployed
+  image tag and the probe that read it back. "Pushed" is not "deployed".
+- **The board is the history.** If something ships without a card (a hotfix, an operator request
+  mid-session), create the card and complete it with the evidence rather than leaving the work
+  invisible.
+
 ### Checking the GUI
 
 The web UI has no build step and no test framework, so two things are checked instead:
