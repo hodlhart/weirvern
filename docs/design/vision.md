@@ -157,13 +157,7 @@ A budget breach is a card. "Feels slow" is not a finding.
 
 ## 8. How the work is governed
 
-**Every change starts as a card.** The standing board is `weirvern` for fixes and improvements; a
-multi-card programme gets its own board named `weirvern-<topic>` (the settings merge is
-`weirvern-settings-merge`). A card carries GOAL / WHENCE / ACCEPT / NOTES, its ACCEPT is a
-checkable success condition, and its completion names the commit and the verification — see
-`docs/development.md`, "Every change starts as a card". Nothing is executed from a parked card.
-
-The usability programme has its own board, `weirvern-usability`, four card families:
+One board, `weirvern-usability`, four card families:
 
 - **`UXR-`** review cards — a view or a flow. Verdict + scorecard + evidence bundle.
 - **`UXF-`** findings — reproduction, screenshot, fix-shaped ACCEPT. QA-1's D1–D4 are the template.
