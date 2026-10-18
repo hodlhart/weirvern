@@ -519,7 +519,7 @@ function wireSluice() {
         if (out.rule_id) {
           note.appendChild(document.createTextNode(" "));
           note.appendChild(el("button", {
-            class: "small", text: "Show the filed rule \u2192", attrs: { type: "button" },
+            class: "quiet", text: "Show the filed rule \u2192", attrs: { type: "button" },
             title: "scroll to the rule this block created",
             on: { click: () => sluiceHighlightRule(out.rule_id) },
           }));
@@ -835,7 +835,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (out.rule_id) {
           note.appendChild(document.createTextNode(" "));
           note.appendChild(el("button", {
-            class: "small", text: "Show the rule \u2192", attrs: { type: "button" },
+            class: "quiet", text: "Show the rule \u2192", attrs: { type: "button" },
             title: "open this rule on the Blocked page",
             on: { click: () => {
               if (typeof closeModal === "function") closeModal(document.getElementById("rule-composer"));

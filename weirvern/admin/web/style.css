@@ -8,6 +8,12 @@
  * The token system and the principles behind every value: docs/theme.md.
  */
 :root {
+  /* BTN-1: THE BUTTON SYSTEM'S THREE NUMBERS. Every button-shaped control derives its size
+   * from these -- a variant may change colour, never size -- so two buttons side by side
+   * cannot disagree about how tall a button is. */
+  --btn-h: 28px;
+  --btn-px: 12px;
+  --btn-r: 6px;
   /* The UA renders native controls (scrollbars, form widgets, selection) in the theme's own
    * key: without this, a dark page shows light scrollbars and a white date picker. */
   color-scheme: dark;
@@ -100,12 +106,31 @@ h1 { font-size: 21px; font-weight: 400; margin: 0; }
   color: color-mix(in srgb, var(--warn) 82%, #fff); }
 .pill.bad { background: var(--wash-bad); color: color-mix(in srgb, var(--bad) 78%, #fff); }
 
+/* THE BUTTON SYSTEM (BTN-1). One base, three numbers, colour variants only.
+ *
+ * The console had grown .small (11px/1px 6px), .review-act (11px/1px 6px), .tab (12px 16px),
+ * .pager-btn (4px 10px, min-width 34), .info-btn/.setting-help-btn (18x18), a
+ * `button.small` override inside Sluice and a mobile block that re-sized four classes
+ * independently. Three buttons in one row could be three heights. Size is NOT hierarchy:
+ * the vocabulary of colour says what a control is, and every control is the same size.
+ */
 button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--btn-h); padding: 0 var(--btn-px);
   background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: 6px; padding: 6px 13px; font-size: 13px; cursor: pointer;
-  letter-spacing: .25px; transition: border-color var(--t-fast), background-color var(--t-fast);
+  border-radius: var(--btn-r); font: inherit; font-size: 13px; line-height: 1;
+  cursor: pointer; letter-spacing: .25px; white-space: nowrap;
+  transition: border-color var(--t-fast), background-color var(--t-fast), color var(--t-fast);
 }
 button:hover { border-color: var(--accent); }
+/* Colour variants -- and ONLY colour. */
+button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+button.primary:hover { background: var(--accent-hover); border-color: transparent; }
+button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+button.danger:hover { border-color: var(--danger); background: var(--wash-bad); }
+button.quiet { background: none; color: var(--muted); border-color: var(--border); }
+button.quiet:hover { color: var(--fg); border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
 .auto { color: var(--muted); display: flex; align-items: center; gap: 5px; }
 
 nav {
@@ -113,7 +138,7 @@ nav {
   background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .tab {
-  border: none; background: none; border-radius: 0; padding: 12px 16px;
+  border: none; background: none; border-radius: 0;
   color: var(--muted); border-bottom: 2px solid transparent;
 }
 .tab:hover { color: var(--fg); border-color: transparent; }
@@ -193,7 +218,6 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .review-acts { display: flex; gap: 4px; margin-top: 4px; }
 .review-act {
   background: none; border: 1px solid var(--border); color: var(--muted);
-  border-radius: 4px; padding: 1px 6px; font-size: 11px; cursor: pointer;
 }
 .review-act:hover { color: var(--fg); border-color: var(--accent); }
 
@@ -256,7 +280,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   border-radius: 8px; padding: 9px 10px; font: inherit;
 }
 .gate-field input:focus { outline: none; border-color: var(--accent); }
-.gate-card button.primary { padding: 9px 12px; }
+/* BTN-1: a one-off size override used to live here; size is the base's business now. */
 .gate-error { color: var(--danger); font-size: 13px; margin: 0; min-height: 1em; }
 .gate-foot { font-size: 11px; margin: 4px 0 0; }
 /* The break-glass toggle on the gate: a link-shaped button, because it opens a form rather
@@ -278,7 +302,6 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 }
 .user-act {
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
 }
 .user-act:hover { border-color: var(--accent); }
 .user-act.danger:hover { border-color: var(--danger); color: var(--danger); }
@@ -354,8 +377,8 @@ body.modal-open { overflow: hidden; }
 td.pick, th.pick { width: 1.6em; }
 #sl-bulk { display: flex; gap: 6px; align-items: center; padding: 4px 0; }
 #sl-bulk.hidden { display: none; }
-.icon-btn { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer;
-  padding: 2px 5px; border-radius: 4px; }
+.icon-btn { background: none; border: 1px solid transparent; color: var(--muted);
+  width: var(--btn-h); min-width: var(--btn-h); padding: 0; }
 .icon-btn:hover { border-color: var(--line); color: var(--fg); }
 .icon-btn.danger:hover { color: var(--bad); }
 .icon-btn.armed { border-color: var(--bad); color: var(--bad); }
@@ -437,8 +460,8 @@ svg.spark rect.cur { fill: var(--accent); }
 @keyframes sheet-in { from { transform: translateX(100%); } to { transform: none; } }
 .sheet-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 74; }
 .sheet-scrim.hidden { display: none; }
-.sheet-close { float: right; font-size: 12px; padding: 2px 10px; background: none;
-  border: 1px solid var(--border-solid); color: var(--muted); border-radius: 4px; cursor: pointer; }
+.sheet-close { float: right; background: none;
+  border: 1px solid var(--border-solid); color: var(--muted); }
 .sheet-close:hover { color: var(--fg); }
 /* TH-3: the grouped nav -- one row, clusters spaced apart, nothing hidden or collapsing. */
 #tabs { display: flex; align-items: center; flex-wrap: nowrap; }
@@ -672,9 +695,8 @@ td.num { font-family: var(--mono); text-align: right; }
  * not reflow under the cursor and the boundary is visible.
  */
 .pager { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; }
-.pager-btn { font-family: var(--mono); font-size: 13px; min-width: 34px;
-  padding: 4px 10px; background: var(--panel2); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.pager-btn { font-family: var(--mono); background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); }
 .pager-btn:hover:not(:disabled) { border-color: var(--accent); }
 .pager-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
 .pager-info { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -726,9 +748,9 @@ td.num { font-family: var(--mono); text-align: right; }
 
 /* THE "?" BUTTON. Round, quiet, and identical on every row -- it is a discovery affordance, not
  * a control competing with the value beside it. `open` marks the expanded state. */
-.setting-help-btn { width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%;
-  font-size: 11px; line-height: 1; color: var(--muted); background: none;
-  border: 1px solid var(--border); cursor: pointer; font-family: var(--mono); }
+.setting-help-btn { width: var(--btn-h); min-width: var(--btn-h); padding: 0; border-radius: 50%;
+  color: var(--muted); background: none; border: 1px solid var(--border);
+  font-family: var(--mono); }
 .setting-help-btn:hover { color: var(--fg); border-color: var(--accent); }
 .setting-help-btn.open { color: var(--accent); border-color: var(--accent); }
 /* The explanation itself: full width under the row, readable prose, visually distinct from
@@ -744,10 +766,9 @@ td.num { font-family: var(--mono); text-align: right; }
  * panel OPEN, never decoratively.
  */
 .info-btn {
-  width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%;
-  font-size: 11px; line-height: 1; color: var(--muted); background: none;
-  border: 1px solid var(--border); cursor: pointer; font-family: var(--mono);
-  margin-left: 8px; vertical-align: -2px;
+  width: var(--btn-h); min-width: var(--btn-h); padding: 0; border-radius: 50%;
+  color: var(--muted); background: none; border: 1px solid var(--border);
+  font-family: var(--mono); margin-left: 8px;
 }
 .info-btn:hover { color: var(--fg); border-color: var(--accent); }
 .info-btn.open { color: var(--accent); border-color: var(--accent); }
@@ -812,9 +833,6 @@ td.num { font-family: var(--mono); text-align: right; }
 .stage-res-item .fail { color: var(--warn); }
 .stage-blast { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 6px;
   flex-wrap: wrap; }
-button.primary { background: var(--accent); border-color: transparent; color: #fff; }
-button.primary:hover { background: var(--accent-hover); border-color: transparent; }
-button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── confidence chips (host identity) ──────────────────────────────────────
  * DELIBERATELY NOT .chip: that class is the clickable host-tracking chip and carries
@@ -876,7 +894,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   color: inherit;
   font: inherit;
 }
-#view-sluice button.small { padding: 2px 8px; font-size: 0.86em; }
+/* BTN-1: `button.small` was a SECOND button scale inside one view; removed. */
 
 /* ── responsive layout: the same console on a desk and in a pocket ──────────────────────────
  *
@@ -948,9 +966,8 @@ nav::-webkit-scrollbar-track { background: transparent; }
   /* Tap targets: desktop sizes assume a 2px cursor, not a finger. Measured at 390px: these
    * sizes put the tabs at ~43px and ordinary buttons at ~37px tall -- the desktop sizes were
    * 39 and 31. */
-  button { padding: 9px 12px; }
-  .tab { padding: 13px 15px; }
-  .review-act, .user-act, .pager-btn { padding: 4px 9px; }
+  /* BTN-1: a finger needs a taller base, not four different per-class sizes. */
+  :root { --btn-h: 34px; --btn-px: 14px; }
   td, th { padding: 8px 10px; }
 
   /* The force map: a shorter canvas keeps the 1000x460 drawing from being stretched into a
@@ -1008,7 +1025,8 @@ nav::-webkit-scrollbar-track { background: transparent; }
  *    at rest -- additive and temporary, not a state the system reports.
  *  - a chip HOLDING a filter wears the accent border, a CHECKMARK and aria-pressed="true".
  *    Never colour alone: the checkmark is the state, the border is the reinforcement. */
-.dc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px;
+.dc-chip { display: inline-flex; align-items: center; gap: 4px; height: var(--btn-h);
+  padding: 0 var(--btn-px);
   background: var(--panel); border: 1px dashed var(--line); border-radius: 12px;
   font-size: 12px; }
 .dc-chip[aria-pressed="true"], .chip.act[aria-pressed="true"] {

@@ -1663,7 +1663,7 @@ async function loadAudit() {
       ]),
       el("td", { class: "num", text: anAgeShort(f.elapsed_s) }),
       el("td", {}, [
-        el("button", { class: "small", text: f.fix && f.fix.label ? f.fix.label : "open",
+        el("button", { class: "quiet", text: f.fix && f.fix.label ? f.fix.label : "open",
                        attrs: { type: "button", title: "go to the surface that fixes this" },
                        on: { click: () => auditGo(f.fix) } }),
       ]),
@@ -2349,7 +2349,7 @@ function gateForm(a) {
           // just created, on the Blocked page, with the card saying "you are here" once.
           note.appendChild(document.createTextNode(" "));
           note.appendChild(el("button", {
-            class: "small", text: "Open the filed rule \u2192", attrs: { type: "button" },
+            class: "quiet", text: "Open the filed rule \u2192", attrs: { type: "button" },
             title: "the rule this block created",
             on: { click: () => {
               showView("blocked");

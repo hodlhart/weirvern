@@ -206,3 +206,36 @@ Refusals (the kill-list, from the research):
   shortcuts are accelerators, not the only door.
 - No dead pointers: a class that sets `cursor: pointer` with no handler anywhere is a bug,
   not decoration.
+
+## 11. The button system (BTN-1)
+
+**One base, three numbers, colour variants only.** Every button-shaped control in the
+console is the same shape, because the shape is defined once:
+
+```css
+:root { --btn-h: 28px; --btn-px: 12px; --btn-r: 6px; }
+button { height: var(--btn-h); padding: 0 var(--btn-px);
+         border-radius: var(--btn-r); font-size: 13px; ... }
+```
+
+A variant may change **colour and weight**, never size:
+`.primary` (the one committing action), `.danger` (destroys or cuts traffic), `.quiet`
+(muted, secondary). Icon-only controls (`.info-btn`, `.setting-help-btn`, `.icon-btn`) are
+square at the same height; the chip's remove control lives inside a chip and cannot exceed
+it.
+
+**The size rule.** Buttons that sit near each other are the same size. Size is not
+hierarchy — a row of verbs that are three heights reads as three products. Where hierarchy
+is needed it is said with colour, position, or words.
+
+**The rule is enforced, not hoped for.** `tests/test_buttons.py` block-parses the
+stylesheet (media queries and pseudo-elements included) and fails when any button selector
+invents its own `font-size`, `padding`, `height`, `min-height`, `min-width` or
+`border-radius` outside the documented exceptions (the base itself; icon controls; the
+chip's pill; the link-shaped break-glass control). The old scales — `.small`, the
+`button.small` override inside Sluice, the `.gate-card button.primary` one-off — are gone,
+and the test says so.
+
+**Refusals.** No second button scale in one view. No per-view button padding. No mobile
+block that re-sizes classes independently: a finger gets one taller base
+(`--btn-h: 34px`), not four different targets.

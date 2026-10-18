@@ -3897,6 +3897,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
   }
 
+  // ── THE BUTTON SYSTEM (BTN-1) ───────────────────────────────────────────────────────────────
+  {
+    // ONE SIZE: the base owns size, so no button may smuggle its own via an inline style.
+    const inlineSized = [...doc.querySelectorAll("button")].filter((b) =>
+      /(?:^|;)\s*(height|width|padding|font-size)\s*:/.test(b.getAttribute("style") || ""));
+    check("BTN-1: no button carries an inline size (the base owns size)",
+          inlineSized.length === 0,
+          inlineSized.slice(0, 3).map((b) => b.getAttribute("style")).join(" | "));
+    // ...and no legacy size class survives in the live document.
+    check("BTN-1: no button still wears a retired size class",
+          doc.querySelectorAll("button.small, .btn-small, .btn-lg").length === 0,
+          String(doc.querySelectorAll("button.small").length));
+  }
+
   // ── THE GROUPED NAV AND ITS BREADCRUMBS (TH-3) ──────────────────────────────────────────────
   {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

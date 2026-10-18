@@ -532,8 +532,8 @@
 
     <div class="card hidden" id="id-detail-card">
       <h2>Evidence for <span class="mono" id="id-detail-host"></span>
-        <button id="id-detail-open" class="small" title="open this host's own view">Open host view &rarr;</button>
-        <button id="id-detail-close" class="small" title="hide this card">Close</button></h2>
+        <button id="id-detail-open" class="quiet" title="open this host's own view">Open host view &rarr;</button>
+        <button id="id-detail-close" class="quiet" title="hide this card">Close</button></h2>
       <div id="id-detail"></div>
     </div>
   </section>
@@ -833,7 +833,7 @@
     <div id="h-results" class="hidden">
       <div class="card">
         <h2><span id="h-title">Host</span>
-          <button id="h-close" class="small" title="hide this drill-down; the last address stays in the box">Close</button></h2>
+          <button id="h-close" class="quiet" title="hide this drill-down; the last address stays in the box">Close</button></h2>
         <div class="stats" id="h-stats"></div>
       </div>
       <div class="grid">
@@ -1061,10 +1061,10 @@
       <div id="sl-reach" class="chips"></div>
       <div id="sl-bulk" class="hidden">
         <span class="muted" id="sl-bulk-n"></span>
-        <button id="sl-bulk-disable" class="small">Disable selected</button>
-        <button id="sl-bulk-enable" class="small">Enable selected</button>
-        <button id="sl-bulk-delete" class="small danger">Delete selected</button>
-        <button id="sl-bulk-clear" class="small">Clear</button>
+        <button id="sl-bulk-disable" class="quiet">Disable selected</button>
+        <button id="sl-bulk-enable" class="quiet">Enable selected</button>
+        <button id="sl-bulk-delete" class="danger">Delete selected</button>
+        <button id="sl-bulk-clear" class="quiet">Clear</button>
       </div>
       <div class="controls">
         
@@ -1193,17 +1193,17 @@
              checkbox stays in the DOM -- the Needs-action view drives it -- while the tiles
              and views are the visible controls. -->
         <label class="muted">view <select id="wl-view"></select></label>
-        <button id="wl-view-save" class="small">Save view</button>
+        <button id="wl-view-save" class="quiet">Save view</button>
         <label class="muted hidden"><input id="wl-problems-only" type="checkbox"> problems only</label>
         <label class="muted"><input id="wl-revoked" type="checkbox"> include revoked</label>
       </div>
       <div id="wl-bulk" class="controls hidden">
         <span class="muted" id="wl-bulk-n"></span>
-        <button id="wl-bulk-enable" class="small">Enable selected</button>
-        <button id="wl-bulk-disable" class="small">Disable selected</button>
-        <button id="wl-bulk-reapply" class="small">Re-apply plans</button>
-        <button id="wl-bulk-revoke" class="small danger">Revoke selected</button>
-        <button id="wl-bulk-clear" class="small">Clear</button>
+        <button id="wl-bulk-enable" class="quiet">Enable selected</button>
+        <button id="wl-bulk-disable" class="quiet">Disable selected</button>
+        <button id="wl-bulk-reapply" class="quiet">Re-apply plans</button>
+        <button id="wl-bulk-revoke" class="danger">Revoke selected</button>
+        <button id="wl-bulk-clear" class="quiet">Clear</button>
       </div>
       <table id="wl-table">
         <thead>

@@ -57,13 +57,44 @@ else
     FAIL=1
 fi
 
-# 2. No identifiers in commit messages either: GitHub renders those.
-step "sanitation: no deployment identifiers in commit messages"
-if "$PY" -m weirvern.tools.sanitize_identifiers --check --history | grep -q "^  clean"; then
+# 2. No identifiers in the commit messages BEING PUSHED. GitHub renders those, so they are
+# published surface -- but rewriting history is a destructive act that needs its own decision
+# (and the operator's consent), so the ALL-HISTORY report stays advisory: the gate checks the
+# range that would reach GitHub now. An older commit's message can only be fixed by a rewrite.
+step "sanitation: no deployment identifiers in commit messages being pushed"
+RANGE_BASE="$(git rev-parse --verify -q origin/main || true)"
+if [ -n "$RANGE_BASE" ]; then RANGE="$RANGE_BASE..HEAD"; else RANGE="-1 HEAD"; fi
+if "$PY" - "$RANGE" <<'PYEOF'
+import subprocess, sys
+from weirvern.tools.sanitize_identifiers import find_identifiers, _mapping_hits
+
+log = subprocess.run(["git", "log", "--format=%h%x1f%B%x1e", sys.argv[1]],
+                     capture_output=True, text=True)
+bad = 0
+for entry in log.stdout.split("\x1e"):
+    if not entry.strip():
+        continue
+    parts = entry.split("\x1f")
+    if len(parts) < 2:
+        continue
+    sha, body = parts[0], parts[1]
+    hits = find_identifiers(body, "(commit message)")
+    patterns = _mapping_hits(body)
+    if hits or patterns:
+        bad += 1
+        detail = ", ".join(sorted({kind for _, kind, _ in hits})) or f"{len(patterns)} mapped range(s)"
+        print(f"  {sha}: {detail}")
+sys.exit(1 if bad else 0)
+PYEOF
+then
     echo "  PASS"
 else
-    echo "  FAIL -- commit messages are published surface"
+    echo "  FAIL -- a commit being pushed carries an identifier"
     FAIL=1
+fi
+# The all-history report stays visible, but it cannot gate a push that does not touch it.
+if ! "$PY" -m weirvern.tools.sanitize_identifiers --check --history 2>/dev/null | grep -q "^0 identifier"; then
+    echo "  note: an OLDER commit carries an identifier; rewriting history needs consent (advisory)"
 fi
 
 # RUFF: TRIED FROM THE PINNED VENV, THEN FROM PATH. The fallback was DEAD CODE until F106 was fixed
