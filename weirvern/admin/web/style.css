@@ -536,12 +536,19 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 svg.spark { display: block; margin-top: 4px; overflow: visible; }
 svg.spark rect { fill: var(--chart-area); }
 svg.spark rect.cur { fill: var(--accent); }
-/* TH-4: the drill-down SHEET -- fixed to the right edge, over the view. position: fixed is
-   the no-layout-jump guarantee: the fleet list underneath never reflows under the reader. */
-#wl-detail-card.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;
-  width: min(480px, 94vw); margin: 0; border-radius: 0; border-left: 1px solid var(--border-solid);
-  overflow-y: auto; z-index: 75; animation: sheet-in .18s ease-out; }
-#wl-detail-card.sheet.hidden { display: none; }
+/* THE SHEET STANDARD (docs/design/sheets.md): one primitive, one class. A sheet sits against the
+   right edge over the view; position: fixed is the no-layout-jump guarantee -- the list
+   underneath never reflows under the reader. On a phone it is the whole width (C-8). */
+.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;
+  width: min(480px, 94vw); max-width: 100vw; margin: 0; border-radius: 0;
+  border-left: 1px solid var(--border-solid); overflow-y: auto; z-index: 75;
+  animation: sheet-in .18s ease-out; }
+.sheet.hidden { display: none; }
+/* The primary verb stays in thumb reach: a sheet's action row is sticky at its foot. */
+.sheet-actions { position: sticky; bottom: 0; z-index: 1; margin-top: 16px;
+  padding: 12px 0 6px; background: var(--surface);
+  border-top: 1px solid var(--border); display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap; }
 @keyframes sheet-in { from { transform: translateX(100%); } to { transform: none; } }
 .sheet-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 74; }
 .sheet-scrim.hidden { display: none; }
@@ -1026,6 +1033,8 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .tablewrap::-webkit-scrollbar-track { background: transparent; }
 
 @media (max-width: 720px) {
+  /* A sheet on a phone is the whole width (C-8). */
+  .sheet { width: 100vw; border-left: 0; }
   /* US-D1: the chain reads top-to-bottom when there is no width for five columns. */
   .chain { grid-template-columns: 1fr; }
   /* A phone reads this page one column at a time. */
@@ -1155,7 +1164,7 @@ html { scrollbar-width: thin; scrollbar-color: var(--hover) transparent; }
 #palette-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .gate-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* The sheet and the palette results scroll; their scrollbars join the theme like the page's. */
-#wl-detail-card.sheet, #palette-results { scrollbar-width: thin;
+.sheet, #palette-results { scrollbar-width: thin;
   scrollbar-color: var(--border) transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

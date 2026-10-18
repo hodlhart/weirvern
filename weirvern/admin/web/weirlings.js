@@ -623,15 +623,12 @@ function renderWeirlings(rows, revoked, revokedReason) {
 let wlDetail = null;
 
 /** TH-4: THE ONE WAY OUT OF THE DRILL-DOWN SHEET. Escape, a click on the scrim, the Close
- *  button, and the breadcrumb's back segment all land here -- a sheet with four exits that
- *  each do their own thing is a sheet that will disagree with itself. */
+ *  button, and the breadcrumb's back segment all land here. The mechanics (scrim, Escape, focus)
+ *  are the sheet standard's, in sheets.js -- this function only names the exit. */
 function closeWeirling() {
   const card = document.getElementById("wl-detail-card");
-  if (!card || card.classList.contains("hidden")) return;
-  card.classList.add("hidden");
-  const scrim = document.getElementById("wl-sheet-scrim");
-  if (scrim) scrim.classList.add("hidden");
-  if (typeof clearCrumbs === "function") clearCrumbs();
+  if (!card || !sheetIsOpen(card)) return;
+  closeSheet(card);
 }
 
 async function openWeirling(sensorId) {
@@ -650,19 +647,8 @@ async function openWeirling(sensorId) {
   // status and actions, and points there.
   body.replaceChildren(el("p", { class: "muted", text: "loading…" }));
   note.textContent = "";
-  card.classList.remove("hidden");
-  // THE SHEET (TH-4): a scrim takes the click-out, and focus moves INTO the sheet so Escape
-  // and the keyboard belong to it while it is open. The scrim is created once, on first open.
-  let scrim = document.getElementById("wl-sheet-scrim");
-  if (!scrim) {
-    scrim = document.createElement("div");
-    scrim.id = "wl-sheet-scrim";
-    scrim.className = "sheet-scrim hidden";
-    scrim.addEventListener("click", () => closeWeirling());
-    document.body.appendChild(scrim);
-  }
-  scrim.classList.remove("hidden");
-  if (typeof card.focus === "function") card.focus();
+  // THE SHEET STANDARD (sheets.js): scrim, focus and Escape are not this module's job.
+  openSheet(card, { scrimId: "wl-sheet-scrim" });
   // THE DRILL-DOWN'S PATH BACK (TH-3): Fleet > Weirlings > <sensor>; the middle segment and
   // the sheet's own exits all route through closeWeirling so they can never disagree.
   if (typeof setCrumbs === "function") {
@@ -788,17 +774,12 @@ async function openWeirling(sensorId) {
  */
 
 function wireWeirlings() {
-  // TH-4: the sheet's own controls, wired once. Escape closes the sheet from anywhere on the
-  // page (a sheet you cannot dismiss with the documented key is a trap).
-  const sheetClose = document.getElementById("wl-sheet-close");
-  if (sheetClose && !sheetClose.dataset.wired) {
-    sheetClose.dataset.wired = "1";
-    sheetClose.addEventListener("click", () => closeWeirling());
-  }
-  if (!document.body.dataset.wlSheetKeys) {
-    document.body.dataset.wlSheetKeys = "1";
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWeirling(); });
-  }
+  // THE SHEET STANDARD (sheets.js): .sheet-close, the scrim, Escape and focus are wired once
+  // there. The breadcrumb is this sheet's extra exit and routes through closeWeirling.
+  wireSheet(document.getElementById("wl-detail-card"), {
+    scrimId: "wl-sheet-scrim",
+    onClose: () => { if (typeof clearCrumbs === "function") clearCrumbs(); },
+  });
   const viewSel = document.getElementById("wl-view");
   if (viewSel && !viewSel.dataset.wired) {
     viewSel.dataset.wired = "1";

@@ -233,23 +233,39 @@ async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, sho
     await cdp.call("Page.navigate", {"url": f"{base}/?qa={idx}#v={view}"})
     await asyncio.sleep(2.4)
     if open_sheet:
-        # THE SHEET IS A MEASUREMENT SURFACE TOO (WSM-8). A hash deep-link may not have opened it
-        # by the time the page settles, so open it explicitly and let its detail + settings reads
-        # finish; measuring the fleet with the sheet closed would silently audit the wrong DOM.
-        opened = await cdp.call("Runtime.evaluate", {
-            "expression": "openWeirling(" + json.dumps(open_sheet) + ")",
-            "awaitPromise": True, "returnByValue": True})
+        # THE SHEET IS A MEASUREMENT SURFACE TOO (WSM-8, SS-1). A hash deep-link may not have
+        # opened it by the time the page settles, so open it explicitly and let its reads finish;
+        # measuring the view with the sheet closed would silently audit the wrong DOM.
+        # `--open-sheet <sensor>` opens that weirling; `--open-sheet new-rule` opens the Sluice
+        # rule sheet the way the view does (its one primary verb).
+        if open_sheet == "new-rule":
+            opened = await cdp.call("Runtime.evaluate", {
+                "expression": "(() => { const b=document.getElementById('sl-new-rule');"
+                              " if (!b) return 'no New rule control'; b.click(); return 'clicked'; })()",
+                "returnByValue": True})
+        else:
+            opened = await cdp.call("Runtime.evaluate", {
+                "expression": "openWeirling(" + json.dumps(open_sheet) + ")",
+                "awaitPromise": True, "returnByValue": True})
         if opened.get("exceptionDetails"):
             print("  !! open-sheet failed:", opened["exceptionDetails"].get("text"),
                   (opened["exceptionDetails"].get("exception") or {}).get("description", ""),
                   file=sys.stderr)
         await asyncio.sleep(1.2)
+        card_id = "sl-rule-sheet" if open_sheet == "new-rule" else "wl-detail-card"
         probe = await cdp.call("Runtime.evaluate", {
-            "expression": "(() => { const c=document.getElementById('wl-detail-card');"
-                          " if (!c) return null; const r=c.getBoundingClientRect();"
-                          " return {hidden: c.classList.contains('hidden'), width: r.width,"
-                          " body: (document.getElementById('wl-detail-body').textContent||'').slice(0,60),"
-                          " rows: document.querySelectorAll('#st-sensor .setting').length}; })()",
+            "expression":
+                "(() => { const c=document.getElementById(" + json.dumps(card_id) + ");"
+                " if (!c) return null; const r=c.getBoundingClientRect();"
+                " const cs=getComputedStyle(c);"
+                " return {hidden: c.classList.contains('hidden'), width: Math.round(r.width),"
+                " left: Math.round(r.left), right: Math.round(r.right),"
+                " gapRight: Math.round(window.innerWidth - r.right),"
+                " position: cs.position, role: c.getAttribute('role'),"
+                " labelled: c.getAttribute('aria-labelledby'),"
+                " actions: !!c.querySelector('.sheet-actions'),"
+                " scrimShown: (() => { const s=document.querySelector('.sheet-scrim');"
+                "   return !!s && !s.classList.contains('hidden'); })()}; })()",
             "returnByValue": True})
         print("  sheet probe:", probe.get("result", {}).get("value"), file=sys.stderr)
     if css:
@@ -355,7 +371,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--widths", default="1440x900,820x1180,390x844,320x640")
     ap.add_argument("--css", default="", help="measure a candidate stylesheet before it ships")
     ap.add_argument("--open-sheet", default="",
-                    help="sensor id whose drill-down sheet to open before measuring")
+                    help="sheet to open before measuring: a sensor id (weirling drill-down) "
+                         "or 'new-rule' (the Sluice rule sheet)")
     args = ap.parse_args(argv)
     views = [v.strip() for v in args.views.split(",") if v.strip()]
     widths: list[tuple[int, int]] = []

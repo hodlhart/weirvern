@@ -92,6 +92,9 @@ STATIC_FILES = {
     # The Sluice Gate tab. Its own file for the same reason as the others, and because "what is
     # being blocked, and is the gate actually holding" is a distinct concern from what the dashboard
     # shows -- a reader looking for the blocking logic should find it in one place.
+    # The sheet standard: one opener/closer for every right-edge editing surface (scrim,
+    # Escape, focus). Loaded after app.js and before the views that open a sheet.
+    "/sheets.js": ("sheets.js", "application/javascript; charset=utf-8"),
     "/sluice.js": ("sluice.js", "application/javascript; charset=utf-8"),
     # The Weirlings fleet tab. Its own file for the same reason as the others, and because
     # "which sensors are expected, and which of them are silent" is a distinct concern from both

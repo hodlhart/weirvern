@@ -386,6 +386,10 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     code shows or hides, and whose contents (#st-account-note, the users
               #     table's tbody, #st-user-result) carry the data
               "st-account-card", "st-users-card", "st-user-add",
+              #   wl-sheet-close / sl-rule-close: the sheets' close controls; sheets.js finds
+              #     them by CLASS (.sheet-close), and they carry static text -- never populated
+              #   wl-detail-title: the weirling sheet's aria-labelledby target; static text
+              "wl-sheet-close", "sl-rule-close", "wl-detail-title",
               #   gate-submit / pw-submit / gate-token-submit: form submit buttons,
               #     handled by their forms' submit events rather than by a getElementById
               #     binding

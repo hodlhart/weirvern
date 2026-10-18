@@ -82,7 +82,7 @@ async function main() {
   const order = [];
   doc.querySelectorAll("script[src]").forEach((s) => order.push(s.getAttribute("src")));
   check("index.html loads the scripts in the required order",
-        JSON.stringify(order) === JSON.stringify(["/app.js", "/soc.js", "/assets.js", "/sluice.js",
+        JSON.stringify(order) === JSON.stringify(["/app.js", "/sheets.js", "/soc.js", "/assets.js", "/sluice.js",
                                                  "/weirlings.js", "/discover.js",
                                                  "/dnsview.js", "/blocked.js", "/palette.js"]),
         JSON.stringify(order));
@@ -3721,8 +3721,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("...which opens the rule sheet, not a form on the tab",
             !!sheet && !sheet.classList.contains("hidden") && !!sheet.querySelector("#sl-block"),
             "the composer is not the sheet");
-      const close = doc.getElementById("sl-rule-close");
-      if (close) close.click();
+      check("...and it is a labelled dialog with one close",
+            sheet.getAttribute("role") === "dialog"
+            && sheet.getAttribute("aria-modal") === "true"
+            && !!doc.getElementById(sheet.getAttribute("aria-labelledby"))
+            && sheet.querySelectorAll(".sheet-close").length === 1,
+            sheet.getAttribute("aria-labelledby") || "no label");
+      // THE SHEET STANDARD: Escape is the documented exit, handled once in sheets.js.
+      doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      check("...and Escape closes it, scrim and all",
+            sheet.classList.contains("hidden")
+            && doc.getElementById("sl-rule-scrim").classList.contains("hidden"));
     }
 
     // A ROW OPENS THE SAME SHEET (SL-1), with the destructive act inside it.
@@ -4401,7 +4411,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
     check("the drill-down is a sheet: fixed to the right edge, so the view never reflows",
-          cssText.includes("#wl-detail-card.sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;"),
+          cssText.includes(".sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;"),
           "css rule");
     const card = doc.getElementById("wl-detail-card");
     check("...and it slides in (the sheet-in keyframe is defined)",

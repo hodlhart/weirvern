@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.17.6 — 2026-10-18
+
+THE SHEET IS THE STANDARD.
+
+The operator, 2026-10-18: *"Make that pop out a standard."*
+
+The Sluice rule sheet was built with `class="card sheet"`, but `style.css` only fixed
+`#wl-detail-card.sheet`. `.sheet` was a name two screens shared, not a primitive: the new sheet
+rendered **inline in the view** — no pop-out, no scrim, no Escape. The scrim, Escape and focus
+code were duplicated between `weirlings.js` and `sluice.js`.
+
+- **`.sheet` is a real class**: fixed to the right edge, `min(480px, 94vw)`, full height, full
+  width at ≤720, one `sheet-in` motion (`prefers-reduced-motion` honoured). Both sheets pop.
+- **`sheets.js` is the one implementation**: `openSheet` / `closeSheet` / `sheetIsOpen` /
+  `wireSheet`; one scrim factory, one Escape handler for the top sheet (capture phase, so a
+  sheet open over a confirmation modal loses the key to the modal), focus into the sheet and
+  back to the control that opened it, Tab contained. Neither view module builds a scrim or binds
+  Escape any more.
+- **`role="dialog" aria-modal="true" aria-labelledby`** on both sheets; one `.sheet-close` each.
+- **`.sheet-actions`**: the primary verb sits in a sticky foot bar, in thumb reach on a phone.
+- **`docs/design/sheets.md`**: when a sheet (one object) vs a modal (one blocking question) vs
+  inline; anatomy; sizes; behaviour; accessibility; a checklist for a new surface; the
+  anti-patterns (form at rest on a tab, per-row destroy icons, bulk delete, a second composer).
+- **`tests/test_sheet_standard.py`** pins it (6 tests). Harness 826 → 828: the rule sheet is a
+  labelled dialog and Escape closes it, scrim and all. `responsive_audit.py --open-sheet new-rule`
+  measures the rule sheet in a real browser.
+- Known debt, recorded in the standard rather than hidden: the Blocked view's rule card is still
+  a modal; it edits one object and belongs in a sheet next.
+
 ## 0.17.5 — 2026-10-18
 
 DELETING A RULE ASKS FOR THE REASON THE SERVER REQUIRES.

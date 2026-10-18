@@ -1070,7 +1070,8 @@
     <!-- RULE SHEET (SL-1, 2026-10-18): adding and deleting a rule is a focused act, so it happens
          in the same right-side sheet the weirlings use -- never in a form sitting on the tab. One
          composer: the DNS/Blocked "block this domain" entry point opens this sheet too. -->
-    <div id="sl-rule-sheet" class="card sheet hidden" tabindex="-1">
+    <div id="sl-rule-sheet" class="card sheet hidden" tabindex="-1"
+         role="dialog" aria-modal="true" aria-labelledby="sl-rule-title" aria-hidden="true">
       <h2><span id="sl-rule-title">New rule</span>
         <span class="muted" id="sl-rule-id"></span>
         <button id="sl-rule-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
@@ -1116,7 +1117,7 @@
         <label>reason (optional)
           <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
         </label>
-        <div class="controls">
+        <div class="controls sheet-actions">
           <button id="sl-block" class="primary" type="button">Create rule</button>
           <span id="sl-block-note" class="muted"></span>
           <button class="info-btn" data-info="sl-refuse-info" aria-label="what the gate refuses and why"
@@ -1137,7 +1138,7 @@
           <input id="sl-rule-delete-reason" type="text"
                  placeholder="why is this rule going away?">
         </label>
-        <div class="controls">
+        <div class="controls sheet-actions">
           <button id="sl-rule-toggle" type="button"></button>
           <button id="sl-rule-delete" class="danger" type="button">Delete this rule</button>
           <button id="sl-rule-blocked" class="quiet" type="button">Open on the Blocked page</button>
@@ -1273,8 +1274,9 @@
          not say whether "stale" means the box is powered off or its capture died.
          TH-4: it is a SLIDE-IN SHEET now -- fixed to the right edge, over the view, so the
          fleet list underneath never reflows while you read one sensor. -->
-    <div class="card sheet hidden" id="wl-detail-card" tabindex="-1">
-      <h2>Change this weirling <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
+    <div class="card sheet hidden" id="wl-detail-card" tabindex="-1"
+         role="dialog" aria-modal="true" aria-labelledby="wl-detail-title" aria-hidden="true">
+      <h2><span id="wl-detail-title">Change this weirling</span> <span id="wl-detail-id" class="muted"></span> <button class="info-btn" data-info="wl-detail-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button>
         <button id="wl-sheet-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
       <div id="wl-detail-body"></div>
       <!-- THIS HUB'S OWN WEIRLING (WSM-3, 2026-10-18): the settings its daemon reads, MOVED
@@ -1325,7 +1327,7 @@
           <h3>Pending changes <span class="muted" id="wl-stage-count"></span></h3>
           <p class="muted" id="wl-stage-note" role="status" aria-live="polite">No changes staged.</p>
           <div id="wl-stage-list"></div>
-          <div class="controls">
+          <div class="controls sheet-actions">
             <button id="wl-stage-apply" class="primary" disabled>Apply changes</button>
             <button id="wl-stage-discard" disabled>Discard</button>
           </div>
@@ -1546,6 +1548,7 @@
 </div>
 
 <script src="/app.js"></script>
+<script src="/sheets.js"></script>
 <script src="/soc.js"></script>
 <script src="/assets.js"></script>
 <script src="/sluice.js"></script>

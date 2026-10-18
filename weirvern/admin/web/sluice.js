@@ -825,10 +825,8 @@ function slRuleNote(text) {
 
 function closeRuleSheet() {
   const card = document.getElementById("sl-rule-sheet");
-  if (!card || card.classList.contains("hidden")) return;
-  card.classList.add("hidden");
-  const scrim = document.getElementById("sl-rule-scrim");
-  if (scrim) scrim.classList.add("hidden");
+  if (!card || !sheetIsOpen(card)) return;
+  closeSheet(card);            // the sheet standard hides the card and its scrim
   SL_RULE = null;
 }
 
@@ -894,21 +892,10 @@ function openRuleSheet(rule, domain) {
     const reasonEl = document.getElementById("sl-rule-delete-reason");
     if (reasonEl) reasonEl.value = "";
   }
-  card.classList.remove("hidden");
-  let scrim = document.getElementById("sl-rule-scrim");
-  if (!scrim) {
-    scrim = document.createElement("div");
-    scrim.id = "sl-rule-scrim";
-    scrim.className = "sheet-scrim hidden";
-    scrim.addEventListener("click", closeRuleSheet);
-    document.body.appendChild(scrim);
-  }
-  scrim.classList.remove("hidden");
-  if (typeof card.focus === "function") card.focus();
-  if (creating) {
-    const dom = document.getElementById("sl-domain");
-    if (dom) dom.focus();
-  }
+  openSheet(card, {
+    scrimId: "sl-rule-scrim",
+    initialFocus: creating ? "sl-domain" : null,
+  });
 }
 
 /** The DNS/Blocked entry point: same sheet, prefilled with the name. */
@@ -918,11 +905,9 @@ function openRuleComposer(domain) {
 
 function wireRuleSheet() {
   const card = document.getElementById("sl-rule-sheet");
-  if (!card || card.dataset.wired === "1") return;
-  card.dataset.wired = "1";
-
-  const close = document.getElementById("sl-rule-close");
-  if (close) close.addEventListener("click", closeRuleSheet);
+  if (!card) return;
+  // THE SHEET STANDARD (sheets.js): one close control, one scrim, one Escape for every sheet.
+  wireSheet(card, { scrimId: "sl-rule-scrim" });
 
   const create = document.getElementById("sl-block");
   if (create) create.addEventListener("click", async () => {
@@ -1034,10 +1019,6 @@ function wireRuleSheet() {
     closeRuleSheet();
     if (typeof showView === "function") showView("blocked");
     if (typeof blOpenRuleById === "function") blOpenRuleById(rid).catch(() => {});
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && slRuleSheetOpen()) closeRuleSheet();
   });
 }
 

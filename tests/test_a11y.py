@@ -40,7 +40,7 @@ def test_reduced_motion_neutralises_animation_everywhere():
 
 def test_scrollbars_are_themed_on_every_scrolling_surface():
     css = _css()
-    for surface in ("html {", "nav { overflow-x: auto;", "#wl-detail-card.sheet, #palette-results {"):
+    for surface in ("html {", "nav { overflow-x: auto;", ".sheet, #palette-results {"):
         idx = css.index(surface)
         chunk = css[idx:idx + 260]
         assert "scrollbar-color" in chunk, f"{surface} scrolls without a themed scrollbar"
