@@ -1863,6 +1863,35 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
 
+  // ── ONE BOX, ONE IDENTITY (QA-1-D2) ─────────────────────────────────────────────────────────
+  {
+    const origFetch = window.fetch;
+    window.fetch = (u) => (String(u).includes("/api/identity")
+      ? Promise.resolve({ ok: true, json: async () => ({
+          available: true, merged: 1,
+          coverage: { available: true, hosts_seen: 20, hosts_classified: 2, coverage_pct: 10,
+                      high_confidence: 1, medium_confidence: 1, unknown: 0, window_days: 7 },
+          hosts: [
+            { host: "weirvern", score: 0.9, confidence: "high", agreeing_sources: 2,
+              os_label: "Linux", signals: [], age_s: 60, aliases: ["Weirvern"], merged_from: 2 },
+            { host: "other-box", score: 0.7, confidence: "medium", agreeing_sources: 1,
+              os_label: "Linux", signals: [], age_s: 90 },
+          ] }) })
+      : origFetch(u));
+    H.showView("identity");
+    await H.loadIdentity();
+    await new Promise((r) => setTimeout(r, 120));
+    window.fetch = origFetch;
+    const note = doc.getElementById("id-coverage-note").textContent;
+    check("a folded host spelling is named in the coverage note",
+          /1 duplicate spelling folded/.test(note), note.slice(0, 160));
+    const rowText = doc.querySelector("#id-table tbody tr").textContent;
+    check("...and the surviving row shows what else it was called",
+          /also seen as Weirvern/.test(rowText), rowText.slice(0, 120));
+    check("...with one row per box, not two",
+          doc.querySelectorAll("#id-table tbody tr").length === 2);
+  }
+
   // ── THE EVIDENCE CHAIN (US-D1) ──────────────────────────────────────────────────────────────
   {
     const origFetch = window.fetch;

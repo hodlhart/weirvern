@@ -4652,8 +4652,12 @@ async function loadIdentity() {
       covBox.appendChild(el("div", { class: "stat" }, statCells(k, v)));
     }
   }
+  // A FOLDED SPELLING IS NAMED, NOT SILENTLY DROPPED (QA-1-D2): the operator saw two rows and
+  // is owed the reason there is now one.
+  const folded = Number(d.merged || 0);
   document.getElementById("id-coverage-note").textContent = cov.available
     ? `Of ${cov.hosts_seen} hosts seen in the last ${cov.window_days} days, ${cov.hosts_classified} have an identity. The rest have produced no identifying signal yet.`
+      + (folded ? ` ${folded} duplicate spelling${folded === 1 ? "" : "s"} folded into the host it belongs to.` : "")
     : "";
 
   idRenderChips();
@@ -4686,7 +4690,10 @@ async function loadIdentity() {
       // destinations, anomalies together); the row's own click still opens the identity detail.
       el("td", { class: "mono dcell", attrs: { title: "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); openHost(h.host); } } },
-         [el("span", { text: h.hostname ? `${h.hostname} (${h.host})` : h.host })]),
+         [el("span", { text: h.hostname ? `${h.hostname} (${h.host})` : h.host }),
+          ...((h.aliases || []).length
+            ? [el("span", { class: "muted", text: ` \u00b7 also seen as ${h.aliases.join(", ")}` })]
+            : [])]),
       el("td", { class: "dcell", attrs: { title: "filter the list to this identity" },
                  on: { click: (e) => { e.stopPropagation();
                    idSetFilter("os", h.os_label || h.os || "unknown"); } } },

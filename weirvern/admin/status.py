@@ -1659,6 +1659,8 @@ def host_identity_view(client) -> dict:
                       if updated else None),
         })
 
+    hosts, merged = collapse_identity_rows(hosts)
+
     try:
         cov = coverage(client)
     except Exception as exc:  # noqa: BLE001
@@ -1669,8 +1671,59 @@ def host_identity_view(client) -> dict:
         "window_days": IDENTITY_WINDOW_DAYS,
         "hosts": hosts,
         "count": len(hosts),
+        # HOW MANY KEYS WERE FOLDED, named rather than silently deduped: the operator saw two
+        # rows, and the surface should be able to say why there is now one.
+        "merged": merged,
         "coverage": cov,
     }
+
+
+def collapse_identity_rows(hosts: list[dict]) -> tuple[list[dict], int]:
+    """Fold identity rows whose HOST differs only by case (QA-1-D2).
+
+    MEASURED DEFECT: the store keyed one box twice -- `weirvern` and `Weirvern` -- because the
+    hostname arrives from two sources with different capitalisation, and every row then offered
+    its own Adopt. Two identities for one box is a truth lie: the operator cannot tell which name
+    is real, and adopting either creates the fossil the other just left.
+
+    The row with the stronger evidence wins (higher score, then more agreeing sources, then the
+    newer observation). The losers' hostnames/software/JA4 are unioned into the winner so nothing
+    observed is lost, their spellings are recorded as `aliases`, and the count of folded rows
+    travels back so the caller can say so.
+    """
+    groups: dict[str, list[dict]] = {}
+    for row in hosts:
+        key = str(row.get("host") or "").strip().lower()
+        groups.setdefault(key, []).append(row)
+
+    out: list[dict] = []
+    merged = 0
+    for group in groups.values():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        group.sort(key=lambda r: (float(r.get("score") or 0),
+                                  int(r.get("agreeing_sources") or 0),
+                                  str(r.get("updated_at") or "")), reverse=True)
+        winner = dict(group[0])
+        aliases = sorted({str(r.get("host")) for r in group if r.get("host")
+                          and str(r.get("host")) != str(winner.get("host"))})
+        for fname in ("hostnames_seen", "software_seen", "ja4_seen"):
+            union: list = []
+            for r in group:
+                for v in (r.get(fname) or []):
+                    if v not in union:
+                        union.append(v)
+            if union:
+                winner[fname] = union
+        winner["aliases"] = aliases
+        winner["merged_from"] = len(group)
+        merged += len(group) - 1
+        out.append(winner)
+
+    out.sort(key=lambda r: (str(r.get("confidence") or "") == "high",
+                            float(r.get("score") or 0)), reverse=True)
+    return out, merged
 
 
 def _parse_json(value):

@@ -189,3 +189,31 @@ def test_service_browsing_alone_stays_low_however_many_names_agree():
     v = verdicts[0]
     assert v["os"] == "apple" and v["confidence"] == "low", v
     assert v["agreeing_sources"] == 1, "one family, however many names"
+
+
+def test_one_box_is_one_identity_even_when_the_spelling_differs():
+    """QA-1-D2: the fleet listed `weirvern` and `Weirvern` as two hosts, each offering Adopt.
+
+    Case is not identity. The stronger row wins, the other's observations survive on it, and the
+    alternates are named rather than dropped.
+    """
+    from weirvern.admin.status import collapse_identity_rows
+
+    rows = [
+        {"host": "weirvern", "score": 0.90, "agreeing_sources": 2,
+         "hostnames_seen": ["weirvern"], "updated_at": "2026-10-18T10:00:00"},
+        {"host": "Weirvern", "score": 0.40, "agreeing_sources": 1,
+         "hostnames_seen": ["Weirvern.lan"], "updated_at": "2026-10-17T10:00:00"},
+        {"host": "other-box", "score": 0.70, "agreeing_sources": 1,
+         "hostnames_seen": [], "updated_at": ""},
+    ]
+    out, merged = collapse_identity_rows(rows)
+
+    assert len(out) == 2, [r["host"] for r in out]
+    assert merged == 1
+    winner = next(r for r in out if r["host"] == "weirvern")
+    assert winner["aliases"] == ["Weirvern"]
+    assert winner["merged_from"] == 2
+    # nothing observed is lost in the fold
+    assert "Weirvern.lan" in winner["hostnames_seen"]
+    assert winner["hostnames_seen"][0] == "weirvern"
