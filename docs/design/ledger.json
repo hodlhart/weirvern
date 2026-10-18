@@ -1,0 +1,334 @@
+{
+  "$comment": "THE LEDGER: who owns what. Two surfaces may show a fact; only one may OWN the job. canon_lint.py pins views/ids/labels; concepts are advisory until their DUP- card lands.",
+  "version": 1,
+  "updated": "2026-10-18",
+  "views": [
+    {
+      "id": "health",
+      "label": "Health",
+      "job": "is anything wrong right now",
+      "tab": true,
+      "module": "app.js"
+    },
+    {
+      "id": "anomalies",
+      "label": "Anomalies",
+      "job": "what did the models flag",
+      "tab": true,
+      "module": "soc.js"
+    },
+    {
+      "id": "logs",
+      "label": "Logs",
+      "job": "what changed, and what is broken",
+      "tab": true,
+      "module": "app.js"
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "job": "what is talking to what",
+      "tab": true,
+      "module": "assets.js"
+    },
+    {
+      "id": "netflow",
+      "label": "Netflow",
+      "job": "who moved the bytes (detail)",
+      "tab": true,
+      "module": "soc.js"
+    },
+    {
+      "id": "discover",
+      "label": "Discover",
+      "job": "what exists on the wire",
+      "tab": true,
+      "module": "discover.js"
+    },
+    {
+      "id": "dns",
+      "label": "DNS",
+      "job": "what names are being asked",
+      "tab": true,
+      "module": "dnsview.js"
+    },
+    {
+      "id": "zeek",
+      "label": "Zeek",
+      "job": "what the sensor recorded (detail)",
+      "tab": true,
+      "module": "app.js"
+    },
+    {
+      "id": "sluice",
+      "label": "Sluice Gate",
+      "job": "is enforcement armed, and what did it do",
+      "tab": true,
+      "module": "sluice.js"
+    },
+    {
+      "id": "blocked",
+      "label": "Blocked",
+      "job": "what is being stopped, and why",
+      "tab": true,
+      "module": "blocked.js"
+    },
+    {
+      "id": "identity",
+      "label": "Identity",
+      "job": "who is this device",
+      "tab": true,
+      "module": "soc.js"
+    },
+    {
+      "id": "weirlings",
+      "label": "Weirlings",
+      "job": "which sensors report, and are they flowing",
+      "tab": true,
+      "module": "weirlings.js"
+    },
+    {
+      "id": "host",
+      "label": "Assets",
+      "job": "which hosts exist and what do we know",
+      "tab": true,
+      "module": "assets.js",
+      "debt": "view id 'host' does not match the label 'Assets' (QA-1-D4)"
+    },
+    {
+      "id": "models",
+      "label": "Models",
+      "job": "when did the baseline last learn",
+      "tab": true,
+      "module": "app.js"
+    },
+    {
+      "id": "settings",
+      "label": "Settings",
+      "job": "how is this configured, and what changed",
+      "tab": true,
+      "module": "app.js"
+    },
+    {
+      "id": "evidence",
+      "label": "Evidence",
+      "job": "the record behind one entity",
+      "tab": false,
+      "module": "soc.js",
+      "debt": "drill-only: reachable by hash/drill-through, no tab and no nav affordance (candidate home for the evidence chain)"
+    }
+  ],
+  "concepts": [
+    {
+      "concept": "sensor identity",
+      "canonical_id": "sensor_id",
+      "labels": [
+        "weirling",
+        "sensor"
+      ],
+      "owned_by": "weirlings",
+      "renderer": "weirlings.js",
+      "status": "owned",
+      "duplicates": [
+        "a case-different fossil row 'Weirvern' can be adopted as a second identity (QA-1-D2)"
+      ]
+    },
+    {
+      "concept": "the fleet row",
+      "canonical_id": "fleet_row",
+      "labels": [
+        "weirling row"
+      ],
+      "owned_by": "weirlings",
+      "renderer": "weirlings.js",
+      "status": "owned",
+      "duplicates": [
+        "Discover also lists sensors as a facet; that is a filter, not a fleet row"
+      ]
+    },
+    {
+      "concept": "flow trend",
+      "canonical_id": "flow_series",
+      "labels": [
+        "flow",
+        "trend"
+      ],
+      "owned_by": "weirlings",
+      "renderer": "weirlings.js:wlSparkline",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "netflow observation",
+      "canonical_id": "netflow",
+      "labels": [
+        "netflow"
+      ],
+      "owned_by": "netflow",
+      "renderer": "weirlings.js (indicator) + soc.js (detail)",
+      "status": "shared-by-job",
+      "duplicates": [
+        "indicator on the fleet row (summary) and the Netflow view (detail) share a word but not a job"
+      ]
+    },
+    {
+      "concept": "zeek observation",
+      "canonical_id": "zeek",
+      "labels": [
+        "zeek"
+      ],
+      "owned_by": "zeek",
+      "renderer": "weirlings.js (indicator) + app.js (detail)",
+      "status": "shared-by-job",
+      "duplicates": []
+    },
+    {
+      "concept": "declared segment",
+      "canonical_id": "segment",
+      "labels": [
+        "networks",
+        "segment",
+        "CIDR"
+      ],
+      "owned_by": "weirlings",
+      "renderer": "weirlings.js",
+      "status": "owned",
+      "duplicates": [
+        "Settings declares it; the row reports it. Declaration vs report is a distinction, not a duplicate."
+      ]
+    },
+    {
+      "concept": "anomaly",
+      "canonical_id": "anomaly",
+      "labels": [
+        "anomaly",
+        "alert"
+      ],
+      "owned_by": "anomalies",
+      "renderer": "soc.js",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "reason code",
+      "canonical_id": "reason_code",
+      "labels": [
+        "why",
+        "reason"
+      ],
+      "owned_by": "anomalies",
+      "renderer": "soc.js",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "block action",
+      "canonical_id": "block",
+      "labels": [
+        "block"
+      ],
+      "owned_by": "blocked",
+      "renderer": "blocked.js + sluice.js",
+      "status": "shared-by-job",
+      "duplicates": []
+    },
+    {
+      "concept": "write trail",
+      "canonical_id": "write_trail",
+      "labels": [
+        "changes",
+        "trail"
+      ],
+      "owned_by": "logs",
+      "renderer": "app.js",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "setting",
+      "canonical_id": "setting",
+      "labels": [
+        "setting"
+      ],
+      "owned_by": "settings",
+      "renderer": "app.js",
+      "status": "owned",
+      "duplicates": [
+        "change-only sheet may stage a change; it does not own the setting's value"
+      ]
+    },
+    {
+      "concept": "pending change",
+      "canonical_id": "pending_change",
+      "labels": [
+        "pending changes",
+        "staged"
+      ],
+      "owned_by": "settings",
+      "renderer": "app.js",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "host / asset",
+      "canonical_id": "host",
+      "labels": [
+        "asset",
+        "host"
+      ],
+      "owned_by": "host",
+      "renderer": "assets.js",
+      "status": "owned",
+      "duplicates": [
+        "label says Assets, id says host (QA-1-D4)"
+      ]
+    },
+    {
+      "concept": "model / baseline",
+      "canonical_id": "model",
+      "labels": [
+        "model",
+        "baseline"
+      ],
+      "owned_by": "models",
+      "renderer": "app.js",
+      "status": "owned",
+      "duplicates": []
+    },
+    {
+      "concept": "evidence record",
+      "canonical_id": "evidence_chain",
+      "labels": [
+        "evidence"
+      ],
+      "owned_by": "evidence",
+      "renderer": "soc.js",
+      "status": "unfinished",
+      "duplicates": [
+        "the drill-only view; the five-stage chain (vision.md \u00a72) is not built yet"
+      ]
+    }
+  ],
+  "known_duplicates": [
+    {
+      "kind": "identity",
+      "detail": "'weirvern' and 'Weirvern' both listed; the capitalised one is unregistered and offers Adopt",
+      "card": "QA-1-D2"
+    },
+    {
+      "kind": "vocabulary",
+      "detail": "view id 'host' vs label 'Assets'",
+      "card": "QA-1-D4"
+    },
+    {
+      "kind": "reachability",
+      "detail": "the Weirlings problem dot's first finding exists only in a title attribute; measured 2026-10-18: 7 meaning-only title facts console-wide (2 Weirlings, 5 Sluice) out of 136 title attributes",
+      "card": "QA-1-D4"
+    },
+    {
+      "kind": "surface",
+      "detail": "the Evidence view has no tab and no nav affordance",
+      "card": null
+    }
+  ]
+}

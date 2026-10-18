@@ -12,7 +12,12 @@
 # the schema Job and the prune CronJob.
 set -eu
 
-kustomize build k8s/ | python3 -c '
+# Resolve the interpreter the way the gate does: the venv carries PyYAML, the system python may
+# not, and a hardcoded `python3` meant the one step that proves the published numbers could not run.
+PY=.venv/bin/python
+[ -x "$PY" ] || PY=python3
+
+kustomize build k8s/ | "$PY" -c '
 import sys, yaml
 
 def q(v):
