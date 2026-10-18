@@ -743,6 +743,10 @@
     <div class="card">
       <h2 id="ev-title">Evidence</h2>
       <p class="muted" id="ev-sub"></p>
+      <!-- THE SIGNATURE, ON THE PAGE WHERE AN ALERT IS READ (US-D1, vision §2): what was seen,
+           what was detected, why, what was ruled, and whether it is done. Each stage states its
+           own state; a stage with no record says so instead of rendering empty. -->
+      <ol class="chain" id="ev-chain" aria-label="how this alert went from packets to a decision"></ol>
       <div class="stats" id="ev-stats"></div>
       <div id="ev-verdict"></div>
     </div>

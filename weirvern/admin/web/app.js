@@ -2487,6 +2487,53 @@ async function loadEvidence(addr, start, end) {
                run: () => returnWithScroll(fromView, EVIDENCE_SCROLL),
                title: "back where this drill was opened, with its filters and scroll" }]);
 
+  // ── THE EVIDENCE CHAIN (US-D1) ─────────────────────────────────────────────────────────────
+  // Five stages, each with its own state. The rule from the vision: an unknown is drawn as an
+  // unknown, never as an absence -- so a stage with no record says "not recorded" in words.
+  {
+    const box = document.getElementById("ev-chain");
+    if (box) {
+      box.replaceChildren();
+      const s = d.flow_summary || null;
+      const a = d.anomaly || null;
+      const state = (a && a.review_state) || "";
+      const reviewed = {
+        resolved: ["closed", "resolved"],
+        false_positive: ["closed", "false positive"],
+        ack: ["open", "acknowledged"],
+        unavailable: ["unknown", "review state could not be read"],
+      }[state] || ["open", "not reviewed yet"];
+      const stages = [
+        ["observed", "observed", s
+          ? `${Number(s.flows || 0).toLocaleString()} flows \u00b7 ${fmtBytes(s.bytes)} \u00b7 ` +
+            `${s.unique_destinations ?? "\u2014"} destinations in this window`
+          : "no flow records in this window", s ? "known" : "unknown"],
+        ["detected", "detected", a
+          ? `${sevText(a.severity) || "\u2014"} \u00b7 score ` +
+            `${Number(a.anomaly_score ?? 0).toFixed(3)} \u00b7 ${a.detected_by_models || "\u2014"}`
+          : "no verdict stored for this window", a ? "known" : "unknown"],
+        ["explained", "explained",
+          (a && (a.baseline_comparison || a.primary_deviation_feature))
+            ? String(a.baseline_comparison || `primary deviation: ${a.primary_deviation_feature}`)
+            : "no explanation recorded",
+          (a && (a.baseline_comparison || a.primary_deviation_feature)) ? "known" : "unknown"],
+        ["ruled", "ruled", reviewed[1], reviewed[0]],
+        ["done", "done", reviewed[0] === "closed" ? "closed" :
+          (reviewed[0] === "open" ? "still open \u2014 a decision is owed" : "unknown"),
+          reviewed[0]],
+      ];
+      for (const [id, label, text, st] of stages) {
+        box.appendChild(el("li", { class: `chain-step chain-${st}`,
+          attrs: { "data-stage": id } }, [
+          el("span", { class: "chain-n", text: String(stages.findIndex((x) => x[0] === id) + 1) }),
+          el("span", { class: "chain-label", text: label }),
+          el("span", { class: "chain-text", text: text }),
+          el("span", { class: "chain-state", text: st }),
+        ]));
+      }
+    }
+  }
+
   // The verdict, so the evidence is read in context rather than cold.
   const verdict = document.getElementById("ev-verdict");
   verdict.replaceChildren();

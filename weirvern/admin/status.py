@@ -2167,6 +2167,28 @@ def alert_evidence(client, src_addr: str, window_start: str,
         logger.warning("alert_evidence window lookup failed: %s", exc)
         out.setdefault("_errors", {})["anomaly"] = str(exc)[:200]
 
+    # ── THE DECISION TRAIL BELONGS ON THE EVIDENCE PAGE (US-D1) ────────────────────────────────
+    # The chain reads observed -> detected -> explained -> ruled -> done, and the last two stages
+    # are the review store's. Without this merge the page could show the measurement behind an
+    # alert but never whether anyone had ruled on it -- so "nobody has looked" and "this was
+    # accepted three days ago" rendered identically.
+    if out.get("anomaly") is not None:
+        try:
+            idx, rev_err, covered_since = review_index(client)
+            probe = dict(out["anomaly"])
+            probe["window_start"] = out.get("window_start")
+            probe["src_addr"] = src_addr
+            attach_reviews([probe], idx, rev_err, covered_since=covered_since)
+            out["anomaly"]["review_state"] = probe.get("review_state", "")
+            out["anomaly"]["review_note"] = probe.get("review_note", "")
+        except Exception as exc:  # noqa: BLE001
+            # A failed review read is "unavailable", never "unreviewed": the chain must not
+            # claim nobody has ruled when the ruling simply could not be read.
+            logger.warning("alert_evidence review lookup failed: %s", exc)
+            out["anomaly"]["review_state"] = REVIEW_UNAVAILABLE
+            out["anomaly"]["review_note"] = ""
+            out.setdefault("_errors", {})["review"] = str(exc)[:200]
+
     ws = out["window_start"]
     we = out["window_end"]
     if ws is None:

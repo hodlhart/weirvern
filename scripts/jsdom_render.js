@@ -1863,6 +1863,41 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
 
+  // ── THE EVIDENCE CHAIN (US-D1) ──────────────────────────────────────────────────────────────
+  {
+    const origFetch = window.fetch;
+    window.fetch = (u) => (String(u).includes("/api/evidence")
+      ? Promise.resolve({ ok: true, json: async () => ({
+          available: true, hostname: "host.example", src_addr: "198.51.100.5",
+          window_start: "2026-10-17T10:55:00", window_end: "2026-10-17T11:00:00",
+          anomaly: { severity: "high", anomaly_score: 0.91,
+                     detected_by_models: "Isolation Forest",
+                     baseline_comparison: "bytes 4.1x the learned mean for this hour",
+                     primary_deviation_feature: "bytes", attack_techniques: "",
+                     review_state: "ack" },
+          flow_summary: { bytes: 1000, packets: 9, flows: 3,
+                          unique_destinations: 1, unique_ports: 1 },
+          flows: [], zeek_conn: [], zeek_ssl: [], zeek_dns: [], notice: [],
+          errors: null }) })
+      : origFetch(u));
+    H.showView("evidence");
+    await H.loadEvidence("198.51.100.5", "2026-10-17T10:55:00", "2026-10-17T11:00:00");
+    await new Promise((r) => setTimeout(r, 150));
+    window.fetch = origFetch;
+
+    const steps = [...doc.querySelectorAll("#ev-chain .chain-step")];
+    check("the evidence page shows the five stages in order",
+          steps.length === 5
+          && steps.map((s) => s.getAttribute("data-stage")).join(",") ===
+             "observed,detected,explained,ruled,done",
+          steps.map((s) => s.getAttribute("data-stage")).join(","));
+    const txt = steps.map((s) => s.textContent).join(" | ");
+    check("...each carrying its own measurements, not a heading",
+          /3 flows/.test(txt) && /0\.910/.test(txt) && /4\.1x/.test(txt), txt.slice(0, 160));
+    check("...and the ruling is stated in words",
+          /acknowledged/.test(txt) && /still open/.test(txt), txt.slice(0, 200));
+  }
+
   // ── THE POINTS TABLE IS PAGED (US-A4) ──────────────────────────────────────────────────────
   // The window can hold thousands of points. Rendering every one put this view at 8,650 elements
   // against a 6,000 budget; the table now renders a page, says how many it holds back, and offers
