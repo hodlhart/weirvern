@@ -125,16 +125,21 @@ def test_the_routes_and_serializer_carry_the_new_state():
     assert "revoke_rules(" in body, "the revoke route must accept a selection"
 
 
-def test_the_view_has_checkboxes_icons_confirm_and_click_to_edit():
+def test_the_view_has_checkboxes_bulk_parking_and_a_rule_sheet():
     html = (WEB / "index.html").read_text()
     for elem in ('id="sl-pick-all"', 'id="sl-bulk"', 'id="sl-bulk-disable"',
-                 'id="sl-bulk-enable"', 'id="sl-bulk-delete"', 'id="sl-bulk-clear"'):
+                 'id="sl-bulk-enable"', 'id="sl-bulk-clear"'):
         assert elem in html, f"{elem} missing from the rules view"
+    # Deleting a rule is a per-rule act in its sheet (SL-1, 2026-10-18), not a bulk button and
+    # not an icon in the list.
+    assert 'id="sl-bulk-delete"' not in html, "bulk delete is back on the sluice tab"
     js = (WEB / "sluice.js").read_text()
     assert "sl-pick" in js and "slConfirm" in js and "slBulkAct" in js
-    assert 'slIcon("trash")' in js and 'slIcon(r.disabled ? "play" : "ban")' in js
-    assert "blOpenRuleById(r.rule_id)" in js, "rows must open the shared rule card"
+    assert "openRuleSheet(" in js, "a row must open the rule sheet"
+    assert "slRuleRevoke(" in js and "sl-rule-delete" in html
     assert "click again to confirm" in js
+    assert 'slIcon("trash")' not in js, "the row's trash icon belongs in the sheet now"
+    assert "blOpenRuleById(rid)" in js, "the sheet must still offer the Blocked-page view"
 
 
 

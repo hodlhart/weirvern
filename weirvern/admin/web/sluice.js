@@ -323,30 +323,13 @@ async function loadSluice() {
     ]);
 
     if (!r.revoked) {
-      const actions = el("td", { class: "sl-actions" });
-      if (r.live || r.disabled) {
-        // A parked rule can be put back; a revoked one cannot -- and that two-way switch is
-        // exactly what separates the disable icon from the trashcan beside it.
-        const disText = r.disabled ? "enable this rule again"
-                                   : "disable this rule (keeps it, stops it)";
-        const dis = el("button", { class: "icon-btn",
-          attrs: { title: disText, "aria-label": `${disText}: ${r.describes || r.rule_id}` } },
-          [slIcon(r.disabled ? "play" : "ban")]);
-        dis.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(dis, () => slRuleSetDisabled(r, !r.disabled)); });
-        actions.appendChild(dis);
-      }
-      const delText = "delete this rule (the record stays; the rule cannot come back)";
-      const del = el("button", { class: "icon-btn danger",
-        attrs: { title: delText, "aria-label": `${delText}: ${r.describes || r.rule_id}` } },
-        [slIcon("trash")]);
-      del.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(del, () => slRuleRevoke(r)); });
-      actions.appendChild(del);
-      tr.appendChild(actions);
+      // NO PER-ROW ACTION CELL (SL-1). A row opens its sheet; enable/disable and delete live
+      // there, so a stray click cannot delete a rule from the list.
     } else {
       tr.appendChild(el("td", { class: "muted", text: "" }));
     }
     tr.addEventListener("click", () => {
-      if (typeof blOpenRuleById === "function") blOpenRuleById(r.rule_id);
+      openRuleSheet(r);
     });
     tbody.appendChild(tr);
   }
@@ -393,8 +376,7 @@ function slConfirm(btn, run) {
 async function slRuleRevoke(r) {
   const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id });
   if (out && out.ok) {
-    const n = document.getElementById("sl-block-note");
-    if (n) n.textContent = out.note || "revoked";
+    slRuleNote(out.note || "revoked");
     await loadSluice();
   } else {
     showError(new Error((out && out.error) || "the rule could not be revoked"));
@@ -404,9 +386,8 @@ async function slRuleRevoke(r) {
 async function slRuleSetDisabled(r, want) {
   const out = await postJSON("/api/sluice/rule/disabled", { rule_id: r.rule_id, disabled: want });
   if (out && out.ok) {
-    const n = document.getElementById("sl-block-note");
     const refused = (out.refused || [])[0];
-    if (n) n.textContent = refused ? refused.error : (out.note || (want ? "disabled" : "re-enabled"));
+    slRuleNote(refused ? refused.error : (out.note || (want ? "disabled" : "re-enabled")));
     await loadSluice();
   } else {
     showError(new Error((out && out.error) || "the rule could not be changed"));
@@ -468,15 +449,17 @@ function slBulkRefresh() {
 async function slBulkAct(kind) {
   const ids = slSelected();
   if (!ids.length) return;
-  const out = await postJSON(kind === "delete" ? "/api/sluice/revoke" : "/api/sluice/rule/disabled",
-    kind === "delete" ? { rule_ids: ids } : { rule_ids: ids, disabled: kind === "disable" });
+  // DELETING IS NOT A BULK ACTION (SL-1): a rule is deleted in its own sheet, behind a second
+  // click. The bulk bar only parks or restores rules, which is reversible.
+  const out = await postJSON("/api/sluice/rule/disabled",
+    { rule_ids: ids, disabled: kind === "disable" });
   if (out && out.ok) {
     const n = document.getElementById("sl-block-note");
-    const done = (out.changed || out.revoked || []).length;
+    const done = (out.changed || []).length;
     const bad = (out.refused || []).length + (out.missing || []).length;
     if (n) {
-      n.textContent = `${done} rule(s) ` + (kind === "delete" ? "deleted"
-        : (kind === "disable" ? "disabled" : "re-enabled")) + (bad ? `; ${bad} refused` : "");
+      n.textContent = `${done} rule(s) ` + (kind === "disable" ? "disabled" : "re-enabled")
+        + (bad ? `; ${bad} refused` : "");
     }
     await loadSluice();
   } else {
@@ -501,7 +484,6 @@ function slBulkWire() {
   };
   wire("sl-bulk-disable", "disable");
   wire("sl-bulk-enable", "enable");
-  wire("sl-bulk-delete", "delete");
   const clear = document.getElementById("sl-bulk-clear");
   if (clear) {
     clear.addEventListener("click", () => {
@@ -560,54 +542,7 @@ function wireSluice() {
   if (newRule) newRule.addEventListener("click", () => {
     if (typeof openRuleComposer === "function") openRuleComposer("");
   });
-
-  const block = document.getElementById("sl-block");
-  if (!block) return;
-  block.addEventListener("click", async () => {
-    const note = document.getElementById("sl-block-note");
-    const body = {
-      src_cidr: document.getElementById("sl-src").value.trim(),
-      dst_cidr: document.getElementById("sl-dst").value.trim(),
-      domain: (document.getElementById("sl-domain") || {}).value ? document.getElementById("sl-domain").value.trim() : "",
-      mode: document.getElementById("sl-mode") ? document.getElementById("sl-mode").value : "block",
-      protocol: document.getElementById("sl-proto").value,
-      dst_port: Number(document.getElementById("sl-port").value || 0),
-      direction: document.getElementById("sl-direction").value,
-      ttl_minutes: Number(document.getElementById("sl-ttl").value || 60),
-      reason: document.getElementById("sl-reason").value.trim(),
-    };
-    // NO REASON CHECK HERE ANY MORE (2026-10-16): the reason is optional. A derived block always
-    // carries one and the form pre-fills the field, but a manual block may be left blank, and the
-    // store records it blank rather than inventing a placeholder that would read like a fact.
-    block.disabled = true;
-    note.textContent = "recording…";
-    try {
-      const out = await postJSON("/api/sluice/block", body);
-      if (out && out.ok) {
-        note.textContent = out.note || "recorded";
-        document.getElementById("sl-reason").value = "";
-        await loadSluice();
-        // US-3: the receipt KEEPS ITS ID -- one click scrolls to the rule it just created.
-        if (out.rule_id) {
-          note.appendChild(document.createTextNode(" "));
-          note.appendChild(el("button", {
-            class: "quiet", text: "Show the filed rule \u2192", attrs: { type: "button" },
-            title: "scroll to the rule this block created",
-            on: { click: () => sluiceHighlightRule(out.rule_id) },
-          }));
-        }
-      } else {
-        // The server's refusal text is the deliverable: it names the fix.
-        note.textContent = (out && out.error) || "the rule was refused";
-      }
-    } catch (err) {
-      note.textContent = String(err.message || err);
-    } finally {
-      block.disabled = false;
-    }
-  });
 }
-
 
 /* ── Blocklists: what has been imported, and what it has caught ──────────────────────────────── */
 function renderBlocklists(d) {
@@ -862,80 +797,242 @@ async function loadBlockingControls() {
   note.textContent = "";
 }
 
-function openRuleComposer(domain) {
-  const card = document.getElementById("rule-composer");
-  if (!card) return;
-  const dom = document.getElementById("rc-domain");
-  const note = document.getElementById("rc-note");
-  const create = document.getElementById("rc-create");
-  if (dom) dom.value = String(domain || "");
-  if (note) note.textContent = "";
-  if (create) { create.textContent = "Create"; delete create.dataset.armed; }
-  openModal(card);
-  if (dom) dom.focus();
+
+/* ── THE RULE SHEET (SL-1, 2026-10-18) ────────────────────────────────────────────────────────
+ *
+ * One sheet for creating a rule, reading one, parking or restoring it, and deleting it. The tab's
+ * table is a list; the acts live here, the way a weirling's settings live in its drill-down. The
+ * DNS and Blocked pages enter the same composer -- a domain rule is a rule, not a second form.
+ */
+let SL_RULE = null;
+
+function slRuleSheetOpen() {
+  const card = document.getElementById("sl-rule-sheet");
+  return Boolean(card && !card.classList.contains("hidden"));
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  const create = document.getElementById("rc-create");
-  const cancel = document.getElementById("rc-cancel");
-  if (cancel) cancel.addEventListener("click", () =>
-    closeModal(document.getElementById("rule-composer")));
+/** The sheet's own line, mirrored into the create section's note so a create receipt survives
+ *  the switch back to the form. */
+function slRuleNote(text) {
+  for (const id of ["sl-rule-note", "sl-block-note"]) {
+    const n = document.getElementById(id);
+    if (n) n.textContent = text;
+  }
+}
+
+function closeRuleSheet() {
+  const card = document.getElementById("sl-rule-sheet");
+  if (!card || card.classList.contains("hidden")) return;
+  card.classList.add("hidden");
+  const scrim = document.getElementById("sl-rule-scrim");
+  if (scrim) scrim.classList.add("hidden");
+  SL_RULE = null;
+}
+
+function slRuleFacts(r) {
+  const facts = document.getElementById("sl-rule-facts");
+  if (!facts) return;
+  facts.replaceChildren();
+  const rows = [
+    ["rule", r.describes || r.src_cidr || r.rule_id],
+    ["state", r.revoked ? "revoked" : (r.disabled ? "disabled" : (r.live ? "live" : "lapsed"))],
+    ["origin", r.origin === "detection"
+      ? `detection (${r.severity || "?"})` : (r.origin || "manual")],
+    ["expires", r.live ? sluiceDuration(r.expires_in_s) : (r.expires_at || "—")],
+    ["reason", r.reason || "(no reason recorded)"],
+    ["rule id", r.rule_id],
+  ];
+  for (const [k, v] of rows) {
+    facts.appendChild(el("div", { class: "setting" }, [
+      el("span", { class: "setting-key", text: k }),
+      el("span", { class: "setting-val", text: String(v) }),
+    ]));
+  }
+}
+
+function openRuleSheet(rule, domain) {
+  if (typeof showView === "function") showView("sluice");
+  const card = document.getElementById("sl-rule-sheet");
+  if (!card) return;
+  SL_RULE = rule || null;
+  const creating = !rule;
+  const title = document.getElementById("sl-rule-title");
+  const id = document.getElementById("sl-rule-id");
+  const create = document.getElementById("sl-rule-create");
+  const detail = document.getElementById("sl-rule-detail");
+  if (title) title.textContent = creating ? "New rule" : "Rule";
+  if (id) id.textContent = creating ? "" : (rule.rule_id || "");
+  if (create) create.classList.toggle("hidden", !creating);
+  if (detail) detail.classList.toggle("hidden", creating);
+  slRuleNote("");
+  if (creating) {
+    const dom = document.getElementById("sl-domain");
+    if (dom) dom.value = String(domain || "");
+    const btn = document.getElementById("sl-block");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Create rule";
+      delete btn.dataset.armed;
+    }
+  } else {
+    slRuleFacts(rule);
+    const toggle = document.getElementById("sl-rule-toggle");
+    if (toggle) {
+      toggle.textContent = rule.disabled ? "Enable this rule" : "Disable this rule";
+      toggle.disabled = Boolean(rule.revoked);
+    }
+    const del = document.getElementById("sl-rule-delete");
+    if (del) {
+      del.disabled = Boolean(rule.revoked);
+      delete del.dataset.armed;
+      del.classList.remove("armed");
+      del.textContent = "Delete this rule";
+    }
+  }
+  card.classList.remove("hidden");
+  let scrim = document.getElementById("sl-rule-scrim");
+  if (!scrim) {
+    scrim = document.createElement("div");
+    scrim.id = "sl-rule-scrim";
+    scrim.className = "sheet-scrim hidden";
+    scrim.addEventListener("click", closeRuleSheet);
+    document.body.appendChild(scrim);
+  }
+  scrim.classList.remove("hidden");
+  if (typeof card.focus === "function") card.focus();
+  if (creating) {
+    const dom = document.getElementById("sl-domain");
+    if (dom) dom.focus();
+  }
+}
+
+/** The DNS/Blocked entry point: same sheet, prefilled with the name. */
+function openRuleComposer(domain) {
+  openRuleSheet(null, domain);
+}
+
+function wireRuleSheet() {
+  const card = document.getElementById("sl-rule-sheet");
+  if (!card || card.dataset.wired === "1") return;
+  card.dataset.wired = "1";
+
+  const close = document.getElementById("sl-rule-close");
+  if (close) close.addEventListener("click", closeRuleSheet);
+
+  const create = document.getElementById("sl-block");
   if (create) create.addEventListener("click", async () => {
-    const dom = document.getElementById("rc-domain");
-    const wild = document.getElementById("rc-wild");
-    const mode = document.getElementById("rc-mode");
-    const reason = document.getElementById("rc-reason");
-    const note = document.getElementById("rc-note");
-    let name = String((dom && dom.value) || "").trim().toLowerCase().replace(/\.$/, "");
-    if (!name) { note.textContent = "a name is required."; return; }
-    if (wild && wild.checked && !name.startsWith("*.")) name = "*." + name;
-    const wantMode = (mode && mode.value) || "alert";
-    if (wantMode === "block" && !create.dataset.armed) {
+    const note = document.getElementById("sl-block-note");
+    const value = (id) => {
+      const node = document.getElementById(id);
+      return node ? String(node.value || "").trim() : "";
+    };
+    const body = {
+      src_cidr: value("sl-src"),
+      dst_cidr: value("sl-dst"),
+      domain: value("sl-domain"),
+      mode: value("sl-mode") || "alert",
+      protocol: value("sl-proto"),
+      dst_port: Number(value("sl-port") || 0),
+      direction: value("sl-direction") || "forward",
+      ttl_minutes: Number(value("sl-ttl") || 60),
+      reason: value("sl-reason"),
+    };
+    // A BLOCKING RULE STILL ASKS TWICE (retained from the old composer): mode=block makes the
+    // kernel drop what this matches, so the first click arms and names the consequence, the
+    // second commits. Alert rules write on one click; they enforce nothing.
+    if (body.mode === "block" && create.dataset.armed !== "1") {
       create.dataset.armed = "1";
-      create.textContent = "Confirm: enforce in kernel";
-      note.textContent = "Block mode makes the kernel drop what this name resolves to. "
-        + "Click again to confirm.";
+      create.textContent = "Confirm: create a blocking rule";
+      if (note) {
+        note.textContent = "Block mode makes the kernel drop what this rule matches. "
+          + "Click again to confirm.";
+      }
       return;
     }
     delete create.dataset.armed;
+    create.textContent = "Create rule";
+    // NO REASON CHECK (2026-10-16): the reason is optional and blank stays blank.
     create.disabled = true;
+    if (note) note.textContent = "recording…";
     try {
-      const out = await postJSON("/api/sluice/block", {
-        domain: name, mode: wantMode, reason: String((reason && reason.value) || "").trim(),
-        origin: "dns", ttl_minutes: 0,
-      });
+      const out = await postJSON("/api/sluice/block", body);
       if (out && out.ok) {
-        note.textContent = `created ${name} (${wantMode}); it appears under Rules and on the `
-          + "Blocked page. A rule with no expiry lasts until revoked.";
-        if (typeof loadSluice === "function") loadSluice().catch(() => {});
-        if (typeof loadBlocked === "function") loadBlocked().catch(() => {});
-        // US-3: "it appears under Rules" was a sentence; now it is a button. One click closes
-        // the composer and lands on the rule's card on the Blocked page.
-        if (out.rule_id) {
+        if (note) note.textContent = out.note || "rule created";
+        await loadSluice();
+        if (out.rule_id && note) {
           note.appendChild(document.createTextNode(" "));
           note.appendChild(el("button", {
-            class: "quiet", text: "Show the rule \u2192", attrs: { type: "button" },
-            title: "open this rule on the Blocked page",
-            on: { click: () => {
-              if (typeof closeModal === "function") closeModal(document.getElementById("rule-composer"));
-              showView("blocked");
-              if (typeof blOpenRuleById === "function") blOpenRuleById(out.rule_id).catch(() => {});
-            } },
+            class: "quiet", text: "Show the filed rule \u2192", attrs: { type: "button" },
+            on: { click: () => { closeRuleSheet(); sluiceHighlightRule(out.rule_id); } },
           }));
         }
-      } else {
-        note.textContent = (out && out.error) || "the rule was refused.";
+      } else if (note) {
+        note.textContent = (out && out.error) || "the rule was refused";
       }
     } catch (err) {
-      note.textContent = String((err && err.message) || err);
+      if (note) note.textContent = String((err && err.message) || err);
     } finally {
       create.disabled = false;
-      create.textContent = "Create";
     }
   });
+
+  const del = document.getElementById("sl-rule-delete");
+  if (del) del.addEventListener("click", () => {
+    if (!SL_RULE) return;
+    const rule = SL_RULE;
+    if (del.dataset.armed === "1") {
+      delete del.dataset.armed;
+      del.classList.remove("armed");
+      del.textContent = "Delete this rule";
+      del.disabled = true;
+      slRuleRevoke(rule)
+        .then(() => closeRuleSheet())
+        .catch(showError)
+        .finally(() => { del.disabled = false; });
+      return;
+    }
+    del.dataset.armed = "1";
+    del.classList.add("armed");
+    del.textContent = "Click again to delete";
+    slRuleNote("Deleting keeps the record and the audit trail; the rule cannot come back.");
+    setTimeout(() => {
+      if (del.isConnected && del.dataset.armed === "1") {
+        delete del.dataset.armed;
+        del.classList.remove("armed");
+        del.textContent = "Delete this rule";
+      }
+    }, 5000);
+  });
+
+  const toggle = document.getElementById("sl-rule-toggle");
+  if (toggle) toggle.addEventListener("click", () => {
+    if (!SL_RULE) return;
+    toggle.disabled = true;
+    slRuleSetDisabled(SL_RULE, !SL_RULE.disabled)
+      .then(() => closeRuleSheet())
+      .catch(showError)
+      .finally(() => { toggle.disabled = false; });
+  });
+
+  const blocked = document.getElementById("sl-rule-blocked");
+  if (blocked) blocked.addEventListener("click", () => {
+    if (!SL_RULE) return;
+    const rid = SL_RULE.rule_id;
+    closeRuleSheet();
+    if (typeof showView === "function") showView("blocked");
+    if (typeof blOpenRuleById === "function") blOpenRuleById(rid).catch(() => {});
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && slRuleSheetOpen()) closeRuleSheet();
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
   const blk = document.getElementById("dn-block");
   if (blk) blk.addEventListener("click", () => {
     const field = document.getElementById("dn-domain");
     openRuleComposer(String((field && field.value) || "").trim());
   });
+  wireRuleSheet();
 });

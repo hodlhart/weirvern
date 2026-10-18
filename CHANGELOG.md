@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.17.4 — 2026-10-18
+
+RULES ARE ADDED AND DELETED IN A SHEET, NOT ON THE SLUICE TAB.
+
+The operator, 2026-10-18: "Sluice gate needs refining. Adding or deleting rules should be a
+similar pop out like weirling settings. Not added on the main sluice gate tab."
+
+- The inline "Block a host or network" card is gone from the Sluice view. "New rule" opens
+  `#sl-rule-sheet` — the same right-side sheet the weirlings use — with the source, destination,
+  domain, mode, protocol, port, direction, duration and reason fields.
+- A rule row opens that same sheet: its state, origin, expiry, reason and id, with Enable/Disable,
+  Delete and "Open on the Blocked page". Delete arms on the first click and writes on the second;
+  the confirm and the audit trail are unchanged.
+- The per-row trash/ban icons and the bulk "Delete selected" button are gone. The bulk bar parks
+  and restores rules (reversible); deleting is one rule at a time, in its sheet.
+- One composer: the DNS/Blocked "block this domain" button opens this sheet with the name filled
+  in; the separate `#rule-composer` modal is retired.
+- Blocking rules still ask twice: the create button arms before it writes. Alert rules write on
+  one click.
+
+Harness 821 → 825 checks; full suite green.
+
 ## 0.17.3 — 2026-10-18
 
 A WEIRLING'S SETTINGS LIVE IN ITS OWN SHEET.

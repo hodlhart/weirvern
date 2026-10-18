@@ -32,12 +32,14 @@ def test_escape_and_backdrop_close():
     assert 'modal-backdrop' in js
 
 
-def test_the_rule_card_and_the_composer_open_in_the_modal():
+def test_the_rule_card_opens_in_the_modal_but_the_composer_is_a_sheet():
     blocked = (WEB / "blocked.js").read_text()
     assert "openModal(els.card)" in blocked and "closeModal(els.card)" in blocked
     sluice = (WEB / "sluice.js").read_text()
-    assert "openModal(card);" in sluice
-    assert 'closeModal(document.getElementById("rule-composer"))' in sluice
+    assert "openRuleSheet(" in sluice
+    html = (WEB / "index.html").read_text()
+    assert 'id="sl-rule-sheet"' in html, "the rule sheet is missing"
+    assert 'id="rule-composer"' not in html, "the old centred composer survives"
 
 
 def test_the_dns_block_button_lives_in_its_own_far_right_column():

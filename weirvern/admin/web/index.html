@@ -984,64 +984,6 @@
       </table>
     </div>
 
-    <div class="card">
-      <h2>Block a host or network <button class="info-btn" data-info="sl-refuse-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-      <div class="grid2">
-        <label>source address or CIDR
-          <input id="sl-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24">
-        </label>
-        <label>destination (if no source is set)
-          <input id="sl-dst" type="text" placeholder="block traffic to this address">
-        </label>
-        <label>or block a domain
-          <input id="sl-domain" type="text" placeholder="ads.example.com — blocks what it resolves to">
-        </label>
-        <label>mode
-          <select id="sl-mode">
-            <option value="alert">alert: record hits, block nothing</option>
-            <option value="block" selected>block</option>
-          </select>
-        </label>
-        <label>protocol
-          <select id="sl-proto">
-            <option value="">any</option>
-            <option value="tcp">tcp</option>
-            <option value="udp">udp</option>
-            <option value="icmp">icmp</option>
-          </select>
-        </label>
-        <label>destination port (optional)
-          <input id="sl-port" type="number" min="0" max="65535" placeholder="any">
-        </label>
-        <label>direction
-          <select id="sl-direction">
-            <option value="forward" selected>forwarded (traffic passing through)</option>
-            <option value="in">inbound (traffic to this weirling)</option>
-          </select>
-        </label>
-        <label>duration in minutes (0 = until revoked)
-          <input id="sl-ttl" type="number" min="0" max="10080" value="60">
-        </label>
-      </div>
-      <!-- THE REASON IS OPTIONAL (2026-10-16). A derived block always writes one and the alert
-           form pre-fills one; a manual block may be left blank, and blank is recorded as blank.
-           The question "why is this blocked" is still the one asked later, which is why the field
-           is here and why the auto-block path never leaves it empty. -->
-      <label>reason (optional)
-        <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
-      </label>
-      <div class="controls">
-        <button id="sl-block" class="primary">Block</button>
-        <span id="sl-block-note" class="muted"></span>
-      </div>
-<div class="info-text hidden" id="sl-refuse-info">
-  <p><strong>What it is.</strong> The safety refusals — on purpose: a rule with no address, a port without a protocol, the management interface, this weirling's own address, and anything covering the whole internet.</p>
-  <p><strong>What writes it.</strong> The gate's validator, at submit time.</p>
-  <p><strong>Last changed.</strong> Nothing is stored — a refusal happens before anything exists.</p>
-  <p><strong>Where to see it.</strong> The message right here when a rule is refused; each refusal names its fix.</p>
-</div>
-    </div>
-
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
 
     <!-- THE GATE'S STATE, IN ONE LINE (the operator, 2026-10-18): status first, one control
@@ -1079,7 +1021,6 @@
         <span class="muted" id="sl-bulk-n"></span>
         <button id="sl-bulk-disable" class="quiet">Disable selected</button>
         <button id="sl-bulk-enable" class="quiet">Enable selected</button>
-        <button id="sl-bulk-delete" class="danger">Delete selected</button>
         <button id="sl-bulk-clear" class="quiet">Clear</button>
       </div>
       <div class="controls">
@@ -1123,6 +1064,81 @@
       <div class="controls">
         <button id="sl-dom-toggle" type="button">&hellip;</button>
         <span class="muted" id="sl-dom-note"></span>
+      </div>
+    </div>
+
+    <!-- RULE SHEET (SL-1, 2026-10-18): adding and deleting a rule is a focused act, so it happens
+         in the same right-side sheet the weirlings use -- never in a form sitting on the tab. One
+         composer: the DNS/Blocked "block this domain" entry point opens this sheet too. -->
+    <div id="sl-rule-sheet" class="card sheet hidden" tabindex="-1">
+      <h2><span id="sl-rule-title">New rule</span>
+        <span class="muted" id="sl-rule-id"></span>
+        <button id="sl-rule-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
+      <!-- CREATE -->
+      <div id="sl-rule-create">
+        <div class="grid2">
+          <label>source address or CIDR
+            <input id="sl-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24">
+          </label>
+          <label>destination (if no source is set)
+            <input id="sl-dst" type="text" placeholder="block traffic to this address">
+          </label>
+          <label>or block a domain
+            <input id="sl-domain" type="text" placeholder="ads.example.com — blocks what it resolves to">
+          </label>
+          <label>mode
+            <select id="sl-mode">
+              <option value="alert">alert: record hits, block nothing</option>
+              <option value="block" selected>block</option>
+            </select>
+          </label>
+          <label>protocol
+            <select id="sl-proto">
+              <option value="">any</option>
+              <option value="tcp">tcp</option>
+              <option value="udp">udp</option>
+              <option value="icmp">icmp</option>
+            </select>
+          </label>
+          <label>destination port (optional)
+            <input id="sl-port" type="number" min="0" max="65535" placeholder="any">
+          </label>
+          <label>direction
+            <select id="sl-direction">
+              <option value="forward" selected>forwarded (traffic passing through)</option>
+              <option value="in">inbound (traffic to this weirling)</option>
+            </select>
+          </label>
+          <label>duration in minutes (0 = until revoked)
+            <input id="sl-ttl" type="number" min="0" max="10080" value="60">
+          </label>
+        </div>
+        <label>reason (optional)
+          <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
+        </label>
+        <div class="controls">
+          <button id="sl-block" class="primary" type="button">Create rule</button>
+          <span id="sl-block-note" class="muted"></span>
+          <button class="info-btn" data-info="sl-refuse-info" aria-label="what the gate refuses and why"
+                  aria-expanded="false">i</button>
+        </div>
+        <div class="info-text hidden" id="sl-refuse-info">
+  <p><strong>What it is.</strong> The safety refusals — on purpose: a rule that blocks the wrong thing takes a network down, so a rule with no address, a port without a protocol, the management interface, this weirling's own address, and anything covering the whole internet are refused.</p>
+  <p><strong>What writes it.</strong> The gate's validator, at submit time.</p>
+  <p><strong>Last changed.</strong> Nothing is stored — a refusal happens before anything exists.</p>
+  <p><strong>Where to see it.</strong> The message right here when a rule is refused; each refusal names its fix.</p>
+</div>
+      </div>
+      <!-- AN EXISTING RULE: what it is, and the two acts that change it. Deleting lives here,
+           behind a second click, because it is the destructive one. -->
+      <div id="sl-rule-detail" class="hidden">
+        <div id="sl-rule-facts"></div>
+        <div class="controls">
+          <button id="sl-rule-toggle" type="button"></button>
+          <button id="sl-rule-delete" class="danger" type="button">Delete this rule</button>
+          <button id="sl-rule-blocked" class="quiet" type="button">Open on the Blocked page</button>
+        </div>
+        <p id="sl-rule-note" class="muted sonar-note" role="status" aria-live="polite"></p>
       </div>
     </div>
   </section>
@@ -1517,19 +1533,6 @@
      domain to a block rule and modify it like adding a *"). Opens prefilled from a DNS row or
      the domain box; the `*.` checkbox is how you say "this name AND its subdomains" -- which a
      rule already covers, so the marker is stored as typed and shown back to you. -->
-<div id="rule-composer" class="card hidden">
-  <h3>Create a domain rule</h3>
-  <div class="controls">
-    <label>domain <input id="rc-domain" type="text" placeholder="example.com" size="30"></label>
-    <label class="check"><input type="checkbox" id="rc-wild"> include subdomains (*.)</label>
-    <label>mode <select id="rc-mode"><option value="alert">alert — record only</option><option value="block">block — enforce</option></select></label>
-    <label>reason <input id="rc-reason" type="text" placeholder="optional" size="24"></label>
-    <button id="rc-create">Create</button>
-    <button id="rc-cancel">Cancel</button>
-  </div>
-  <p class="muted" id="rc-note"></p>
-</div>
-
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-backdrop" id="modal-backdrop"></div>
   <div class="modal-panel">

@@ -3716,12 +3716,49 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the rules card offers one obvious add", !!newRule && /new rule/i.test(newRule.textContent));
     if (newRule) {
       newRule.click();
-      await new Promise((r) => setTimeout(r, 60));
-      const composer = doc.getElementById("rule-composer");
-      check("...which enters the composer by a click, not at rest",
-            !!composer && !composer.classList.contains("hidden"));
-      const cancel = doc.getElementById("rc-cancel");
-      if (cancel) cancel.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const sheet = doc.getElementById("sl-rule-sheet");
+      check("...which opens the rule sheet, not a form on the tab",
+            !!sheet && !sheet.classList.contains("hidden") && !!sheet.querySelector("#sl-block"),
+            "the composer is not the sheet");
+      const close = doc.getElementById("sl-rule-close");
+      if (close) close.click();
+    }
+
+    // A ROW OPENS THE SAME SHEET (SL-1), with the destructive act inside it.
+    const firstRow = doc.querySelector("#sl-table tbody tr.sl-rule-row");
+    if (firstRow) {
+      const rid = firstRow.getAttribute("data-rule-id");
+      firstRow.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const sheet = doc.getElementById("sl-rule-sheet");
+      check("a rule row opens its sheet with the delete act inside",
+            !!sheet && !sheet.classList.contains("hidden")
+            && !doc.getElementById("sl-rule-detail").classList.contains("hidden")
+            && !!sheet.querySelector("#sl-rule-delete")
+            && (doc.getElementById("sl-rule-id").textContent || "") === rid,
+            "row click did not open the rule sheet");
+      check("...and no delete control sits on the tab",
+            !doc.querySelector("#sl-bulk-delete") && !doc.querySelector("#sl-table .icon-btn"),
+            "a delete control is still on the tab");
+      check("...the sheet's actions are named buttons, not icons",
+            ["sl-rule-delete", "sl-rule-toggle", "sl-rule-blocked"].every((id) => {
+              const b = doc.getElementById(id);
+              return b && (b.textContent || "").trim().length > 3;
+            }));
+      // DELETING ASKS TWICE: the first click arms and names the consequence, nothing is posted.
+      const delBtn = doc.getElementById("sl-rule-delete");
+      if (delBtn) {
+        const beforeDel = POSTED.length;
+        delBtn.click();
+        await new Promise((r) => setTimeout(r, 60));
+        check("delete arms before it revokes",
+              /Click again/.test(delBtn.textContent)
+              && !POSTED.slice(beforeDel).some((r) => r.url.includes("/api/sluice/revoke")),
+              delBtn.textContent);
+      }
+      const close = doc.getElementById("sl-rule-close");
+      if (close) close.click();
     }
 
     const glance = doc.getElementById("sl-glance");
@@ -3732,10 +3769,6 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("...and names the recent names rather than a bare count",
           !!top && /ads\.example\.com/.test(top.textContent), top ? top.textContent : "none");
 
-    const iconBtns = [...doc.querySelectorAll("#sl-table tbody .icon-btn")];
-    check("A3: every icon-only row control carries an accessible name",
-          iconBtns.length > 0 && iconBtns.every((b) => (b.getAttribute("aria-label") || "").length > 8),
-          `${iconBtns.filter((b) => !(b.getAttribute("aria-label") || "").length).length} unnamed`);
     const picks = [...doc.querySelectorAll("#sl-table tbody .sl-pick")];
     check("A3: every row checkbox carries an accessible name",
           picks.length > 0 && picks.every((b) => (b.getAttribute("aria-label") || "").length > 8),
@@ -5148,6 +5181,10 @@ check("each gate states the path it is enforcing by",
     slSrc.value = "203.0.113.77";
     slWhy.value = "";
     slTtl.value = "0";
+    // ALERT MODE: the check is about the OPTIONAL reason and a deliberate 0 TTL, not about the
+    // blocking confirm. Block mode arms on the first click (retained BF-9 step).
+    const slMode = H.document.getElementById("sl-mode");
+    if (slMode) slMode.value = "alert";
     const postedBefore = POSTED.length;
     slGo.click();
     await new Promise((r) => setTimeout(r, 140));
@@ -6561,16 +6598,21 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("JOB block-domain: the verb lives ON the row that shows the domain", !!blockVerb);
     clicks = 0;
     if (blockVerb) {
-      C(blockVerb);                              // 1: open the composer (target+blast on screen)
+      C(blockVerb);                              // 1: open the rule sheet
       await sleep(180);
-      const modeSel = doc.getElementById("rc-mode");
+      const sheet = doc.getElementById("sl-rule-sheet");
+      check("JOB block-domain: the row's verb opens the rule sheet with the name filled in",
+            !!sheet && !sheet.classList.contains("hidden")
+            && (doc.getElementById("sl-domain").value || "").includes("ads.example.com"),
+            "the composer did not open on the sheet");
+      const modeSel = doc.getElementById("sl-mode");
       if (modeSel) {
         modeSel.value = "block";
         modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
       }
       check("JOB block-domain: choosing block mode is not a click (a select, not a step)",
             clicks === 1, `clicks=${clicks}`);
-      const createBtn = doc.getElementById("rc-create");
+      const createBtn = doc.getElementById("sl-block");
       if (createBtn) {
         C(createBtn);                            // 2: arms -- the retained BF-9 echo
         await sleep(100);
@@ -6579,8 +6621,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
         C(createBtn);                            // 3: commits
         await sleep(320);
       }
-      const cancelBtn = doc.getElementById("rc-cancel");
-      if (cancelBtn) cancelBtn.click();
+      const closeBtn = doc.getElementById("sl-rule-close");
+      if (closeBtn) closeBtn.click();
     }
     const act2 = clicks;
     const post2 = POSTED.slice(-1)[0] || {};
@@ -7180,14 +7222,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
           "");
   }
 
-  // ── OPENING A RULE FROM SLUICE ON A FRESH CONSOLE (#15) ─────────────────────────────────────
+  // ── OPENING A RULE'S CARD ON A FRESH CONSOLE (#15) ──────────────────────────────────────────
   //
-  // The rule card is fed from BLOCKED_STATE.data, and clicking a Sluice row used to fabricate a
-  // "not among the live rules / expired or revoked" placeholder whenever that payload had not
-  // been fetched yet -- i.e. on every fresh console until the Blocked tab was visited, telling
-  // the operator a live rule was dead. These checks drive the REAL click with the store in its
-  // fresh state, assert the card opens editable with the real rule, prove the payload is
-  // fetched ONCE (not once per click), and keep the genuine not-live case working.
+  // The rule card is fed from BLOCKED_STATE.data. Opening it with the store in its fresh state
+  // used to fabricate a "not among the live rules / expired or revoked" placeholder whenever that
+  // payload had not been fetched yet -- i.e. on every fresh console until the Blocked tab was
+  // visited, telling the operator a live rule was dead. These checks drive the REAL entry point,
+  // assert the card opens editable with the real rule, prove the payload is fetched ONCE (not
+  // once per click), and keep the genuine not-live case working. (Sluice rows open the rule
+  // sheet; this card is reached from its "Open on the Blocked page" button.)
   {
     fetchOverride = null;
     H.showView("sluice");
@@ -7195,11 +7238,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const savedBlocked = H.BLOCKED_STATE.data;
     H.BLOCKED_STATE.data = null;                 // the console never visited Blocked
     const fetches0 = BLOCKED_FETCHES;
-    const slRow = (needle) => [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
-      .find((tr) => tr.textContent.includes(needle));
-    const liveRow1 = slRow("ads.example.com");
-    check("a live rule is listed on Sluice before Blocked was ever loaded", !!liveRow1);
-    liveRow1.click();
+    check("a live rule is listed on Sluice before Blocked was ever loaded",
+          [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
+            .some((tr) => tr.textContent.includes("ads.example.com")));
+    await H.blOpenRuleById("r1");
     await new Promise((r) => setTimeout(r, 160));
     const modeSel = doc.getElementById("bl-rule-mode");
     check("clicking it opens the card EDITABLE -- not the fabricated not-live state",
@@ -7214,13 +7256,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("the payload was fetched ON DEMAND, exactly once",
           BLOCKED_FETCHES === fetches0 + 1,
           `${BLOCKED_FETCHES - fetches0} fetch(es)`);
-    slRow("track.example.net").click();
+    await H.blOpenRuleById("r2");
     await new Promise((r) => setTimeout(r, 160));
     check("opening a second rule does not refetch it",
           BLOCKED_FETCHES === fetches0 + 1
           && doc.getElementById("bl-rule-id").textContent === "r2",
           `${BLOCKED_FETCHES - fetches0} fetch(es); id=${doc.getElementById("bl-rule-id").textContent}`);
-    slRow("203.0.113.6").click();               // r-revoked: not among the live sets
+    await H.blOpenRuleById("r-revoked");         // not among the live sets
     await new Promise((r) => setTimeout(r, 160));
     check("a genuinely non-live rule still renders the not-live copy",
           /not among the live rules/.test(doc.getElementById("bl-rule-note").textContent)
