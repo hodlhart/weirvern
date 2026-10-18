@@ -58,7 +58,8 @@ def test_a_domain_rule_matches_its_resolved_addresses():
 def test_alert_rules_do_not_enforce_and_say_so():
     r = Rule("r1", domain="ads.example.com", mode="alert", resolved_ips=["203.0.113.7"])
     assert r.enforcing is False
-    assert "(alert)" in r.describes()
+    # US-SL1: the sentence names the effect in its verb, not in a parenthetical.
+    assert r.describes().startswith("alert on "), r.describes()
 
 
 # ── the compiler ──────────────────────────────────────────────────────────────────────────────

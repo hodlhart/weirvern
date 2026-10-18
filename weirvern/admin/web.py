@@ -1251,6 +1251,11 @@ def _build_handler(ctx: GuiContext):
                     exp = exp.replace(tzinfo=_dt.UTC)
                 rows.append({
                     "rule_id": r.rule_id, "describes": r.describes(),
+                    # The GUI needs these to show what the sentence means: a name rule's
+                    # enforcement is its resolved addresses, and alert-mode rules never reach
+                    # the kernel (US-SL1).
+                    "domain": r.domain, "mode": r.mode,
+                    "resolved": len(r.resolved_ips or []),
                     "src_cidr": r.src_cidr, "dst_cidr": r.dst_cidr, "protocol": r.protocol,
                     "dst_port": r.dst_port, "direction": r.direction, "reason": r.reason,
                     "origin": r.origin, "severity": r.severity, "created_by": r.created_by,

@@ -398,6 +398,15 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .view-head { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; }
 .view-head h2 { margin: 0; }
+/* At-a-glance chips: a number and its noun, never a bare count (US-SL1). */
+.stat-chip {
+  display: inline-flex; align-items: baseline; gap: 2px;
+  padding: 2px 8px; border-radius: var(--btn-r);
+  background: var(--surface-2); color: inherit;
+}
+.stat-chip strong { font-variant-numeric: tabular-nums; }
+#sl-new-rule { margin-left: auto; }
+
 /* The gate's status line (2026-10-18): state first, one control, nothing else. */
 .sl-status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
 .sl-status-item { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }

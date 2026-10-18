@@ -1052,7 +1052,14 @@
     </div>
 
     <div class="card">
-      <h2>Rules <span id="sl-count" class="muted"></span></h2>
+      <h2>At a glance <span class="muted" id="sl-glance-note"></span></h2>
+      <div class="chips" id="sl-glance"></div>
+      <div class="chips" id="sl-top-names"></div>
+    </div>
+
+    <div class="card">
+      <h2>Rules <span id="sl-count" class="muted"></span>
+        <button id="sl-new-rule" class="quiet" type="button">New rule</button></h2>
       <!-- US-9: what these rules can actually act on -- and each sensor is a door to its sheet. -->
       <div id="sl-reach" class="chips"></div>
       <div id="sl-bulk" class="hidden">

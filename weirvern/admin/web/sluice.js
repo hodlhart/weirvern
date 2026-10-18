@@ -215,6 +215,65 @@ async function loadSluice() {
     }
   }
 
+  // ── AT A GLANCE (US-SL1, the operator's rule 2: "tabs should provide at-a-glance information
+  // or visualizations"). Every number comes from the payload loaded above -- nothing invented,
+  // and a failed read leaves the strip empty rather than showing a confident zero.
+  {
+    const box = document.getElementById("sl-glance");
+    const names = document.getElementById("sl-top-names");
+    const note = document.getElementById("sl-glance-note");
+    if (box) {
+      box.replaceChildren();
+      if (!d.available) {
+        if (note) note.textContent = "\u2014 unavailable, the gate query failed";
+      } else {
+        if (note) note.textContent = "";
+        const all = d.rules || [];
+        const live = all.filter((r) => r.live).length;
+        const lapsed = all.filter((r) => !r.live && !r.revoked && !r.disabled).length;
+        const parked = all.filter((r) => r.disabled).length;
+        const revoked = all.filter((r) => r.revoked).length;
+        const alertMode = all.filter((r) => r.mode === "alert").length;
+        const dropMode = all.length - alertMode;
+        const hits = d.hits || [];
+        const chips = [
+          [`${all.length}`, all.length === 1 ? "rule" : "rules"],
+          [`${live}`, "live"],
+          [`${dropMode}`, "drop"],
+          [`${alertMode}`, "alert-only"],
+        ];
+        if (lapsed) chips.push([`${lapsed}`, "lapsed"]);
+        if (parked) chips.push([`${parked}`, "disabled"]);
+        if (revoked) chips.push([`${revoked}`, "revoked"]);
+        if (hits.length) chips.push([`${hits.length}`, "recent hits"]);
+        for (const [v, k] of chips) {
+          box.appendChild(el("span", { class: "stat-chip" }, [
+            el("strong", { text: v }), el("span", { class: "muted", text: " " + k }),
+          ]));
+        }
+      }
+    }
+    if (names) {
+      names.replaceChildren();
+      const hits = d.hits || [];
+      if (hits.length) {
+        const counts = new Map();
+        for (const h of hits) {
+          const n = h.domain || h.query || "(unnamed)";
+          counts.set(n, (counts.get(n) || 0) + 1);
+        }
+        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+        names.appendChild(el("span", { class: "muted", text: "recent names: " }));
+        for (const [n, c] of top) {
+          names.appendChild(el("span", { class: "stat-chip" }, [
+            el("span", { class: "mono", text: n }),
+            el("span", { class: "muted", text: ` \u00d7${c}` }),
+          ]));
+        }
+      }
+    }
+  }
+
   const tbody = document.querySelector("#sl-table tbody");
   tbody.replaceChildren();
   const empty = document.getElementById("sl-empty");
@@ -245,6 +304,7 @@ async function loadSluice() {
     const pick = el("input", { attrs: { type: "checkbox" }, class: "sl-pick" });
     pick.value = r.rule_id;
     pick.title = "select for a bulk action";
+    pick.setAttribute("aria-label", `select rule ${r.describes || r.rule_id}`);
     pick.addEventListener("click", (e) => e.stopPropagation());
     pick.addEventListener("change", slBulkRefresh);
 
@@ -267,14 +327,18 @@ async function loadSluice() {
       if (r.live || r.disabled) {
         // A parked rule can be put back; a revoked one cannot -- and that two-way switch is
         // exactly what separates the disable icon from the trashcan beside it.
+        const disText = r.disabled ? "enable this rule again"
+                                   : "disable this rule (keeps it, stops it)";
         const dis = el("button", { class: "icon-btn",
-          attrs: { title: r.disabled ? "enable this rule again"
-                                     : "disable this rule (keeps it, stops it)" } }, [slIcon(r.disabled ? "play" : "ban")]);
+          attrs: { title: disText, "aria-label": `${disText}: ${r.describes || r.rule_id}` } },
+          [slIcon(r.disabled ? "play" : "ban")]);
         dis.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(dis, () => slRuleSetDisabled(r, !r.disabled)); });
         actions.appendChild(dis);
       }
+      const delText = "delete this rule (the record stays; the rule cannot come back)";
       const del = el("button", { class: "icon-btn danger",
-        attrs: { title: "delete this rule (the record stays; the rule cannot come back)" } }, [slIcon("trash")]);
+        attrs: { title: delText, "aria-label": `${delText}: ${r.describes || r.rule_id}` } },
+        [slIcon("trash")]);
       del.addEventListener("click", (e) => { e.stopPropagation(); slConfirm(del, () => slRuleRevoke(r)); });
       actions.appendChild(del);
       tr.appendChild(actions);
@@ -488,6 +552,14 @@ function wireSluice() {
   if (reload) reload.addEventListener("click", () => loadSluice().then(clearError).catch(showError));
   const liveOnly = document.getElementById("sl-live-only");
   if (liveOnly) liveOnly.addEventListener("change", () => loadSluice().then(clearError).catch(showError));
+
+  // The operator's rule 3: one obvious "add" on the rules surface. The composer is the same one
+  // the Blocked page opens -- one form, one code path -- and it is entered by a click, never
+  // sitting open (rule 2).
+  const newRule = document.getElementById("sl-new-rule");
+  if (newRule) newRule.addEventListener("click", () => {
+    if (typeof openRuleComposer === "function") openRuleComposer("");
+  });
 
   const block = document.getElementById("sl-block");
   if (!block) return;

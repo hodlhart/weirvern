@@ -243,23 +243,29 @@ class Rule:
         return self.mode != "alert"
 
     def describes(self) -> str:
-        """A one-line human summary, for the audit row and the GUI table."""
-        parts = []
+        """One readable sentence: the verb, the subject, and what it costs.
+
+        The rules list must read as a policy, not as a row of protocol columns (US-SL1, the
+        operator's rule 3: "each rule readable as a sentence"). The audit rows and the API carry
+        the same sentence, so the operator sees one wording everywhere.
+        """
+        verb = "block" if self.mode != "alert" else "alert on"
         if self.domain:
-            parts.append(f"domain {self.domain}")
-            if self.mode == "alert":
-                parts.append("(alert)")
+            sentence = f"{verb} {self.domain}"
+            if self.resolved_ips is not None:
+                n = len(self.resolved_ips)
+                sentence += f" (resolves to {n} address{'es' if n != 1 else ''})"
+            return sentence
+        parts = []
         if self.src_cidr:
             parts.append(f"from {self.src_cidr}")
         if self.dst_cidr:
             parts.append(f"to {self.dst_cidr}")
         if self.dst_port:
-            parts.append(f"{self.protocol or 'tcp'}/{self.dst_port}")
+            parts.append(f"on {self.protocol or 'tcp'}/{self.dst_port}")
         if not parts:
             return "(no predicate)"
-        if self.domain and self.resolved_ips is not None:
-            parts.append(f"({len(self.resolved_ips)} address(es) resolved)")
-        return " ".join(parts)
+        return f"{verb} traffic " + " ".join(parts)
 
     def snapshot(self) -> str:
         """What this rule WAS, copied into an event row at enforcement time.

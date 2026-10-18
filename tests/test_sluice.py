@@ -1659,3 +1659,26 @@ def test_a_disabled_worker_with_no_leftovers_never_touches_the_backend(monkeypat
     assert backend.disarms == 0
     assert backend.checks == 1, "the kernel is asked once per process, not once per pass"
     assert writes == [], "a clean disabled start writes nothing"
+
+
+def test_a_rule_describes_itself_as_a_sentence():
+    """US-SL1: the rules list must read as policy, not as a row of protocol columns.
+
+    One wording everywhere -- the table, the audit row and the API all call describes().
+    """
+    from weirvern.sluice import Rule
+
+    block = Rule(rule_id="a", domain="ads.example.com", mode="block",
+                 resolved_ips=["192.0.2.1"]).describes()
+    assert block == "block ads.example.com (resolves to 1 address)", block
+
+    alert = Rule(rule_id="b", domain="x.example", mode="alert",
+                 resolved_ips=["1.1.1.1", "2.2.2.2"]).describes()
+    assert alert == "alert on x.example (resolves to 2 addresses)", alert
+
+    tuple_rule = Rule(rule_id="c", src_cidr="198.51.100.0/24", dst_port=443,
+                      protocol="tcp").describes()
+    assert tuple_rule == "block traffic from 198.51.100.0/24 on tcp/443", tuple_rule
+
+    # An empty predicate is a data defect and must not be dressed up as a sentence.
+    assert Rule(rule_id="d").describes() == "(no predicate)"

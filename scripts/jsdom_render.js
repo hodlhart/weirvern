@@ -578,35 +578,35 @@ const SLUICE_PAYLOAD = {
     // this same rule table (soc.py reads one store), so these two carry the ids the
     // BLOCKED_PAYLOAD lists as a block and an alert -- exactly as a live deployment does. Without
     // them the fixtures would encode the bug as normal: a live rule that can never be found.
-    { rule_id: "r1", describes: "domain ads.example.com", src_cidr: "", dst_cidr: "",
+    { rule_id: "r1", describes: "block ads.example.com (resolves to 1 address)", src_cidr: "", dst_cidr: "",
       protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       domain: "ads.example.com", origin: "manual", severity: "", created_by: "admin",
       origin_ref: "", reason: "", expires_at: "2026-10-16T07:00:00Z", expires_in_s: 1800 },
-    { rule_id: "r2", describes: "domain track.example.net (alert)", src_cidr: "", dst_cidr: "",
+    { rule_id: "r2", describes: "alert on track.example.net", src_cidr: "", dst_cidr: "",
       protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       domain: "track.example.net", origin: "manual", severity: "", created_by: "admin",
       origin_ref: "", reason: "", expires_at: "", expires_in_s: null },
-    { rule_id: "r-live-1", describes: "from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
+    { rule_id: "r-live-1", describes: "block traffic from 198.51.100.7/32", src_cidr: "198.51.100.7/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
       reason: "scanner on the lab segment", expires_at: "", expires_in_s: 1800 },
-    { rule_id: "r-live-2", describes: "from 198.51.100.9/32 tcp/22", src_cidr: "198.51.100.9/32",
+    { rule_id: "r-live-2", describes: "block traffic from 198.51.100.9/32 on tcp/22", src_cidr: "198.51.100.9/32",
       dst_cidr: "", protocol: "tcp", dst_port: 22, direction: "forward", live: true, revoked: false,
       origin: "detection", severity: "high", created_by: "detection", origin_ref: "w-123",
       reason: "detection: severity high at confidence 0.91", expires_at: "", expires_in_s: 900 },
     // UNTIL REVOKED, with no reason recorded: the two states an operator can now create on
     // purpose (duration 0, reason left blank). A stub without them cannot show that either
     // renders as something an analyst can read.
-    { rule_id: "r-indef", describes: "from 203.0.113.9/32", src_cidr: "203.0.113.9/32",
+    { rule_id: "r-indef", describes: "block traffic from 203.0.113.9/32", src_cidr: "203.0.113.9/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: true, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
       reason: "", expires_at: "", expires_in_s: null },
-    { rule_id: "r-lapsed", describes: "from 203.0.113.5/32", src_cidr: "203.0.113.5/32",
+    { rule_id: "r-lapsed", describes: "block traffic from 203.0.113.5/32", src_cidr: "203.0.113.5/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: false, revoked: false,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
       reason: "temporary block that expired", expires_at: "2026-01-01T00:00:00Z",
       expires_in_s: -3600 },
-    { rule_id: "r-revoked", describes: "from 203.0.113.6/32", src_cidr: "203.0.113.6/32",
+    { rule_id: "r-revoked", describes: "block traffic from 203.0.113.6/32", src_cidr: "203.0.113.6/32",
       dst_cidr: "", protocol: "", dst_port: 0, direction: "forward", live: false, revoked: true,
       origin: "manual", severity: "", created_by: "admin", origin_ref: "",
       reason: "blocked in error, revoked", expires_at: "2026-01-01T00:00:00Z",
@@ -836,7 +836,7 @@ const IDENTITY_PAYLOAD = {
                         return { ok: true, state: sent.state || "", note: sent.note || "" };
                       })()
                   : u.includes("/api/sluice/block")
-                    ? { ok: true, rule_id: "r-filed-1", describes: "from 198.51.100.44/32",
+                    ? { ok: true, rule_id: "r-filed-1", describes: "block traffic from 198.51.100.44/32",
                         note: "the rule is filed; the gate re-checks within a minute" }
                   : u.includes("/api/models/retrain")
                     ? { ok: true, action: sent.action || "retrain",
@@ -1164,13 +1164,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         query: "x.track.example.net", client: "198.51.100.21" },
     ],
     blocks: [
-      { rule_id: "r1", describes: "domain ads.example.com (2 address(es) resolved)",
+      { rule_id: "r1", describes: "block ads.example.com (resolves to 2 addresses)",
         mode: "block", domain: "ads.example.com", origin: "manual", severity: "",
         expires_at: "2026-10-16 07:00:00", resolved: ["203.0.113.7", "203.0.113.8"],
         resolved_count: 2, resolved_error: false },
     ],
     alerts: [
-      { rule_id: "r2", describes: "domain track.example.net (alert)",
+      { rule_id: "r2", describes: "alert on track.example.net",
         mode: "alert", domain: "track.example.net", origin: "manual", severity: "",
         expires_at: "", resolved: ["203.0.113.9"], resolved_count: 1, resolved_error: false },
     ],
@@ -3561,6 +3561,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             spy.some((b) => /SLUICE_BLOCK_DOMAINS/.test(b)),
             spy.join(" | ").slice(0, 140) || `${POSTED.length - before} request(s), none to apply`);
     }
+  }
+
+  // ── THE RULES SURFACE (US-SL1, the operator's rules 1-3 and the absorbed A3) ────────────────
+  {
+    H.showView("sluice");
+    await H.loadSluice();
+    await new Promise((r) => setTimeout(r, 120));
+
+    const rows = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")];
+    check("every rule row reads as a sentence, not a protocol tuple",
+          rows.length > 0 && rows.every((tr) => {
+            const cell = tr.querySelector("td.mono");
+            return cell && /^(block|alert on)\b/.test(cell.textContent.trim());
+          }),
+          rows.map((tr) => (tr.querySelector("td.mono") || {}).textContent).join(" | "));
+
+    const newRule = doc.getElementById("sl-new-rule");
+    check("the rules card offers one obvious add", !!newRule && /new rule/i.test(newRule.textContent));
+    if (newRule) {
+      newRule.click();
+      await new Promise((r) => setTimeout(r, 60));
+      const composer = doc.getElementById("rule-composer");
+      check("...which enters the composer by a click, not at rest",
+            !!composer && !composer.classList.contains("hidden"));
+      const cancel = doc.getElementById("rc-cancel");
+      if (cancel) cancel.click();
+    }
+
+    const glance = doc.getElementById("sl-glance");
+    check("the glance strip states counts with their nouns",
+          !!glance && /\d/.test(glance.textContent) && /(rule|live|drop|alert)/i.test(glance.textContent),
+          glance ? glance.textContent : "no strip");
+    const top = doc.getElementById("sl-top-names");
+    check("...and names the recent names rather than a bare count",
+          !!top && /ads\.example\.com/.test(top.textContent), top ? top.textContent : "none");
+
+    const iconBtns = [...doc.querySelectorAll("#sl-table tbody .icon-btn")];
+    check("A3: every icon-only row control carries an accessible name",
+          iconBtns.length > 0 && iconBtns.every((b) => (b.getAttribute("aria-label") || "").length > 8),
+          `${iconBtns.filter((b) => !(b.getAttribute("aria-label") || "").length).length} unnamed`);
+    const picks = [...doc.querySelectorAll("#sl-table tbody .sl-pick")];
+    check("A3: every row checkbox carries an accessible name",
+          picks.length > 0 && picks.every((b) => (b.getAttribute("aria-label") || "").length > 8),
+          `${picks.filter((b) => !(b.getAttribute("aria-label") || "").length).length} unnamed`);
   }
 
   // ── THE FLEET IS A WORKLIST (BF-7) ──────────────────────────────────────────────────────────
