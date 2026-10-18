@@ -2895,6 +2895,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const actBtns = [...doc.querySelectorAll("#anomalies-table .review-act")];
   check("the row offers the dispositions that are not its current state",
         actBtns.length > 0, `${actBtns.length} action buttons`);
+
+  // ── A2: THE VERBS ARE BEHIND ONE DISCLOSURE ─────────────────────────────────────────────────
+  // The row used to carry seven 28px buttons. At ~90 rows that is 630 controls -- a wall of
+  // misses on a phone. One <details> per row holds them, closed at rest; the row itself still
+  // opens the evidence. These two checks keep it that way.
+  const rowMores = [...doc.querySelectorAll("#anomalies-table tbody tr .row-more")];
+  check("every row's verbs live behind one closed disclosure",
+        rowMores.length === anomRows.length && rowMores.every((d) => !d.open && !!d.querySelector("summary")),
+        `${rowMores.length} disclosures for ${anomRows.length} rows; open: ${rowMores.filter((d) => d.open).length}`);
+  // Open the disclosure with its own summary: that click must not reach the row handler (which
+  // opens Evidence), and it must not post anything -- the state checks below still expect row 0
+  // to be unreviewed.
+  const summaryInDisclosure = rowMores[0] && rowMores[0].querySelector("summary");
+  if (summaryInDisclosure) {
+    summaryInDisclosure.click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("opening the disclosure does NOT fall through to the row's Evidence drill",
+          doc.getElementById("view-anomalies").classList.contains("active"),
+          "the row handler must not fire through the disclosure");
+    check("...and the disclosure actually opens", !!rowMores[0].open);
+  }
   // `[title*='ack']` matched "back to unreviewed" -- substring traps. Match the exact
   // affordance instead: the acked row must not offer "as ack", the unreviewed row must.
   const rowsArr = [...doc.querySelectorAll("#anomalies-table tbody tr")];

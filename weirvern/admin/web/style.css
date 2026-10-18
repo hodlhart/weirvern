@@ -216,6 +216,19 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   display: inline-block; border-radius: 999px; padding: 2px 8px; margin-left: 4px;
   font-size: 11px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap;
 }
+/* A2: the row's seven verbs, one level down. Closed at rest, so the table is a table. */
+.row-more { display: inline-block; margin-left: 6px; vertical-align: middle; }
+.row-more > summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center;
+  justify-content: center; width: var(--btn-h); height: var(--btn-h);
+  border: 1px solid var(--border-solid); border-radius: var(--btn-r); color: var(--muted);
+  font-size: 13px; line-height: 1;
+}
+.row-more > summary::-webkit-details-marker { display: none; }
+.row-more > summary:hover { color: var(--fg); border-color: var(--accent); }
+.row-more[open] > summary { color: var(--fg); border-color: var(--accent); }
+.row-more-body { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.row-more-body .an-actions, .row-more-body .review-acts { margin: 0; }
 .review-acts { display: flex; gap: 4px; margin-top: 4px; }
 .review-act {
   background: none; border: 1px solid var(--border); color: var(--muted);
@@ -985,7 +998,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
    * sizes put the tabs at ~43px and ordinary buttons at ~37px tall -- the desktop sizes were
    * 39 and 31. */
   /* BTN-1: a finger needs a taller base, not four different per-class sizes. */
-  :root { --btn-h: 34px; --btn-px: 14px; }
+  :root { --btn-h: 44px; --btn-px: 16px; }
   td, th { padding: 8px 10px; }
 
   /* The force map: a shorter canvas keeps the 1000x460 drawing from being stretched into a

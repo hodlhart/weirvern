@@ -92,10 +92,15 @@ Density loses to the thumb on a phone. On desktop, density wins.
 
 ## C-10 · Budgets, not vibes
 
-Per view, per viewport: **≤12 API calls on load**, **≤6000 DOM elements**, **zero per-row verbs**
-(a dense view carries its weight in filters), and **steps-to-answer** budgets for the five
-operator questions (triage 3, find a host 2, prove a block 3, change a setting 4, explain a
-detection 2).
+Per view, per viewport: **≤12 API calls on load**, **≤6000 DOM elements**, **zero per-row verbs
+at rest** — a dense view carries its weight in filters, and a row may hold its verbs behind **one
+disclosure** (the list stays a list; every verb is still one click away on its own row) — and
+**steps-to-answer** budgets for the five operator questions (triage 3, find a host 2, prove a
+block 3, change a setting 4, explain a detection 2).
+
+*Why a disclosure and not seven buttons:* at ~90 rows the anomalies table carried 630 controls,
+all 28px tall — 632 of them under the touch line. The verbs were never the problem; their
+placement at rest was.
 
 A breach is a card. "Feels slow" is not a finding.
 

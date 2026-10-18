@@ -1466,9 +1466,36 @@ function reviewCell(a) {
       title: `${summary.remaining} of ${summary.n} occurrences \u2014 the count cell lists them`,
     }));
   }
-  const acts = reviewActs(a, state);
-  if (acts) wrap.appendChild(acts);
   return wrap;
+}
+
+/**
+ * A2 · THE ROW'S VERBS LIVE BEHIND ONE DISCLOSURE.
+ *
+ * The table used to carry seven buttons per row -- Evidence, Block, Watch, Tune and every
+ * disposition that was not the current state. At ~90 rows that is 630 controls, all 28px tall:
+ * a wall of misses on touch and, in the audit's words, 632 controls under the 44px line.
+ *
+ * The row itself is still the way into the evidence. The verbs sit one level down, behind a
+ * native <details> disclosure: closed at rest (so the list is a list, not a button matrix),
+ * one 44px target per row on a phone, and the same keyboard behaviour a summary always has.
+ * Nothing was removed -- every verb is still one click away, on the row it belongs to.
+ */
+function rowMore(a, state) {
+  const box = el("details", { class: "row-more" });
+  // The summary needs a NAME of its own: "..." is decoration, and a title attribute would be a
+  // fact only a mouse can reach -- the exact defect class this console keeps re-learning.
+  const summary = el("summary", { attrs: { "aria-label": "actions for this alert" },
+                                  text: "\u22ef" });
+  box.appendChild(summary);
+  const body = el("div", { class: "row-more-body" });
+  body.appendChild(anActions(a));
+  const acts = reviewActs(a, state);
+  if (acts) body.appendChild(acts);
+  box.appendChild(body);
+  // A click inside the disclosure must not fall through to the row, which opens Evidence.
+  box.addEventListener("click", (e) => e.stopPropagation());
+  return box;
 }
 
 /** Post a disposition and re-render from the server's answer. Failures surface, never pass. */
@@ -1923,7 +1950,7 @@ async function loadAnomalies() {
           attrs: { title: "stable reason code: detector initials + the measurement that moved" },
           text: a.reason_code }) : null,
       ]),
-      el("td", {}, [anActions(a), reviewCell(a)]),
+      el("td", {}, [reviewCell(a), rowMore(a, a.review_state || "")]),
     ]));
   }
 

@@ -63,6 +63,8 @@ def test_the_pointer_sweep_no_dead_pointers():
         ".stat.clickable", ".dc-chip-x", ".tr-panel button", "h2.acc", ".modal-x",
         ".info-btn", ".graph", ".gate-field", ".sev-tiles",
         ".gate-linkish", ".setting-help-btn", ".setting-toggle-label",
+        # A native disclosure is interactive: its own summary opens it (US-A2).
+        "summary",
     )
     offenders = []
     for sel, body in _rules(_css()):

@@ -100,7 +100,8 @@ AUDIT_JS = r"""
     }
   }
 
-  const controls = [...document.querySelectorAll('button, a, input, select, textarea')].filter(vis);
+  // `summary` is a control in every way that matters on touch (it opens the row's verbs).
+  const controls = [...document.querySelectorAll('button, a, input, select, textarea, summary')].filter(vis);
   const small = [], verySmall = [];
   for (const el of controls) {
     const r = el.getBoundingClientRect();
