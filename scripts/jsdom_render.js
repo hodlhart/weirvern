@@ -3667,6 +3667,33 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
   }
 
+  // ── A DEGRADED GATE SAYS WHY, WHERE IT IS READ (QA-1-D3) ────────────────────────────────────
+  {
+    const origFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).split("?")[0].endsWith("/api/sluice"))
+        return Promise.resolve({ ok: true, json: async () => Object.assign({}, SLUICE_PAYLOAD, {
+          enabled: false,
+          gate: Object.assign({}, SLUICE_PAYLOAD.gate, {
+            state: "degraded", rules_active: 0, rules_total: 0,
+            detail: "these tables are still present after deletion: weirvern_sluice",
+          }),
+        }) });
+      return origFetch(u, o);
+    };
+    await H.loadBlockingControls();
+    await new Promise((r) => setTimeout(r, 120));
+    window.fetch = origFetch;
+    const st = doc.getElementById("sl-gate-state").textContent;
+    const det = doc.getElementById("sl-gate-detail");
+    check("a degraded gate names its state beside the gate line", /degraded/i.test(st), st);
+    check("...and carries the server's reason, not just the word",
+          !!det && !det.classList.contains("hidden")
+          && /still present after deletion/.test(det.textContent),
+          det ? det.textContent.slice(0, 120) : "no detail");
+    await H.loadBlockingControls();   // tidy back to the healthy fixture
+  }
+
   // ── THE RULES SURFACE (US-SL1, the operator's rules 1-3 and the absorbed A3) ────────────────
   {
     H.showView("sluice");

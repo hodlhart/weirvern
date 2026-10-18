@@ -794,10 +794,28 @@ async function loadBlockingControls() {
   const gateLive = gate && gate.gate ? gate.gate : null;
   const live = Number(gateLive && gateLive.rules_active) || 0;
 
-  gateState.textContent = gateOn
+  const gstate = String((gateLive && gateLive.state) || "");
+  const gdetail = String((gateLive && gateLive.detail) || "");
+  const healthy = !gstate || ["ok", "armed", "disabled", "running"].includes(gstate.toLowerCase());
+  gateState.textContent = (gateOn
     ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced` : "armed \u00b7 nothing enforced")
-    : "off";
+    : "off") + (healthy ? "" : ` \u00b7 ${gstate}`);
   gateState.className = gateOn ? "sl-on" : "sl-off";
+
+  // THE REASON, NOT JUST THE WORD (QA-1-D3). The gate reported "degraded" beside zero enforced
+  // rules and nothing said why; the server had the sentence all along. A state without its cause
+  // is a status the operator cannot act on.
+  const detailBox = document.getElementById("sl-gate-detail");
+  if (detailBox) {
+    if (healthy) {
+      detailBox.classList.add("hidden");
+      detailBox.textContent = "";
+    } else {
+      detailBox.classList.remove("hidden");
+      detailBox.textContent = gdetail || `${gstate} \u2014 the gate gave no reason`;
+      detailBox.className = "sl-gate-detail";
+    }
+  }
   gateBtn.textContent = gateOn ? "Disarm the gate" : "Arm the gate";
   gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
 

@@ -439,6 +439,9 @@ tr.show-more button { margin-left: 6px; }
 .sl-status-item strong { font-weight: 600; }
 .sl-status-item .sl-on { color: var(--ok); }
 .sl-status-item .sl-off { color: var(--offline); }
+/* The reason a gate is not healthy, on the same line as its state (QA-1-D3). */
+.sl-gate-detail { color: var(--sev-high); font-size: var(--fs-1); }
+
 #sl-dom-line { margin: 6px 0 10px; }
 .sev-tiles { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 /* The occurrence expansion under a counted anomaly row (2026-10-16). */
