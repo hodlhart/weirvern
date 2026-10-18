@@ -1531,7 +1531,14 @@ def test_the_shared_event_actually_stops_a_REAL_ingest_loop_and_checkpoints():
                                 "zeek_dir": "", "exporter_allow": "", "stop": stop},
                         daemon=True)
         th.start()
-        _time.sleep(0.8)          # at least one full pass
+        # POLL FOR THE WORK, DO NOT TIME IT (2026-10-18). A fixed 0.8s sleep assumed one pass fits
+        # in 800ms; under a loaded machine running the whole suite it does not, the test then
+        # stopped the loop mid-pass and asserted against rows that had not been read yet -- or
+        # against a checkpoint that had not been written. Two gate runs in a row failed this way.
+        # The condition IS the assertion, so wait for it with a bound.
+        _deadline = _time.monotonic() + 10
+        while c1.rows < 6 and _time.monotonic() < _deadline:
+            _time.sleep(0.02)
         stop.set()                # what _handle_sigterm does
         th.join(timeout=10)       # what main() now does
         assert not th.is_alive(), "the ingest loop did not stop within the join timeout"
@@ -1550,7 +1557,12 @@ def test_the_shared_event_actually_stops_a_REAL_ingest_loop_and_checkpoints():
                                  "zeek_dir": "", "exporter_allow": "", "stop": stop2},
                          daemon=True)
         th2.start()
-        _time.sleep(0.5)
+        # Give the restart a generous number of passes (the loop's own interval x 8, at least a
+        # second) rather than a fixed sleep, so a slow machine gets MORE chances to re-ingest --
+        # which is the failure this phase exists to catch.
+        _wait_until = _time.monotonic() + max(1.0, 8 * 0.15)
+        while c2.rows == 0 and _time.monotonic() < _wait_until:
+            _time.sleep(0.02)
         stop2.set()
         th2.join(timeout=10)
         assert c2.rows == 0, (
