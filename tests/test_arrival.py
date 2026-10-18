@@ -39,7 +39,7 @@ def test_a_fresh_lookup_is_not_a_journey():
     """h-go (typed lookup) must NOT leave a crumb: you came from nowhere."""
     src = (WEB / "app.js").read_text()
     seg = src.split("function openHost(addr) {", 1)[1].split("\n}", 1)[0]
-    assert 'CURRENT_VIEW !== "host"' in seg, "a host->host hop is being treated as a journey"
+    assert 'CURRENT_VIEW !== "assets"' in seg, "a host->host hop is being treated as a journey"
 
 
 def test_the_total_count_ignores_every_filter():

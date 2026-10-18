@@ -88,12 +88,11 @@
       "module": "weirlings.js"
     },
     {
-      "id": "host",
+      "id": "assets",
       "label": "Assets",
       "job": "which hosts exist and what do we know",
       "tab": true,
-      "module": "assets.js",
-      "debt": "view id 'host' does not match the label 'Assets' (QA-1-D4)"
+      "module": "assets.js"
     },
     {
       "id": "models",
@@ -276,7 +275,7 @@
         "asset",
         "host"
       ],
-      "owned_by": "host",
+      "owned_by": "assets",
       "renderer": "assets.js",
       "status": "owned",
       "duplicates": [
@@ -314,11 +313,6 @@
       "kind": "identity",
       "detail": "'weirvern' and 'Weirvern' both listed; the capitalised one is unregistered and offers Adopt",
       "card": "QA-1-D2"
-    },
-    {
-      "kind": "vocabulary",
-      "detail": "view id 'host' vs label 'Assets'",
-      "card": "QA-1-D4"
     },
     {
       "kind": "reachability",

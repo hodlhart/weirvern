@@ -151,3 +151,28 @@ def test_touch_controls_are_forty_four():
     assert int(m.group(1)) >= 44, (
         f"touch buttons are {m.group(1)}px; canon C-9 wants 44 on touch (density loses to the thumb)"
     )
+
+
+def test_every_tab_id_agrees_with_its_view_and_its_ledger_entry():
+    """QA-1-D4: one name per surface, in the URL, the DOM and the label.
+
+    The defect this pins: the inventory's tab said "Assets" while its id said `host`, so a
+    script, a doc or the palette looking for the label could not find the surface.
+    """
+    import json
+    import pathlib as _p
+    import re as _re
+
+    repo = _p.Path(__file__).resolve().parents[1]
+    html = (repo / "weirvern/admin/web/index.html").read_text(encoding="utf-8")
+    ledger = json.loads((repo / "docs/design/ledger.json").read_text(encoding="utf-8"))
+
+    tabs = _re.findall(r'<button class="tab[^"]*" data-view="([^"]+)">([^<]+)</button>', html)
+    assert len(tabs) == 15, len(tabs)
+    for view_id, label in tabs:
+        assert f'id="view-{view_id}"' in html, f"{view_id}: tab points at a view that does not exist"
+        entry = next((v for v in ledger["views"] if v.get("id") == view_id), None)
+        assert entry is not None, f"{view_id}: no ledger entry -- the surface is unowned"
+        assert entry.get("label") == label.strip(), (
+            f"{view_id}: tab says {label!r}, ledger says {entry.get('label')!r}"
+        )

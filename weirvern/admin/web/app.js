@@ -473,6 +473,10 @@ let SETTINGS_ROWS = {};
 /** One editable setting rendered as its natural control. Stages on change; never writes. */
 function settingControl(row, shown, spec) {
   const key = row.key;
+  // A NAME FOR EVERY CONTROL (QA-1-D4, WCAG 4.1.2). The visible label is a SIBLING of the
+  // control, so assistive tech announced "spin button" with no name. The row's own label is the
+  // name; the range hint is associated rather than merely adjacent.
+  const label = String(row.label || key);
   const stage = (v) => stageChange(key, v, String(row.value));
   const s = spec || { control: "text" };
 
@@ -506,7 +510,7 @@ function settingControl(row, shown, spec) {
     const stateWord = el("span", { class: "setting-toggle-state", text: on ? "on" : "off" });
     const box = el("input", {
       class: "setting-toggle",
-      attrs: { type: "checkbox", "data-key": key },
+      attrs: { type: "checkbox", "data-key": key, "aria-label": label },
       on: { change: (ev) => {
         const now = ev.target.checked;
         stateWord.textContent = now ? "on" : "off";
@@ -527,7 +531,7 @@ function settingControl(row, shown, spec) {
     if (shown !== "" && !opts.includes(String(shown))) opts.push(String(shown));
     const sel = el("select", {
       class: "setting-select",
-      attrs: { "data-key": key },
+      attrs: { "data-key": key, "aria-label": label },
       on: { change: (ev) => stage(ev.target.value) },
     });
     for (const o of opts) {
@@ -550,7 +554,7 @@ function settingControl(row, shown, spec) {
     const input = el("input", {
       class: "setting-input setting-number", value: shown,
       attrs: { type: "number", "data-key": key, inputmode: "decimal", spellcheck: "false",
-               autocomplete: "off" },
+               autocomplete: "off", "aria-label": label },
       on: { input: (ev) => stage(ev.target.value) },
     });
     if (s.min !== undefined) input.setAttribute("min", String(s.min));
@@ -558,17 +562,20 @@ function settingControl(row, shown, spec) {
     if (s.step !== undefined) input.setAttribute("step", String(s.step));
     const range = (s.min !== undefined && s.max !== undefined)
       ? `${s.min}–${s.max}${s.unit ? " " + s.unit : ""}` : "";
-    return el("span", { class: "setting-ctl-group" }, [
-      input,
-      range ? el("span", { class: "setting-unit", text: range }) : null,
-    ]);
+    let hint = null;
+    if (range) {
+      hint = el("span", { class: "setting-unit", text: range, attrs: { id: `hint-${key}` } });
+      input.setAttribute("aria-describedby", `hint-${key}`);
+    }
+    return el("span", { class: "setting-ctl-group" }, [input, hint]);
   }
 
   // text -- the deliberate free-text keys. data-key kept so the DOM harness and any other
   // selector can find it by key regardless of control kind.
   return el("input", {
     class: "setting-input", value: shown,
-    attrs: { type: "text", "data-key": key, spellcheck: "false", autocomplete: "off" },
+    attrs: { type: "text", "data-key": key, spellcheck: "false", autocomplete: "off",
+               "aria-label": label },
     on: { input: (ev) => stage(ev.target.value) },
   });
 }
@@ -2178,7 +2185,7 @@ async function loadHost(addr, hours) {
 
   // US-6: the labeled exit, only for JOURNEYS (openHost) -- a fresh lookup in the box is not
   // somewhere you came from. The label names the DESTINATION, not "back".
-  if (HOST_RETURN.pending && CURRENT_VIEW === "host") {
+  if (HOST_RETURN.pending && CURRENT_VIEW === "assets") {
     HOST_RETURN.pending = false;
     const fromTab = [...document.querySelectorAll(".tab")]
       .find((t) => t.dataset.view === HOST_RETURN.view);
@@ -2190,14 +2197,14 @@ async function loadHost(addr, hours) {
 
 function openHost(addr) {
   if (!addr) return;
-  if (CURRENT_VIEW && CURRENT_VIEW !== "host") {
+  if (CURRENT_VIEW && CURRENT_VIEW !== "assets") {
     // US-6: remember where the jump started -- the labeled way back needs it, and so does the
     // scroll restore. A host->host hop (a destination cell on the drill) is not a journey.
     HOST_RETURN = { pending: true, view: CURRENT_VIEW, scroll: Number(window.scrollY || 0) };
   } else {
     HOST_RETURN.pending = false;
   }
-  showView("host");
+  showView("assets");
   document.getElementById("h-addr").value = addr;
   // US-6: the GLOBAL time window, not a hardcoded 24h -- a drill must answer the question the
   // operator already asked (the audit: "window = global range").
@@ -3288,6 +3295,9 @@ function returnWithScroll(view, scroll) {
 const TAB_FOR_DRILL = { evidence: "anomalies" };
 let CURRENT_VIEW = "";
 function showView(name) {
+  // ONE NAME PER SURFACE (QA-1-D4): the inventory's view id is `assets`, matching its label and
+  // its ledger entry. The old `#v=host` links still land here rather than on a blank page.
+  if (name === "host") name = "assets";
   CURRENT_VIEW = name;
   // US-8: the session's last views become palette recents, however they were reached.
   if (typeof paletteNoteView === "function") paletteNoteView(name);
@@ -3326,7 +3336,7 @@ function showView(name) {
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on
   // ClickHouse for a panel nobody is looking at.
-  if (name === "host") loadAssets().then(clearError).catch(showError);
+  if (name === "assets") loadAssets().then(clearError).catch(showError);
   if (name === "network") loadNetwork().then(clearError).catch(showError);
   // The SOC views load on demand rather than on every refresh cycle: they run several
   // aggregate queries each, and firing them every 15s in the background would put load on

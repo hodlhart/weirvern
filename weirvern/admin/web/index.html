@@ -153,7 +153,7 @@
   </div>
   <div class="tab-group" data-group="fleet">
     <button class="tab" data-view="weirlings">Weirlings</button>
-    <button class="tab" data-view="host">Assets</button>
+    <button class="tab" data-view="assets">Assets</button>
   </div>
   <div class="tab-group" data-group="telemetry">
     <button class="tab" data-view="models">Models</button>
@@ -784,7 +784,7 @@
     which is the wrong shape for the question "what is on this network". The inventory lists
     every host first and the drill-down is what a row does when clicked.
   -->
-  <section id="view-host" class="view">
+  <section id="view-assets" class="view">
     <div class="card">
       <h2>Asset inventory <button class="info-btn" data-info="as-info" aria-label="what this inventory lists and how to drill in" aria-expanded="false" title="what this inventory lists and how to drill in">i</button> <span class="muted" id="as-summary">loading…</span></h2>
       <div class="controls">
@@ -1321,9 +1321,9 @@
       <p class="muted" id="st-account-note">checking…</p>
       <div class="controls hidden" id="st-account-pw">
         <input id="st-pw-current" type="password" placeholder="current password"
-               autocomplete="current-password" spellcheck="false">
+               aria-label="current password" autocomplete="current-password" spellcheck="false">
         <input id="st-pw-new" type="password" placeholder="new password"
-               autocomplete="new-password" spellcheck="false">
+               aria-label="new password" autocomplete="new-password" spellcheck="false">
         <button id="st-pw-save">Change password</button>
       </div>
       <p class="muted" id="st-pw-result"></p>
@@ -1342,12 +1342,14 @@
         <tbody></tbody>
       </table>
       <div class="controls" id="st-user-add">
-        <input id="st-new-user" type="text" placeholder="username" autocomplete="off" spellcheck="false">
-        <select id="st-new-role">
+        <input id="st-new-user" type="text" placeholder="username" aria-label="new user name"
+               autocomplete="off" spellcheck="false">
+        <select id="st-new-role" aria-label="new user role">
           <option value="viewer" selected>viewer</option>
           <option value="admin">admin</option>
         </select>
         <input id="st-new-pass" type="password" placeholder="initial password"
+               aria-label="initial password for the new user"
                autocomplete="new-password" spellcheck="false">
         <button id="st-user-create">Add user</button>
       </div>
@@ -1370,7 +1372,8 @@
       <h2>Break-glass access <span class="muted">operator token</span> <button class="info-btn" data-info="st-token-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
       <p class="muted" id="st-auth-note"></p>
       <div class="controls" id="st-auth-controls">
-        <input id="st-token" type="password" placeholder="operator token" autocomplete="off"
+        <input id="st-token" type="password" placeholder="operator token"
+               aria-label="operator token" autocomplete="off"
                spellcheck="false">
         <button id="st-token-save">Use token</button>
         <button id="st-token-clear">Forget token</button>

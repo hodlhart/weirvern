@@ -356,7 +356,7 @@ def test_the_gui_uses_only_classes_that_exist_in_the_stylesheet():
 #   views/tabs/statusline: toggled by CSS class, not filled with data
 #   h-hint: hint text set once in the markup
 #   ev-notice-card: shown/hidden, not populated
-_STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-host",
+_STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               "view-network", "view-models", "view-netflow", "view-zeek", "view-health",
               # view-discover: a structural section toggled by `showView`, like its siblings
               # above; its inner elements are what the scripts populate.
