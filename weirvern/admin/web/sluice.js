@@ -373,8 +373,11 @@ function slConfirm(btn, run) {
   }, 5000);
 }
 
-async function slRuleRevoke(r) {
-  const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id });
+async function slRuleRevoke(r, reason) {
+  // THE SERVER REQUIRES A REASON (BF-9): it is recorded with the actor and the time. The old
+  // sheet posted only the id and every delete came back 400; found by the live create/delete
+  // check, not by the harness.
+  const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id, reason: reason || "" });
   if (out && out.ok) {
     slRuleNote(out.note || "revoked");
     await loadSluice();
@@ -888,6 +891,8 @@ function openRuleSheet(rule, domain) {
       del.classList.remove("armed");
       del.textContent = "Delete this rule";
     }
+    const reasonEl = document.getElementById("sl-rule-delete-reason");
+    if (reasonEl) reasonEl.value = "";
   }
   card.classList.remove("hidden");
   let scrim = document.getElementById("sl-rule-scrim");
@@ -980,12 +985,20 @@ function wireRuleSheet() {
   if (del) del.addEventListener("click", () => {
     if (!SL_RULE) return;
     const rule = SL_RULE;
+    const reasonEl = document.getElementById("sl-rule-delete-reason");
+    const reason = reasonEl ? String(reasonEl.value || "").trim() : "";
+    if (!reason) {
+      // NO REASON, NO ARM: the server refuses the write and records the reason with the actor.
+      slRuleNote("A reason is required to delete a rule; it is recorded with your name and the time.");
+      if (reasonEl) reasonEl.focus();
+      return;
+    }
     if (del.dataset.armed === "1") {
       delete del.dataset.armed;
       del.classList.remove("armed");
       del.textContent = "Delete this rule";
       del.disabled = true;
-      slRuleRevoke(rule)
+      slRuleRevoke(rule, reason)
         .then(() => closeRuleSheet())
         .catch(showError)
         .finally(() => { del.disabled = false; });

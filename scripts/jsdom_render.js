@@ -3746,10 +3746,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               const b = doc.getElementById(id);
               return b && (b.textContent || "").trim().length > 3;
             }));
-      // DELETING ASKS TWICE: the first click arms and names the consequence, nothing is posted.
+      // DELETING ASKS TWICE, AND THE SERVER REQUIRES A REASON: with an empty reason nothing arms;
+      // with a reason the first click arms and still nothing is posted.
       const delBtn = doc.getElementById("sl-rule-delete");
       if (delBtn) {
         const beforeDel = POSTED.length;
+        delBtn.click();
+        await new Promise((r) => setTimeout(r, 60));
+        check("delete without a reason refuses to arm",
+              !/Click again/.test(delBtn.textContent)
+              && !POSTED.slice(beforeDel).some((r) => r.url.includes("/api/sluice/revoke")),
+              delBtn.textContent);
+        const why = doc.getElementById("sl-rule-delete-reason");
+        if (why) why.value = "harness: this rule has lapsed";
         delBtn.click();
         await new Promise((r) => setTimeout(r, 60));
         check("delete arms before it revokes",

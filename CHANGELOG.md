@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.5 — 2026-10-18
+
+DELETING A RULE ASKS FOR THE REASON THE SERVER REQUIRES.
+
+Found on the live box during the 0.17.4 create/delete check: `/api/sluice/revoke` refuses a
+request with no reason ("a reason is required to revoke a rule; it is recorded with your name
+and the time"), and the sheet posted only the rule id, so the delete button could never work.
+
+- The rule sheet's detail section gains a required reason field. Delete without a reason refuses
+  to arm and explains why; with a reason it arms on the first click and writes on the second,
+  sending both the id and the reason.
+- Harness: 825 → 826 checks — "delete without a reason refuses to arm" and "delete arms before
+  it revokes" both pin the behaviour; live create → revoke → read-back verifies the write.
+
 ## 0.17.4 — 2026-10-18
 
 RULES ARE ADDED AND DELETED IN A SHEET, NOT ON THE SLUICE TAB.
