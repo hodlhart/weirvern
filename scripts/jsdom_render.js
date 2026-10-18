@@ -3921,6 +3921,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a blocked apply does NOT clear the stage -- the fix is the staged value",
           Object.keys(H.STAGE.changes).length > 0,
           JSON.stringify(H.STAGE.changes));
+    // QA-1-D1: the refusal must not be a dead end. The receipt carries its own way out, and
+    // Discard clears the whole thing -- staged row, BLOCKED line, receipt -- in one click.
+    const clearBtn = [...doc.querySelectorAll("#st-apply-results button")]
+      .find((b) => /Clear this plan/i.test(b.textContent));
+    check("a blocked apply offers a live way out in the receipt", !!clearBtn);
+    const discardBtn = doc.getElementById("st-stage-discard");
+    check("...and Discard is live while the refused plan is staged",
+          !!discardBtn && !discardBtn.disabled);
+    check("the staged line states the from-value immediately (no plan needed)",
+          /was 0\.35|was 0\.3/.test(doc.getElementById("st-stage-list").textContent),
+          doc.getElementById("st-stage-list").textContent.slice(0, 120));
+    if (clearBtn) {
+      clearBtn.click();
+      await new Promise((r) => setTimeout(r, 200));
+      const noteAfter = doc.getElementById("st-stage-note").textContent;
+      check("...and clearing it removes the BLOCKED line and the staged row",
+            !/BLOCKED/.test(noteAfter)
+            && !/base_threshold/.test(doc.getElementById("st-stage-list").textContent)
+            && doc.getElementById("st-stage-apply").disabled,
+            noteAfter.slice(0, 120));
+    }
     // now a value that passes: the checks ride the success receipt too
     btIn.value = "0.5";
     btIn.dispatchEvent(new window.Event("input", { bubbles: true }));

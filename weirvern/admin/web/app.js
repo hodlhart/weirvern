@@ -586,8 +586,9 @@ function stageChange(key, value, original) {
   // fresh staged change would claim a state that no longer holds.
   LAST_APPLY.text = "";
   LAST_APPLY.results = null;
-  if (value === original) delete STAGE.changes[key];
-  else STAGE.changes[key] = value;
+  STAGE.from = STAGE.from || {};
+  if (value === original) { delete STAGE.changes[key]; delete STAGE.from[key]; }
+  else { STAGE.changes[key] = value; STAGE.from[key] = String(original); }
   STAGE.plan = null;   // any edit invalidates a previously fetched plan
   persistStage();
   renderStage();
@@ -595,8 +596,16 @@ function stageChange(key, value, original) {
 
 function discardStage() {
   STAGE.changes = {};
+  STAGE.from = {};
   STAGE.plan = null;
+  // THE WAY OUT CLEARS THE MESSAGE TOO (QA-1-D1). A refused apply writes "BLOCKED — ..." into
+  // LAST_APPLY, which this card re-renders on every load; clearing the stage without clearing
+  // the verdict left the operator reading a refusal for a plan that no longer existed, with
+  // nothing left to click. Discarding is a complete answer, so it resets both halves.
+  LAST_APPLY.text = "";
+  LAST_APPLY.results = null;
   persistStage();
+  renderStage();          // immediately: no list, no note, Apply disabled
   // Re-render from the server's values so the inputs and the table agree again.
   loadSettings().catch(showError);
 }
@@ -642,11 +651,19 @@ function renderStage() {
       el("span", { class: "stage-arrow", text: "→" }),
       el("span", { class: "stage-val mono", text: STAGE.changes[key] || "(empty)" }),
     ]);
-    if (STAGE.plan) {
-      const p = (STAGE.plan.proposals || []).find((x) => x.key === key);
-      // WHAT IT REPLACES, not just what it becomes: a diff the operator cannot read is not a review.
-      if (p && p.current !== undefined) {
-        row.appendChild(el("span", { class: "stage-was", text: `(was ${p.current || "empty"})` }));
+    // WHAT IT REPLACES, not just what it becomes: a diff the operator cannot read is not a review.
+    // The from-value comes from the plan when there is one and from the running settings otherwise,
+    // so a fresh stage reads "0.35 -> 0.36" immediately rather than only after a plan has run
+    // (QA-1-D1).
+    {
+      const p = (STAGE.plan && (STAGE.plan.proposals || []).find((x) => x.key === key)) || null;
+      const was = (STAGE.from && STAGE.from[key] !== undefined)
+        ? STAGE.from[key]
+        : (p && p.current !== undefined
+            ? p.current
+            : (SETTINGS_ROWS[key] ? SETTINGS_ROWS[key].value : ""));
+      if (was !== "" && was !== undefined && was !== null) {
+        row.appendChild(el("span", { class: "stage-was", text: `(was ${was})` }));
       }
       if (p && p.warning) {
         row.appendChild(el("div", { class: "stage-warn", text: "⚠ " + p.warning }));
@@ -716,6 +733,16 @@ function renderApplyResults() {
   }
   for (const e of (R.restart_errors || [])) {
     out.appendChild(el("div", { class: "stage-res-item fail", text: "restart failed \u2014 " + e }));
+  }
+  if (R.blocked) {
+    // A refused plan is still a plan. The receipt says so and offers the one verb that ends it,
+    // so the card can never be a dead end (the reason the QA walk filed this).
+    const dismiss = el("button", {
+      class: "quiet", text: "Clear this plan", attrs: { type: "button" },
+      title: "discard the staged change and the refusal together",
+      on: { click: () => discardStage() },
+    });
+    out.appendChild(el("div", { class: "stage-res-item" }, [dismiss]));
   }
   if (failed.length) {
     const btn = el("button", {
@@ -794,6 +821,7 @@ async function applyStage(skipWarnConfirm) {
     // Report the outcome in the server's terms. A saved-but-not-restarted change is INERT, so it
     // is shown as a problem rather than folded into a success line.
     STAGE.changes = {};
+    STAGE.from = {};
     STAGE.plan = null;
     persistStage();
     LAST_APPLY.results = {
