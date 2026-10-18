@@ -213,6 +213,27 @@ consequence in clicks or seconds. "Feels cluttered" is rejected by the skill its
 - Which peer supplies the table grammar reference — Grafana's tables or Elastic's data grid?
 - Do we keep the fifteen-tab rail at 820px, or collapse to a two-level nav there?
 
+## 12. Sluice Gate is a firewall surface (operator directive, 2026-10-18)
+
+The operator's directive (2026-10-18) reads as five rules, and they generalise beyond
+this view:
+
+1. **A control surface opens with its state.** Enabled/disabled is the first fact, with the one
+   control that changes it, and the consequence named (what stops being enforced).
+2. **Glance first, act second.** Tabs show information or visualisation; nothing is an editable
+   form at rest. To add, customise or delete, you click first — the edit surface is entered, not
+   always-on.
+3. **Rules are first-class and additive.** A visible rule list with one obvious "add", each rule
+   readable as a sentence.
+4. **The unit of a Sluice rule is a domain block.** Sluice is where domain blocking is
+   *enforced*: a rule names what to block (domain, blocklist, category), for whom (segment /
+   host), and what happens (drop / alert), not a bare IP-and-port tuple.
+5. **Enforcement is honest.** Live rule count, hit count and gate state; disabled reads as a
+   decision, degraded names what is broken and what would restore it (D3 is the template).
+
+This supersedes the current Sluice layout as the target. US-SL1 on the `weirvern-usability` board
+carries it; US-A3's accessibility findings are absorbed into that build.
+
 ## Changelog
 
 - **2026-10-18** — created from the operator's design conversation. Locked: signature, standard,
