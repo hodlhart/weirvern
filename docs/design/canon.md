@@ -71,6 +71,9 @@ Breakpoints at **420 · 720 · 1100**. The review set is **1440×900, 820×1180,
 **320×640** stress pass.
 
 - **Nav:** the tab rail scrolls; the primary surface never hides behind a hamburger.
+- **The shell wraps, it does not widen.** The header and the status line are wrapping flex
+  rows. A non-wrapping row sets a page minimum above the breakpoint and drags every view
+  sideways (2026-10-18: 257px at 820 on all fifteen views).
 - **Tables:** at ≤720 a table becomes stacked label/value rows — same fields, same order. Horizontal
   scroll is allowed only inside a designated data grid, never for a page. *Data behind a swipe is
   data a phone operator does not have during an incident.*

@@ -69,6 +69,28 @@ AUDIT_JS = r"""
   const root = document.documentElement;
   const overflow = Math.max(0, root.scrollWidth - window.innerWidth);
 
+  // When the page scrolls sideways, name the widest offenders: a number without a culprit sends
+  // the next reader hunting, and the same 257px on every view is one element outside the views.
+  const widest = [];
+  const inScroller = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const ox = getComputedStyle(p).overflowX;
+      if (ox === 'auto' || ox === 'scroll' || ox === 'hidden') return true;
+    }
+    return false;
+  };
+  if (overflow > 0) {
+    for (const el of document.querySelectorAll('body *')) {
+      if (!vis(el) || inScroller(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.right > window.innerWidth + 1) {
+        widest.push(sel(el) + ' w=' + Math.round(r.width) + ' right=' + Math.round(r.right));
+      }
+    }
+    widest.sort((a, b) => (parseInt(b.split('right=')[1], 10) || 0) - (parseInt(a.split('right=')[1], 10) || 0));
+    widest.length = Math.min(widest.length, 6);
+  }
+
   const clipped = [];
   for (const el of document.querySelectorAll('td, th, .cell, .kv dd, .kv dt, span, div')) {
     if (!vis(el) || !(el.innerText || '').trim()) continue;
@@ -110,6 +132,7 @@ AUDIT_JS = r"""
                ? document.querySelector('#tabs .tab.active').getAttribute('data-view') : ''),
     overflow, clipped, small: small.slice(0, 8), smallCount: small.length,
     verySmall: verySmall.slice(0, 8), verySmallCount: verySmall.length,
+    widest,
     hoverOnly, hoverOnlyCount: hoverOnly.length, unnamed: unnamed.slice(0, 8),
     wideGrids, dom: document.querySelectorAll('*').length, api,
     errors: (window.__auditErr || []).slice(0, 5),
@@ -176,7 +199,7 @@ def new_target(port: int) -> str:
 
 
 async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, shot: Path,
-                    idx: int = 0) -> dict:
+                    idx: int = 0, css: str = "") -> dict:
     mobile = width <= 720
     await cdp.call("Emulation.setDeviceMetricsOverride",
                    {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": mobile})
@@ -185,6 +208,15 @@ async def audit_one(cdp: CDP, base: str, view: str, width: int, height: int, sho
     # previous view on screen and every row would silently measure the same page.
     await cdp.call("Page.navigate", {"url": f"{base}/?qa={idx}#v={view}"})
     await asyncio.sleep(2.4)
+    if css:
+        # Measure a CANDIDATE stylesheet before it ships: append it after the served one, which
+        # wins on equal specificity, then measure exactly as if it were deployed.
+        await cdp.call("Runtime.evaluate", {
+            "expression": "(() => { const s = document.createElement('style');"
+                          " s.textContent = " + json.dumps(css) + "; document.head.appendChild(s);"
+                          " return s.textContent.length; })()",
+            "returnByValue": True})
+        await asyncio.sleep(0.3)
     res = await cdp.call("Runtime.evaluate", {"expression": AUDIT_JS, "returnByValue": True})
     data = json.loads(res["result"]["value"])
     data["wanted"] = view
@@ -234,18 +266,21 @@ async def run(args) -> int:
             await cdp.call("Emulation.setDeviceMetricsOverride",
                            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False})
 
+            css = Path(args.css).read_text(encoding="utf-8") if args.css else ""
             results = []
             idx = 0
             for view in args.views:
                 for w, h in args.widths:
                     idx += 1
                     shot = Path(args.out) / "shots" / f"{view}-{w}.png"
-                    row = await audit_one(cdp, args.url.rstrip("/"), view, w, h, shot, idx)
+                    row = await audit_one(cdp, args.url.rstrip("/"), view, w, h, shot, idx, css)
                     results.append(row)
                     flag = "  !! measured " + str(row.get("activeId")) if row.get("mismatch") else ""
                     print(f"  {view:11s} {w:4d}  overflow={row['overflow']:3d}  clipped={len(row['clipped']):2d}"
                           f"  small={row['smallCount']:3d}  hover-only={row['hoverOnlyCount']:2d}"
                           f"  unnamed={len(row['unnamed']):2d}  dom={row['dom']:5d}  api={row['api']:2d}{flag}")
+                    if row['widest']:
+                        print("        widest:", " | ".join(row['widest'][:3]))
         finally:
             await cdp.close()
     finally:
@@ -273,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--views", default="health,anomalies,logs,network,netflow,discover,dns,zeek,"
                                        "sluice,blocked,identity,weirlings,host,models,settings")
     ap.add_argument("--widths", default="1440x900,820x1180,390x844,320x640")
+    ap.add_argument("--css", default="", help="measure a candidate stylesheet before it ships")
     args = ap.parse_args(argv)
     views = [v.strip() for v in args.views.split(",") if v.strip()]
     widths: list[tuple[int, int]] = []

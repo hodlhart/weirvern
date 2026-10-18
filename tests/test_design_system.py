@@ -109,3 +109,33 @@ def test_audit_script_is_safe_and_compiles():
     assert "token-file" in src
     # A token literal would look like a long random assignment; the script may only read one.
     assert not re.search(r'(TOKEN|token)\s*=\s*"[A-Za-z0-9]{20,}"', src)
+
+
+def _rule_block(css: str, selector: str) -> str:
+    """The first `selector { ... }` block, brace-counted (comments stripped first)."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    start = css.find(selector + " {")
+    if start < 0:
+        return ""
+    open_at = css.find("{", start)
+    depth = 0
+    for i in range(open_at, len(css)):
+        if css[i] == "{":
+            depth += 1
+        elif css[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[open_at : i + 1]
+    return ""
+
+
+def test_the_shell_wraps_instead_of_widening_the_page():
+    """US-A1: a flex row that cannot wrap made every view 257px too wide at 820."""
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    for selector in ("header", ".status"):
+        block = _rule_block(css, selector)
+        assert block, f"the {selector} rule disappeared"
+        assert "flex-wrap: wrap" in block, (
+            f"{selector} must wrap: without it the shell sets a page width above the 720 "
+            "breakpoint and every view scrolls sideways on a tablet"
+        )

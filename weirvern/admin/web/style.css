@@ -80,7 +80,7 @@ body {
 
 header {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: 12px 20px;
+  flex-wrap: wrap; gap: 10px 16px; padding: 12px 20px;
   background: var(--panel); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
 }
@@ -95,7 +95,8 @@ header {
   box-shadow: 0 0 0 1px var(--border);
 }
 h1 { font-size: 21px; font-weight: 400; margin: 0; }
-.status { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.status { display: flex; align-items: center; gap: 12px; font-size: 13px;
+  flex-wrap: wrap; min-width: 0; }
 
 .pill {
   padding: 4px 11px; border-radius: 6px; font-weight: 600;
