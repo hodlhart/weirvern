@@ -23,12 +23,31 @@ _LOCK = threading.Lock()
 
 
 def proc_root() -> Path:
-    """The procfs that describes the SENSOR, not the GUI container."""
+    """The procfs with the host's CPU and memory, not a cgroup-sized one.
+
+    A hostPath /proc mount is not a guarantee: on this k3s the mounted `/host-proc` reports
+    the pod's 512 MiB memory limit, while the pod's own `/proc` reports the host's 40 GiB.
+    Pick the candidate with the larger MemTotal instead of trusting the mount's name; if
+    neither is readable, keep `/proc` so the caller gets a real error rather than a guess.
+    """
     configured = os.environ.get("HOST_PROC", "").strip()
-    if configured:
-        return Path(configured)
-    host = Path("/host-proc")
-    return host if host.is_dir() else Path("/proc")
+    candidates = ([Path(configured)] if configured else []) + [Path("/proc"), Path("/host-proc")]
+    best: tuple[int, Path] = (-1, Path("/proc"))
+    for candidate in candidates:
+        try:
+            text = (candidate / "meminfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("MemTotal:"):
+                try:
+                    total = int(line.split()[1])
+                except (IndexError, ValueError):
+                    total = 0
+                if total > best[0]:
+                    best = (total, candidate)
+                break
+    return best[1]
 
 
 def _read(path: Path) -> str:

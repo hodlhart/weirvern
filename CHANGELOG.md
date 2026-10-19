@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.40 — 2026-10-19
+
+THE SYSTEM CARDS READ THE HOST, NOT THE POD'S MEMORY LIMIT.
+
+- A `hostPath: /proc` mount can be cgroup-sized: on this cluster `/host-proc/meminfo` reported
+  the GUI pod's 512 MiB limit while `/proc` reported the host's 40 GiB. The sampler now picks
+  the candidate procfs with the larger MemTotal instead of trusting the mount's name.
+
 ## 0.17.39 — 2026-10-19
 
 SONAR NEEDS AN IN-PATH MODE, AND PERFORMANCE NAMES ITS SENSOR.
