@@ -18,7 +18,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
@@ -1207,7 +1207,11 @@ def _load_detect_cursor(settings) -> datetime | None:
         value = data.get("covered_through")
         if not value:
             return None
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
+        # A CURSOR IS A TIME, AND TIMES ARE AWARE HERE. Older cursors were written without a
+        # zone; comparing one to utcnow() raises TypeError and, measured live after a restart,
+        # stops the entire detection loop. Normalise the old form instead of refusing it.
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     except FileNotFoundError:
         return None
     except Exception as exc:  # noqa: BLE001 - see the docstring

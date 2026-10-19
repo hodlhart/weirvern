@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.26 — 2026-10-19
+
+THE FLOWS TRENDS ROUTE, AND A CURSOR THAT STOPPED DETECTION. `/api/discover/trends` was added to
+the handler but not to the dispatcher, so the three feed boxes received a 404. Separately, a
+detection cursor written before zones were normalised compared naive to aware and raised on every
+worker cycle after a restart, stopping detection and the new table-size sampling with it. Old
+cursors are now read as UTC.
+
 ## 0.17.25 — 2026-10-19
 
 INTERFACES CONFIGURE THEMSELVES, AND THE CONSOLE SAYS WHAT IT MEANS.

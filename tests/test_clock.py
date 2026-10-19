@@ -105,3 +105,19 @@ def test_the_stored_flow_timestamp_is_utc(chicago):
 
     assert _ts(0).utcoffset() == timedelta(0)
     assert map_flow({})["timestamp"].utcoffset() == timedelta(0)
+
+
+def test_an_old_naive_detection_cursor_is_read_as_UTC(tmp_path):
+    """A cursor written before zones were normalised must not stop the detection loop."""
+    import dataclasses
+    import json
+
+    from weirvern import worker
+    from weirvern.config import get_settings
+
+    settings = dataclasses.replace(get_settings(), model_dir=str(tmp_path))
+    (tmp_path / "detect_cursor.json").write_text(
+        json.dumps({"covered_through": "2026-10-19T12:00:00"}))
+    parsed = worker._load_detect_cursor(settings)
+    assert parsed is not None and parsed.tzinfo is not None
+    assert parsed.utcoffset().total_seconds() == 0

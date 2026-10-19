@@ -368,6 +368,10 @@ def _build_handler(ctx: GuiContext):
             # filter bar -- flow type, address, port, sensor -- and paging.
             if path == "/api/discover":
                 return self._discover(query)
+            # Three header sparklines (operator, 2026-10-19): feed health at a glance,
+            # without paging three raw feeds through the browser.
+            if path == "/api/discover/trends":
+                return self._discover_trends(query)
             # DNS ON PORT 53, MADE READABLE: the operator's ask ("can we view dns"). Rows are
             # Q/A pairs out of `zeek_dns`; the reverse side (address -> names) comes from the
             # materialized map in schema/016, which is also what domain rules resolve through.
