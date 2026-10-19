@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.17.12 — 2026-10-19
+
+THE INVESTIGATION PAGE, and the sensor row becomes a menu.
+
+- **A host has its own page.** Clicking a host in Anomalies or Assets opens `#v=host` for that
+  address — not the whole Assets inventory. It carries a connection picture (the host and its
+  top peers, edge weight by bytes), a NetFlow bar chart by hour, DNS queries, Zeek sessions by
+  service, top destinations and that host's anomalies. The server's `/api/host` now returns
+  `dns_queries`, `zeek_timeline` and `zeek_peers` beside the existing totals.
+- **The weirling row is a menu; the NIC lines are the settings.** Clicking the sensor name opens
+  exactly Adopt / Enable / Disable / Delete. Clicking a non-management NIC line opens that NIC's
+  settings with its interface selected. The selection checkboxes and the bulk bar are gone.
+- **A selected criterion wears a white outline** on the Weirlings summary tiles and the
+  Anomalies severity tiles, so the active filter is visible against any tile colour.
+- **Anomalies columns:** host narrowed, matched rule and why widened, row height down; **Owner
+  became Location** — the weirling that sees the host's network and that network (`unplaced`
+  when no declared segment contains it). The server resolves it against the fleet's segments,
+  most specific first.
+- **Assets review:** a four-tile summary (hosts / active in the last hour / with anomalies /
+  external), a `new` badge for hosts first seen inside the window, and clickable column headers
+  for address, name, bytes, flows and anomalies. The scope, search, service facets and pager
+  remain.
+- **Discover is now Flows** in the tab strip (the view id stays `discover` for links).
+- **`wl=` no longer leaks.** The weirling deep link is written only while a weirling sheet is
+  open on the Weirlings view, and only a Weirlings URL honours it; an anomalies link can no
+  longer carry `wl=...` or hijack the next reload back to Weirlings.
+- Gate passed; pytest green; harness green (842 checks).
+
 ## 0.17.11 — 2026-10-19
 
 **EACH NON-MANAGEMENT NIC IS A LINE INSIDE ITS SENSOR'S ROW.** The `NICs (n)` disclosure is gone:

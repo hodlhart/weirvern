@@ -107,6 +107,23 @@ function renderAssetFacets(all) {
   }
 }
 
+/** The inventory's four first questions: how many, how many are active now, how many carry an
+ *  anomaly, and how many are outside the monitored networks. Counts are over the SCOPED set so
+ *  the tiles and the table cannot disagree. */
+function renderAssetStats(all) {
+  const box = document.getElementById("as-stats");
+  if (!box) return;
+  const now = Date.now();
+  const active = all.filter((h) => h.last_seen && (now - Date.parse(h.last_seen)) < 3600e3).length;
+  const anomalies = all.filter((h) => Number(h.anomalies) > 0).length;
+  const external = all.filter((h) => netScope(h.addr) === "external").length;
+  const cells = [["hosts", String(all.length)], ["active (1h)", String(active)],
+                 ["with anomalies", String(anomalies)], ["external", String(external)]];
+  box.replaceChildren(...cells.map(([k, v]) => el("div", { class: "stat" }, [
+    el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
+  ])));
+}
+
 function renderAssets() {
   const tbody = document.querySelector("#as-table tbody");
   const note = document.getElementById("as-note");
@@ -189,6 +206,7 @@ function renderAssets() {
   summary.textContent = (why.length
     ? `${rows.length} of ${all.length} hosts ${why.join(" and ")}`
     : `${all.length} hosts in the last ${d.hours}h`) + range;
+  renderAssetStats(all);
 
   // The facet itself: what services this inventory actually saw, most common first.
   renderAssetFacets(all);
@@ -224,7 +242,13 @@ function renderAssets() {
   for (const h of pageRows) {
     const tr = el("tr", { class: "clickable" }, [
       el("td", { class: "link", text: h.addr, title: `drill into ${h.addr}` }),
-      el("td", { class: "muted", text: h.name || "—" }),
+      el("td", { class: "muted" }, [
+        el("span", { text: h.name || "—" }),
+        (h.first_seen && (Date.now() - Date.parse(h.first_seen)) < (Number(d.hours) || 24) * 3600e3)
+          ? el("span", { class: "chip muted", text: " new",
+                         attrs: { title: `first seen ${fmtTime(h.first_seen)}` } })
+          : null,
+      ]),
       el("td", { class: "mono", text: fmtBytes(h.bytes) }),
       el("td", {
         class: "mono",

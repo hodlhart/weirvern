@@ -351,7 +351,7 @@ def test_the_anomalies_table_has_a_header_for_every_cell():
     # The table moved to #anomalies-table when the Overview tab was removed. The assertion
     # follows it: a table that stops being checked is a table that drifts.
     html = (WEB / "index.html").read_text()
-    m = re.search(r'<table id="anomalies-table">\s*<thead>(.*?)</thead>', html, re.S)
+    m = re.search(r'<table id="anomalies-table">.*?<thead>(.*?)</thead>', html, re.S)
     assert m, "the anomalies table was not found"
     headers = len(re.findall(r"<th", m.group(1)))
 

@@ -40,7 +40,7 @@
     },
     {
       "id": "discover",
-      "label": "Discover",
+      "label": "Flows",
       "job": "what exists on the wire",
       "tab": true,
       "module": "discover.js"
@@ -79,6 +79,13 @@
       "job": "which sensors report, and are they flowing",
       "tab": true,
       "module": "weirlings.js"
+    },
+    {
+      "id": "host",
+      "label": "Host",
+      "job": "one address under investigation: connections, NetFlow, DNS, Zeek and its alerts",
+      "tab": false,
+      "module": "app.js"
     },
     {
       "id": "assets",

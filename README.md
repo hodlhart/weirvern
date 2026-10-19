@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 baselines, flags the deviations that match real attack shapes, and shows a human *why*, with the
 measurements that fired.
 
-Current release: **0.17.11** · Runs on any conformant Kubernetes · No payload inspection · Alerts
+Current release: **0.17.12** · Runs on any conformant Kubernetes · No payload inspection · Alerts
 via [Pushover](https://pushover.net), or log-only.
 
 ## What it does
@@ -104,7 +104,7 @@ deterministic force map of who talks to whom) · Anomalies with a **raw-evidence
 (flows, Zeek sessions, TLS records with their JA4 fingerprints, DNS, notices) · Models, including
 **force a retrain** — it trains a candidate on the last window, reports what it found (and whether
 the window already held detections, which a retrain would learn as normal) and waits for you to keep
-or trash it · Discover (the raw flows themselves, filterable down to every field) · DNS (port-53
+or trash it · Flows (the raw flows themselves, filterable down to every field) · DNS (port-53
 questions and answers, with a reverse lookup: which names pointed at an address recently, out of
 what DNS actually answered) · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes ·
 Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this

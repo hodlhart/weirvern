@@ -2087,6 +2087,7 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
         "src_addr": src_addr, "hours": hours,
         "totals": None, "top_destinations": [], "top_ports": [],
         "timeline": [], "anomalies": [], "zeek_services": [],
+        "dns_queries": [], "zeek_timeline": [], "zeek_peers": [],
     }
 
     def _q(sql: str, params: dict, key: str, cast: Callable = list) -> None:
@@ -2143,6 +2144,29 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
         base, "anomalies",
     )
     # Zeek enrichment, if that sensor is running. Absence is normal, not an error.
+    # DNS, per host (the query names this host asked). Separate table and separate guard:
+    # a host can have NetFlow and no DNS, and a missing Zeek DNS log must not empty the rest.
+    _q(
+        "SELECT query, qtype, count() AS asks, uniqExact(dst_addr) AS resolvers "
+        "FROM weirvern.zeek_dns WHERE src_addr = %(a)s "
+        "AND ts >= %(since)s AND ts <= %(until)s AND query != '' "
+        "GROUP BY query, qtype ORDER BY asks DESC LIMIT 20",
+        base, "dns_queries",
+    )
+    _q(
+        "SELECT toStartOfHour(ts) AS hr, count() AS conns, "
+        "sum(orig_bytes + resp_bytes) AS bytes "
+        "FROM weirvern.zeek_conn WHERE src_addr = %(a)s "
+        "AND ts >= %(since)s AND ts <= %(until)s GROUP BY hr ORDER BY hr",
+        base, "zeek_timeline",
+    )
+    _q(
+        "SELECT dst_addr, count() AS conns, sum(orig_bytes + resp_bytes) AS bytes, "
+        "groupUniqArray(service) AS services FROM weirvern.zeek_conn "
+        "WHERE src_addr = %(a)s AND ts >= %(since)s AND ts <= %(until)s "
+        "GROUP BY dst_addr ORDER BY bytes DESC LIMIT 12",
+        base, "zeek_peers",
+    )
     _q(
         "SELECT service, count() AS conns, sum(orig_bytes + resp_bytes) AS bytes "
         # src_addr, NOT id_orig_h. THE BUG: the schema normalizes Zeek's

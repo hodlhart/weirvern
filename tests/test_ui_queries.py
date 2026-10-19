@@ -190,6 +190,7 @@ def test_host_detail_queries_real_columns():
         "weirvern.flows": _columns_of("weirvern.flows"),
         "weirvern.netflow_anomalies": _columns_of("weirvern.netflow_anomalies"),
         "weirvern.zeek_conn": _columns_of("weirvern.zeek_conn"),
+        "weirvern.zeek_dns": _columns_of("weirvern.zeek_dns"),
     }
     for table in known:
         assert table in sql, f"host_detail no longer queries {table}"

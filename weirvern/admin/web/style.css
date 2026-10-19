@@ -382,6 +382,25 @@ tr.wl-state-never_seen { box-shadow: inset 3px 0 0 var(--bad); }
 tr.wl-state-unregistered { box-shadow: inset 3px 0 0 var(--warn); }
 tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 
+/* ANOMALIES: fixed columns so the host stays one short token and the rule/why get the room
+   (operator, 2026-10-19: shrink host, grow matched rule and why, reduce row height). */
+/* THE HOST PAGE: its own picture, not a table of every asset. */
+.hp-graph { min-height: 300px; }
+.hp-network { width: 100%; height: 300px; }
+.hp-node { fill: var(--accent); stroke: var(--bg); stroke-width: 1.5; }
+.hp-center { fill: var(--fg); }
+.hp-label { fill: var(--muted); font-size: 11px; }
+.hp-bars { height: 260px; display: flex; align-items: flex-end; }
+.hp-bar-row { display: flex; align-items: flex-end; gap: 3px; width: 100%; height: 100%; }
+.hp-bar { flex: 1; background: var(--accent); border-radius: var(--r-sm); min-height: 2px; }
+.hp-bar.zero { background: var(--border); }
+
+#as-table th.sortable { cursor: pointer; user-select: none; }
+#anomalies-table { table-layout: fixed; }
+#anomalies-table td { vertical-align: top; }
+#anomalies-table td:nth-child(4) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#anomalies-table td:nth-child(9), #anomalies-table td:nth-child(10) { overflow-wrap: anywhere; }
+
 #wl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 #wl-summary .stat {
   min-width: 108px; padding: 10px 14px; background: var(--panel2);
@@ -504,6 +523,12 @@ tr.an-exp td { background: var(--panel2); }
      13px label + 27px number out of the rounded panel. The panel sizes itself. */
   height: auto; white-space: normal; }
 .sev-tiles .tile.active { box-shadow: 0 0 0 1px var(--accent); }
+/* A SELECTED CRITERION WEARS A WHITE OUTLINE (operator, 2026-10-19). The accent ring disappeared
+   into the severity colour on several tiles; white is the one value no tile colour can share. */
+#wl-summary .stat.active, .sev-tiles .tile.active {
+  outline: 2px solid var(--fg); outline-offset: 1px;
+}
+input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1px; }
 .sev-tiles .tile .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums;
   line-height: 1.1; }
@@ -521,7 +546,7 @@ tr.an-exp td { background: var(--panel2); }
    is easy deployment. */
 .spark { display: flex; align-items: flex-end; gap: 3px; height: 90px; padding-top: 6px; }
 .spark .bar {
-  flex: 1; min-width: 3px; background: var(--accent); border-radius: 2px 2px 0 0;
+  flex: 1; min-width: 3px; background: var(--accent); border-radius: var(--r-sm);
   opacity: .75; position: relative;
 }
 .spark .bar:hover { opacity: 1; }

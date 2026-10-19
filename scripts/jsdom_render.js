@@ -416,7 +416,8 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
       baseline_score: 0.2, primary_deviation_feature: "unique_dst_ports",
       primary_deviation_zscore: 5.2, deviation_magnitude: 3.1,
       feature_contributions: { unique_dst_ports: { z: 5.2 }, total_bytes: { z: 1.1 } },
-      owner: "ops", matched_rule: "IsolationForest scored this window above the strong-signal floor",
+      owner: "ops", location: { weirling: "edge-alive", network: "198.51.100.0/24" },
+      matched_rule: "IsolationForest scored this window above the strong-signal floor",
       baseline_comparison: "unique_dst_ports is 5.2 sigma above this host's baseline",
       review_state: "", review_note: "", reviewed_at: null, watched: true },
     { detected_at: "2026-01-02T08:00:00", window_start: "2026-01-02T07:55:00",
@@ -982,7 +983,7 @@ const WEIRLINGS_PAYLOAD = {
   sensors: [
     {
       sensor_id: "edge-alive", state: "alive", is_problem: false,
-      address: "198.51.100.7", segment: "third floor", reported_segment: "third floor",
+      iface: "eth1", address: "198.51.100.7", segment: "third floor", reported_segment: "third floor",
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
       local: true,
       plan: { mode: "", iface: "", segment: "", addr: "", gateway: "", targets: "" },
@@ -998,13 +999,14 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-stopped", state: "stale", is_problem: true,
+      iface: "eth1",
       plan: { mode: "", iface: "", segment: "", addr: "", gateway: "", targets: "" },
       address: "", segment: "second floor", reported_segment: "",
       expected_mode: "loch", reported_mode: "loch", enabled: true, registered: true,
       age_s: 900.0, last_seen: "2026-09-23T11:45:00+00:00",
       capture_loss_pct: null, packets_recv: null, packets_dropped: null, hosts: 0,
       note: "", stale_after_s: 45,
-      interfaces: ["eth0"],
+      interfaces: ["eth0", "eth1"],
       flow_series: [],
       netflow: { known: false, observed: false, flows: 0, last_at: "",
                  why: "the sensor has not reported an address yet" },
@@ -1019,6 +1021,7 @@ const WEIRLINGS_PAYLOAD = {
       sensor_id: "edge-promised", state: "never_seen", is_problem: true,
       plan: { mode: "siphon", iface: "eth2", segment: "198.51.100.0/24", addr: "", gateway: "198.51.100.1", targets: "*" },
       address: "198.51.100.9", segment: "fourth floor IDF", reported_segment: "",
+      interfaces: ["eth2"],
       flow_series: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       netflow: { known: true, observed: false, flows: 0, last_at: "",
                  why: "no flows from this sensor's address in 24h" },
@@ -1054,6 +1057,7 @@ const WEIRLINGS_PAYLOAD = {
     },
     {
       sensor_id: "edge-moved", state: "alive", is_problem: false,
+      interfaces: ["eth3"],
       plan: { mode: "siphon", iface: "eth3", segment: "203.0.113.0/24", addr: "203.0.113.250", gateway: "203.0.113.1", targets: "203.0.113.7" },
       address: "198.51.100.60", segment: "fifth floor", reported_segment: "sixth floor",
       expected_mode: "loch", reported_mode: "siphon", enabled: true, registered: true,
@@ -3850,18 +3854,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the fleet table is weirling, mode, channel, networks, flow, feeds",
           heads.join("|") === "weirling|mode|channel|networks|flow|feeds", heads.join("|"));
     const localRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
-      .find((tr) => tr.textContent.includes("weirvern"));
+      .find((tr) => {
+        const b = tr.querySelector("button.link, .link");
+        return b && b.textContent.trim() === "weirvern";
+      });
     if (localRow) {
-      const cells = [...localRow.querySelectorAll("td")];
-      check("mode states only loch or siphon, not the declaration",
-            /^(loch|siphon|—)/i.test(cells[1].textContent.trim())
-            && !/declared/i.test(cells[1].textContent), cells[1].textContent.trim());
-      check("the channel column states enabled or disabled",
-            /^(enabled|disabled)$/i.test(cells[2].textContent.trim()), cells[2].textContent.trim());
-      check("the feeds cell keeps both indicators",
-            cells[5].querySelectorAll(".tap").length === 2, cells[5].textContent.trim());
-      check("the flow cell says something even with no series",
-            cells[4].textContent.trim().length > 0, cells[4].textContent.trim());
+      // THE SENSOR ROW IS A NAME, NOT A SECOND COPY OF THE FACTS (operator, 2026-10-19).
+      check("the sensor row leaves the fact columns empty",
+            localRow.children.length === 2
+            && localRow.children[1].textContent.trim() === "",
+            [...localRow.children].map((td) => td.textContent.trim()).join("|"));
       const nicRows = [...doc.querySelectorAll("#wl-table tbody tr.wl-nic-row")];
       check("every non-management NIC is its own line under the sensor row",
             nicRows.length >= 1 && !doc.querySelector(".wl-nics-open"),
@@ -3871,10 +3873,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && nicRows.some((tr) => /capture/.test(tr.textContent)),
             nicRows.map((tr) => tr.children.length).join(","));
       const captureRow = nicRows.find((tr) => /capture/.test(tr.textContent));
-      check("...the capture NIC carries the trend and both feed indicators",
-            !!captureRow && captureRow.querySelectorAll(".tap").length === 2
-            && /flows|wl-spark/.test(captureRow.children[4].innerHTML),
-            captureRow ? captureRow.children[4].textContent.trim() : "no capture NIC");
+      if (captureRow) {
+        const cells = [...captureRow.children];
+        check("mode states only loch or siphon, not the declaration",
+              /^(loch|siphon|\u2014)/i.test(cells[1].textContent.trim())
+              && !/declared/i.test(cells[1].textContent), cells[1].textContent.trim());
+        check("the channel column states enabled or disabled",
+              /^(enabled|disabled|\u2014)$/i.test(cells[2].textContent.trim()),
+              cells[2].textContent.trim());
+        check("the feeds cell keeps both indicators",
+              cells[5].querySelectorAll(".tap").length === 2, cells[5].textContent.trim());
+        check("the flow cell draws a trend even at a measured zero",
+              !!cells[4].querySelector("svg.wl-spark"), cells[4].textContent.trim());
+      }
     }
     const nsTile = tiles.find((t) => /never seen/.test(t.textContent));
     nsTile.click();
@@ -3891,75 +3902,50 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("...and clicking it again clears the filter",
           [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].length > 1,
           String([...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].length));
-    // bulk: select two rows, disable, prove every POST
-    const boxes = [...doc.querySelectorAll("#wl-table input.wl-sel")];
-    check("every registered row can be selected for bulk work", boxes.length >= 2,
-          String(boxes.length));
-    boxes[0].click();
-    boxes[1].click();
-    await new Promise((r) => setTimeout(r, 60));
-    const bar = doc.getElementById("wl-bulk");
-    check("...selecting rows raises the bulk bar with the count",
-          !bar.classList.contains("hidden") && /2/.test(doc.getElementById("wl-bulk-n").textContent),
-          doc.getElementById("wl-bulk-n").textContent);
-    const posts = [];
-    const origFetch7 = window.fetch;
-    window.fetch = (u, o) => {
-      if (/weirlings\/enable/.test(String(u)) && o && o.body) posts.push(String(o.body));
-      return origFetch7(u, o);
-    };
-    doc.getElementById("wl-bulk-disable").click();   // arms the confirm (two-stage)
-    await new Promise((r) => setTimeout(r, 40));
-    doc.getElementById("wl-bulk-disable").click();   // confirm
-    await new Promise((r) => setTimeout(r, 350));
-    window.fetch = origFetch7;
-    check("...and disabling acts on EVERY selected sensor, posting the inverse",
-          posts.length === 2 && posts.every((b) => /"enabled":false/.test(b)),
-          posts.join(" | ").slice(0, 150));
-    doc.getElementById("wl-bulk-clear").click();
-    await new Promise((r) => setTimeout(r, 60));
-    check("...clear drops the selection and the bar",
-          doc.getElementById("wl-bulk").classList.contains("hidden"));
-    // THE UNADOPTED ROW IS SELECTABLE, AND SELECTING IT IS NOT OPENING IT (operator, 2026-10-18).
-    // Both defects were in one control: the checkbox existed only on declared rows, and clicking
-    // it bubbled to the row's own click handler, which opened the drill-down sheet over the list.
-    const ghostBox = doc.querySelector('#wl-table input.wl-sel[data-id="ghost-box"]');
-    check("an undeclared weirling carries a checkbox too", !!ghostBox,
-          ghostBox ? "present" : "missing");
-    const detailCard = doc.getElementById("wl-detail-card");
-    if (detailCard) detailCard.classList.add("hidden");
-    ghostBox.click();
+    // THE SENSOR ROW IS A MENU; THE NIC ROW IS THE SETTINGS (operator, 2026-10-19).
+    check("there are no selection checkboxes any more",
+          doc.querySelectorAll("#wl-table input.wl-sel").length === 0,
+          String(doc.querySelectorAll("#wl-table input.wl-sel").length));
+    const sensorRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
+      .find((tr) => (tr.textContent || "").includes("edge-alive"));
+    const sensorLink = sensorRow && sensorRow.querySelector("button.link");
+    check("the sensor name is the action affordance", !!sensorLink);
+    sensorLink.click();
     await new Promise((r) => setTimeout(r, 120));
-    check("...and selecting it does not open the sensor sheet",
-          !!detailCard && detailCard.classList.contains("hidden"),
-          detailCard ? detailCard.className : "no card");
-    check("...while the click still selects the row",
-          /1 selected/.test(doc.getElementById("wl-bulk-n").textContent),
-          doc.getElementById("wl-bulk-n").textContent);
-    check("...and the bar offers Adopt, not the declared-only verbs",
-          !doc.getElementById("wl-bulk-adopt").classList.contains("hidden") &&
-            doc.getElementById("wl-bulk-enable").classList.contains("hidden") &&
-            doc.getElementById("wl-bulk-revoke").classList.contains("hidden"),
-          `adopt=${!doc.getElementById("wl-bulk-adopt").classList.contains("hidden")} ` +
-            `enable=${!doc.getElementById("wl-bulk-enable").classList.contains("hidden")}`);
-    const beforeAdopt = POSTED.length;
-    doc.getElementById("wl-bulk-adopt").click();
-    await new Promise((r) => setTimeout(r, 300));
-    const adopted = POSTED.slice(beforeAdopt)
-      .filter((r) => r.url.includes("/api/weirlings/register"));
-    check("...and Adopt selected declares every undeclared row it was given",
-          adopted.length === 1 && /"sensor_id":"ghost-box"/.test(adopted[0].body),
-          adopted.map((r) => r.body).join(" | ").slice(0, 160));
-    // The stub is stateful, so put the fixture back: a later check must not inherit a
-    // registration this one made.
-    const ghostFixture = WEIRLINGS_PAYLOAD.sensors
-      .find((x) => x.sensor_id === "ghost-box");
-    if (ghostFixture) {
-      ghostFixture.registered = false;
-      ghostFixture.enabled = false;
-      ghostFixture.state = "unregistered";
-    }
-    await H.loadWeirlings();
+    const sensorCard = doc.getElementById("wl-sensor-card");
+    check("clicking the sensor name opens ONLY the sensor actions",
+          !!sensorCard && !sensorCard.classList.contains("hidden")
+          && /edge-alive/.test(doc.getElementById("wl-sensor-title").textContent),
+          sensorCard ? sensorCard.className : "no card");
+    check("...with enable/disable/delete/adopt and nothing else",
+          ["wl-sensor-adopt", "wl-sensor-enable", "wl-sensor-disable", "wl-sensor-delete"]
+            .every((id) => !!doc.getElementById(id))
+          && !doc.querySelector("#wl-sensor-card input, #wl-sensor-card select"),
+          "unexpected control");
+    check("...the verbs match this sensor's state",
+          doc.getElementById("wl-sensor-adopt").classList.contains("hidden")
+          && doc.getElementById("wl-sensor-enable").classList.contains("hidden")
+          && !doc.getElementById("wl-sensor-disable").classList.contains("hidden")
+          && !doc.getElementById("wl-sensor-delete").classList.contains("hidden"));
+    doc.getElementById("wl-sensor-close").click();
+    await new Promise((r) => setTimeout(r, 80));
+    const capRow = (() => {
+      let sib = sensorRow.nextElementSibling;
+      while (sib && sib.classList.contains("wl-nic-row")) {
+        if (/capture/.test(sib.textContent)) return sib;
+        sib = sib.nextElementSibling;
+      }
+      return null;
+    })();
+    check("a NIC line is clickable", !!capRow && capRow.classList.contains("clickable"));
+    capRow.click();
+    await new Promise((r) => setTimeout(r, 180));
+    check("clicking a NIC line opens that NIC's settings",
+          !doc.getElementById("wl-detail-card").classList.contains("hidden")
+          && (doc.getElementById("wl-plan-iface").value || "") === "eth1"
+          && /editing NIC eth1/.test((doc.getElementById("wl-nic-edit") || {}).textContent || ""),
+          `iface=${doc.getElementById("wl-plan-iface").value} note=${(doc.getElementById("wl-nic-edit") || {}).textContent}`);
+    doc.getElementById("wl-detail-close").click();
     await new Promise((r) => setTimeout(r, 80));
     // views: a default exists, switching applies filters, saving adds one
     await H.loadWeirlings();
@@ -3991,10 +3977,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           String(window.sessionStorage.getItem("wv-wl-views")).slice(0, 80));
     // THE ROW'S VERBS ARE MINIMAL (WL-1): membership changes live in the sheet; the list's
     // only row-level action is Adopt, and only while a sensor is undeclared.
-    check("a row carries NO verbs except Adopt (the sheet owns membership)",
+    check("a sensor row carries NO verbs (the sensor sheet owns membership)",
           !doc.querySelector("#wl-table .wl-inline-toggle")
-          && doc.querySelectorAll("#wl-table button.wl-adopt").length >= 1,
-          String(doc.querySelectorAll("#wl-table .wl-inline-toggle").length));
+          && doc.querySelectorAll("#wl-table button.wl-adopt").length === 0,
+          String(doc.querySelectorAll("#wl-table button.wl-adopt").length));
     try { window.sessionStorage.removeItem("wv-wl-views"); } catch (_e) {}
     await H.loadWeirlings();
   }
@@ -4012,26 +3998,36 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           heads.join("|"));
     const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => (tr.textContent || "").includes(id));
+    const nicsOf = (tr) => {
+      const out = [];
+      let sib = tr ? tr.nextElementSibling : null;
+      while (sib && sib.classList.contains("wl-nic-row")) { out.push(sib); sib = sib.nextElementSibling; }
+      return out;
+    };
+    const capOf = (tr) => nicsOf(tr).find((x) => /capture/.test(x.textContent));
     const alive = row("edge-alive");
-    const spark = alive && alive.querySelector("svg.wl-spark polyline");
+    const aliveCap = capOf(alive);
+    const spark = aliveCap && aliveCap.querySelector("svg.wl-spark polyline");
     const pts = spark ? (spark.getAttribute("points") || "").trim().split(/\s+/).length : 0;
     check("...a sensor with flow draws its trend from the series", pts >= 3,
           spark ? spark.getAttribute("points") : "no sparkline");
-    const taps = alive ? [...alive.querySelectorAll(".tap")] : [];
+    const taps = aliveCap ? [...aliveCap.querySelectorAll(".tap")] : [];
     check("...the taps LIGHT on evidence", taps.length === 2
           && taps.every((t) => t.classList.contains("on")),
           taps.map((t) => `${t.className}:${t.textContent}`).join(" "));
     const promised = row("edge-promised");
-    const dark = promised ? promised.querySelector(".tap.off") : null;
+    const promisedCap = capOf(promised);
+    const dark = promisedCap ? promisedCap.querySelector(".tap.off") : null;
     check("...and SUBDUE with the reason when there is none",
           !!dark && /no flows/.test(dark.getAttribute("title") || ""),
           dark ? dark.getAttribute("title") : "none");
     const stopped = row("edge-stopped");
+    const stoppedCap = capOf(stopped);
     check("...no series is an explicit absence, never a flat zero line",
-          !!stopped && !!stopped.querySelector(".wl-spark-empty")
-          && !stopped.querySelector("svg.wl-spark"),
-          stopped ? stopped.textContent.slice(0, 80) : "no row");
-    const cidrCell = promised && promised.querySelector("td:nth-child(4)");
+          !!stoppedCap && !!stoppedCap.querySelector(".wl-spark-empty")
+          && !stoppedCap.querySelector("svg.wl-spark"),
+          stoppedCap ? stoppedCap.textContent.slice(0, 80) : "no row");
+    const cidrCell = promisedCap && promisedCap.querySelector("td:nth-child(4)");
     check("...networks carries the subnet with CIDR",
           !!cidrCell && /198\.51\.100\.0\/24/.test(cidrCell.textContent || ""),
           cidrCell ? cidrCell.textContent : "none");
@@ -4047,11 +4043,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const head = [...doc.querySelectorAll("#anomalies-table thead th")]
       .map((t) => t.textContent.toLowerCase());
     check("the triage table names its fixed contract",
-          head.includes("owner") && head.includes("matched rule"), head.join(","));
+          head.includes("location") && head.includes("matched rule"), head.join(","));
     const first = doc.querySelector("#anomalies-table tbody tr");
     const cells = first ? [...first.querySelectorAll("td")].map((t) => t.textContent) : [];
-    check("...and rows carry the owner and what matched",
-          cells.length >= 11 && cells.includes("ops") &&
+    check("...and rows carry the location and what matched",
+          cells.length >= 11 && cells.some((c) => /edge-alive/.test(c)) &&
             cells.some((c) => /scored this window/.test(c)),
           cells.join(" | ").slice(0, 140));
     const disc = doc.getElementById("an-discipline").textContent;
@@ -4683,24 +4679,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a siphon apply whose plan does NOT move escalates NOT APPLIED",
           /NOT APPLIED/.test(doc.getElementById("wl-plan-note").textContent),
           doc.getElementById("wl-plan-note").textContent);
-    // (6) bulk revoke: the echo's reason rides EVERY posted revoke
+    // (6) delete: the sensor sheet's Delete posts the echo's reason
     H.showView("weirlings");
     await H.loadWeirlings();
     await sleep(150);
-    const boxes = [...doc.querySelectorAll("#wl-table tbody input.wl-sel")];
-    if (boxes[0]) { boxes[0].checked = true; boxes[0].dispatchEvent(new window.Event("change", { bubbles: true })); }
+    const victim = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
+      .find((tr) => (tr.textContent || "").includes("edge-moved"));
+    victim.querySelector("button.link").click();
     await sleep(80);
     const before6 = POSTED.length;
-    doc.getElementById("wl-bulk-revoke").click();   // arm
-    await sleep(40);
-    doc.getElementById("wl-bulk-revoke").click();   // confirm -> the echo
+    doc.getElementById("wl-sensor-delete").click();
     await sleep(80);
     await confirmEcho("decommissioned after the move");
     await sleep(200);
     const rvs = POSTED.slice(before6).filter((r) => r.url.includes("/api/weirlings/revoke"));
-    check("a bulk revoke posts the echo's reason on every id",
-          rvs.length >= 1 && rvs.every((r) => /decommissioned after the move/.test(r.body)),
+    check("Delete on the sensor sheet posts the echo's reason",
+          rvs.length === 1 && /decommissioned after the move/.test(rvs[0].body),
           rvs.map((r) => r.body).join(" | ").slice(0, 160));
+    const card = doc.getElementById("wl-sensor-card");
+    if (card && !card.classList.contains("hidden")) doc.getElementById("wl-sensor-close").click();
   }
 
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
@@ -5424,9 +5421,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
 
 // ── the drill-down ───────────────────────────────────────────────────────────────────────────
 {
-  const btn = [...H.document.querySelectorAll("#wl-table button")]
-    .find((b) => (b.textContent || "") === "edge-stopped");
-  check("a fleet row opens that sensor's drill-down", !!btn);
+  const stoppedRow = [...H.document.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
+    .find((tr) => (tr.textContent || "").includes("edge-stopped"));
+  const btn = stoppedRow ? (() => {
+    let sib = stoppedRow.nextElementSibling;
+    while (sib && sib.classList.contains("wl-nic-row")) {
+      if (/capture/.test(sib.textContent)) return sib;
+      sib = sib.nextElementSibling;
+    }
+    return null;
+  })() : null;
+  check("a NIC line opens that sensor's drill-down", !!btn);
   if (btn) {
     btn.click();
     for (let i = 0; i < 40 && !(H.document.getElementById("wl-detail-body").textContent || "")
@@ -5441,8 +5446,16 @@ check("...a contradicted segment names BOTH segments on the issues list",
           (() => {
             const r = [...H.document.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
               .find((tr) => (tr.textContent || "").includes("edge-moved"));
-            const cell = r ? r.querySelector("td:nth-child(2)") : null;
-            const title = cell ? (cell.textContent.match(/siphon/) ? cell.querySelector("span").getAttribute("title") : "") : "";
+            const cap = r ? (() => {
+              let sib = r.nextElementSibling;
+              while (sib && sib.classList.contains("wl-nic-row")) {
+                if (/capture/.test(sib.textContent)) return sib;
+                sib = sib.nextElementSibling;
+              }
+              return null;
+            })() : null;
+            const cell = cap ? cap.querySelector("td:nth-child(2)") : null;
+            const title = cell ? (cell.getAttribute("title") || "") : "";
             return !!cell && /^siphon$/i.test(cell.textContent.trim())
               && /registry declares loch/.test(title || "");
           })(),
@@ -5457,24 +5470,24 @@ check("...a contradicted segment names BOTH segments on the issues list",
 // sensor id". The drill-down for an undeclared sensor must offer REGISTER, and the click must
 // file the declaration from the OBSERVED identity rather than leaving an empty form.
 {
-  const btn = [...H.document.querySelectorAll("#wl-table button")]
+  const btn = [...H.document.querySelectorAll("#wl-table button.link")]
     .find((b) => (b.textContent || "") === "ghost-box");
-  check("the undeclared sensor is drill-down-able, to register from", !!btn);
+  check("the undeclared sensor's name opens its actions", !!btn);
   if (btn) {
     btn.click();
-    for (let i = 0; i < 40 && !(H.document.getElementById("wl-detail-body").textContent || "")
-         .includes("undeclared"); i++) {
+    for (let i = 0; i < 40 && !((H.document.getElementById("wl-sensor-card") || {})
+         .classList || { contains: () => false }).contains("hidden"); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    const regBtn = H.document.getElementById("wl-detail-register");
+    const regBtn = H.document.getElementById("wl-sensor-adopt");
     check("an undeclared sensor offers an ADOPT button, not only prose",
           !!regBtn && !regBtn.classList.contains("hidden")
           && (regBtn.textContent || "").includes("Adopt"),
-          "the id the hub is already hearing should not have to be retyped from the row into the "
-          + "form below");
+          "the id the hub is already hearing should not have to be retyped from the row into the " +
+          "form below");
     const before = POSTED.length;
     if (regBtn) regBtn.click();
-    for (let i = 0; i < 60 && POSTED.length === before; i++) {
+    for (let i = 0; i < 80 && POSTED.length === before; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
     const post = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/register"));
@@ -5482,23 +5495,24 @@ check("...a contradicted segment names BOTH segments on the issues list",
     try { sentBody = JSON.parse((post || {}).body || "{}"); } catch (_e) { sentBody = {}; }
     check("the click registers the OBSERVED identity, not a blank form",
           !!post && sentBody.sensor_id === "ghost-box",
-          "registering the wrong id -- or leaving the form for the operator to fill -- leaves the "
-          + "sensor undeclared while looking like it worked");
+          "registering the wrong id -- or leaving the form for the operator to fill -- leaves the " +
+          "sensor undeclared while looking like it worked");
     check("the observed mode rides along as the expectation",
           !!post && sentBody.expected_mode === "loch",
-          "the declaration should start from what the sensor reports, not from a default nobody "
-          + "chose");
-    for (let i = 0; i < 60 && !(H.document.getElementById("wl-detail-note").textContent || "")
+          "the declaration should start from what the sensor reports, not from a default nobody " +
+          "chose");
+    for (let i = 0; i < 80 && !(H.document.getElementById("wl-detail-note").textContent || "")
          .includes("Registered"); i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
     check("the outcome is stated on the detail, not silently swallowed",
           (H.document.getElementById("wl-detail-note").textContent || "")
             .includes("Registered ghost-box"));
+    const detailReg = H.document.getElementById("wl-detail-register");
     check("a registered sensor does not offer REGISTER",
-          !!regBtn && regBtn.classList.contains("hidden"),
-          "the button is offered only while the sensor reads as undeclared; anything else "
-          + "invites a click that cannot mean anything");
+          !detailReg || detailReg.classList.contains("hidden"),
+          "the button is offered only while the sensor reads as undeclared; anything else " +
+          "invites a click that cannot mean anything");
     // ── and the panel's controls are BOUND, not merely rendered ──────────────────
     // wireWeirlings() was defined but never called from the app's bootstrap, so every button in
     // this panel and the register form rendered and did NOTHING. Labels all looked right; only a
@@ -5659,22 +5673,28 @@ check("...a contradicted segment names BOTH segments on the issues list",
   const ghost = rowFor("ghost-box");
   const alive = rowFor("edge-alive");
   const adopt = ghost && ghost.querySelector("button.wl-adopt");
-  check("an unregistered sensor offers one-click Adopt in its ROW",
-        !!adopt && !(alive && alive.querySelector("button.wl-adopt")),
-        "the action must be where the sensor is, and only while it is needed");
-  if (adopt) {
+  check("an unregistered sensor offers Adopt in its actions, not as a row verb",
+        !adopt && !(alive && alive.querySelector("button.wl-adopt")),
+        "membership is the sensor name's job; the row carries only the name");
+  if (ghost) {
+    ghost.querySelector("button.link").click();
+    await new Promise((r) => setTimeout(r, 100));
+    const adoptBtn = doc.getElementById("wl-sensor-adopt");
+    check("...and its sensor actions carry the Adopt", !!adoptBtn);
     const before = POSTED.length;
-    adopt.click();
-    for (let i = 0; i < 60 && POSTED.length === before; i++) {
+    if (adoptBtn) adoptBtn.click();
+    for (let i = 0; i < 80 && POSTED.length === before; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
     const post = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/register"));
     let sent = {};
     try { sent = JSON.parse((post || {}).body || "{}"); } catch (_e) { sent = {}; }
-    check("Adopt files the declaration from the sensor's own reports -- no form, no drill-down",
+    check("Adopt files the declaration from the sensor's own reports -- no form",
           !!post && sent.sensor_id === "ghost-box" && sent.expected_mode === "loch"
           && (sent.segment === "" || sent.segment === undefined),
           (post || {}).body || "no register POST");
+    const close = doc.getElementById("wl-detail-close");
+    if (close) close.click();
   }
 }
 
@@ -6141,12 +6161,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(300);
     const head = [...doc.querySelectorAll("#anomalies-table thead th")].map((t) => t.textContent.toLowerCase());
     const cells = [...doc.querySelectorAll("#anomalies-table tbody tr")[0].querySelectorAll("td")].map((t) => t.textContent);
-    const ownerAt = cells.findIndex((c) => c === "ops");
+    const locAt = cells.findIndex((c) => /edge-alive/.test(c));
     const matchedAt = cells.findIndex((c) => /scored this window/.test(c));
     check("the header names its columns where the rows put them",
-          head.indexOf("owner") === ownerAt && head.indexOf("matched rule") === matchedAt
-          && ownerAt > -1 && matchedAt > -1,
-          "owner head=" + head.indexOf("owner") + " cell=" + ownerAt
+          head.indexOf("location") === locAt && head.indexOf("matched rule") === matchedAt
+          && locAt > -1 && matchedAt > -1,
+          "location head=" + head.indexOf("location") + " cell=" + locAt
           + "; matched head=" + head.indexOf("matched rule") + " cell=" + matchedAt);
   }
 
@@ -6210,9 +6230,16 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("weirlings");
     await H.loadWeirlings();
     await sleep(200);
-    const flowCell = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
-      .find((tr) => (tr.textContent || "").includes("edge-alive"))
-      ?.querySelector(".wl-flow-cell.clickable");
+    const aliveRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
+      .find((tr) => (tr.textContent || "").includes("edge-alive"));
+    let flowCell = null;
+    if (aliveRow) {
+      let sib = aliveRow.nextElementSibling;
+      while (sib && sib.classList.contains("wl-nic-row")) {
+        if (/capture/.test(sib.textContent)) { flowCell = sib.querySelector(".wl-flow-cell.clickable"); break; }
+        sib = sib.nextElementSibling;
+      }
+    }
     check("the flow trend is the pivot to that sensor's flows", !!flowCell);
     if (flowCell) {
       const beforeDc = DISCOVER_REQS.length;
@@ -7473,6 +7500,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (shell0 && !shell0.classList.contains("hidden")) {
       for (const node of [...doc.getElementById("modal-body").children]) H.closeModal(node);
     }
+    if (typeof H.closeWeirling === "function") H.closeWeirling();
+    const strayClose = doc.getElementById("wl-sensor-close");
+    if (strayClose) strayClose.click();
     const opener = doc.createElement("button");
     opener.textContent = "open";
     doc.body.appendChild(opener);

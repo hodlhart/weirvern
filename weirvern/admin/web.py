@@ -211,6 +211,43 @@ def _accounts_on(ctx) -> bool:
         return False
 
 
+def _attach_anomaly_locations(rows: list, sensors: list) -> None:
+    """Where each alert happened: the weirling that sees that network, and the network.
+
+    Anomalies carry no sensor id -- the detector scores a host window, not a sensor -- so the
+    location is resolved from the address against the fleet's declared segments. Most specific
+    network wins. A host outside every declared segment carries NO location rather than a guess
+    (the UI says "unplaced"), because naming a weirling that cannot see the address would be a
+    lie the operator would act on.
+    """
+    import ipaddress as _ip  # noqa: PLC0415
+
+    nets = []
+    for s in sensors or []:
+        sid = str(s.get("sensor_id") or "")
+        for seg in {s.get("segment"), s.get("reported_segment")}:
+            seg = str(seg or "").strip()
+            if not seg:
+                continue
+            try:
+                net = _ip.ip_network(seg, strict=False)
+            except ValueError:
+                continue
+            if net.version == 4:
+                nets.append((net, sid))
+    for r in rows or []:
+        try:
+            addr = _ip.ip_address(str(r.get("src_addr") or "").strip())
+        except ValueError:
+            continue
+        matches = [(n, sid) for n, sid in nets if addr in n]
+        if not matches:
+            continue
+        matches.sort(key=lambda x: x[0].prefixlen, reverse=True)
+        net, sid = matches[0]
+        r["location"] = {"weirling": sid, "network": str(net)}
+
+
 def _build_handler(ctx: GuiContext):
     """Create the request handler class, closing over ctx."""
 
@@ -510,6 +547,15 @@ def _build_handler(ctx: GuiContext):
                     watch_set, watch_err = status_mod.watch_index(client)
                     for r in rows:
                         r["watched"] = (r.get("src_addr") in watch_set) if watch_err is None else None
+                    # WHERE EACH ALERT HAPPENED (operator, 2026-10-19): the Owner column became
+                    # Location -- the weirling that sees this host's network and the network
+                    # itself. Resolved here, from the fleet's declared segments, so the console
+                    # and the fleet tab cannot disagree about which sensor covers an address.
+                    try:
+                        _fleet = fleet_store.build_fleet(client)
+                        _attach_anomaly_locations(rows, _fleet.get("sensors") or [])
+                    except Exception as _loc_exc:  # noqa: BLE001
+                        logger.warning("anomaly locations unavailable: %s", _loc_exc)
                     # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
                     # state we could not read would answer "nothing is unreviewed" -- a
                     # confident claim built from a failed query. Better to return the rows

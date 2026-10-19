@@ -141,7 +141,7 @@
   <div class="tab-group" data-group="network">
     <button class="tab" data-view="network">Network</button>
     <button class="tab" data-view="netflow">Netflow</button>
-    <button class="tab" data-view="discover">Discover</button>
+    <button class="tab" data-view="discover">Flows</button>
     <button class="tab" data-view="dns">DNS</button>
     <button class="tab" data-view="zeek">Zeek</button>
   </div>
@@ -508,7 +508,16 @@
 </div>
 
       <table id="anomalies-table">
-        <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Owner</th><th>Matched rule</th><th>Why</th><th>Actions</th></tr></thead>
+        <!-- COLUMN BUDGET (operator, 2026-10-19): the host is one short token and does not need
+             a wide column; the matched rule and the why sentence are the reading. Location
+             replaces Owner: which weirling sees this host's network, and which network. -->
+        <colgroup>
+          <col style="width: 92px"><col style="width: 92px"><col style="width: 44px">
+          <col style="width: 128px"><col style="width: 56px"><col style="width: 84px">
+          <col style="width: 120px"><col style="width: 150px"><col style="width: 300px">
+          <col style="width: 340px"><col style="width: 78px">
+        </colgroup>
+        <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Location</th><th>Matched rule</th><th>Why</th><th>Actions</th></tr></thead>
         <tbody></tbody>
       </table>
     
@@ -735,9 +744,55 @@
     which is the wrong shape for the question "what is on this network". The inventory lists
     every host first and the drill-down is what a row does when clicked.
   -->
+  <!-- THE HOST PAGE (operator, 2026-10-19): an alert's host click lands HERE, on that
+       address, with its own network picture and its own NetFlow / DNS / Zeek panels --
+       not on the fleet-wide Assets inventory. -->
+  <section id="view-host" class="view">
+    <div class="view-head">
+      <button id="hp-back" class="quiet" type="button" title="back where this was opened">Back</button>
+      <h2 id="hp-title">Host</h2>
+      <span id="hp-sub" class="muted"></span>
+    </div>
+    <div class="card"><div id="hp-stats" class="stats"></div></div>
+    <div class="grid">
+      <div class="card">
+        <h2>Connections <span class="muted">this host and its top peers</span></h2>
+        <div id="hp-graph" class="hp-graph"></div>
+      </div>
+      <div class="card">
+        <h2>NetFlow <span class="muted">bytes and flows by hour</span></h2>
+        <div id="hp-flow" class="hp-bars"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>DNS <span class="muted">queries this host asked</span></h2>
+        <table id="hp-dns"><thead><tr><th>query</th><th>type</th><th>asks</th><th>resolvers</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Zeek <span class="muted">sessions by service</span></h2>
+        <table id="hp-zeek"><thead><tr><th>service</th><th>sessions</th><th>bytes</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Top destinations</h2>
+        <table id="hp-dests"><thead><tr><th>destination</th><th>bytes</th><th>flows</th><th>ports</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Anomalies for this host</h2>
+        <table id="hp-anoms"><thead><tr><th>detected</th><th>score</th><th>severity</th><th>why</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
   <section id="view-assets" class="view">
     <div class="card">
       <h2>Asset inventory <button class="info-btn" data-info="as-info" aria-label="what this inventory lists and how to drill in" aria-expanded="false" title="what this inventory lists and how to drill in">i</button> <span class="muted" id="as-summary">loading…</span></h2>
+      <!-- THE INVENTORY AT A GLANCE (operator, 2026-10-19: "this is meant for asset inventory...
+           improve how we show it"). The tiles answer the four questions an inventory reader has
+           first; the table below is the detail. -->
+      <div id="as-stats" class="stat-row"></div>
       <div class="controls">
         <label>search
           <input type="text" id="as-search" placeholder="address, name or service" autocomplete="off">
@@ -774,8 +829,14 @@
       <div id="as-note"></div>
       <table id="as-table">
         <thead><tr>
-          <th>Address</th><th>Name</th><th>Bytes</th><th>Out / In</th><th>Flows</th>
-          <th>Dests</th><th>Services</th><th>Anomalies</th><th>Last seen</th>
+          <th data-sort="addr" class="sortable" title="sort by address">Address</th>
+          <th data-sort="name" class="sortable">Name</th>
+          <th data-sort="bytes" class="sortable">Bytes</th>
+          <th>Out / In</th>
+          <th data-sort="flows" class="sortable">Flows</th>
+          <th>Dests</th><th>Services</th>
+          <th data-sort="anomalies" class="sortable">Anomalies</th>
+          <th>Last seen</th>
         </tr></thead>
         <tbody></tbody>
       </table>

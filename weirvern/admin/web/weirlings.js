@@ -419,8 +419,14 @@ function wlSituation(r) {
 /** WL-1: a twelve-bucket flow sparkline. NO SERIES IS NOT AN IDLE LINE: no samples means
  *  "not observed" and says so; a measured idle hour is a series of real zeroes. */
 function wlSparkline(r) {
-  const vals = Array.isArray(r.flow_series) ? r.flow_series : [];
+  let vals = Array.isArray(r.flow_series) ? r.flow_series : [];
   const ev = r.netflow || {};
+  // A MEASURED ZERO STILL HAS A SHAPE (operator, 2026-10-19: "where is the flow trend line").
+  // No series + a known exporter used to render as text only, so an idle sensor had no line to
+  // read at all. A flat line at zero is the honest trend; a sensor with no address still gets
+  // NO line, because that is not a measurement.
+  const measuredZero = !vals.length && ev.known;
+  if (measuredZero) vals = Array(12).fill(0);
   if (!vals.length) {
     // A MEASURED ZERO IS NOT A DASH (operator, 2026-10-19: "flow is not showing anything
     // either"). "—" means not measured; when the exporter is known and produced nothing, the
@@ -450,8 +456,13 @@ function wlSparkline(r) {
   poly.setAttribute("stroke-width", "1.5");
   svg.appendChild(poly);
   const wrap = el("span", { class: "wl-spark-wrap",
-    attrs: { title: `${total} flows in the last hour` } });
+    attrs: { title: measuredZero
+      ? `0 flows in the last hour \u2014 ${ev.why || "no flows observed in 24h"}`
+      : `${total} flows in the last hour` } });
   wrap.appendChild(svg);
+  if (measuredZero) {
+    wrap.appendChild(el("span", { class: "muted mono wl-spark-zero", text: "0" }));
+  }
   return wrap;
 }
 
@@ -482,9 +493,8 @@ function wlNicFacts(r) {
   const mgmt = local ? wlCfg("mgmt_iface") : "";
   const capture = (local ? wlCfg("zeek_iface") : "")
     || String(r.iface || (r.plan && r.plan.iface) || "");
-  const segment = local
-    ? (wlCfg("intercept_segment") || r.segment || r.reported_segment)
-    : (r.segment || (r.plan && r.plan.segment) || r.reported_segment || "");
+  const segment = (r.plan && r.plan.segment) || (local ? wlCfg("intercept_segment") : "")
+    || r.segment || r.reported_segment || "";
   const mode = String(r.reported_mode || r.expected_mode || "").toLowerCase();
   // MANAGEMENT IS NOT A CAPTURE NIC (operator, 2026-10-19): it is excluded from this list,
   // not hidden with a dash. Every remaining interface gets its own line in the sensor's row.
@@ -505,20 +515,40 @@ function wlNicRows(r) {
   const facts = wlNicFacts(r);
   return facts.rows.map((n) => {
     const capture = n.role === "capture";
-    return el("tr", { class: "wl-nic-row" }, [
+    const row = el("tr", { class: "wl-nic-row clickable" }, [
       el("td", {}, [
         el("span", { class: "mono wl-nic-name", text: n.name }),
         el("span", { class: "muted", text: ` ${n.role}` }),
       ]),
-      el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—" }),
+      el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
+                 attrs: { title: n.mode
+                   ? (String(r.expected_mode || "").toLowerCase()
+                      && String(r.expected_mode).toLowerCase() !== n.mode
+                        ? `the sensor reports ${n.mode}; the registry declares ${String(r.expected_mode).toLowerCase()}`
+                        : "the mode the sensor reports running")
+                   : "the sensor has not reported a mode" } }),
       el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
                  attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
-      el("td", {}, [capture ? wlSparkline(r) : el("span", { class: "muted", text: "\u2014" })]),
+      (() => {
+        const cell = el("td", { class: "wl-flow-cell" }, [capture ? wlSparkline(r)
+          : el("span", { class: "muted", text: "\u2014" })]);
+        if (capture && typeof discoverDrill === "function") {
+          cell.classList.add("clickable");
+          cell.title = "open this sensor's flows in Discover";
+          cell.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            discoverDrill({ sensor: r.sensor_id });
+          });
+        }
+        return cell;
+      })(),
       el("td", {}, [capture
         ? el("span", { class: "wl-feeds" }, [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])
         : el("span", { class: "muted", text: "\u2014" })]),
     ]);
+    row.addEventListener("click", () => openWeirling(r.sensor_id, { nic: n.name }));
+    return row;
   });
 }
 
@@ -566,113 +596,31 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // issues, and the problem dot's title carries the first sentence.
     const tr = el("tr", { class: `wl-state-${r.state || "unknown"} clickable` +
                                  (r.is_problem ? " row-problem" : "") });
+    // THE SENSOR ROW IS THE SENSOR'S OWN MENU (operator, 2026-10-19): enable, disable,
+    // delete, or adopt -- nothing else. Settings belong to a NIC line.
     tr.addEventListener("click", () => {
-      if (typeof openWeirling === "function") openWeirling(r.sensor_id);
+      if (typeof openSensorActions === "function") openSensorActions(r);
     });
 
-    // 1) WEIRLING -- the name is the open affordance; the checkbox is the worklist's.
     tr.appendChild(el("td", {}, [
-      el("input", {
-        class: "wl-sel",
-        attrs: { type: "checkbox", "data-id": r.sensor_id,
-                 title: "select for bulk actions",
-                 "aria-label": `select ${r.sensor_id}` },
-        on: {
-          // SELECTING IS NOT OPENING (operator, 2026-10-18). The row's own click opens the
-          // drill-down; without this the checkbox did BOTH -- it selected the row and opened a
-          // sheet over the list -- so the one control meant to be a quiet selection behaved
-          // like a link.
-          click: (ev) => ev.stopPropagation(),
-          change: (ev) => {
-            if (ev.target.checked) WL_SELECTED.add(r.sensor_id);
-            else WL_SELECTED.delete(r.sensor_id);
-            wlRenderBulk();
-          },
-        },
-      }),
       el("button", {
         class: "link",
         text: r.sensor_id,
-        attrs: { title: "open this sensor" },
-        on: { click: (ev) => { ev.stopPropagation(); openWeirling(r.sensor_id); } },
+        attrs: { title: "open this sensor's actions" },
+        on: { click: (ev) => { ev.stopPropagation(); openSensorActions(r); } },
       }),
       r.is_problem
         ? el("span", { class: "wl-problem-dot",
             attrs: { title: (r.findings || [])[0] || "needs attention",
                      "aria-label": "needs attention" } })
         : null,
-      // ONE-CLICK ADOPTION stays in the row: a sensor the hub can hear but nobody declared
-      // offers the one action it needs, and only while that is true.
-      !r.registered
-        ? el("button", {
-            class: "link wl-adopt",
-            text: "Adopt",
-            attrs: { title: "adopt this sensor: declare it, from its own reports" },
-            on: { click: (ev) => { ev.stopPropagation(); adoptWeirling(r, ev.target); } },
-          })
-        : null,
     ].filter(Boolean)));
-    if (WL_SELECTED.has(r.sensor_id)) {
-      const cb = tr.querySelector("input.wl-sel");
-      if (cb) cb.checked = true;
-    }
 
-    // 2) MODE -- the word the sensor reports, and NOTHING ELSE. The declaration rides in the
-    // title when it disagrees: "siphon declared loch" in the cell read as one value, and the
-    // operator asked for the two facts to stop sharing a column (2026-10-19).
-    const reported = String(r.reported_mode || "").toLowerCase();
-    const declared = String(r.expected_mode || "").toLowerCase();
-    tr.appendChild(el("td", {}, [
-      el("span", { class: "mono" + (reported ? "" : " muted"),
-                   text: reported || "—",
-                   attrs: { title: reported
-                     ? (declared && declared !== reported
-                        ? `the sensor reports ${reported}; the registry declares ${declared}`
-                        : "the mode the sensor reports running")
-                     : "the sensor has not reported a mode" } }),
-    ]));
-
-    // 2b) CHANNEL -- the in-path channel's EVIDENCE, not the configured mode. Measured live
-    // 2026-10-19: mode siphon with zero mappings and no flows for 24h; the mode alone made the
-    // row look like a working path.
-    const chan = r.channel || {};
-    tr.appendChild(el("td", {}, [
-      el("span", { class: "mono " + (chan.state === "enabled" ? "" : "muted"),
-                   text: chan.state || "—",
-                   attrs: { title: chan.why || "whether the in-path channel is forwarding" } }),
-    ]));
-
-    // 3) NETWORKS -- the subnet with CIDR: the plan's segment, else the declaration, else the
-    // sensor's own report, and an explicit "no segment declared" rather than a blank.
-    const plan = r.plan || {};
-    const cidr = String(plan.segment || r.segment || r.reported_segment || "").trim();
-    tr.appendChild(el("td", {}, [
-      el("span", { class: "mono" + (cidr ? "" : " muted"),
-                   text: cidr || "— no segment declared",
-                   attrs: { title: cidr ? "the subnet this weirling captures"
-                                        : "no plan, declaration or report carries a CIDR" } }),
-    ]));
-
-    // 4) FLOW -- the last hour as a sparkline (see wlSparkline for the empty contract).
-    // The trend IS the pivot to this sensor's flows: a chart you cannot open is a picture of
-    // a fact you cannot act on, and the sheet is change-only, so the pivot lives here.
-    const flowCell = el("td", { class: "wl-flow-cell" }, [wlSparkline(r)]);
-    if (typeof discoverDrill === "function") {
-      flowCell.classList.add("clickable");
-      flowCell.title = "open this sensor's flows in Discover";
-      flowCell.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        discoverDrill({ sensor: r.sensor_id });
-      });
-    }
-    tr.appendChild(flowCell);
-
-    // 5) FEEDS -- netflow and zeek, still their own indicators, in one column (operator,
-    // 2026-10-19: "Combine the table column netflow and zeek into feeds. leave the netflow
-    // and zeek indicators the same thought.").
-    tr.appendChild(el("td", { class: "wl-feeds" }, [
-      wlTap("netflow", r.netflow), wlTap("zeek", r.zeek),
-    ]));
+    // THE SENSOR ROW CARRIES THE NAME, NOT THE FACTS (operator, 2026-10-19: "the row with the
+    // sensor name should not have filled in columns, on the nics"). Mode, channel, networks,
+    // flow and feeds belong to each NIC line below; repeating them here put two versions of
+    // the same fact in one row.
+    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "5" } }));
 
     tbody.appendChild(tr);
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
@@ -732,7 +680,120 @@ function closeWeirling() {
   closeSheet(card);
 }
 
-async function openWeirling(sensorId) {
+// ── the sensor's own actions ────────────────────────────────────────────────────────────────
+// THE SENSOR ROW IS A MENU, NOT A SETTINGS FORM (operator, 2026-10-19): enable, disable,
+// delete, or adopt. Settings live on the NIC lines. Kept as its own sheet so the two jobs
+// cannot be confused by a shared close button or a stray field.
+let WL_ACTION_ROW = null;
+let WL_SENSOR_CARD = null;
+
+function wlSensorCard() {
+  if (WL_SENSOR_CARD && document.body.contains(WL_SENSOR_CARD)) return WL_SENSOR_CARD;
+  const card = el("div", { class: "sheet hidden",
+    attrs: { id: "wl-sensor-card", role: "dialog", "aria-modal": "true",
+             "aria-labelledby": "wl-sensor-title" } }, [
+    el("div", { class: "sheet-head" }, [
+      el("h2", { attrs: { id: "wl-sensor-title" }, text: "Sensor" }),
+      el("button", { class: "quiet sheet-close", text: "Close",
+        attrs: { type: "button", id: "wl-sensor-close" } }),
+    ]),
+    el("p", { class: "muted", attrs: { id: "wl-sensor-state" }, text: "" }),
+    el("p", { class: "muted", attrs: { id: "wl-sensor-note" }, text: "" }),
+    el("div", { class: "sheet-actions" }, [
+      el("button", { class: "quiet", attrs: { type: "button", id: "wl-sensor-adopt" },
+        text: "Adopt", on: { click: () => wlSensorAdopt() } }),
+      el("button", { class: "quiet", attrs: { type: "button", id: "wl-sensor-enable" },
+        text: "Enable", on: { click: () => wlSensorEnable(true) } }),
+      el("button", { class: "quiet", attrs: { type: "button", id: "wl-sensor-disable" },
+        text: "Disable", on: { click: () => wlSensorEnable(false) } }),
+      el("button", { class: "danger", attrs: { type: "button", id: "wl-sensor-delete" },
+        text: "Delete", on: { click: () => wlSensorDelete() } }),
+    ]),
+  ]);
+  document.body.appendChild(card);
+  if (typeof wireSheet === "function") wireSheet(card, { scrimId: "wl-sensor-scrim" });
+  WL_SENSOR_CARD = card;
+  return card;
+}
+
+function openSensorActions(r) {
+  if (!r) return;
+  WL_ACTION_ROW = r;
+  const card = wlSensorCard();
+  document.getElementById("wl-sensor-title").textContent = r.sensor_id;
+  document.getElementById("wl-sensor-state").textContent =
+    `${r.state || "unknown"} · ${r.registered ? (r.enabled ? "enabled" : "disabled") : "not adopted"}`
+    + (r.is_problem ? " · needs attention" : "");
+  document.getElementById("wl-sensor-note").textContent = "";
+  const show = (id, on) => {
+    const b = document.getElementById(id);
+    if (b) b.classList.toggle("hidden", !on);
+  };
+  show("wl-sensor-adopt", !r.registered);
+  show("wl-sensor-enable", Boolean(r.registered && !r.enabled));
+  show("wl-sensor-disable", Boolean(r.registered && r.enabled));
+  show("wl-sensor-delete", Boolean(r.registered));
+  openSheet(card, { scrimId: "wl-sensor-scrim", initialFocus: "wl-sensor-close" });
+}
+
+async function wlSensorEnable(enabled) {
+  const r = WL_ACTION_ROW;
+  if (!r) return;
+  const note = document.getElementById("wl-sensor-note");
+  note.textContent = enabled ? "enabling…" : "disabling…";
+  try {
+    const d = await postJSON("/api/weirlings/enable", { sensor_id: r.sensor_id, enabled });
+    if (!d || d.ok !== true) throw new Error((d && d.error) || "the server refused");
+    closeSheet(WL_SENSOR_CARD);
+    await loadWeirlings();
+  } catch (err) {
+    note.textContent = `Could not ${enabled ? "enable" : "disable"}: ${err && err.message ? err.message : err}`;
+  }
+}
+
+async function wlSensorAdopt() {
+  const r = WL_ACTION_ROW;
+  if (!r) return;
+  // The sheet's Adopt is ONE action that lands on the existing registration path: close this
+  // menu, open the sensor's sheet, and press its own Adopt. That keeps the observed-identity
+  // fill and the "Registered ..." outcome in the one place that already proves them.
+  closeSheet(WL_SENSOR_CARD);
+  await openWeirling(r.sensor_id);
+  const btn = document.getElementById("wl-detail-register");
+  if (!btn) {
+    document.getElementById("wl-detail-note").textContent =
+      "This sensor cannot be adopted from here; open it from the fleet.";
+    return;
+  }
+  btn.click();
+}
+
+async function wlSensorDelete() {
+  const r = WL_ACTION_ROW;
+  if (!r) return;
+  if (typeof confirmDestructive !== "function") return;
+  const verdict = await confirmDestructive({
+    title: `Delete ${r.sensor_id}: the hub stops expecting it.`,
+    target: r.sensor_id,
+    blast: "its heartbeats stop being raised as missing; the record stays readable and it can "
+           + "be registered again later",
+    reasonHint: "why this sensor is being retired",
+  });
+  if (!verdict.ok) return;
+  const note = document.getElementById("wl-sensor-note");
+  note.textContent = "deleting…";
+  try {
+    const d = await postJSON("/api/weirlings/revoke",
+                             { sensor_id: r.sensor_id, reason: verdict.reason });
+    if (!d || d.ok !== true) throw new Error((d && d.error) || "the server refused");
+    closeSheet(WL_SENSOR_CARD);
+    await loadWeirlings();
+  } catch (err) {
+    note.textContent = `Could not delete: ${err && err.message ? err.message : err}`;
+  }
+}
+
+async function openWeirling(sensorId, opts = {}) {
   // US-2: the sheet lives on THIS view, and callers now arrive from other views (a sluice
   // gate's sensor, the palette, an audit fix). A sheet opened onto an inactive view is an
   // invisible dead end; ensure the view first, for every caller.
@@ -785,9 +846,11 @@ async function openWeirling(sensorId) {
   // no observed flows -- the exact contradiction the operator reported.
   const listRow = (window.__wlRows || []).find((x) => x.sensor_id === sensorId);
   const r = listRow ? Object.assign({}, d.sensor, {
+    sensor_id: listRow.sensor_id || sensorId,
     channel: listRow.channel, netflow: listRow.netflow, zeek: listRow.zeek,
     flow_series: listRow.flow_series, mappings: listRow.mappings, running: listRow.running,
   }) : d.sensor;
+  r.sensor_id = r.sensor_id || sensorId;   // the detail payload must never lose its identity
   wlDetail = r;
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   body.replaceChildren();
@@ -827,6 +890,23 @@ async function openWeirling(sensorId) {
     planBox.classList.toggle("hidden", !showPlan);
     if (showPlan) wlRenderPlan(r);
     else { WL_PLAN.sensor_id = ""; WL_PLAN.changes = {}; WL_PLAN.survey = null; }
+    // A NIC ROW OPENS THE SETTINGS FOR THAT NIC (operator, 2026-10-19). The plan's interface
+    // field is where a NIC becomes actionable, so focus it on the NIC the operator clicked;
+    // the rest of the sheet is unchanged.
+    if (opts.nic) {
+      const ifaceInput = document.getElementById("wl-plan-iface");
+      if (ifaceInput) {
+        ifaceInput.value = opts.nic;
+        ifaceInput.focus();
+      }
+      let nicNote = document.getElementById("wl-nic-edit");
+      if (!nicNote) {
+        nicNote = el("p", { class: "muted", attrs: { id: "wl-nic-edit" } });
+        const body = document.getElementById("wl-detail-body");
+        if (body) body.prepend(nicNote);
+      }
+      nicNote.textContent = `editing NIC ${opts.nic}`;
+    }
   }
 
   // WL-2: THE SHEET IS FOR CHANGES. One situation line explains what is being changed (a

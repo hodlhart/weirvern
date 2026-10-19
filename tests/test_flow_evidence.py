@@ -80,10 +80,9 @@ def test_the_payload_attaches_evidence_and_remote_zeek_is_unknown():
 
 def test_the_row_is_a_scan_line_not_a_fact_dump():
     src = (WEB / "weirlings.js").read_text()
-    seg = src.split("function renderWeirlings(", 1)[1].split("// Revoked registrations", 1)[0]
+    seg = src.split("function wlNicFacts(", 1)[1].split("function wlNicRows(", 1)[0]
+    seg += src.split("function wlNicRows(", 1)[1].split("function renderWeirlings(", 1)[0]
     assert 'wlTap("netflow"' in seg and 'wlTap("zeek"' in seg
     assert "wlSparkline(r)" in seg
-    assert "plan.segment || r.segment || r.reported_segment" in seg
-    assert "r.findings" not in seg.split("wl-problem-dot", 1)[1].split("filter(Boolean)", 1)[0] \
-        or True   # findings may ride the dot's TITLE only; prose is checked below
+    assert "(r.plan && r.plan.segment)" in seg and "r.reported_segment" in seg
     assert "el(\"li\", { text: f }" not in seg, "findings prose came back into the list"

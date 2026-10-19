@@ -2008,12 +2008,14 @@ async function loadAnomalies() {
           if (i < arr.length - 1) parts.push(el("span", { text: ", " }));
           return parts;
         })),
-      // THE CONTRACT'S OWNER + MATCHED RULE (BF-12), derived server-side from the same
-      // registry the pager reads.
-      el("td", { class: a.owner ? "" : "muted", text: a.owner || "unowned",
-                 attrs: { title: a.owner
-                   ? `the ${a.owner} team owns this detector`
-                   : "no owner registered: this detector cannot page anyone" } }),
+      // WHERE IT HAPPENED (operator, 2026-10-19: "replace owner with location: weirling
+      // name and network"). The server resolves it from the fleet's declared segments; a host
+      // outside every segment says "unplaced" rather than naming a sensor that cannot see it.
+      el("td", { class: a.location ? "mono" : "muted",
+                 text: a.location ? `${a.location.weirling} · ${a.location.network}` : "unplaced",
+                 attrs: { title: a.location
+                   ? `${a.location.weirling} sees ${a.location.network}, which contains this host`
+                   : "no weirling declares a network containing this address" } }),
       el("td", { class: "muted", text: a.matched_rule || "—",
                  attrs: { title: "what matched, from the detector registry" } }),
       el("td", {}, [
@@ -2243,20 +2245,231 @@ async function loadHost(addr, hours) {
   }
 }
 
+const HP_BACK = document.getElementById("hp-back");
+if (HP_BACK) {
+  HP_BACK.addEventListener("click", () => {
+    if (HOST_RETURN && HOST_RETURN.pending && HOST_RETURN.view) {
+      returnWithScroll(HOST_RETURN.view, HOST_RETURN.scroll);
+    } else {
+      showView("assets");
+    }
+  });
+}
+
 function openHost(addr) {
   if (!addr) return;
-  if (CURRENT_VIEW && CURRENT_VIEW !== "assets") {
-    // US-6: remember where the jump started -- the labeled way back needs it, and so does the
-    // scroll restore. A host->host hop (a destination cell on the drill) is not a journey.
+  if (CURRENT_VIEW && CURRENT_VIEW !== "assets" && CURRENT_VIEW !== "host") {
+    // Remember where the jump started -- the labeled way back needs it, and so does the scroll.
     HOST_RETURN = { pending: true, view: CURRENT_VIEW, scroll: Number(window.scrollY || 0) };
   } else {
+    // A fresh lookup is not a journey; the way back is the Assets tab itself.
     HOST_RETURN.pending = false;
   }
-  showView("assets");
-  document.getElementById("h-addr").value = addr;
-  // US-6: the GLOBAL time window, not a hardcoded 24h -- a drill must answer the question the
-  // operator already asked (the audit: "window = global range").
+  showView("host");
+  // The legacy drill-down still renders (its DOM lives in Assets) so every existing pivot and
+  // test that reads it keeps working while the new page is the surface an operator sees.
   loadHost(addr, String(trHours())).catch(showError);
+  loadHostPage(addr).catch(showError);
+}
+
+/* ── THE HOST PAGE (operator, 2026-10-19) ──────────────────────────────────────────────────
+ * One address per page: who it is, what it talked to, and the four evidence families the
+ * operator named -- network connections, NetFlow, DNS, Zeek -- each with its own panel. The
+ * Assets tab is an inventory; this is the investigation surface an alert's host click needs.
+ */
+let HP_ADDR = "";
+
+async function loadHostPage(addr) {
+  HP_ADDR = String(addr || "").trim();
+  const hostView = document.getElementById("view-host");
+  if (hostView) hostView.dataset.addr = HP_ADDR;
+  const title = document.getElementById("hp-title");
+  const sub = document.getElementById("hp-sub");
+  if (!HP_ADDR) return;
+  if (title) title.textContent = HP_ADDR;
+  if (sub) sub.textContent = "loading…";
+  const hours = String(trHours());
+  let d;
+  try {
+    d = await getJSON(`/api/host?addr=${encodeURIComponent(HP_ADDR)}&hours=${encodeURIComponent(hours)}`);
+  } catch (err) {
+    if (sub) sub.textContent = `could not read this host: ${err && err.message ? err.message : err}`;
+    return;
+  }
+  if (sub) sub.textContent = `${d.hostname || "no name observed"} · last ${hours}h`;
+  document.getElementById("h-addr").value = HP_ADDR;
+
+  const tot = d.totals || {};
+  const stats = document.getElementById("hp-stats");
+  if (stats) {
+    stats.replaceChildren();
+    const cells = [
+      ["bytes", fmtBytes(tot.bytes || 0)],
+      ["flows", String(tot.flows || 0)],
+      ["destinations", String(tot.unique_destinations || 0)],
+      ["ports", String(tot.unique_ports || 0)],
+      ["last seen", tot.last_seen ? fmtTime(tot.last_seen) : "—"],
+    ];
+    for (const [k, v] of cells) {
+      stats.appendChild(el("div", { class: "stat" }, [
+        el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
+      ]));
+    }
+  }
+  hpRenderGraph(d.top_destinations || []);
+  hpRenderFlow(d.timeline || []);
+  hpRenderDns(d.dns_queries || []);
+  hpRenderZeek(d.zeek_services || []);
+  hpRenderDests(d.top_destinations || []);
+  hpRenderAnoms(d.anomalies || []);
+}
+
+function hpRenderGraph(dests) {
+  const box = document.getElementById("hp-graph");
+  if (!box) return;
+  box.replaceChildren();
+  const list = (dests || []).slice(0, 12);
+  if (!list.length) {
+    box.appendChild(el("p", { class: "muted", text: "No conversations observed for this host in the window." }));
+    return;
+  }
+  const NS = "http://www.w3.org/2000/svg";
+  const w = 640, h = 300, cx = w / 2, cy = h / 2;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "hp-network");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `connections from ${HP_ADDR} to ${list.length} peers`);
+  const maxB = Math.max(1, ...list.map((x) => Number(x.bytes) || 0));
+  list.forEach((dst, i) => {
+    const ang = (Math.PI * 2 * i) / list.length - Math.PI / 2;
+    const x = cx + Math.cos(ang) * 190, y = cy + Math.sin(ang) * 120;
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", cx); line.setAttribute("y1", cy);
+    line.setAttribute("x2", x); line.setAttribute("y2", y);
+    line.setAttribute("stroke", "var(--border)");
+    line.setAttribute("stroke-width", String(1 + 4 * (Number(dst.bytes) || 0) / maxB));
+    svg.appendChild(line);
+    const node = document.createElementNS(NS, "circle");
+    node.setAttribute("cx", x); node.setAttribute("cy", y);
+    node.setAttribute("r", String(4 + 8 * (Number(dst.bytes) || 0) / maxB));
+    node.setAttribute("class", "hp-node");
+    const ttl = document.createElementNS(NS, "title");
+    ttl.textContent = `${dst.dst_addr}${dst.hostname ? " (" + dst.hostname + ")" : ""} — ${fmtBytes(dst.bytes || 0)}, ${dst.flows || 0} flows`;
+    node.appendChild(ttl);
+    svg.appendChild(node);
+    const label = document.createElementNS(NS, "text");
+    label.setAttribute("x", String(x + (x >= cx ? 10 : -10)));
+    label.setAttribute("y", String(y + 4));
+    label.setAttribute("text-anchor", x >= cx ? "start" : "end");
+    label.setAttribute("class", "hp-label");
+    label.textContent = dst.hostname || dst.dst_addr;
+    svg.appendChild(label);
+  });
+  const center = document.createElementNS(NS, "circle");
+  center.setAttribute("cx", cx); center.setAttribute("cy", cy); center.setAttribute("r", "12");
+  center.setAttribute("class", "hp-center");
+  svg.appendChild(center);
+  const clabel = document.createElementNS(NS, "text");
+  clabel.setAttribute("x", cx); clabel.setAttribute("y", cy + 28);
+  clabel.setAttribute("text-anchor", "middle");
+  clabel.setAttribute("class", "hp-label");
+  clabel.textContent = HP_ADDR;
+  svg.appendChild(clabel);
+  box.appendChild(svg);
+}
+
+function hpRenderFlow(timeline) {
+  const box = document.getElementById("hp-flow");
+  if (!box) return;
+  box.replaceChildren();
+  const rows = timeline || [];
+  if (!rows.length) {
+    box.appendChild(el("p", { class: "muted", text: "No NetFlow records for this host in the window." }));
+    return;
+  }
+  const max = Math.max(1, ...rows.map((r) => Number(r.bytes) || 0));
+  const bars = el("div", { class: "hp-bar-row" });
+  for (const r of rows) {
+    const v = Number(r.bytes) || 0;
+    bars.appendChild(el("div", {
+      class: "hp-bar" + (v ? "" : " zero"),
+      attrs: { title: `${r.hour} — ${fmtBytes(v)}, ${r.flows || 0} flows`,
+               style: `height:${Math.max(2, Math.round((v / max) * 100))}%` },
+    }));
+  }
+  box.appendChild(bars);
+}
+
+function hpRenderDns(queries) {
+  const body = document.querySelector("#hp-dns tbody");
+  if (!body) return;
+  body.replaceChildren();
+  if (!queries.length) {
+    emptyRow(body, 4, "No DNS queries observed for this host in the window.");
+    return;
+  }
+  for (const q of queries) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: q.query || "—" }),
+      el("td", { class: "mono", text: q.qtype || "—" }),
+      el("td", { class: "num", text: String(q.asks || 0) }),
+      el("td", { class: "num", text: String(q.resolvers || 0) }),
+    ]));
+  }
+}
+
+function hpRenderZeek(services) {
+  const body = document.querySelector("#hp-zeek tbody");
+  if (!body) return;
+  body.replaceChildren();
+  if (!services.length) {
+    emptyRow(body, 3, "No Zeek sessions observed for this host in the window.");
+    return;
+  }
+  for (const s of services) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: s.service || "—" }),
+      el("td", { class: "num", text: String(s.conns || 0) }),
+      el("td", { class: "num", text: fmtBytes(s.bytes || 0) }),
+    ]));
+  }
+}
+
+function hpRenderDests(dests) {
+  const body = document.querySelector("#hp-dests tbody");
+  if (!body) return;
+  body.replaceChildren();
+  if (!dests.length) {
+    emptyRow(body, 4, "No destinations observed for this host in the window.");
+    return;
+  }
+  for (const x of dests) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: x.dst_addr || "—" }),
+      el("td", { class: "num", text: fmtBytes(x.bytes || 0) }),
+      el("td", { class: "num", text: String(x.flows || 0) }),
+      el("td", { class: "num", text: String(x.ports || 0) }),
+    ]));
+  }
+}
+
+function hpRenderAnoms(anoms) {
+  const body = document.querySelector("#hp-anoms tbody");
+  if (!body) return;
+  body.replaceChildren();
+  if (!anoms.length) {
+    emptyRow(body, 4, "No anomalies recorded for this host in the window.");
+    return;
+  }
+  for (const a of anoms) {
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: fmtTime(a.detected_at) }),
+      el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
+      el("td", {}, [sevCell(a.severity)]),
+      el("td", { text: a.baseline_comparison || "—" }),
+    ]));
+  }
 }
 
 /* ── sending an alert to the Sluice Gate ─────────────────────────────────── */
@@ -3827,6 +4040,17 @@ document.addEventListener("DOMContentLoaded", () => {
     ASSETS_STATE.page = 1;
     renderAssets();
   });
+  // A COLUMN HEADER SORTS (operator, 2026-10-19: inventory review). The select stays for
+  // discoverability; the headers are the fast path an operator reaches for.
+  for (const th of document.querySelectorAll("#as-table th[data-sort]")) {
+    th.addEventListener("click", () => {
+      ASSETS_STATE.sort = th.dataset.sort;
+      ASSETS_STATE.page = 1;
+      const sel = document.getElementById("as-sort");
+      if (sel) sel.value = ASSETS_STATE.sort;
+      renderAssets();
+    });
+  }
   const asScope = document.getElementById("as-scope");
   if (asScope) asScope.addEventListener("change", (e) => {
     window.NET_SCOPE = e.target.value;
@@ -5101,7 +5325,13 @@ function syncURL() {
   if (typeof NF_FILTERS !== "undefined") {
     for (const f of NF_FILTERS) p.append("nf", f.field + ":" + f.value);
   }
-  if (typeof wlDetail !== "undefined" && wlDetail) {
+  // `wl` IS A WEIRLINGS DEEP LINK, NOT GLOBAL STATE (operator, 2026-10-19: why does an
+  // anomalies URL carry wl=weirvern-eth2?). It used to be written whenever a weirling sheet had
+  // ever been opened, so the parameter survived a tab switch and then FORCED the next reload
+  // back to Weirlings. Emit it only while that sheet is actually open on its own view.
+  const wlCard = document.getElementById("wl-detail-card");
+  if (viewForURL === "weirlings" && typeof wlDetail !== "undefined" && wlDetail
+      && wlCard && !wlCard.classList.contains("hidden")) {
     p.set("wl", String(wlDetail.sensor_id || ""));
   }
   if (typeof WL_FILTERS !== "undefined" && WL_FILTERS.state) p.set("wl.f", WL_FILTERS.state);
@@ -5216,8 +5446,9 @@ function applyURLState() {
   for (const id of ["dn-qtype", "dn-rcode", "dn-domain", "dn-client"]) {
     if (p.get(id.replace("dn-", "dn."))) dv(id, p.get(id.replace("dn-", "dn.")));
   }
-  if (p.get("wl")) {
-    showView("weirlings");
+  if (p.get("wl") && v === "weirlings") {
+    // Only a Weirlings URL may open a sensor; a stray wl= on another view is ignored rather
+    // than hijacking the view the operator asked for.
     PENDING_WL = p.get("wl");
     if (typeof WL_FILTERS !== "undefined") {
       WL_FILTERS.state = p.get("wl.f") || "";
