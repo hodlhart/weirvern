@@ -2037,7 +2037,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       mbFirst.click();
       await new Promise((r) => setTimeout(r, 220));
       check("a baselined host opens its host view in one click",
-            doc.getElementById("view-assets").classList.contains("active"));
+            doc.getElementById("view-host").classList.contains("active"));
       H.showView("models");
       await new Promise((r) => setTimeout(r, 120));
     }
@@ -4278,8 +4278,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       if (ipRows[0]) ipRows[0].click();
       await sleep(450);
       check("...activating it lands on the host's view with the address loaded",
-            doc.getElementById("view-assets").classList.contains("active")
-            && doc.getElementById("h-addr").value === "198.51.100.5",
+            doc.getElementById("view-host").classList.contains("active")
+            && (doc.getElementById("hp-title").textContent || "") === "198.51.100.5",
             `addr=${doc.getElementById("h-addr").value}`);
       // 3) A DOMAIN IS ITS DNS RECORDS.
       openPal();
@@ -4441,11 +4441,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           views.join(","));
     check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
 
-    // QA-1-D4: the inventory is `assets` in the URL, the DOM and the label -- one name. Old
-    // `#v=host` links still land there instead of a blank page.
+    // HOST IS ITS OWN SURFACE (operator, 2026-10-19): an old #v=host link lands on the host
+    // page, not back on the inventory.
     H.showView("host");
-    check("an old #v=host link still lands on the inventory",
-          doc.getElementById("view-assets").classList.contains("active"), H.CURRENT_VIEW);
+    check("an old #v=host link lands on the host view",
+          doc.getElementById("view-host").classList.contains("active"), H.CURRENT_VIEW);
     H.showView("assets");
     const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
     check("...one row: the strip is nowrap and scrolls rather than wrapping",
@@ -6184,7 +6184,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (hostCellEl) {
       hostCellEl.click();
       await sleep(220);
-      check("...and it opens the Host view", doc.getElementById("view-assets").classList.contains("active"));
+      check("...and it opens the Host view", doc.getElementById("view-host").classList.contains("active"));
     }
     // 2. a netflow talker -> its host (was: filter-only, the audit's runner-up)
     fetchOverride = (u) => (String(u).includes("/api/netflow")
@@ -6202,7 +6202,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       tkBar.click();
       await sleep(220);
       check("a talker opens its host, not just a filter",
-            doc.getElementById("view-assets").classList.contains("active"));
+            doc.getElementById("view-host").classList.contains("active"));
     }
     fetchOverride = null;
     // 3. a Discover Zeek log row -> that log's drill in the Zeek view
@@ -6277,7 +6277,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (idHost) {
       idHost.click();
       await sleep(220);
-      check("...and the host cell opens the Host view", doc.getElementById("view-assets").classList.contains("active"));
+      check("...and the host cell opens the Host view", doc.getElementById("view-host").classList.contains("active"));
     }
     H.showView("identity");
     await H.loadIdentity();
@@ -6436,7 +6436,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       doc.getElementById("id-detail-open").click();
       await sleep(220);
       check("...and 'Open host view' lands on the host's view",
-            doc.getElementById("view-assets").classList.contains("active"));
+            doc.getElementById("view-host").classList.contains("active"));
     }
     // 4. the post-block receipt keeps the id and lands on the rule.
     H.showView("anomalies");
@@ -6834,7 +6834,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(320);
     }
     check("JOB find-and-inspect: ONE click from the row to the host's traffic",
-          clicks === 1 && doc.getElementById("view-assets").classList.contains("active")
+          clicks === 1 && doc.getElementById("view-host").classList.contains("active")
           && (doc.getElementById("h-stats").textContent || "").length > 0,
           `clicks=${clicks} stats=${(doc.getElementById("h-stats").textContent || "").slice(0, 40)}`);
     note("find-and-inspect", "understand", clicks);
@@ -6938,7 +6938,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(380);
     const hCrumb = [...doc.querySelectorAll("#crumbs .crumb")].slice(-1)[0];
     check("HOST RETURN: the jump lands with the labeled way back",
-          doc.getElementById("view-assets").classList.contains("active")
+          doc.getElementById("view-host").classList.contains("active")
           && !!hCrumb && /Anomalies/.test(hCrumb.textContent),
           hCrumb ? hCrumb.textContent : "no crumb");
     check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
@@ -7289,7 +7289,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         if (dnsBtn) dnsBtn.click();
         await new Promise((r) => setTimeout(r, 120));
         check("...and that button lands on the host view",
-              !!dnsBtn && doc.getElementById("view-assets").classList.contains("active"));
+              !!dnsBtn && doc.getElementById("view-host").classList.contains("active"));
         H.showView("discover");
         feedSel.value = "netflow";
         feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));

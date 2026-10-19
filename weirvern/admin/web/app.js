@@ -2235,7 +2235,7 @@ async function loadHost(addr, hours) {
 
   // US-6: the labeled exit, only for JOURNEYS (openHost) -- a fresh lookup in the box is not
   // somewhere you came from. The label names the DESTINATION, not "back".
-  if (HOST_RETURN.pending && CURRENT_VIEW === "assets") {
+  if (HOST_RETURN.pending && (CURRENT_VIEW === "assets" || CURRENT_VIEW === "host")) {
     HOST_RETURN.pending = false;
     const fromTab = [...document.querySelectorAll(".tab")]
       .find((t) => t.dataset.view === HOST_RETURN.view);
@@ -3686,9 +3686,9 @@ function netScope(addr) {
   return "monitored";
 }
 function showView(name) {
-  // ONE NAME PER SURFACE (QA-1-D4): the inventory's view id is `assets`, matching its label and
-  // its ledger entry. The old `#v=host` links still land here rather than on a blank page.
-  if (name === "host") name = "assets";
+  // HOST IS ITS OWN SURFACE (operator, 2026-10-19). It has no tab (it is reached from a host),
+  // and it must not be folded back into Assets: that was the defect that made an alert's host
+  // click land on the whole inventory.
   // IDENTITY IS PART OF ASSETS NOW (operator, 2026-10-19: "Combine assets and identity").
   // Old links and any palette entry that still says identity land on the combined tab.
   if (name === "identity") name = "assets";

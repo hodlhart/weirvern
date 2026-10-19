@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.13 — 2026-10-19
+
+THE HOST VIEW ACTUALLY OPENS. 0.17.12 added `#view-host` but `showView("host")` still carried the
+old compatibility alias that folded `host` back into `assets` — so the host click landed on the
+inventory again, exactly the defect the page was built to fix. The alias is gone; `#v=host` is
+its own surface, the back crumb is built for it, and the host page's address is `hp-title`.
+Harness expectations that pinned the old alias are updated to the host view.
+
 ## 0.17.12 — 2026-10-19
 
 THE INVESTIGATION PAGE, and the sensor row becomes a menu.
