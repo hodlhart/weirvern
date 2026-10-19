@@ -386,9 +386,24 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 #wl-summary .stat {
   min-width: 108px; padding: 10px 14px; background: var(--panel2);
   border: 1px solid var(--border); border-radius: 10px;
+  /* THE TILES ARE BUTTONS (BF-7) AND MUST NOT INHERIT THE BUTTON BOX (found 2026-10-19).
+     BTN-1 gives every button height: var(--btn-h) -- 28px -- and nowrap. A tile carries a
+     13px label plus a 27px/36px number: 51px of content inside a 28px box, so the digits and
+     the label spilled above and below the rounded pill. The tile sizes itself. */
+  height: auto; white-space: normal;
 }
 #wl-summary .stat .v { font-size: 27px; line-height: 36px; }
 #wl-summary .stat.ok .v { color: var(--ok); }
+/* WL-3: the combined feeds cell and the per-NIC expansion (operator, 2026-10-19). */
+.wl-feeds { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.wl-nics-open { margin-left: 8px; }
+tr.wl-nics > td { background: var(--panel2); padding: 0 0 8px 26px; }
+.wl-nic-wrap { padding: 6px 0 10px; }
+.wl-nic-table { width: 100%; border-collapse: collapse; font-size: var(--fs-1); }
+.wl-nic-table th, .wl-nic-table td {
+  padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border);
+}
+.wl-nic-table th { color: var(--muted); font-weight: 500; }
 #wl-summary .stat.warn .v { color: var(--warn); }
 #wl-summary .stat.bad .v { color: var(--bad); }
 #wl-summary .stat.muted .v { color: var(--muted); }
@@ -482,7 +497,11 @@ tr.sl-picked { background: var(--panel2); }
 tr.an-exp td { background: var(--panel2); }
 .sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 92px;
   padding: 10px 14px; background: var(--surface-2); border: 0;
-  border-radius: 8px; box-shadow: var(--ring); cursor: pointer; text-align: left; color: var(--fg); }
+  border-radius: 8px; box-shadow: var(--ring); cursor: pointer; text-align: left; color: var(--fg);
+  /* SAME DEFECT AS THE FLEET TILES (operator, 2026-10-19: "anomalies has the same issue as
+     weirlings"). These tiles are <button>s, so BTN-1's height: var(--btn-h) = 28px squeezed the
+     13px label + 27px number out of the rounded panel. The panel sizes itself. */
+  height: auto; white-space: normal; }
 .sev-tiles .tile.active { box-shadow: 0 0 0 1px var(--accent); }
 .sev-tiles .tile .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums;

@@ -1169,8 +1169,10 @@ async function loadSettings() {
     }
     modeSel.disabled = !Boolean(data.writes && data.writes.enabled);
   }
-  const total = Object.values(groups).reduce((n, rows) => n + (rows || []).length, 0);
-  if (sum) sum.textContent = `${total} settings in effect`;
+  // NO "N SETTINGS IN EFFECT" (operator, 2026-10-19: "this tells me nothing"). The count was
+  // decoration; the rows themselves are the answer. The element still carries the unavailable
+  // reason above, which is information.
+  if (sum) sum.textContent = "";
 
   for (const key of ["detect", "sensor", "dns", "runtime"]) {
     const host = document.getElementById(`st-${key}`);
@@ -3450,10 +3452,33 @@ function returnWithScroll(view, scroll) {
  * previously unwritable because no tab carried it, so a shared link lost the drill. */
 const TAB_FOR_DRILL = { evidence: "anomalies" };
 let CURRENT_VIEW = "";
+// ONE ASSETS TAB, ONE NETWORK SCOPE (operator, 2026-10-19). "monitored" means a private or
+// link-local address -- the networks this deployment's sensors actually sit on; "external" is
+// a global address. A value that is not an address at all (a MAC, a hostname) is a host on the
+// monitored side by construction: it was learned from that network's own traffic.
+window.NET_SCOPE = "all";
+function netScope(addr) {
+  const a = String(addr || "").split("%")[0].trim().toLowerCase();
+  if (!a) return "monitored";
+  const v4 = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [o1, o2] = [Number(v4[1]), Number(v4[2])];
+    return (o1 === 10 || o1 === 127 || (o1 === 172 && o2 >= 16 && o2 <= 31)
+      || (o1 === 192 && o2 === 168) || (o1 === 169 && o2 === 254)) ? "monitored" : "external";
+  }
+  if (a.includes(":")) {
+    return (a === "::1" || /^f[cd][0-9a-f]{2}:/.test(a) || /^fe[89ab][0-9a-f]:/.test(a))
+      ? "monitored" : "external";
+  }
+  return "monitored";
+}
 function showView(name) {
   // ONE NAME PER SURFACE (QA-1-D4): the inventory's view id is `assets`, matching its label and
   // its ledger entry. The old `#v=host` links still land here rather than on a blank page.
   if (name === "host") name = "assets";
+  // IDENTITY IS PART OF ASSETS NOW (operator, 2026-10-19: "Combine assets and identity").
+  // Old links and any palette entry that still says identity land on the combined tab.
+  if (name === "identity") name = "assets";
   CURRENT_VIEW = name;
   // US-8: the session's last views become palette recents, however they were reached.
   if (typeof paletteNoteView === "function") paletteNoteView(name);
@@ -3492,7 +3517,10 @@ function showView(name) {
   // The Assets inventory loads on demand for the same reason the SOC views do: it runs a
   // query per Zeek host table, and firing that every 15s in the background would put load on
   // ClickHouse for a panel nobody is looking at.
-  if (name === "assets") loadAssets().then(clearError).catch(showError);
+  if (name === "assets") {
+    loadAssets().then(clearError).catch(showError);
+    loadIdentity().then(clearError).catch(showError);
+  }
   if (name === "network") loadNetwork().then(clearError).catch(showError);
   // The SOC views load on demand rather than on every refresh cycle: they run several
   // aggregate queries each, and firing them every 15s in the background would put load on
@@ -3504,10 +3532,6 @@ function showView(name) {
   if (name === "discover") loadDiscover().then(clearError).catch(showError);
   if (name === "dns") loadDns().then(clearError).catch(showError);
   if (name === "blocked") loadBlocked().then(clearError).catch(showError);
-  // Identity also loads on demand: it reads the verdict table plus a coverage aggregation, and
-  // firing that every 15s in the background would query ClickHouse for a panel nobody is looking
-  // at. Same reasoning as the SOC views above.
-  if (name === "identity") loadIdentity().then(clearError).catch(showError);
   // The Sluice Gate loads on demand for the same reason as Identity: it reads two tables and the
   // gate's state row, and firing that in the background every 15s would query ClickHouse for a
   // panel nobody is looking at.
@@ -3802,6 +3826,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // hosts than the one the reader was looking at.
     ASSETS_STATE.page = 1;
     renderAssets();
+  });
+  const asScope = document.getElementById("as-scope");
+  if (asScope) asScope.addEventListener("change", (e) => {
+    window.NET_SCOPE = e.target.value;
+    ASSETS_STATE.page = 1;
+    renderAssets();
+    // The identity table is filtered by the same value; re-read it so the two panels cannot
+    // disagree about which network is on screen.
+    if (typeof loadIdentity === "function") loadIdentity().catch(showError);
   });
   // ── Network graph controls ─────────────────────────────────────────────────
   const nwClear = document.getElementById("nw-clear");
@@ -4785,6 +4818,7 @@ function idSetFilter(field, value) {
 }
 
 function idKeep(h) {
+  if (window.NET_SCOPE !== "all" && netScope(h.host || h.addr) !== window.NET_SCOPE) return false;
   if (ID_FILTERS.os && String(h.os_label || h.os || "unknown") !== ID_FILTERS.os) return false;
   if (ID_FILTERS.confidence && String(h.confidence || "") !== ID_FILTERS.confidence) return false;
   return true;

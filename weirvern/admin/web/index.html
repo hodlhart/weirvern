@@ -137,7 +137,6 @@
   <div class="tab-group" data-group="operations">
     <button class="tab active" data-view="health">Health</button>
     <button class="tab" data-view="anomalies">Anomalies</button>
-    <button class="tab" data-view="logs">Logs</button>
   </div>
   <div class="tab-group" data-group="network">
     <button class="tab" data-view="network">Network</button>
@@ -149,7 +148,6 @@
   <div class="tab-group" data-group="security">
     <button class="tab" data-view="sluice">Sluice Gate</button>
     <button class="tab" data-view="blocked">Blocked</button>
-    <button class="tab" data-view="identity">Identity</button>
   </div>
   <div class="tab-group" data-group="fleet">
     <button class="tab" data-view="weirlings">Weirlings</button>
@@ -160,6 +158,10 @@
   </div>
   <div class="tab-group" data-group="console">
     <button class="tab" data-view="settings">Settings</button>
+  </div>
+  <!-- LOGS LAST (operator, 2026-10-19: "move the logs tab to the final spot to the right"). -->
+  <div class="tab-group" data-group="logs">
+    <button class="tab" data-view="logs">Logs</button>
   </div>
 </nav>
 
@@ -479,64 +481,7 @@
 
   <!-- ── Anomalies ────────────────────────────────────────────────────── -->
   <!-- ── Identity: what each host IS, from traffic already seen ─────────── -->
-  <section id="view-identity" class="view">
-    <div class="card">
-      <h2>Passive host identification <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
-      <div class="controls">
-        
-      </div>
-      <!--
-        THE OTHER DIRECTION. The table below answers "what does this host run?"; this row answers
-        "who else presents this stack?" -- the pivot from a fingerprint seen in one alert to
-        every other host that presents it. It reads the raw TLS records, so it works while a
-        fleet is still being identified.
-      -->
-      <div class="controls fp-search">
-        <label>find by JA4 fingerprint
-          <input id="fp-input" type="text" placeholder="t13d1516h2_8daaf6152771_02713d6af862" />
-        </label>
-        <button id="fp-go" type="button">Look up</button>
-        <span class="muted" id="fp-note"></span>
-      </div>
-      <div id="fp-results"></div>
-      <div class="info-text hidden" id="id-info">
-  <p><strong>What it is.</strong> Passive identities: nothing is probed and nothing is sent — every fact here was derived from traffic the weirling already saw.</p>
-  <p><strong>What writes it.</strong> Independent sources agreeing — a banner, a DHCP lease, a NIC vendor, a TLS fingerprint. Confidence counts how many agree; one weak signal is never presented as an answer.</p>
-  <p><strong>Last changed.</strong> Rebuilt as new signals arrive in the window.</p>
-  <p><strong>Where to see it.</strong> Click any host for each signal with its source and weight.</p>
-</div>
 
-    </div>
-
-    <div class="card">
-      <h2>Coverage</h2>
-      <!-- The denominator, not just the numerator. "14 hosts identified" on a 245-host
-           segment is a misleading number, so the fraction is stated. -->
-      <div class="stats" id="id-coverage"></div>
-      <p class="muted" id="id-coverage-note"></p>
-    </div>
-
-    <div class="card">
-      <h2>Hosts <span class="muted" id="id-count"></span> <span id="id-filters"></span></h2>
-      <table id="id-table">
-          <thead>
-            <tr>
-              <th>host</th><th>identity</th><th>confidence</th>
-              <th>sources</th><th>strongest evidence</th><th>last updated</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      <p class="muted" id="id-empty"></p>
-    </div>
-
-    <div class="card hidden" id="id-detail-card">
-      <h2>Evidence for <span class="mono" id="id-detail-host"></span>
-        <button id="id-detail-open" class="quiet" title="open this host's own view">Open host view &rarr;</button>
-        <button id="id-detail-close" class="quiet" title="hide this card">Close</button></h2>
-      <div id="id-detail"></div>
-    </div>
-  </section>
 
   <section id="view-anomalies" class="view">
     <div class="card">
@@ -806,6 +751,15 @@
             <option value="name">by name</option>
           </select>
         </label>
+        <!-- ONE ASSETS TAB, ONE NETWORK SCOPE (operator, 2026-10-19: combine Assets and
+             Identity; look at monitored networks, the external network, or all). -->
+        <label>networks
+          <select id="as-scope">
+            <option value="all" selected>all networks</option>
+            <option value="monitored">monitored networks</option>
+            <option value="external">external network</option>
+          </select>
+        </label>
         
       </div>
       <!-- US-7: the services the inventory actually saw, as chips that filter it in place. -->
@@ -870,6 +824,62 @@
         <h2>Anomalies for this host</h2>
         <table id="h-anoms"><thead><tr><th>Detected</th><th>Score</th><th>Severity</th><th>Models</th><th>Why</th></tr></thead><tbody></tbody></table>
       </div>
+    </div>
+    <div class="card">
+      <h2>Passive host identification <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
+      <div class="controls">
+        
+      </div>
+      <!--
+        THE OTHER DIRECTION. The table below answers "what does this host run?"; this row answers
+        "who else presents this stack?" -- the pivot from a fingerprint seen in one alert to
+        every other host that presents it. It reads the raw TLS records, so it works while a
+        fleet is still being identified.
+      -->
+      <div class="controls fp-search">
+        <label>find by JA4 fingerprint
+          <input id="fp-input" type="text" placeholder="t13d1516h2_8daaf6152771_02713d6af862" />
+        </label>
+        <button id="fp-go" type="button">Look up</button>
+        <span class="muted" id="fp-note"></span>
+      </div>
+      <div id="fp-results"></div>
+      <div class="info-text hidden" id="id-info">
+  <p><strong>What it is.</strong> Passive identities: nothing is probed and nothing is sent — every fact here was derived from traffic the weirling already saw.</p>
+  <p><strong>What writes it.</strong> Independent sources agreeing — a banner, a DHCP lease, a NIC vendor, a TLS fingerprint. Confidence counts how many agree; one weak signal is never presented as an answer.</p>
+  <p><strong>Last changed.</strong> Rebuilt as new signals arrive in the window.</p>
+  <p><strong>Where to see it.</strong> Click any host for each signal with its source and weight.</p>
+</div>
+
+    </div>
+
+    <div class="card">
+      <h2>Coverage</h2>
+      <!-- The denominator, not just the numerator. "14 hosts identified" on a 245-host
+           segment is a misleading number, so the fraction is stated. -->
+      <div class="stats" id="id-coverage"></div>
+      <p class="muted" id="id-coverage-note"></p>
+    </div>
+
+    <div class="card">
+      <h2>Hosts <span class="muted" id="id-count"></span> <span id="id-filters"></span></h2>
+      <table id="id-table">
+          <thead>
+            <tr>
+              <th>host</th><th>identity</th><th>confidence</th>
+              <th>sources</th><th>strongest evidence</th><th>last updated</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      <p class="muted" id="id-empty"></p>
+    </div>
+
+    <div class="card hidden" id="id-detail-card">
+      <h2>Evidence for <span class="mono" id="id-detail-host"></span>
+        <button id="id-detail-open" class="quiet" title="open this host's own view">Open host view &rarr;</button>
+        <button id="id-detail-close" class="quiet" title="hide this card">Close</button></h2>
+      <div id="id-detail"></div>
     </div>
   </section>
 
@@ -959,21 +969,6 @@
     "armed" and "degraded, and here is why" must never look alike.
   -->
   <section id="view-sluice" class="view">
-    <div class="card">
-      <h2>Sluice Gate <button class="info-btn" data-info="sl-info" aria-label="what the gate does and how it fails" aria-expanded="false" title="what the gate does and how it fails">i</button></h2>
-      <div class="info-text hidden" id="sl-info">
-  <p><strong>What it is.</strong> The part of this system that can stop traffic, built to fail open: if its supervisor dies the gate OPENS rather than taking your network down — a tool that drops a production network when it has a bad day is a tool nobody deploys twice.</p>
-  <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
-  <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
-  <p><strong>Where to see it.</strong> The status panel above always says which enforcement path is actually live; the rules are below it.</p>
-</div>
-
-      <!-- THE GATE'S OWN STATE, FIRST AND LARGEST. An operator's first question is "is this
-           actually blocking anything", and the answer is not the rule count. -->
-      <div id="sl-state" class="stat-row"></div>
-      <p id="sl-state-note" class="muted"></p>
-    </div>
-
     <!--
       WHERE THE RULES ARE ENFORCED. One rule store, many gates: the hub and every weirling that sits
       in the path install the same rules on their own segment. A gate that has stopped reporting is
@@ -990,6 +985,17 @@
       </table>
     </div>
 
+    <div class="card">
+      <h2>Sluice Gate <button class="info-btn" data-info="sl-info" aria-label="what the gate does and how it fails" aria-expanded="false" title="what the gate does and how it fails">i</button></h2>
+      <div class="info-text hidden" id="sl-info">
+  <p><strong>What it is.</strong> The part of this system that can stop traffic, built to fail open: if its supervisor dies the gate OPENS rather than taking your network down — a tool that drops a production network when it has a bad day is a tool nobody deploys twice.</p>
+  <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
+  <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
+  <p><strong>Where to see it.</strong> The status panel above always says which enforcement path is actually live; the rules are below it.</p>
+</div>
+
+    </div>
+
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
 
     <!-- THE GATE'S STATE, IN ONE LINE (the operator, 2026-10-18): status first, one control
@@ -1004,9 +1010,6 @@
         <span class="sl-status-item">Domain blocking
           <strong id="sl-dom-state">loading&hellip;</strong></span>
         <span class="muted" id="sl-bc-auto-state"></span>
-        <!-- A DEGRADED GATE NAMES ITSELF WHERE IT IS READ (QA-1-D3): the state word is not the
-             answer, the reason is. -->
-        <span class="hidden" id="sl-gate-detail"></span>
         <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
         <span class="muted" id="sl-bc-note"></span>
       </div>
@@ -1267,8 +1270,8 @@
       <table id="wl-table">
         <thead>
           <tr>
-            <th>weirling</th><th>mode</th><th>networks</th><th>flow</th>
-            <th>netflow</th><th>zeek</th>
+            <th>weirling</th><th>mode</th><th>channel</th><th>networks</th><th>flow</th>
+            <th>feeds</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -1394,7 +1397,7 @@
 
     <div class="card">
       <h2>Settings <span class="muted" id="st-window"></span> <button class="info-btn" data-info="st-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-      <p class="muted" id="st-summary">loading…</p>
+      <p class="muted" id="st-summary"></p>
 <div class="info-text hidden" id="st-info">
   <p><strong>What it is.</strong> The values the running deployment is using, read from the cluster — each shown as the control that changes it, with an i in a circle beside every row explaining what it does and what happens when it moves.</p>
   <p><strong>What writes it.</strong> Operators with admin rights here — staged and then applied; from a shell, <code>weirvern config set</code> on the hub itself.</p>
@@ -1500,20 +1503,6 @@
       <div id="st-dns" class="grid-inline"></div>
     </div>
 
-    <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
-         the blast radius comes from the same code that will perform the write, not from a second
-         copy of the rules in JavaScript. -->
-    <div class="card" id="st-stage-card">
-      <h2>Pending changes <span class="muted" id="st-stage-count"></span></h2>
-      <p class="muted" id="st-stage-note" role="status" aria-live="polite">No changes staged. Edit a value above to stage one.</p>
-      <div id="st-stage-list"></div>
-      <div id="st-apply-results" role="status" aria-live="polite"></div>
-      <div class="controls">
-        <button id="st-stage-apply" class="primary" disabled>Apply changes</button>
-        <button id="st-stage-discard" disabled>Discard</button>
-      </div>
-    </div>
-
     <div class="card">
       <h2>Storage and runtime</h2>
       <div id="st-runtime" class="grid-inline"></div>
@@ -1538,6 +1527,21 @@
         <span id="sl-bl-note" class="muted"></span>
       </div>
     </div>
+
+    <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
+         the blast radius comes from the same code that will perform the write, not from a second
+         copy of the rules in JavaScript. -->
+    <div class="card" id="st-stage-card">
+      <h2>Pending changes <span class="muted" id="st-stage-count"></span></h2>
+      <p class="muted" id="st-stage-note" role="status" aria-live="polite">No changes staged. Edit a value above to stage one.</p>
+      <div id="st-stage-list"></div>
+      <div id="st-apply-results" role="status" aria-live="polite"></div>
+      <div class="controls">
+        <button id="st-stage-apply" class="primary" disabled>Apply changes</button>
+        <button id="st-stage-discard" disabled>Discard</button>
+      </div>
+    </div>
+
 </section>
 </main>
 

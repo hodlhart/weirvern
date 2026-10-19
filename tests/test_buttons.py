@@ -105,6 +105,30 @@ def test_no_button_selector_invents_a_size():
         + "; ".join(offenders))
 
 
+def test_content_sized_button_panels_are_not_squeezed_into_the_button_height():
+    """A tile is a panel that happens to be a button (BF-7, and the severity tiles).
+
+    The base rule gives every button `height: var(--btn-h)` (28px) and `white-space: nowrap`.
+    A tile carries a label and a 27px number -- more than 28px -- so the fixed height pushed
+    the content out of the rounded panel on the live box (fleet tiles, then the severity
+    tiles: "anomalies has the same issue as weirlings"). Every such panel sizes itself.
+    """
+    css = (WEB / "style.css").read_text()
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    base = re.search(r"(?m)^button\s*\{([^}]*)\}", css)
+    assert base and "--btn-h" in base.group(1), "the button base lost its height variable"
+    panels = {
+        "#wl-summary .stat": r"#wl-summary\s+\.stat\s*\{([^}]*)\}",
+        ".sev-tiles .tile": r"\.sev-tiles\s+\.tile\s*\{([^}]*)\}",
+    }
+    for label, pattern in panels.items():
+        rule = re.search(pattern, css)
+        assert rule, f"{label} rule is gone"
+        decls = rule.group(1)
+        assert "height: auto" in decls, f"{label} inherits the 28px button height again"
+        assert "white-space: normal" in decls, f"{label} inherits the button's nowrap"
+
+
 def test_the_old_scales_are_gone():
     html = (WEB / "index.html").read_text()
     js = "\n".join(p.read_text() for p in sorted(WEB.glob("*.js")))

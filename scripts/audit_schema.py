@@ -250,6 +250,9 @@ def main() -> int:
         # WL-2: the segment facts the per-sensor issue findings compare (declared vs observed)
         "segment", "reported_segment", "expected_mode", "capture_loss_pct",
         "packets_recv", "packets_dropped",
+        # WL-3: the capture path and the channel's evidence (web.py reads them to state
+        # whether the in-path channel is forwarding, and the reason when it is not)
+        "reported_mode", "iface", "mappings", "running",
         # the self-audit's own finding records (pipeline_audit -> panic_page)
         "class", "severity", "subject", "detail", "elapsed_s", "fix",
     }

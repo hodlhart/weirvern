@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.17.9 — 2026-10-19
+
+THE OPERATOR'S WALKTHROUGH BATCH. Every item came from reading the live console, and the
+live measurement is quoted where it changed the design.
+
+- **The tiles were taller than their boxes (fleet and severity).** BTN-1 gives every button
+  `height: var(--btn-h)` (28px) and `nowrap`; the fleet summary tiles and the Anomalies severity
+  tiles are buttons that carry a label and a 27px number (51px of content). Measured live: a
+  28px box with the number at y=257.5–293.5 — the digits sat outside the rounded panel. Both
+  tile rules now size from their content. Pins: `tests/test_buttons.py` and the jsdom computed
+  style checks; mutations turn both checks RED.
+- **The fleet table answers the questions an operator actually asks.** Columns are now
+  **weirling · mode · channel · networks · flow · feeds**: mode is only `loch`/`siphon` (a
+  disagreeing declaration is in the title, not the cell), **channel** is the in-path channel's
+  evidence (enabled only when siphon has live mappings; disabled with the reason otherwise),
+  netflow and zeek share **feeds** while keeping their own indicators, and **flow** says
+  `0 flows` when the exporter is known and produced nothing instead of a bare dash. The sheet
+  now separates *configured* from *observed*: measured live, the settings said flow capture was
+  on while the table said no flows for 24h — both true, now both stated.
+- **Each NIC, on demand.** A `NICs (n)` control expands a sub-table: nic · role · mode ·
+  networks · flow · feeds, with roles from the local sensor's settings (management / capture /
+  channel ends) or the remote plan's interface. A fact the agent did not report says so.
+- **The Assets tab now contains Identity.** One tab, both datasets, with a **networks**
+  selector: all networks · monitored networks · external network. "Monitored" is a private or
+  link-local address (the sensor's own side); "external" is global. The filter applies to the
+  inventory and the identity table from one value, so the two panels cannot disagree.
+- **Sluice Gate leads with Enforcing gates.** The state tiles and the cleanup sentence
+  ("these tables are still present after deletion") are gone; the server's reason survives as
+  the state word's tooltip. The gates table is the first thing on the page.
+- **Settings loses the decoration.** The "N settings in effect" line is gone, the DNS group is
+  titled **Reverse DNS**, and Pending changes is the last card on the page.
+- **Logs moved to the far right** of the tab strip.
+- New pins: `tests/test_channel_state.py` (5), harness 838 → 845 (tile heights, channel/feeds,
+  per-NIC expansion, Assets scope, Sluice order). Full pytest green; gate passed.
+
 ## 0.17.8 — 2026-10-19
 
 TWO OPERATOR-FILED IMPROVEMENTS (GitHub #51, #52).

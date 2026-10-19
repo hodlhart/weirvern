@@ -74,13 +74,6 @@
       "module": "blocked.js"
     },
     {
-      "id": "identity",
-      "label": "Identity",
-      "job": "who is this device",
-      "tab": true,
-      "module": "soc.js"
-    },
-    {
       "id": "weirlings",
       "label": "Weirlings",
       "job": "which sensors report, and are they flowing",

@@ -477,6 +477,31 @@ def revoke(reg: Registration, now: datetime | None = None) -> Registration:
     return replace(reg, revoked_at=now or datetime.now(UTC), enabled=False)
 
 
+def channel_state(mode: str, mappings: int, running: bool, fresh: bool) -> dict:
+    """Whether the in-path channel is forwarding, as a word plus its reason.
+
+    MODE IS INTENT; THE CHANNEL IS EVIDENCE. `siphon` in a ConfigMap says the sensor is
+    CONFIGURED to sit in the traffic path; the intercept's own heartbeat (mappings > 0) says
+    traffic is actually crossing it. This deployment measured the difference: mode siphon,
+    mappings 0, Zeek observed -- and no flows for 24h, because the channel was never up.
+    Rendering the configured word alone made the row claim a working path it did not have.
+    """
+    mode = str(mode or "").lower()
+    mappings = int(mappings or 0)
+    if mode != "siphon":
+        return {"state": "disabled", "mappings": 0,
+                "why": "loch is passive: there is no in-path channel"}
+    if not fresh:
+        return {"state": "disabled", "mappings": mappings,
+                "why": "the intercept's heartbeat is stale, so the channel cannot be confirmed"}
+    if mappings <= 0:
+        return {"state": "disabled", "mappings": 0,
+                "why": "siphon is declared but no intercept mappings are live; traffic is not "
+                       "crossing the channel, so flow capture cannot produce records"}
+    return {"state": "enabled", "mappings": mappings,
+            "why": f"the in-path channel is forwarding ({mappings} mappings)"}
+
+
 @dataclass
 class SensorHealth:
     """One row of the fleet view: a registration compared against what the hub has heard."""
@@ -505,6 +530,12 @@ class SensorHealth:
     # THE SENSOR'S OWN NICS, from its heartbeat (its netns view, filtered of software
     # interfaces). Empty means not reported; the reader renders a dash, never a guess.
     interfaces: list[str] = field(default_factory=list)
+    # WHAT THE HEARTBEAT SAYS ABOUT THE CAPTURE PATH. `iface` is the interface the sensor
+    # reports capturing on; `mappings`/`running` are the intercept's own evidence. The fleet
+    # row needs them to answer "is the channel forwarding?" without a second read.
+    iface: str = ""
+    mappings: int = 0
+    running: bool = False
     enabled: bool = True
     registered: bool = False
     age_s: float | None = None
@@ -588,6 +619,9 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         reported_mode=reported_mode,
         plan=(reg.plan if reg else SensorPlan()),
         interfaces=list((newest or {}).get("interfaces") or []),
+        iface=str((newest or {}).get("iface") or ""),
+        mappings=int((newest or {}).get("mappings") or 0),
+        running=bool((newest or {}).get("running") or False),
         enabled=(reg.enabled if reg else False),
         registered=bool(reg is not None),
         age_s=age,

@@ -160,6 +160,12 @@ async function loadWeirlings() {
   noteBox.textContent = bits.join(" ");
 
   // ── the rows
+  // The local sensor's NIC ROLES come from its capture settings, not from a guess. Loaded here,
+  // once per render, so the NIC sub-table can name eth0 as management and eth1 as capture.
+  if ((d.sensors || []).some((r) => r.local) && typeof loadSettings === "function"
+      && !Object.keys(SETTINGS_ROWS || {}).length) {
+    try { await loadSettings(); } catch (_e) { /* the rows still render without config */ }
+  }
   renderWeirlings(d.sensors || [], d.revoked || [], d.revoked_reason || "");
   wlRenderBulk();
 
@@ -373,6 +379,25 @@ function wlSituation(r) {
   const box = el("div", { class: "wl-situation" }, [
     el("p", { class: "muted", text: bits.join(" · ") + "." }),
   ]);
+  // CONFIGURED IS NOT OBSERVED (operator, 2026-10-19: "it says netflow is on, but from the tab
+  // its not showing as working"). The sheet used to show only the settings that SAY flow capture
+  // is on; this line states what the hub has actually seen, and names the two separately.
+  const cap = [];
+  const mode = r.reported_mode || r.expected_mode;
+  if (mode) cap.push(`mode ${mode}`);
+  if (r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
+  const nf = r.netflow || {};
+  if (nf.known) cap.push(nf.observed ? `${Number(nf.flows || 0).toLocaleString()} flows in 24h` : "no flows in 24h");
+  const zk = r.zeek || {};
+  if (zk.known) cap.push(zk.observed ? `Zeek observed${zk.last_at ? ` ${zk.last_at}` : ""}` : "Zeek not observed");
+  if (cap.length) box.appendChild(el("p", { class: "muted", text: `Evidence: ${cap.join(" \u00b7 ")}.` }));
+  if (r.local) {
+    const configured = /^(1|true|on|yes|enabled)$/i.test(wlCfg("siphon_netflow"))
+      || /^(1|true|on|yes|enabled)$/i.test(wlCfg("channel_netflow"));
+    box.appendChild(el("p", { class: "muted",
+      text: `Flow capture is configured ${configured ? "on" : "off"} \u2014 a setting, not evidence; `
+        + `the line above is what the hub has actually seen.` }));
+  }
   const first = (r.findings || [])[0];
   if (first) box.appendChild(el("p", { class: "muted", text: first }));
   if (r.local) {
@@ -397,9 +422,14 @@ function wlSparkline(r) {
   const vals = Array.isArray(r.flow_series) ? r.flow_series : [];
   const ev = r.netflow || {};
   if (!vals.length) {
-    const why = !ev.known ? "no address reported yet"
-      : (ev.flows ? "no flows in the last hour" : "no flows observed in 24h");
-    return el("span", { class: "muted mono wl-spark-empty", text: "—",
+    // A MEASURED ZERO IS NOT A DASH (operator, 2026-10-19: "flow is not showing anything
+    // either"). "—" means not measured; when the exporter is known and produced nothing, the
+    // cell says 0 and the title says over what window. The reason is the one the server
+    // computed, so it cannot drift from the netflow chip beside it.
+    const why = ev.why || (!ev.known ? "no address reported yet"
+      : (ev.flows ? "no flows in the last hour" : "no flows observed in 24h"));
+    return el("span", { class: "muted mono wl-spark-empty",
+                        text: ev.known ? `${Number(ev.flows || 0).toLocaleString()} flows` : "—",
                         attrs: { title: why } });
   }
   const w = 88, h = 22, pad = 2;
@@ -436,6 +466,84 @@ function wlTap(kind, info) {
   }
   return el("span", { class: "tap off", text: label,
     attrs: { title: `${label} not observed — ${i.why || "no evidence"}` } });
+}
+
+/** One local capture setting, by key, from the Settings payload the app already loaded. */
+function wlCfg(key) {
+  const row = (typeof SETTINGS_ROWS !== "undefined") ? SETTINGS_ROWS[key] : null;
+  const v = row ? (row.value != null ? row.value : row.current) : "";
+  return String(v == null ? "" : v).trim();
+}
+
+/** Every NIC the heartbeat reports, with only the roles this hub can justify. */
+function wlNicFacts(r) {
+  const names = [...(r.interfaces || [])];
+  const local = !!r.local;
+  const mgmt = local ? wlCfg("mgmt_iface") : "";
+  const capture = (local ? wlCfg("zeek_iface") : "")
+    || String(r.iface || (r.plan && r.plan.iface) || "");
+  const segment = local
+    ? (wlCfg("intercept_segment") || r.segment || r.reported_segment)
+    : (r.segment || (r.plan && r.plan.segment) || r.reported_segment || "");
+  const mode = String(r.reported_mode || r.expected_mode || "").toLowerCase();
+  const rows = names.map((name) => {
+    const role = (mgmt && name === mgmt) ? "management"
+      : (capture && name === capture) ? "capture" : "unassigned";
+    return { name, role, mode, networks: role === "capture" ? segment : "" };
+  });
+  // The in-path channel's ends are software ports, not NICs the agent reports; show them when
+  // this hub's sensor is configured for siphon, labelled as the channel they are.
+  if (local && mode === "siphon") {
+    for (const [key, label] of [["channel_upstream", "channel upstream"],
+                                ["channel_downstream", "channel downstream"]]) {
+      const n = wlCfg(key);
+      if (n && !rows.some((x) => x.name === n)) rows.push({ name: n, role: label, mode, networks: "" });
+    }
+  }
+  return { rows, capture, segment };
+}
+
+/** The per-NIC table under one row. What is not known says so; nothing is inferred. */
+function wlToggleNics(tr, r, btn) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("wl-nics")) {
+    next.remove();
+    btn.setAttribute("aria-expanded", "false");
+    return;
+  }
+  document.querySelectorAll("#wl-table tbody tr.wl-nics").forEach((x) => x.remove());
+  document.querySelectorAll(".wl-nics-open").forEach((b) => b.setAttribute("aria-expanded", "false"));
+  const facts = wlNicFacts(r);
+  const body = el("tbody");
+  for (const n of facts.rows) {
+    const capture = n.role === "capture";
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: n.name }),
+      el("td", { class: "muted", text: n.role }),
+      el("td", { class: "mono", text: n.mode || "—" }),
+      el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
+      el("td", {}, [capture ? wlSparkline(r) : "—"]),
+      el("td", {}, [capture
+        ? el("span", { class: "wl-feeds" }, [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])
+        : "—"]),
+    ]));
+  }
+  const sub = el("tr", { class: "wl-nics" }, [
+    el("td", { attrs: { colspan: "6" } }, [
+      el("div", { class: "wl-nic-wrap" }, [
+        el("p", { class: "muted", text: `What the hub knows about ${r.sensor_id}'s interfaces `
+          + `(capture interface: ${facts.capture || "not reported"}; segment: `
+          + `${facts.segment || "not declared"}).` }),
+        el("table", { class: "wl-nic-table" }, [
+          el("thead", {}, [el("tr", {}, ["nic", "role", "mode", "networks", "flow", "feeds"]
+            .map((h) => el("th", { text: h })))]),
+          body,
+        ]),
+      ]),
+    ]),
+  ]);
+  tr.after(sub);
+  btn.setAttribute("aria-expanded", "true");
 }
 
 function renderWeirlings(rows, revoked, revokedReason) {
@@ -527,26 +635,47 @@ function renderWeirlings(rows, revoked, revokedReason) {
             on: { click: (ev) => { ev.stopPropagation(); adoptWeirling(r, ev.target); } },
           })
         : null,
+      // EACH NIC, ON DEMAND (operator, 2026-10-19: "i also need to see each nic on the
+      // sensors and its mode, networks, flow and feeds"). The sub-row lists what the hub
+      // actually knows; a fact the agent did not report says so instead of being invented.
+      (r.interfaces || []).length
+        ? el("button", {
+            class: "quiet wl-nics-open", text: `NICs (${r.interfaces.length})`,
+            attrs: { type: "button", "aria-expanded": "false",
+                     title: "show each interface, its role, mode, networks, flow and feeds" },
+            on: { click: (ev) => { ev.stopPropagation(); wlToggleNics(tr, r, ev.target); } },
+          })
+        : null,
     ].filter(Boolean)));
     if (WL_SELECTED.has(r.sensor_id)) {
       const cb = tr.querySelector("input.wl-sel");
       if (cb) cb.checked = true;
     }
 
-    // 2) MODE -- what the sensor REPORTS running; the declaration rides beside it only when
-    // the two disagree, because a declaration that matches is not information.
+    // 2) MODE -- the word the sensor reports, and NOTHING ELSE. The declaration rides in the
+    // title when it disagrees: "siphon declared loch" in the cell read as one value, and the
+    // operator asked for the two facts to stop sharing a column (2026-10-19).
     const reported = String(r.reported_mode || "").toLowerCase();
     const declared = String(r.expected_mode || "").toLowerCase();
     tr.appendChild(el("td", {}, [
       el("span", { class: "mono" + (reported ? "" : " muted"),
                    text: reported || "—",
-                   attrs: { title: reported ? "the mode the sensor reports running"
-                                            : "the sensor has not reported a mode" } }),
-      declared && declared !== reported
-        ? el("span", { class: "muted", text: ` declared ${declared}`,
-                       attrs: { title: "the mode the registry declares for it" } })
-        : null,
-    ].filter(Boolean)));
+                   attrs: { title: reported
+                     ? (declared && declared !== reported
+                        ? `the sensor reports ${reported}; the registry declares ${declared}`
+                        : "the mode the sensor reports running")
+                     : "the sensor has not reported a mode" } }),
+    ]));
+
+    // 2b) CHANNEL -- the in-path channel's EVIDENCE, not the configured mode. Measured live
+    // 2026-10-19: mode siphon with zero mappings and no flows for 24h; the mode alone made the
+    // row look like a working path.
+    const chan = r.channel || {};
+    tr.appendChild(el("td", {}, [
+      el("span", { class: "mono " + (chan.state === "enabled" ? "" : "muted"),
+                   text: chan.state || "—",
+                   attrs: { title: chan.why || "whether the in-path channel is forwarding" } }),
+    ]));
 
     // 3) NETWORKS -- the subnet with CIDR: the plan's segment, else the declaration, else the
     // sensor's own report, and an explicit "no segment declared" rather than a blank.
@@ -573,9 +702,12 @@ function renderWeirlings(rows, revoked, revokedReason) {
     }
     tr.appendChild(flowCell);
 
-    // 5) NETFLOW / 6) ZEEK -- evidence, not decoration.
-    tr.appendChild(el("td", {}, [wlTap("netflow", r.netflow)]));
-    tr.appendChild(el("td", {}, [wlTap("zeek", r.zeek)]));
+    // 5) FEEDS -- netflow and zeek, still their own indicators, in one column (operator,
+    // 2026-10-19: "Combine the table column netflow and zeek into feeds. leave the netflow
+    // and zeek indicators the same thought.").
+    tr.appendChild(el("td", { class: "wl-feeds" }, [
+      wlTap("netflow", r.netflow), wlTap("zeek", r.zeek),
+    ]));
 
     tbody.appendChild(tr);
   }

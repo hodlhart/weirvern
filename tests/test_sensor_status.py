@@ -398,7 +398,7 @@ _STRUCTURAL_IDS = {"view-anomalies", "view-evidence", "view-assets",
               #     referenced by showView's class toggle rather than by getElementById.
               "view-identity",
               #   view-sluice: the same shape -- a view SECTION toggled by class, whose
-              #     contents carry the data (#sl-state, #sl-state-note, #sl-count, the rules
+              #     contents carry the data (#sl-count, the rules
               #     table's tbody, #sl-empty, #sl-policies, #sl-criticality-note). Listed
               #     explicitly rather than implied by the pattern, so a future section that
               #     really is an orphan cannot hide behind its neighbours.

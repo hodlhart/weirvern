@@ -1392,6 +1392,15 @@ def _build_handler(ctx: GuiContext):
                     {"known": False, "observed": False, "last_at": "",
                      "why": "only the hub runs Zeek; a remote weirling does not report one"}
                 )
+                # THE CHANNEL IS NOT THE MODE (measured live 2026-10-19: mode siphon,
+                # mappings 0, no flows for 24h). The row states the evidence, and the reason
+                # when it is not there, so a configured path cannot read as a working one.
+                row["channel"] = fleet_store.channel_state(
+                    str(row.get("reported_mode") or row.get("expected_mode") or ""),
+                    int(row.get("mappings") or 0),
+                    bool(row.get("running")),
+                    row.get("state") == "alive",
+                )
 
             if include_revoked:
                 # Revoked rows are shown on request, for the audit question ("was this ever

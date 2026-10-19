@@ -125,7 +125,13 @@ function renderAssets() {
     return;
   }
 
-  const all = d.hosts || [];
+  const everyHost = d.hosts || [];
+  // THE SCOPE IS A VIEW FILTER, NOT A SECOND QUERY (operator, 2026-10-19). Applying it before
+  // search keeps the two controls composable; the summary's denominator is the scoped set, so
+  // "3 of 3 hosts" never means "3 of the 40 hosts you filtered out".
+  const scope = window.NET_SCOPE || "all";
+  const all = scope === "all" ? everyHost
+    : everyHost.filter((h) => netScope(h.addr) === scope);
   // Search matches the address, the reverse-DNS name, or a service -- an analyst looking for
   // "everything that spoke smb" has a service name, not an address.
   const q = ASSETS_STATE.search.trim().toLowerCase();
@@ -177,6 +183,7 @@ function renderAssets() {
   // US-7: "showing X of Y" for EVERY filter combination -- the count and the reasons travel
   // together, so a short list always says what made it short.
   const why = [];
+  if (scope !== "all") why.push(`on ${scope === "monitored" ? "monitored networks" : "the external network"}`);
   if (q) why.push(`matching “${ASSETS_STATE.search}”`);
   if (ASSETS_STATE.svc) why.push(`with service ${ASSETS_STATE.svc}`);
   summary.textContent = (why.length

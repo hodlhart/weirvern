@@ -868,7 +868,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
     # Weirling group, which made "weirling settings" mean the capture AND the DNS view. It is
     # read by the resolver, not by a capture process, so it owns a group the weirling sheet
     # never renders.
-    ("dns", "DNS", [
+    ("dns", "Reverse DNS", [
         ("reverse_dns", "reverse DNS"),
     ]),
     ("sluice", "Sluice Gate", [

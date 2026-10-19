@@ -56,15 +56,6 @@ async function loadSluice() {
     d = await getJSON("/api/sluice");
   } catch (err) {
     showDataError(`the gate query failed: ${(err && err.message) || err}`);
-    const box = document.getElementById("sl-state");
-    if (box) {
-      box.replaceChildren();
-      box.appendChild(el("p", { class: "empty",
-        text: "Gate state unknown — the query did not complete. Nothing here says the gate is " +
-              "open or shut; it says the answer could not be read." }));
-    }
-    const note = document.getElementById("sl-state-note");
-    if (note) note.textContent = "Rules and policy are not shown for the same reason.";
     // NOT RE-THROWN. `showView` attaches `.catch(showError)` to this call, and re-throwing would
     // report ONE failure as TWO banners with different ids -- "Data unavailable" from here and
     // "Could not load data" from there -- which a later successful load then clears together. The
@@ -77,55 +68,16 @@ async function loadSluice() {
   renderBlocklists(d);
   loadBlockingControls().catch(showError);
 
-  // ── the gate's own state ────────────────────────────────────────────────────────────────────
-  const stateBox = document.getElementById("sl-state");
-  const noteBox = document.getElementById("sl-state-note");
-  stateBox.replaceChildren();
-  noteBox.textContent = "";
-
-  const gate = d.gate || {};
+  // THE STATE TILES ARE GONE (operator, 2026-10-19: "we dont need this"). They restated the
+  // mode/interface/counts above a list that already carries them, and the cleanup sentence
+  // ("these tables are still present after deletion") was housekeeping the operator cannot act
+  // on. What remains: the one-line gate status below (with its arm/disarm control) and the
+  // Enforcing gates table, which is now the first thing on the page.
   if (!d.available) {
-    // A FAILED QUERY IS NOT "THE GATE IS OFF". Saying so would tell an operator nothing is being
-    // blocked when the truth is that nobody knows.
     showDataError(d.reason || "the gate state is unavailable");
   } else {
     showDataError(null);
   }
-
-  if (gate.available === false) {
-    stateBox.appendChild(el("p", { class: "empty",
-      text: `Gate state unknown — ${gate.reason || "the state query did not run"}.` }));
-  } else {
-    const items = [
-      ["state", gate.state || (d.enabled ? "not yet run" : "disabled")],
-      ["interface", gate.iface || d.iface || "—"],
-      ["rules enforced", String(gate.rules_active ?? "—")],
-      ["rules total", String(gate.rules_total ?? "—")],
-      // THE CONSOLE'S OWN FORMATTERS (issue #23): raw integers read as foreign next to every
-      // other panel -- no digit grouping, and a byte total with no scale. Missing still renders
-      // the placeholder and a real zero still renders 0, never hidden.
-      ["packets blocked",
-       gate.packets_blocked == null ? "—" : Number(gate.packets_blocked).toLocaleString()],
-      ["bytes blocked",
-       gate.bytes_blocked == null ? "—" : fmtBytes(gate.bytes_blocked)],
-    ];
-    for (const [k, v] of items) {
-      stateBox.appendChild(el("div", { class: "stat" }, [
-        el("div", { class: "v", text: v }),
-        el("div", { class: "k", text: k }),
-      ]));
-    }
-  }
-
-  // The server's own sentence, verbatim. It knows WHY (no interface, missing nft, a ruleset that
-  // did not install) and paraphrasing it here would lose the reason an operator acts on.
-  const bits = [];
-  if (gate.detail) bits.push(gate.detail);
-  if (gate.warning) bits.push(gate.warning);
-  if (!d.enabled) {
-    bits.push("Blocking is DISABLED (SLUICE_ENABLED=0), so no rule is enforced however many exist.");
-  }
-  noteBox.textContent = bits.join(" ");
 
   // ── where the rules are enforced ─────────────────────────────────────────────────────────────
   //
@@ -740,20 +692,10 @@ async function loadBlockingControls() {
     : "off") + (healthy ? "" : ` \u00b7 ${gstate}`);
   gateState.className = gateOn ? "sl-on" : "sl-off";
 
-  // THE REASON, NOT JUST THE WORD (QA-1-D3). The gate reported "degraded" beside zero enforced
-  // rules and nothing said why; the server had the sentence all along. A state without its cause
-  // is a status the operator cannot act on.
-  const detailBox = document.getElementById("sl-gate-detail");
-  if (detailBox) {
-    if (healthy) {
-      detailBox.classList.add("hidden");
-      detailBox.textContent = "";
-    } else {
-      detailBox.classList.remove("hidden");
-      detailBox.textContent = gdetail || `${gstate} \u2014 the gate gave no reason`;
-      detailBox.className = "sl-gate-detail";
-    }
-  }
+  // THE REASON MOVED TO THE TOOLTIP (operator, 2026-10-19: the visible cleanup sentence is
+  // noise). The state word still names an unhealthy gate; hovering it still gives the server's
+  // own sentence, so the cause is not lost -- it just stops occupying a line.
+  if (gateState) gateState.title = healthy ? "" : (gdetail || `${gstate} \u2014 the gate gave no reason`);
   gateBtn.textContent = gateOn ? "Disarm the gate" : "Arm the gate";
   gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
 

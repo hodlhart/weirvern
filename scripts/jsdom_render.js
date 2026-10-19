@@ -1472,6 +1472,41 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("unreadable sources are named, not silently dropped",
         doc.getElementById("as-note").textContent.includes("zeek_quic"));
 
+  // ONE ASSETS TAB, TWO DATASETS, ONE NETWORK SCOPE (operator, 2026-10-19).
+  check("Identity is not a tab of its own any more",
+        !doc.querySelector('.tab[data-view="identity"]')
+        && !!doc.querySelector("#view-assets #id-table"),
+        "the identity table is not inside Assets");
+  const scopeSel = doc.getElementById("as-scope");
+  check("the Assets view offers monitored / external / all",
+        !!scopeSel && [...scopeSel.options].map((o) => o.value).join("|")
+          === "all|monitored|external");
+  if (scopeSel) {
+    await H.loadAssets();          // settle any in-flight load before swapping the inventory
+    const baseInv = H.ASSETS_STATE.inventory;
+    H.ASSETS_STATE.inventory = {
+      ...baseInv,
+      hosts: [...baseInv.hosts,
+        { addr: "fd00::50", name: "printer", bytes: 10, flows: 1, dst_count: 1,
+          first_seen: "", last_seen: "", services: ["dns"], anomalies: 0 }],
+    };
+    window.NET_SCOPE = "monitored";
+    H.renderAssets();
+    const mon = [...doc.querySelectorAll("#as-table tbody tr")].map((r) => r.textContent);
+    check("...monitored networks keeps the private host",
+          mon.length === 1 && /fd00::50/.test(mon[0]),
+          `rows=${mon.join(" | ")} scopeForPrinter=${typeof window.netScope === "function" ? window.netScope("fd00::50") : "no netScope"}`);
+    window.NET_SCOPE = "external";
+    H.renderAssets();
+    const ext = [...doc.querySelectorAll("#as-table tbody tr")].map((r) => r.textContent);
+    check("...the external network keeps the public hosts",
+          ext.length >= 2 && !ext.some((x) => /fd00::50/.test(x)), ext.join(" | "));
+    window.NET_SCOPE = "all";
+    H.ASSETS_STATE.inventory = baseInv;
+    H.renderAssets();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+
   // Search filters the cached payload.
   H.ASSETS_STATE.search = "vault";
   H.renderAssets();
@@ -2848,8 +2883,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadSettings();
 
   const stSummary = doc.getElementById("st-summary");
-  check("the settings view states how many settings are in effect",
-        /\d+ settings in effect/.test(stSummary.textContent));
+  check("the settings view no longer counts its own rows",
+        !/settings in effect/.test(stSummary.textContent || ""),
+        stSummary.textContent);
 
   // SCOPED TO EVERY SETTINGS GRID, wherever it renders: the sensor's group moved into the
   // Weirlings drill-down on request ("configure each weirling"), and a check still scoped to
@@ -3689,13 +3725,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
     window.fetch = origFetch;
-    const st = doc.getElementById("sl-gate-state").textContent;
-    const det = doc.getElementById("sl-gate-detail");
-    check("a degraded gate names its state beside the gate line", /degraded/i.test(st), st);
-    check("...and carries the server's reason, not just the word",
-          !!det && !det.classList.contains("hidden")
-          && /still present after deletion/.test(det.textContent),
-          det ? det.textContent.slice(0, 120) : "no detail");
+    const st = doc.getElementById("sl-gate-state");
+    check("a degraded gate names its state beside the gate line", /degraded/i.test(st.textContent), st.textContent);
+    check("...and carries the server's reason in its title, not a banner",
+          /still present after deletion/.test(st.getAttribute("title") || ""),
+          st.getAttribute("title") || "no reason");
     await H.loadBlockingControls();   // tidy back to the healthy fixture
   }
 
@@ -3804,6 +3838,45 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the fleet's counts are filters, not decoration",
           tiles.length >= 6 && tiles.every((t) => t.tagName === "BUTTON"),
           `${tiles.length} tiles, first tag ${tiles[0] ? tiles[0].tagName : "none"}`);
+    // THE TILE MUST NOT WEAR THE BUTTON'S 28px BOX (2026-10-19): the clickable summary tiles
+    // are <button>s, so BTN-1's height squeezed a 51px label+number stack out of the pill.
+    if (tiles.length) {
+      const tileH = window.getComputedStyle(tiles[0]).height;
+      check("...and a tile is sized by its content, not the button height",
+            !/^28px$/.test(tileH), tileH);
+    }
+    const heads = [...doc.querySelectorAll("#wl-table thead th")]
+      .map((th) => th.textContent.trim().toLowerCase());
+    check("the fleet table is weirling, mode, channel, networks, flow, feeds",
+          heads.join("|") === "weirling|mode|channel|networks|flow|feeds", heads.join("|"));
+    const localRow = [...doc.querySelectorAll("#wl-table tbody tr")]
+      .find((tr) => tr.textContent.includes("weirvern"));
+    if (localRow) {
+      const cells = [...localRow.querySelectorAll("td")];
+      check("mode states only loch or siphon, not the declaration",
+            /^(loch|siphon|—)/i.test(cells[1].textContent.trim())
+            && !/declared/i.test(cells[1].textContent), cells[1].textContent.trim());
+      check("the channel column states enabled or disabled",
+            /^(enabled|disabled)$/i.test(cells[2].textContent.trim()), cells[2].textContent.trim());
+      check("the feeds cell keeps both indicators",
+            cells[5].querySelectorAll(".tap").length === 2, cells[5].textContent.trim());
+      check("the flow cell says something even with no series",
+            cells[4].textContent.trim().length > 0, cells[4].textContent.trim());
+      const nicBtn = localRow.querySelector(".wl-nics-open");
+      check("the row offers each of its NICs", !!nicBtn, "no NIC control");
+      if (nicBtn) {
+        nicBtn.click();
+        await new Promise((r) => setTimeout(r, 120));
+        const sub = doc.querySelector("#wl-table tbody tr.wl-nics");
+        const nicRows = sub ? [...sub.querySelectorAll(".wl-nic-table tbody tr")] : [];
+        check("...and expands to one row per interface, with roles",
+              !!sub && nicRows.length >= (localRow.querySelector(".wl-nics-open").textContent.match(/\d+/) || [0])[0] * 1
+              && /management|capture|unassigned|channel/.test(sub.textContent),
+              `${nicRows.length} NIC rows`);
+        nicBtn.click();
+        await new Promise((r) => setTimeout(r, 80));
+      }
+    }
     const nsTile = tiles.find((t) => /never seen/.test(t.textContent));
     nsTile.click();
     await new Promise((r) => setTimeout(r, 250));
@@ -3935,8 +4008,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(300);
     const heads = [...doc.querySelectorAll("#wl-table thead th")]
       .map((t) => t.textContent.trim());
-    check("WL-1: the columns are name / mode / networks / flow / netflow / zeek",
-          heads.join("|") === "weirling|mode|networks|flow|netflow|zeek",
+    check("WL-1: the columns are name / mode / channel / networks / flow / feeds",
+          heads.join("|") === "weirling|mode|channel|networks|flow|feeds",
           heads.join("|"));
     const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr")]
       .find((tr) => (tr.textContent || "").includes(id));
@@ -3959,7 +4032,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!stopped && !!stopped.querySelector(".wl-spark-empty")
           && !stopped.querySelector("svg.wl-spark"),
           stopped ? stopped.textContent.slice(0, 80) : "no row");
-    const cidrCell = promised && promised.querySelector("td:nth-child(3)");
+    const cidrCell = promised && promised.querySelector("td:nth-child(4)");
     check("...networks carries the subnet with CIDR",
           !!cidrCell && /198\.51\.100\.0\/24/.test(cidrCell.textContent || ""),
           cidrCell ? cidrCell.textContent : "none");
@@ -4365,10 +4438,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && doc.querySelectorAll("#tabs .tab-group-label").length === 0,
           groups.map((g) => g.querySelectorAll(".tab").length + " tab(s)").join(", "));
     const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
-    check("...and all fifteen tabs survive the regrouping",
-          views.length === 15 && new Set(views).size === 15
+    check("...and all fourteen tabs survive the regrouping",
+          views.length === 14 && new Set(views).size === 14
           && ["health", "anomalies", "logs", "network", "netflow", "discover", "dns", "zeek",
-              "identity", "sluice", "blocked", "weirlings", "models", "assets", "settings"]
+              "sluice", "blocked", "weirlings", "models", "assets", "settings"]
              .every((v) => views.includes(v)),
           views.join(","));
     check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
@@ -4393,7 +4466,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           crumbs.textContent.trim());
     check("...and the nav stays on screen inside the detail view",
           !doc.getElementById("tabs").classList.contains("hidden")
-          && doc.querySelectorAll("#tabs .tab").length === 15);
+          && doc.querySelectorAll("#tabs .tab").length === 14);
     const back = [...crumbs.querySelectorAll("button.crumb")].find((b) => /Weirlings/.test(b.textContent));
     check("...with a real, clickable way back out of the drill", !!back);
     if (back) back.click();
@@ -4494,6 +4567,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the severity tiles read label-then-value as well",
           !!sevFirst && sevFirst.children[0].classList.contains("k"),
           sevFirst ? sevFirst.children[0].className : "none");
+    if (sevFirst) {
+      const sevH = window.getComputedStyle(sevFirst).height;
+      check("...and a severity tile is sized by its content, not the button height",
+            !/^28px$/.test(sevH), sevH);
+    }
     H.showView("health");
     await sleep(60);
   }
@@ -5020,7 +5098,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const idRows = doc.querySelectorAll("#id-table tbody tr");
   check("identity renders a row per host", idRows.length === 3, `${idRows.length} rows`);
 
-  const idText = doc.getElementById("view-identity").textContent;
+  const idText = doc.getElementById("view-assets").textContent;
   // THE DISAGREEMENT LIVES IN THE DETAIL PANEL, which opens on click -- so the check must click.
   // Asserting against the table text was checking the wrong surface and would have passed only by
   // accident if a hostname happened to appear in a row.
@@ -5091,7 +5169,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         banner ? banner.textContent.slice(0, 100) : "no banner was shown");
   // And the coverage panel must say UNKNOWN rather than render zeros, which would read as
   // "identified nothing" -- a different and much more alarming claim.
-  const failView = doc.getElementById("view-identity").textContent;
+  const failView = doc.getElementById("view-assets").textContent;
   check("coverage unknown is distinguishable from coverage zero",
         failView.includes("Coverage unknown"), "unknown coverage rendered as zero");
   fetchOverride = null;
@@ -5121,19 +5199,15 @@ check("the gate's STATE is shown, not just a rule count",
       slText().includes("armed") && slText().includes("eth1"),
       slText().slice(0, 200));
 
-check("the server's own state sentence reaches the screen",
-      slText().includes("lapsed and are no longer enforced"),
-      "gate.detail was not rendered, so the operator cannot see WHY");
-
-// ── the blocking statistics use the console's formatters (#23) ──────────────────────────────
-// Raw integers read as foreign beside every other panel: no digit grouping, no byte scale.
-// The fixture's gate carries 1234 packets / 987654 bytes, so both formatters have work to do;
-// the stopped gate further down (0 packets) must still render a real 0, never a blank.
-const slState = doc.getElementById("sl-state") ? doc.getElementById("sl-state").textContent : "";
-check("the gate tiles group packet counts and scale byte totals",
-      slState.includes((1234).toLocaleString()) && !slState.includes("1234")
-      && slState.includes(H.fmtBytes(987654)),
-      slState.slice(0, 170));
+// THE STATE TILES ARE GONE (operator, 2026-10-19), and with them the visible cleanup sentence.
+// The page starts with Enforcing gates instead; the one-line status card keeps the state word.
+check("the sluice page leads with the enforcing gates",
+      doc.querySelector("#view-sluice .card h2") &&
+      /Enforcing gates/.test(doc.querySelector("#view-sluice .card h2").textContent),
+      (doc.querySelector("#view-sluice .card h2") || {}).textContent || "no first card");
+check("the removed state tiles and cleanup sentence are not in the DOM",
+      !doc.getElementById("sl-state") && !doc.getElementById("sl-state-note")
+      && !doc.getElementById("sl-gate-detail"));
 const slGateRows = [...doc.querySelectorAll("#sl-gates tbody tr")];
 const dualRow = slGateRows.find((r) => r.textContent.includes("weirvern-dual"));
 check("the gates table groups its packet counts too",
@@ -5334,7 +5408,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         sheet.querySelector("h2").textContent);
   check("...and explains the change in a short situation, not a fact sheet",
         !!bodyNow.querySelector(".wl-situation")
-        && bodyNow.querySelectorAll(".wl-situation p").length <= 3,
+        && bodyNow.querySelectorAll(".wl-situation p").length <= 6,
         String(bodyNow.querySelectorAll(".wl-situation p").length) + " paragraph(s)");
   const localSettings = doc.getElementById("wl-local-settings");
   check("...this hub's own sensor points at the surface that changes it",
@@ -5364,11 +5438,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("the drill-down shows the REASON, not just the state word",
           body.includes("why it died"),
           "a state word alone cannot tell the operator whether the box is off or its capture died");
-    check("DECLARED and REPORTED are both visible where the mode is (the row)",
+    check("DECLARED and REPORTED are both readable where the mode is, without sharing the cell",
           (() => {
             const r = [...H.document.querySelectorAll("#wl-table tbody tr")]
               .find((tr) => (tr.textContent || "").includes("edge-moved"));
-            return !!r && /siphon/.test(r.textContent) && /declared loch/.test(r.textContent);
+            const cell = r ? r.querySelector("td:nth-child(2)") : null;
+            const title = cell ? (cell.textContent.match(/siphon/) ? cell.querySelector("span").getAttribute("title") : "") : "";
+            return !!cell && /^siphon$/i.test(cell.textContent.trim())
+              && /registry declares loch/.test(title || "");
           })(),
           "one is a claim somebody made and the other is a fact the sensor produced");
     H.document.getElementById("wl-detail-close").click();
