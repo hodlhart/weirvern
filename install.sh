@@ -141,9 +141,18 @@ systemctl is-active --quiet docker || { systemctl start docker; }
 log "k3s (Kubernetes runtime)"
 if command -v k3s >/dev/null; then
     ok "already installed: $(k3s --version | head -1)"
+    if ! grep -qs "secrets-encryption" /etc/systemd/system/k3s.service /etc/rancher/k3s/config.yaml 2>/dev/null; then
+        warn "this cluster was installed WITHOUT secrets encryption: every Secret sits"
+        warn "unencrypted in the k3s datastore. See docs/security.md -> Secrets at rest"
+        warn "for the k3s secrets-encrypt procedure (it needs a server restart)."
+    fi
 else
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server" sh -
-    ok "installed: $(k3s --version | head -1)"
+    # SECRETS AT REST (HD-27, GitHub #27). k3s generates the AES-CBC key and encryption config
+    # on first start when this flag is present; it cannot be added to a running server without
+    # a restart, so a FRESH install is the one time it is free. Existing installs are warned
+    # about above and documented, not silently left exposed.
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --secrets-encryption" sh -
+    ok "installed: $(k3s --version | head -1) (secrets encryption on)"
 fi
 if [ ! -f /root/.kube/config ]; then
     mkdir -p /root/.kube
@@ -645,6 +654,7 @@ done
 ok "schema applied (the Job ran weirvern init-db)"
 
 deadline=$(( $(date +%s) + PODS_READY_TIMEOUT ))
+NOT_READY=""
 while :; do
     notready=$(kubectl -n "$NAMESPACE" get pods --no-headers 2>/dev/null \
         | grep -v -E '([0-9]+)/\1\s+Running|Completed' || true)
@@ -653,6 +663,7 @@ while :; do
         warn "these pods are not ready after ${PODS_READY_TIMEOUT}s:"
         printf '%s\n' "$notready" | sed 's/^/      /'
         warn "the deployment is up but incomplete; investigate before using it"
+        NOT_READY="$notready"
         break
     fi
     sleep 5
@@ -826,3 +837,14 @@ if [ "$SIPHON" = "1" ]; then
 EOF
 fi
 echo "───────────────────────────────────────────────────────────────────────────────"
+# AN INSTALLER THAT CALLS ITS OWN DEPLOYMENT INCOMPLETE MUST NOT EXIT 0 (HD-24, GitHub #24).
+# The warnings above still run first so the operator gets the full picture, but the exit code is
+# the one thing automation and `curl | bash` can see -- reporting success here made an incomplete
+# deployment indistinguishable from a clean one.
+if [ -n "${NOT_READY:-}" ]; then
+    echo
+    echo "INCOMPLETE: these pods were not Ready after ${PODS_READY_TIMEOUT}s:" >&2
+    printf '%s\n' "$NOT_READY" | sed 's/^/  /' >&2
+    echo "Re-check with: kubectl -n ${NAMESPACE} get pods" >&2
+    exit 1
+fi

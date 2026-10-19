@@ -275,7 +275,7 @@ spec:
         # mapping work. An exporter pointed at the CONTAINER port of a pod instead would match
         # nothing and fail silently -- one of the two failures worth writing down.
         - name: netflow
-          image: netsampler/goflow2:v2.2.6
+          image: netsampler/goflow2:v2.2.6@sha256:b930e69d1bc7bd765da5b45d12f04edd10970c310b33ba44fd12a07a870da8e6
           args:
             - -listen
             - netflow://:2055,sflow://:6343

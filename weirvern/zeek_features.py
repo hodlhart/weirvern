@@ -47,6 +47,8 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+from .clock import utcnow
+
 # ── the Zeek feature set ─────────────────────────────────────────────────────────
 #
 # Chosen for what NetFlow cannot express, not for what is easy to compute. Every one of
@@ -1090,12 +1092,12 @@ def zeek_window_sql(since: str, until: str | None = None) -> str:
     training query would put the same traffic in different rows and the features would not
     line up with the model.
     """
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     if until is None:
         # A small forward margin so a record written during the sweep is not excluded by
         # clock skew between the worker and ClickHouse.
-        until = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        until = (utcnow() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
     return f"SELECT * FROM ({zeek_window_summary_sql(since, until)})"
 
 
@@ -1141,10 +1143,10 @@ def zeek_protocol_records_sql(since: str, until: str | None = None) -> str:
     mapper called here sees the same contract as one called from the tailer. Without this a
     path of '-' would match nothing while looking like data.
     """
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     if until is None:
-        until = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        until = (utcnow() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
 
     # ── EVERY ARM MUST CARRY THE SAME COLUMNS, AND FOUR WERE MISSING ──────────────────────────
     #

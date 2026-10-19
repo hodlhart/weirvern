@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 
 import requests
 from clickhouse_connect.driver.client import Client
 
 from weirvern import attack, detector_registry
 from weirvern.config import Settings
+
+from .clock import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ def _audit(client: Client | None, verdict: dict, sent: bool, reason: str, messag
         client.insert(
             "weirvern.alert_events",
             [[
-                datetime.now(), verdict["src_addr"], verdict.get("window_start"),
+                utcnow(), verdict["src_addr"], verdict.get("window_start"),
                 verdict.get("severity", "low"), verdict.get("anomaly_score", 0.0),
                 message[:1024], int(sent), reason,
             ]],

@@ -3,7 +3,7 @@
 ## 1. Header
 
 **Build:** `0.17.5`, image `sha-5d18b9c7b`, commit `5d18b9c`, branch `feat/sluice-rule-sheet`, live at
-`http://weirvern.home:30088`. **Date:** 2026-10-18. **Stance:** read-only; no repo, cluster or box mutation. **Judge:** the
+`http://sensor.example:30088`. **Date:** 2026-10-18. **Stance:** read-only; no repo, cluster or box mutation. **Judge:** the
 served bytes.
 
 **Read:** `vision.md`, `canon.md`, `canon.json`, `ledger.json`/`ledger.md`, `scorecards/2026-10-18.md`,
@@ -39,7 +39,7 @@ A 3 is "on the view, in words, no hunting"; 2 "works, one clear gap"; 1 "the gap
 
 **Movement.**
 
-- **TTA 2.06 → 3.** The chain shipped (`c97f6ea`) and is deployed. On `192.168.3.194` the Evidence page renders five stages,
+- **TTA 2.06 → 3.** The chain shipped (`c97f6ea`) and is deployed. On `192.0.2.10` the Evidence page renders five stages,
   each with its own state: the vision's one question is answerable from one screenshot. The only real gain.
 - **Honesty 2.94 → 3.** The hardest case is live: gate `degraded`, 0 rules enforced, leftover nft tables. The console says so
   in words on two surfaces and does not paint it green.

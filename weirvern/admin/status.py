@@ -24,6 +24,8 @@ from typing import Any
 from weirvern import addressing
 from weirvern.admin import timewindow
 
+from ..clock import age_seconds, as_aware, utcnow
+
 logger = logging.getLogger(__name__)
 from weirvern.admin.mode import MODE_SIPHON  # noqa: E402
 
@@ -1294,8 +1296,7 @@ def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
         if stamp:
             try:
                 when = datetime.fromisoformat(stamp)
-                now = datetime.now(when.tzinfo) if when.tzinfo else datetime.now()
-                age_h = (now - when).total_seconds() / 3600
+                age_h = (utcnow() - as_aware(when)).total_seconds() / 3600
             except (ValueError, TypeError):
                 age_h = None
         rows.append({
@@ -1395,9 +1396,7 @@ def baselines_overview(client) -> dict:
 def _age_seconds(when) -> int | None:
     """Seconds since a datetimes.datetime, naive or aware -- None when it cannot be read."""
     try:
-        from datetime import datetime as _dt
-        now = _dt.now(tz=when.tzinfo) if getattr(when, "tzinfo", None) else _dt.now()
-        return max(0, int((now - when).total_seconds()))
+        return max(0, int(age_seconds(when)))
     except Exception:  # noqa: BLE001
         return None
 
@@ -1661,7 +1660,7 @@ def host_identity_view(client) -> dict:
             # lesson: the label must be LOCAL, not UTC. Relabelling local time as UTC produced
             # NEGATIVE ages, and `stale = age > threshold` means a negative age is never stale --
             # so a sensor dead for five minutes reported running. One helper, already tested.
-            "age_s": ((_aware(datetime.datetime.now()) - _aware(updated)).total_seconds()
+            "age_s": ((datetime.datetime.now(datetime.UTC) - _aware(updated)).total_seconds()
                       if updated else None),
         })
 
@@ -2413,7 +2412,7 @@ def rank_sensor_row(row: dict, now: datetime.datetime | None = None) -> tuple:
         # `_aware` on BOTH sides. ClickHouse returns aware datetimes while `now()` is naive, so
         # subtracting them raises -- the exact defect `_aware` exists to prevent, and which the
         # first version of this helper reintroduced by calling `now()` directly.
-        age_s = (_aware(now or datetime.datetime.now()) - _aware(ts_value)).total_seconds()
+        age_s = (_aware(now or datetime.datetime.now(datetime.UTC)) - _aware(ts_value)).total_seconds()
     else:
         age_s = float("inf")
     fresh = age_s <= HEARTBEAT_STALE_S
@@ -2473,7 +2472,7 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
     field is present even when nothing was ever reported, so the caller never has to
     distinguish "key missing" from "null value".
     """
-    now = _aware(now or datetime.datetime.now())
+    now = _aware(now or datetime.datetime.now(datetime.UTC))
     out: dict = {
         "reported": False,
         "running": False,
@@ -2743,7 +2742,7 @@ def siphon_liveness(configured_mode: str, client, now: datetime.datetime | None 
         )
         return out
 
-    now_aware = _aware(now or datetime.datetime.now())
+    now_aware = _aware(now or datetime.datetime.now(datetime.UTC))
     out["verified"] = True
 
     def _age_s(row: dict) -> float | None:
@@ -3134,7 +3133,7 @@ def write_review(client, *, window_start: str, src_addr: str, state: str,
         raise ValueError(f"unreadable window_start {window_start!r}")
     client.insert(
         "weirvern.alert_reviews",
-        [[stamp, src_addr, state, note, datetime.datetime.now()]],
+        [[stamp, src_addr, state, note, datetime.datetime.now(datetime.UTC)]],
         column_names=["window_start", "src_addr", "state", "note", "reviewed_at"],
     )
     return True
@@ -3174,7 +3173,7 @@ def write_watch(client, *, src_addr: str, watching: bool) -> bool:
         raise ValueError(f"unreadable src_addr {addr!r}") from exc
     client.insert(
         "weirvern.host_watches",
-        [[addr, 1 if watching else 0, datetime.datetime.now()]],
+        [[addr, 1 if watching else 0, datetime.datetime.now(datetime.UTC)]],
         column_names=["src_addr", "watching", "watched_at"],
     )
     return True
@@ -3355,7 +3354,7 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
             "weirvern.sensor_status",
             [[sensor_id, mode, iface, segment, int(hosts), int(mappings),
               1 if running else 0, float(uptime_s), int(restores), int(refreshes),
-              list(failures or []), datetime.datetime.now(),
+              list(failures or []), datetime.datetime.now(datetime.UTC),
               # None stores as NULL and means NOT MEASURED. It must not become 0.0: 0.0
               # means "measured, nothing lost", so a sensor with no capture_loss.log would
               # read as a perfect one.

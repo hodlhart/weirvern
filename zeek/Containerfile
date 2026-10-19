@@ -28,7 +28,7 @@
 # unset; pinning it to share/zeek hides the builtin plugins under lib/zeek/plugins and
 # Zeek dies at startup with "can't find Zeek_JavaScript/__load__.zeek". Verified by
 # comparing the two images directly -- the derived one crash-looped.
-FROM zeek/zeek:lts
+FROM zeek/zeek:lts@sha256:70733f4e540ba1608e37e00c6a93d009f79734262c9ec2ba09d90aa9abc16de5
 
 # The module lands at the path the site policy loads: site/packages/ja4-zeek-scripts.
 # The policy (k8s/zeek/weirvern-local.zeek, mounted from a ConfigMap at runtime) does

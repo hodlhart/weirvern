@@ -42,6 +42,8 @@ from weirvern.fingerprint import (
     summarise,
 )
 
+from .clock import age_seconds, as_aware, utcnow
+
 logger = logging.getLogger(__name__)
 
 # How far back an observation still counts toward a verdict.
@@ -241,7 +243,7 @@ def persist(client: Client, verdicts: list[dict[str, Any]]) -> None:
     detection in this project raised silently for hours. So the two are checked against each
     other before the insert rather than trusted.
     """
-    now = datetime.now()
+    now = utcnow()
     rows = []
     for v in verdicts:
         rows.append([
@@ -322,7 +324,7 @@ def _as_local(dt: datetime) -> datetime:
     """
     if dt is None:
         return dt
-    return dt if dt.tzinfo is not None else dt.astimezone()
+    return as_aware(dt)
 
 def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[str, Any]]:
     """Current verdicts for specific hosts, keyed by address. For enriching other views.
@@ -369,8 +371,7 @@ def identity_for_hosts(client: Client, hosts: dict[str, str]) -> dict[str, dict[
             # "cannot read host identity" while the data is fine. `_as_local` applies the rule:
             # label a naive value with the SYSTEM's local zone (what it actually means), never
             # with UTC, because relabelling local as UTC yields NEGATIVE ages.
-            "age_s": ((datetime.now().astimezone() - _as_local(updated)).total_seconds()
-                      if updated else None),
+            "age_s": (age_seconds(updated) if updated else None),
         }
     return out
 
@@ -448,4 +449,4 @@ def coverage(client: Client, days: int = IDENTITY_WINDOW_DAYS) -> dict[str, Any]
 
 def stale_before(days: int = IDENTITY_WINDOW_DAYS) -> datetime:
     """The cutoff an observation must postdate to still count. Exposed for the CLI and tests."""
-    return datetime.now() - timedelta(days=days)
+    return utcnow() - timedelta(days=days)

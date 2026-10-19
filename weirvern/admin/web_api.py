@@ -75,7 +75,7 @@ def health_payload(report) -> dict:
     """Serialise a HealthReport."""
     return {
         "ok": report.ok,
-        "fetched_at": _jsonable(_dt.datetime.fromtimestamp(report.fetched_at)),
+        "fetched_at": _jsonable(_dt.datetime.fromtimestamp(report.fetched_at, _dt.UTC)),
         "checks": [
             {"name": p.name, "ok": p.ok, "detail": p.detail,
              "value": _jsonable(p.value), "latency_ms": round(p.latency_ms, 1)}
@@ -270,7 +270,7 @@ def host_payload(detail: dict) -> dict:
         if len(row) >= 3:
             by_hour[str(_jsonable(row[0]))[:19]] = {"bytes": row[1] or 0, "flows": row[2] or 0}
 
-    now = _dt.datetime.now().replace(minute=0, second=0, microsecond=0)
+    now = _dt.datetime.now(_dt.UTC).replace(minute=0, second=0, microsecond=0)
     timeline = []
     for i in range(hours - 1, -1, -1):
         hour = now - _dt.timedelta(hours=i)

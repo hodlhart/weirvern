@@ -2952,18 +2952,50 @@ function toggleAllHelp(force) {
  * MOVES a node into it and remembers where the node lived; closeModal puts it back. Moving --
  * not cloning -- is what keeps ONE editor with ONE set of ids and listeners; a second copy would
  * drift from the first the day someone edits one of them. Esc, the backdrop and the X all close.
+ *
+ * THE DIALOG CONTRACT (HD-17, GitHub #17; docs/design/sheets.md decides what is a sheet):
+ * the shell is a labelled dialog (`aria-labelledby` -> the moved node's own heading), focus moves
+ * INTO it on open, Tab cannot leave it, and focus returns to the control that opened it. A dialog
+ * that cannot be left by keyboard, or that drops the reader at the top of the page on close, is a
+ * trap; this was the shell's defect before HD-17.
  */
 const MODAL_HOME = new WeakMap();
+let MODAL_RETURN = null;
+let MODAL_TITLE_SEQ = 0;
+
+function modalFocusables() {
+  const body = document.getElementById("modal-body");
+  if (!body) return [];
+  const nodes = [...body.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+    + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  return nodes.filter((n) => !n.closest(".hidden"));
+}
 
 function openModal(node) {
   const shell = document.getElementById("modal");
   const body = document.getElementById("modal-body");
   if (!shell || !body || !node) return;
+  const wasHidden = shell.classList.contains("hidden");
+  if (wasHidden) MODAL_RETURN = document.activeElement;
   if (!MODAL_HOME.has(node)) MODAL_HOME.set(node, node.parentNode);
   body.appendChild(node);
   node.classList.remove("hidden");
   shell.classList.remove("hidden");
   document.body.classList.add("modal-open");
+  // THE LABEL IS THE NODE'S OWN HEADING, not a generic "dialog": a screen reader should hear
+  // "Block this domain, dialog" rather than "dialog".
+  const heading = node.querySelector("h1, h2, h3, [data-modal-title]");
+  if (heading) {
+    if (!heading.id) heading.id = `modal-title-${++MODAL_TITLE_SEQ}`;
+    shell.setAttribute("aria-labelledby", heading.id);
+  } else {
+    shell.removeAttribute("aria-labelledby");
+  }
+  const target = modalFocusables()[0] || node;
+  if (typeof node.focus === "function" && target === node
+      && !node.hasAttribute("tabindex")) node.setAttribute("tabindex", "-1");
+  if (typeof target.focus === "function") target.focus();
 }
 
 function closeModal(node) {
@@ -2975,6 +3007,9 @@ function closeModal(node) {
   }
   if (shell) shell.classList.add("hidden");
   document.body.classList.remove("modal-open");
+  const back = MODAL_RETURN;
+  MODAL_RETURN = null;
+  if (back && document.contains(back) && typeof back.focus === "function") back.focus();
 }
 
 function modalWiring() {
@@ -2990,6 +3025,59 @@ function modalWiring() {
   const back = document.getElementById("modal-backdrop");
   if (back) back.addEventListener("click", closeTop);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTop(); });
+  // TAB STAYS IN THE DIALOG (HD-17). A sheet opened over the modal owns the keyboard instead
+  // (sheets.js handles that case), so this trap only runs while the dialog is the top surface.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || shell.classList.contains("hidden")) return;
+    if (document.querySelector(".sheet:not(.hidden)")) return;
+    const focusable = modalFocusables();
+    if (!focusable.length) { e.preventDefault(); return; }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }, true);
+}
+
+// ── FILTER CELLS ARE KEYBOARD-OPERABLE (HD-17) ──────────────────────────────────────────────
+// A `.dcell` is a click-to-filter affordance drawn inside a table cell or a chart bar. Before
+// this, it existed only for a mouse: no tabindex, no role, no key handler. The cells are created
+// in a dozen renderers, so they are marked where they appear rather than at each call site -- and
+// an Enter/Space on a focused cell performs exactly the click a mouse would.
+function markFilterCells() {
+  for (const cell of document.querySelectorAll(".dcell:not([data-kb])")) {
+    cell.dataset.kb = "1";
+    cell.setAttribute("tabindex", "0");
+    if (!cell.getAttribute("role")) cell.setAttribute("role", "button");
+    const title = cell.getAttribute("title");
+    if (title && !cell.getAttribute("aria-label")) cell.setAttribute("aria-label", title);
+  }
+}
+
+function filterCellWiring() {
+  if (document.body.dataset.filterCells === "1") return;
+  document.body.dataset.filterCells = "1";
+  markFilterCells();
+  const main = document.querySelector("main") || document.body;
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => { queued = false; markFilterCells(); });
+  }).observe(main, { childList: true, subtree: true });
+  document.addEventListener("keydown", (e) => {
+    const cell = e.target && e.target.closest ? e.target.closest(".dcell") : null;
+    if (!cell) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      cell.click();
+    }
+  });
 }
 
 // ── DESTRUCTIVE ACTIONS: THE ECHO AND THE READ-BACK (BF-9) ───────────────────────────────────
@@ -3868,6 +3956,7 @@ async function boot() {
   lockTabsToTop();
   settingsAccordion();
   modalWiring();
+  filterCellWiring();
   // The "i" affordances: every view's explainer is one click from the header it explains.
   wireInfoButtons();
   try {

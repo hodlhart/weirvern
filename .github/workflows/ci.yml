@@ -99,22 +99,53 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install kubeconform
+        # PINNED, WITH A CHECKSUM (HD-22). It used to install whatever `releases/latest`
+        # published, so the validator that gates every manifest change was unpinned and
+        # unverified. Bump KUBECONFORM_VERSION deliberately.
+        env:
+          KUBECONFORM_VERSION: v0.8.0
         run: |
-          curl -sSfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
-            | tar xz kubeconform
-          sudo mv kubeconform /usr/local/bin/
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -sSfL "$base/kubeconform-linux-amd64.tar.gz" -o /tmp/kubeconform.tgz
+          curl -sSfL "$base/CHECKSUMS" -o /tmp/kubeconform.CHECKSUMS
+          (cd /tmp && grep ' kubeconform-linux-amd64.tar.gz$' kubeconform.CHECKSUMS | sha256sum -c -)
+          tar xzf /tmp/kubeconform.tgz -C /tmp kubeconform
+          sudo mv /tmp/kubeconform /usr/local/bin/
+          kubeconform -v
 
       - name: Install kustomize
+        # ONE VERSION, ONE PLACE: install.sh ships the renderer operators use, so CI reads its
+        # pin rather than keeping a second number in a second file. The old v5.5.0 here and
+        # v5.7.1 there meant two renderers validating the same manifests.
         run: |
-          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.5.0/kustomize_v5.5.0_linux_amd64.tar.gz" \
+          KUSTOMIZE_VERSION="$(sed -n 's/^KUSTOMIZE_VERSION="\(.*\)"/\1/p' install.sh)"
+          [ -n "$KUSTOMIZE_VERSION" ] || { echo "install.sh has no KUSTOMIZE_VERSION pin"; exit 1; }
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
             | tar xz kustomize
           sudo mv kustomize /usr/local/bin/
+          kustomize version
 
       - name: Validate manifests against Kubernetes schemas
-        run: kubeconform -strict -summary -ignore-missing-schemas k8s/
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas k8s/
+          for f in k8s/units/*.template; do
+            # The unit templates are YAML documents with placeholders, not manifests; a
+            # placeholder is expected to fail schema validation, so they are parsed, not
+            # schema-checked.
+            python -c "import yaml,sys; list(yaml.safe_load_all(open(sys.argv[1])))" "$f"
+          done
 
       - name: Assemble the manifests
-        run: kustomize build k8s/ > /tmp/rendered.yaml
+        # EVERY overlay is rendered, not just k8s/. `overlays/siphon` has its own
+        # kustomization and used to be found broken by hand, after the fact.
+        run: |
+          kustomize build k8s/ > /tmp/rendered.yaml
+          for d in overlays/*/; do
+            if [ -f "$d/kustomization.yaml" ]; then
+              echo "rendering $d"
+              kustomize build "$d" > "/tmp/render-$(basename "$d").yaml"
+            fi
+          done
 
       - name: Verify the schema ships inside the package
         run: |

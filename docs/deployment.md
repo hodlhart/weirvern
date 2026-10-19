@@ -99,6 +99,12 @@ curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh |
 Run it from a checkout (`sudo ./install.sh [--siphon] [--zeek-iface X --mgmt-iface Y]`)
 and it uses that checkout instead of cloning.
 
+A fresh install enables **k3s secrets encryption** (`--secrets-encryption`) and serves the console
+on plain HTTP. Before exposing it beyond the management segment, terminate TLS in front of it —
+see [Transport and the trust boundary](security.md#transport-and-the-trust-boundary). The
+Secrets-at-rest behaviour, and what an existing cluster must do, is in
+[Secrets at rest](security.md#secrets-at-rest).
+
 **If the target host cannot reach GitHub** — an isolated or air-gapped box, or a host you
 deliberately keep without deploy credentials — copy the tree and run the installer inside it. No
 clone and no network fetch is attempted, because the installer uses the checkout it finds around

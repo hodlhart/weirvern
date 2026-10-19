@@ -123,6 +123,15 @@ rsh() {
     fi
 }
 
+# A credential this script generates: 24 random bytes as hex. No openssl dependency.
+rand_hex() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 24
+    else
+        od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
+    fi
+}
+
 # ── the remove path, first: it needs none of the hub discovery ─────────────────────────────
 if [ "$REMOVE" = "1" ]; then
     step "remove weirling '$SENSOR_ID' from $TARGET"
@@ -142,6 +151,17 @@ if [ "$REMOVE" = "1" ]; then
         say "  containers removed; logs kept under /var/lib/weirvern-weirling (use --purge to drop them)"
     fi
     say "  the fleet row will show the sensor as STALE once its last heartbeat ages out"
+    # REVOKING ONE SENSOR MUST NOT ROTATE THE OTHERS (HD-25). The credential is per sensor, so
+    # dropping its user ends this weirling's access and leaves every other sensor shipping.
+    CH_USER="wv_$(printf '%s' "$SENSOR_ID" | tr '-' '_')"
+    if [ -n "$HUB" ]; then
+        rsh "$HUB" "kubectl -n weirvern exec -i clickhouse-0 -- clickhouse-client --query 'DROP USER IF EXISTS ${CH_USER}'" \
+            || say "  warning: could not drop ${CH_USER} on the hub -- run: DROP USER IF EXISTS ${CH_USER}"
+        rsh "$HUB" "f=/var/lib/weirvern/sensor-credentials.tsv; [ -f \"\$f\" ] && awk -F '\t' -v id='$SENSOR_ID' '\$1 != id' \"\$f\" > \"\$f.tmp\" && mv \"\$f.tmp\" \"\$f\"" || true
+        say "  credential ${CH_USER} dropped (other weirlings unaffected)"
+    else
+        say "  no --hub given: drop the credential yourself with: DROP USER IF EXISTS ${CH_USER}"
+    fi
     exit 0
 fi
 
@@ -262,14 +282,28 @@ say "  ClickHouse answers at $CH_HOST:$CH_PORT"
 
 # ── creds + site policy on the target ───────────────────────────────────────────────────────
 step "writing the target's configuration"
-# The password goes from the hub's Secret into the target's 0600 env file; it is never printed.
-CH_USER="$(rsh "$HUB" "kubectl -n weirvern get cm weirvern-env -o go-template='{{index .data \"CLICKHOUSE_USER\"}}'" || true)"
-CH_USER="${CH_USER:-weirvern}"
+# PER-WEIRLING CLICKHOUSE CREDENTIAL (HD-25, GitHub #25). This used to copy the HUB's own
+# ClickHouse user and password to every sensor: one compromised weirling yielded the database
+# credential for the whole deployment, and revoking one sensor meant rotating all of them.
+# Now each sensor gets its own user, INSERT-only on the weirvern database (flows, the zeek_*
+# tables and sensor_status all go through that one code path), and the password is generated
+# here, written only to the target's 0600 env file, and never printed.
+CH_USER="wv_$(printf '%s' "$SENSOR_ID" | tr '-' '_')"
+CH_PASS="$(rand_hex)"
+CRED_SQL="CREATE USER IF NOT EXISTS ${CH_USER} IDENTIFIED WITH sha256_password BY '${CH_PASS}';
+ALTER USER ${CH_USER} IDENTIFIED WITH sha256_password BY '${CH_PASS}';
+GRANT INSERT ON weirvern.* TO ${CH_USER};"
+printf '%s\n' "$CRED_SQL" | rsh "$HUB" "kubectl -n weirvern exec -i clickhouse-0 -- clickhouse-client --multiquery" \
+    || die "could not create the per-weirling ClickHouse user ${CH_USER} on the hub -- refusing to fall back to the hub's shared credential"
+# WHICH USER BELONGS TO WHICH SENSOR, so one sensor can be revoked without touching the rest.
+rsh "$HUB" "install -d -m 0700 /var/lib/weirvern && printf '%s\t%s\t%s\n' '$SENSOR_ID' '$CH_USER' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /var/lib/weirvern/sensor-credentials.tsv && chmod 0600 /var/lib/weirvern/sensor-credentials.tsv" \
+    || say "  warning: could not record the sensor credential in /var/lib/weirvern/sensor-credentials.tsv"
+say "  credential: ${CH_USER} (INSERT only, per sensor)"
 {
     printf 'CLICKHOUSE_HOST=%s\n' "$CH_HOST"
     printf 'CLICKHOUSE_PORT=%s\n' "$CH_PORT"
     printf 'CLICKHOUSE_USER=%s\n' "$CH_USER"
-    printf 'CLICKHOUSE_PASSWORD=%s\n' "$(rsh "$HUB" "kubectl -n weirvern get secret weirvern-secrets -o jsonpath='{.data.CLICKHOUSE_PASSWORD}' | base64 -d")"
+    printf 'CLICKHOUSE_PASSWORD=%s\n' "$CH_PASS"
 } | rsh "$TARGET" "cat > /etc/weirvern-weirling.env && chmod 0600 /etc/weirvern-weirling.env"
 
 POLICY="$(rsh "$HUB" "kubectl -n weirvern get cm $SITE_CM -o go-template='{{index .data \"weirvern-local.zeek\"}}'")"

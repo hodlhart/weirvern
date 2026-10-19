@@ -29,6 +29,8 @@ from datetime import datetime
 from ipaddress import ip_address, ip_network
 from typing import Any, Protocol
 
+from .clock import from_epoch, utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,15 +100,15 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
 
 def _ts(epoch_ns: Any) -> datetime:
     try:
-        return datetime.fromtimestamp(float(epoch_ns) / 1e9)
+        return from_epoch(float(epoch_ns) / 1e9)
     except (TypeError, ValueError, OverflowError):
-        return datetime.now()
+        return utcnow()
 
 
 def map_flow(raw: dict[str, Any]) -> dict[str, Any]:
     """goflow2 JSON record → flows row (legacy mapping, hardened)."""
     return {
-        "timestamp": datetime.now(),
+        "timestamp": utcnow(),
         "sampler_address": raw.get("sampler_address", ""),
         "time_flow_start": _ts(raw.get("time_flow_start_ns", 0)),
         "time_flow_end": _ts(raw.get("time_flow_end_ns", 0)),
@@ -303,7 +305,7 @@ def map_zeek_conn(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "src_port": _safe_int(rec.get("id.orig_p"), 0),
@@ -329,7 +331,7 @@ def map_zeek_dns(rec: dict[str, str]) -> dict[str, Any] | None:
     ts = _safe_float(rec.get("ts"), 0.0)
     query = rec.get("query") or ""
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(zeek_value(rec.get("id.resp_h", "")) or "0.0.0.0"),
@@ -364,7 +366,7 @@ def map_zeek_ssl(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -399,7 +401,7 @@ def map_zeek_notice(rec: dict[str, str]) -> dict[str, Any] | None:
     src = zeek_value(rec.get("src", "")) or zeek_value(rec.get("id.orig_h", ""))
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src or "0.0.0.0"),
         "dst_addr": _to_ip(zeek_value(rec.get("dst", "")) or "0.0.0.0"),
@@ -465,7 +467,7 @@ def map_zeek_http(rec: dict[str, str]) -> dict[str, Any] | None:
     # which would otherwise be indistinguishable from a literal "-" hostname.
     host = rec.get("host") or ""
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "src_port": _safe_int(rec.get("id.orig_p"), 0),
@@ -501,7 +503,7 @@ def map_zeek_files(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "fuid": rec.get("fuid") or "",
         "src_addr": _to_ip(src),
@@ -533,7 +535,7 @@ def map_zeek_ssh(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "src_port": _safe_int(rec.get("id.orig_p"), 0),
@@ -565,7 +567,7 @@ def map_zeek_weird(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "src_port": _safe_int(rec.get("id.orig_p"), 0),
@@ -591,9 +593,9 @@ def _epoch_or_zero(val: Any) -> datetime:
     """
     v = zeek_value(val if isinstance(val, str) else "")
     if v is None:
-        return datetime.fromtimestamp(0)
+        return from_epoch(0)
     f = _safe_float(v, 0.0)
-    return datetime.fromtimestamp(f) if f > 0 else datetime.fromtimestamp(0)
+    return from_epoch(f) if f > 0 else from_epoch(0)
 
 
 def map_zeek_kerberos(rec: dict[str, str]) -> dict[str, Any] | None:
@@ -624,7 +626,7 @@ def map_zeek_kerberos(rec: dict[str, str]) -> dict[str, Any] | None:
         return 0 if v.lower() in ("f", "false", "0") else 1
 
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -657,7 +659,7 @@ def map_zeek_dce_rpc(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -684,7 +686,7 @@ def map_zeek_smb_mapping(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -714,7 +716,7 @@ def map_zeek_smb_files(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -743,7 +745,7 @@ def map_zeek_ntlm(rec: dict[str, str]) -> dict[str, Any] | None:
     v = zeek_value(rec.get("success", ""))
     success = 0 if v is None or v.lower() in ("f", "false", "0") else 1
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -782,7 +784,7 @@ def map_zeek_dhcp(rec: dict[str, str]) -> dict[str, Any] | None:
         uids = uids.replace("\x01", ",").replace(",", ",")  # Zeek's set separator is a comma
 
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uids": uids,
         "client_addr": _to_ip(client),
         "server_addr": _to_ip(server),
@@ -829,7 +831,7 @@ def map_zeek_x509(rec: dict[str, str]) -> dict[str, Any] | None:
         return 1 if v is not None and v.lower() in ("t", "true", "1") else 0
 
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "fingerprint": fingerprint,
         "subject": rec.get("certificate.subject") or rec.get("subject") or "",
         "issuer": rec.get("certificate.issuer") or rec.get("issuer") or "",
@@ -866,7 +868,7 @@ def map_zeek_tunnel(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -893,7 +895,7 @@ def map_zeek_quic(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -922,7 +924,7 @@ def map_zeek_ldap_search(rec: dict[str, str]) -> dict[str, Any] | None:
         return None
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "uid": rec.get("uid") or "",
         "src_addr": _to_ip(src),
         "dst_addr": _to_ip(dst),
@@ -972,7 +974,7 @@ def map_zeek_software(rec: dict[str, str]) -> dict[str, Any] | None:
     ts = _safe_float(rec.get("ts"), 0.0)
     return {
         "_observation": True,
-        "ts": datetime.fromtimestamp(ts) if ts else datetime.now(),
+        "ts": from_epoch(ts) if ts else utcnow(),
         "src_addr": host,
         # software.log carries no MAC. The DHCP path supplies it, and the identity pass joins
         # them by address -- a gap here is expected, not a defect.
@@ -1127,7 +1129,7 @@ def _record_observations(client: Inserter, rows: list[dict[str, Any]]) -> int:
         try:
             record_observation(
                 client,
-                ts=r.get("ts") or datetime.now(),
+                ts=r.get("ts") or utcnow(),
                 src_addr=str(r.get("src_addr") or ""),
                 mac=str(r.get("mac") or ""),
                 source=str(r.get("source") or ""),
@@ -1152,7 +1154,7 @@ def observations_from_dhcp(rec: dict[str, str], row: dict[str, Any]) -> list[dic
     the same host.
     """
     out: list[dict[str, Any]] = []
-    ts = row.get("ts") or datetime.now()
+    ts = row.get("ts") or utcnow()
     # `client_addr` is 0.0.0.0 in a DISCOVER, which is why the MAC carries the identity.
     addr = str(row.get("client_addr") or "") or ""
     if addr in {"0.0.0.0", ""}:
@@ -1206,12 +1208,12 @@ def observations_from_ssl(rec: dict[str, str], row: dict[str, Any]) -> list[dict
         return out
     ja4 = zeek_value(rec.get("ja4", "")) or ""
     if ja4 and ja4 not in {"-", "(empty)"}:
-        out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+        out.append({"ts": row.get("ts") or utcnow(), "src_addr": src, "mac": "",
                     "source": "ja4", "raw": ja4, "note": "from ssl"})
     sni = zeek_value(rec.get("server_name", "")) or ""
     sni = sni.strip().lower().rstrip(".")
     if sni and sni not in {"-", "(empty)"}:
-        out.append({"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+        out.append({"ts": row.get("ts") or utcnow(), "src_addr": src, "mac": "",
                     "source": "tls_sni", "raw": sni, "note": "from ssl"})
     return out
 
@@ -1230,7 +1232,7 @@ def observations_from_conn(rec: dict[str, str], row: dict[str, Any]) -> list[dic
     src = str(row.get("src_addr") or "")
     if not src or not mac or mac in {"-", "(empty)"}:
         return []
-    return [{"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": mac,
+    return [{"ts": row.get("ts") or utcnow(), "src_addr": src, "mac": mac,
              "source": "oui", "raw": mac, "note": "from conn"}]
 
 
@@ -1250,7 +1252,7 @@ def observations_from_dns(rec: dict[str, str], row: dict[str, Any]) -> list[dict
     src = str(row.get("src_addr") or "")
     if not src or not is_display_name(name):
         return []
-    return [{"ts": row.get("ts") or datetime.now(), "src_addr": src, "mac": "",
+    return [{"ts": row.get("ts") or utcnow(), "src_addr": src, "mac": "",
              "source": "dns_name", "raw": name, "note": "from dns"}]
 
 

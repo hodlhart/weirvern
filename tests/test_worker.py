@@ -8,9 +8,10 @@ exercised faithfully.
 import logging
 import pathlib
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from weirvern.clock import utcnow
 from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.worker import (
@@ -115,7 +116,7 @@ def test_first_call_always_full_trains():
 
 def test_not_due_refreshes_baseline_only():
     detectors, (if_m, gb_m, db_m, bl_m) = fake_detectors()
-    last = datetime.now()
+    last = utcnow()
     result = train_if_due(fake_client, detectors, FakeSettings(), ModelConfig(), last_full_train=last)
     assert result == last  # full-train timestamp unchanged
     assert if_m.trains == 0
@@ -131,7 +132,7 @@ def test_cadence_does_not_advance_when_nothing_trained():
     detectors, (if_m, gb_m, db_m, bl_m) = fake_detectors()
     for m in (if_m, gb_m, db_m, bl_m):
         m.train_ok = False
-    stale = datetime.now() - timedelta(hours=7)
+    stale = utcnow() - timedelta(hours=7)
     result = train_if_due(fake_client, detectors, FakeSettings(), ModelConfig(), last_full_train=stale)
     assert result == stale, "cadence advanced despite nothing training"
 
@@ -142,7 +143,7 @@ def test_fast_path_finds_baseline_without_positional_coupling():
     bl_m = FakeBaseline()
     others = [FakeModel("Gradient Boosting"), FakeModel("DBSCAN")]
     detectors = [if_m, bl_m, *others]  # baseline deliberately NOT last
-    last = datetime.now()
+    last = utcnow()
     train_if_due(fake_client, detectors, FakeSettings(), ModelConfig(), last_full_train=last)
     assert bl_m.trains == 1, "baseline refresh did not run (positional coupling?)"
     assert if_m.trains == 0
@@ -150,7 +151,7 @@ def test_fast_path_finds_baseline_without_positional_coupling():
 
 def test_due_triggers_full_retrain():
     detectors, (if_m, gb_m, db_m, bl_m) = fake_detectors()
-    stale = datetime.now() - timedelta(hours=7)
+    stale = utcnow() - timedelta(hours=7)
     result = train_if_due(fake_client, detectors, FakeSettings(), ModelConfig(), last_full_train=stale)
     assert result is not None and result > stale
     assert if_m.trains == 1
@@ -264,7 +265,7 @@ def test_an_ALL_SKIPPED_sweep_records_coverage_too(monkeypatch, tmp_path):
     assert inserted, "the fresh sweep must write"
 
     # Pin the cursor backward, as the defect leaves it: stuck at the last fresh write.
-    stale = datetime.now() - timedelta(minutes=5)
+    stale = utcnow() - timedelta(minutes=5)
     _save_detect_cursor(settings, stale)
 
     # Sweep 2: the same window re-verdicts, and EVERY verdict is already recorded.
@@ -278,7 +279,7 @@ def test_an_ALL_SKIPPED_sweep_records_coverage_too(monkeypatch, tmp_path):
     )
     assert inserted2 == [], "nothing new was inserted, so nothing should have been"
     moved = _load_detect_cursor(settings)
-    assert moved is not None and moved >= datetime.now() - timedelta(seconds=10), (
+    assert moved is not None and moved >= utcnow() - timedelta(seconds=10), (
         f"an all-skipped sweep did not record coverage (cursor={moved}); it stays pinned at "
         "the last fresh write and every later sweep re-reads and re-scores from there"
     )
@@ -506,6 +507,12 @@ def test_a_POPULATED_side_table_does_not_warn(monkeypatch, caplog):
 # that only checked "detection returns verdicts" passes with an empty window and is exactly the
 # failure mode being fixed.
 
+def _aware_utc(value: str) -> datetime:
+    """A formatted ClickHouse bound is UTC wall time; attach the zone before comparing it."""
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def _sweep_since(monkeypatch, *, interval_s):
     """The `since` the sweep computes, captured from the query it actually issues."""
     import weirvern.db as db
@@ -532,8 +539,8 @@ def test_the_lookback_is_WIDER_than_the_aggregation_bucket(monkeypatch):
 
     since = _sweep_since(monkeypatch, interval_s=AGG_BUCKET_S)
     assert since, "the sweep issued no query, so this test proves nothing"
-    asked = datetime.fromisoformat(since)
-    span = (datetime.now() - asked).total_seconds()
+    asked = _aware_utc(since)
+    span = (utcnow() - asked).total_seconds()
     assert span > AGG_BUCKET_S, (
         f"the lookback is {span:.0f}s against a {AGG_BUCKET_S}s bucket. A bucket is then dropped "
         f"before the next one has rows, and the sweep analyses NOTHING while every probe reads green"
@@ -549,8 +556,8 @@ def test_a_FASTER_cadence_cannot_reintroduce_the_race(monkeypatch):
 
     for interval in (10, 60, 120, 300, 900):
         since = _sweep_since(monkeypatch, interval_s=interval)
-        asked = datetime.fromisoformat(since)
-        span = (datetime.now() - asked).total_seconds()
+        asked = _aware_utc(since)
+        span = (utcnow() - asked).total_seconds()
         assert span > AGG_BUCKET_S, (
             f"at DETECT_INTERVAL_S={interval} the lookback is {span:.0f}s against a "
             f"{AGG_BUCKET_S}s bucket, so a bucket falls out of the window before the next has rows"
@@ -562,7 +569,7 @@ def test_the_lookback_still_covers_at_least_one_detection_interval(monkeypatch):
     skip rows entirely."""
     for interval in (10, 60, 300, 900):
         since = _sweep_since(monkeypatch, interval_s=interval)
-        span = (datetime.now() - datetime.fromisoformat(since)).total_seconds()
+        span = (utcnow() - _aware_utc(since)).total_seconds()
         assert span >= interval, (
             f"at DETECT_INTERVAL_S={interval} the lookback is only {span:.0f}s, so consecutive "
             f"sweeps would not overlap and rows between them would never be scored"
@@ -745,7 +752,7 @@ def test_a_HEALTHY_cycle_covers_exactly_what_the_old_code_covered():
     arithmetic.
     """
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     lookback = AGG_BUCKET_S + settings.detect_interval_s
 
     since = _cursor_since(settings, now - timedelta(seconds=settings.detect_interval_s))
@@ -760,7 +767,7 @@ def test_a_HEALTHY_cycle_covers_exactly_what_the_old_code_covered():
 def test_a_SLOW_cycle_re_covers_the_buckets_it_would_have_skipped():
     """THE DEFECT. A 1183s gap stepped over ~2 whole buckets, never examined, never logged."""
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     lookback = AGG_BUCKET_S + settings.detect_interval_s
 
     slow_gap_s = 1183  # the maximum measured on the live cluster
@@ -782,7 +789,7 @@ def test_the_window_always_ends_at_NOW_so_coverage_means_covered():
     """The returned cursor is the sweep's start, in every branch -- so the next cycle's window starts
     from what THIS one actually reached, and a cursor can never claim more than was examined."""
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     for cursor in (None, now - timedelta(seconds=300), now - timedelta(seconds=1183),
                    now + timedelta(hours=3), now - timedelta(hours=100)):
         _since, new_cursor = _covered_through(settings, cursor)
@@ -803,7 +810,7 @@ def test_with_NO_cursor_the_behaviour_is_the_old_window():
     slow early cycle would be unprotected -- which is exactly the case this fix is for.
     """
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     since, cursor = _covered_through(settings, None)
 
     expected = now - timedelta(seconds=AGG_BUCKET_S + settings.detect_interval_s)
@@ -821,7 +828,7 @@ def test_a_cursor_in_the_FUTURE_falls_back_instead_of_wedging(caplog):
     import logging
 
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
         since, cursor = _covered_through(settings, now + timedelta(hours=3))
 
@@ -840,7 +847,7 @@ def test_an_outage_longer_than_the_RETENTION_is_clamped_and_reported(caplog):
     import logging
 
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     gap_h = settings.retrain_window_h + 28
 
     with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
@@ -859,7 +866,7 @@ def test_an_outage_longer_than_the_RETENTION_is_clamped_and_reported(caplog):
 def test_an_outage_WITHIN_retention_is_fully_recovered():
     """The clamp must not blunt the fix: a gap inside the retention is covered in full."""
     settings = Settings()
-    now = datetime.now()
+    now = utcnow()
     gap_h = max(1, settings.retrain_window_h - 48)
 
     since, _cursor = _covered_through(settings, now - timedelta(hours=gap_h))
@@ -910,7 +917,7 @@ def test_an_UNWRITABLE_cursor_does_not_lose_the_sweep(tmp_path, caplog):
     (tmp_path / "nope").write_text("this is a FILE, so the directory cannot be created")
 
     with caplog.at_level(logging.WARNING, logger="weirvern.worker"):
-        _save_detect_cursor(settings, datetime.now())  # must not raise
+        _save_detect_cursor(settings, utcnow())  # must not raise
 
     assert any("Could not record" in r.getMessage() for r in caplog.records), (
         "an unwritable cursor failed silently, so an operator would never know coverage was lost"
@@ -940,7 +947,7 @@ def test_a_sweep_that_EXAMINED_rows_RECORDS_coverage(monkeypatch, tmp_path):
         "a sweep that read and scored aggregates recorded no coverage, so the next cycle starts "
         "from now() again and a slow cycle still steps over windows"
     )
-    assert cursor >= datetime.now() - timedelta(seconds=10), f"the cursor {cursor} is stale"
+    assert cursor >= utcnow() - timedelta(seconds=10), f"the cursor {cursor} is stale"
 
 
 def test_the_cursor_ROUND_TRIPS_through_the_file(monkeypatch, tmp_path):
@@ -949,7 +956,7 @@ def test_the_cursor_ROUND_TRIPS_through_the_file(monkeypatch, tmp_path):
     from weirvern.worker import _load_detect_cursor
 
     settings = Settings(model_dir=str(tmp_path))
-    when = datetime.now() - timedelta(minutes=7)
+    when = utcnow() - timedelta(minutes=7)
     _save_detect_cursor(settings, when)
 
     # A fresh read, exactly as a restarted process would do it.

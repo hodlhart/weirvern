@@ -149,7 +149,7 @@ def test_the_worker_does_not_stamp_now_on_a_warm_start():
     code = re.sub(r'""".*?"""', "", src, flags=re.S)      # docstrings
     code = re.sub(r"^\s*#.*$", "", code, flags=re.M)      # comments
 
-    assert "last_full_train = trained_at or datetime.now()" in code, (
+    assert "last_full_train = as_aware(trained_at) if trained_at else utcnow()" in code, (
         "the worker does not use the artifact timestamp for last_full_train, so a warm start "
         "resets the retrain clock (measured: 16 hours without a retrain against a 6h interval)"
     )

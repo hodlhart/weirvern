@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.17.7 — 2026-10-18
+
+THE HARDENING BATCH. GitHub issues #17, #18, #22, #24, #25, #26, #27, #28 and #32, verified
+against `6ccc19c`, imported to the `weirvern-hardening` board and fixed here. **#8 (README
+screenshots) is deliberately not in this release.**
+
+- **One clock (HD-28).** Every stored, computed or queried time is now aware UTC: 79 naive
+  `datetime.now()` / `fromtimestamp()` sites across the worker, ingester, host identity, alerts,
+  detectors, the admin API and Zeek windows. `weirvern/clock.py` owns the convention;
+  `tests/test_clock.py` runs it under `TZ=America/Chicago`, asserts no negative ages, and parses
+  the package to forbid a naive call from returning. Legacy naive values are read as LOCAL
+  (`clock.as_aware`), never relabelled UTC.
+- **The dialog contract (HD-17).** The modal shell is labelled by the moved node's own heading,
+  focus moves into it, Tab cannot leave it, and focus returns to the opening control.
+  `.dcell` filter cells are tabbable, carry `role=button` and an accessible name from their
+  title, and Enter/Space performs the click. Harness 828 → 834.
+- **Images pinned by digest (HD-18).** busybox 1.37 (the 1.36 drift is gone), ClickHouse 26.8,
+  goflow2 v2.2.6, `python:3.11-slim` and `zeek/zeek:lts` now carry `@sha256` in every manifest,
+  overlay, unit template and Containerfile.
+- **CI and manifest hardening (HD-22).** kubeconform pinned to v0.8.0 and verified against its
+  CHECKSUMS; kustomize reads `install.sh`'s pin instead of keeping a second version; every
+  `overlays/*/` is rendered; the unit templates are parsed; the prune container gets
+  `allowPrivilegeEscalation: false`, `drop: ALL`, a read-only root and a writable `/tmp`.
+- **The installer is honest (HD-24).** If pods never become Ready it still prints the full
+  picture, then exits **1** with an `INCOMPLETE:` line naming them and the command to re-check.
+- **Per-weirling credentials (HD-25).** `deploy-weirling.sh` creates `wv_<sensor>` with
+  `GRANT INSERT ON weirvern.*` and nothing else, generates the password locally, writes it only
+  to the target's 0600 env file, records sensor → user on the hub
+  (`/var/lib/weirvern/sensor-credentials.tsv`), and drops the user on `--remove`. It refuses to
+  fall back to the hub's shared password.
+- **Documented security and recovery (HD-26, HD-27, HD-32).** `docs/security.md` now states the
+  transport boundary with a worked nginx TLS example and the port-forward alternative, the
+  secrets-at-rest position (fresh installs use `--secrets-encryption`; existing clusters are
+  warned and given the k3s migration), and per-weirling credential revocation.
+  `docs/operations.md` carries the upgrade and rollback contract: code rolls back, data does
+  not, with the `IfNotPresent` caveat and the model archive path.
+- New pins: `tests/test_hardening.py` (8), `tests/test_dialog_contract.py` (4),
+  `tests/test_clock.py` (8). Full pytest green; harness 834; gate passed.
+
 ## 0.17.6 — 2026-10-18
 
 THE SHEET IS THE STANDARD.

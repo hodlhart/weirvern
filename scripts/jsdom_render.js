@@ -118,6 +118,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadDiscover, dcClear, discoverDrill,
                    loadDns, dnClear, dnApply, loadBlocked,
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
+                  openModal, closeModal, markFilterCells,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
                    wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
@@ -7363,6 +7364,54 @@ check("...a contradicted segment names BOTH segments on the issues list",
           doc.getElementById("dc-window").textContent);
     H.trApply({ mode: "relative", hours: 24 });
     await new Promise((r) => setTimeout(r, 300));
+  }
+  // ── HD-17: THE DIALOG CONTRACT AND KEYBOARD FILTER CELLS ─────────────────────────────────
+  {
+    // Start from a closed shell: an earlier block leaves the Blocked rule card open, and a
+    // modal opened over an open modal would focus the first node's control (a real stack, but
+    // not what this probe is measuring).
+    const shell0 = doc.getElementById("modal");
+    if (shell0 && !shell0.classList.contains("hidden")) {
+      for (const node of [...doc.getElementById("modal-body").children]) H.closeModal(node);
+    }
+    const opener = doc.createElement("button");
+    opener.textContent = "open";
+    doc.body.appendChild(opener);
+    opener.focus();
+    const pane = doc.createElement("div");
+    pane.innerHTML = "<h2>Contract probe</h2><button id='probe-a'>a</button><button id='probe-b'>b</button>";
+    H.openModal(pane);
+    await new Promise((r) => setTimeout(r, 40));
+    const shell = doc.getElementById("modal");
+    const labelId = shell.getAttribute("aria-labelledby");
+    const label = labelId ? doc.getElementById(labelId) : null;
+    check("the dialog is labelled by its own heading",
+          !!label && /Contract probe/.test(label.textContent), labelId || "no label");
+    check("focus moves into the dialog on open",
+          shell.contains(doc.activeElement),
+          (doc.activeElement || {}).id || (doc.activeElement || {}).tagName);
+    doc.getElementById("probe-b").focus();
+    doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    check("Tab stays inside the dialog", doc.activeElement === doc.getElementById("probe-a"),
+          (doc.activeElement || {}).id || "?");
+    H.closeModal(pane);
+    await new Promise((r) => setTimeout(r, 40));
+    check("closing returns focus to the opener", doc.activeElement === opener);
+    opener.remove();
+  }
+  {
+    H.showView("anomalies");
+    await H.loadAnomalies();
+    await new Promise((r) => setTimeout(r, 80));
+    const cells = [...doc.querySelectorAll(".dcell")];
+    check("every filter cell is reachable by keyboard",
+          cells.length > 0 && cells.every((c) => c.getAttribute("tabindex") === "0"),
+          `${cells.filter((c) => c.getAttribute("tabindex") !== "0").length}/${cells.length} unmarked`);
+    const cell = cells[0];
+    let clicked = 0;
+    if (cell) cell.addEventListener("click", () => { clicked += 1; });
+    if (cell) cell.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    check("and Enter performs the click a mouse would", clicked === 1, `clicks=${clicked}`);
   }
   check("no JavaScript errors during any of the above", errors.length === 0,
         errors.slice(0, 3).join(" | "));

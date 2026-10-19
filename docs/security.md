@@ -58,4 +58,92 @@ node, restricted at your firewall to trusted exporters. ClickHouse is
 cluster-internal by default (`k8s/30-clickhouse.yaml` ships an optional
 externally-reachable Service with `type: NodePort` commented out).
 
+### Transport and the trust boundary
+
+**The console serves plain HTTP.** That is a deliberate choice for a management segment: no
+certificate to renew, no proxy to keep alive, and the CLI and port-forward paths work without one.
+The boundary it assumes is explicit: **anything beyond the trusted management segment must
+terminate TLS in front of the console.** Nothing in the repository provides a certificate,
+renewal, or HSTS.
+
+Two supported paths:
+
+**1. Terminate TLS at a reverse proxy** (anything long-lived). Point nginx or Traefik at the GUI
+NodePort. The console is same-origin, sends its token as headers (`X-Weirvern-Token`; it also
+accepts a session cookie), and uses no websockets, so the proxy only has to preserve the host and
+the scheme:
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name weirvern.example;
+  ssl_certificate     /etc/ssl/certs/weirvern.pem;
+  ssl_certificate_key /etc/ssl/private/weirvern.key;
+
+  location / {
+    proxy_pass http://127.0.0.1:30088;       # the GUI NodePort
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 120s;                  # settings applies can be slow
+  }
+}
+```
+
+Once the proxy answers, restrict the NodePort at the firewall to the proxy's host — otherwise the
+plain HTTP door is still open beside the TLS one.
+
+**2. One operator, no extra components.** `kubectl -n weirvern port-forward svc/weirvern-gui
+30088:80`, or `ssh -L 30088:127.0.0.1:30088 <hub>`, then browse `http://127.0.0.1:30088`. The
+tunnel is the transport security; nothing else listens.
+
+If neither path is in place and the console is reachable from an untrusted segment, **the operator
+token, account credentials and the session travel in clear text.** That is the exposure; it is
+stated here rather than left to be discovered.
+
+### Secrets at rest
+
+`install.sh` installs k3s with `--secrets-encryption` on **fresh** installs. Per the k3s
+documentation, the first start with that flag generates an AES-CBC key, an encryption config, and
+passes it to the kube-apiserver; the Secrets in this namespace (the ClickHouse password, the
+GUI/operator token, the Pushover credentials, the account store) are then encrypted in the k3s
+datastore on disk.
+
+**Existing clusters installed before this flag are not encrypted.** k3s cannot enable it on a
+running server without a restart: follow the k3s procedure (`k3s secrets-encrypt enable`, then
+restart the server as that page requires), and use `k3s secrets-encrypt reencrypt` to rewrite
+existing Secrets. If that migration is not acceptable, record the exposure here and in the
+deployment notes rather than assuming the datastore is encrypted. The installer warns when it
+finds an existing k3s without the flag.
+
+Reference: <https://docs.k3s.io/security/secrets-encryption>. The k3s default when the flag is
+absent is no encryption at rest.
+
+### Per-weirling database credentials
+
+Every weirling used to ship with the hub's own ClickHouse user and password. One compromised
+sensor therefore held the database credential for the whole deployment, and revoking it meant
+rotating every other sensor at the same time.
+
+`scripts/deploy-weirling.sh` now creates a **dedicated user per sensor**:
+
+- name `wv_<sensor-id>` (hyphens become underscores);
+- `GRANT INSERT ON weirvern.*` and nothing else — no SELECT, no DDL, no access to other
+  databases. The shipping path writes `flows`, the `zeek_*` tables and `sensor_status`, all
+  through the same ingester code;
+- a password generated on the machine running the deploy script (24 random bytes, hex), written
+  only to the target's `/etc/weirvern-weirling.env` (0600) and never printed;
+- the sensor → user mapping recorded on the hub in
+  `/var/lib/weirvern/sensor-credentials.tsv` (0600, root-owned).
+
+Re-running the install rotates that sensor's password (`ALTER USER`) without touching any other
+sensor. **To revoke one sensor:** `scripts/deploy-weirling.sh --target … --sensor-id … --remove`
+(which also drops the user when `--hub` is given), or by hand:
+
+```sql
+DROP USER IF EXISTS wv_<sensor_id>;
+```
+
+The other weirlings keep shipping. The hub's own credential is no longer copied anywhere.
+
 ---

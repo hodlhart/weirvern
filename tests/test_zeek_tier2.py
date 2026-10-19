@@ -24,7 +24,7 @@ duplicated in a literal.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -201,17 +201,17 @@ def test_kerberos_reads_the_ticket_window_from_from_and_till():
     `from`/`till`. Reading the schema's names from the record yields the epoch for every
     ticket -- a column that is never empty and never correct, which is worse than empty."""
     row = row_of(map_zeek_kerberos, _KERBEROS_RECORD)
-    assert row["ticket_from"] == datetime.fromtimestamp(1758199000)
-    assert row["ticket_till"] == datetime.fromtimestamp(1758285400)
+    assert row["ticket_from"] == datetime.fromtimestamp(1758199000, UTC)
+    assert row["ticket_till"] == datetime.fromtimestamp(1758285400, UTC)
     # And specifically not the epoch, which is what the wrong field name produces.
-    assert row["ticket_till"] != datetime.fromtimestamp(0)
+    assert row["ticket_till"] != datetime.fromtimestamp(0, UTC)
 
 
 def test_kerberos_distinguishes_unset_tickets_from_the_epoch():
     """A ticket with no logged window must not read as "expired in 1970" -- that is a
     missing value, and a query for expired tickets would match every row."""
     row = row_of(map_zeek_kerberos, {**_KERBEROS_RECORD, "from": UNSET, "till": UNSET})
-    assert row["ticket_till"] == datetime.fromtimestamp(0)
+    assert row["ticket_till"] == datetime.fromtimestamp(0, UTC)
 
 
 def test_kerberos_records_the_spn_and_principal_that_make_roasting_visible():

@@ -121,6 +121,56 @@ need one), encryption at rest, and the data-retention windows themselves (that i
 ---
 
 
+### Upgrade and rollback
+
+**What an upgrade is.** Images are built with an immutable tag (`sha-<commit>`), manifests are
+rendered by kustomize, and the schema is applied by the `weirvern-schema` Job. A release is: build
+images → set the image tags → `kubectl apply -k k8s/`.
+
+**Before you start.**
+
+- take a backup: `scripts/backup_clickhouse.sh`
+- record the running tags:
+  `kubectl -n weirvern get deploy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.template.spec.containers[0].image}{"\n"}{end}'`
+- `weirvern status` (or `kubectl -n weirvern get pods`)
+- note the schema version and the release in the change record
+
+**Rolling back the code.** Pin the previous immutable tag on each deployment:
+
+```bash
+kubectl -n weirvern set image deploy/weirvern-worker worker=weirvern-worker:sha-<previous>
+kubectl -n weirvern set image deploy/weirvern-gui    gui=weirvern-worker:sha-<previous>
+kubectl -n weirvern set image deploy/zeek            zeek=weirvern-zeek:sha-<previous>
+kubectl -n weirvern rollout status deploy/weirvern-worker
+kubectl -n weirvern rollout status deploy/weirvern-gui
+kubectl -n weirvern rollout status deploy/zeek
+```
+
+The equivalent manifest-first path is `kustomize edit set image` in `k8s/` followed by
+`kubectl apply -k k8s/`; the manifests are the source of truth, so a later apply will restore
+whatever tag they carry.
+
+**The `IfNotPresent` caveat.** The workloads pull with `imagePullPolicy: IfNotPresent`. Re-using a
+tag does not re-pull it, so a rollback to a tag that is already present is only meaningful if
+those bits are the ones you want. Always use the immutable `sha-<commit>` tags the build produces
+— never a floating tag as a rollback target.
+
+**What cannot be rolled back: the schema.** `weirvern init-db` applies add-only migrations; there
+are no down migrations, and data written by a newer version may not be readable by an older one.
+Rolling the code back is safe only if the schema did not advance. If it did, restore the
+pre-upgrade backup into a scratch database, verify it, then restore for real — see
+[Backups](#backups) and `scripts/backup_clickhouse.sh --restore`. That is the contract: **code
+rolls back, data does not.**
+
+**Rolling back models.** Artifacts live on the `models` PVC; the previous set is archived under
+`superseded/<stamp>/` (`SUPERSEDED_DIR` in `weirvern/models/retrain.py`). Copy the chosen set back
+into `MODEL_DIR` and restart the worker; the next cycle warm-loads it.
+
+**If a deployment will not roll back cleanly.** `kubectl -n weirvern rollout undo deploy/<name>`
+works while the deployment has revision history, but it is not a substitute for the image pin
+when kustomize-managed tags are re-applied. Record the intended tag in the change record so the
+next apply cannot silently move the deployment forward again.
+
 ## Configuration
 
 There are two configuration surfaces, and the distinction matters:

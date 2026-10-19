@@ -788,10 +788,10 @@ class AdaptiveBaselineDetector(BaseDetector):
 
     def persist_history(self, client: Client, window_hours: int) -> None:
         """Mirror baselines to ClickHouse for audit/rebuild (legacy behavior)."""
-        from datetime import datetime as _dt
+        from ..clock import utcnow
 
         rows = [[
-            _dt.now(), src, b["avg_bytes"], b["stddev_bytes"], b["avg_packets"], b["stddev_packets"],
+            utcnow(), src, b["avg_bytes"], b["stddev_bytes"], b["avg_packets"], b["stddev_packets"],
             b["avg_unique_dsts"], b["stddev_unique_dsts"], 1, window_hours,
             b["p95_bytes"], b["p99_bytes"], b["p999_bytes"],
             b["p95_packets"], b["p99_packets"], b["p999_packets"],

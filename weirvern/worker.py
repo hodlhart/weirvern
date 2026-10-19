@@ -40,6 +40,8 @@ from weirvern.zeek_features import (
     zeek_window_sql,
 )
 
+from .clock import as_aware, utcnow
+
 logger = logging.getLogger(__name__)
 
 # ── THE AGGREGATION BUCKET SIZE, AND WHY IT IS A NAMED CONSTANT ───────────────────────────────
@@ -147,7 +149,7 @@ def _sluice_dns_maybe(settings, client) -> None:
     if cursor is None:
         # Naive local time, like every other clock read in this file: the rows zeek writes are
         # stamped in the box's local time, and comparing aware to naive would skip every row.
-        cursor = datetime.now() - timedelta(seconds=60)
+        cursor = utcnow() - timedelta(seconds=60)
     try:
         rows = client.query(
             "SELECT ts, src_addr, query FROM weirvern.zeek_dns "
@@ -358,7 +360,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
 # five-minute cooldown after a crash.
 # When THIS process began. The line for the orphan sweep: an action row stamped before it cannot be
 # running now, because exactly one process executes model actions (see actions.reap_running).
-_PROCESS_STARTED = datetime.now()
+_PROCESS_STARTED = utcnow()
 
 CHANNEL_NETFLOW_COLLECTOR = "127.0.0.1:2055"  # goflow2, hostNetwork on this node
 # Timeouts chosen for a monitoring pipeline that re-evaluates five-minute buckets: idle flows
@@ -751,7 +753,7 @@ def load_or_train(client: Client, detectors, settings,
     trained, read from their own on-disk metadata; it is None when nothing was trained.
 
     WHY IT RETURNS A TIMESTAMP AND NOT JUST A BOOL. The caller used to stamp
-    `last_full_train = datetime.now()` whenever the detectors were usable, and a WARM START is
+    `last_full_train = utcnow()` whenever the detectors were usable, and a WARM START is
     usable with no training having happened at all. So every restart reset the retrain clock to
     now for models whose artifacts could be hours old, and `train_if_due` then correctly
     declined to retrain for another `retrain_every_h`.
@@ -774,12 +776,12 @@ def load_or_train(client: Client, detectors, settings,
         logger.info("All detectors loaded from disk — warm start")
         oldest = _oldest_trained_at(detectors)
         if oldest is not None:
-            age_h = (datetime.now() - oldest).total_seconds() / 3600
+            age_h = (utcnow() - as_aware(oldest)).total_seconds() / 3600
             logger.info("Artifacts are %.1fh old (retrain due at %dh)",
                         age_h, settings.retrain_every_h)
         return True, oldest
 
-    end_dt, start_dt = datetime.now(), datetime.now() - timedelta(hours=settings.retrain_window_h)
+    end_dt, start_dt = utcnow(), utcnow() - timedelta(hours=settings.retrain_window_h)
     trained_any = False
     # WHICH detectors actually trained, tracked as we go. `_record_model_metadata` writes a
     # TRAINING-HISTORY row, and the health probe counts those rows -- so writing one for a detector
@@ -866,8 +868,8 @@ def train_if_due(
     (at least one detector trained). Otherwise the next cycle retries a full
     retrain rather than deferring it a whole cadence while models stay stale.
     """
-    now = datetime.now()
-    if last_full_train is None or (now - last_full_train) > timedelta(hours=settings.retrain_every_h):
+    now = utcnow()
+    if last_full_train is None or (now - as_aware(last_full_train)) > timedelta(hours=settings.retrain_every_h):
         end_dt = now
         start_dt = now - timedelta(hours=settings.retrain_window_h)
         logger.info("🔄 Full retrain (window %dh)", settings.retrain_window_h)
@@ -1087,7 +1089,7 @@ def _covered_through(settings, last_covered: datetime | None) -> tuple[datetime,
     RETURNED, NOT STORED. The caller owns the cursor, so this stays a pure function of its inputs and
     is testable with no filesystem and no loop.
     """
-    now = datetime.now()
+    now = utcnow()
     lookback_s = max(AGG_BUCKET_S + settings.detect_interval_s, settings.detect_interval_s)
     default_since = now - timedelta(seconds=lookback_s)
 
@@ -1627,7 +1629,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
                   m["threshold_used"], m["reason"], m["model_agreement"],
                   m["isolation_forest_score"], m["gradient_boosting_score"],
                   m["dbscan_score"], m["baseline_score"], m["detected_by_models"],
-                  datetime.now()] for m in near_misses],
+                  utcnow()] for m in near_misses],
                 column_names=["window_start", "window_end", "src_addr", "anomaly_score",
                               "threshold_used", "reason", "model_agreement",
                               "isolation_forest_score", "gradient_boosting_score",
@@ -1715,7 +1717,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         v["_attack_matches"] = techniques
         v["attack_label"] = attack.label(techniques)
         rows.append([
-            datetime.now(), v["window_start"], f.get("window_end"), v["src_addr"],
+            utcnow(), v["window_start"], f.get("window_end"), v["src_addr"],
             v["anomaly_score"], v["confidence"], v["isolation_forest_score"],
             v["gradient_boosting_score"], v["dbscan_score"], v["baseline_score"],
             v["model_agreement"], exp["primary_deviation_feature"],
@@ -2089,7 +2091,7 @@ def main() -> None:
                 usable, trained_at = load_or_train(client, detectors, settings, cfg)
                 if usable:
                     trained_once = True
-                    last_full_train = trained_at or datetime.now()
+                    last_full_train = as_aware(trained_at) if trained_at else utcnow()
                 else:
                     logger.info("No data to train on yet — will retry next cycle "
                                 "(this clears automatically once flows arrive)")

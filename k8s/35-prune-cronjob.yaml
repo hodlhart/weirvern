@@ -92,6 +92,9 @@ spec:
                   value: /models
                 - name: NETFLOW_DIR
                   value: /data
+                # readOnlyRootFilesystem leaves no place to write bytecode; disable it.
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
               volumeMounts:
                 # Read-WRITE, and scoped to this container only. The worker's own mount of
                 # this same path stays read-only (33-worker.yaml), so the invariant that
@@ -105,6 +108,8 @@ spec:
                   mountPath: /models
                 - name: flow-data
                   mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
               resources:
                 requests:
                   cpu: 10m
@@ -114,6 +119,16 @@ spec:
                   # memory, but not much: it streams in chunks.
                   cpu: 200m
                   memory: 256Mi
+              # THE CONTAINER-LEVEL HARDENING THE OTHER WORKLOADS CARRY (HD-22). The pod had
+              # a securityContext; the container that actually runs the CLI did not. The root
+              # filesystem is read-only because this job writes only to its three mounts;
+              # bytecode writing is disabled so importing the package does not need a writable
+              # site-packages, and /tmp is an emptyDir for anything transient.
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
           volumes:
             # hostPath, matching 32-zeek.yaml and 33-worker.yaml. This is a single-node
             # deployment by design; a multi-node cluster would need these as a PVC with
@@ -129,3 +144,6 @@ spec:
             - name: models
               persistentVolumeClaim:
                 claimName: models
+            # readOnlyRootFilesystem containers still need a writable /tmp for transient files.
+            - name: tmp
+              emptyDir: {}
