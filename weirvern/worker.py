@@ -287,6 +287,11 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
             try:
                 prior = sluice_store.load_gate_state(client, _sensor_name(settings))
                 if changed or prior.get("state") != GATE_STATE_DISARMED:
+                    # A stale row still needs a state that names this gate's interface and backend.
+                    # The default GateState has neither, and writing it made the panel say
+                    # "interface —" and warn about a '' backend on a gate that uses nft on eth1.
+                    if not changed:
+                        sup.disarm()
                     sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice: could not record the disarmed state: %s", exc)

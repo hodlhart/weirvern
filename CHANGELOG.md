@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.17 — 2026-10-19
+
+THE TRAFFIC GATE NAMES ITS INTERFACE AND BACKEND. Writing the default `GateState` on a disabled
+restart left `iface` and `backend` empty, so the split card read "interface —" and warned about a
+`''` backend on a gate that uses nft on eth1. A stale row now goes through `disarm()` before it is
+recorded, which fills both from the running supervisor. Domain Gate also counts the recorded hits
+list correctly and says plainly that it answers DNS rather than dropping packets.
+
 ## 0.17.16 — 2026-10-19
 
 TWO GATES, TWO JOBS. The Sluice page showed one gate state for two independent enforcement paths,

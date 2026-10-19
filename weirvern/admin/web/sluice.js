@@ -523,7 +523,7 @@ function renderGateSplit(d) {
     dg.replaceChildren(
       tile("lists enabled", `${on.length} / ${lists.length}`),
       tile("domains", domains.toLocaleString()),
-      tile("hits recorded", Number(d.hits) || 0),
+      tile("hits recorded", Array.isArray(d.hits) ? d.hits.length : (Number(d.hits) || 0)),
       tile("last sync", last),
     );
   }
@@ -760,8 +760,8 @@ async function loadBlockingControls() {
   const domNote = document.getElementById("sl-dom-note");
   if (domLine) {
     domLine.textContent = domOn
-      ? "On: a rule whose match is a name may drop traffic, and every drop is recorded with the name that matched."
-      : "Off: domain rules still record and alert, but nothing is dropped for them; address rules are unaffected.";
+      ? "On: names on an enabled blocklist and block-mode domain rules are answered with a block answer. This happens in DNS, not in the packet gate."
+      : "Off: domain rules still record and alert, but DNS answers are not blocked; the traffic gate is separate.";
   }
   if (domToggle) {
     domToggle.textContent = domOn ? "Disable domain blocking" : "Enable domain blocking";
