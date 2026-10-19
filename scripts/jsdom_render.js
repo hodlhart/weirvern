@@ -3904,17 +3904,22 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               !!cells[4].querySelector("svg.wl-spark"), cells[4].textContent.trim());
       }
     }
-    const nsTile = tiles.find((t) => /never seen/.test(t.textContent));
-    nsTile.click();
+    // THE STALE TILE, not a never-seen tile: the operator asked for that count to leave the
+    // summary row (2026-10-19). The worklist filter itself still exists for declarations.
+    const staleTile = tiles.find((t) => /stale/.test(t.textContent));
+    check("the summary no longer offers a never-seen tile",
+          !tiles.some((t) => /never seen/.test(t.textContent)),
+          tiles.map((t) => t.textContent).join("|").slice(0, 180));
+    staleTile.click();
     await new Promise((r) => setTimeout(r, 250));
     const rowsNow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")];
     check("...clicking a count filters the worklist to exactly it",
           rowsNow.length >= 1 &&
-            rowsNow.every((tr) => tr.classList.contains("wl-state-never_seen")),
+            rowsNow.every((tr) => tr.classList.contains("wl-state-stale")),
           rowsNow.map((t) => t.className).join(", ").slice(0, 120));
     check("...and the filter rides the URL",
-          String(window.location.hash).includes("wl.f=never_seen"), String(window.location.hash));
-    nsTile.click();   // toggle off
+          String(window.location.hash).includes("wl.f=stale"), String(window.location.hash));
+    staleTile.click();   // toggle off
     await new Promise((r) => setTimeout(r, 250));
     check("...and clicking it again clears the filter",
           [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].length > 1,
@@ -5412,10 +5417,11 @@ for (let i = 0; i < 40 && !wlText().includes("edge-alive"); i++) {
 check("the Weirlings tab exists and renders the fleet",
       wlText().includes("edge-alive") && wlText().includes("edge-stopped"));
 
-check("a NEVER-SEEN sensor is distinguishable from a STALE one",
-      wlText().includes("never seen") && wlText().includes("stale"),
-      "both render as 'no fresh heartbeat'; collapsing them sends an operator to the logs of a "
-      + "sensor that never wrote any");
+check("a NEVER-SEEN sensor is still distinguishable from a STALE one",
+      (wlText().toLowerCase().includes("never seen")
+       || !!doc.querySelector("#wl-view option[value='never-seen']"))
+      && wlText().toLowerCase().includes("stale"),
+      "the summary tile is gone; the state vocabulary and its view must remain distinct");
 
 // WL-2: THE SHEET IS CHANGE-ONLY. The facts it used to list live on the ISSUES list (Logs),
 // where a problem belongs beside its fix -- so the claims are checked THERE, and the sheet is

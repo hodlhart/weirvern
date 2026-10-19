@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.34 — 2026-10-19
+
+THE OLD WHOLE-HUB SETTINGS GRID IS OUT OF THE WEIRLING SHEET, AND ETH2 SHOWS ETH2.
+
+- The per-NIC panel no longer sits above a second, global settings grid. That grid was the
+  old interface settings page: selecting eth2 still showed eth1's `ZEEK_IFACE` and
+  `CAPTURE_IFACE` values underneath, which made the two interfaces look connected. The grid
+  remains on Settings; the sheet renders only the selected interface's controls.
+- A sensor row now opens its first non-management NIC automatically, so the per-NIC panel is
+  always the settings surface; a NIC row opens exactly that NIC.
+- The Weirlings summary no longer draws a **never seen** tile. The state and its saved view
+  remain; the tile was removed at the operator's request.
+
 ## 0.17.33 — 2026-10-19
 
 THE PER-INTERFACE SHEET HAS A MODE AND A FEEDS SECTION, AND NETFLOW SAYS WHERE IT COMES FROM.

@@ -1295,3 +1295,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 #wl-nic-settings .nic-section { margin: 10px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
 #wl-nic-settings .nic-section h4 { margin: 0 0 4px; font-size: var(--fs-2); color: var(--muted); }
 #wl-nic-settings .nic-section .controls { margin: 0; }
+/* THE OLD GLOBAL SENSOR SETTINGS GRID IS GONE FROM THE WEIRLING SHEET (operator, 2026-10-19:
+ * "selecting eth2 still has eth1 settings... they should be independent"). The sheet used to
+ * render the whole-hub grid under the per-NIC panel, so the global ZEEK_IFACE/CAPTURE_IFACE
+ * values (eth1) appeared beside eth2's controls. The grid remains on the Settings tab; the
+ * sheet now speaks only through the selected NIC's panel. */
+#wl-local-settings > h3,
+#wl-local-settings > .info-text,
+#wl-local-settings > .sonar-row,
+#wl-local-settings > #st-sonar-note,
+#wl-local-settings > #st-sonar-help-text,
+#wl-local-settings > #st-test-note,
+#wl-local-settings > #st-test-help-text,
+#wl-local-settings > #st-sensor { display: none !important; }

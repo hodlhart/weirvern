@@ -119,7 +119,6 @@ async function loadWeirlings() {
     ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : "", "alive"],
     ["problems", String(s.problems ?? "—"), (s.problems ?? 0) > 0 ? "bad" : "", "problem"],
     ["stale", String(s.stale ?? "—"), (s.stale ?? 0) > 0 ? "warn" : "", "stale"],
-    ["never seen", String(s.never_seen ?? "—"), (s.never_seen ?? 0) > 0 ? "warn" : "", "never_seen"],
     ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : "", "unregistered"],
     ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : "", "disabled"],
   ];
@@ -851,7 +850,14 @@ async function openWeirling(sensorId, opts = {}) {
   const localBox = document.getElementById("wl-local-settings");
   if (localBox) {
     const showLocal = Boolean(r.local);
-    if (!opts.nic) wlCloseNicSettings();
+    // A SENSOR ROW OPENS THE FIRST USABLE NIC; a NIC row opens exactly that NIC. The old
+    // whole-hub settings grid is gone, so there must always be a NIC panel here.
+    let chosen = opts.nic;
+    if (showLocal && !chosen) {
+      const mgmt = String(wlCfgValue("mgmt_iface") || "").trim();
+      const ifaces = Array.isArray(r.interfaces) ? r.interfaces : [];
+      chosen = ifaces.find((n) => n && n !== mgmt && n !== "lo") || "";
+    }
     localBox.classList.toggle("hidden", !showLocal);
     const localState = document.getElementById("wl-local-state");
     if (localState) localState.textContent = showLocal && !r.registered ? "not yet adopted" : "";
@@ -865,8 +871,8 @@ async function openWeirling(sensorId, opts = {}) {
         // editor below is for REMOTE sensors; this hub is configured through Settings, so the
         // click has to land in the CAPTURE_IFACE control and stage the change -- setting only the
         // value would look right until Apply and then do nothing.
-        if (opts.nic && /^[A-Za-z0-9_.:-]+$/.test(opts.nic)) {
-          wlShowNicSettings(opts.nic);
+        if (chosen && /^[A-Za-z0-9_.:-]+$/.test(chosen)) {
+          wlShowNicSettings(chosen);
         }
       } catch (err) {
         const detailNote = document.getElementById("wl-detail-note");
