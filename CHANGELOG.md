@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.19 — 2026-10-19
+
+THE NIC CLICK STAGES THE FIELD IT FINDS. Settings rows carry their key lowercased in the DOM
+(`capture_iface`) while the registry key is uppercase (`CAPTURE_IFACE`); the NIC click queried
+the uppercase form, found nothing, and silently staged no change — the sheet opened with eth1
+still selected. The lookup is case-insensitive now, and the Zeek list lookup accepts either
+spelling. Verified by driving the click and reading the staged value.
+
 ## 0.17.18 — 2026-10-19
 
 THE OPERATOR'S RULE WORK, AND MULTI-PORT CAPTURE.

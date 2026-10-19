@@ -866,14 +866,18 @@ async function openWeirling(sensorId, opts = {}) {
         // value would look right until Apply and then do nothing.
         if (opts.nic && /^[A-Za-z0-9_.:-]+$/.test(opts.nic)) {
           const setInput = (key, value) => {
+            // Settings rows carry their key LOWERCASED in the DOM even when the registry key is
+            // uppercase. Querying the uppercase form silently found nothing -- the click looked
+            // like it worked but staged no change.
             const input = document.querySelector(
-              `#st-sensor .setting[data-key="${key}"] input`);
+              `#st-sensor .setting[data-key="${String(key).toLowerCase()}"] input`);
             if (!input) return;
             input.value = value;
             input.dispatchEvent(new window.Event("input", { bubbles: true }));
           };
           setInput("CAPTURE_IFACE", opts.nic);
-          const zrow = (typeof SETTINGS_ROWS !== "undefined" && SETTINGS_ROWS.ZEEK_IFACES) || null;
+          const zrow = (typeof SETTINGS_ROWS !== "undefined"
+            && (SETTINGS_ROWS.ZEEK_IFACES || SETTINGS_ROWS.zeek_ifaces)) || null;
           const current = String((zrow && zrow.value) || "").split(",").map((s) => s.trim())
             .filter(Boolean);
           if (!current.includes(opts.nic)) setInput("ZEEK_IFACES", current.concat(opts.nic).join(","));
