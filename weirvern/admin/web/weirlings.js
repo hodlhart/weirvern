@@ -391,20 +391,9 @@ function wlSituation(r) {
   const zk = r.zeek || {};
   if (zk.known) cap.push(zk.observed ? `Zeek observed${zk.last_at ? ` ${zk.last_at}` : ""}` : "Zeek not observed");
   if (cap.length) box.appendChild(el("p", { class: "muted", text: `Evidence: ${cap.join(" \u00b7 ")}.` }));
-  if (r.local) {
-    const configured = /^(1|true|on|yes|enabled)$/i.test(wlCfg("siphon_netflow"))
-      || /^(1|true|on|yes|enabled)$/i.test(wlCfg("channel_netflow"));
-    box.appendChild(el("p", { class: "muted",
-      text: `Flow capture is configured ${configured ? "on" : "off"} \u2014 a setting, not evidence; `
-        + `the line above is what the hub has actually seen.` }));
-  }
   const first = (r.findings || [])[0];
   if (first) box.appendChild(el("p", { class: "muted", text: first }));
   if (r.local) {
-    // THE SETTINGS ARE BELOW, NOT ON ANOTHER TAB (WSM-3, 2026-10-18). The old "Open Settings"
-    // button led to a card that no longer exists; the sentence points at this sheet's section.
-    box.appendChild(el("p", { class: "muted",
-      text: "This is the hub's own weirling — its mode, Sonar and capture settings are below." }));
     if (!r.registered) {
       box.appendChild(el("p", { class: "muted",
         text: "It has not been adopted into the fleet yet; adopt it below. Its settings are "
@@ -870,6 +859,32 @@ async function openWeirling(sensorId, opts = {}) {
       // show a change made elsewhere the next time this sheet opens.
       try {
         await loadSettings();
+        // A NIC ROW SELECTS THAT NIC FOR THE INTERCEPT (operator, 2026-10-19: "Weirling setting
+        // should auto select the correct nic ... I want to enable eth2 for siphon"). The plan
+        // editor below is for REMOTE sensors; this hub is configured through Settings, so the
+        // click has to land in the CAPTURE_IFACE control and stage the change -- setting only the
+        // value would look right until Apply and then do nothing.
+        if (opts.nic && /^[A-Za-z0-9_.:-]+$/.test(opts.nic)) {
+          const setInput = (key, value) => {
+            const input = document.querySelector(
+              `#st-sensor .setting[data-key="${key}"] input`);
+            if (!input) return;
+            input.value = value;
+            input.dispatchEvent(new window.Event("input", { bubbles: true }));
+          };
+          setInput("CAPTURE_IFACE", opts.nic);
+          const zrow = (typeof SETTINGS_ROWS !== "undefined" && SETTINGS_ROWS.ZEEK_IFACES) || null;
+          const current = String((zrow && zrow.value) || "").split(",").map((s) => s.trim())
+            .filter(Boolean);
+          if (!current.includes(opts.nic)) setInput("ZEEK_IFACES", current.concat(opts.nic).join(","));
+          let nicNote = document.getElementById("wl-nic-edit");
+          if (!nicNote) {
+            nicNote = el("p", { class: "muted", attrs: { id: "wl-nic-edit" } });
+            const local = document.getElementById("wl-local-settings");
+            if (local) local.prepend(nicNote);
+          }
+          nicNote.textContent = `editing NIC ${opts.nic} — siphon capture iface (staged)`;
+        }
       } catch (err) {
         const detailNote = document.getElementById("wl-detail-note");
         if (detailNote) {

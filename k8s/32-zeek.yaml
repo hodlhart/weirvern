@@ -129,6 +129,15 @@ spec:
             - |
               set -eu
               IFACE="${ZEEK_IFACE:-eth0}"
+              # MULTIPLE CAPTURE PORTS (operator, 2026-10-19): ZEEK_IFACES is a comma-separated
+              # list (eth1,eth2). Empty means just ZEEK_IFACE, so every existing deployment is
+              # unchanged. Zeek accepts repeated -i and merges both streams into one capture.
+              IFARGS=""
+              for one in $(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' '); do
+                [ -n "$one" ] || continue
+                IFARGS="$IFARGS -i $one"
+              done
+              [ -n "$IFARGS" ] || IFARGS="-i $IFACE"
               MGMT="${MGMT_IFACE:-}"
               MODE="${SENSOR_MODE:-loch}"
               # ── WHICH MODE ARE WE IN, AND WHAT DOES IT COST IF WE FAIL? ──────
@@ -394,14 +403,14 @@ spec:
                 echo "[zeek] capture filter: $BPF"
               fi
               if [ -n "$BPF" ]; then
-                exec zeek -i "$IFACE" \
+                exec zeek $IFARGS \
                      -C \
                      -f "$BPF" \
                      /zeek/site/weirvern-local.zeek \
                      Log::default_rotation_interval=1hr \
                      Log::default_logdir=/zeek/logs
               fi
-              exec zeek -i "$IFACE" \
+              exec zeek $IFARGS \
                    -C \
                    /zeek/site/weirvern-local.zeek \
                    Log::default_rotation_interval=1hr \
@@ -412,6 +421,12 @@ spec:
                 configMapKeyRef:
                   name: weirvern-env
                   key: ZEEK_IFACE
+            - name: ZEEK_IFACES
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: ZEEK_IFACES
+                  optional: true
             # THE CAPTURE EXCLUSION LIST, DECLARED HERE OR IT DOES NOTHING. The startup
             # script builds its BPF filter from this variable, and an UNDECLARED variable is
             # EMPTY at runtime -- so the filter would silently never apply while the manifest

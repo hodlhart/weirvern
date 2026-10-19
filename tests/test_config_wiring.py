@@ -169,7 +169,7 @@ def test_the_startup_script_and_the_env_list_agree(docs):
     # in env: would be wrong -- and an earlier version of this test did exactly that,
     # flagging a correct script.
     internal = {
-        "IFACE", "MGMT", "MODE", "DEFROUTE", "CAPS", "IFLAGS", "HOME", "PATH", "PWD",
+        "IFACE", "IFARGS", "MGMT", "MODE", "DEFROUTE", "CAPS", "IFLAGS", "HOME", "PATH", "PWD",
         "SHELL", "HOSTNAME", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
         # BPF is the script's OWN local: it is built from WEIRVERN_CAPTURE_EXCLUDE_CIDRS and
         # assigned before use (`BPF=""` then appended to). Requiring it in env: would be wrong for

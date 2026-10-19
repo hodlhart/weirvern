@@ -72,6 +72,8 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "PUSHOVER_COOLDOWN_S",
     "PUSHOVER_MAX_PER_HOUR",
     "ZEEK_IFACE",
+    "ZEEK_IFACES",
+    "CAPTURE_IFACE",
     "MGMT_IFACE",
     "WEIRVERN_REVERSE_DNS",
     "INTERCEPT_TARGETS",
@@ -164,6 +166,9 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "ZEEK_IFACE": (("ds/zeek", "deploy/weirvern-worker"),
                    "restarts the capture sensor (brief capture gap) and the worker, whose "
                    "intercept relays on this interface"),
+    "ZEEK_IFACES": (("ds/zeek",), "restarts the capture sensor (brief capture gap)"),
+    "CAPTURE_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker, whose "
+                      "intercept relays on this interface"),
     "MGMT_IFACE": (("ds/zeek",), "restarts the capture sensor (brief capture gap)"),
     # The intercept plan is read by the WORKER's supervisor, not by the sensor: the sensor only
     # captures. Restarting ds/zeek for these (an earlier mapping) applied nothing.
@@ -317,6 +322,8 @@ SETTING_CONTROLS: dict[str, dict] = {
     "SENSOR_MODE": {"control": "select", "options": ["loch", "siphon"]},
     "WEIRVERN_REVERSE_DNS": {"control": "select", "options": ["private", "all", "off"]},
     "ZEEK_IFACE": {"control": "text"},
+    "ZEEK_IFACES": {"control": "text"},
+    "CAPTURE_IFACE": {"control": "text"},
     "MGMT_IFACE": {"control": "text"},
     "INTERCEPT_TARGETS": {"control": "text"},
     "INTERCEPT_SEGMENT": {"control": "text"},

@@ -132,7 +132,10 @@ def test_the_view_has_checkboxes_bulk_parking_and_a_rule_sheet():
         assert elem in html, f"{elem} missing from the rules view"
     # Deleting a rule is a per-rule act in its sheet (SL-1, 2026-10-18), not a bulk button and
     # not an icon in the list.
-    assert 'id="sl-bulk-delete"' not in html, "bulk delete is back on the sluice tab"
+    # The operator asked for a bulk delete (2026-10-19). It lives in the bulk bar, behind a
+    # required reason, and never as a per-row icon.
+    assert 'id="sl-bulk-delete"' in html, "the operator's bulk delete is missing"
+    assert 'id="sl-bulk-reason"' in html, "bulk delete has no reason field"
     js = (WEB / "sluice.js").read_text()
     assert "sl-pick" in js and "slConfirm" in js and "slBulkAct" in js
     assert "openRuleSheet(" in js, "a row must open the rule sheet"

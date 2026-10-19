@@ -1030,6 +1030,15 @@
     "armed" and "degraded, and here is why" must never look alike.
   -->
   <section id="view-sluice" class="view">
+    <!-- THE OPERATOR'S OVERVIEW BELONGS FIRST (operator, 2026-10-19: "put at a glance at the
+         top. But change its name"). "At a glance" named the reading habit, not the subject; this
+         is the gate's own overview. -->
+    <div class="card">
+      <h2>Gate overview <span class="muted" id="sl-glance-note"></span></h2>
+      <div class="chips" id="sl-glance"></div>
+      <div class="chips" id="sl-top-names"></div>
+    </div>
+
     <!--
       WHERE THE RULES ARE ENFORCED. One rule store, many gates: the hub and every weirling that sits
       in the path install the same rules on their own segment. A gate that has stopped reporting is
@@ -1090,25 +1099,23 @@
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
 
     <div class="card">
-      <h2>At a glance <span class="muted" id="sl-glance-note"></span></h2>
-      <div class="chips" id="sl-glance"></div>
-      <div class="chips" id="sl-top-names"></div>
-    </div>
-
-    <div class="card">
       <h2>Rules <span id="sl-count" class="muted"></span>
         <button id="sl-new-rule" class="quiet" type="button">New rule</button></h2>
       <!-- US-9: what these rules can actually act on -- and each sensor is a door to its sheet. -->
       <div id="sl-reach" class="chips"></div>
       <div id="sl-bulk" class="hidden">
         <span class="muted" id="sl-bulk-n"></span>
+        <span class="muted" id="sl-bulk-note"></span>
+        <input id="sl-bulk-reason" type="text" placeholder="reason (required to delete)" class="setting-input">
         <button id="sl-bulk-disable" class="quiet">Disable selected</button>
         <button id="sl-bulk-enable" class="quiet">Enable selected</button>
+        <button id="sl-bulk-delete" class="danger">Delete selected</button>
         <button id="sl-bulk-clear" class="quiet">Clear</button>
       </div>
       <div class="controls">
         
         <label class="muted"><input id="sl-live-only" type="checkbox"> live rules only</label>
+        <label class="muted"><input id="sl-show-revoked" type="checkbox"> show revoked</label>
       </div>
       <table id="sl-table">
         <thead>
@@ -1202,6 +1209,14 @@
            behind a second click, because it is the destructive one. -->
       <div id="sl-rule-detail" class="hidden">
         <div id="sl-rule-facts"></div>
+        <div class="controls">
+          <label>mode <select id="sl-rule-mode">
+            <option value="alert">alert: record hits, block nothing</option>
+            <option value="block">block</option>
+          </select></label>
+          <label>domain (domain rules only) <input id="sl-rule-domain" type="text" placeholder="ads.example.com or *.example.com"></label>
+          <button id="sl-rule-save" type="button">Save changes</button>
+        </div>
         <label>reason for deleting (required, recorded with your name)
           <input id="sl-rule-delete-reason" type="text"
                  placeholder="why is this rule going away?">

@@ -155,6 +155,12 @@ class Settings:
     # interface that is also the default route is the configuration that produces a
     # capture full of broadcast noise and nothing else.
     zeek_iface: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACE", ""))
+    # ZEEK_IFACES lets the capture sensor sniff SEVERAL ports (operator, 2026-10-19: "Zeek must be
+    # configured to leverage multiple nic"). Empty means "just zeek_iface". CAPTURE_IFACE is the
+    # one port the siphon intercept borrows for in-path relay; it may be one of the Zeek ports or
+    # a different one, and it is the only port that is ever poisoned.
+    zeek_ifaces: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACES", ""))
+    capture_iface: str = field(default_factory=lambda: os.environ.get("CAPTURE_IFACE", ""))
     mgmt_iface: str = field(default_factory=lambda: os.environ.get("MGMT_IFACE", ""))
 
     # What this sensor calls itself in sensor-keyed rows and the gate's state row

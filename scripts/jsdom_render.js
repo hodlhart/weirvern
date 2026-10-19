@@ -3787,9 +3787,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && !!sheet.querySelector("#sl-rule-delete")
             && (doc.getElementById("sl-rule-id").textContent || "") === rid,
             "row click did not open the rule sheet");
-      check("...and no delete control sits on the tab",
-            !doc.querySelector("#sl-bulk-delete") && !doc.querySelector("#sl-table .icon-btn"),
-            "a delete control is still on the tab");
+      check("...and the only delete control on the tab is the BULK one the operator asked for",
+            !!doc.querySelector("#sl-bulk #sl-bulk-delete")
+            && !doc.querySelector("#sl-table .icon-btn"),
+            "a per-row delete icon is still on the tab");
       check("...the sheet's actions are named buttons, not icons",
             ["sl-rule-delete", "sl-rule-toggle", "sl-rule-blocked"].every((id) => {
               const b = doc.getElementById(id);
@@ -5195,11 +5196,11 @@ check("the gate's STATE is shown, not just a rule count",
       slText().includes("armed") && slText().includes("eth1"),
       slText().slice(0, 200));
 
-// TWO GATES, TWO JOBS (operator, 2026-10-19): the working DNS gate leads, the packet gate follows.
-check("the sluice page leads with the Domain Gate and then the Traffic Gate",
-      doc.querySelector("#view-sluice .card h2") &&
-      /Domain Gate/.test(doc.querySelector("#view-sluice .card h2").textContent)
-      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[1] || {}).textContent || ""),
+// THE OPERATOR'S ORDER (2026-10-19): overview first, then the working DNS gate, then the packet gate.
+check("the sluice page leads with the overview, the Domain Gate and then the Traffic Gate",
+      /Gate overview/.test((doc.querySelector("#view-sluice .card h2") || {}).textContent || "")
+      && /Domain Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[1] || {}).textContent || "")
+      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[2] || {}).textContent || ""),
       (doc.querySelector("#view-sluice .card h2") || {}).textContent || "no first card");
 check("the removed state tiles and cleanup sentence are not in the DOM",
       !doc.getElementById("sl-state") && !doc.getElementById("sl-state-note")

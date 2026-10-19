@@ -245,6 +245,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
     channel_state = _channel.detect(settings.channel_upstream, settings.channel_downstream)
     _iface = (
         settings.sluice_iface
+        or settings.capture_iface
         or (channel_state.bridge if channel_state.active else "")
         or settings.zeek_iface
         or ""

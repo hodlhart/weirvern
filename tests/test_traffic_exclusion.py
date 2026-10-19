@@ -385,8 +385,8 @@ def test_the_zeek_manifest_still_runs_zeek_without_a_filter():
     """The no-filter path must survive, or every deployment that does not set the variable
     stops capturing."""
     text = ZEEK_MANIFEST.read_text()
-    assert 'exec zeek -i "$IFACE"' in text
-    assert text.count('exec zeek -i "$IFACE"') == 2, (
+    assert "exec zeek $IFARGS" in text
+    assert text.count("exec zeek $IFARGS") == 2, (
         "expected two exec lines (filtered and unfiltered); one means a path was lost"
     )
 

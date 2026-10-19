@@ -133,8 +133,13 @@ async function loadSluice() {
 
   // ── the rules ───────────────────────────────────────────────────────────────────────────────
   const liveOnly = document.getElementById("sl-live-only").checked;
+  const showRevoked = Boolean((document.getElementById("sl-show-revoked") || {}).checked);
   let rules = d.rules || [];
   if (liveOnly) rules = rules.filter((r) => r.live);
+  // DELETED MEANS GONE FROM THE LIST (operator, 2026-10-19: "deleting rules doesn't work").
+  // Revoked rules were kept in the table with a disabled Delete button, so a successful delete
+  // looked like nothing happened. They stay in the record and behind "show revoked".
+  if (!showRevoked) rules = rules.filter((r) => !r.revoked);
   document.getElementById("sl-count").textContent = rules.length ? `(${rules.length})` : "";
 
   // US-9: THE REACH. A rule only bites where a sensor has a verified in-path channel (the same
@@ -236,7 +241,7 @@ async function loadSluice() {
     // legitimate answer; an empty list from a FAILED one is not.
     empty.textContent = d.available
       ? (liveOnly
-          ? "No rule is currently enforced. Untick 'live rules only' to see rules that exist but have lapsed."
+          ? "No rule is currently enforced. Untick 'live rules only' to see rules that exist but have lapsed; tick 'show revoked' to see deleted ones."
           : "No blocking rules exist. Traffic is being watched, not stopped.")
       : "";
     // Leave the table hidden rather than showing an empty grid with headers.
@@ -423,6 +428,29 @@ async function slBulkAct(kind) {
   }
 }
 
+async function slBulkDelete() {
+  const ids = slSelected();
+  if (!ids.length) return;
+  const reasonEl = document.getElementById("sl-bulk-reason");
+  const reason = reasonEl ? String(reasonEl.value || "").trim() : "";
+  if (!reason) {
+    const n = document.getElementById("sl-bulk-note");
+    if (n) n.textContent = "A reason is required to delete rules; it is recorded with your name.";
+    if (reasonEl) reasonEl.focus();
+    return;
+  }
+  const out = await postJSON("/api/sluice/revoke", { rule_ids: ids, reason });
+  const n = document.getElementById("sl-bulk-note");
+  if (out && out.ok) {
+    const done = (out.revoked || []).length || (out.changed || []).length || ids.length;
+    const bad = (out.refused || []).length + (out.missing || []).length;
+    if (n) n.textContent = `${done} rule(s) deleted` + (bad ? `; ${bad} refused` : "");
+    await loadSluice();
+  } else {
+    showError(new Error((out && out.error) || "the selection could not be deleted"));
+  }
+}
+
 function slBulkWire() {
   const bar = document.getElementById("sl-bulk");
   if (!bar || bar.dataset.wired === "1") return;
@@ -440,6 +468,8 @@ function slBulkWire() {
   };
   wire("sl-bulk-disable", "disable");
   wire("sl-bulk-enable", "enable");
+  const del = document.getElementById("sl-bulk-delete");
+  if (del) del.addEventListener("click", () => slConfirm(del, slBulkDelete));
   const clear = document.getElementById("sl-bulk-clear");
   if (clear) {
     clear.addEventListener("click", () => {
@@ -490,6 +520,8 @@ function wireSluice() {
   if (reload) reload.addEventListener("click", () => loadSluice().then(clearError).catch(showError));
   const liveOnly = document.getElementById("sl-live-only");
   if (liveOnly) liveOnly.addEventListener("change", () => loadSluice().then(clearError).catch(showError));
+  const showRevoked = document.getElementById("sl-show-revoked");
+  if (showRevoked) showRevoked.addEventListener("change", () => loadSluice().then(clearError).catch(showError));
 
   // The operator's rule 3: one obvious "add" on the rules surface. The composer is the same one
   // the Blocked page opens -- one form, one code path -- and it is entered by a click, never
@@ -876,6 +908,24 @@ function openRuleSheet(rule, domain) {
       toggle.textContent = rule.disabled ? "Enable this rule" : "Disable this rule";
       toggle.disabled = Boolean(rule.revoked);
     }
+    const mode = document.getElementById("sl-rule-mode");
+    if (mode) {
+      mode.value = String(rule.mode || "block").toLowerCase() === "alert" ? "alert" : "block";
+      mode.disabled = Boolean(rule.revoked);
+    }
+    const dom = document.getElementById("sl-rule-domain");
+    if (dom) {
+      dom.value = String(rule.domain || "");
+      dom.disabled = Boolean(rule.revoked) || !rule.domain;
+      dom.placeholder = rule.domain ? "ads.example.com or *.example.com"
+        : "address rules have no domain";
+    }
+    const save = document.getElementById("sl-rule-save");
+    if (save) {
+      save.disabled = Boolean(rule.revoked);
+      save.textContent = "Save changes";
+      delete save.dataset.armed;
+    }
     const del = document.getElementById("sl-rule-delete");
     if (del) {
       del.disabled = Boolean(rule.revoked);
@@ -1004,6 +1054,36 @@ function wireRuleSheet() {
       .then(() => closeRuleSheet())
       .catch(showError)
       .finally(() => { toggle.disabled = false; });
+  });
+
+  const save = document.getElementById("sl-rule-save");
+  if (save) save.addEventListener("click", async () => {
+    if (!SL_RULE) return;
+    const note = document.getElementById("sl-rule-note");
+    const wantMode = String((document.getElementById("sl-rule-mode") || {}).value || "");
+    const wantDom = String((document.getElementById("sl-rule-domain") || {}).value || "").trim();
+    const curMode = String(SL_RULE.mode || "block").toLowerCase();
+    const curDom = String(SL_RULE.domain || "");
+    save.disabled = true;
+    try {
+      if (wantMode && wantMode !== curMode) {
+        const body = { rule_id: SL_RULE.rule_id, mode: wantMode };
+        if (wantMode === "block") body.confirmed = true;
+        const out = await postJSON("/api/sluice/rule/mode", body);
+        if (!out || !out.ok) throw new Error((out && out.error) || "the mode was refused");
+      }
+      if (wantDom && wantDom !== curDom) {
+        const out = await postJSON("/api/sluice/rule/domain",
+                                   { rule_id: SL_RULE.rule_id, domain: wantDom });
+        if (!out || !out.ok) throw new Error((out && out.error) || "the domain was refused");
+      }
+      if (note) note.textContent = "Saved. Enforcement follows within a few seconds.";
+      await loadSluice();
+    } catch (err) {
+      if (note) note.textContent = String((err && err.message) || err);
+    } finally {
+      save.disabled = false;
+    }
   });
 
   const blocked = document.getElementById("sl-rule-blocked");

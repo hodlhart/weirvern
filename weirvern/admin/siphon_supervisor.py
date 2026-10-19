@@ -216,7 +216,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> InterceptConfig:
         mode=mode_mod.normalise(e.get("SENSOR_MODE") or ""),
         # CAPTURE_IFACE wins when set: the CLI documents it as the explicit override
         # for the interface an intercept runs on.
-        iface=first("CAPTURE_IFACE", "ZEEK_IFACE"),
+        # A comma list in ZEEK_IFACE/ZEEK_IFACES belongs to Zeek; the intercept borrows ONE port.
+        iface=first("CAPTURE_IFACE", "ZEEK_IFACE").split(",")[0].strip(),
         segment=first("INTERCEPT_SEGMENT"),
         our_ip=first("INTERCEPT_ADDR"),
         gateway=first("INTERCEPT_GATEWAY"),

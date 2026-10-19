@@ -839,6 +839,8 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("sensor", "Weirling", [
         ("sensor_mode", "mode"),
         ("zeek_iface", "Zeek interface"),
+        ("zeek_ifaces", "additional Zeek interfaces"),
+        ("capture_iface", "siphon capture interface"),
         ("mgmt_iface", "management interface"),
         ("zeek_log_dir", "Zeek log dir"),
         ("tail_file", "NetFlow tail file"),
@@ -962,6 +964,15 @@ _SETTINGS_HELP: dict[str, str] = {
         "switch mirror/SPAN port or a passive TAP. It must not be the same interface as the "
         "management port, and should not be a bridge member: a weirling pointed at the wrong NIC "
         "captures mostly broadcast noise and looks healthy while seeing almost nothing."),
+    "zeek_ifaces": (
+        "Additional capture ports for Zeek, comma-separated (for example eth1,eth2). Zeek reads "
+        "all of them as one capture, so a weirling with more than one mirrored segment can see "
+        "the whole network. Leave empty to capture only the Zeek interface above."),
+    "capture_iface": (
+        "The ONE interface the siphon intercept borrows when it puts this weirling in the traffic "
+        "path. It must be one of the capture ports and must not be the management interface. "
+        "Empty means use the Zeek interface. This is separate from Zeek's capture list so Zeek "
+        "can still watch every mirrored segment while only one is redirected."),
     "mgmt_iface": (
         "The interface carrying the default route, SSH and the cluster API. The weirling never "
         "captures from it; it is used to DETECT when the capture interface is pointed at the "

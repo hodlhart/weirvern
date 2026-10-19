@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.17.18 — 2026-10-19
+
+THE OPERATOR'S RULE WORK, AND MULTI-PORT CAPTURE.
+
+- **Gate overview leads the Sluice page** (renamed from "At a glance").
+- **Delete selected**: the bulk bar takes a required reason and revokes every checked rule.
+  Revoked rules are hidden by default (`show revoked` brings them back) — before, a successful
+  delete left the row in place with a disabled Delete button, which read as "deleting doesn't work".
+- **A rule opens to edit**: the sheet carries mode and domain (domain rules only), a Save that
+  calls the existing mode/domain endpoints, and the existing enable/disable toggle. Revoked rules
+  stay read-only.
+- **Clicking a NIC on this hub's own weirling selects it for siphon**: the click stages
+  `CAPTURE_IFACE=<nic>` in Settings (and adds the port to `ZEEK_IFACES`) instead of doing nothing.
+- **Zeek can watch several ports**: `ZEEK_IFACES=eth1,eth2` compiles to repeated `-i` arguments.
+  `CAPTURE_IFACE` names the one port the siphon intercept borrows, so Zeek keeps every mirrored
+  segment while only one is redirected.
+- The weirling sheet's top prose is trimmed to the state/evidence lines.
+
 ## 0.17.17 — 2026-10-19
 
 THE TRAFFIC GATE NAMES ITS INTERFACE AND BACKEND. Writing the default `GateState` on a disabled

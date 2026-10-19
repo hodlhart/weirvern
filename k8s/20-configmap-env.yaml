@@ -83,6 +83,10 @@ data:
   #       -p '{"data":{"ZEEK_IFACE":"<capture>","MGMT_IFACE":"<mgmt>"}}'
   #     kubectl -n weirvern rollout restart ds/zeek
   ZEEK_IFACE: "eth1"
+  # Comma-separated extra ports for Zeek (eth1,eth2). Empty = just ZEEK_IFACE.
+  ZEEK_IFACES: ""
+  # The one port the siphon intercept borrows (empty = ZEEK_IFACE).
+  CAPTURE_IFACE: ""
   MGMT_IFACE: "eth0"
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
