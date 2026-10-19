@@ -952,7 +952,7 @@
     <!-- THE IDENTITY VERDICT IS A MINI DASHBOARD, NOT A CARD AT THE BOTTOM (operator, 2026-10-19:
          "clicking on identity should do a pop out like sensor interface settings ... Think of it
          as a mini dashboard"). Same sheet mechanics as the sensor sheet: one scrim, one close. -->
-    <div class="sheet hidden" id="id-detail-card" role="dialog" aria-modal="true"
+    <div class="card sheet hidden" id="id-detail-card" role="dialog" aria-modal="true"
          aria-labelledby="id-detail-title">
       <div class="sheet-head">
         <h2 id="id-detail-title">Identity evidence
@@ -970,6 +970,10 @@
 
   <!-- ── Health ───────────────────────────────────────────────────────── -->
   <section id="view-health" class="view active">
+    <div class="card">
+      <h2>System <span class="muted">host CPU and memory</span></h2>
+      <div id="hp-system"><p class="muted">loading…</p></div>
+    </div>
     <div class="card">
       <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks and what the audit means" aria-expanded="false" title="what this page checks and what the audit means">i</button> <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
@@ -1350,6 +1354,10 @@
       <p id="wl-summary-note" class="muted"></p>
     </div>
 
+    <div class="card">
+      <h2>Performance <span class="muted">this hub's host</span></h2>
+      <div id="wl-performance"><p class="muted">loading…</p></div>
+    </div>
 
     <div class="card">
       <h2>Fleet <span id="wl-count" class="muted"></span></h2>
@@ -1416,9 +1424,12 @@
             <span class="muted" id="wl-nic-role"></span></h3>
           <p class="muted" id="wl-nic-facts"></p>
           <p class="muted" id="wl-nic-channel-note" role="status" aria-live="polite"></p>
-          <div class="controls">
-            <label>network name <input id="wl-nic-network" class="setting-input" type="text"
-                 placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
+          <div class="nic-section">
+            <h4>Network name</h4>
+            <div class="controls">
+              <label><input id="wl-nic-network" class="setting-input" type="text"
+                   placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
+            </div>
           </div>
           <div class="nic-section">
             <h4>Mode</h4>

@@ -463,6 +463,103 @@ function probeText(c) {
   return String(v);
 }
 
+/**
+ * THE HOST SYSTEM CARDS (operator, 2026-10-19). Health owns the CPU/memory summary at the top;
+ * the Weirlings tab carries the same readings beside the fleet's interface throughput. One
+ * fetch renders both surfaces, so the two tabs cannot disagree about the same box.
+ */
+async function loadSystemMetrics() {
+  let d;
+  try {
+    d = await getJSON(API.system);
+  } catch (err) {
+    d = { available: false, reason: (err && err.message) || "the system read failed" };
+  }
+  renderSystemMetrics(d);
+  return d;
+}
+
+function sysSpark(values, cls) {
+  const ns = "http://www.w3.org/2000/svg";
+  const w = 240, h = 46;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "trend over the sampler history");
+  const nums = (values || []).filter((v) => v !== null && v !== undefined).map(Number);
+  if (nums.length < 2) {
+    svg.setAttribute("class", "sys-spark-empty");
+    return svg;
+  }
+  const x = (i) => (i / (nums.length - 1)) * w;
+  const y = (v) => h - 3 - (Math.max(0, Math.min(100, v)) / 100) * (h - 6);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", nums.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "));
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke", cls === "memory" ? "var(--warn)" : "var(--accent)");
+  svg.appendChild(path);
+  return svg;
+}
+
+function sysCard(label, percent, sub, values, cls) {
+  return el("div", { class: "sys-card" }, [
+    el("div", { class: "sys-label", text: label }),
+    el("div", { class: "sys-value", text: percent === null || percent === undefined ? "—" : `${percent}%` }),
+    sub ? el("div", { class: "sys-sub", text: sub }) : null,
+    sysSpark(values, cls),
+  ].filter(Boolean));
+}
+
+function renderSystemMetrics(d) {
+  const health = document.getElementById("hp-system");
+  const perf = document.getElementById("wl-performance");
+  if (!health && !perf) return;
+  const available = !!(d && d.available);
+  const reason = (d && d.reason) || "the host procfs is not readable";
+  const history = (d && d.history) || [];
+  const cpu = available ? history.map((p) => p.cpu) : [];
+  const mem = available ? history.map((p) => p.memory) : [];
+  const memTotal = Number(d && d.memory_total_bytes) || 0;
+  const memUsed = Number(d && d.memory_used_bytes) || 0;
+  const memSub = memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "";
+  const cards = () => {
+    if (!available) return el("p", { class: "muted", text: `System unavailable — ${reason}.` });
+    return el("div", { class: "sys-grid" }, [
+      sysCard("CPU", d.cpu_percent,
+        history.length > 1 ? `${history.length} samples` : "first sample", cpu, "cpu"),
+      sysCard("Memory", d.memory_percent, memSub, mem, "memory"),
+    ]);
+  };
+  if (health) {
+    health.replaceChildren(cards());
+  }
+  if (perf) {
+    const body = el("div");
+    body.appendChild(cards());
+    if (available && Array.isArray(d.interfaces) && d.interfaces.length) {
+      const table = el("table", { class: "sys-ifaces" });
+      const thead = el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Interface" }), el("th", { text: "In" }),
+        el("th", { text: "Out" }), el("th", { text: "Drops" }),
+      ])]);
+      const tbody = el("tbody");
+      for (const iface of d.interfaces) {
+        const drops = (Number(iface.rx_drops) || 0) + (Number(iface.tx_drops) || 0);
+        tbody.appendChild(el("tr", {}, [
+          el("td", { class: "mono", text: iface.name }),
+          el("td", { class: "mono", text: `${fmtBytes(iface.rx_bps)}/s` }),
+          el("td", { class: "mono", text: `${fmtBytes(iface.tx_bps)}/s` }),
+          el("td", { class: drops ? "mono sev-high" : "mono", text: String(drops) }),
+        ]));
+      }
+      table.appendChild(thead); table.appendChild(tbody);
+      body.appendChild(table);
+    }
+    perf.replaceChildren(body);
+  }
+}
+
 async function loadHealthDeep() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
@@ -470,6 +567,8 @@ async function loadHealthDeep() {
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
 
   document.getElementById("hp-window").textContent = `${hours}h window`;
+  // The host reading is independent of ClickHouse; a database problem must not blank it.
+  loadSystemMetrics().catch(() => {});
   const h = d.health || {};
   const checks = (h && h.checks) || [];
   // ── THREE STATES, NOT TWO (audit F081) ───────────────────────────────────────────────────────

@@ -1338,3 +1338,22 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @media (max-width: 640px) {
   .id-metrics { grid-template-columns: 1fr; }
 }
+
+/* ── SYSTEM AND PERFORMANCE (operator, 2026-10-19) ────────────────────────────────────────
+ * CPU and memory are two equal readings, not a dashboard of unrelated numbers. The trend is
+ * a sparkline of the sampler's own history; an empty history says so rather than drawing a
+ * flat line at zero. */
+.sys-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sys-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; min-width: 0; }
+.sys-card .sys-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+  text-transform: uppercase; }
+.sys-card .sys-value { color: var(--fg); font-size: 27px; font-weight: 600; line-height: 1.1;
+  margin-top: 2px; }
+.sys-card .sys-sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.sys-card svg { display: block; width: 100%; height: 46px; margin-top: 8px; overflow: visible; }
+.sys-card .sys-empty { color: var(--dim); font-size: 11px; margin-top: 8px; }
+.sys-ifaces { margin-top: 12px; }
+.sys-ifaces table { width: 100%; }
+.sys-ifaces th { text-align: left; }
+@media (max-width: 640px) { .sys-grid { grid-template-columns: 1fr; } }

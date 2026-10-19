@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.37 — 2026-10-19
+
+THE SYSTEM IS A READING, AND THE POP-OUTS LOOK LIKE THE CONSOLE.
+
+- **Health** opens with a **System** card: host CPU and memory, each with its own trend line
+  and the sampler's history. **Weirlings** gains **Performance** with the same two readings,
+  plus per-interface throughput and drop counters. The host procfs is read read-only from
+  `/host-proc`; a database outage cannot blank these cards.
+- Identity and the sensor/channel pair now use the same `card sheet` surface as the Weirling
+  interface settings, so both pop-outs sit on the console's background rather than bare text.
+- **Network name** is a section heading matching **Mode**, and **Sonar** surveys the selected
+  interface; its ARP/spoof recommendations stage through the ordinary plan.
+
 ## 0.17.36 — 2026-10-19
 
 THE CHANNEL PAIR BELONGS TO THE SENSOR ROW.

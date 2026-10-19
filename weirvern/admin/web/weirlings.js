@@ -92,6 +92,10 @@ async function loadWeirlings() {
     return;
   }
 
+  // The Performance card shares the host sampler with Health; the fleet read is not blocked
+  // by a slow or unavailable procfs.
+  if (typeof loadSystemMetrics === "function") loadSystemMetrics().catch(() => {});
+
   const summaryBox = document.getElementById("wl-summary");
   const noteBox = document.getElementById("wl-summary-note");
   summaryBox.replaceChildren();
@@ -676,7 +680,7 @@ let WL_SENSOR_CARD = null;
 
 function wlSensorCard() {
   if (WL_SENSOR_CARD && document.body.contains(WL_SENSOR_CARD)) return WL_SENSOR_CARD;
-  const card = el("div", { class: "sheet hidden",
+  const card = el("div", { class: "card sheet hidden",
     attrs: { id: "wl-sensor-card", role: "dialog", "aria-modal": "true",
              "aria-labelledby": "wl-sensor-title" } }, [
     el("div", { class: "sheet-head" }, [
@@ -1453,7 +1457,9 @@ async function wlScanNetwork() {
     return;
   }
   if (note) note.textContent = "Scanning this segment — ARP survey only; nothing is written.";
-  const res = await runSonar();
+  const box = document.getElementById("wl-nic-settings");
+  const nic = box ? box.dataset.nic : "";
+  const res = await runSonar(nic ? { interface: nic } : {});
   if (!note) return;
   if (!res || res.ok !== true) {
     note.textContent = "Scan failed — " + ((res && res.error) || SONAR_STATE.error || "no result");
@@ -1473,7 +1479,8 @@ async function wlScanNetwork() {
     || (Array.isArray(res.free_addresses) ? res.free_addresses[0] : "");
   if (intercept && free) intercept.value = free;
   note.textContent = `Scan complete${where ? ` (${where})` : ""}. ` +
-    "Network, gateway and intercept IP are filled below; review them, then stage this interface.";
+    "Network, gateway and intercept IP are filled below; the ARP/spoof settings are staged " +
+    "as pending changes. Review them, then stage this interface.";
 }
 
 /** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...

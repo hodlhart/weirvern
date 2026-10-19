@@ -1267,6 +1267,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // probes, and weakening them to make room for this would trade one blind spot for another.
     ["/api/health?hours=6", HEALTH_WITH_FAILURE],
     ["/api/health", HEALTH_PAYLOAD],
+    ["/api/system", () => ({ available: true, reason: "", proc_root: "/host-proc",
+      sampled_at: 1, cpu_percent: 21.5, memory_percent: 48.0,
+      memory_used_bytes: 4 * 1024 ** 3, memory_total_bytes: 8 * 1024 ** 3,
+      history: [{ t: 1, cpu: 18.0, memory: 47.0 }, { t: 2, cpu: 21.5, memory: 48.0 }],
+      interfaces: [{ name: "eth0", rx_bps: 1200, tx_bps: 800, rx_drops: 0, tx_drops: 0 },
+                   { name: "eth1", rx_bps: 5500, tx_bps: 2100, rx_drops: 2, tx_drops: 0 }] })],
     // US-7: the inventory, finally stubbed -- the facet checks need real services, and a
     // missing arm made loadAssets answer an empty {} ("0 hosts in the last undefinedh").
     ["/api/assets", () => ({
@@ -2792,6 +2798,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       }
     }
 
+  check("the System card is the first thing on the Health tab",
+        !!doc.getElementById("hp-system")
+        && doc.getElementById("view-health").firstElementChild ===
+           doc.getElementById("hp-system").closest(".card"));
+  check("the Weirlings tab carries a performance section",
+        !!doc.getElementById("wl-performance"));
   check("the alert audit panels are on the Health tab (SOC-8)",
         !!doc.getElementById("hp-alerts-reasons")
           && !!doc.getElementById("hp-alerts-recent")
@@ -4026,7 +4038,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && !!doc.getElementById("wl-nic-sonar")
             && !!doc.getElementById("wl-nic-cidr") && !!doc.getElementById("wl-nic-gateway")
             && !!doc.getElementById("wl-nic-intercept-ip")
-            && !doc.getElementById("wl-nic-network").closest(".nic-section"),
+            && /Network name/.test(doc.getElementById("wl-nic-settings").textContent),
             words.slice(0, 360));
       check("the channel pair is not a NIC field; the NIC sheet states its consequence",
             !/Channel/.test(words)

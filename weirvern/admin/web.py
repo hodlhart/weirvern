@@ -442,6 +442,10 @@ def _build_handler(ctx: GuiContext):
             # "is data still arriving", which requires reading it.
             if path == "/api/health":
                 return self._health(query)
+            # Host CPU/memory and interface counters. A reading surface, not a write route;
+            # it reads the host's procfs mounted read-only at /host-proc.
+            if path == "/api/system":
+                return self._system()
             # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
             if path == "/api/settings":
                 return self._settings(query)
@@ -1136,6 +1140,17 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False, "domains": [], "reason":
                                    f"cannot reach ClickHouse: {type(exc).__name__}"})
             self._json(payload)
+
+        def _system(self) -> None:
+            """The sensor host's CPU, memory, and interface counters.
+
+            A process-level read of procfs, not a database query: it is cheap and has no
+            ClickHouse dependency, so an unavailable database cannot make the system cards
+            disappear. The sampler owns its own bounded history.
+            """
+            from weirvern.admin import system_metrics
+
+            self._json(system_metrics.sample())
 
         def _health(self, query: dict) -> None:
             """DEEP health: the checks, ingestion trend, table sizes, and the sensor.

@@ -39,6 +39,7 @@ const API = {
   netflow: "/api/netflow",
   zeek: "/api/zeek",
   health: "/api/health",
+  system: "/api/system",
 };
 
 let timer = null;
@@ -1038,7 +1039,7 @@ window.LAST_APPLY = LAST_APPLY;
  */
 const SONAR_STATE = { running: false, result: null, error: "", testRunning: false };
 
-async function runSonar() {
+async function runSonar(opts = {}) {
   const btn = document.getElementById("st-sonar");
   const note = document.getElementById("st-sonar-note");
   if (SONAR_STATE.running) return null;
@@ -1049,7 +1050,10 @@ async function runSonar() {
     + "Nothing is changed — this can take a few seconds.";
 
   try {
-    const res = await postJSON("/api/settings/sonar", {});
+    // The caller may name the interface to survey. The Weirlings sheet is per-NIC and must
+    // measure the port it is open on, not the global capture default (operator, 2026-10-19).
+    const body = opts && opts.interface ? { interface: String(opts.interface) } : {};
+    const res = await postJSON("/api/settings/sonar", body);
     SONAR_STATE.result = res;
     renderSonarNote(res);
     // SONAR IS A SURVEY, NOT A WRITE, but its measured answer belongs in the fields the

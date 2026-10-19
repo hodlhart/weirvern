@@ -152,11 +152,21 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # THE HOST'S PROCFS, READ-ONLY (operator, 2026-10-19). The system cards must
+            # describe the sensor box, not this container's cgroup: /proc inside the pod is
+            # the wrong machine. Mounted at /host-proc; the route never writes it.
+            - name: host-proc
+              mountPath: /host-proc
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
         # bytecode caches and temp files. An emptyDir is the minimum that allows.
         - name: tmp
           emptyDir: {}
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
 ---
 apiVersion: v1
 kind: Service
