@@ -949,11 +949,22 @@
       <p class="muted" id="id-empty"></p>
     </div>
 
-    <div class="card hidden" id="id-detail-card">
-      <h2>Evidence for <span class="mono" id="id-detail-host"></span>
-        <button id="id-detail-open" class="quiet" title="open this host's own view">Open host view &rarr;</button>
-        <button id="id-detail-close" class="quiet" title="hide this card">Close</button></h2>
-      <div id="id-detail"></div>
+    <!-- THE IDENTITY VERDICT IS A MINI DASHBOARD, NOT A CARD AT THE BOTTOM (operator, 2026-10-19:
+         "clicking on identity should do a pop out like sensor interface settings ... Think of it
+         as a mini dashboard"). Same sheet mechanics as the sensor sheet: one scrim, one close. -->
+    <div class="sheet hidden" id="id-detail-card" role="dialog" aria-modal="true"
+         aria-labelledby="id-detail-title">
+      <div class="sheet-head">
+        <h2 id="id-detail-title">Identity evidence
+          <span class="mono" id="id-detail-host"></span></h2>
+        <button id="id-detail-close" class="quiet sheet-close" type="button"
+                title="close this panel (Escape also closes)">Close</button>
+      </div>
+      <div class="controls">
+        <button id="id-detail-open" class="quiet" type="button"
+                title="open this host's own view">Open host view &rarr;</button>
+      </div>
+      <div id="id-detail" class="id-dashboard"></div>
     </div>
   </section>
 
@@ -1404,6 +1415,11 @@
           <h3>Settings for <span class="mono" id="wl-nic-name"></span>
             <span class="muted" id="wl-nic-role"></span></h3>
           <p class="muted" id="wl-nic-facts"></p>
+          <p class="muted" id="wl-nic-channel-note" role="status" aria-live="polite"></p>
+          <div class="controls">
+            <label>network name <input id="wl-nic-network" class="setting-input" type="text"
+                 placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
+          </div>
           <div class="nic-section">
             <h4>Mode</h4>
             <div class="controls">
@@ -1428,24 +1444,21 @@
               port in loch mode. Passive means this sensor listens for NetFlow that another device sends to it.</p>
           </div>
           <div class="nic-section">
-            <h4>Network</h4>
+            <h4>Networks</h4>
             <div class="controls">
-              <label>network name <input id="wl-nic-network" class="setting-input" type="text"
-                   placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
+              <label>network <input id="wl-nic-cidr" class="setting-input" type="text"
+                   placeholder="192.0.2.0/24" spellcheck="false" autocomplete="off"></label>
+              <label>gateway <input id="wl-nic-gateway" class="setting-input" type="text"
+                   placeholder="192.0.2.1" spellcheck="false" autocomplete="off"></label>
+              <label>intercept IP <input id="wl-nic-intercept-ip" class="setting-input" type="text"
+                   placeholder="free address" spellcheck="false" autocomplete="off"></label>
             </div>
             <p class="scan-line">Scan Network
               <button id="wl-nic-sonar" type="button">Sonar</button>
             </p>
             <p class="muted" id="wl-nic-scan-note" role="status" aria-live="polite"></p>
-          </div>
-          <div class="nic-section">
-            <h4>Channel</h4>
-            <div class="controls">
-              <label>upstream <select id="wl-nic-upstream"></select></label>
-              <label>downstream <select id="wl-nic-downstream"></select></label>
-            </div>
-            <p class="muted">Join these two ports into one in-line channel. They must be
-              different interfaces; the worker verifies the bridge before claiming it is active.</p>
+            <p class="muted">Sonar measures the segment and fills the network, gateway, and a
+              free intercept IP. Review them, then stage this interface.</p>
           </div>
           <div class="controls">
             <button id="wl-nic-stage" type="button">Stage for this interface</button>

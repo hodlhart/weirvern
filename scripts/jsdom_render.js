@@ -3947,16 +3947,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!sensorCard && !sensorCard.classList.contains("hidden")
           && /edge-alive/.test(doc.getElementById("wl-sensor-title").textContent),
           sensorCard ? sensorCard.className : "no card");
-    check("...with enable/disable/delete/adopt and nothing else",
+    const sensorExtras = [...sensorCard.querySelectorAll("input, select")]
+      .filter((node) => !node.closest("#wl-sensor-channel"));
+    check("...with enable/disable/delete/adopt and the Channel pair, nothing else",
           ["wl-sensor-adopt", "wl-sensor-enable", "wl-sensor-disable", "wl-sensor-delete"]
             .every((id) => !!doc.getElementById(id))
-          && !doc.querySelector("#wl-sensor-card input, #wl-sensor-card select"),
-          "unexpected control");
+          && sensorExtras.length === 0,
+          sensorExtras.map((n) => n.id || n.tagName).join(",") || "unexpected control");
     check("...the verbs match this sensor's state",
           doc.getElementById("wl-sensor-adopt").classList.contains("hidden")
           && doc.getElementById("wl-sensor-enable").classList.contains("hidden")
           && !doc.getElementById("wl-sensor-disable").classList.contains("hidden")
           && !doc.getElementById("wl-sensor-delete").classList.contains("hidden"));
+    check("the sensor sheet owns the Channel pair",
+          /Channel/.test(sensorCard.textContent)
+          && !!doc.getElementById("wl-sensor-channel-upstream")
+          && !!doc.getElementById("wl-sensor-channel-downstream"),
+          "the channel controls are not on the sensor sheet");
     doc.getElementById("wl-sensor-close").click();
     await new Promise((r) => setTimeout(r, 80));
     const capRow = (() => {
@@ -3968,6 +3975,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       return null;
     })();
     check("a NIC line is clickable", !!capRow && capRow.classList.contains("clickable"));
+    // A CHANNEL IS A SENSOR DECISION; the NIC sheet must make the conflicting choices
+    // unavailable (operator, 2026-10-19). Staging the pair is enough to exercise the rule.
+    const channelHeld = H.STAGE.changes.channel_upstream;
+    const channelHeldDown = H.STAGE.changes.channel_downstream;
+    H.STAGE.changes.channel_upstream = "eth1";
+    H.STAGE.changes.channel_downstream = "eth2";
     capRow.click();
     await new Promise((r) => setTimeout(r, 180));
     check("clicking a NIC line opens that NIC's settings",
@@ -3975,6 +3988,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && (doc.getElementById("wl-plan-iface").value || "") === "eth1"
           && /editing NIC eth1/.test((doc.getElementById("wl-nic-edit") || {}).textContent || ""),
           `iface=${doc.getElementById("wl-plan-iface").value} note=${(doc.getElementById("wl-nic-edit") || {}).textContent}`);
+    check("an enabled channel locks siphon and passive NetFlow out of the NIC sheet",
+          doc.getElementById("wl-nic-siphon").disabled
+          && doc.getElementById("wl-nic-netflow-passive").disabled
+          && doc.getElementById("wl-nic-loch").checked
+          && doc.getElementById("wl-nic-netflow-active").checked,
+          `siphon disabled=${doc.getElementById("wl-nic-siphon").disabled} ` +
+          `passive disabled=${doc.getElementById("wl-nic-netflow-passive").disabled}`);
+    if (channelHeld === undefined) delete H.STAGE.changes.channel_upstream;
+    else H.STAGE.changes.channel_upstream = channelHeld;
+    if (channelHeldDown === undefined) delete H.STAGE.changes.channel_downstream;
+    else H.STAGE.changes.channel_downstream = channelHeldDown;
     // ONE NIC'S SETTINGS MUST NOT NAME ANOTHER NIC (operator, 2026-10-19: "If I am configuring
     // eth1 ... there should be no reference of eth2"). The global Zeek list is stored elsewhere;
     // the scoped panel reads only this interface.
@@ -3997,13 +4021,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             /NetFlow source/.test(words)
             && !!doc.getElementById("wl-nic-netflow-passive")
             && !!doc.getElementById("wl-nic-netflow-active"), words.slice(0, 260));
-      check("...with a Network row that offers Scan Network and Sonar",
-            /Network/.test(words) && /Scan Network/.test(words)
-            && !!doc.getElementById("wl-nic-sonar"),
-            words.slice(0, 320));
-      check("...and a Channel row that selects upstream and downstream NICs",
-            /Channel/.test(words) && !!doc.getElementById("wl-nic-upstream")
-            && !!doc.getElementById("wl-nic-downstream"),
+      check("...with Networks fields Sonar fills, and the name above the mode",
+            /Networks/.test(words) && /Scan Network/.test(words)
+            && !!doc.getElementById("wl-nic-sonar")
+            && !!doc.getElementById("wl-nic-cidr") && !!doc.getElementById("wl-nic-gateway")
+            && !!doc.getElementById("wl-nic-intercept-ip")
+            && !doc.getElementById("wl-nic-network").closest(".nic-section"),
+            words.slice(0, 360));
+      check("the channel pair is not a NIC field; the NIC sheet states its consequence",
+            !/Channel/.test(words)
+            && !!doc.getElementById("wl-sensor-channel-upstream")
+            && !!doc.getElementById("wl-sensor-channel-downstream"),
             words.slice(0, 360));
       const held = H.STAGE.changes;
       H.STAGE.changes = { zeek_ifaces: "eth1,eth2" };

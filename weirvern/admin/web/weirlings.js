@@ -686,6 +686,32 @@ function wlSensorCard() {
     ]),
     el("p", { class: "muted", attrs: { id: "wl-sensor-state" }, text: "" }),
     el("p", { class: "muted", attrs: { id: "wl-sensor-note" }, text: "" }),
+    // THE CHANNEL PAIR IS A SENSOR DECISION, NOT A NIC DECISION (operator, 2026-10-19:
+    // "This is configured when you select the top row with the sensor name"). It lives on the
+    // sensor's own sheet; the NIC sheet only reports and enforces the consequences.
+    el("div", { class: "nic-section", attrs: { id: "wl-sensor-channel" } }, [
+      el("h4", { text: "Channel" }),
+      el("div", { class: "controls" }, [
+        el("label", { text: "upstream " }, [
+          el("select", { attrs: { id: "wl-sensor-channel-upstream" },
+            on: { change: () => wlSensorChannelChanged() } }),
+        ]),
+        el("label", { text: "downstream " }, [
+          el("select", { attrs: { id: "wl-sensor-channel-downstream" },
+            on: { change: () => wlSensorChannelChanged() } }),
+        ]),
+      ]),
+      el("p", { class: "muted", text: "Join these two ports into one in-line channel. They must be " +
+        "different interfaces; the worker verifies the bridge before claiming it is active." }),
+      el("p", { class: "muted", text: "While a channel is enabled, siphon mode and passive " +
+        "NetFlow are unavailable: they would fight the bridge." }),
+      el("div", { class: "controls" }, [
+        el("button", { attrs: { type: "button", id: "wl-sensor-channel-apply" },
+          text: "Apply channel", on: { click: () => wlSensorChannelApply() } }),
+      ]),
+      el("p", { class: "muted", attrs: { id: "wl-sensor-channel-note", role: "status",
+        "aria-live": "polite" }, text: "" }),
+    ]),
     el("div", { class: "sheet-actions" }, [
       el("button", { class: "quiet", attrs: { type: "button", id: "wl-sensor-adopt" },
         text: "Adopt", on: { click: () => wlSensorAdopt() } }),
@@ -707,6 +733,14 @@ function openSensorActions(r) {
   if (!r) return;
   WL_ACTION_ROW = r;
   const card = wlSensorCard();
+  // THE CHANNEL PAIR BELONGS TO THE SENSOR ROW (operator, 2026-10-19). A remote sensor's
+  // capture is configured on its own box, so only the local hub exposes an editable pair here.
+  const channelBox = document.getElementById("wl-sensor-channel");
+  if (channelBox) channelBox.classList.toggle("hidden", !r.local);
+  if (r.local) {
+    const ready = (typeof loadSettings === "function") ? loadSettings().catch(() => {}) : Promise.resolve();
+    ready.then(() => wlPopulateSensorChannel(r)).catch(() => {});
+  }
   document.getElementById("wl-sensor-title").textContent = r.sensor_id;
   document.getElementById("wl-sensor-state").textContent =
     `${r.state || "unknown"} · ${r.registered ? (r.enabled ? "enabled" : "disabled") : "not adopted"}`
@@ -1041,13 +1075,8 @@ function wireWeirlings() {
     nicSonar.dataset.wired = "1";
     nicSonar.addEventListener("click", () => wlScanNetwork().catch(showError));
   }
-  for (const id of ["wl-nic-upstream", "wl-nic-downstream"]) {
-    const sel = document.getElementById(id);
-    if (sel && !sel.dataset.wired) {
-      sel.dataset.wired = "1";
-      sel.addEventListener("change", () => wlNicChannelChanged());
-    }
-  }
+  // The channel selects live on the sensor sheet (openSensorActions), not this NIC panel;
+  // their change handlers are attached when that sheet is built.
   const modeSel = document.getElementById("wl-mode-select");
   if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
@@ -1109,6 +1138,101 @@ function wlCfgValue(key) {
   return (/^(\(not set\)|—)$/i.test(raw) ? "" : raw);
 }
 
+/** A setting's value as the operator would see it if they applied the pending set. */
+function wlStagedValue(key) {
+  if (typeof STAGE !== "undefined" && STAGE && STAGE.changes
+      && Object.prototype.hasOwnProperty.call(STAGE.changes, key)) {
+    const v = STAGE.changes[key];
+    return String(v == null ? "" : v).trim();
+  }
+  return wlCfgValue(key);
+}
+
+/** THE CHANNEL PAIR IS ACTIVE ONLY WHEN BOTH SIDES ARE NAMED AND DIFFERENT. */
+function wlChannelEnabled() {
+  const up = wlStagedValue("channel_upstream");
+  const down = wlStagedValue("channel_downstream");
+  return Boolean(up && down && up !== down);
+}
+
+function wlPopulateSensorChannel(r) {
+  const box = document.getElementById("wl-sensor-channel");
+  if (!box || box.classList.contains("hidden")) return;
+  const mgmt = String(wlCfgValue("mgmt_iface") || "").trim() || "eth0";
+  const usable = (Array.isArray(r && r.interfaces) ? r.interfaces : [])
+    .filter((n) => n && n !== "lo" && n !== mgmt);
+  for (const [id, key] of [["wl-sensor-channel-upstream", "channel_upstream"],
+                           ["wl-sensor-channel-downstream", "channel_downstream"]]) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    const current = wlStagedValue(key);
+    const options = usable.slice();
+    if (current && !options.includes(current)) options.push(current);
+    sel.replaceChildren();
+    sel.appendChild(el("option", { attrs: { value: "" }, text: "— none —" }));
+    for (const name of options) {
+      sel.appendChild(el("option", { attrs: { value: name }, text: name }));
+    }
+    sel.value = current;
+  }
+  const note = document.getElementById("wl-sensor-channel-note");
+  if (note) note.textContent = wlChannelEnabled()
+    ? "This sensor is bridged. Siphon and passive NetFlow are locked out while the channel is active."
+    : "";
+}
+
+function wlSensorChannelChanged() {
+  const up = document.getElementById("wl-sensor-channel-upstream");
+  const down = document.getElementById("wl-sensor-channel-downstream");
+  const note = document.getElementById("wl-sensor-channel-note");
+  if (!up || !down || !note) return;
+  if (up.value && down.value && up.value === down.value) {
+    note.textContent = "Upstream and downstream must be different interfaces.";
+    return;
+  }
+  note.textContent = up.value && down.value
+    ? "Channel staged. Apply channel writes the pair and locks siphon/passive NetFlow out."
+    : "Channel staged for removal. Apply channel writes the change.";
+}
+
+async function wlSensorChannelApply() {
+  const up = document.getElementById("wl-sensor-channel-upstream");
+  const down = document.getElementById("wl-sensor-channel-downstream");
+  const note = document.getElementById("wl-sensor-channel-note");
+  if (!up || !down || !note) return;
+  if (up.value && down.value && up.value === down.value) {
+    note.textContent = "Upstream and downstream must be different interfaces.";
+    return;
+  }
+  const enabled = Boolean(up.value && down.value && up.value !== down.value);
+  stageChange("channel_upstream", up.value, wlCfgValue("channel_upstream"));
+  stageChange("channel_downstream", down.value, wlCfgValue("channel_downstream"));
+  if (enabled) {
+    // A BRIDGE CANNOT ALSO BE AN INTERCEPT POINT OR A PASSIVE FLOW TARGET. Write the safe
+    // companion values in the same plan as the pair rather than leaving the operator with an
+    // enabled channel and a stale siphon/passive choice that would fight it.
+    stageChange("sensor_mode", "loch", wlCfgValue("sensor_mode"));
+    stageChange("netflow_mode", "active", wlCfgValue("netflow_mode"));
+  }
+  note.textContent = "applying channel…";
+  const btn = document.getElementById("wl-sensor-channel-apply");
+  if (btn) btn.disabled = true;
+  try {
+    if (typeof applyStage !== "function") throw new Error("the apply path is not available");
+    await applyStage(true, { skipSiphonConfirm: true,
+                             reason: "channel configured from the sensor sheet" });
+    note.textContent = enabled
+      ? "Channel applied. Siphon and passive NetFlow are now locked out on this sensor."
+      : "Channel removed.";
+    if (typeof loadWeirlings === "function") await loadWeirlings();
+    closeSheet(WL_SENSOR_CARD);
+  } catch (err) {
+    note.textContent = "Could not apply the channel: " + (err && err.message ? err.message : err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function wlIfaceList(value) {
   return String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
@@ -1148,48 +1272,39 @@ function wlShowNicSettings(nic, interfaces) {
   const names = wlIfaceNames(wlCfgValue("interface_networks"));
   const netInput = document.getElementById("wl-nic-network");
   if (netInput) netInput.value = names[nic] || "";
+  const cidrInput = document.getElementById("wl-nic-cidr");
+  if (cidrInput) cidrInput.value = wlStagedValue("intercept_segment");
+  const gatewayInput = document.getElementById("wl-nic-gateway");
+  if (gatewayInput) gatewayInput.value = wlStagedValue("intercept_gateway");
+  const interceptInput = document.getElementById("wl-nic-intercept-ip");
+  if (interceptInput) interceptInput.value = wlStagedValue("intercept_addr");
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
     facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
       + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowActive ? "active" : "passive"}.`;
   }
-  // THE CHANNEL PAIR BELONGS TO THE SENSOR, NOT ONE NIC (operator, 2026-10-19: "This is
-  // where we can select upstream and downstream nics to channel together"). Populate both
-  // selectors from the interfaces this sensor reports; the current values stay selectable
-  // even when the interface list is incomplete.
-  const mgmt = String(wlCfgValue("mgmt_iface") || "").trim();
-  // A NIC panel must not name another NIC -- least of all management. When the setting is
-  // empty, eth0 is the conventional management port and is withheld from the channel pair.
-  const hidden = mgmt || "eth0";
-  const usable = (Array.isArray(interfaces) ? interfaces : [])
-    .filter((n) => n && n !== "lo" && n !== hidden);
-  for (const [id, key] of [["wl-nic-upstream", "channel_upstream"],
-                           ["wl-nic-downstream", "channel_downstream"]]) {
-    const sel = document.getElementById(id);
-    if (!sel) continue;
-    const current = String(wlCfgValue(key) || "").trim();
-    const options = usable.slice();
-    if (current && !options.includes(current)) options.push(current);
-    sel.replaceChildren();
-    sel.appendChild(el("option", { attrs: { value: "" }, text: "— none —" }));
-    for (const name of options) {
-      sel.appendChild(el("option", { attrs: { value: name }, text: name }));
-    }
-    sel.value = current;
-  }
+  // THE CHANNEL PAIR IS NOT A NIC FIELD (operator, 2026-10-19). It is configured on the
+  // sensor's own sheet; this panel only carries its consequences.
   const z = document.getElementById("wl-nic-zeek");
   const sip = document.getElementById("wl-nic-siphon");
   const loch = document.getElementById("wl-nic-loch");
   const net = document.getElementById("wl-nic-netflow");
+  const channelOn = wlChannelEnabled();
   if (z) z.checked = zeekOn;
-  if (sip) sip.checked = siphonOn;
-  if (loch) loch.checked = !siphonOn;
-  if (net) { net.checked = netflowOn; net.disabled = !flowActive; }
+  if (sip) { sip.checked = siphonOn && !channelOn; sip.disabled = channelOn; }
+  if (loch) loch.checked = channelOn || !siphonOn;
+  if (net) { net.checked = channelOn ? true : netflowOn; net.disabled = !flowActive && !channelOn; }
   const passive = document.getElementById("wl-nic-netflow-passive");
   const active = document.getElementById("wl-nic-netflow-active");
-  if (passive) passive.checked = !flowActive;
-  if (active) active.checked = flowActive;
+  if (passive) { passive.checked = channelOn ? false : !flowActive; passive.disabled = channelOn; }
+  if (active) { active.checked = channelOn ? true : flowActive; active.disabled = false; }
+  const channelNote = document.getElementById("wl-nic-channel-note");
+  if (channelNote) {
+    channelNote.textContent = channelOn
+      ? "A channel is enabled on this sensor — siphon and passive NetFlow are locked out."
+      : "";
+  }
   box.dataset.nic = nic;
   const note = document.getElementById("wl-nic-note");
   if (note) note.textContent = "";
@@ -1201,7 +1316,7 @@ function wlShowNicSettings(nic, interfaces) {
 function wlNicModeClicked(which) {
   const sip = document.getElementById("wl-nic-siphon");
   const loch = document.getElementById("wl-nic-loch");
-  if (!sip || !loch) return;
+  if (!sip || !loch || sip.disabled) return;
   if (which === "siphon" && sip.checked) loch.checked = false;
   if (which === "loch" && loch.checked) sip.checked = false;
   if (!sip.checked && !loch.checked) {
@@ -1228,7 +1343,7 @@ function wlNicChannelChanged() {
 function wlNicNetflowSourceChanged() {
   const active = document.getElementById("wl-nic-netflow-active");
   const net = document.getElementById("wl-nic-netflow");
-  if (!active || !net) return;
+  if (!active || !net || active.disabled) return;
   if (active.checked) {
     net.disabled = false;
     net.checked = true;
@@ -1257,9 +1372,17 @@ function wlStageNicSettings() {
   const netBox = document.getElementById("wl-nic-netflow");
   const activeSource = document.getElementById("wl-nic-netflow-active");
   const note = document.getElementById("wl-nic-note");
+  const channelOn = wlChannelEnabled();
   let zeekOn = !!(zeekBox && zeekBox.checked);
-  const siphonOn = !!(siphonBox && siphonBox.checked);
-  const lochOn = !!(lochBox && lochBox.checked);
+  let siphonOn = !!(siphonBox && siphonBox.checked) && !channelOn;
+  let lochOn = !!(lochBox && lochBox.checked) || channelOn;
+  if (channelOn) {
+    // THE CHANNEL WINS OVER A STALE NIC CHECKBOX. The controls are disabled while the bridge
+    // is active, so a hidden checked siphon box must not stage an in-path mode anyway.
+    if (siphonBox) siphonBox.checked = false;
+    if (lochBox) lochBox.checked = true;
+    if (activeSource) activeSource.checked = true;
+  }
   if (siphonOn) zeekOn = true;   // siphon needs a port Zeek can see
   if (siphonOn && !zeekOn) {
     zeekOn = true;
@@ -1286,6 +1409,15 @@ function wlStageNicSettings() {
   }
 
   // MODE: one weirling runs one mode. Choosing it here applies to the sensor, not just the NIC.
+  // THE NETWORKS SECTION IS PART OF THIS INTERFACE'S STAGE. Sonar fills these fields; the
+  // operator may also edit them. They are sensor-level settings, written in the same plan.
+  for (const [id, key] of [["wl-nic-cidr", "intercept_segment"],
+                           ["wl-nic-gateway", "intercept_gateway"],
+                           ["wl-nic-intercept-ip", "intercept_addr"]]) {
+    const field = document.getElementById(id);
+    if (field) stageChange(key, String(field.value || "").trim(), wlCfgValue(key));
+  }
+
   const currentMode = String(wlCfgValue("sensor_mode") || "loch").toLowerCase();
   const wantedMode = siphonOn ? "siphon" : "loch";
   if (wantedMode !== currentMode) stageChange("sensor_mode", wantedMode, currentMode);
@@ -1329,8 +1461,19 @@ async function wlScanNetwork() {
   }
   const where = [res.interface && `interface ${res.interface}`, res.segment]
     .filter(Boolean).join(" on ");
+  // FILL THE NETWORKS SECTION WITH WHAT THE SURVEY MEASURED (operator, 2026-10-19). The
+  // values are already staged by runSonar's ordinary recommendation path; this only makes the
+  // measured answer visible in the fields the operator is about to review.
+  const cidr = document.getElementById("wl-nic-cidr");
+  if (cidr && res.segment) cidr.value = res.segment;
+  const gateway = document.getElementById("wl-nic-gateway");
+  if (gateway && res.gateway) gateway.value = res.gateway;
+  const intercept = document.getElementById("wl-nic-intercept-ip");
+  const free = (res.recommended && res.recommended.intercept_addr)
+    || (Array.isArray(res.free_addresses) ? res.free_addresses[0] : "");
+  if (intercept && free) intercept.value = free;
   note.textContent = `Scan complete${where ? ` (${where})` : ""}. ` +
-    "Its recommendations are staged below; Apply writes them after review.";
+    "Network, gateway and intercept IP are filled below; review them, then stage this interface.";
 }
 
 /** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...

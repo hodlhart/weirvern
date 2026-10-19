@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.36 — 2026-10-19
+
+THE CHANNEL PAIR BELONGS TO THE SENSOR ROW.
+
+- The **Channel** pair moved off the per-NIC settings panel and onto the sensor's own sheet,
+  opened by clicking the row with the sensor name. A NIC panel no longer offers a sensor-wide
+  choice.
+- While a channel is enabled, the NIC panel greys out **Siphon** and **Passive NetFlow**. Applying
+  the channel writes `channel_upstream`/`channel_downstream` together with `sensor_mode=loch`
+  and `netflow_mode=active`, so a bridge cannot be left fighting an in-path or router-feed choice.
+- The **network name** is back above Mode. **Networks** now carries the measured network CIDR,
+  gateway and intercept IP; **Sonar** fills all three from the segment it surveys, and staging
+  the interface writes them with the rest of the plan.
+- Clicking **Identity** in Assets opens the evidence as a sheet, not a card at the bottom: four
+  headline metrics (identity, confidence, sources, last updated), one strongest-evidence
+  call-out, then the checkable signal list.
+
 ## 0.17.35 — 2026-10-19
 
 APPLY FROM THE WEIRLINGS SHEET DOES NOT ASK FOR A SECOND REASON.

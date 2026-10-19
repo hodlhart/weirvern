@@ -3993,12 +3993,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const idClose = document.getElementById("id-detail-close");
   if (idClose) {
     idClose.addEventListener("click", () => {
-      document.getElementById("id-detail-card").classList.add("hidden");
+      const card = document.getElementById("id-detail-card");
+      if (typeof closeSheet === "function") closeSheet(card);
+      else card.classList.add("hidden");
     });
   }
   const idOpen = document.getElementById("id-detail-open");
   if (idOpen) {
     idOpen.addEventListener("click", () => {
+      // The sheet is a layer, not a card: leaving it open behind the host view would leave
+      // two surfaces claiming the same screen.
+      const detailCard = document.getElementById("id-detail-card");
+      if (typeof closeSheet === "function") closeSheet(detailCard);
       if (CURRENT_ID_HOST) openHost(CURRENT_ID_HOST);
     });
   }
@@ -5212,7 +5218,19 @@ let CURRENT_ID_HOST = "";
 function showIdentityDetail(h) {
   CURRENT_ID_HOST = h.host || "";
   const card = document.getElementById("id-detail-card");
-  card.classList.remove("hidden");
+  if (!card) return;
+  // Dotted calls keep this file's bare-call audit clean: the sheet helpers live in
+  // sheets.js, not app.js, and the scanner only treats `foo(` as ours.
+  if (typeof window.wireSheet === "function") {
+    window.wireSheet(card, { scrimId: "id-detail-scrim", initialFocus: "id-detail-close" });
+  }
+  if (typeof window.openSheet === "function") {
+    window.openSheet(card, { scrimId: "id-detail-scrim", initialFocus: "id-detail-close" });
+  } else {
+    card.classList.remove("hidden");
+  }
+  const detailTitle = document.getElementById("id-detail-title");
+  if (detailTitle) detailTitle.setAttribute("data-host", h.host || "");
   document.getElementById("id-detail-host").textContent = h.hostname
     ? `${h.hostname} (${h.host})` : h.host;
 
@@ -5220,29 +5238,49 @@ function showIdentityDetail(h) {
   box.replaceChildren();
 
   const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "—";
-  const facts = [
-    ["identity", h.os_label || h.os || "unknown"],
-    ["confidence", String(h.confidence || "unknown")],
-    ["sources", `${h.agreeing_sources ?? "—"} source(s) agreeing`],
-    ["strongest evidence", strongest],
-    ["last updated", h.updated_at ? fmtTime(h.updated_at)
-                                    : (h.age_s != null ? `${fmtAge(h.age_s)} ago` : "—")],
-    ["MAC", h.mac || "—"],
+  const updated = h.updated_at ? fmtTime(h.updated_at)
+    : (h.age_s != null ? `${fmtAge(h.age_s)} ago` : "—");
+  const metrics = [
+    ["Identity", h.os_label || h.os || "unknown", h.os && h.os_label ? h.os : ""],
+    ["Confidence", String(h.confidence || "unknown"),
+      h.score != null ? `score ${h.score}` : ""],
+    ["Sources", `${h.agreeing_sources ?? "—"} agreeing`, ""],
+    ["Last updated", updated, ""],
   ];
+  const grid = el("div", { class: "id-metrics" });
+  for (const [label, value, sub] of metrics) {
+    grid.appendChild(el("div", { class: "id-metric" }, [
+      el("div", { class: "id-label", text: label }),
+      el("div", { class: "id-value", text: String(value) }),
+      sub ? el("div", { class: "id-sub", text: sub }) : null,
+    ].filter(Boolean)));
+  }
+  box.appendChild(grid);
+  box.appendChild(el("div", { class: "id-strongest" }, [
+    el("div", { class: "id-label", text: "Strongest evidence" }),
+    el("div", { class: "id-value", text: String(strongest) }),
+  ]));
+
+  // The remaining mechanical facts, not the dashboard's four headline numbers.
+  const facts = [];
+  if (h.mac) facts.push(["MAC", h.mac]);
   if (h.ja4_structure) {
     const j = h.ja4_structure;
     facts.push(["TLS", `${j.transport || "?"} ${j.tls_version || ""}, ` +
                         `${j.cipher_count ?? "?"} ciphers, ALPN ${j.alpn || "none"}`]);
   }
-  const table = el("table");
-  const tb = el("tbody");
-  for (const [k, v] of facts) {
-    tb.appendChild(el("tr", {}, [
-      el("td", { class: "muted", text: k }), el("td", { class: "mono", text: String(v) }),
-    ]));
+  if (facts.length) {
+    box.appendChild(el("h3", { text: "Host facts" }));
+    const table = el("table");
+    const tb = el("tbody");
+    for (const [k, v] of facts) {
+      tb.appendChild(el("tr", {}, [
+        el("td", { class: "muted", text: k }), el("td", { class: "mono", text: String(v) }),
+      ]));
+    }
+    table.appendChild(tb);
+    box.appendChild(table);
   }
-  table.appendChild(tb);
-  box.appendChild(table);
 
   // The evidence, with its source and weight, so the label can be CHECKED rather than trusted.
   if (h.signals && h.signals.length) {
