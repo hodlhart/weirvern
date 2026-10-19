@@ -162,6 +162,14 @@ spec:
                 configMapKeyRef:
                   name: weirvern-env
                   key: CLICKHOUSE_USER
+            # ACCESS MANAGEMENT FOR THE NAMED USER (HD-25). The deploy script creates one
+            # ClickHouse user per weirling, which needs CREATE USER / ALTER USER / DROP USER.
+            # The official image's switch writes <access_management>1</access_management> into
+            # the generated user file for CLICKHOUSE_USER -- measured live: without it,
+            # CREATE USER returns ACCESS_DENIED; with it, system grants include CREATE USER,
+            # ALTER USER, DROP USER. It widens user administration, not data access.
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
           volumeMounts:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
