@@ -1682,3 +1682,22 @@ def test_a_rule_describes_itself_as_a_sentence():
 
     # An empty predicate is a data defect and must not be dressed up as a sentence.
     assert Rule(rule_id="d").describes() == "(no predicate)"
+
+
+def test_a_failed_nft_list_does_not_count_as_a_present_table():
+    """ENOENT names the table in stderr.
+
+    `nft list table inet weirvern_sluice` on a box with no such table exits non-zero and prints
+    "list table inet weirvern_sluice". Reading the text alone made every absence look like a
+    leftover table, so the live gate reported "degraded: these tables are still present after
+    deletion" forever while `nft list tables` showed neither.
+    """
+    from weirvern.sluice import NftBackend
+
+    def runner(args, stdin=None, capture=False):
+        return False, "Error: No such file or directory\nlist table inet weirvern_sluice"
+
+    backend = NftBackend(runner=runner)
+    assert backend.installed() is False
+    ok, detail = backend.disarm()
+    assert ok is True and "still present" not in detail

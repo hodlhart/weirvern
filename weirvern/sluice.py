@@ -807,7 +807,11 @@ class NftBackend(Backend):
         # leftover there is exactly as live as one in the forward table.
         for table in (NFT_TABLE, NFT_TABLE_IN):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
-            if present and table in present:
+            # A FAILED LIST IS NOT PRESENCE. nft writes the requested table name into its
+            # stderr ("list table inet weirvern_sluice" on ENOENT), so testing the text alone
+            # made every absence read as a leftover table -- the live gate called itself
+            # degraded forever, even with no nft table anywhere on the box.
+            if ok and present and table in present:
                 return True
         return False
 
@@ -821,7 +825,7 @@ class NftBackend(Backend):
         still = []
         for table in (NFT_TABLE, NFT_TABLE_IN):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
-            if present and table in present:
+            if ok and present and table in present:
                 still.append(table)
         if still:
             return False, f"these tables are still present after deletion: {', '.join(still)}"

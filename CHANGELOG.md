@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.14 — 2026-10-19
+
+THE GATE'S "DEGRADED" WAS A FALSE ALARM. `NftBackend.installed()` and `disarm()` verified a table
+by asking `nft list table inet <name>` and then testing whether the name appeared in the output.
+On a box with no such table nft exits non-zero and prints the requested name in its stderr
+("list table inet weirvern_sluice"), so every ABSENCE read as a leftover table: the live gate
+reported "degraded — these tables are still present after deletion" while `nft list tables`
+showed neither table anywhere. Presence now requires a successful list (`ok and ...`), with a
+regression test built from the exact ENOENT text. The gate's capture path was never the problem;
+this was the cleanup check lying about it.
+
 ## 0.17.13 — 2026-10-19
 
 THE HOST VIEW ACTUALLY OPENS. 0.17.12 added `#view-host` but `showView("host")` still carried the
