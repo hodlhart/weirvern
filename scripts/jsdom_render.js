@@ -104,7 +104,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadNetwork, drawGraph, computeLayout, settleGraph, nodeTitle, edgeTitle,
                    toggleTracked, loadZeekLog, loadFlowDetail, openHost,
                      showView, loadSettings, loadHealthDeep,
-                     STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange,
+                     STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange, renderStageMirror,
                      syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, toggleAllHelp,
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
@@ -3962,6 +3962,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && (doc.getElementById("wl-plan-iface").value || "") === "eth1"
           && /editing NIC eth1/.test((doc.getElementById("wl-nic-edit") || {}).textContent || ""),
           `iface=${doc.getElementById("wl-plan-iface").value} note=${(doc.getElementById("wl-nic-edit") || {}).textContent}`);
+    // ONE NIC'S SETTINGS MUST NOT NAME ANOTHER NIC (operator, 2026-10-19: "If I am configuring
+    // eth1 ... there should be no reference of eth2"). The global Zeek list is stored elsewhere;
+    // the scoped panel reads only this interface.
+    {
+      const panel = doc.getElementById("wl-nic-settings");
+      const words = panel ? panel.textContent : "";
+      check("a NIC's settings panel names only that NIC",
+            !/eth2/i.test(words) && !/eth0/i.test(words), words.slice(0, 180));
+      const held = H.STAGE.changes;
+      H.STAGE.changes = { zeek_ifaces: "eth1,eth2" };
+      H.renderStageMirror(["zeek_ifaces"]);
+      const diff = doc.getElementById("wl-stage-list").textContent || "";
+      check("...and its pending diff states this NIC's on/off, not the other NIC's name",
+            !/eth2/i.test(diff) && /eth1/.test(diff) && /\bon\b/.test(diff), diff.slice(0, 120));
+      H.STAGE.changes = held;
+      H.renderStageMirror(Object.keys(held));
+    }
     doc.getElementById("wl-detail-close").click();
     await new Promise((r) => setTimeout(r, 80));
     // views: a default exists, switching applies filters, saving adds one

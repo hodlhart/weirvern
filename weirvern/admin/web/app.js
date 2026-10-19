@@ -624,12 +624,40 @@ function renderStageMirror(keys) {
   if (apply) apply.disabled = keys.length === 0;
   if (discard) discard.disabled = keys.length === 0;
   if (!list) return;
+  // IN A NIC'S SETTINGS, SHOW THAT NIC'S EFFECT, NOT THE WHOLE BOX'S LIST (operator,
+  // 2026-10-19: "If I am configuring eth1 ... there should be no reference of eth2"). The
+  // backend stores Zeek capture as one list, so the diff used to print `eth1,eth2` while the
+  // operator was editing only eth1. The stored value stays global; the sentence here is local.
+  const nicBox = document.getElementById("wl-nic-settings");
+  const nic = nicBox && !nicBox.classList.contains("hidden") ? nicBox.dataset.nic : "";
+  const localValue = (key, value) => {
+    if (!nic) return value;
+    if (key === "zeek_ifaces") {
+      const list = String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+      return list.includes(nic) || (!list.length && typeof wlCfgValue === "function"
+        && wlCfgValue("zeek_iface") === nic)
+        ? "on" : "off";
+    }
+    if (key === "capture_iface") return String(value) === nic ? "on" : "off";
+    if (key === "interface_networks") {
+      return typeof wlIfaceNames === "function" ? (wlIfaceNames(value)[nic] || "") : value;
+    }
+    return value;
+  };
+  const localKey = (key) => {
+    if (!nic) return key;
+    if (key === "zeek_ifaces") return `Zeek capture · ${nic}`;
+    if (key === "capture_iface") return `siphon capture · ${nic}`;
+    if (key === "interface_networks") return `network name · ${nic}`;
+    return key;
+  };
   list.replaceChildren();
   for (const key of keys) {
+    const value = localValue(key, STAGE.changes[key] || "");
     list.appendChild(el("div", { class: "stage-row" }, [
-      el("span", { class: "stage-key mono", text: key }),
+      el("span", { class: "stage-key mono", text: localKey(key) }),
       el("span", { class: "stage-arrow", text: "→" }),
-      el("span", { class: "stage-val mono", text: STAGE.changes[key] || "(empty)" }),
+      el("span", { class: "stage-val mono", text: value || "(empty)" }),
     ]));
   }
 }

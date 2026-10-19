@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.30 — 2026-10-19
+
+A NIC'S PENDING DIFF NAMES ONLY THAT NIC. The per-interface sheet was scoped, but its pending
+changes rendered the stored Zeek list verbatim, so editing eth1 printed `eth1,eth2`. The mirror
+now states the selected interface's effect — capture on/off, siphon on/off, its network name —
+while the stored value remains the one list the backend needs. The settings panel itself was
+already interface-only; a regression check now keeps eth0 and eth2 out of it.
+
 ## 0.17.29 — 2026-10-19
 
 INTERFACE NAMES REACH THE ALERTS. The per-interface settings now carry a network name
