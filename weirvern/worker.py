@@ -287,7 +287,10 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         if first_sweep:
             try:
                 prior = sluice_store.load_gate_state(client, _sensor_name(settings))
-                if changed or prior.get("state") != GATE_STATE_DISARMED:
+                stale = (prior.get("state") != GATE_STATE_DISARMED
+                         or not prior.get("iface")
+                         or not prior.get("backend"))
+                if changed or stale:
                     # A stale row still needs a state that names this gate's interface and backend.
                     # The default GateState has neither, and writing it made the panel say
                     # "interface —" and warn about a '' backend on a gate that uses nft on eth1.

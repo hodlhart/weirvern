@@ -878,10 +878,19 @@ async function openWeirling(sensorId, opts = {}) {
           setInput("CAPTURE_IFACE", opts.nic);
           const zrow = (typeof SETTINGS_ROWS !== "undefined"
             && (SETTINGS_ROWS.ZEEK_IFACES || SETTINGS_ROWS.zeek_ifaces)) || null;
+          const zbase = (typeof SETTINGS_ROWS !== "undefined"
+            && (SETTINGS_ROWS.ZEEK_IFACE || SETTINGS_ROWS.zeek_iface)) || null;
           // "(not set)" is the SETTINGS PAYLOAD's display value for an empty key, not an
           // interface name. Splitting it in appended "(not set),eth2" to ZEEK_IFACES.
+          const clean = (s) => (s && !/^\(not set\)$/i.test(s) && s !== "—") ? s : "";
           const current = String((zrow && zrow.value) || "").split(",").map((s) => s.trim())
-            .filter((s) => s && !/^\(not set\)$/i.test(s) && s !== "—");
+            .map(clean).filter(Boolean);
+          // A list that only names the clicked port would DROP the interface Zeek already
+          // watches. Seed the list with ZEEK_IFACE when ZEEK_IFACES is empty.
+          if (!current.length) {
+            const base = clean(String((zbase && zbase.value) || "").trim());
+            if (base) current.push(base);
+          }
           if (!current.includes(opts.nic)) setInput("ZEEK_IFACES", current.concat(opts.nic).join(","));
           let nicNote = document.getElementById("wl-nic-edit");
           if (!nicNote) {

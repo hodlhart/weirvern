@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.21 — 2026-10-19
+
+THE NIC LIST KEEPS THE PORT ZEEK ALREADY WATCHES. Selecting eth2 for siphon staged
+`ZEEK_IFACES=eth2`, which would have dropped eth1 from Zeek's capture. The list is seeded with
+ZEEK_IFACE when it is empty, so the click stages `eth1,eth2`. A gate row whose stored interface or
+backend is empty is also treated as stale and rewritten from the running supervisor, so the
+Traffic Gate tile names eth1/nft instead of "—".
+
 ## 0.17.20 — 2026-10-19
 
 "(not set)" IS NOT AN INTERFACE. The settings payload renders an empty key as `(not set)`, so the

@@ -1627,7 +1627,8 @@ def _wire_disabled_sweep(monkeypatch, backend):
     monkeypatch.setattr(sluice_store, "write_gate_state",
                         lambda client, sensor, state: writes.append(state))
     monkeypatch.setattr(sluice_store, "load_gate_state",
-                        lambda client, sensor: {"state": "disarmed"})
+                        lambda client, sensor: {"state": "disarmed", "iface": "eth9",
+                                                "backend": "sweep-fake"})
     worker._SLUICE.update({"supervisor": None, "last_pass": 0.0, "armed": False, "swept": False})
     return worker, writes
 
