@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.28 — 2026-10-19
+
+THE TABLE-SIZE HISTORY BOUNDS, ROUND TWO. The table held samples while the Health query returned
+none: the driver's aware-datetime binding selected no rows for a `DateTime64(…, 'UTC')` column
+through the HTTP interface. Bind the window as wall-clock strings instead; the history is a
+read-only diagnostic and both sides parse that form.
+
 ## 0.17.27 — 2026-10-19
 
 THE HEALTH TRENDS HAVE DATA ON THE FIRST VISIT. The history read grouped by hour and lost the

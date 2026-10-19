@@ -655,12 +655,18 @@ def table_sizes(client, limit: int = 14, history_hours: int = 24) -> dict:
             # by hour meant a freshly restarted table had only ONE point and the panel read
             # "collecting" for an hour after the feature shipped. The samples are already
             # throttled, so the series is bounded (about 288 points/day/table).
+            # BIND THE BOUNDS AS WALL-CLOCK STRINGS. The table stores `at` with an explicit UTC
+            # zone and the driver's aware-datetime binding selected no rows through the HTTP
+            # interface (measured: 67 rows in the table, zero returned here). The history query
+            # is a read-only diagnostic; a string both sides parse is the stable form.
+            w = timewindow.w(history_hours)
             hrows = client.query(
                 "SELECT table_name, at, bytes, rows "
                 "FROM weirvern.table_size_history "
                 "WHERE at >= %(since)s AND at <= %(until)s "
                 "ORDER BY table_name, at",
-                parameters=timewindow.w(history_hours),
+                parameters={"since": w["since"].strftime("%Y-%m-%d %H:%M:%S"),
+                            "until": w["until"].strftime("%Y-%m-%d %H:%M:%S")},
             ).result_rows
             wanted = set(names)
             for name, when, b, n in hrows:
