@@ -475,7 +475,7 @@ function wlCfg(key) {
   return String(v == null ? "" : v).trim();
 }
 
-/** Every NIC the heartbeat reports, with only the roles this hub can justify. */
+/** Every NON-MANAGEMENT NIC the heartbeat reports, with only the roles this hub can justify. */
 function wlNicFacts(r) {
   const names = [...(r.interfaces || [])];
   const local = !!r.local;
@@ -486,64 +486,40 @@ function wlNicFacts(r) {
     ? (wlCfg("intercept_segment") || r.segment || r.reported_segment)
     : (r.segment || (r.plan && r.plan.segment) || r.reported_segment || "");
   const mode = String(r.reported_mode || r.expected_mode || "").toLowerCase();
-  const rows = names.map((name) => {
-    const role = (mgmt && name === mgmt) ? "management"
-      : (capture && name === capture) ? "capture" : "unassigned";
-    return { name, role, mode, networks: role === "capture" ? segment : "" };
+  // MANAGEMENT IS NOT A CAPTURE NIC (operator, 2026-10-19): it is excluded from this list,
+  // not hidden with a dash. Every remaining interface gets its own line in the sensor's row.
+  const rows = names.filter((name) => !(mgmt && name === mgmt)).map((name) => {
+    const role = (capture && name === capture) ? "capture" : "unassigned";
+    return {
+      name, role, mode,
+      networks: role === "capture" ? segment : "",
+      channel: role === "capture" ? ((r.channel && r.channel.state) || "") : "",
+    };
   });
-  // The in-path channel's ends are software ports, not NICs the agent reports; show them when
-  // this hub's sensor is configured for siphon, labelled as the channel they are.
-  if (local && mode === "siphon") {
-    for (const [key, label] of [["channel_upstream", "channel upstream"],
-                                ["channel_downstream", "channel downstream"]]) {
-      const n = wlCfg(key);
-      if (n && !rows.some((x) => x.name === n)) rows.push({ name: n, role: label, mode, networks: "" });
-    }
-  }
   return { rows, capture, segment };
 }
 
-/** The per-NIC table under one row. What is not known says so; nothing is inferred. */
-function wlToggleNics(tr, r, btn) {
-  const next = tr.nextElementSibling;
-  if (next && next.classList.contains("wl-nics")) {
-    next.remove();
-    btn.setAttribute("aria-expanded", "false");
-    return;
-  }
-  document.querySelectorAll("#wl-table tbody tr.wl-nics").forEach((x) => x.remove());
-  document.querySelectorAll(".wl-nics-open").forEach((b) => b.setAttribute("aria-expanded", "false"));
+/** Each non-management NIC as its own line, placed immediately under the weirling's row.
+ *  What the hub does not know says so; nothing is inferred. */
+function wlNicRows(r) {
   const facts = wlNicFacts(r);
-  const body = el("tbody");
-  for (const n of facts.rows) {
+  return facts.rows.map((n) => {
     const capture = n.role === "capture";
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: n.name }),
-      el("td", { class: "muted", text: n.role }),
-      el("td", { class: "mono", text: n.mode || "—" }),
+    return el("tr", { class: "wl-nic-row" }, [
+      el("td", {}, [
+        el("span", { class: "mono wl-nic-name", text: n.name }),
+        el("span", { class: "muted", text: ` ${n.role}` }),
+      ]),
+      el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—" }),
+      el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
+                 attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
-      el("td", {}, [capture ? wlSparkline(r) : "—"]),
+      el("td", {}, [capture ? wlSparkline(r) : el("span", { class: "muted", text: "\u2014" })]),
       el("td", {}, [capture
         ? el("span", { class: "wl-feeds" }, [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])
-        : "—"]),
-    ]));
-  }
-  const sub = el("tr", { class: "wl-nics" }, [
-    el("td", { attrs: { colspan: "6" } }, [
-      el("div", { class: "wl-nic-wrap" }, [
-        el("p", { class: "muted", text: `What the hub knows about ${r.sensor_id}'s interfaces `
-          + `(capture interface: ${facts.capture || "not reported"}; segment: `
-          + `${facts.segment || "not declared"}).` }),
-        el("table", { class: "wl-nic-table" }, [
-          el("thead", {}, [el("tr", {}, ["nic", "role", "mode", "networks", "flow", "feeds"]
-            .map((h) => el("th", { text: h })))]),
-          body,
-        ]),
-      ]),
-    ]),
-  ]);
-  tr.after(sub);
-  btn.setAttribute("aria-expanded", "true");
+        : el("span", { class: "muted", text: "\u2014" })]),
+    ]);
+  });
 }
 
 function renderWeirlings(rows, revoked, revokedReason) {
@@ -635,17 +611,6 @@ function renderWeirlings(rows, revoked, revokedReason) {
             on: { click: (ev) => { ev.stopPropagation(); adoptWeirling(r, ev.target); } },
           })
         : null,
-      // EACH NIC, ON DEMAND (operator, 2026-10-19: "i also need to see each nic on the
-      // sensors and its mode, networks, flow and feeds"). The sub-row lists what the hub
-      // actually knows; a fact the agent did not report says so instead of being invented.
-      (r.interfaces || []).length
-        ? el("button", {
-            class: "quiet wl-nics-open", text: `NICs (${r.interfaces.length})`,
-            attrs: { type: "button", "aria-expanded": "false",
-                     title: "show each interface, its role, mode, networks, flow and feeds" },
-            on: { click: (ev) => { ev.stopPropagation(); wlToggleNics(tr, r, ev.target); } },
-          })
-        : null,
     ].filter(Boolean)));
     if (WL_SELECTED.has(r.sensor_id)) {
       const cb = tr.querySelector("input.wl-sel");
@@ -710,6 +675,10 @@ function renderWeirlings(rows, revoked, revokedReason) {
     ]));
 
     tbody.appendChild(tr);
+    // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
+    // row"). Always visible, never behind a control: a NIC list you have to discover is the
+    // same dead end the old evidence drill was.
+    for (const nicRow of wlNicRows(r)) tbody.appendChild(nicRow);
   }
 
   // Revoked registrations are shown BESIDE the fleet, never inside it: a sensor somebody removed

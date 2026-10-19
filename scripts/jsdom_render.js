@@ -3849,7 +3849,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       .map((th) => th.textContent.trim().toLowerCase());
     check("the fleet table is weirling, mode, channel, networks, flow, feeds",
           heads.join("|") === "weirling|mode|channel|networks|flow|feeds", heads.join("|"));
-    const localRow = [...doc.querySelectorAll("#wl-table tbody tr")]
+    const localRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => tr.textContent.includes("weirvern"));
     if (localRow) {
       const cells = [...localRow.querySelectorAll("td")];
@@ -3862,25 +3862,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             cells[5].querySelectorAll(".tap").length === 2, cells[5].textContent.trim());
       check("the flow cell says something even with no series",
             cells[4].textContent.trim().length > 0, cells[4].textContent.trim());
-      const nicBtn = localRow.querySelector(".wl-nics-open");
-      check("the row offers each of its NICs", !!nicBtn, "no NIC control");
-      if (nicBtn) {
-        nicBtn.click();
-        await new Promise((r) => setTimeout(r, 120));
-        const sub = doc.querySelector("#wl-table tbody tr.wl-nics");
-        const nicRows = sub ? [...sub.querySelectorAll(".wl-nic-table tbody tr")] : [];
-        check("...and expands to one row per interface, with roles",
-              !!sub && nicRows.length >= (localRow.querySelector(".wl-nics-open").textContent.match(/\d+/) || [0])[0] * 1
-              && /management|capture|unassigned|channel/.test(sub.textContent),
-              `${nicRows.length} NIC rows`);
-        nicBtn.click();
-        await new Promise((r) => setTimeout(r, 80));
-      }
+      const nicRows = [...doc.querySelectorAll("#wl-table tbody tr.wl-nic-row")];
+      check("every non-management NIC is its own line under the sensor row",
+            nicRows.length >= 1 && !doc.querySelector(".wl-nics-open"),
+            `${nicRows.length} NIC lines`);
+      check("...each NIC line carries mode, channel, networks, flow and feeds",
+            nicRows.every((tr) => tr.children.length === 6)
+            && nicRows.some((tr) => /capture/.test(tr.textContent)),
+            nicRows.map((tr) => tr.children.length).join(","));
+      const captureRow = nicRows.find((tr) => /capture/.test(tr.textContent));
+      check("...the capture NIC carries the trend and both feed indicators",
+            !!captureRow && captureRow.querySelectorAll(".tap").length === 2
+            && /flows|wl-spark/.test(captureRow.children[4].innerHTML),
+            captureRow ? captureRow.children[4].textContent.trim() : "no capture NIC");
     }
     const nsTile = tiles.find((t) => /never seen/.test(t.textContent));
     nsTile.click();
     await new Promise((r) => setTimeout(r, 250));
-    const rowsNow = [...doc.querySelectorAll("#wl-table tbody tr")];
+    const rowsNow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")];
     check("...clicking a count filters the worklist to exactly it",
           rowsNow.length >= 1 &&
             rowsNow.every((tr) => tr.classList.contains("wl-state-never_seen")),
@@ -3890,8 +3889,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     nsTile.click();   // toggle off
     await new Promise((r) => setTimeout(r, 250));
     check("...and clicking it again clears the filter",
-          [...doc.querySelectorAll("#wl-table tbody tr")].length > 1,
-          String([...doc.querySelectorAll("#wl-table tbody tr")].length));
+          [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].length > 1,
+          String([...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].length));
     // bulk: select two rows, disable, prove every POST
     const boxes = [...doc.querySelectorAll("#wl-table input.wl-sel")];
     check("every registered row can be selected for bulk work", boxes.length >= 2,
@@ -4011,7 +4010,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("WL-1: the columns are name / mode / channel / networks / flow / feeds",
           heads.join("|") === "weirling|mode|channel|networks|flow|feeds",
           heads.join("|"));
-    const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr")]
+    const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => (tr.textContent || "").includes(id));
     const alive = row("edge-alive");
     const spark = alive && alive.querySelector("svg.wl-spark polyline");
@@ -5440,7 +5439,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           "a state word alone cannot tell the operator whether the box is off or its capture died");
     check("DECLARED and REPORTED are both readable where the mode is, without sharing the cell",
           (() => {
-            const r = [...H.document.querySelectorAll("#wl-table tbody tr")]
+            const r = [...H.document.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
               .find((tr) => (tr.textContent || "").includes("edge-moved"));
             const cell = r ? r.querySelector("td:nth-child(2)") : null;
             const title = cell ? (cell.textContent.match(/siphon/) ? cell.querySelector("span").getAttribute("title") : "") : "";
@@ -5655,7 +5654,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   const ghostFix = WEIRLINGS_PAYLOAD.sensors.find((s) => s.sensor_id === "ghost-box");
   if (ghostFix) { ghostFix.registered = false; ghostFix.state = "unregistered"; ghostFix.enabled = false; }
   await H.loadWeirlings();
-  const rows = [...doc.querySelectorAll("#wl-table tbody tr")];
+  const rows = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")];
   const rowFor = (id) => rows.find((tr) => (tr.textContent || "").includes(id));
   const ghost = rowFor("ghost-box");
   const alive = rowFor("edge-alive");
@@ -6211,7 +6210,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("weirlings");
     await H.loadWeirlings();
     await sleep(200);
-    const flowCell = [...doc.querySelectorAll("#wl-table tbody tr")]
+    const flowCell = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => (tr.textContent || "").includes("edge-alive"))
       ?.querySelector(".wl-flow-cell.clickable");
     check("the flow trend is the pivot to that sensor's flows", !!flowCell);
@@ -6562,7 +6561,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("weirlings");
     await H.loadWeirlings();
     await sleep(200);
-    const fleetRow = [...doc.querySelectorAll("#wl-table tbody tr")].find((r) => /clickable/.test(r.className));
+    const fleetRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")].find((r) => /clickable/.test(r.className));
     check("a fleet row carries the row-level cue", !!fleetRow);
     if (fleetRow) {
       fleetRow.click();

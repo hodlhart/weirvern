@@ -394,16 +394,17 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 }
 #wl-summary .stat .v { font-size: 27px; line-height: 36px; }
 #wl-summary .stat.ok .v { color: var(--ok); }
-/* WL-3: the combined feeds cell and the per-NIC expansion (operator, 2026-10-19). */
+/* WL-3: the combined feeds cell and the in-row NIC lines (operator, 2026-10-19). */
 .wl-feeds { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.wl-nics-open { margin-left: 8px; }
-tr.wl-nics > td { background: var(--panel2); padding: 0 0 8px 26px; }
-.wl-nic-wrap { padding: 6px 0 10px; }
-.wl-nic-table { width: 100%; border-collapse: collapse; font-size: var(--fs-1); }
-.wl-nic-table th, .wl-nic-table td {
-  padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border);
+/* EACH NON-MANAGEMENT NIC, ONE LINE UNDER ITS SENSOR. A tinted band, indented, with the
+   NIC's own name first; the sensor row above it carries the sensor-wide state. */
+tr.wl-nic-row > td {
+  background: var(--panel2); border-top: 1px solid var(--border);
+  padding-top: 5px; padding-bottom: 5px;
 }
-.wl-nic-table th { color: var(--muted); font-weight: 500; }
+tr.wl-nic-row > td:first-child { padding-left: 34px; }
+.wl-nic-name { color: var(--fg); }
+
 #wl-summary .stat.warn .v { color: var(--warn); }
 #wl-summary .stat.bad .v { color: var(--bad); }
 #wl-summary .stat.muted .v { color: var(--muted); }

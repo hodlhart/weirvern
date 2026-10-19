@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.11 — 2026-10-19
+
+**EACH NON-MANAGEMENT NIC IS A LINE INSIDE ITS SENSOR'S ROW.** The `NICs (n)` disclosure is gone:
+every non-management interface the heartbeat reports is rendered directly under its weirling, one
+line each, with its own **name and role**, **mode**, **channel**, **networks**, **flow trend** and
+**feeds**. The management NIC is excluded (it is not a capture path), and a fact the hub does not
+have renders as a dash rather than a guess. The sensor row above keeps the sensor-wide summary;
+the NIC lines carry the per-interface view. Harness checks pin the inline rows, the six cells and
+the capture NIC's trend and both feed indicators.
+
 ## 0.17.10 — 2026-10-19
 
 TWO FOLLOW-UPS FOUND BY READING THE LIVE BOX AFTER 0.17.9 WAS DEPLOYED.
