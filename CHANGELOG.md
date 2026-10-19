@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.38 — 2026-10-19
+
+INTERFACE COUNTERS COME FROM SYSFS.
+
+- `/proc/net` follows the pod's network namespace even when procfs is mounted from the host,
+  so the interface table only ever saw the pod's own eth0. The sampler now reads the host's
+  `/sys/class/net/*/statistics` (read-only `/host-sys`) and falls back to procfs when that
+  mount is absent. CPU and memory still come from the host procfs.
+
 ## 0.17.37 — 2026-10-19
 
 THE SYSTEM IS A READING, AND THE POP-OUTS LOOK LIKE THE CONSOLE.

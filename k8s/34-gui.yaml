@@ -158,6 +158,11 @@ spec:
             - name: host-proc
               mountPath: /host-proc
               readOnly: true
+            # Interface counters live in sysfs, not procfs: /proc/net follows the pod's
+            # network namespace even when procfs is the host's.
+            - name: host-sys
+              mountPath: /host-sys
+              readOnly: true
       volumes:
         # readOnlyRootFilesystem is on, so Python needs a writable /tmp for
         # bytecode caches and temp files. An emptyDir is the minimum that allows.
@@ -166,6 +171,10 @@ spec:
         - name: host-proc
           hostPath:
             path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
             type: Directory
 ---
 apiVersion: v1

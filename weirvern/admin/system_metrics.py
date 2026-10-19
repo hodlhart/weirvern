@@ -104,6 +104,40 @@ def parse_netdev(text: str) -> dict[str, dict[str, int]]:
     return out
 
 
+def read_net_counters() -> dict[str, dict[str, int]]:
+    """Interface counters from the host's sysfs, falling back to this procfs' netdev.
+
+    `/proc/net/dev` is network-namespace scoped even when procfs is the host's: a mount
+    changes the filesystem, not the namespace. `/sys/class/net` is the host's interface
+    list, so the counters are read there when the GUI has the read-only mount.
+    """
+    configured = os.environ.get("HOST_SYS", "").strip()
+    base = Path(configured) if configured else Path("/host-sys")
+    class_net = base / "class" / "net"
+    if class_net.is_dir():
+        out: dict[str, dict[str, int]] = {}
+        for iface in sorted(class_net.iterdir()):
+            stats = iface / "statistics"
+            if not stats.is_dir():
+                continue
+
+            def one(name: str, stats: Path = stats) -> int:
+                try:
+                    return int((stats / name).read_text().strip())
+                except (OSError, ValueError):
+                    return 0
+
+            out[iface.name] = {
+                "rx_bytes": one("rx_bytes"), "rx_packets": one("rx_packets"),
+                "rx_errors": one("rx_errors"), "rx_drops": one("rx_dropped"),
+                "tx_bytes": one("tx_bytes"), "tx_packets": one("tx_packets"),
+                "tx_errors": one("tx_errors"), "tx_drops": one("tx_dropped"),
+            }
+        if out:
+            return out
+    return parse_netdev(_read(proc_root() / "net" / "dev"))
+
+
 def _rate(now: int, before: int, elapsed: float) -> float:
     if elapsed <= 0:
         return 0.0
@@ -118,7 +152,7 @@ def sample() -> dict:
         now = time.time()
         cpu = parse_cpu(_read(root / "stat"))
         mem = parse_meminfo(_read(root / "meminfo"))
-        net = parse_netdev(_read(root / "net" / "dev"))
+        net = read_net_counters()
 
         cpu_percent = None
         if cpu is not None and _PREV_CPU is not None:
