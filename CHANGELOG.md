@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.15 — 2026-10-19
+
+A DISABLED RESTART CLEARS A STALE GATE ROW. 0.17.14 stopped an absent nft table from reading as
+present, but the panel still said "degraded" after a restart: the old worker had recorded that
+detail while shutting down, and the fresh supervisor — already disarmed — skipped its write, so
+the stale row survived. The disabled branch now reads the prior row once per process and writes
+"disarmed" when the stored state is not disarmed (a genuinely empty table stays empty and still
+says "has not run yet"). Pinned by a regression test.
+
 ## 0.17.14 — 2026-10-19
 
 THE GATE'S "DEGRADED" WAS A FALSE ALARM. `NftBackend.installed()` and `disarm()` verified a table

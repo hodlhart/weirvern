@@ -272,15 +272,24 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         if first_sweep:
             _SLUICE["swept"] = True
         leftover = bool(first_sweep and sup.backend.installed())
-        if _SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED or leftover:
+        changed = bool(_SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED or leftover)
+        if changed:
             sup.disarm()
             _SLUICE["armed"] = False
-            try:
-                sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("sluice: could not record the disarmed state: %s", exc)
             logger.info("sluice gate is DISABLED (SLUICE_ENABLED=0); rules are not enforced%s",
                         ": removed a table a previous run left behind" if leftover else "")
+        # A DISABLED RESTART MUST NOT LEAVE A STALE "DEGRADED" ROW BEHIND. The fresh supervisor is
+        # already disarmed, so the guard above skips the write -- which is right for an EMPTY
+        # table (nothing has run) and wrong for a row a previous process wrote. Measured live:
+        # the old process recorded "degraded" while shutting down, the new one skipped its write,
+        # and the panel kept showing a fault on a box with no nft table at all.
+        if first_sweep:
+            try:
+                prior = sluice_store.load_gate_state(client, _sensor_name(settings))
+                if changed or prior.get("state") != GATE_STATE_DISARMED:
+                    sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sluice: could not record the disarmed state: %s", exc)
         return
 
     now = _time.monotonic()

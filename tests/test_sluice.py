@@ -1626,6 +1626,8 @@ def _wire_disabled_sweep(monkeypatch, backend):
     writes: list = []
     monkeypatch.setattr(sluice_store, "write_gate_state",
                         lambda client, sensor, state: writes.append(state))
+    monkeypatch.setattr(sluice_store, "load_gate_state",
+                        lambda client, sensor: {"state": "disarmed"})
     worker._SLUICE.update({"supervisor": None, "last_pass": 0.0, "armed": False, "swept": False})
     return worker, writes
 
@@ -1659,6 +1661,21 @@ def test_a_disabled_worker_with_no_leftovers_never_touches_the_backend(monkeypat
     assert backend.disarms == 0
     assert backend.checks == 1, "the kernel is asked once per process, not once per pass"
     assert writes == [], "a clean disabled start writes nothing"
+
+
+def test_a_disabled_restart_clears_a_stale_degraded_row(monkeypatch):
+    """A previous process may have written "degraded" on its way out.
+
+    The fresh supervisor is already disarmed, so the disarm guard skips its write and the panel
+    keeps showing a fault on a box with no nft table at all. A stale row is corrected once.
+    """
+    backend = _SweepBackend(present=False)
+    worker, writes = _wire_disabled_sweep(monkeypatch, backend)
+    from weirvern import sluice_store
+    monkeypatch.setattr(sluice_store, "load_gate_state",
+                        lambda client, sensor: {"state": "degraded"})
+    worker._sluice_maybe(_disabled_settings(), client=object())
+    assert len(writes) == 1 and writes[0].state == "disarmed"
 
 
 def test_a_rule_describes_itself_as_a_sentence():
