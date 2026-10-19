@@ -536,6 +536,20 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
   letter-spacing: .5px; }
 
 .stats { display: flex; gap: 28px; flex-wrap: wrap; }
+/* THE GATE CARDS READ LEFT TO RIGHT (operator, 2026-10-19: "the gates information read down
+ * the page and doesnt use the full screen. it should read left to right"). `.stat-row` was a
+ * class with no rule behind it, so the four measured values stacked vertically inside a
+ * full-width card. Same tile language as the fleet summary, sized for two cards side by side. */
+.stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+  margin: 12px 0 10px; }
+.stat-row .stat { padding: 10px 12px; background: var(--panel2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); min-width: 0; }
+.stat-row .stat .v { font-size: var(--fs-4); line-height: 28px; }
+.gate-grid { align-items: stretch; }
+.gate-grid > .card { height: 100%; }
+@media (max-width: 900px) {
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .stat { display: flex; flex-direction: column; gap: 2px; }
 .stat .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums; }

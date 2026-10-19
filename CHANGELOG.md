@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.24 — 2026-10-19
+
+THE SLUICE GATE READS ACROSS THE PAGE. Domain Gate and Traffic Gate were two full-width cards
+stacked vertically, and each card's four measurements sat in a `.stat-row` that had no CSS
+behind it -- so the page was a single narrow column of numbers. The two cards now share one
+responsive grid, the measurements are tiles across the card (2×2 on a phone), and the fleet
+table is its own full-width card below them. Gate overview's chips sit in the title row.
+
 ## 0.17.23 — 2026-10-19
 
 A PASSIVE SURVEY STAGES WHAT IT ACTUALLY LEARNED. The passive result returned no recommendations,

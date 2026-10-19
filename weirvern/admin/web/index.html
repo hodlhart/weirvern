@@ -1034,8 +1034,10 @@
          top. But change its name"). "At a glance" named the reading habit, not the subject; this
          is the gate's own overview. -->
     <div class="card">
-      <h2>Gate overview <span class="muted" id="sl-glance-note"></span></h2>
-      <div class="chips" id="sl-glance"></div>
+      <div class="view-head">
+        <h2>Gate overview <span class="muted" id="sl-glance-note"></span></h2>
+        <div class="chips" id="sl-glance"></div>
+      </div>
       <div class="chips" id="sl-top-names"></div>
     </div>
 
@@ -1050,6 +1052,7 @@
          the Domain Gate answers DNS and keeps working with no packet rules at all; the Traffic
          Gate drops packets in the kernel and can be disarmed while DNS blocking still enforces.
          Showing one "gate" state for both made a working DNS gate look broken. -->
+    <div class="grid gate-grid">
     <div class="card">
       <h2>Domain Gate <button class="info-btn" data-info="sl-dom-info" aria-label="how the domain gate works" aria-expanded="false" title="how the domain gate works">i</button></h2>
       <div class="info-text hidden" id="sl-dom-info">
@@ -1087,7 +1090,11 @@
         <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
         <span class="muted" id="sl-bc-note"></span>
       </div>
-      <h3>Fleet gates</h3>
+    </div>
+    </div>
+
+    <div class="card">
+      <h2>Fleet gates <span class="muted">where the same rules are enforced</span></h2>
       <p class="muted" id="sl-gates-note"></p>
       <table id="sl-gates">
         <thead><tr><th>Weirling</th><th>State</th><th>Interface</th><th>Rules active / total</th>

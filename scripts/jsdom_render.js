@@ -2559,10 +2559,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("Sonar POSTs to the sonar route",
         POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length === sonarBefore + 1,
         POSTED.map((r) => r.url).join(","));
-  // A standalone survey surveys and REPORTS; it stages nothing by itself (the mode selector's
-  // enable is what stages, from the same result).
-  check("a standalone survey stages nothing",
-        Object.keys(H.STAGE.changes).length === 0, JSON.stringify(H.STAGE.changes));
+  // THE OPERATOR'S PREFILL (2026-10-19): a standalone survey puts its measured answer in the
+  // controls as pending changes for review -- it still writes nothing until Apply.
+  check("a standalone survey stages its recommendations for review",
+        H.STAGE.changes && H.STAGE.changes.sensor_mode === "siphon"
+        && H.STAGE.changes.intercept_segment === "198.51.100.0/24",
+        JSON.stringify(H.STAGE.changes));
   H.stageSonarRecommendations(H.SONAR_STATE.result);
   check("Sonar stages its recommendations as pending changes (not applied)",
         H.STAGE.changes && H.STAGE.changes.sensor_mode === "siphon"
@@ -5202,6 +5204,21 @@ check("the sluice page leads with the overview, the Domain Gate and then the Tra
       && /Domain Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[1] || {}).textContent || "")
       && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[2] || {}).textContent || ""),
       (doc.querySelector("#view-sluice .card h2") || {}).textContent || "no first card");
+check("the two gate cards share one horizontal grid, not two stacked full-width cards",
+      (() => {
+        const g = doc.querySelector("#view-sluice .grid.gate-grid");
+        if (!g) return false;
+        return [...g.children].filter((c) => c.classList.contains("card")).length === 2
+          && /Domain Gate/.test(g.children[0].textContent)
+          && /Traffic Gate/.test(g.children[1].textContent);
+      })(), doc.querySelector("#view-sluice .gate-grid") ? "grid missing cards" : "no gate-grid");
+check("the fleet table is a full-width card outside the two-gate grid",
+      (() => {
+        const card = [...doc.querySelectorAll("#view-sluice > .card")]
+          .find((c) => /Fleet gates/.test((c.querySelector("h2") || {}).textContent || ""));
+        return !!card && !card.classList.contains("gate-grid")
+          && !!card.querySelector("#sl-gates") && !card.closest(".gate-grid");
+      })(), "fleet gates still nested in a gate card");
 check("the removed state tiles and cleanup sentence are not in the DOM",
       !doc.getElementById("sl-state") && !doc.getElementById("sl-state-note")
       && !doc.getElementById("sl-gate-detail"));
