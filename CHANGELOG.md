@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.10 — 2026-10-19
+
+TWO FOLLOW-UPS FOUND BY READING THE LIVE BOX AFTER 0.17.9 WAS DEPLOYED.
+
+- **The weirling sheet now gets the LIST's evidence.** `/api/weirlings/detail` is the
+  classification payload and does not carry `channel`, `netflow`, `zeek` or `flow_series`;
+  the sheet therefore said "flow capture configured on" beside no channel and no observed
+  flows. It merges the enriched row from the list it was opened from, keyed by sensor id.
+  Measured before: `channel=None, netflow=None, zeek=None` on the detail payload.
+- **The Reverse DNS card title.** The Settings card is static markup, so renaming the API
+  group was not enough; the visible heading is now **Reverse DNS**.
+
 ## 0.17.9 — 2026-10-19
 
 THE OPERATOR'S WALKTHROUGH BATCH. Every item came from reading the live console, and the

@@ -810,7 +810,15 @@ async function openWeirling(sensorId) {
     return;
   }
 
-  const r = d.sensor;
+  // MERGE THE ENRICHED LIST ROW (WL-3). /api/weirlings/detail is the classification payload;
+  // the per-sensor evidence (channel, netflow/zeek, flow series) is computed for the LIST. The
+  // sheet used to render without it and read "flow capture configured on" beside no channel and
+  // no observed flows -- the exact contradiction the operator reported.
+  const listRow = (window.__wlRows || []).find((x) => x.sensor_id === sensorId);
+  const r = listRow ? Object.assign({}, d.sensor, {
+    channel: listRow.channel, netflow: listRow.netflow, zeek: listRow.zeek,
+    flow_series: listRow.flow_series, mappings: listRow.mappings, running: listRow.running,
+  }) : d.sensor;
   wlDetail = r;
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   body.replaceChildren();
