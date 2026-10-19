@@ -5188,18 +5188,18 @@ for (let i = 0; i < 40 && !slText().includes("scanner on the lab segment"); i++)
   await new Promise((r) => setTimeout(r, 20));
 }
 
-check("the Sluice Gate tab exists and renders",
-      slText().includes("Sluice Gate"));
+check("the Sluice Gate tab exists and renders both gates",
+      slText().includes("Domain Gate") && slText().includes("Traffic Gate"));
 
 check("the gate's STATE is shown, not just a rule count",
       slText().includes("armed") && slText().includes("eth1"),
       slText().slice(0, 200));
 
-// THE STATE TILES ARE GONE (operator, 2026-10-19), and with them the visible cleanup sentence.
-// The page starts with Enforcing gates instead; the one-line status card keeps the state word.
-check("the sluice page leads with the enforcing gates",
+// TWO GATES, TWO JOBS (operator, 2026-10-19): the working DNS gate leads, the packet gate follows.
+check("the sluice page leads with the Domain Gate and then the Traffic Gate",
       doc.querySelector("#view-sluice .card h2") &&
-      /Enforcing gates/.test(doc.querySelector("#view-sluice .card h2").textContent),
+      /Domain Gate/.test(doc.querySelector("#view-sluice .card h2").textContent)
+      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[1] || {}).textContent || ""),
       (doc.querySelector("#view-sluice .card h2") || {}).textContent || "no first card");
 check("the removed state tiles and cleanup sentence are not in the DOM",
       !doc.getElementById("sl-state") && !doc.getElementById("sl-state-note")

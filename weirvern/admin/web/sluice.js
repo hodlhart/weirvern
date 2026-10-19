@@ -66,6 +66,7 @@ async function loadSluice() {
 
   // What has been imported and what it caught: same payload, same load, one place to read.
   renderBlocklists(d);
+  renderGateSplit(d);
   loadBlockingControls().catch(showError);
 
   // THE STATE TILES ARE GONE (operator, 2026-10-19: "we dont need this"). They restated the
@@ -500,6 +501,57 @@ function wireSluice() {
 }
 
 /* ── Blocklists: what has been imported, and what it has caught ──────────────────────────────── */
+/** DOMAIN GATE and TRAFFIC GATE are separate enforcement paths (operator, 2026-10-19).
+ *
+ *  Domain blocking is answered by DNS and keeps working with no nft rules; the packet gate can be
+ *  disarmed while names are still blocked. One shared "gate" state made the working half look
+ *  broken, so each card carries its own measured facts. Every value is read from this payload --
+ *  no inference from a setting when a measurement exists.
+ */
+function renderGateSplit(d) {
+  const tile = (k, v, title) => el("div", { class: "stat", attrs: title ? { title } : {} }, [
+    el("div", { class: "k", text: k }), el("div", { class: "v", text: String(v) }),
+  ]);
+
+  const dg = document.getElementById("dg-stats");
+  if (dg) {
+    const lists = d.blocklists || [];
+    const on = lists.filter((s) => s.enabled);
+    const domains = on.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
+    const stamps = on.map((s) => s.fetched_at).filter(Boolean).sort();
+    const last = stamps.length ? fmtTime(new Date(stamps[stamps.length - 1])) : "never";
+    dg.replaceChildren(
+      tile("lists enabled", `${on.length} / ${lists.length}`),
+      tile("domains", domains.toLocaleString()),
+      tile("hits recorded", Number(d.hits) || 0),
+      tile("last sync", last),
+    );
+  }
+
+  const tg = document.getElementById("tg-stats");
+  if (tg) {
+    const g = d.gate || {};
+    const state = String(g.state || "unknown");
+    tg.replaceChildren(
+      tile("state", state, g.detail || ""),
+      tile("interface", g.iface || "—"),
+      tile("rules active", `${Number(g.rules_active) || 0} / ${Number(g.rules_total) || 0}`),
+      tile("packets blocked", Number(g.packets_blocked) || 0),
+    );
+  }
+
+  const manage = document.getElementById("dg-manage");
+  if (manage && !manage.dataset.wired) {
+    manage.dataset.wired = "1";
+    manage.addEventListener("click", () => {
+      showView("settings");
+      const rows = document.getElementById("sl-bl-rows");
+      const card = rows && rows.closest(".card");
+      if (card && card.scrollIntoView) card.scrollIntoView({ block: "start" });
+    });
+  }
+}
+
 function renderBlocklists(d) {
   const body = document.getElementById("sl-bl-rows");
   if (!body) return;

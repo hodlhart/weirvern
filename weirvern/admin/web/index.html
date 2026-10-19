@@ -1036,8 +1036,49 @@
       a segment the operator believes is filtered and is not, so this list is the only place that
       distinction can be seen.
     -->
+    <!-- TWO GATES, TWO JOBS (operator, 2026-10-19: "domain blocking works ... maybe have a Domain
+         Gate and a Traffic Gate?"). They fail independently and are read by different systems:
+         the Domain Gate answers DNS and keeps working with no packet rules at all; the Traffic
+         Gate drops packets in the kernel and can be disarmed while DNS blocking still enforces.
+         Showing one "gate" state for both made a working DNS gate look broken. -->
     <div class="card">
-      <h2>Enforcing gates</h2>
+      <h2>Domain Gate <button class="info-btn" data-info="sl-dom-info" aria-label="how the domain gate works" aria-expanded="false" title="how the domain gate works">i</button></h2>
+      <div class="info-text hidden" id="sl-dom-info">
+        <p><strong>What it is.</strong> The DNS half of enforcement: a name on an enabled blocklist, or a block-mode domain rule, is answered with a block answer. It needs no nft rules and keeps working while the Traffic Gate is disarmed.</p>
+        <p><strong>What writes it.</strong> The blocklist sync and the operator's domain rules; the switch below gates the domain half only.</p>
+        <p><strong>Last changed.</strong> Each change is an audit row; each hit is recorded on Blocked.</p>
+        <p><strong>Where to see it.</strong> Hits appear on Blocked with the name that matched. Blocklists and their switches live on the Settings tab.</p>
+      </div>
+      <p class="muted">Answers DNS queries. Independent of the Traffic Gate.</p>
+      <div class="stat-row" id="dg-stats"></div>
+      <p class="muted" id="sl-dom-line">loading&hellip;</p>
+      <div class="controls">
+        <span class="sl-status-item">Domain blocking <strong id="sl-dom-state">loading&hellip;</strong></span>
+        <button id="sl-dom-toggle" type="button">&hellip;</button>
+        <span class="muted" id="sl-dom-note"></span>
+        <button id="dg-manage" type="button" class="link">Manage blocklists in Settings</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Traffic Gate <button class="info-btn" data-info="sl-info" aria-label="what the traffic gate does and how it fails" aria-expanded="false" title="what the traffic gate does and how it fails">i</button></h2>
+      <div class="info-text hidden" id="sl-info">
+        <p><strong>What it is.</strong> The packet half of enforcement: nft rules on the capture interface that drop traffic. It fails open on purpose — if its supervisor dies the gate OPENS rather than taking your network down.</p>
+        <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
+        <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
+        <p><strong>Where to see it.</strong> The state line below says whether the kernel is enforcing; the fleet table says which segment each gate covers.</p>
+      </div>
+      <p class="muted">Drops packets on the capture interface. Needs a rule and an armed nft backend.</p>
+      <div class="stat-row" id="tg-stats"></div>
+      <div class="sl-status-line">
+        <span class="sl-status-item">Gate
+          <strong id="sl-gate-state">loading&hellip;</strong>
+          <button id="sl-bc-gate" type="button">&hellip;</button></span>
+        <span class="muted" id="sl-bc-auto-state"></span>
+        <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
+        <span class="muted" id="sl-bc-note"></span>
+      </div>
+      <h3>Fleet gates</h3>
       <p class="muted" id="sl-gates-note"></p>
       <table id="sl-gates">
         <thead><tr><th>Weirling</th><th>State</th><th>Interface</th><th>Rules active / total</th>
@@ -1046,35 +1087,7 @@
       </table>
     </div>
 
-    <div class="card">
-      <h2>Sluice Gate <button class="info-btn" data-info="sl-info" aria-label="what the gate does and how it fails" aria-expanded="false" title="what the gate does and how it fails">i</button></h2>
-      <div class="info-text hidden" id="sl-info">
-  <p><strong>What it is.</strong> The part of this system that can stop traffic, built to fail open: if its supervisor dies the gate OPENS rather than taking your network down — a tool that drops a production network when it has a bad day is a tool nobody deploys twice.</p>
-  <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
-  <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
-  <p><strong>Where to see it.</strong> The status panel above always says which enforcement path is actually live; the rules are below it.</p>
-</div>
-
-    </div>
-
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
-
-    <!-- THE GATE'S STATE, IN ONE LINE (the operator, 2026-10-18): status first, one control
-         that changes it. The duplicate "Blocking controls" card -- a second policy strip, a
-         second arm button, an auto-block score field and three notes -- is gone; the policy
-         lives in the card below, the domain switch in its own card, and the score in Settings. -->
-    <div class="card sl-status">
-      <div class="sl-status-line">
-        <span class="sl-status-item">Gate
-          <strong id="sl-gate-state">loading&hellip;</strong>
-          <button id="sl-bc-gate" type="button">&hellip;</button></span>
-        <span class="sl-status-item">Domain blocking
-          <strong id="sl-dom-state">loading&hellip;</strong></span>
-        <span class="muted" id="sl-bc-auto-state"></span>
-        <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
-        <span class="muted" id="sl-bc-note"></span>
-      </div>
-    </div>
 
     <div class="card">
       <h2>At a glance <span class="muted" id="sl-glance-note"></span></h2>
@@ -1120,21 +1133,6 @@
 </div>
       <div id="sl-policies"></div>
       <p id="sl-criticality-note" class="muted"></p>
-    </div>
-
-    <div class="card">
-      <h2>Blocking on domain blocks <button class="info-btn" data-info="sl-dom-info" aria-label="how to read this card" aria-expanded="false">i</button></h2>
-      <div class="info-text hidden" id="sl-dom-info">
-        <p><strong>What it is.</strong> Whether a rule whose match is a NAME may drop traffic. On by default: an operator who wrote a domain rule in block mode asked for it.</p>
-        <p><strong>What writes it.</strong> The operator — this switch gates the domain half of enforcement only.</p>
-        <p><strong>Last changed.</strong> Each change is an audit row; the trail names this key.</p>
-        <p><strong>Where to see it.</strong> Blocks made this way appear in Blocked, with the name that matched as their reason.</p>
-      </div>
-      <p class="muted" id="sl-dom-line">loading&hellip;</p>
-      <div class="controls">
-        <button id="sl-dom-toggle" type="button">&hellip;</button>
-        <span class="muted" id="sl-dom-note"></span>
-      </div>
     </div>
 
     <!-- RULE SHEET (SL-1, 2026-10-18): adding and deleting a rule is a focused act, so it happens

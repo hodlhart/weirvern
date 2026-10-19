@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.16 — 2026-10-19
+
+TWO GATES, TWO JOBS. The Sluice page showed one gate state for two independent enforcement paths,
+so a working DNS gate read as broken because the packet gate was disarmed.
+
+- **Domain Gate** leads: lists enabled / domains imported / hits recorded / last sync, the
+  domain-blocking switch, and a link to the blocklists in Settings. It states plainly that it
+  answers DNS and works with no nft rules.
+- **Traffic Gate** follows: its own state / interface / rules / packets-blocked tiles, the
+  arm-disarm control, and the fleet gates table (now "Fleet gates"). It states that it drops
+  packets and needs a rule and an armed nft backend.
+- The duplicate "Sluice Gate" card, the shared status line and the separate "Blocking on domain
+  blocks" card are gone; their controls live in the gate they actually govern.
+
 ## 0.17.15 — 2026-10-19
 
 A DISABLED RESTART CLEARS A STALE GATE ROW. 0.17.14 stopped an absent nft table from reading as
