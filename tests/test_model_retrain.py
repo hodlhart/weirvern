@@ -13,9 +13,12 @@ Each test here is one way this feature could quietly do the wrong thing:
 """
 
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+from weirvern.models.base import BaseDetector as _BaseDetector  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,12 +27,13 @@ class _Det:
     """The smallest thing run_candidate can be given: train, metadata, save, artifact_path."""
 
     def __init__(self, name: str, model_dir: Path, *, trains: bool = True, rows: int = 100,
-                 is_teacher: bool = False):
+                 is_teacher: bool = False, load_ok: bool = True):
         self.name = name
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.trains = trains
         self.loaded = 0
+        self.load_ok = load_ok
         self.saved = 0
         self.trained_into = None
         self.metadata = SimpleNamespace(sample_count=rows, metrics={}, window_start=None,
@@ -51,6 +55,24 @@ class _Det:
 
     def load(self) -> bool:
         self.loaded += 1
+        return self.load_ok
+
+
+class _TinyDetector(_BaseDetector):
+    """Picklable minimal BaseDetector stand-in for the artifact-home test.
+
+    A class defined inside the test cannot be pickled, which is exactly what save() does.
+    """
+
+    name = "Tiny"
+
+    def train(self, *args, **kwargs) -> bool:
+        return True
+
+    def predict(self, flow, features=None) -> float:
+        return 0.0
+
+    def is_ready(self) -> bool:
         return True
 
 
@@ -153,6 +175,48 @@ def test_keep_archives_what_it_replaces_and_reloads_the_running_detectors(tmp_pa
         "the replaced artifact was not kept: a worse retrain would not be undoable")
     assert dets[0].loaded == 1, "the running detector was not reloaded, so it keeps scoring with the old model"
     assert not cand.exists(), "the candidate directory was left behind to be installed again later"
+
+
+def test_a_load_failure_restores_the_archived_live_model_and_is_not_reported_installed(tmp_path):
+    """A candidate that cannot load must not be called installed (GitHub #59).
+
+    The live file was moved aside; if the reload refuses the new artifact, the old bytes have
+    to go back or the next restart silently adopts the candidate we just rejected.
+    """
+    from weirvern.models import retrain
+
+    live = tmp_path / "Isolation Forest_v2.pkl"
+    live.write_bytes(b"WORKING MODEL")
+    cand = tmp_path / "candidate"
+    cand.mkdir()
+    (cand / "Isolation Forest_v2.pkl").write_bytes(b"BROKEN CANDIDATE")
+
+    det = _Det("Isolation Forest", tmp_path, load_ok=False)
+    out = retrain.apply_candidate(_Client(), SimpleNamespace(model_dir=str(tmp_path)), [det])
+
+    assert out["installed"] == []
+    assert out["failed"] and out["failed"][0]["name"] == "Isolation Forest_v2.pkl"
+    assert live.read_bytes() == b"WORKING MODEL", "the refused candidate was left live"
+    assert det.loaded == 1, "the keep did not attempt a reload"
+    assert not cand.exists(), "the refused candidate directory survived a keep"
+
+
+def test_a_loaded_artifact_cannot_move_the_live_detector_to_the_candidate_directory(tmp_path):
+    """GitHub #59: adopting the artifact's __dict__ moved the live detector's home to
+    candidate/, which the keep then deletes -- so the next save raised or silently wrote
+    nowhere. Loading must preserve the live home and the in-process error counter."""
+    live = _TinyDetector(tmp_path / "live")
+    cand = _TinyDetector(tmp_path / "candidate")
+    cand.save()
+    shutil.copy2(cand.artifact_path(), live.artifact_path())
+    live.predict_errors = 7
+
+    assert live.load() is True
+    assert live.model_dir == tmp_path / "live", "the artifact redirected the live model home"
+    assert live.predict_errors == 7, "the live prediction-error counter was overwritten"
+    # The next save must land in the live directory, not in a deleted candidate one.
+    written = live.save()
+    assert written.parent == tmp_path / "live"
 
 
 def test_trash_removes_the_candidate_and_leaves_the_live_files_alone(tmp_path):

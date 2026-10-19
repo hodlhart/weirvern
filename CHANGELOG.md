@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.31 — 2026-10-19
+
+A KEPT MODEL KEEPS ITS HOME, AND ZEEK COUNTS ARE LOGGED ONCE.
+
+- **#59 — the candidate cannot redirect the live detector.** `BaseDetector.load()` adopted the
+  artifact's pickled `model_dir`, so keeping a retrained candidate pointed the live detector at
+  `candidate/`, which the keep then deleted. The live home and the in-process prediction-error
+  counter are preserved across a load. `apply_candidate` now verifies the reload: if it refuses,
+  the archived live artifact is restored, the detector is reported in `failed`, and the keep is
+  not described as installed.
+- **#58 — one log transform, not two.** `zeek_window_summary_sql` log1p-scales seven count
+  columns; `extract_zeek_features` log1p'd them again, so training saw `log1p(n)` and scoring saw
+  `log1p(log1p(n))`. Scoring now passes SQL values through unchanged, and service rarity inverts
+  the logged window count before comparing it with the raw baseline. Tests pin all seven counts at
+  raw 0, 1, 10, 100 and 10,000, and the baseline-1/baseline-5 rarity cases.
+
 ## 0.17.30 — 2026-10-19
 
 A NIC'S PENDING DIFF NAMES ONLY THAT NIC. The per-interface sheet was scoped, but its pending

@@ -279,18 +279,21 @@ def test_ja4_reaches_every_model_including_the_dbscan_subset(tmp_path):
 
 def test_ja4_computes_real_values_and_they_reach_the_vector():
     """THE DERIVATION COMPUTES, not merely wires. A window with three fingerprints of which
-    one is in the host's history is two-thirds novel; the count is log-scaled like the other
-    counts; both land at their named slots in the ordered vector the wide models consume. And
-    WITHOUT a history there is no novelty to claim, so the ratio stays 0.0 -- the feature must
-    not guess a denominator into existence."""
+    one is in the host's history is two-thirds novel; the counts arrive SQL-logged and reach
+    the vector unchanged; both land at their named slots in the ordered vector the wide models
+    consume. And WITHOUT a history there is no novelty to claim, so the ratio stays 0.0 -- the
+    feature must not guess a denominator into existence."""
     import math
 
     from weirvern.features import extract_features, feature_vector
 
+    # Shaped exactly as `zeek_window_summary_sql` returns it: the seven counts are log1p'd
+    # there, and scoring passes them through (GitHub #58).
     zeek_row = {
-        "zeek_present": 1, "zeek_conn_count": 3, "zeek_notice_count": 1,
-        "zeek_ja4_count": 3, "ja4_set": ["ja4_a", "ja4_b", "ja4_c"],
-        "zeek_service_count": 2,
+        "zeek_present": 1, "zeek_conn_count": math.log1p(3),
+        "zeek_notice_count": math.log1p(1),
+        "zeek_ja4_count": math.log1p(3), "ja4_set": ["ja4_a", "ja4_b", "ja4_c"],
+        "zeek_service_count": math.log1p(2),
     }
     history = {"baseline_ja4_set": ["ja4_a"], "baseline_ja4_count": 1,
                "baseline_service_count": 2}
@@ -308,7 +311,8 @@ def test_ja4_computes_real_values_and_they_reach_the_vector():
     assert g["zeek_ja4_count"] == math.log1p(3)
     # And a host with no TLS is not "novel": an empty set produces no ratio at all.
     h = extract_features({"window_start": None, "total_bytes": 0, "total_packets": 0},
-                         None, None, {"zeek_present": 1, "zeek_conn_count": 1}, history)
+                         None, None, {"zeek_present": 1,
+                                      "zeek_conn_count": math.log1p(1)}, history)
     assert h["zeek_ja4_novelty"] == 0.0
 
 

@@ -1014,8 +1014,10 @@ def process_model_actions(client: Client, detectors, settings, cfg: ModelConfig)
                            report={"error": f"{type(exc).__name__}: {exc}"})
             continue
         if not outcome["installed"]:
-            actions.finish(client, action_id, actions.FAILED,
-                           note="the candidate had no artifacts left to install")
+            failed = outcome.get("failed") or []
+            why = ("; ".join(f"{f['name']}: {f['reason']}" for f in failed)
+                   or "the candidate had no artifacts left to install")
+            actions.finish(client, action_id, actions.FAILED, note=why)
             continue
         # The artifacts are live; their training IS the newest entry in the model history, and
         # the metadata inside them carries the candidate's real training time (not now).
@@ -1023,8 +1025,12 @@ def process_model_actions(client: Client, detectors, settings, cfg: ModelConfig)
             _record_model_metadata(client, detectors)
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not record model metadata after keep: %s", exc)
-        actions.finish(client, action_id, actions.APPLIED, report=outcome,
-                       note=f"{len(outcome['installed'])} artifact(s) installed")
+        refused = outcome.get("failed") or []
+        note = f"{len(outcome['installed'])} artifact(s) installed"
+        if refused:
+            note += f"; {len(refused)} refused: " + "; ".join(
+                f"{f['name']}: {f['reason']}" for f in refused)
+        actions.finish(client, action_id, actions.APPLIED, report=outcome, note=note)
 
     for req in actions.pending(client, actions.TRASH):
         action_id = req["action_id"]

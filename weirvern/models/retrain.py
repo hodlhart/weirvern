@@ -177,31 +177,58 @@ def apply_candidate(client: Client, settings, detectors) -> dict[str, Any]:
 
     The live detectors are reloaded straight after the swap, in this process, so the pod that
     just installed them starts scoring with them instead of waiting for its next restart.
+
+    THE RELOAD IS THE VERIFICATION (GitHub #59). A candidate that cannot load is not installed:
+    the bytes that were live are put back, the detector is named in `failed`, and the caller
+    can report a refusal instead of a success it did not get.
     """
     target = candidate_dir(settings.model_dir)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     archive = Path(settings.model_dir) / SUPERSEDED_DIR / stamp
     installed: list[str] = []
     archived: list[str] = []
+    failed: list[dict[str, str]] = []
     for det in detectors:
         name = det.artifact_path().name
         src = target / name
         if not src.exists():
             continue
         live = Path(settings.model_dir) / name
+        kept: Path | None = None
         if live.exists():
             archive.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(live, archive / name)
-            archived.append(str(archive / name))
+            kept = archive / name
+            shutil.copy2(live, kept)
+            archived.append(str(kept))
         src.replace(live)
+        # A KEEP IS A VERIFIED SWAP (GitHub #59). The old code discarded this bool, so an
+        # unreadable candidate was reported as installed while the live file on disk was the
+        # new, unusable one. Reload IN PLACE: the same object the cycle holds should carry the
+        # candidate's weights -- but only after it has proved it can.
+        try:
+            loaded = bool(det.load())
+            reason = "" if loaded else "the artifact did not load"
+        except Exception as exc:  # noqa: BLE001
+            loaded = False
+            reason = f"the artifact did not load: {exc}"
+        if not loaded:
+            # Put back exactly what was there. With no old artifact, remove the new one:
+            # leaving it would make the next restart adopt the candidate we just refused.
+            if kept is not None:
+                shutil.copy2(kept, live)
+            else:
+                live.unlink(missing_ok=True)
+            failed.append({"name": name, "reason": reason})
+            logger.error("candidate %s was NOT installed: %s", name, reason)
+            continue
         installed.append(name)
-        # Reload IN PLACE: the same object the cycle holds now carries the candidate's weights.
-        det.load()
     # Anything left in the candidate directory would be installed by the NEXT keep as if it had
     # just been built -- a stale artifact wearing a fresh date.
     shutil.rmtree(target, ignore_errors=True)
-    logger.info("candidate kept: %s installed, %s archived", len(installed), len(archived))
-    return {"installed": installed, "archived": archived, "archived_to": str(archive)}
+    logger.info("candidate kept: %s installed, %s archived, %s failed",
+                len(installed), len(archived), len(failed))
+    return {"installed": installed, "archived": archived, "archived_to": str(archive),
+            "failed": failed}
 
 
 def discard_candidate(settings) -> dict[str, Any]:

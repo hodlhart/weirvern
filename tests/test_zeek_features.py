@@ -14,6 +14,8 @@ correctly in both directions.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from weirvern.features import IF_FEATURES, extract_features
@@ -31,10 +33,10 @@ from weirvern.zeek_features import (
 REAL_SCAN_ROW = {
     "window_start": "2026-09-17 23:25:00",
     "src_addr": "198.51.100.1",
-    "zeek_conn_count": 89,
-    "zeek_unique_dst_ips": 4,
-    "zeek_service_count": 2,
-    "zeek_dns_count": 79,
+    "zeek_conn_count": math.log1p(89),
+    "zeek_unique_dst_ips": math.log1p(4),
+    "zeek_service_count": math.log1p(2),
+    "zeek_dns_count": math.log1p(79),
     "zeek_dns_mean_query_entropy": 2.9693712769499143,
     "zeek_dns_mean_query_len": 29.82278481012658,
     "zeek_ja4_count": 0,
@@ -128,27 +130,46 @@ def test_a_ratio_never_divides_by_zero():
 def test_service_rarity_is_clamped_and_needs_a_baseline():
     """Using FEWER services than the baseline is not novelty. And with no baseline supplied
     the feature is 0 rather than guessed."""
-    row = {"zeek_conn_count": 5, "zeek_service_count": 2, "zeek_present": 1}
+    # The window count comes from SQL and is already log1p'd; the baseline is raw.
+    row = {"zeek_conn_count": math.log1p(5), "zeek_service_count": math.log1p(2),
+           "zeek_present": 1}
     assert extract_zeek_features(row)["zeek_service_rarity"] == 0.0
     # A baseline of 5 services and a window with 2 is ordinary, not novel.
     assert extract_zeek_features(row, {"baseline_service_count": 5})[
         "zeek_service_rarity"] == 0.0
-    # 2 in-window against a baseline of 1 is novel.
+    # 2 in-window against a baseline of 1 is novelty of exactly (2 - 1) / 1.
     rarity = extract_zeek_features(row, {"baseline_service_count": 1})[
         "zeek_service_rarity"]
-    assert rarity > 0
+    assert rarity == pytest.approx(1.0)
 
 
-def test_count_features_are_log_scaled():
-    """So they sit on a comparable range to the NetFlow features, which are log1p'd. Without
-    this a host with 10,000 connections dominates any distance metric -- DBSCAN's most of
-    all, since it clusters on distance."""
-    import math
+def test_sql_count_features_are_not_log_scaled_a_second_time():
+    """The query owns the log transform; scoring passes its value through (GitHub #58).
 
-    feats = extract_zeek_features({"zeek_conn_count": 1000, "zeek_present": 1})
+    A host with 10,000 connections must not dominate a distance metric, but that is the SQL's
+    job. Applying log1p here as well made inference see log1p(log1p(n)) while every model was
+    trained on log1p(n).
+    """
+    feats = extract_zeek_features({"zeek_conn_count": math.log1p(1000),
+                                   "zeek_present": 1})
     assert feats["zeek_conn_count"] == pytest.approx(math.log1p(1000))
-    small = extract_zeek_features({"zeek_conn_count": 10, "zeek_present": 1})
+    small = extract_zeek_features({"zeek_conn_count": math.log1p(10),
+                                   "zeek_present": 1})
     assert small["zeek_conn_count"] == pytest.approx(math.log1p(10))
+
+
+def test_training_and_scoring_vectors_agree_for_every_scaled_count():
+    """The seven count aliases are the training matrix's columns; scoring must return them
+    unchanged for every magnitude (0, 1, 10, 100, 10000)."""
+    names = ("zeek_conn_count", "zeek_unique_dst_ips", "zeek_service_count",
+             "zeek_dns_count", "zeek_ja4_count", "zeek_notice_count", "zeek_weird_count")
+    for raw in (0, 1, 10, 100, 10_000):
+        sql_row = {name: math.log1p(raw) for name in names}
+        sql_row["zeek_present"] = 1
+        feats = extract_zeek_features(sql_row)
+        for name in names:
+            assert feats[name] == pytest.approx(sql_row[name]), (
+                f"{name} at raw {raw}: scoring transformed a value the model trained on")
 
 
 def test_a_none_value_never_raises():

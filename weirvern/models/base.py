@@ -162,9 +162,19 @@ class BaseDetector(ABC):
                     self.name, len(have), len(expected),
                 )
                 return False
+            # AN ARTIFACT CANNOT REDIRECT ITS OWNER. `det` was built in the candidate
+            # directory, and its pickled `model_dir` says so; adopting the whole dict moved
+            # the LIVE detector's home to a directory `apply_candidate` deletes moments
+            # later (GitHub #59). The live object's home and its in-process error counter
+            # are runtime state, not model state: preserve both across the load.
+            home = self.model_dir
+            errors = self.predict_errors
             self.__dict__.update(det.__dict__)
+            self.model_dir = home
             # Legacy artifacts predate the counter; a diagnostic surface must still read it.
-            self.predict_errors = int(getattr(self, "predict_errors", 0) or 0)
+            # The LIVE counter wins over the artifact's snapshot -- it counts this process's
+            # failed predictions, which is what the health surface is asking about.
+            self.predict_errors = int(errors or 0)
             self.metadata = meta
             logger.info("📂 Loaded %s from disk (trained %s)", self.name, self.metadata.trained_at)
             return True

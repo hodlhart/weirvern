@@ -616,16 +616,13 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             -- than a silently-zero feature. An earlier version exposed raw names
             -- (conn_count, s0_count) while the features were zeek_conn_count and
             -- zeek_s0_ratio, so every training query named a column that did not exist.
-            -- ── LOG-SCALED, MATCHING THE SCORING PATH EXACTLY ─────────────────────────────────
+            -- ── LOG-SCALED HERE, THE ONLY PLACE ──────────────────────────────────────────────
             --
-            -- `extract_zeek_features` log1p's these seven counts at scoring time, with the
-            -- right rationale (a host with 10,000 connections must not dominate a distance
-            -- metric -- DBSCAN's most of all) -- and THE TRAINING MATRIX CARRIED THEM RAW.
-            -- The same host-window therefore meant different numbers on the two sides of the
-            -- pipeline: fitted on one distribution, scored on another, and nothing raised
-            -- because every number stayed a valid number. One transform, applied in both
-            -- places. The ratios below still divide by the RAW counts, which is what the
-            -- scoring path does too -- it scales these columns after the ratios are taken.
+            -- These seven counts are log1p'd in the query and passed through unchanged by
+            -- `extract_zeek_features`. The transform belongs to the query because BOTH the
+            -- training matrix and the scoring path read these aliases; applying it a second
+            -- time in Python made inference `log1p(log1p(n))` while training saw `log1p(n)`
+            -- (GitHub #58). The ratios below still divide by the RAW counts.
             log1p(coalesce(c.conn_count, 0))                      AS zeek_conn_count,
             log1p(coalesce(c.uniq_dst, 0))                        AS zeek_unique_dst_ips,
             log1p(coalesce(c.svc_count, 0))                       AS zeek_service_count,
@@ -965,7 +962,13 @@ def _fill(out: dict[str, float], row: dict[str, Any],
     # normally does. Needs the longer-window baseline, which the summary query cannot supply
     # (it only sees this window), so it is 0 when no baseline is given rather than guessed.
     # Clamped at 0 because using FEWER services than the baseline is not novelty.
-    svc = out["zeek_service_count"]
+    #
+    # BOTH SIDES MUST BE RAW. `zeek_service_count` arrives log1p'd from the query; the
+    # baseline's `baseline_service_count` is a raw `uniqExactIf`. Comparing them directly made
+    # rarity blind for any baseline above one (GitHub #58). expm1 inverts the query's transform
+    # exactly, so this ratio is services/services again.
+    svc_logged = out["zeek_service_count"]
+    svc = math.expm1(max(svc_logged, 0.0))
     if baseline and svc:
         known = max(_f(baseline.get("baseline_service_count")), 1.0)
         out["zeek_service_rarity"] = max(0.0, svc - known) / known
@@ -1001,16 +1004,10 @@ def _fill(out: dict[str, float], row: dict[str, Any],
                     familiar += 1
         out["zeek_ja4_novelty"] = max(0.0, len(seen) - familiar) / len(seen)
 
-    # Log-scale the counts so they sit on a comparable range to the NetFlow features, which
-    # are log1p'd. Without this a host with 10,000 connections dominates any distance metric
-    # -- DBSCAN's most of all, since it clusters on distance.
-    #
-    # Applied LAST, after rarity, because rarity is a ratio of raw service counts: scaling the
-    # counts first would make rarity a ratio of logarithms, which is a different quantity.
-    for name in ("zeek_conn_count", "zeek_dns_count", "zeek_notice_count",
-                 "zeek_weird_count", "zeek_unique_dst_ips", "zeek_ja4_count",
-                 "zeek_service_count"):
-        out[name] = math.log1p(max(out[name], 0.0))
+    # NO SECOND LOG HERE. `zeek_window_summary_sql` already log1p's these seven columns and
+    # the training matrix selects those aliases directly; logging again made scoring see
+    # `log1p(log1p(n))` (GitHub #58). Service rarity inverted the transform above; every other
+    # feature is a straight value.
 
 
 def zeek_join_coverage(netflow_hosts: int, zeek_hosts: int, overlapping: int) -> dict:
