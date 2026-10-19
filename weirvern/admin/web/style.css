@@ -1348,7 +1348,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   padding: 12px; min-width: 0; }
 .sys-card .sys-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
   text-transform: uppercase; }
-.sys-card .sys-value { color: var(--fg); font-size: 27px; font-weight: 600; line-height: 1.1;
+.sys-card .sys-value { color: var(--fg); font-size: 19px; font-weight: 600; line-height: 1.1;
   margin-top: 2px; }
 .sys-card .sys-sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
 .sys-card svg { display: block; width: 100%; height: 46px; margin-top: 8px; overflow: visible; }

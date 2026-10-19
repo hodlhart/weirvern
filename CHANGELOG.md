@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.39 — 2026-10-19
+
+SONAR NEEDS AN IN-PATH MODE, AND PERFORMANCE NAMES ITS SENSOR.
+
+- **Sonar** is disabled unless **Siphon** is selected; in loch mode there is no ARP/spoof plan
+  to stage, so the button no longer offers a survey that cannot be used.
+- The Weirlings **Performance** card has a sensor selector and asks `/api/system` for that
+  sensor. The hub's own host supplies CPU/memory and interface counters; a remote sensor that
+  has not reported host metrics says so instead of wearing the hub's numbers.
+- The System percentages use the console's 19px reading size, not the old oversized 27px.
+
 ## 0.17.38 — 2026-10-19
 
 INTERFACE COUNTERS COME FROM SYSFS.

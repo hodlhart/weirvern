@@ -445,7 +445,7 @@ def _build_handler(ctx: GuiContext):
             # Host CPU/memory and interface counters. A reading surface, not a write route;
             # it reads the host's procfs mounted read-only at /host-proc.
             if path == "/api/system":
-                return self._system()
+                return self._system(query)
             # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
             if path == "/api/settings":
                 return self._settings(query)
@@ -1141,16 +1141,31 @@ def _build_handler(ctx: GuiContext):
                                    f"cannot reach ClickHouse: {type(exc).__name__}"})
             self._json(payload)
 
-        def _system(self) -> None:
+        def _system(self, query: dict) -> None:
             """The sensor host's CPU, memory, and interface counters.
 
             A process-level read of procfs, not a database query: it is cheap and has no
             ClickHouse dependency, so an unavailable database cannot make the system cards
             disappear. The sampler owns its own bounded history.
+
+            `sensor` scopes the read to a fleet member. Only this hub's host is sampled; a
+            remote sensor has not reported host counters, and saying so is better than
+            presenting the hub's numbers under another sensor's name.
             """
             from weirvern.admin import system_metrics
 
-            self._json(system_metrics.sample())
+            raw = query.get("sensor")
+            sensor = str(raw[0] if isinstance(raw, list) and raw else (raw or "")).strip()
+            if sensor and sensor != _gate_sensor_name():
+                return self._json({
+                    "available": False, "sensor": sensor,
+                    "reason": f"{sensor} has not reported host CPU, memory or interface counters",
+                    "history": [], "interfaces": [],
+                })
+            payload = system_metrics.sample()
+            if sensor:
+                payload["sensor"] = sensor
+            self._json(payload)
 
         def _health(self, query: dict) -> None:
             """DEEP health: the checks, ingestion trend, table sizes, and the sensor.

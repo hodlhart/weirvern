@@ -468,10 +468,11 @@ function probeText(c) {
  * the Weirlings tab carries the same readings beside the fleet's interface throughput. One
  * fetch renders both surfaces, so the two tabs cannot disagree about the same box.
  */
-async function loadSystemMetrics() {
+async function loadSystemMetrics(opts = {}) {
   let d;
+  const sensor = String((opts && opts.sensor) || "").trim();
   try {
-    d = await getJSON(API.system);
+    d = await getJSON(API.system + (sensor ? `?sensor=${encodeURIComponent(sensor)}` : ""));
   } catch (err) {
     d = { available: false, reason: (err && err.message) || "the system read failed" };
   }
@@ -537,14 +538,20 @@ function renderSystemMetrics(d) {
   if (perf) {
     const body = el("div");
     body.appendChild(cards());
-    if (available && Array.isArray(d.interfaces) && d.interfaces.length) {
+    // THE PERFORMANCE TABLE NAMES THE SENSOR'S PORTS, not every veth and bridge the node
+    // happens to own. The host's sysfs list includes container plumbing; an operator reading
+    // throughput wants the capture and management NICs.
+    const interfaces = available && Array.isArray(d.interfaces)
+      ? d.interfaces.filter((iface) => /^(eth|ens|eno|enp|bond|wl)/.test(iface.name))
+      : [];
+    if (interfaces.length) {
       const table = el("table", { class: "sys-ifaces" });
       const thead = el("thead", {}, [el("tr", {}, [
         el("th", { text: "Interface" }), el("th", { text: "In" }),
         el("th", { text: "Out" }), el("th", { text: "Drops" }),
       ])]);
       const tbody = el("tbody");
-      for (const iface of d.interfaces) {
+      for (const iface of interfaces) {
         const drops = (Number(iface.rx_drops) || 0) + (Number(iface.tx_drops) || 0);
         tbody.appendChild(el("tr", {}, [
           el("td", { class: "mono", text: iface.name }),

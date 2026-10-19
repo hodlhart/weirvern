@@ -92,10 +92,6 @@ async function loadWeirlings() {
     return;
   }
 
-  // The Performance card shares the host sampler with Health; the fleet read is not blocked
-  // by a slow or unavailable procfs.
-  if (typeof loadSystemMetrics === "function") loadSystemMetrics().catch(() => {});
-
   const summaryBox = document.getElementById("wl-summary");
   const noteBox = document.getElementById("wl-summary-note");
   summaryBox.replaceChildren();
@@ -171,6 +167,9 @@ async function loadWeirlings() {
   }
   renderWeirlings(d.sensors || [], d.revoked || [], d.revoked_reason || "");
   wlRenderBulk();
+  // The Performance card is scoped to one sensor, never silently to the hub when a different
+  // row is on screen. Its selector is rebuilt from the fleet each load.
+  wlPopulatePerfSensors(d.sensors || []);
 
   // THE FIRST RUN APPEARS ONLY WHILE THE FLEET HAS NEVER HAD A LIVE SENSOR -- onboarding, not
   // decoration; the moment one reports, it is gone for good (or for this tab, if skipped).
@@ -541,6 +540,38 @@ function wlNicRows(r) {
     row.addEventListener("click", () => openWeirling(r.sensor_id, { nic: n.name }));
     return row;
   });
+}
+
+function wlPerfSensorChanged() {
+  const sel = document.getElementById("wl-perf-sensor");
+  const scope = document.getElementById("wl-perf-scope");
+  if (!sel) return;
+  const id = sel.value;
+  if (scope) scope.textContent = id ? id : "this hub's host";
+  if (typeof loadSystemMetrics === "function") {
+    loadSystemMetrics(id ? { sensor: id } : {}).catch(() => {});
+  }
+}
+
+/** One selector entry per sensor; the hub is the default scope, not an implicit fallback. */
+function wlPopulatePerfSensors(rows) {
+  const sel = document.getElementById("wl-perf-sensor");
+  if (!sel) return;
+  const held = sel.value;
+  sel.replaceChildren();
+  sel.appendChild(el("option", { attrs: { value: "" }, text: "this hub" }));
+  for (const r of rows) {
+    sel.appendChild(el("option", { attrs: { value: r.sensor_id }, text: r.sensor_id }));
+  }
+  const local = rows.find((r) => r.local);
+  const next = held && [...sel.options].some((o) => o.value === held)
+    ? held : (local ? local.sensor_id : "");
+  sel.value = next;
+  if (!sel.dataset.wired) {
+    sel.dataset.wired = "1";
+    sel.addEventListener("change", () => wlPerfSensorChanged());
+  }
+  wlPerfSensorChanged();
 }
 
 function renderWeirlings(rows, revoked, revokedReason) {
@@ -1297,6 +1328,15 @@ function wlShowNicSettings(nic, interfaces) {
   const channelOn = wlChannelEnabled();
   if (z) z.checked = zeekOn;
   if (sip) { sip.checked = siphonOn && !channelOn; sip.disabled = channelOn; }
+  // SONAR IS AN IN-PATH SURVEY (operator, 2026-10-19): it is only meaningful while siphon is
+  // selected. In loch mode there is no ARP/spoof plan to stage, so the button is disabled
+  // rather than offering a scan whose result the operator cannot use.
+  const sonarBtn = document.getElementById("wl-nic-sonar");
+  if (sonarBtn) {
+    sonarBtn.disabled = channelOn || !siphonOn;
+    sonarBtn.title = sonarBtn.disabled
+      ? "Sonar is available when siphon is selected" : "survey this segment";
+  }
   if (loch) loch.checked = channelOn || !siphonOn;
   if (net) { net.checked = channelOn ? true : netflowOn; net.disabled = !flowActive && !channelOn; }
   const passive = document.getElementById("wl-nic-netflow-passive");
@@ -1325,6 +1365,12 @@ function wlNicModeClicked(which) {
   if (which === "loch" && loch.checked) sip.checked = false;
   if (!sip.checked && !loch.checked) {
     if (which === "siphon") loch.checked = true; else sip.checked = true;
+  }
+  const sonarBtn = document.getElementById("wl-nic-sonar");
+  if (sonarBtn) {
+    sonarBtn.disabled = sip.disabled || !sip.checked;
+    sonarBtn.title = sonarBtn.disabled
+      ? "Sonar is available when siphon is selected" : "survey this segment";
   }
 }
 
@@ -1451,6 +1497,8 @@ function wlStageNicSettings() {
 /** SCAN NETWORK: the Sonar survey, from the NIC that is open. It stages its findings through
  *  the ordinary apply plan; nothing about the segment is written by the scan itself. */
 async function wlScanNetwork() {
+  const btn = document.getElementById("wl-nic-sonar");
+  if (btn && btn.disabled) return;
   const note = document.getElementById("wl-nic-scan-note");
   if (typeof runSonar !== "function") {
     if (note) note.textContent = "Sonar is unavailable in this build.";
