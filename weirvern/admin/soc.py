@@ -647,15 +647,25 @@ def table_sizes(client, limit: int = 14, history_hours: int = 24) -> dict:
     history_error = ""
     if names:
         try:
+            # NO `IN` LIST. It looked right and returned an empty result through the driver's
+            # bound-parameter path, which rendered the whole History column as "collecting".
+            # The history table is small (one sample per table per five minutes); filtering the
+            # rows here is cheaper than debugging a binding difference in a read path.
+            # RAW SAMPLES, NOT HOURLY BUCKETS. The worker samples every five minutes; grouping
+            # by hour meant a freshly restarted table had only ONE point and the panel read
+            # "collecting" for an hour after the feature shipped. The samples are already
+            # throttled, so the series is bounded (about 288 points/day/table).
             hrows = client.query(
-                "SELECT table_name, toStartOfHour(at) AS t, max(bytes) AS b, max(rows) AS n "
+                "SELECT table_name, at, bytes, rows "
                 "FROM weirvern.table_size_history "
-                "WHERE table_name IN %(names)s "
-                "AND at >= %(since)s AND at <= %(until)s "
-                "GROUP BY table_name, t ORDER BY table_name, t",
-                parameters={"names": tuple(names), **timewindow.w(history_hours)},
+                "WHERE at >= %(since)s AND at <= %(until)s "
+                "ORDER BY table_name, at",
+                parameters=timewindow.w(history_hours),
             ).result_rows
+            wanted = set(names)
             for name, when, b, n in hrows:
+                if str(name) not in wanted:
+                    continue
                 history.setdefault(str(name), []).append({
                     "t": when.isoformat() if hasattr(when, "isoformat") else str(when),
                     "bytes": int(b or 0), "rows": int(n or 0),

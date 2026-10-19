@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.27 — 2026-10-19
+
+THE HEALTH TRENDS HAVE DATA ON THE FIRST VISIT. The history read grouped by hour and lost the
+fresh samples; it now reads the worker's five-minute samples directly, so a table shows a line as
+soon as two samples exist. The read also no longer uses a bound `IN` list, which the driver
+returned empty for, making every table say "collecting" while the rows were present.
+
 ## 0.17.26 — 2026-10-19
 
 THE FLOWS TRENDS ROUTE, AND A CURSOR THAT STOPPED DETECTION. `/api/discover/trends` was added to
