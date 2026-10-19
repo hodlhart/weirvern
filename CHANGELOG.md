@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.17.35 — 2026-10-19
+
+APPLY FROM THE WEIRLINGS SHEET DOES NOT ASK FOR A SECOND REASON.
+
+- The sheet's **Apply changes** button writes the staged set directly: no costly-change
+  confirmation and no second reason prompt. The BF-9 in-path confirmation and its reason field
+  remain on the Settings tab; the Weirlings surface records `applied from the Weirlings sheet`
+  as the origin in the write trail instead of interrupting the operator after they already
+  pressed Apply.
+- The per-NIC sheet gains a **Network** row: the interface's network name, a **Scan Network**
+  line, and a **Sonar** button. Sonar surveys the segment, stages its findings through the
+  ordinary plan, and writes nothing itself.
+- A **Channel** row selects the upstream and downstream NICs that should be joined into one
+  in-line channel. The picks stage `channel_upstream` and `channel_downstream` through the same
+  plan as every other setting.
+- **Siphon forwarding is configured in the background.** The capture DaemonSet now runs a
+  privileged `siphon-forwarding-init` before Zeek: in siphon mode it enables IPv4 forwarding,
+  disables reverse-path filtering and send-redirects on the capture port, and ensures the
+  interface-scoped FORWARD accepts that k3s's default `DROP` policy requires. It is inert in
+  loch mode. The operator no longer has to set sysctls or firewall rules before going in-path.
+- **Assets carries identity.** The duplicate Hosts table at the bottom is retired. The asset
+  inventory gains an Identity column; clicking a label opens the evidence pop-out with
+  confidence, agreeing sources, strongest evidence and last updated — the same verdict, one
+  place closer to the host it describes.
+
 ## 0.17.34 — 2026-10-19
 
 THE OLD WHOLE-HUB SETTINGS GRID IS OUT OF THE WEIRLING SHEET, AND ETH2 SHOWS ETH2.
@@ -21,11 +46,11 @@ THE PER-INTERFACE SHEET HAS A MODE AND A FEEDS SECTION, AND NETFLOW SAYS WHERE I
   the capture port and requires Zeek; choosing loch returns the sensor to passive capture.
 - **Feeds** — Zeek and NetFlow are separate checkboxes. The Zeek choice edits the capture list;
   NetFlow is governed by the source statement beside it.
-- **NetFlow source** — Passive means a router exports NetFlow to this sensor, as before. Active
-  means the sensor summarises its own capture: the verified siphon relay while intercepting, or
-  the selected mirrored port in loch mode. Active loch uses `NETFLOW_IFACE` (or the Zeek
-  interface when empty); auto preserves the historical behaviour. Passive stops any
-  sensor-generated probe and leaves the router feed untouched.
+- **NetFlow source** — Passive means this sensor listens for NetFlow another device sends to it.
+  Active means the sensor summarises its own capture: the verified siphon relay while
+  intercepting, or the selected mirrored port in loch mode. Active loch uses `NETFLOW_IFACE`
+  (or the Zeek interface when empty); auto preserves the historical behaviour. Passive stops
+  any sensor-generated probe and leaves the received feed untouched.
 - The panel still speaks only about the selected NIC; pending changes name that NIC's mode,
   feeds and NetFlow source rather than the global lists.
 

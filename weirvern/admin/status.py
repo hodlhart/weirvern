@@ -1003,8 +1003,8 @@ _SETTINGS_HELP: dict[str, str] = {
         "(that would be records of nothing), and it yields to the channel selection when both are "
         "set, because two taps would count each conversation twice."),
     "netflow_mode": (
-        "Whether NetFlow comes from a router or from this sensor. 'passive' leaves flow "
-        "collection to an external exporter pointed at the sensor. 'active' makes the sensor "
+        "Whether NetFlow comes from another device or from this sensor. 'passive' makes the "
+        "sensor listen for NetFlow sent by another device. 'active' makes the sensor "
         "summarise its own capture: the live siphon relay while intercepting, or the mirrored "
         "port in loch mode. 'auto' preserves the old behaviour."),
     "netflow_iface": (

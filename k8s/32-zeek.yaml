@@ -96,6 +96,89 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
+      # ── SIPHON FORWARDING IS WEIRVERN'S JOB, NOT THE OPERATOR'S ─────────────────────────────
+      # The operator should not have to read sysctls or install FORWARD rules before choosing
+      # in-path mode (operator, 2026-10-19: "Weirvern must handle this in the background"). This
+      # privileged init container has the one namespace the capture container does not need:
+      # the host network namespace with a writable view of /proc/sys. It is inert in loch mode
+      # and configures the forwarding path only when SENSOR_MODE says siphon. The worker still
+      # verifies the same facts at apply time; this makes the healthy state the default.
+      initContainers:
+        - name: siphon-forwarding-init
+          image: weirvern-worker
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              MODE="${SENSOR_MODE:-loch}"
+              if [ "$MODE" != "siphon" ]; then
+                echo "[siphon-init] mode=$MODE — passive; forwarding unchanged"
+                exit 0
+              fi
+              IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
+              MGMT="${MGMT_IFACE:-}"
+              if [ -n "$MGMT" ] && [ "$IFACE" = "$MGMT" ]; then
+                echo "[siphon-init] FATAL: capture interface $IFACE is the management interface" >&2
+                exit 1
+              fi
+              write_sysctl() {
+                path="/host-sys/$1"
+                if [ ! -w "$path" ]; then
+                  echo "[siphon-init] FATAL: $path is not writable; cannot configure forwarding" >&2
+                  exit 1
+                fi
+                echo "$2" > "$path"
+                echo "[siphon-init] $1=$2"
+              }
+              write_sysctl net/ipv4/ip_forward 1
+              write_sysctl net/ipv4/conf/all/rp_filter 0
+              write_sysctl net/ipv4/conf/default/rp_filter 0
+              write_sysctl net/ipv4/conf/all/send_redirects 0
+              write_sysctl net/ipv4/conf/default/send_redirects 0
+              if [ -e "/host-sys/net/ipv4/conf/$IFACE/rp_filter" ]; then
+                write_sysctl "net/ipv4/conf/$IFACE/rp_filter" 0
+                write_sysctl "net/ipv4/conf/$IFACE/send_redirects" 0
+              fi
+              if [ "$(cat /host-sys/net/ipv4/ip_forward)" != "1" ]; then
+                echo "[siphon-init] FATAL: ip_forward did not take" >&2
+                exit 1
+              fi
+              # A relayed packet arrives and leaves on the same capture port; k3s's default
+              # FORWARD policy is DROP, so without these the ARP mapping would forge a path
+              # into a black hole. Add the two interface-scoped accepts idempotently.
+              if command -v nft >/dev/null 2>&1; then
+                for dir in iifname oifname; do
+                  if ! nft -nn list chain ip filter FORWARD 2>/dev/null | grep -q "$dir "$IFACE" accept"; then
+                    nft insert rule ip filter FORWARD "$dir" "$IFACE" accept comment "weirvern siphon" 2>/dev/null \
+                      || nft add rule ip filter FORWARD "$dir" "$IFACE" accept comment "weirvern siphon"
+                  fi
+                done
+                echo "[siphon-init] forwarding path ready on $IFACE"
+              else
+                echo "[siphon-init] FATAL: nft is not in this image; cannot allow relayed traffic" >&2
+                exit 1
+              fi
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+          securityContext:
+            # The only container in this pod that needs the host's sysctls and netfilter.
+            # The capture container itself keeps its narrow NET_RAW-only posture.
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
       containers:
         - name: zeek
           # DERIVED image, not upstream: it carries the JA4 module vendored at
@@ -544,6 +627,10 @@ spec:
           # restarts the sniffer on a slow period would drop packets. Its health
           # signal is capture_loss.log, which the worker ingests.
       volumes:
+        - name: host-sys
+          hostPath:
+            path: /proc/sys
+            type: Directory
         - name: zeek-logs
           hostPath:
             path: /var/lib/weirvern/zeek

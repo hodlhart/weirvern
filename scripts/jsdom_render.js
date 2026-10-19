@@ -1492,6 +1492,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the address cell is clickable", !!firstRow && !!firstRow.querySelector("td.link"));
   check("the name column shows the resolved name",
         !!firstRow && firstRow.textContent.includes("workstation.lan"));
+  const assetHeads = [...doc.querySelectorAll("#as-table thead th")]
+    .map((th) => th.textContent.trim().toLowerCase());
+  check("the inventory carries an Identity column",
+        assetHeads.includes("identity"), assetHeads.join("|"));
+  check("the old Hosts table is retired from the visible Assets page",
+        !doc.getElementById("id-hosts-card")
+        || doc.getElementById("id-hosts-card").classList.contains("hidden"),
+        "the duplicate hosts card is still visible");
   check("the address is shown ALONGSIDE the name, not replaced by it",
         !!firstRow && firstRow.textContent.includes("203.0.113.42"));
   check("a zero-anomaly host is shown, not hidden",
@@ -3973,8 +3981,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     {
       const panel = doc.getElementById("wl-nic-settings");
       const words = panel ? panel.textContent : "";
+      // THE CHANNEL SELECTORS ARE THE ONE PLACE ANOTHER NIC'S NAME MAY APPEAR: choosing an
+      // upstream and downstream pair requires listing the candidates. The facts and the
+      // heading still name only the interface being edited.
+      const ownWords = (doc.getElementById("wl-nic-name") || {}).textContent
+        + " " + (doc.getElementById("wl-nic-facts") || {}).textContent;
       check("a NIC's settings panel names only that NIC",
-            !/eth2/i.test(words) && !/eth0/i.test(words), words.slice(0, 180));
+            !/eth2/i.test(ownWords) && !/eth0/i.test(ownWords), ownWords.slice(0, 180));
       check("the NIC sheet separates Mode from Feeds",
             /Mode/.test(words) && /Feeds/.test(words)
             && !!doc.getElementById("wl-nic-siphon") && !!doc.getElementById("wl-nic-loch")
@@ -3984,6 +3997,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             /NetFlow source/.test(words)
             && !!doc.getElementById("wl-nic-netflow-passive")
             && !!doc.getElementById("wl-nic-netflow-active"), words.slice(0, 260));
+      check("...with a Network row that offers Scan Network and Sonar",
+            /Network/.test(words) && /Scan Network/.test(words)
+            && !!doc.getElementById("wl-nic-sonar"),
+            words.slice(0, 320));
+      check("...and a Channel row that selects upstream and downstream NICs",
+            /Channel/.test(words) && !!doc.getElementById("wl-nic-upstream")
+            && !!doc.getElementById("wl-nic-downstream"),
+            words.slice(0, 360));
       const held = H.STAGE.changes;
       H.STAGE.changes = { zeek_ifaces: "eth1,eth2" };
       H.renderStageMirror(["zeek_ifaces"]);
@@ -5417,11 +5438,11 @@ for (let i = 0; i < 40 && !wlText().includes("edge-alive"); i++) {
 check("the Weirlings tab exists and renders the fleet",
       wlText().includes("edge-alive") && wlText().includes("edge-stopped"));
 
-check("a NEVER-SEEN sensor is still distinguishable from a STALE one",
-      (wlText().toLowerCase().includes("never seen")
-       || !!doc.querySelector("#wl-view option[value='never-seen']"))
+check("the never-seen tile and view are gone; stale remains",
+      !wlText().toLowerCase().includes("never seen")
+      && !doc.querySelector("#wl-view option[value='never-seen']")
       && wlText().toLowerCase().includes("stale"),
-      "the summary tile is gone; the state vocabulary and its view must remain distinct");
+      "the operator removed both the summary tile and the saved view");
 
 // WL-2: THE SHEET IS CHANGE-ONLY. The facts it used to list live on the ISSUES list (Logs),
 // where a problem belongs beside its fix -- so the claims are checked THERE, and the sheet is

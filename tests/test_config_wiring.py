@@ -250,7 +250,10 @@ def test_root_containers_are_only_ones_with_a_documented_reason(docs):
     test treats an UNSPECIFIED uid as needing the same deliberate decision as root -- with
     `zeek`'s own manifest showing why an unspecified uid is not safe merely because it is not 0.
     """
-    expected_root = {"zeek", "fix-permissions"}
+    # siphon-forwarding-init is deliberately root: it writes the host's /proc/sys and netfilter
+    # through a privileged hostPath, the one job the capture container must not do. It is inert
+    # outside siphon mode.
+    expected_root = {"zeek", "fix-permissions", "siphon-forwarding-init"}
     # Containers whose uid is unspecified at BOTH levels. They inherit the image's USER, which for
     # most images is root, so each one needs an explicit decision like root does.
     expected_unspecified: set[str] = set()

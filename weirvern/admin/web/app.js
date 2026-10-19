@@ -652,6 +652,8 @@ function renderStageMirror(keys) {
     if (key === "zeek_ifaces") return `Zeek capture · ${nic}`;
     if (key === "capture_iface") return `siphon capture · ${nic}`;
     if (key === "netflow_iface") return `active NetFlow · ${nic}`;
+    if (key === "channel_upstream") return "channel upstream";
+    if (key === "channel_downstream") return "channel downstream";
     if (key === "sensor_mode") return `mode · ${nic}`;
     if (key === "netflow_mode") return `NetFlow source · ${nic}`;
     if (key === "interface_networks") return `network name · ${nic}`;
@@ -852,7 +854,7 @@ async function planStage() {
  * skipWarnConfirm is for the ONE-CLICK enable (operator, 2026-10-17: the user just enables
  * it): the enable already IS the confirmation -- the button says what it does. The manual
  * Apply keeps its warned-change dialog. */
-async function applyStage(skipWarnConfirm) {
+async function applyStage(skipWarnConfirm, opts = {}) {
   const keys = Object.keys(STAGE.changes);
   if (!keys.length) return;
   setStageNote("applying…");
@@ -878,7 +880,7 @@ async function applyStage(skipWarnConfirm) {
     let applyReason = "";
     const siphonStaged = Object.entries(STAGE.changes || {}).some(
       ([k, v]) => String(k).toLowerCase() === "sensor_mode" && String(v).toLowerCase() === "siphon");
-    if (siphonStaged) {
+    if (siphonStaged && !opts.skipSiphonConfirm) {
       const verdict = await confirmDestructive({
         title: "Enabling siphon puts this deployment IN THE TRAFFIC PATH.",
         target: "sensor_mode = siphon",
@@ -893,8 +895,14 @@ async function applyStage(skipWarnConfirm) {
       }
       applyReason = verdict.reason;
     }
-    const res = await postJSON("/api/settings/apply", { changes: STAGE.changes, confirmed: true,
-                                                         reason: applyReason });
+    const res = await postJSON("/api/settings/apply", {
+      changes: STAGE.changes, confirmed: true,
+      // THE WEIRLINGS SHEET APPLIES WITHOUT A SECOND REASON PROMPT (operator, 2026-10-19:
+      // "Once I hit apply in wierlings don't do the secondary pop up for a reason"). The
+      // ordinary Settings tab keeps the BF-9 echo. The sheet records its own origin so the
+      // write trail still says where the decision came from.
+      reason: applyReason || opts.reason || "",
+    });
 
     // Report the outcome in the server's terms. A saved-but-not-restarted change is INERT, so it
     // is shown as a problem rather than folded into a success line.
@@ -4020,7 +4028,10 @@ document.addEventListener("DOMContentLoaded", () => {
     ["st-stage-discard", async () => discardStage()],
     // THE SHEET'S APPLY IS THE SAME APPLY (WSM-2): same STAGE, same plan, same write route,
     // same receipt. Nothing here is a second settings mechanism.
-    ["wl-stage-apply", () => applyStage().catch(showError)],
+    ["wl-stage-apply", () => applyStage(true, {
+      skipSiphonConfirm: true,
+      reason: "applied from the Weirlings sheet",
+    }).catch(showError)],
     ["wl-stage-discard", async () => discardStage()],
     // SONAR: the survey button. Disabled for callers without write access (loadSettings
     // sets that from the server's answer) -- a viewer sees it with its help text, which
@@ -5094,6 +5105,10 @@ function idKeep(h) {
 
 async function loadIdentity() {
   scheduleURLSync();
+  // The Hosts table is retired from Assets; keep the compatibility node out of the way even if
+  // an older link or a future test mounts it.
+  const legacyHosts = document.getElementById("id-hosts-card");
+  if (legacyHosts) legacyHosts.classList.add("hidden");
   const hours = String(trHours());
   const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
 
@@ -5204,9 +5219,14 @@ function showIdentityDetail(h) {
   const box = document.getElementById("id-detail");
   box.replaceChildren();
 
+  const strongest = (h.signals && h.signals.length) ? h.signals[0].detail : "—";
   const facts = [
     ["identity", h.os_label || h.os || "unknown"],
-    ["confidence", `${h.confidence} (score ${h.score}, ${h.agreeing_sources} source(s))`],
+    ["confidence", String(h.confidence || "unknown")],
+    ["sources", `${h.agreeing_sources ?? "—"} source(s) agreeing`],
+    ["strongest evidence", strongest],
+    ["last updated", h.updated_at ? fmtTime(h.updated_at)
+                                    : (h.age_s != null ? `${fmtAge(h.age_s)} ago` : "—")],
     ["MAC", h.mac || "—"],
   ];
   if (h.ja4_structure) {

@@ -199,7 +199,6 @@ const WL_BUILTIN_VIEWS = [
   { id: "all", label: "All sensors", state: "", problems: false },
   { id: "needs-action", label: "Needs action", state: "", problems: true },
   { id: "stale", label: "Stale", state: "stale", problems: false },
-  { id: "never-seen", label: "Never seen", state: "never_seen", problems: false },
   { id: "unregistered", label: "Unregistered", state: "unregistered", problems: false },
 ];
 
@@ -872,7 +871,7 @@ async function openWeirling(sensorId, opts = {}) {
         // click has to land in the CAPTURE_IFACE control and stage the change -- setting only the
         // value would look right until Apply and then do nothing.
         if (chosen && /^[A-Za-z0-9_.:-]+$/.test(chosen)) {
-          wlShowNicSettings(chosen);
+          wlShowNicSettings(chosen, r.interfaces);
         }
       } catch (err) {
         const detailNote = document.getElementById("wl-detail-note");
@@ -1037,6 +1036,18 @@ function wireWeirlings() {
       radio.addEventListener("change", () => wlNicNetflowSourceChanged());
     }
   }
+  const nicSonar = document.getElementById("wl-nic-sonar");
+  if (nicSonar && !nicSonar.dataset.wired) {
+    nicSonar.dataset.wired = "1";
+    nicSonar.addEventListener("click", () => wlScanNetwork().catch(showError));
+  }
+  for (const id of ["wl-nic-upstream", "wl-nic-downstream"]) {
+    const sel = document.getElementById(id);
+    if (sel && !sel.dataset.wired) {
+      sel.dataset.wired = "1";
+      sel.addEventListener("change", () => wlNicChannelChanged());
+    }
+  }
   const modeSel = document.getElementById("wl-mode-select");
   if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
@@ -1117,7 +1128,7 @@ function wlIfaceNames(value) {
 
 /** Scope the local settings to ONE NIC. The panel edits that port's two capture choices and
  *  nothing else; all other settings remain behind the explicit "All hub settings" link. */
-function wlShowNicSettings(nic) {
+function wlShowNicSettings(nic, interfaces) {
   const box = document.getElementById("wl-nic-settings");
   const local = document.getElementById("wl-local-settings");
   if (!box || !local) return;
@@ -1142,6 +1153,30 @@ function wlShowNicSettings(nic) {
   if (facts) {
     facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
       + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowActive ? "active" : "passive"}.`;
+  }
+  // THE CHANNEL PAIR BELONGS TO THE SENSOR, NOT ONE NIC (operator, 2026-10-19: "This is
+  // where we can select upstream and downstream nics to channel together"). Populate both
+  // selectors from the interfaces this sensor reports; the current values stay selectable
+  // even when the interface list is incomplete.
+  const mgmt = String(wlCfgValue("mgmt_iface") || "").trim();
+  // A NIC panel must not name another NIC -- least of all management. When the setting is
+  // empty, eth0 is the conventional management port and is withheld from the channel pair.
+  const hidden = mgmt || "eth0";
+  const usable = (Array.isArray(interfaces) ? interfaces : [])
+    .filter((n) => n && n !== "lo" && n !== hidden);
+  for (const [id, key] of [["wl-nic-upstream", "channel_upstream"],
+                           ["wl-nic-downstream", "channel_downstream"]]) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    const current = String(wlCfgValue(key) || "").trim();
+    const options = usable.slice();
+    if (current && !options.includes(current)) options.push(current);
+    sel.replaceChildren();
+    sel.appendChild(el("option", { attrs: { value: "" }, text: "— none —" }));
+    for (const name of options) {
+      sel.appendChild(el("option", { attrs: { value: name }, text: name }));
+    }
+    sel.value = current;
   }
   const z = document.getElementById("wl-nic-zeek");
   const sip = document.getElementById("wl-nic-siphon");
@@ -1179,6 +1214,17 @@ function wlNicModeClicked(which) {
  * Passive disables the per-port NetFlow choice because the feed does not belong to a NIC;
  * active makes this NIC selectable as the probe source.
  */
+/** Stage the channel pair through the same plan as every other setting. */
+function wlNicChannelChanged() {
+  const up = document.getElementById("wl-nic-upstream");
+  const down = document.getElementById("wl-nic-downstream");
+  if (!up || !down) return;
+  stageChange("channel_upstream", up.value, wlCfgValue("channel_upstream"));
+  stageChange("channel_downstream", down.value, wlCfgValue("channel_downstream"));
+  const note = document.getElementById("wl-nic-note");
+  if (note) note.textContent = "channel pair staged — review the pending changes, then Apply.";
+}
+
 function wlNicNetflowSourceChanged() {
   const active = document.getElementById("wl-nic-netflow-active");
   const net = document.getElementById("wl-nic-netflow");
@@ -1264,6 +1310,27 @@ function wlStageNicSettings() {
   if (typeof setStageNote === "function") {
     setStageNote(`staged capture choices for ${nic}; nothing is written until Apply.`);
   }
+}
+
+/** SCAN NETWORK: the Sonar survey, from the NIC that is open. It stages its findings through
+ *  the ordinary apply plan; nothing about the segment is written by the scan itself. */
+async function wlScanNetwork() {
+  const note = document.getElementById("wl-nic-scan-note");
+  if (typeof runSonar !== "function") {
+    if (note) note.textContent = "Sonar is unavailable in this build.";
+    return;
+  }
+  if (note) note.textContent = "Scanning this segment — ARP survey only; nothing is written.";
+  const res = await runSonar();
+  if (!note) return;
+  if (!res || res.ok !== true) {
+    note.textContent = "Scan failed — " + ((res && res.error) || SONAR_STATE.error || "no result");
+    return;
+  }
+  const where = [res.interface && `interface ${res.interface}`, res.segment]
+    .filter(Boolean).join(" on ");
+  note.textContent = `Scan complete${where ? ` (${where})` : ""}. ` +
+    "Its recommendations are staged below; Apply writes them after review.";
 }
 
 /** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...

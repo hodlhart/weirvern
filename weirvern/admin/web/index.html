@@ -840,6 +840,7 @@
         <thead><tr>
           <th data-sort="addr" class="sortable" title="sort by address">Address</th>
           <th data-sort="name" class="sortable">Name</th>
+          <th>Identity</th>
           <th data-sort="bytes" class="sortable">Bytes</th>
           <th>Out / In</th>
           <th data-sort="flows" class="sortable">Flows</th>
@@ -931,7 +932,10 @@
       <p class="muted" id="id-coverage-note"></p>
     </div>
 
-    <div class="card">
+    <!-- THE HOSTS TABLE IS FOLDED INTO THE ASSET INVENTORY (operator, 2026-10-19): its identity
+         column opens this pop-out, so the duplicate table at the bottom is retired. The DOM stays
+         hidden for the identity tests and older links; nothing renders it. -->
+    <div class="card hidden" id="id-hosts-card">
       <h2>Hosts <span class="muted" id="id-count"></span> <span id="id-filters"></span></h2>
       <table id="id-table">
           <thead>
@@ -1400,10 +1404,6 @@
           <h3>Settings for <span class="mono" id="wl-nic-name"></span>
             <span class="muted" id="wl-nic-role"></span></h3>
           <p class="muted" id="wl-nic-facts"></p>
-          <div class="controls">
-            <label>network name <input id="wl-nic-network" class="setting-input" type="text"
-                 placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
-          </div>
           <div class="nic-section">
             <h4>Mode</h4>
             <div class="controls">
@@ -1421,11 +1421,31 @@
           <div class="nic-section">
             <h4>NetFlow source</h4>
             <div class="controls">
-              <label class="check"><input type="radio" name="wl-netflow-source" value="passive" id="wl-nic-netflow-passive"> Passive — a router exports to this sensor</label>
+              <label class="check"><input type="radio" name="wl-netflow-source" value="passive" id="wl-nic-netflow-passive"> Passive — listen for NetFlow another device sends here</label>
               <label class="check"><input type="radio" name="wl-netflow-source" value="active" id="wl-nic-netflow-active"> Active — this sensor measures its own capture</label>
             </div>
             <p class="muted">Active uses siphon while intercepting, or the selected mirrored
-              port in loch mode. Passive leaves collection to an external router.</p>
+              port in loch mode. Passive means this sensor listens for NetFlow that another device sends to it.</p>
+          </div>
+          <div class="nic-section">
+            <h4>Network</h4>
+            <div class="controls">
+              <label>network name <input id="wl-nic-network" class="setting-input" type="text"
+                   placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
+            </div>
+            <p class="scan-line">Scan Network
+              <button id="wl-nic-sonar" type="button">Sonar</button>
+            </p>
+            <p class="muted" id="wl-nic-scan-note" role="status" aria-live="polite"></p>
+          </div>
+          <div class="nic-section">
+            <h4>Channel</h4>
+            <div class="controls">
+              <label>upstream <select id="wl-nic-upstream"></select></label>
+              <label>downstream <select id="wl-nic-downstream"></select></label>
+            </div>
+            <p class="muted">Join these two ports into one in-line channel. They must be
+              different interfaces; the worker verifies the bridge before claiming it is active.</p>
           </div>
           <div class="controls">
             <button id="wl-nic-stage" type="button">Stage for this interface</button>

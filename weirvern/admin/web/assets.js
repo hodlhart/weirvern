@@ -35,6 +35,8 @@ const ASSETS_STATE = {
   inventory: null,   // the /api/assets payload
   graph: null,       // the /api/graph payload
   tracked: [],       // addresses the operator selected on the Network view
+  identity: {},      // address/name -> the identity verdict, for the inventory column
+  identityError: "", // why the identity lookup could not fill that column
   sort: "anomalies",
   search: "",
   svc: "",          // US-7: the service facet filter (click a chip; filters in place)
@@ -57,9 +59,19 @@ const ASSETS_STATE = {
 function loadAssets() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = trHours();  // the global time control is the range (one control, every view)
-  return getJSON(ASSET_API.assets(hours))
-    .then((d) => {
+  // THE INVENTORY CARRIES IDENTITY NOW (operator, 2026-10-19). Fetch the verdicts in parallel
+  // with the inventory, then fold them by address; a failed identity read leaves the column as
+  // "—" and says why, never as a guessed label.
+  return Promise.all([
+    getJSON(ASSET_API.assets(hours)),
+    getJSON(`/api/identity?hours=${encodeURIComponent(String(hours))}`)
+      .catch((err) => ({ available: false, hosts: [], reason: err.message })),
+  ])
+    .then(([d, ids]) => {
       ASSETS_STATE.inventory = d;
+      ASSETS_STATE.identity = indexIdentity(ids);
+      ASSETS_STATE.identityError = ids && ids.available === false
+        ? (ids.reason || "the identity lookup did not run") : "";
       renderAssets();
     })
     .catch((err) => {
@@ -122,6 +134,24 @@ function renderAssetStats(all) {
   box.replaceChildren(...cells.map(([k, v]) => el("div", { class: "stat" }, [
     el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
   ])));
+}
+
+/** Fold identity verdicts by every key an asset may be indexed under. */
+function indexIdentity(payload) {
+  const out = {};
+  for (const h of (payload && payload.hosts) || []) {
+    for (const key of [h.host, h.hostname, ...(h.aliases || [])]) {
+      const k = String(key || "").trim().toLowerCase();
+      if (k) out[k] = h;
+    }
+  }
+  return out;
+}
+
+function identityForAsset(h) {
+  return ASSETS_STATE.identity[String(h.addr || "").trim().toLowerCase()]
+    || ASSETS_STATE.identity[String(h.name || "").trim().toLowerCase()]
+    || null;
 }
 
 function renderAssets() {
@@ -226,12 +256,19 @@ function renderAssets() {
       text: `Some figures are incomplete: the ${d.sources_failed.join(", ")} query did not run.`,
     }));
   }
+  if (ASSETS_STATE.identityError) {
+    note.appendChild(el("p", {
+      class: "muted",
+      text: `Identity is unavailable: ${ASSETS_STATE.identityError}. The Identity column is blank; ` +
+            "the asset rows are still complete.",
+    }));
+  }
 
   tbody.replaceChildren();
   if (!rows.length) {
     tbody.replaceChildren(el("tr", {}, [
       el("td", {
-        class: "empty", attrs: { colspan: "9" },
+        class: "empty", attrs: { colspan: "10" },
         text: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
       }),
@@ -249,6 +286,19 @@ function renderAssets() {
                          attrs: { title: `first seen ${fmtTime(h.first_seen)}` } })
           : null,
       ]),
+      (() => {
+        const ident = identityForAsset(h);
+        const cell = el("td", { class: "muted", text: ident ? (ident.os_label || ident.os || "unknown") : "—" });
+        if (ident) {
+          cell.classList.add("dcell");
+          cell.title = "open the identity evidence";
+          cell.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (typeof showIdentityDetail === "function") showIdentityDetail(ident);
+          });
+        }
+        return cell;
+      })(),
       el("td", { class: "mono", text: fmtBytes(h.bytes) }),
       el("td", {
         class: "mono",

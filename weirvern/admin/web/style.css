@@ -1308,3 +1308,5 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 #wl-local-settings > #st-test-note,
 #wl-local-settings > #st-test-help-text,
 #wl-local-settings > #st-sensor { display: none !important; }
+/* THE NETWORK ROW: NAME, THE SCAN LINE, AND THE SONAR ACTION (operator, 2026-10-19). */
+#wl-nic-settings .scan-line { display: flex; align-items: center; gap: 10px; margin: 8px 0 4px; }
