@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.22 — 2026-10-19
+
+SONAR RUNS ON A PASSIVE PORT, AND ITS ANSWER LANDS IN THE FIELDS. `iface_ipv4` raises when an
+interface has no address; the passive watcher below it was therefore unreachable, so Sonar
+refused on the live capture port (eth1 carries only link-local IPv6). The default reader now
+returns empty and lets the watcher learn the segment. On success the recommendations are staged
+**and written into the setting controls**, which is what the note already claimed; before, the
+pending list stayed empty and every field read `(not set)`.
+
 ## 0.17.21 — 2026-10-19
 
 THE NIC LIST KEEPS THE PORT ZEEK ALREADY WATCHES. Selecting eth2 for siphon staged

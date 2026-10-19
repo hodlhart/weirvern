@@ -231,7 +231,16 @@ def survey(iface: str, mgmt_iface: str = "", *,
     from weirvern.admin import segmentwatch, siphonnet
 
     mac_reader = mac_reader or siphonnet.read_mac
-    addr_reader = addr_reader or iface_ipv4
+    # A passive capture port has NO IPv4 address by design. `iface_ipv4` raises in that case
+    # (correct for callers that need an address), but the fallback below is the whole point of
+    # this path: treat "no address" as an empty read and let the passive watcher learn the
+    # segment. An injected reader still owns its own refusal.
+    def _addr_or_empty(name: str) -> tuple[str, str]:
+        try:
+            return iface_ipv4(name)
+        except SonarError:
+            return "", ""
+    addr_reader = addr_reader or _addr_or_empty
     route_reader = route_reader or _route_gateway
     sweep = sweep or ic_mod.arp_sweep
     watcher = watcher or segmentwatch.observe_segment

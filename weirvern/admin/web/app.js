@@ -1010,6 +1010,11 @@ async function runSonar() {
     const res = await postJSON("/api/settings/sonar", {});
     SONAR_STATE.result = res;
     renderSonarNote(res);
+    // SONAR IS A SURVEY, NOT A WRITE, but its measured answer belongs in the fields the
+    // operator is about to review. Stage it through the ordinary dedupe (so an unchanged
+    // recommendation stages nothing) and show the value in the control -- the note promised
+    // "staged as pending changes below" while the fields stayed blank.
+    if (res && res.ok === true) stageSonarRecommendations(res);
     return res;
   } catch (err) {
     SONAR_STATE.error = (err && err.message) || String(err);
@@ -1030,6 +1035,12 @@ function stageSonarRecommendations(res) {
     // is possible and the recommendation is staged (it will be validated by the plan).
     const current = row ? String(row.value) : "";
     stageChange(key, String(value), current);
+    // Show the recommendation in the control itself, not only in the pending list. The
+    // setting rows carry their key lowercased in the DOM even when the registry key is
+    // uppercase; query the lowercase form, as the NIC click does.
+    const input = document.querySelector(
+      `#st-sensor .setting[data-key="${String(key).toLowerCase()}"] input`);
+    if (input) input.value = String(value);
   }
 }
 

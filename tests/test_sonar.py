@@ -151,6 +151,20 @@ def test_no_free_address_is_stated_rather_than_offering_a_taken_one():
     assert any("no free address was found" in n for n in r["notes"])
 
 
+def test_the_DEFAULT_addr_reader_tolerates_a_passive_port(monkeypatch):
+    """The default reader must not raise before the passive watcher runs. The live defect was
+    `iface_ipv4` raising SonarError at line 111 and the watch fallback being unreachable."""
+    def no_addr(name):
+        raise sonar.SonarError(f"'{name}' has no IPv4 address")
+    monkeypatch.setattr(sonar, "iface_ipv4", no_addr)
+    result = sonar.survey(
+        "ens19", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+        route_reader=lambda i: "", watcher=lambda iface, **kw: _obs(),
+        sweep=lambda *a, **k: {}, watch_s=1)
+    assert result["ok"] is True
+    assert result["segment"] == "198.51.100.0/24"
+
+
 def test_a_missing_interface_address_is_refused_with_the_reason():
     with pytest.raises(sonar.SonarError) as e:
         _survey(addr_reader=lambda iface: (_ for _ in ()).throw(
