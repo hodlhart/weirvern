@@ -2802,8 +2802,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         !!doc.getElementById("hp-system")
         && doc.getElementById("view-health").firstElementChild ===
            doc.getElementById("hp-system").closest(".card"));
-  check("the Weirlings tab carries a performance section",
-        !!doc.getElementById("wl-performance"));
+  check("the Weirlings fleet carries performance inline with each sensor",
+        !!doc.querySelector("[data-wl-perf-sensor]"),
+        "no sensor performance strip rendered");
   check("the alert audit panels are on the Health tab (SOC-8)",
         !!doc.getElementById("hp-alerts-reasons")
           && !!doc.getElementById("hp-alerts-recent")

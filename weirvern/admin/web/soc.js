@@ -476,7 +476,7 @@ async function loadSystemMetrics(opts = {}) {
   } catch (err) {
     d = { available: false, reason: (err && err.message) || "the system read failed" };
   }
-  renderSystemMetrics(d);
+  renderSystemMetrics(d, opts);
   return d;
 }
 
@@ -512,59 +512,59 @@ function sysCard(label, percent, sub, values, cls) {
   ].filter(Boolean));
 }
 
-function renderSystemMetrics(d) {
+function sysMetric(value, label, extra) {
+  return el("div", { class: "wl-perf-metric" }, [
+    el("span", { class: "wl-perf-value", text: String(value) }),
+    el("span", { class: "wl-perf-label", text: label }),
+    extra ? el("span", { class: "wl-perf-sub", text: extra }) : null,
+  ].filter(Boolean));
+}
+
+function renderSystemMetrics(d, opts = {}) {
   const health = document.getElementById("hp-system");
-  const perf = document.getElementById("wl-performance");
-  if (!health && !perf) return;
+  const sensor = String((opts && opts.sensor) || "").trim();
   const available = !!(d && d.available);
   const reason = (d && d.reason) || "the host procfs is not readable";
   const history = (d && d.history) || [];
   const cpu = available ? history.map((p) => p.cpu) : [];
   const mem = available ? history.map((p) => p.memory) : [];
-  const memTotal = Number(d && d.memory_total_bytes) || 0;
-  const memUsed = Number(d && d.memory_used_bytes) || 0;
-  const memSub = memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "";
-  const cards = () => {
-    if (!available) return el("p", { class: "muted", text: `System unavailable — ${reason}.` });
-    return el("div", { class: "sys-grid" }, [
-      sysCard("CPU", d.cpu_percent,
-        history.length > 1 ? `${history.length} samples` : "first sample", cpu, "cpu"),
-      sysCard("Memory", d.memory_percent, memSub, mem, "memory"),
-    ]);
-  };
-  if (health) {
-    health.replaceChildren(cards());
-  }
-  if (perf) {
-    const body = el("div");
-    body.appendChild(cards());
-    // THE PERFORMANCE TABLE NAMES THE SENSOR'S PORTS, not every veth and bridge the node
-    // happens to own. The host's sysfs list includes container plumbing; an operator reading
-    // throughput wants the capture and management NICs.
-    const interfaces = available && Array.isArray(d.interfaces)
-      ? d.interfaces.filter((iface) => /^(eth|ens|eno|enp|bond|wl)/.test(iface.name))
-      : [];
-    if (interfaces.length) {
-      const table = el("table", { class: "sys-ifaces" });
-      const thead = el("thead", {}, [el("tr", {}, [
-        el("th", { text: "Interface" }), el("th", { text: "In" }),
-        el("th", { text: "Out" }), el("th", { text: "Drops" }),
-      ])]);
-      const tbody = el("tbody");
-      for (const iface of interfaces) {
-        const drops = (Number(iface.rx_drops) || 0) + (Number(iface.tx_drops) || 0);
-        tbody.appendChild(el("tr", {}, [
-          el("td", { class: "mono", text: iface.name }),
-          el("td", { class: "mono", text: `${fmtBytes(iface.rx_bps)}/s` }),
-          el("td", { class: "mono", text: `${fmtBytes(iface.tx_bps)}/s` }),
-          el("td", { class: drops ? "mono sev-high" : "mono", text: String(drops) }),
-        ]));
-      }
-      table.appendChild(thead); table.appendChild(tbody);
-      body.appendChild(table);
+
+  if (health && !sensor) {
+    if (!available) {
+      health.replaceChildren(el("p", { class: "muted", text: `System unavailable — ${reason}.` }));
+    } else {
+      const memTotal = Number(d.memory_total_bytes) || 0;
+      const memUsed = Number(d.memory_used_bytes) || 0;
+      health.replaceChildren(el("div", { class: "sys-grid" }, [
+        sysCard("CPU", d.cpu_percent,
+          history.length > 1 ? `${history.length} samples` : "first sample", cpu, "cpu"),
+        sysCard("Memory", d.memory_percent,
+          memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "", mem, "memory"),
+      ]));
     }
-    perf.replaceChildren(body);
   }
+  if (!sensor) return;
+  const strip = [...document.querySelectorAll("[data-wl-perf-sensor]")]
+    .find((node) => node.dataset.wlPerfSensor === sensor);
+  if (!strip) return;
+  if (!available) {
+    strip.replaceChildren(el("span", { class: "muted", text: "host metrics not reported" }));
+    return;
+  }
+  const wanted = new Set((opts.interfaces || []).map(String));
+  const interfaces = (Array.isArray(d.interfaces) ? d.interfaces : [])
+    .filter((iface) => (wanted.size ? wanted.has(iface.name) : /^(eth|ens|eno|enp|bond|wl)/.test(iface.name)));
+  const rows = [
+    sysMetric(d.cpu_percent == null ? "—" : `${d.cpu_percent}%`, "CPU"),
+    sysMetric(d.memory_percent == null ? "—" : `${d.memory_percent}%`, "MEMORY"),
+  ];
+  for (const iface of interfaces) {
+    const drops = (Number(iface.rx_drops) || 0) + (Number(iface.tx_drops) || 0);
+    rows.push(sysMetric(`${fmtBytes(iface.rx_bps)}/s`, `${iface.name} in`,
+      drops ? `${drops} drops` : ""));
+    rows.push(sysMetric(`${fmtBytes(iface.tx_bps)}/s`, `${iface.name} out`));
+  }
+  strip.replaceChildren(...rows);
 }
 
 async function loadHealthDeep() {

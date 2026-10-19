@@ -167,9 +167,7 @@ async function loadWeirlings() {
   }
   renderWeirlings(d.sensors || [], d.revoked || [], d.revoked_reason || "");
   wlRenderBulk();
-  // The Performance card is scoped to one sensor, never silently to the hub when a different
-  // row is on screen. Its selector is rebuilt from the fleet each load.
-  wlPopulatePerfSensors(d.sensors || []);
+  wlLoadRowPerformance(d.sensors || []);
 
   // THE FIRST RUN APPEARS ONLY WHILE THE FLEET HAS NEVER HAD A LIVE SENSOR -- onboarding, not
   // decoration; the moment one reports, it is gone for good (or for this tab, if skipped).
@@ -542,36 +540,28 @@ function wlNicRows(r) {
   });
 }
 
-function wlPerfSensorChanged() {
-  const sel = document.getElementById("wl-perf-sensor");
-  const scope = document.getElementById("wl-perf-scope");
-  if (!sel) return;
-  const id = sel.value;
-  if (scope) scope.textContent = id ? id : "this hub's host";
-  if (typeof loadSystemMetrics === "function") {
-    loadSystemMetrics(id ? { sensor: id } : {}).catch(() => {});
-  }
+/** The ports the sensor actually sniffs: every reported NIC except management and loopback. */
+function wlSniffingInterfaces(r) {
+  const mgmt = String(wlCfgValue("mgmt_iface") || "eth0");
+  return (Array.isArray(r && r.interfaces) ? r.interfaces : [])
+    .filter((name) => name && name !== "lo" && name !== mgmt);
 }
 
-/** One selector entry per sensor; the hub is the default scope, not an implicit fallback. */
-function wlPopulatePerfSensors(rows) {
-  const sel = document.getElementById("wl-perf-sensor");
-  if (!sel) return;
-  const held = sel.value;
-  sel.replaceChildren();
-  sel.appendChild(el("option", { attrs: { value: "" }, text: "this hub" }));
+/** Put this sensor's own reading in its row; a remote sensor says it has not reported one. */
+function wlLoadRowPerformance(rows) {
   for (const r of rows) {
-    sel.appendChild(el("option", { attrs: { value: r.sensor_id }, text: r.sensor_id }));
+    const strip = [...document.querySelectorAll("[data-wl-perf-sensor]")]
+      .find((node) => node.dataset.wlPerfSensor === r.sensor_id);
+    if (!strip) continue;
+    if (!r.local) {
+      strip.replaceChildren(el("span", { class: "muted", text: "host metrics not reported" }));
+      continue;
+    }
+    if (typeof loadSystemMetrics === "function") {
+      loadSystemMetrics({ sensor: r.sensor_id, interfaces: wlSniffingInterfaces(r) })
+        .catch(() => {});
+    }
   }
-  const local = rows.find((r) => r.local);
-  const next = held && [...sel.options].some((o) => o.value === held)
-    ? held : (local ? local.sensor_id : "");
-  sel.value = next;
-  if (!sel.dataset.wired) {
-    sel.dataset.wired = "1";
-    sel.addEventListener("change", () => wlPerfSensorChanged());
-  }
-  wlPerfSensorChanged();
 }
 
 function renderWeirlings(rows, revoked, revokedReason) {
@@ -642,7 +632,12 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // sensor name should not have filled in columns, on the nics"). Mode, channel, networks,
     // flow and feeds belong to each NIC line below; repeating them here put two versions of
     // the same fact in one row.
-    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "5" } }));
+    // PERFORMANCE RUNS LEFT TO RIGHT, INLINE WITH THE SENSOR NAME (operator, 2026-10-19).
+    // The strip fills this row's remaining width: CPU, memory, then each sniffing port. Labels
+    // sit BELOW their values so the numbers are scanned first.
+    const perf = el("div", { class: "wl-perf-strip", attrs: { "data-wl-perf-sensor": r.sensor_id } },
+      [el("span", { class: "muted", text: "loading performance…" })]);
+    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "5" } }, [perf]));
 
     tbody.appendChild(tr);
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling

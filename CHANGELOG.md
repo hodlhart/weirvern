@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.41 — 2026-10-19
+
+PERFORMANCE SITS WITH THE SENSOR NAME.
+
+- The separate Performance card is gone. Each sensor row carries its own left-to-right strip:
+  CPU, memory, then the sniffing interfaces only (management and loopback excluded). The
+  labels sit beneath their values, so the numbers are the first thing scanned.
+- A remote sensor that has not reported host counters says so in its row instead of showing
+  the hub's numbers.
+
 ## 0.17.40 — 2026-10-19
 
 THE SYSTEM CARDS READ THE HOST, NOT THE POD'S MEMORY LIMIT.

@@ -1357,3 +1357,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sys-ifaces table { width: 100%; }
 .sys-ifaces th { text-align: left; }
 @media (max-width: 640px) { .sys-grid { grid-template-columns: 1fr; } }
+
+/* ── PERFORMANCE IN THE SENSOR ROW (operator, 2026-10-19) ─────────────────────────────────
+ * Values first, labels underneath: the row reads left to right beside the sensor name and
+ * the label is a caption, not a second heading. Only sniffing ports are listed. */
+.wl-perf-strip { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 22px;
+  padding: 2px 0; }
+.wl-perf-metric { display: flex; flex-direction: column; gap: 1px; min-width: 70px; }
+.wl-perf-value { color: var(--fg); font-family: var(--mono); font-size: 15px;
+  font-weight: 600; line-height: 1.15; white-space: nowrap; }
+.wl-perf-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+  text-transform: uppercase; }
+.wl-perf-sub { color: var(--dim); font-size: 11px; }
