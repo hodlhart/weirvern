@@ -862,6 +862,8 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         # The other in-line source: a live siphon intercept relays through this box too, and its
         # traffic can be metered the same way. One tap per box -- see the tooltip.
         ("siphon_netflow", "intercept flow capture"),
+        ("netflow_mode", "NetFlow source"),
+        ("netflow_iface", "active NetFlow interface"),
         # Traffic exclusion. Editable, because a scanner appearing on the network is exactly the
         # thing an operator needs to respond to without a redeploy.
         ("exclude_cidrs", "exclude from learning"),
@@ -1000,6 +1002,15 @@ _SETTINGS_HELP: dict[str, str] = {
         "`flows` table the channel and any exporter feed. Never on a configured-but-dead intercept "
         "(that would be records of nothing), and it yields to the channel selection when both are "
         "set, because two taps would count each conversation twice."),
+    "netflow_mode": (
+        "Whether NetFlow comes from a router or from this sensor. 'passive' leaves flow "
+        "collection to an external exporter pointed at the sensor. 'active' makes the sensor "
+        "summarise its own capture: the live siphon relay while intercepting, or the mirrored "
+        "port in loch mode. 'auto' preserves the old behaviour."),
+    "netflow_iface": (
+        "The port an ACTIVE flow probe samples in loch mode. Empty resolves to the Zeek "
+        "interface. In siphon mode the probe follows the siphon capture interface, because "
+        "that is the port the relay crosses."),
     "channel_netflow": (
         "Whether the traffic crossing the IN-LINE channel is summarised into NetFlow records. "
         "'off' (the default) collects nothing from the channel; 'upstream' or 'downstream' names "

@@ -1403,13 +1403,34 @@
           <div class="controls">
             <label>network name <input id="wl-nic-network" class="setting-input" type="text"
                  placeholder="Servers / DMZ" spellcheck="false" autocomplete="off"></label>
-            <label class="check"><input type="checkbox" id="wl-nic-zeek"> capture with Zeek</label>
-            <label class="check"><input type="checkbox" id="wl-nic-siphon"> use for siphon capture</label>
+          </div>
+          <div class="nic-section">
+            <h4>Mode</h4>
+            <div class="controls">
+              <label class="check"><input type="checkbox" id="wl-nic-siphon"> Siphon — in the traffic path</label>
+              <label class="check"><input type="checkbox" id="wl-nic-loch"> Loch — passive capture</label>
+            </div>
+          </div>
+          <div class="nic-section">
+            <h4>Feeds</h4>
+            <div class="controls">
+              <label class="check"><input type="checkbox" id="wl-nic-zeek"> Zeek</label>
+              <label class="check"><input type="checkbox" id="wl-nic-netflow"> NetFlow</label>
+            </div>
+          </div>
+          <div class="nic-section">
+            <h4>NetFlow source</h4>
+            <div class="controls">
+              <label class="check"><input type="radio" name="wl-netflow-source" value="passive" id="wl-nic-netflow-passive"> Passive — a router exports to this sensor</label>
+              <label class="check"><input type="radio" name="wl-netflow-source" value="active" id="wl-nic-netflow-active"> Active — this sensor measures its own capture</label>
+            </div>
+            <p class="muted">Active uses siphon while intercepting, or the selected mirrored
+              port in loch mode. Passive leaves collection to an external router.</p>
+          </div>
+          <div class="controls">
             <button id="wl-nic-stage" type="button">Stage for this interface</button>
             <button id="wl-nic-all" class="link" type="button">All hub settings</button>
           </div>
-          <p class="muted">NetFlow capture follows the siphon interface automatically — there is no
-            separate NetFlow port to choose.</p>
           <p id="wl-nic-note" class="muted" role="status" aria-live="polite"></p>
         </div>
 

@@ -586,17 +586,45 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
 
     iface = ""
     source = ""
-    if mode in ("upstream", "downstream") and channel_state.active:
+    flow_mode = str(getattr(settings, "netflow_mode", "auto") or "auto").strip().lower()
+    if flow_mode not in ("auto", "passive", "active"):
+        flow_mode = "auto"
+    sensor_mode = str(getattr(settings, "sensor_mode", "") or "").strip().lower()
+
+    if flow_mode == "passive":
+        # THE ROUTER OWNS THE FEED. Stop any sensor-generated tap; the external exporter
+        # continues into the collector exactly as before.
+        pass
+    elif flow_mode == "active":
+        # ACTIVE MEANS THIS SENSOR MEASURES ITS OWN CAPTURE. In siphon the tap follows the
+        # verified relay; in loch it samples the selected mirrored port continuously.
+        if mode in ("upstream", "downstream") and channel_state.active:
+            iface = (settings.channel_upstream if mode == "upstream"
+                     else settings.channel_downstream).strip()
+            source = "channel"
+        elif sensor_mode == "siphon":
+            if siphon_live == "auto":
+                siphon_live = _siphon_liveness(settings, client)
+            if siphon_live is True:
+                iface = str(getattr(settings, "capture_iface", "")
+                            or getattr(settings, "zeek_iface", "") or "").strip()
+                source = "siphon"
+        else:
+            iface = str(getattr(settings, "netflow_iface", "")
+                        or getattr(settings, "zeek_iface", "")
+                        or getattr(settings, "capture_iface", "") or "").strip()
+            source = "loch"
+    elif mode in ("upstream", "downstream") and channel_state.active:
         iface = (settings.channel_upstream if mode == "upstream"
                  else settings.channel_downstream).strip()
         source = "channel"
-    elif bool(getattr(settings, "siphon_netflow", False)) or (
-            str(getattr(settings, "sensor_mode", "") or "").strip().lower() == "siphon"):
-        # A SIPHON SENSOR WANTS FLOW RECORDS (operator, 2026-10-19: "the back end will want the
-        # zeek and netflow capture config automatically"). It is still gated on VERIFIED
-        # liveness below: a configured-but-dead intercept must not fill the flows table with
-        # records of nothing. The tap follows the SIPHON port, not the Zeek port -- when the
-        # operator chooses a different capture interface the relay runs there.
+    elif bool(getattr(settings, "siphon_netflow", False)) or sensor_mode == "siphon":
+        # AUTO, the historical behaviour. A SIPHON SENSOR WANTS FLOW RECORDS (operator,
+        # 2026-10-19: "the back end will want the zeek and netflow capture config
+        # automatically"). It is still gated on VERIFIED liveness below: a
+        # configured-but-dead intercept must not fill the flows table with records of
+        # nothing. The tap follows the SIPHON port, not the Zeek port -- when the operator
+        # chooses a different capture interface the relay runs there.
         if siphon_live == "auto":
             siphon_live = _siphon_liveness(settings, client)
         if siphon_live is True:

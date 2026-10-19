@@ -250,6 +250,11 @@ data:
   # table), only while the intercept is VERIFIED live, and it yields to CHANNEL_NETFLOW on a box
   # doing both -- two taps would count every conversation twice.
   SIPHON_NETFLOW: "0"
+  # passive | active | auto. Passive = a router exports to this sensor; Active = the sensor
+  # summarises its own capture (siphon while intercepting, loch on NETFLOW_IFACE).
+  NETFLOW_MODE: "auto"
+  # Active loch probe port; empty resolves to ZEEK_IFACE.
+  NETFLOW_IFACE: ""
 
   SLUICE_IFACE: ""
 

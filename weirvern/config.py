@@ -287,6 +287,19 @@ class Settings:
     siphon_netflow: bool = field(
         default_factory=lambda: _env_bool("SIPHON_NETFLOW", False)
     )
+    # PASSIVE OR ACTIVE NETFLOW (operator, 2026-10-19). Passive means an external router
+    # exports NetFlow to this sensor's collector -- the historical path. Active means the
+    # sensor summarises its own capture: the live siphon relay while intercepting, or the
+    # mirrored interface in loch mode. `auto` preserves the pre-setting behaviour (siphon
+    # auto-taps; otherwise only SIPHON_NETFLOW can start a probe).
+    netflow_mode: str = field(
+        default_factory=lambda: os.environ.get("NETFLOW_MODE", "auto").strip().lower()
+    )
+    # The port an ACTIVE loch probe samples. Empty resolves to ZEEK_IFACE. In siphon mode
+    # the probe follows CAPTURE_IFACE, because that is the port the relay crosses.
+    netflow_iface: str = field(
+        default_factory=lambda: os.environ.get("NETFLOW_IFACE", "").strip()
+    )
     channel_netflow: str = field(
         default_factory=lambda: os.environ.get("CHANNEL_NETFLOW", "off").strip().lower()
     )

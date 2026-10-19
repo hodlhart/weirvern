@@ -639,6 +639,9 @@ function renderStageMirror(keys) {
         ? "on" : "off";
     }
     if (key === "capture_iface") return String(value) === nic ? "on" : "off";
+    if (key === "netflow_iface") return String(value) === nic ? "on" : "off";
+    if (key === "sensor_mode") return String(value || "");
+    if (key === "netflow_mode") return String(value || "");
     if (key === "interface_networks") {
       return typeof wlIfaceNames === "function" ? (wlIfaceNames(value)[nic] || "") : value;
     }
@@ -648,6 +651,9 @@ function renderStageMirror(keys) {
     if (!nic) return key;
     if (key === "zeek_ifaces") return `Zeek capture · ${nic}`;
     if (key === "capture_iface") return `siphon capture · ${nic}`;
+    if (key === "netflow_iface") return `active NetFlow · ${nic}`;
+    if (key === "sensor_mode") return `mode · ${nic}`;
+    if (key === "netflow_mode") return `NetFlow source · ${nic}`;
     if (key === "interface_networks") return `network name · ${nic}`;
     return key;
   };

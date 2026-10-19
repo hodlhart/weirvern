@@ -366,13 +366,21 @@ class _NFChannel:
         self.bridge = "wv-br0" if active else ""
 
 
-def _nf_settings(mode: str):
+def _nf_settings(mode: str, *, netflow_mode: str = "auto", netflow_iface: str = "",
+                 sensor_mode: str = "loch", siphon_netflow: bool = False):
     class _S:
         channel_netflow = mode
         channel_upstream = "wv-a"
         channel_downstream = "wv-b"
+        capture_iface = "eth1"
+        zeek_iface = "eth1"
 
-    return _S()
+    obj = _S()
+    obj.netflow_mode = netflow_mode
+    obj.netflow_iface = netflow_iface
+    obj.sensor_mode = sensor_mode
+    obj.siphon_netflow = siphon_netflow
+    return obj
 
 
 def _reset_probe():
@@ -421,6 +429,41 @@ def test_the_probe_taps_into_rotating_segments_once(monkeypatch, tmp_path):
         spawn=_recorder(spawns), which=lambda n: "x", now=lambda: 1001.0,
         run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("sweep ran with no segments")))
     assert len(spawns) == 1, "an unchanged tick spawned another tap"
+
+
+def test_active_loch_netflow_taps_the_selected_mirrored_port(monkeypatch, tmp_path):
+    """Active NetFlow in loch uses this sensor's own capture, not a router export."""
+    worker_mod = _reset_probe()
+    monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
+    spawns: list = []
+    worker_mod._channel_netflow_maybe(
+        _nf_settings("off", netflow_mode="active", netflow_iface="eth9",
+                     sensor_mode="loch"),
+        channel_state=_NFChannel(False), spawn=_recorder(spawns),
+        which=lambda n: f"/usr/sbin/{n}", now=lambda: 1000.0,
+        run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no segments")))
+
+    assert len(spawns) == 1
+    argv = spawns[0]
+    assert "tcpdump" in argv[0]
+    assert argv[argv.index("-i") + 1] == "eth9"
+
+
+def test_passive_netflow_stops_any_sensor_generated_tap(monkeypatch, tmp_path):
+    """Passive means the router owns the feed; nothing on this sensor may keep tapping."""
+    worker_mod = _reset_probe()
+    monkeypatch.setattr(worker_mod, "CHANNEL_NETFLOW_DIR", str(tmp_path))
+    tap = _FakeProc()
+    worker_mod._CHANNEL_NETFLOW.update({"tap": tap, "iface": "eth1"})
+    spawns: list = []
+    worker_mod._channel_netflow_maybe(
+        _nf_settings("upstream", netflow_mode="passive", sensor_mode="siphon",
+                     siphon_netflow=True),
+        channel_state=_NFChannel(True), spawn=_recorder(spawns),
+        which=lambda n: "x", now=lambda: 2000.0)
+
+    assert tap.terminated is True
+    assert spawns == [], "passive mode started a sensor-generated probe"
 
 
 def test_the_probe_stops_the_tap_and_drops_pending_segments(monkeypatch, tmp_path):

@@ -1289,3 +1289,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .watch-mark { color: var(--accent); }
 .review-act.watched { border-color: var(--accent); color: var(--accent); }
 .gate-blast { margin: 6px 0 0; font-size: 12px; }
+/* MODE AND FEEDS ARE TWO DECISIONS, NOT ONE LIST (operator, 2026-10-19). The per-interface
+ * sheet groups the mode (siphon or loch) away from what it feeds (Zeek, NetFlow), and gives
+ * the NetFlow source its own passive/active statement. */
+#wl-nic-settings .nic-section { margin: 10px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+#wl-nic-settings .nic-section h4 { margin: 0 0 4px; font-size: var(--fs-2); color: var(--muted); }
+#wl-nic-settings .nic-section .controls { margin: 0; }

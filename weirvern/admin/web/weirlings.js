@@ -1017,6 +1017,20 @@ function wireWeirlings() {
     nicAll.dataset.wired = "1";
     nicAll.addEventListener("click", () => wlCloseNicSettings());
   }
+  for (const [id, which] of [["wl-nic-siphon", "siphon"], ["wl-nic-loch", "loch"]]) {
+    const box = document.getElementById(id);
+    if (box && !box.dataset.wired) {
+      box.dataset.wired = "1";
+      box.addEventListener("change", () => wlNicModeClicked(which));
+    }
+  }
+  for (const id of ["wl-nic-netflow-passive", "wl-nic-netflow-active"]) {
+    const radio = document.getElementById(id);
+    if (radio && !radio.dataset.wired) {
+      radio.dataset.wired = "1";
+      radio.addEventListener("change", () => wlNicNetflowSourceChanged());
+    }
+  }
   const modeSel = document.getElementById("wl-mode-select");
   if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
@@ -1104,8 +1118,13 @@ function wlShowNicSettings(nic) {
   const base = wlCfgValue("zeek_iface");
   const listed = wlIfaceList(wlCfgValue("zeek_ifaces"));
   const cap = wlCfgValue("capture_iface");
+  const mode = String(wlCfgValue("sensor_mode") || "loch").trim().toLowerCase();
+  const siphonOn = mode === "siphon" && cap === nic;
   const zeekOn = listed.length ? listed.includes(nic) : base === nic;
-  const siphonOn = cap === nic;
+  const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
+  const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
+  const flowIface = String(wlCfgValue("netflow_iface") || "").trim();
+  const netflowOn = !flowActive || (flowIface ? flowIface === nic : siphonOn);
   const name = document.getElementById("wl-nic-name");
   const role = document.getElementById("wl-nic-role");
   const facts = document.getElementById("wl-nic-facts");
@@ -1115,18 +1134,56 @@ function wlShowNicSettings(nic) {
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
-    facts.textContent = `Zeek ${zeekOn ? "captures this port" : "does not capture this port"} · `
-      + `siphon ${siphonOn ? "uses this port" : "does not use this port"}.`;
+    facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
+      + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowActive ? "active" : "passive"}.`;
   }
   const z = document.getElementById("wl-nic-zeek");
-  const s = document.getElementById("wl-nic-siphon");
+  const sip = document.getElementById("wl-nic-siphon");
+  const loch = document.getElementById("wl-nic-loch");
+  const net = document.getElementById("wl-nic-netflow");
   if (z) z.checked = zeekOn;
-  if (s) s.checked = siphonOn;
+  if (sip) sip.checked = siphonOn;
+  if (loch) loch.checked = !siphonOn;
+  if (net) { net.checked = netflowOn; net.disabled = !flowActive; }
+  const passive = document.getElementById("wl-nic-netflow-passive");
+  const active = document.getElementById("wl-nic-netflow-active");
+  if (passive) passive.checked = !flowActive;
+  if (active) active.checked = flowActive;
   box.dataset.nic = nic;
   const note = document.getElementById("wl-nic-note");
   if (note) note.textContent = "";
   box.classList.remove("hidden");
   local.classList.add("wl-scoped");
+}
+
+/** One mode at a time: checking either clears the other, and one always stays checked. */
+function wlNicModeClicked(which) {
+  const sip = document.getElementById("wl-nic-siphon");
+  const loch = document.getElementById("wl-nic-loch");
+  if (!sip || !loch) return;
+  if (which === "siphon" && sip.checked) loch.checked = false;
+  if (which === "loch" && loch.checked) sip.checked = false;
+  if (!sip.checked && !loch.checked) {
+    if (which === "siphon") loch.checked = true; else sip.checked = true;
+  }
+}
+
+/**
+ * PASSIVE MEANS THE ROUTER FEED, ACTIVE MEANS THIS SENSOR MEASURES (operator, 2026-10-19).
+ * Passive disables the per-port NetFlow choice because the feed does not belong to a NIC;
+ * active makes this NIC selectable as the probe source.
+ */
+function wlNicNetflowSourceChanged() {
+  const active = document.getElementById("wl-nic-netflow-active");
+  const net = document.getElementById("wl-nic-netflow");
+  if (!active || !net) return;
+  if (active.checked) {
+    net.disabled = false;
+    net.checked = true;
+  } else {
+    net.disabled = true;
+    net.checked = true;   // the router feed exists regardless of which NIC is selected
+  }
 }
 
 /** Back to the whole hub's settings. Nothing staged is discarded. */
@@ -1144,22 +1201,26 @@ function wlStageNicSettings() {
   if (!nic) return;
   const zeekBox = document.getElementById("wl-nic-zeek");
   const siphonBox = document.getElementById("wl-nic-siphon");
+  const lochBox = document.getElementById("wl-nic-loch");
+  const netBox = document.getElementById("wl-nic-netflow");
+  const activeSource = document.getElementById("wl-nic-netflow-active");
   const note = document.getElementById("wl-nic-note");
   let zeekOn = !!(zeekBox && zeekBox.checked);
   const siphonOn = !!(siphonBox && siphonBox.checked);
-  // Siphon without capture is a contradiction: the intercept must relay a port Zeek can see.
+  const lochOn = !!(lochBox && lochBox.checked);
+  if (siphonOn) zeekOn = true;   // siphon needs a port Zeek can see
   if (siphonOn && !zeekOn) {
     zeekOn = true;
     if (zeekBox) zeekBox.checked = true;
   }
+
+  // FEEDS: Zeek is the interface list; NetFlow is the source statement below.
   const base = wlCfgValue("zeek_iface");
   const list = wlIfaceList(wlCfgValue("zeek_ifaces"));
   if (!list.length && base) list.push(base);
   const next = list.filter((n) => n !== nic);
   if (zeekOn) next.push(nic);
-  const currentList = wlCfgValue("zeek_ifaces");
-  const nextList = next.join(",");
-  stageChange("zeek_ifaces", nextList, currentList);
+  stageChange("zeek_ifaces", next.join(","), wlCfgValue("zeek_ifaces"));
 
   // THE HUMAN NAME IS PART OF THIS INTERFACE'S SETTINGS (operator, 2026-10-19). It is staged with
   // the same plan as the capture choices; anomaly locations read it after Apply.
@@ -1172,9 +1233,24 @@ function wlStageNicSettings() {
     stageChange("interface_networks", nextNames, wlCfgValue("interface_networks"));
   }
 
+  // MODE: one weirling runs one mode. Choosing it here applies to the sensor, not just the NIC.
+  const currentMode = String(wlCfgValue("sensor_mode") || "loch").toLowerCase();
+  const wantedMode = siphonOn ? "siphon" : "loch";
+  if (wantedMode !== currentMode) stageChange("sensor_mode", wantedMode, currentMode);
   const cap = wlCfgValue("capture_iface");
-  if (siphonOn) stageChange("capture_iface", nic, cap);
+  if (wantedMode === "siphon") stageChange("capture_iface", nic, cap);
   else if (cap === nic) stageChange("capture_iface", "", cap);
+
+  // NETFLOW SOURCE: passive leaves the router's export alone; active makes this NIC the probe.
+  const currentSource = String(wlCfgValue("netflow_mode") || "auto").toLowerCase();
+  const wantedSource = activeSource && activeSource.checked ? "active" : "passive";
+  if (wantedSource !== currentSource) stageChange("netflow_mode", wantedSource, currentSource);
+  const currentFlowIface = String(wlCfgValue("netflow_iface") || "");
+  if (wantedSource === "active" && netBox && netBox.checked) {
+    stageChange("netflow_iface", nic, currentFlowIface);
+  } else if (currentFlowIface === nic) {
+    stageChange("netflow_iface", "", currentFlowIface);
+  }
 
   if (note) {
     note.textContent = `staged for ${nic} — review the pending changes below, then Apply.`;

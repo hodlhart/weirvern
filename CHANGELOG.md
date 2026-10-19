@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.33 — 2026-10-19
+
+THE PER-INTERFACE SHEET HAS A MODE AND A FEEDS SECTION, AND NETFLOW SAYS WHERE IT COMES FROM.
+
+- **Mode** — Siphon and Loch are the two mutually exclusive choices. Choosing siphon makes this
+  the capture port and requires Zeek; choosing loch returns the sensor to passive capture.
+- **Feeds** — Zeek and NetFlow are separate checkboxes. The Zeek choice edits the capture list;
+  NetFlow is governed by the source statement beside it.
+- **NetFlow source** — Passive means a router exports NetFlow to this sensor, as before. Active
+  means the sensor summarises its own capture: the verified siphon relay while intercepting, or
+  the selected mirrored port in loch mode. Active loch uses `NETFLOW_IFACE` (or the Zeek
+  interface when empty); auto preserves the historical behaviour. Passive stops any
+  sensor-generated probe and leaves the router feed untouched.
+- The panel still speaks only about the selected NIC; pending changes name that NIC's mode,
+  feeds and NetFlow source rather than the global lists.
+
 ## 0.17.32 — 2026-10-19
 
 THREE MODEL-INTEGRITY FIXES: HONEST RARITY, STABLE SAMPLES, AND HONEST TRAINING.

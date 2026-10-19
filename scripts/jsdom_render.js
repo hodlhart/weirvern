@@ -3970,6 +3970,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const words = panel ? panel.textContent : "";
       check("a NIC's settings panel names only that NIC",
             !/eth2/i.test(words) && !/eth0/i.test(words), words.slice(0, 180));
+      check("the NIC sheet separates Mode from Feeds",
+            /Mode/.test(words) && /Feeds/.test(words)
+            && !!doc.getElementById("wl-nic-siphon") && !!doc.getElementById("wl-nic-loch")
+            && !!doc.getElementById("wl-nic-zeek") && !!doc.getElementById("wl-nic-netflow"),
+            words.slice(0, 220));
+      check("...and states whether NetFlow is passive or active",
+            /NetFlow source/.test(words)
+            && !!doc.getElementById("wl-nic-netflow-passive")
+            && !!doc.getElementById("wl-nic-netflow-active"), words.slice(0, 260));
       const held = H.STAGE.changes;
       H.STAGE.changes = { zeek_ifaces: "eth1,eth2" };
       H.renderStageMirror(["zeek_ifaces"]);

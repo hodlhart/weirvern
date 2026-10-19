@@ -86,6 +86,8 @@ EDITABLE_KEYS: tuple[str, ...] = (
     # The channel's flow selection: whether the in-line traffic is summarised into NetFlow.
     "CHANNEL_NETFLOW",
     "SIPHON_NETFLOW",
+    "NETFLOW_MODE",
+    "NETFLOW_IFACE",
     # THE GATE'S OWN KEYS. The Sluice Gate is a product surface (its own tab, its own proof), and
     # operating it previously meant a ConfigMap patch and a worker restart -- the opposite of the
     # operator's standing request that everything be clickable. All five are read by the WORKER,
@@ -185,6 +187,10 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "CHANNEL_DOWNSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "SIPHON_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
                        "runs the flow probe"),
+    "NETFLOW_MODE": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                      "starts or stops sensor-generated flow capture"),
+    "NETFLOW_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                       "samples this port for active flow capture"),
     "CHANNEL_NETFLOW": (("deploy/weirvern-worker",), "restarts the detection worker, which "
                         "starts or stops the flow probe"),
     # The sluice keys are read by the WORKER: it resolves the enforcement interface, compiles the
@@ -351,6 +357,8 @@ SETTING_CONTROLS: dict[str, dict] = {
     # A switch, and only meaningful in siphon mode: it turns the intercept itself into a flow
     # source (see the tooltip for the one-path rule).
     "SIPHON_NETFLOW": {"control": "toggle"},
+    "NETFLOW_MODE": {"control": "select", "options": ["auto", "passive", "active"]},
+    "NETFLOW_IFACE": {"control": "text"},
     # Empty resolves automatically (channel bridge, else capture port), so it stays free text --
     # a closed set of interface names does not exist across deployments.
     "SLUICE_IFACE": {"control": "text"},
@@ -420,6 +428,21 @@ def validate(key: str, value: str) -> str:
             return ("the probe records only while the channel is verified active, and its "
                     "records land in the same Netflow tab and model features as the router's "
                     "export -- the box's own crossing traffic, summarised.")
+        return ""
+
+    if key == "NETFLOW_MODE":
+        wanted = raw.lower()
+        if wanted not in ("auto", "passive", "active"):
+            raise ConfigError(
+                f"NETFLOW_MODE must be auto, passive or active; got '{raw}'. Passive leaves "
+                f"collection to a router exporter; active makes this sensor summarise its own "
+                f"capture."
+            )
+        return ""
+
+    if key == "NETFLOW_IFACE":
+        if raw and not raw.startswith(("eth", "en", "bond", "wl")):
+            return f"'{raw}' does not look like a network interface name"
         return ""
 
     if key == "ZEEK_IFACE" or key == "MGMT_IFACE":
