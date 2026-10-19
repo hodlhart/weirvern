@@ -190,7 +190,15 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
         "free_addresses": [],
         "observed": observed,
         "passive_only": True,
-        "recommended": {},
+        # WHAT A PASSIVE SURVEY CAN HONESTLY FILL. The segment and gateway were observed (or
+        # inferred and said so); the intercept ADDRESS cannot be, because no sweep ran and a
+        # free address is a liveness fact, not a segment fact. Offer the three fields rather
+        # than an empty object that made the sheet look like Sonar found nothing.
+        "recommended": {
+            "intercept_segment": segment,
+            "intercept_gateway": gateway,
+            "intercept_targets": "*",
+        },
         "notes": notes,
     }
 

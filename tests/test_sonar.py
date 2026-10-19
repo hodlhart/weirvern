@@ -382,6 +382,10 @@ def test_passive_only_survey_does_not_report_a_swept_count():
                           watcher=lambda iface, **kw: o, sweep=lambda *a, **k: {}, watch_s=1)
     assert result.get("passive_only") is True
     assert result.get("swept") is None, "no sweep ran, so there is no count"
+    # The segment/gateway were learned; the address could not be, and must not be invented.
+    assert result["recommended"]["intercept_segment"] == result["segment"]
+    assert result["recommended"]["intercept_gateway"] == "198.51.100.1"
+    assert "intercept_addr" not in result["recommended"]
     assert any("DID NOT SWEEP" in n for n in result["notes"])
 
 

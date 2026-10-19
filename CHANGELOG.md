@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.23 — 2026-10-19
+
+A PASSIVE SURVEY STAGES WHAT IT ACTUALLY LEARNED. The passive result returned no recommendations,
+so a perfectly good survey of `198.51.100.0/24` left every field empty. It now offers the segment,
+gateway and targets, and deliberately omits the intercept address: no sweep ran, so a free
+address would be an invention. The note says "no ARP sweep ran" instead of printing a null count.
+
 ## 0.17.22 — 2026-10-19
 
 SONAR RUNS ON A PASSIVE PORT, AND ITS ANSWER LANDS IN THE FIELDS. `iface_ipv4` raises when an

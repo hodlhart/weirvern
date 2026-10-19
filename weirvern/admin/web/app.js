@@ -1055,10 +1055,16 @@ function renderSonarNote(res) {
     return;
   }
   const lines = [
-    `Interface ${res.interface} is on ${res.segment} (${res.address}).`,
-    `${res.hosts_answered} host(s) answered an ARP sweep of ${res.swept} addresses; `
-      + `${(res.free_addresses || []).length} free address(es) were found.`,
+    `Interface ${res.interface} is on ${res.segment}`
+      + (res.address ? ` (${res.address})` : " (no address of its own)") + ".",
   ];
+  if (res.swept === null || res.swept === undefined) {
+    lines.push(`No ARP sweep ran: ${res.hosts_seen || 0} host(s) were seen speaking, `
+      + `but a quiet host cannot be found without an address to sweep from.`);
+  } else {
+    lines.push(`${res.hosts_answered} host(s) answered an ARP sweep of ${res.swept} addresses; `
+      + `${(res.free_addresses || []).length} free address(es) were found.`);
+  }
   if (res.gateway) {
     lines.push(`Gateway ${res.gateway}${res.gateway_mac ? " (" + res.gateway_mac + ")" : ""}`
       + ` — ${res.gateway_source}.`);
