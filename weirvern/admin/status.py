@@ -841,6 +841,7 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("zeek_iface", "Zeek interface"),
         ("zeek_ifaces", "additional Zeek interfaces"),
         ("capture_iface", "siphon capture interface"),
+        ("interface_networks", "interface network names"),
         ("mgmt_iface", "management interface"),
         ("zeek_log_dir", "Zeek log dir"),
         ("tail_file", "NetFlow tail file"),
@@ -973,6 +974,10 @@ _SETTINGS_HELP: dict[str, str] = {
         "path. It must be one of the capture ports and must not be the management interface. "
         "Empty means use the Zeek interface. This is separate from Zeek's capture list so Zeek "
         "can still watch every mirrored segment while only one is redirected."),
+    "interface_networks": (
+        "Human names for interfaces, comma-separated as iface=label (eth1=Servers,eth2=DMZ). "
+        "They are labels, not addressing: the anomaly list shows the name beside the CIDR so an "
+        "operator can tell which segment an alerted host sits on without translating a subnet."),
     "mgmt_iface": (
         "The interface carrying the default route, SSH and the cluster API. The weirling never "
         "captures from it; it is used to DETECT when the capture interface is pointed at the "

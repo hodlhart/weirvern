@@ -34,3 +34,21 @@ def test_ipv6_and_garbage_addresses_do_not_break_the_page():
     rows = [{"src_addr": "2001:db8::1"}, {"src_addr": "not-an-address"}]
     _attach_anomaly_locations(rows, [{"sensor_id": "edge", "segment": "192.0.2.0/24"}])
     assert "location" not in rows[0] and "location" not in rows[1]
+
+
+def test_a_network_name_rides_beside_the_cidr_when_the_interface_has_one():
+    rows = [{"src_addr": "192.0.2.5"}]
+    _attach_anomaly_locations(
+        rows,
+        [{"sensor_id": "edge", "segment": "192.0.2.0/24", "iface": "eth2"}],
+        {"eth2": "Servers"},
+    )
+    assert rows[0]["location"]["network_name"] == "Servers"
+    assert rows[0]["location"]["network"] == "192.0.2.0/24"
+
+
+def test_an_unlabelled_interface_still_gets_its_cidr():
+    rows = [{"src_addr": "198.51.100.9"}]
+    _attach_anomaly_locations(
+        rows, [{"sensor_id": "edge", "segment": "198.51.100.0/24", "iface": "eth1"}], {})
+    assert "network_name" not in rows[0]["location"]

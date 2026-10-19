@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.29 — 2026-10-19
+
+INTERFACE NAMES REACH THE ALERTS. The per-interface settings now carry a network name
+(`eth1=Servers,eth2=DMZ`), staged with the same capture choices. The anomaly list resolves the
+source address to its segment as before, then adds the interface's name, so a row reads
+`weirvern · Servers` with the CIDR in its title. The name is a label; it never changes addressing.
+
 ## 0.17.28 — 2026-10-19
 
 THE TABLE-SIZE HISTORY BOUNDS, ROUND TWO. The table held samples while the Health query returned

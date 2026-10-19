@@ -88,6 +88,8 @@ data:
   # The one port the siphon intercept borrows (empty = ZEEK_IFACE).
   CAPTURE_IFACE: ""
   MGMT_IFACE: "eth0"
+  # `eth1=Servers,eth2=DMZ` -- labels only, shown on anomaly locations. Empty = addresses only.
+  INTERFACE_NETWORKS: ""
   ZEEK_LOG_DIR: "/zeek/logs"
   TAIL_FILE: "/data/flows.jsonl"
 

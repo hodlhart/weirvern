@@ -2029,9 +2029,13 @@ async function loadAnomalies() {
       // name and network"). The server resolves it from the fleet's declared segments; a host
       // outside every segment says "unplaced" rather than naming a sensor that cannot see it.
       el("td", { class: a.location ? "mono" : "muted",
-                 text: a.location ? `${a.location.weirling} · ${a.location.network}` : "unplaced",
+                 text: a.location
+                   ? `${a.location.weirling} · ${a.location.network_name || a.location.network}`
+                   : "unplaced",
                  attrs: { title: a.location
-                   ? `${a.location.weirling} sees ${a.location.network}, which contains this host`
+                   ? `${a.location.weirling} sees ${a.location.network_name
+                       ? `${a.location.network_name} (${a.location.network})` : a.location.network
+                     }, which contains this host`
                    : "no weirling declares a network containing this address" } }),
       el("td", { class: "muted", text: a.matched_rule || "—",
                  attrs: { title: "what matched, from the detector registry" } }),

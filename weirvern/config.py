@@ -161,6 +161,12 @@ class Settings:
     # a different one, and it is the only port that is ever poisoned.
     zeek_ifaces: str = field(default_factory=lambda: os.environ.get("ZEEK_IFACES", ""))
     capture_iface: str = field(default_factory=lambda: os.environ.get("CAPTURE_IFACE", ""))
+    # HUMAN NAMES FOR INTERFACES, so an alert can say "Servers" or "DMZ" instead of only a CIDR
+    # (operator, 2026-10-19). Format: `eth1=Servers,eth2=DMZ`; empty means no names. Read by the
+    # console's anomaly location resolver; it is a label, never an addressing decision.
+    interface_networks: str = field(
+        default_factory=lambda: os.environ.get("INTERFACE_NETWORKS", "")
+    )
     mgmt_iface: str = field(default_factory=lambda: os.environ.get("MGMT_IFACE", ""))
 
     # What this sensor calls itself in sensor-keyed rows and the gate's state row

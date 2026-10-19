@@ -1082,6 +1082,19 @@ function wlIfaceList(value) {
   return String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** `eth1=Servers,eth2=DMZ` -> {eth1: "Servers", eth2: "DMZ"}. */
+function wlIfaceNames(value) {
+  const out = {};
+  for (const token of String(value || "").split(",")) {
+    const at = token.indexOf("=");
+    if (at <= 0) continue;
+    const iface = token.slice(0, at).trim();
+    const name = token.slice(at + 1).trim();
+    if (iface && name) out[iface] = name;
+  }
+  return out;
+}
+
 /** Scope the local settings to ONE NIC. The panel edits that port's two capture choices and
  *  nothing else; all other settings remain behind the explicit "All hub settings" link. */
 function wlShowNicSettings(nic) {
@@ -1096,6 +1109,9 @@ function wlShowNicSettings(nic) {
   const name = document.getElementById("wl-nic-name");
   const role = document.getElementById("wl-nic-role");
   const facts = document.getElementById("wl-nic-facts");
+  const names = wlIfaceNames(wlCfgValue("interface_networks"));
+  const netInput = document.getElementById("wl-nic-network");
+  if (netInput) netInput.value = names[nic] || "";
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
@@ -1144,6 +1160,17 @@ function wlStageNicSettings() {
   const currentList = wlCfgValue("zeek_ifaces");
   const nextList = next.join(",");
   stageChange("zeek_ifaces", nextList, currentList);
+
+  // THE HUMAN NAME IS PART OF THIS INTERFACE'S SETTINGS (operator, 2026-10-19). It is staged with
+  // the same plan as the capture choices; anomaly locations read it after Apply.
+  const netInput = document.getElementById("wl-nic-network");
+  if (netInput) {
+    const names = wlIfaceNames(wlCfgValue("interface_networks"));
+    const wanted = String(netInput.value || "").trim();
+    if (wanted) names[nic] = wanted; else delete names[nic];
+    const nextNames = Object.entries(names).map(([k, v]) => `${k}=${v}`).join(",");
+    stageChange("interface_networks", nextNames, wlCfgValue("interface_networks"));
+  }
 
   const cap = wlCfgValue("capture_iface");
   if (siphonOn) stageChange("capture_iface", nic, cap);

@@ -211,7 +211,19 @@ def _accounts_on(ctx) -> bool:
         return False
 
 
-def _attach_anomaly_locations(rows: list, sensors: list) -> None:
+def _interface_network_names(raw: str) -> dict[str, str]:
+    """`eth1=Servers,eth2=DMZ` -> {iface: label}. Labels only; malformed tokens are ignored."""
+    out: dict[str, str] = {}
+    for token in str(raw or "").split(","):
+        iface, sep, name = token.partition("=")
+        iface, name = iface.strip(), name.strip()
+        if sep and iface and name:
+            out[iface] = name
+    return out
+
+
+def _attach_anomaly_locations(rows: list, sensors: list,
+                             network_names: dict[str, str] | None = None) -> None:
     """Where each alert happened: the weirling that sees that network, and the network.
 
     Anomalies carry no sensor id -- the detector scores a host window, not a sensor -- so the
@@ -219,9 +231,14 @@ def _attach_anomaly_locations(rows: list, sensors: list) -> None:
     network wins. A host outside every declared segment carries NO location rather than a guess
     (the UI says "unplaced"), because naming a weirling that cannot see the address would be a
     lie the operator would act on.
+
+    `network_names` (operator, 2026-10-19) gives an interface its human label -- Servers, DMZ --
+    and that label rides the location beside the CIDR so an alert says where it happened in the
+    operator's vocabulary, not only in addresses.
     """
     import ipaddress as _ip  # noqa: PLC0415
 
+    names = network_names or {}
     nets = []
     for s in sensors or []:
         sid = str(s.get("sensor_id") or "")
@@ -234,18 +251,21 @@ def _attach_anomaly_locations(rows: list, sensors: list) -> None:
             except ValueError:
                 continue
             if net.version == 4:
-                nets.append((net, sid))
+                nets.append((net, sid, str(s.get("iface") or "")))
     for r in rows or []:
         try:
             addr = _ip.ip_address(str(r.get("src_addr") or "").strip())
         except ValueError:
             continue
-        matches = [(n, sid) for n, sid in nets if addr in n]
+        matches = [(n, sid, iface) for n, sid, iface in nets if addr in n]
         if not matches:
             continue
         matches.sort(key=lambda x: x[0].prefixlen, reverse=True)
-        net, sid = matches[0]
+        net, sid, iface = matches[0]
         r["location"] = {"weirling": sid, "network": str(net)}
+        label = names.get(iface, "")
+        if label:
+            r["location"]["network_name"] = label
 
 
 def _build_handler(ctx: GuiContext):
@@ -557,7 +577,10 @@ def _build_handler(ctx: GuiContext):
                     # and the fleet tab cannot disagree about which sensor covers an address.
                     try:
                         _fleet = fleet_store.build_fleet(client)
-                        _attach_anomaly_locations(rows, _fleet.get("sensors") or [])
+                        _attach_anomaly_locations(
+                            rows, _fleet.get("sensors") or [],
+                            _interface_network_names(getattr(ctx.settings, "interface_networks", "")),
+                        )
                     except Exception as _loc_exc:  # noqa: BLE001
                         logger.warning("anomaly locations unavailable: %s", _loc_exc)
                     # THE FILTER IS SKIPPED WHEN THE REVIEWS ARE UNREADABLE. Filtering on a
