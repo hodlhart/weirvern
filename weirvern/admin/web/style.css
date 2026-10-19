@@ -140,6 +140,9 @@ button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--dan
 button.danger:hover { border-color: var(--danger); background: var(--wash-bad); }
 button.quiet { background: none; color: var(--muted); border-color: var(--border); }
 button.quiet:hover { color: var(--fg); border-color: var(--accent); }
+/* The visible entry to the evidence drill in an alert row (issue #52): a quiet control at
+   rest, under the why-sentence it explains, so a row's drill is discoverable without hover. */
+.ev-open { margin-top: 6px; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .auto { color: var(--muted); display: flex; align-items: center; gap: 5px; }
 

@@ -6582,6 +6582,29 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(250);
     const jobRow = doc.querySelector("#anomalies-table tbody tr");
     check("JOB investigate-anomaly: the row is on screen", !!jobRow);
+    // ISSUE #52: the drill has a VISIBLE entry and exit. The row was the only click target
+    // (nothing at rest said so) and the evidence page's only way back was a nav tab.
+    const evOpen = jobRow ? jobRow.querySelector(".ev-open") : null;
+    check("every alert row carries a visible evidence control", !!evOpen);
+    if (evOpen) {
+      const beforeSev = H.AN_FILTERS.severity;
+      evOpen.click();
+      await sleep(260);
+      check("...which opens the evidence view",
+            doc.getElementById("view-evidence").classList.contains("active"));
+      const evBack = doc.getElementById("ev-back");
+      check("...and the evidence page carries a visible way back",
+            !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
+            evBack ? `hidden=${evBack.hidden} text=${evBack.textContent}` : "no #ev-back");
+      if (evBack) {
+        evBack.click();
+        await sleep(220);
+        check("...that returns to the alert queue with its filters intact",
+              doc.getElementById("view-anomalies").classList.contains("active")
+              && H.AN_FILTERS.severity === beforeSev,
+              `severity=${H.AN_FILTERS.severity} was=${beforeSev}`);
+      }
+    }
     clicks = 0;
     C(jobRow);                                   // 1: the row -> Evidence
     await sleep(280);

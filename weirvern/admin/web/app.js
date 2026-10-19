@@ -2021,6 +2021,15 @@ async function loadAnomalies() {
         a.reason_code ? el("div", { class: "reason-code mono",
           attrs: { title: "stable reason code: detector initials + the measurement that moved" },
           text: a.reason_code }) : null,
+        // THE VISIBLE ENTRY TO THE DRILL (issue #52). The row was the only click target, with
+        // nothing at rest saying so: an operator who never hovered never found the evidence.
+        // This control is the same act, visible, and stops propagation so the row drill and
+        // the per-cell filters do not fight.
+        el("button", { class: "quiet ev-open", text: "evidence \u203a",
+          attrs: { type: "button",
+                   "aria-label": "show the raw evidence for this alert",
+                   title: "Show the raw evidence for this alert" },
+          on: { click: (e) => { e.stopPropagation(); openEvidence(a); } } }),
       ]),
       el("td", {}, [reviewCell(a), rowMore(a, a.review_state || "")]),
     ]));
@@ -2535,9 +2544,28 @@ function openEvidence(a) {
   if (!a || !a.src_addr) return;
   EVIDENCE_FROM = CURRENT_VIEW || "anomalies";
   EVIDENCE_SCROLL = Number(window.scrollY || 0);
+  // THE VISIBLE EXIT (issue #52): the page names the queue it came from. The crumb trail is
+  // the secondary path; this control is the one an operator sees without hunting.
+  const back = document.getElementById("ev-back");
+  if (back) {
+    const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === EVIDENCE_FROM);
+    back.textContent = EVIDENCE_FROM === "anomalies"
+      ? "Back to alerts"
+      : `Back to ${tab ? tab.textContent.trim().toLowerCase() : "where I was"}`;
+    back.hidden = false;
+  }
   showView("evidence");
   const start = a.window_start || a.detected_at;
   loadEvidence(a.src_addr, start, a.window_end).catch(showError);
+}
+
+/** The evidence page's labeled way back (issue #52). Wired once, at boot. */
+function wireEvidenceBack() {
+  const back = document.getElementById("ev-back");
+  if (back) {
+    back.addEventListener("click", () =>
+      returnWithScroll(EVIDENCE_FROM || "anomalies", EVIDENCE_SCROLL));
+  }
 }
 
 async function loadEvidence(addr, start, end) {
@@ -3042,6 +3070,9 @@ function modalWiring() {
       first.focus();
     }
   }, true);
+  // The evidence drill's labeled way back (issue #52); wired with the rest of the one-time
+  // chrome so boot stays the short, legible sequence its pin measures.
+  wireEvidenceBack();
 }
 
 // ── FILTER CELLS ARE KEYBOARD-OPERABLE (HD-17) ──────────────────────────────────────────────

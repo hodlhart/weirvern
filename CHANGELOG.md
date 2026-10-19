@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.17.8 — 2026-10-19
+
+TWO OPERATOR-FILED IMPROVEMENTS (GitHub #51, #52).
+
+- **#51 — the Sluice Gate byte tile.** Already fixed by the formatter batch (#23, `056c8e3`)
+  and pinned by the harness check *"the gate tiles group packet counts and scale byte totals"*.
+  The issue quoted a pre-`056c8e3` line. Verified against `e34e468` and on the box: the tile
+  renders through `fmtBytes`, the packet count through `toLocaleString`, and a missing value
+  still renders "—". No code change was needed; the mutation (back to `String(...)`) turns the
+  check RED with the raw `987654` in the failure text.
+- **#52 — the alert evidence drill has a visible entry and exit.** Every anomaly row now carries
+  a quiet **"evidence ›"** control at rest (it stops propagation, so the row drill, the count
+  unfold and the per-cell filters keep their own clicks), and the evidence view's header carries
+  **"Back to alerts"** (named for the origin) that returns to `view-anomalies` with the queue's
+  filters untouched. The crumb trail remains as the secondary path. Harness 834 → 838.
+  Mutations: renaming `.ev-open` turns the entry check RED; forcing the back control hidden
+  turns the exit check RED.
+- 0.17.8.
+
 ## 0.17.7 — 2026-10-18
 
 THE HARDENING BATCH. GitHub issues #17, #18, #22, #24, #25, #26, #27, #28 and #32, verified
