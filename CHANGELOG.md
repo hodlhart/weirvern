@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.20 — 2026-10-19
+
+"(not set)" IS NOT AN INTERFACE. The settings payload renders an empty key as `(not set)`, so the
+NIC click appended it to `ZEEK_IFACES` and staged `(not set),eth2`. Empty display values are
+filtered; the staged list is just the port that was clicked.
+
 ## 0.17.19 — 2026-10-19
 
 THE NIC CLICK STAGES THE FIELD IT FINDS. Settings rows carry their key lowercased in the DOM

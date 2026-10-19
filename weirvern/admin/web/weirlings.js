@@ -878,8 +878,10 @@ async function openWeirling(sensorId, opts = {}) {
           setInput("CAPTURE_IFACE", opts.nic);
           const zrow = (typeof SETTINGS_ROWS !== "undefined"
             && (SETTINGS_ROWS.ZEEK_IFACES || SETTINGS_ROWS.zeek_ifaces)) || null;
+          // "(not set)" is the SETTINGS PAYLOAD's display value for an empty key, not an
+          // interface name. Splitting it in appended "(not set),eth2" to ZEEK_IFACES.
           const current = String((zrow && zrow.value) || "").split(",").map((s) => s.trim())
-            .filter(Boolean);
+            .filter((s) => s && !/^\(not set\)$/i.test(s) && s !== "—");
           if (!current.includes(opts.nic)) setInput("ZEEK_IFACES", current.concat(opts.nic).join(","));
           let nicNote = document.getElementById("wl-nic-edit");
           if (!nicNote) {
