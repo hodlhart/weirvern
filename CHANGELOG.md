@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.25 — 2026-10-19
+
+INTERFACES CONFIGURE THEMSELVES, AND THE CONSOLE SAYS WHAT IT MEANS.
+
+- **Per-NIC settings**: clicking a NIC on this hub’s weirling scopes the sheet to that port, with
+  Zeek-capture and siphon toggles. “All hub settings” returns to the global pane; a NIC edit can
+  no longer quietly change another port’s configuration.
+- **Automatic capture config**: Zeek captures `CAPTURE_IFACE` when no explicit `ZEEK_IFACES` list
+  is set; NetFlow follows the actual siphon port; a siphon-mode sensor starts its flow tap
+  automatically once the intercept is verified live, without a separate flag.
+- **Flows, not Discover**: the tab and its heading are named Flows. Its header carries three
+  live feed trend boxes — NetFlow, Zeek, DNS — each clickable to that feed.
+- **Health table trends**: `table_size_history` is sampled by the worker every five minutes and
+  the Table sizes card draws a 24-hour line per table: green building, yellow static, red
+  shrinking; a single sample says “collecting” rather than inventing a flat line.
+- **Copy link removed**; the quick-jump entry is named **Quick links**, which is what it does.
+
 ## 0.17.24 — 2026-10-19
 
 THE SLUICE GATE READS ACROSS THE PAGE. Domain Gate and Traffic Gate were two full-width cards

@@ -219,3 +219,46 @@ def test_the_unit_and_the_script_carry_the_collector_and_ship_it_disabled():
     assert "WEIRLING_FLOW_FILE" in unit and "/flows/flows.jsonl" in unit
     assert "--netflow" in script and "weirvern-netflow-" in script
     assert "WEIRLING_NETFLOW" in agent and "FLOW_SHIP_INTERVAL_S" in agent
+
+
+def test_the_tap_follows_the_SIPHON_port_not_the_zeek_port():
+    """The relay runs on CAPTURE_IFACE; tapping zeek_iface meters the wrong segment."""
+    from weirvern import worker
+
+    spawned = []
+
+    def fake_spawn(argv, **_kw):
+        proc = _Proc(argv)
+        spawned.append(proc)
+        return proc
+
+    _reset_holder()
+    worker._channel_netflow_maybe(_settings(capture_iface="eth2"),
+                                  channel_state=_Channel(), siphon_live=True,
+                                  spawn=fake_spawn, which=lambda n: f"/usr/bin/{n}",
+                                  now=lambda: 1000.0)
+    assert len(spawned) == 1
+    argv = spawned[0].argv
+    assert argv[argv.index("-i") + 1] == "eth2", (
+        "the tap followed the Zeek port instead of the siphon capture port")
+    _reset_holder()
+
+
+def test_a_siphon_sensor_meters_automatically_without_the_extra_flag():
+    """The operator asked the backend to derive netflow capture from the mode/interface."""
+    from weirvern import worker
+
+    spawned = []
+
+    def fake_spawn(argv, **_kw):
+        proc = _Proc(argv)
+        spawned.append(proc)
+        return proc
+
+    _reset_holder()
+    worker._channel_netflow_maybe(_settings(siphon_netflow=False, sensor_mode="siphon"),
+                                  channel_state=_Channel(), siphon_live=True,
+                                  spawn=fake_spawn, which=lambda n: f"/usr/bin/{n}",
+                                  now=lambda: 1000.0)
+    assert len(spawned) == 1, "siphon mode did not start its flow capture automatically"
+    _reset_holder()

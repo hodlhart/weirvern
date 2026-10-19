@@ -536,6 +536,50 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
   letter-spacing: .5px; }
 
 .stats { display: flex; gap: 28px; flex-wrap: wrap; }
+/* THE FLOWS HEADER'S THREE FEED TRENDS (operator, 2026-10-19: "in the top right of the flows
+ * tab i want three boxes with trend lines: Netflow, Zeek, DNS"). Same metric-tile language as
+ * the rest of the console, with a line rather than a bar because these are rates over time. */
+.trend-boxes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.trend-box { min-width: 132px; padding: 8px 10px; background: var(--panel2);
+  border: 1px solid var(--border); border-radius: var(--r-lg); }
+.trend-box .k { font-size: var(--fs-1); color: var(--muted); text-transform: uppercase;
+  letter-spacing: .05em; }
+.trend-box .v { font-size: var(--fs-3); font-weight: 600; font-variant-numeric: tabular-nums; }
+.trend-box svg { display: block; width: 100%; height: 28px; margin-top: 4px; overflow: visible; }
+.trend-box .trend-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.trend-box .trend-area { fill: var(--accent); opacity: .08; }
+.trend-box .trend-empty { color: var(--muted); font-size: var(--fs-1); }
+
+/* TABLE-SIZE TRENDS (operator, 2026-10-19): a line per table, coloured by direction.
+ * Green means building, yellow static, red shrinking; an unknown history says "collecting"
+ * rather than drawing a flat line from a single sample. */
+.tbl-trend-cell { min-width: 128px; }
+.tbl-trend-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.tbl-trend { display: block; width: 104px; height: 24px; overflow: visible; }
+.tbl-trend .tbl-trend-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.tbl-trend.up .tbl-trend-line { stroke: var(--ok); }
+.tbl-trend.static .tbl-trend-line { stroke: var(--warn); }
+.tbl-trend.down .tbl-trend-line { stroke: var(--danger); }
+.tbl-trend-word { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .05em; }
+.tbl-trend-word.up { color: var(--ok); }
+.tbl-trend-word.static { color: var(--warn); }
+.tbl-trend-word.down { color: var(--danger); }
+
+/* A NIC CLICK NARROWS THE LOCAL SETTINGS TO THAT NIC. The global rows (mode, Sonar, every
+ * setting) stay reachable through "All hub settings"; while scoped, only the interface panel
+ * and the pending-changes bar are visible -- so an interface edit cannot quietly change another
+ * port's configuration. */
+#wl-local-settings.wl-scoped > h3,
+#wl-local-settings.wl-scoped > .info-text,
+#wl-local-settings.wl-scoped > .sonar-row,
+#wl-local-settings.wl-scoped > #st-sonar-note,
+#wl-local-settings.wl-scoped > #st-sonar-help-text,
+#wl-local-settings.wl-scoped > #st-test-note,
+#wl-local-settings.wl-scoped > #st-test-help-text,
+#wl-local-settings.wl-scoped > #st-sensor { display: none; }
+#wl-nic-settings { margin: 4px 0 10px; }
+#wl-nic-settings h3 { margin-top: 0; }
+
 /* THE GATE CARDS READ LEFT TO RIGHT (operator, 2026-10-19: "the gates information read down
  * the page and doesnt use the full screen. it should read left to right"). `.stat-row` was a
  * class with no rule behind it, so the four measured values stacked vertically inside a

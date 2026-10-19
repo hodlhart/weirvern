@@ -66,12 +66,10 @@ def test_the_payload_carries_the_total_and_degrades_to_none():
     assert p2["total_unfiltered"] is None, "a failed read must omit Y, not invent a zero"
 
 
-def test_copy_link_forces_the_state_before_copying():
-    src = (WEB / "app.js").read_text()
-    seg = src.split('const copyBtn = document.getElementById("copy-link");', 1)[1].split("});", 2)[0]
-    assert "syncURL()" in seg, \
-        "copying must WRITE the URL first (a debounced sync would copy the previous state)"
-    assert "location.href" in seg
+def test_the_header_does_not_offer_a_copy_link():
+    """The operator removed the button (2026-10-19); the URL remains the share surface."""
+    html = (WEB / "index.html").read_text()
+    assert 'id="copy-link"' not in html
 
 
 def test_the_arrival_chip_names_itself_and_offers_the_way_out():

@@ -851,6 +851,7 @@ async function openWeirling(sensorId, opts = {}) {
   const localBox = document.getElementById("wl-local-settings");
   if (localBox) {
     const showLocal = Boolean(r.local);
+    if (!opts.nic) wlCloseNicSettings();
     localBox.classList.toggle("hidden", !showLocal);
     const localState = document.getElementById("wl-local-state");
     if (localState) localState.textContent = showLocal && !r.registered ? "not yet adopted" : "";
@@ -865,40 +866,7 @@ async function openWeirling(sensorId, opts = {}) {
         // click has to land in the CAPTURE_IFACE control and stage the change -- setting only the
         // value would look right until Apply and then do nothing.
         if (opts.nic && /^[A-Za-z0-9_.:-]+$/.test(opts.nic)) {
-          const setInput = (key, value) => {
-            // Settings rows carry their key LOWERCASED in the DOM even when the registry key is
-            // uppercase. Querying the uppercase form silently found nothing -- the click looked
-            // like it worked but staged no change.
-            const input = document.querySelector(
-              `#st-sensor .setting[data-key="${String(key).toLowerCase()}"] input`);
-            if (!input) return;
-            input.value = value;
-            input.dispatchEvent(new window.Event("input", { bubbles: true }));
-          };
-          setInput("CAPTURE_IFACE", opts.nic);
-          const zrow = (typeof SETTINGS_ROWS !== "undefined"
-            && (SETTINGS_ROWS.ZEEK_IFACES || SETTINGS_ROWS.zeek_ifaces)) || null;
-          const zbase = (typeof SETTINGS_ROWS !== "undefined"
-            && (SETTINGS_ROWS.ZEEK_IFACE || SETTINGS_ROWS.zeek_iface)) || null;
-          // "(not set)" is the SETTINGS PAYLOAD's display value for an empty key, not an
-          // interface name. Splitting it in appended "(not set),eth2" to ZEEK_IFACES.
-          const clean = (s) => (s && !/^\(not set\)$/i.test(s) && s !== "—") ? s : "";
-          const current = String((zrow && zrow.value) || "").split(",").map((s) => s.trim())
-            .map(clean).filter(Boolean);
-          // A list that only names the clicked port would DROP the interface Zeek already
-          // watches. Seed the list with ZEEK_IFACE when ZEEK_IFACES is empty.
-          if (!current.length) {
-            const base = clean(String((zbase && zbase.value) || "").trim());
-            if (base) current.push(base);
-          }
-          if (!current.includes(opts.nic)) setInput("ZEEK_IFACES", current.concat(opts.nic).join(","));
-          let nicNote = document.getElementById("wl-nic-edit");
-          if (!nicNote) {
-            nicNote = el("p", { class: "muted", attrs: { id: "wl-nic-edit" } });
-            const local = document.getElementById("wl-local-settings");
-            if (local) local.prepend(nicNote);
-          }
-          nicNote.textContent = `editing NIC ${opts.nic} — siphon capture iface (staged)`;
+          wlShowNicSettings(opts.nic);
         }
       } catch (err) {
         const detailNote = document.getElementById("wl-detail-note");
@@ -1039,6 +1007,16 @@ function wireWeirlings() {
   const save = document.getElementById("wl-save");
   if (save) save.addEventListener("click", () => saveWeirling());
 
+  const nicStage = document.getElementById("wl-nic-stage");
+  if (nicStage && !nicStage.dataset.wired) {
+    nicStage.dataset.wired = "1";
+    nicStage.addEventListener("click", () => wlStageNicSettings());
+  }
+  const nicAll = document.getElementById("wl-nic-all");
+  if (nicAll && !nicAll.dataset.wired) {
+    nicAll.dataset.wired = "1";
+    nicAll.addEventListener("click", () => wlCloseNicSettings());
+  }
   const modeSel = document.getElementById("wl-mode-select");
   if (modeSel) modeSel.addEventListener("change", () => wlApplyMode().catch(showError));
 
@@ -1090,6 +1068,93 @@ function clearWeirlingForm() {
   document.getElementById("wl-cancel").classList.add("hidden");
   document.getElementById("wl-save").textContent = "Register";
   document.getElementById("wl-save-note").textContent = "";
+}
+
+/** THE VALUE A SETTINGS ROW REPORTS, cleaned of the payload's display placeholder. */
+function wlCfgValue(key) {
+  const row = (typeof SETTINGS_ROWS !== "undefined" && SETTINGS_ROWS)
+    ? (SETTINGS_ROWS[key] || SETTINGS_ROWS[String(key).toLowerCase()]) : null;
+  const raw = String((row && row.value) || "").trim();
+  return (/^(\(not set\)|—)$/i.test(raw) ? "" : raw);
+}
+
+function wlIfaceList(value) {
+  return String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Scope the local settings to ONE NIC. The panel edits that port's two capture choices and
+ *  nothing else; all other settings remain behind the explicit "All hub settings" link. */
+function wlShowNicSettings(nic) {
+  const box = document.getElementById("wl-nic-settings");
+  const local = document.getElementById("wl-local-settings");
+  if (!box || !local) return;
+  const base = wlCfgValue("zeek_iface");
+  const listed = wlIfaceList(wlCfgValue("zeek_ifaces"));
+  const cap = wlCfgValue("capture_iface");
+  const zeekOn = listed.length ? listed.includes(nic) : base === nic;
+  const siphonOn = cap === nic;
+  const name = document.getElementById("wl-nic-name");
+  const role = document.getElementById("wl-nic-role");
+  const facts = document.getElementById("wl-nic-facts");
+  if (name) name.textContent = nic;
+  if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
+  if (facts) {
+    facts.textContent = `Zeek ${zeekOn ? "captures this port" : "does not capture this port"} · `
+      + `siphon ${siphonOn ? "uses this port" : "does not use this port"}.`;
+  }
+  const z = document.getElementById("wl-nic-zeek");
+  const s = document.getElementById("wl-nic-siphon");
+  if (z) z.checked = zeekOn;
+  if (s) s.checked = siphonOn;
+  box.dataset.nic = nic;
+  const note = document.getElementById("wl-nic-note");
+  if (note) note.textContent = "";
+  box.classList.remove("hidden");
+  local.classList.add("wl-scoped");
+}
+
+/** Back to the whole hub's settings. Nothing staged is discarded. */
+function wlCloseNicSettings() {
+  const box = document.getElementById("wl-nic-settings");
+  const local = document.getElementById("wl-local-settings");
+  if (box) { box.classList.add("hidden"); box.dataset.nic = ""; }
+  if (local) local.classList.remove("wl-scoped");
+}
+
+/** Stage THIS NIC's capture choices through the ordinary settings plan. */
+function wlStageNicSettings() {
+  const box = document.getElementById("wl-nic-settings");
+  const nic = box ? box.dataset.nic : "";
+  if (!nic) return;
+  const zeekBox = document.getElementById("wl-nic-zeek");
+  const siphonBox = document.getElementById("wl-nic-siphon");
+  const note = document.getElementById("wl-nic-note");
+  let zeekOn = !!(zeekBox && zeekBox.checked);
+  const siphonOn = !!(siphonBox && siphonBox.checked);
+  // Siphon without capture is a contradiction: the intercept must relay a port Zeek can see.
+  if (siphonOn && !zeekOn) {
+    zeekOn = true;
+    if (zeekBox) zeekBox.checked = true;
+  }
+  const base = wlCfgValue("zeek_iface");
+  const list = wlIfaceList(wlCfgValue("zeek_ifaces"));
+  if (!list.length && base) list.push(base);
+  const next = list.filter((n) => n !== nic);
+  if (zeekOn) next.push(nic);
+  const currentList = wlCfgValue("zeek_ifaces");
+  const nextList = next.join(",");
+  stageChange("zeek_ifaces", nextList, currentList);
+
+  const cap = wlCfgValue("capture_iface");
+  if (siphonOn) stageChange("capture_iface", nic, cap);
+  else if (cap === nic) stageChange("capture_iface", "", cap);
+
+  if (note) {
+    note.textContent = `staged for ${nic} — review the pending changes below, then Apply.`;
+  }
+  if (typeof setStageNote === "function") {
+    setStageNote(`staged capture choices for ${nic}; nothing is written until Apply.`);
+  }
 }
 
 /** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...

@@ -100,7 +100,7 @@ function renderAssetFacets(all) {
       ASSETS_STATE.svc = on ? "" : svc;
       ASSETS_STATE.page = 1;
       renderAssets();
-      // US-7: the filter rides the URL (so Copy link carries it and a reload keeps it).
+      // US-7: the filter rides the URL (so the current link and a reload keep it).
       if (typeof scheduleURLSync === "function") scheduleURLSync();
     });
     box.appendChild(chip);

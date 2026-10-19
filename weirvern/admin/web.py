@@ -918,6 +918,20 @@ def _build_handler(ctx: GuiContext):
                 })
             self._json(payload)
 
+        def _discover_trends(self, query: dict) -> None:
+            """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            try:
+                with self._with_client() as client:
+                    payload = soc_mod.discover_trends(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False, "feeds": {},
+                                   "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   "data_error": str(exc)})
+            self._json(payload)
+
         def _discover(self, query: dict) -> None:
             """DISCOVER: raw flows with a filter bar -- Kibana's Discover over the flow table.
 

@@ -3891,23 +3891,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   renderStagePill();
-  const copyBtn = document.getElementById("copy-link");
-  if (copyBtn) {
-    copyBtn.addEventListener("click", () => {
-      syncURL();   // the link must carry the CURRENT state, not the last debounce's
-      const done = (ok) => {
-        copyBtn.textContent = ok ? "copied" : "copy failed";
-        setTimeout(() => { copyBtn.textContent = "Copy link"; }, 1200);
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(location.href).then(() => done(true)).catch(() => done(false));
-        } else {
-          done(false);
-        }
-      } catch (_e) { done(false); }
-    });
-  }
   const abPill = document.getElementById("auto-block-pill");
   if (abPill && !window.__abWired) {
     window.__abWired = true;
@@ -5312,7 +5295,7 @@ function syncURL() {
   if (WTL_STATE.action) p.set("au.action", WTL_STATE.action);
   if (WTL_STATE.target) p.set("au.target", WTL_STATE.target);
   // US-7: the LAST views without URL state. Assets' search and service facet, the graph's
-  // filters, and Discover's feed/selects/chips -- a Copy link now carries the screen, and a
+  // filters, and Discover's feed/selects/chips -- the URL now carries the screen, and a
   // reload returns to it.
   if (ASSETS_STATE.search) p.set("as.q", ASSETS_STATE.search);
   if (ASSETS_STATE.svc) p.set("as.svc", ASSETS_STATE.svc);

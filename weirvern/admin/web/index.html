@@ -95,7 +95,6 @@
     <span class="muted" id="user-chip" title=""></span>
     <button class="pill hidden" id="stage-pill" type="button" title="settings changes staged, not yet applied — click to review"></button>
     <button class="pill bad hidden" id="auto-block-pill" type="button" title="AUTO-BLOCK IS ARMED: detections at or above this score are blocked without anyone looking first — click for the controls that pause it" aria-pressed="false"></button>
-    <button class="pill" id="copy-link" type="button" title="copy a link to this exact view (tab, range, filters)">Copy link</button>
     <button class="pill" id="all-help" type="button" title="show every help panel at once — keyboard: ?" aria-pressed="false">All help</button>
     <button class="pill" id="auto-toggle" type="button" title="auto-refresh of the view you are looking at — click to pause or resume" aria-pressed="false">auto 15s</button>
     <button id="sign-out" class="hidden" title="End this session">Sign out</button>
@@ -124,8 +123,10 @@
       </div>
     </div>
     <button id="refresh" title="Reload now">Refresh</button>
-    <!-- US-4: the palette had no visible entry -- reachable only by whoever knew Ctrl+K. -->
-    <button id="palette-btn" title="open the command palette &#8212; keyboard: Ctrl+K or /">Palette</button>
+    <!-- US-4: the entry must be visible and NAME THE JOB (operator, 2026-10-19: "i like that it is a
+         quick link, but i dont understand the name"). "Palette" described the implementation; this
+         names what it does. -->
+    <button id="palette-btn" title="search and jump to a tab, host, domain, rule or setting &#8212; keyboard: Ctrl+K or /">Quick links</button>
     <label class="auto"><input type="checkbox" id="autorefresh" checked> auto (15s)</label>
   </div>
 </header>
@@ -297,10 +298,18 @@
 
   <section id="view-discover" class="view">
     <div class="card">
-      <h2>Discover <button class="info-btn" data-info="dc-info" aria-label="what Discover is and how to filter it" aria-expanded="false" title="what Discover is and how to filter it">i</button> <span class="muted" id="dc-window"></span></h2>
-      <p class="muted" id="dc-summary">loading…</p>
+      <!-- THE OPERATOR'S NAME (2026-10-19): this is Flows. "Discover" was the Kibana analogy in
+           the code, not the word for what the tab shows. The three boxes are the live feed
+           trends, top right, where a dashboard puts its summary. -->
+      <div class="view-head">
+        <div>
+          <h2>Flows <button class="info-btn" data-info="dc-info" aria-label="what Flows is and how to filter it" aria-expanded="false" title="what Flows is and how to filter it">i</button> <span class="muted" id="dc-window"></span></h2>
+          <p class="muted" id="dc-summary">loading…</p>
+        </div>
+        <div id="dc-trends" class="trend-boxes" aria-label="feed trends"></div>
+      </div>
       <div class="info-text hidden" id="dc-info">
-  <p><strong>What it is.</strong> The raw flows themselves, not a summary of them.</p>
+  <p><strong>What it is.</strong> The raw flows themselves, not a summary of them. The three boxes are the last-24-hour feed trends: NetFlow, Zeek and DNS.</p>
   <p><strong>What writes it.</strong> Flow records as exported to this hub by your weirlings.</p>
   <p><strong>Last changed.</strong> Re-reads every time a filter changes or the window moves.</p>
   <p><strong>Where to see it.</strong> Click any row for every field it carries; the histogram is the same filter over time — click a bucket to narrow the window to it.</p>
@@ -971,7 +980,7 @@
       </div>
       <div class="card">
         <h2>Table sizes</h2>
-        <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th></tr></thead><tbody></tbody></table>
+        <table id="hp-tables"><thead><tr><th>Table</th><th>Rows</th><th>Disk</th><th>Trend <span class="muted">24h</span></th></tr></thead><tbody></tbody></table>
       </div>
     </div>
     <div class="card">
@@ -1383,6 +1392,25 @@
   <p><strong>Last changed.</strong> Each Apply; the fleet row above reports the mode the sensor says it is running.</p>
   <p><strong>Where to see it.</strong> The row above for what it reports; these controls for what it is configured to do.</p>
 </div>
+        <!-- PER-INTERFACE, NOT THE WHOLE BOX (operator, 2026-10-19: "weirlings settings should
+             only configure for that interface. and the settings should only show that interfaces
+             settings"). A NIC click scopes this section to that NIC; the global settings stay one
+             click away and are never the thing an interface row edits by accident. -->
+        <div id="wl-nic-settings" class="hidden">
+          <h3>Settings for <span class="mono" id="wl-nic-name"></span>
+            <span class="muted" id="wl-nic-role"></span></h3>
+          <p class="muted" id="wl-nic-facts"></p>
+          <div class="controls">
+            <label class="check"><input type="checkbox" id="wl-nic-zeek"> capture with Zeek</label>
+            <label class="check"><input type="checkbox" id="wl-nic-siphon"> use for siphon capture</label>
+            <button id="wl-nic-stage" type="button">Stage for this interface</button>
+            <button id="wl-nic-all" class="link" type="button">All hub settings</button>
+          </div>
+          <p class="muted">NetFlow capture follows the siphon interface automatically — there is no
+            separate NetFlow port to choose.</p>
+          <p id="wl-nic-note" class="muted" role="status" aria-live="polite"></p>
+        </div>
+
         <div class="controls sonar-row">
           <label>mode <select id="wl-mode-select"><option value="loch">loch — passive</option><option value="siphon">siphon — in traffic path</option></select></label>
           <button id="st-sonar" type="button">Sonar</button>

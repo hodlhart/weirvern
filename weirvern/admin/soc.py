@@ -597,12 +597,39 @@ def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int =
     }
 
 
-def table_sizes(client, limit: int = 14) -> dict:
-    """Row and byte counts per table, from system.parts.
+def _trend_series(points: list[dict]) -> str:
+    """Classify a table's recent byte history: up, down, static, or unknown.
+
+    ONE PERCENT is the bar. A table that grows by a few kilobytes over a day is not "building";
+    the operator's question is which tables are moving, and a threshold of zero would paint every
+    table green on the first inserted row. Fewer than two samples is unknown -- the UI must say
+    "collecting" rather than call a single reading static.
+    """
+    if len(points) < 2:
+        return "unknown"
+    first = int(points[0].get("bytes") or 0)
+    last = int(points[-1].get("bytes") or 0)
+    if first <= 0:
+        return "up" if last > 0 else "static"
+    change = (last - first) / first
+    if change > 0.01:
+        return "up"
+    if change < -0.01:
+        return "down"
+    return "static"
+
+
+def table_sizes(client, limit: int = 14, history_hours: int = 24) -> dict:
+    """Row and byte counts per table, from system.parts, plus each table's recent trend.
 
     system.tables would need `total_rows` which is not populated for every engine, so
     parts are summed instead -- that is the actual on-disk figure, which is what an
     operator checking disk pressure wants.
+
+    THE TREND COMES FROM A SNAPSHOT TABLE, not from system.parts: parts only says what a table
+    weighs NOW. `table_size_history` is written by the worker on its cycle; each point here is
+    the largest sample in its hour, so a burst of samples cannot make a flat table look noisy.
+    A missing history table degrades to "trend unavailable" -- the current sizes still render.
     """
     try:
         rows = client.query(
@@ -614,9 +641,38 @@ def table_sizes(client, limit: int = 14) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("table_sizes failed: %s", exc)
         return _unavailable(f"table size query failed: {type(exc).__name__}")
-    return {"available": True, "reason": "",
-            "points": [{"table": str(r[0]), "rows": int(r[1] or 0), "bytes": int(r[2] or 0)}
-                       for r in rows]}
+
+    names = [str(r[0]) for r in rows]
+    history: dict[str, list[dict]] = {name: [] for name in names}
+    history_error = ""
+    if names:
+        try:
+            hrows = client.query(
+                "SELECT table_name, toStartOfHour(at) AS t, max(bytes) AS b, max(rows) AS n "
+                "FROM weirvern.table_size_history "
+                "WHERE table_name IN %(names)s "
+                "AND at >= %(since)s AND at <= %(until)s "
+                "GROUP BY table_name, t ORDER BY table_name, t",
+                parameters={"names": tuple(names), **timewindow.w(history_hours)},
+            ).result_rows
+            for name, when, b, n in hrows:
+                history.setdefault(str(name), []).append({
+                    "t": when.isoformat() if hasattr(when, "isoformat") else str(when),
+                    "bytes": int(b or 0), "rows": int(n or 0),
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("table size history unavailable: %s", exc)
+            history_error = f"trend history unavailable: {type(exc).__name__}"
+
+    points = []
+    for r in rows:
+        name = str(r[0])
+        series = history.get(name, [])
+        points.append({
+            "table": name, "rows": int(r[1] or 0), "bytes": int(r[2] or 0),
+            "history": series, "trend": _trend_series(series),
+        })
+    return {"available": True, "reason": history_error, "points": points}
 
 
 def alert_audit(client, hours: int = 24, limit: int = 500) -> dict:
@@ -851,6 +907,42 @@ def _discover_bucket_s(hours: float) -> int:
     """About sixty buckets whatever the window, clamped so a minute never crowds and an hour
     never dominates."""
     return max(60, min(3600, int(float(hours) * 60)))
+
+
+def discover_trends(client, *, hours: int = 24) -> dict:
+    """Three small trend series for the Flows header: NetFlow, Zeek and DNS.
+
+    ONE QUERY PER FEED, not three pages through `discover`: a header sparkline answers "is this
+    feed moving?" and must not make the tab wait for 300 raw rows from each source. A feed whose
+    table cannot be read carries its own reason; the other two still draw.
+    """
+    bucket = _discover_bucket_s(hours)
+    params = {"w": int(bucket), **timewindow.w(hours)}
+    feeds: dict[str, dict] = {}
+    for name, table, column in (
+        ("netflow", "weirvern.flows", "timestamp"),
+        ("zeek", "weirvern.zeek_conn", "ts"),
+        ("dns", "weirvern.zeek_dns", "ts"),
+    ):
+        try:
+            rows = client.query(
+                f"SELECT toStartOfInterval({column}, INTERVAL %(w)s SECOND) AS t, count() AS n "
+                f"FROM {table} WHERE {column} >= %(since)s AND {column} <= %(until)s "
+                "GROUP BY t ORDER BY t",
+                parameters=params,
+            ).result_rows
+            feeds[name] = {
+                "available": True, "reason": "",
+                "points": [{"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                            "n": int(r[1] or 0)} for r in rows],
+                "total": sum(int(r[1] or 0) for r in rows),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("discover trend %s failed: %s", name, exc)
+            feeds[name] = {"available": False,
+                           "reason": f"the {name} query failed: {type(exc).__name__}",
+                           "points": [], "total": None}
+    return {"available": True, "reason": "", "bucket_s": bucket, "feeds": feeds}
 
 
 def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | None = None,

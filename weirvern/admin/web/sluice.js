@@ -551,7 +551,17 @@ function renderGateSplit(d) {
     const on = lists.filter((s) => s.enabled);
     const domains = on.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
     const stamps = on.map((s) => s.fetched_at).filter(Boolean).sort();
-    const last = stamps.length ? fmtTime(new Date(stamps[stamps.length - 1])) : "never";
+    // A TILE VALUE IS ONE LINE. fmtTime prints seconds; at four tiles across a half-width
+    // card that wrapped "last sync" onto a second line and broke the row's rhythm. This
+    // keeps the date and minute -- the precision a sync timestamp is read at.
+    const shortStamp = (value) => {
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return String(value);
+      const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `${day} ${time}`;
+    };
+    const last = stamps.length ? shortStamp(stamps[stamps.length - 1]) : "never";
     dg.replaceChildren(
       tile("lists enabled", `${on.length} / ${lists.length}`),
       tile("domains", domains.toLocaleString()),

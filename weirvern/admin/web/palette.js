@@ -29,13 +29,13 @@ function paletteEl() {
   pal.id = "palette";
   pal.className = "hidden";
   pal.setAttribute("role", "dialog");
-  pal.setAttribute("aria-label", "command palette");
+  pal.setAttribute("aria-label", "quick links");
   const box = document.createElement("div");
   box.className = "palette-box";
   const input = document.createElement("input");
   input.id = "palette-input";
   input.type = "text";
-  input.placeholder = "type a command, an address, a domain, a rule, a setting\u2026 (Ctrl+K)";
+  input.placeholder = "search or jump to a tab, host, domain, rule or setting\u2026 (Ctrl+K)";
   input.setAttribute("autocomplete", "off");
   const results = document.createElement("div");
   results.id = "palette-results";

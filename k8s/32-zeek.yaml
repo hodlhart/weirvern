@@ -427,6 +427,14 @@ spec:
                   name: weirvern-env
                   key: ZEEK_IFACES
                   optional: true
+            # The one port the siphon intercept borrows. When ZEEK_IFACES is empty this is also
+            # the port Zeek captures, so a per-interface choice configures both halves at once.
+            - name: CAPTURE_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: CAPTURE_IFACE
+                  optional: true
             # THE CAPTURE EXCLUSION LIST, DECLARED HERE OR IT DOES NOTHING. The startup
             # script builds its BPF filter from this variable, and an UNDECLARED variable is
             # EMPTY at runtime -- so the filter would silently never apply while the manifest

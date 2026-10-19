@@ -404,6 +404,43 @@ CHANNEL_NETFLOW_KEEP_SEGMENTS = 240
 _CHANNEL_NETFLOW: dict = {"tap": None, "iface": "", "source": "", "retry_after": 0.0}
 
 
+# HOW OFTEN the Health tab's table-size history gets a sample. Five minutes is enough to see a
+# table building over a day and cheap enough to be invisible; the Health query buckets hourly.
+_TABLE_SIZE_SAMPLE_S = 300.0
+_TABLE_SIZE_LAST = {"at": 0.0}
+
+
+def _table_size_maybe(client: Client, *, now: float | None = None) -> None:
+    """Append one snapshot of every table's size for the Health trend lines.
+
+    A READ-SIDE TREND CANNOT BE RECONSTRUCTED. system.parts answers what a table weighs now; the
+    operator asked which tables are BUILDING, which needs history. This writer is deliberately
+    in the worker (the one always-running process) and throttled: one query per five minutes,
+    not one per page load, so opening Health never writes and a forgotten tab cannot skew data.
+    """
+    import time as _time  # noqa: PLC0415
+
+    current = float(now) if now is not None else _time.monotonic()
+    if current - float(_TABLE_SIZE_LAST["at"]) < _TABLE_SIZE_SAMPLE_S:
+        return
+    try:
+        rows = client.query(
+            "SELECT table, sum(rows) AS n, sum(bytes_on_disk) AS b "
+            "FROM system.parts WHERE database = 'weirvern' AND active "
+            "GROUP BY table"
+        ).result_rows
+        if rows:
+            client.insert(
+                "weirvern.table_size_history",
+                [[str(r[0]), int(r[1] or 0), int(r[2] or 0)] for r in rows],
+                column_names=["table_name", "rows", "bytes"],
+            )
+            _TABLE_SIZE_LAST["at"] = current
+    except Exception as exc:  # noqa: BLE001
+        # Never break detection because a size snapshot failed (the schema may not have run yet).
+        logger.debug("table size sample failed: %s", exc)
+
+
 def _stop_channel_netflow(reason: str = "") -> None:
     """Stop the capture tap, drop any pending segments, and say why. Best-effort: never raises.
 
@@ -553,11 +590,18 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
         iface = (settings.channel_upstream if mode == "upstream"
                  else settings.channel_downstream).strip()
         source = "channel"
-    elif bool(getattr(settings, "siphon_netflow", False)):
+    elif bool(getattr(settings, "siphon_netflow", False)) or (
+            str(getattr(settings, "sensor_mode", "") or "").strip().lower() == "siphon"):
+        # A SIPHON SENSOR WANTS FLOW RECORDS (operator, 2026-10-19: "the back end will want the
+        # zeek and netflow capture config automatically"). It is still gated on VERIFIED
+        # liveness below: a configured-but-dead intercept must not fill the flows table with
+        # records of nothing. The tap follows the SIPHON port, not the Zeek port -- when the
+        # operator chooses a different capture interface the relay runs there.
         if siphon_live == "auto":
             siphon_live = _siphon_liveness(settings, client)
         if siphon_live is True:
-            iface = str(getattr(settings, "zeek_iface", "") or "").strip()
+            iface = str(getattr(settings, "capture_iface", "")
+                        or getattr(settings, "zeek_iface", "") or "").strip()
             source = "siphon"
 
     running = holder["tap"] is not None and holder["tap"].poll() is None
@@ -2185,6 +2229,10 @@ def main() -> None:
             # the gate on purpose: collecting flows from the channel does not require blocking
             # anything, and vice versa.
             try:
+                _table_size_maybe(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("table size pass failed (detection continues): %s", exc)
+            try:
                 _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("channel netflow tick failed (detection continues): %s", exc)
@@ -2227,6 +2275,10 @@ def main() -> None:
                 _blocklist_maybe(settings, client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("blocklist pass failed (detection continues): %s", exc)
+            try:
+                _table_size_maybe(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("table size pass failed (detection continues): %s", exc)
             try:
                 _channel_netflow_maybe(settings, client=client)
             except Exception as exc:  # noqa: BLE001

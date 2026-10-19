@@ -3,7 +3,7 @@
 The chip grammar has two families and ONE contract: `.chip` is a status pill (still); a filter
 chip (`.dc-chip` / `.chip.act`) is dashed at rest and, while it HOLDS a filter, wears the accent
 border plus a CHECKMARK and aria-pressed -- never colour alone. And every filter these controls
-can hold rides the URL, so Copy link carries the screen and a reload returns to it.
+can hold rides the URL, so the current link carries the screen and a reload returns to it.
 """
 from __future__ import annotations
 

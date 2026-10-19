@@ -65,6 +65,9 @@ function dcParams() {
 
 async function loadDiscover() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
+  // The header trends are independent of the feed filters: one request answers all three,
+  // and it must not hold up the rows if it fails.
+  loadFlowTrends().catch(() => {});
   const d = await getJSON("/api/discover?" + dcParams());
   DC_STATE.last = d;
   DC_STATE.total = d.total || 0;
@@ -93,6 +96,68 @@ async function loadDiscover() {
   dcRenderFacets(d);
   dcRenderRows(d);
   dcRenderPager(d);
+}
+
+/** A tiny line sparkline -- 28px tall, no axes, no library. */
+function dcTrendSvg(points) {
+  const ns = "http://www.w3.org/2000/svg";
+  const w = 120, h = 28;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-hidden", "true");
+  const vals = (points || []).map((p) => Number(p.n) || 0);
+  if (!vals.length) return svg;
+  const max = Math.max(1, ...vals);
+  const step = vals.length > 1 ? w / (vals.length - 1) : w;
+  const x = (i) => (vals.length > 1 ? i * step : w / 2);
+  const y = (v) => h - 2 - (v / max) * (h - 4);
+  const line = vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const area = document.createElementNS(ns, "path");
+  area.setAttribute("class", "trend-area");
+  area.setAttribute("d", `${line} L${w},${h} L0,${h} Z`);
+  svg.appendChild(area);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("class", "trend-line");
+  path.setAttribute("d", line);
+  svg.appendChild(path);
+  return svg;
+}
+
+async function loadFlowTrends() {
+  const host = document.getElementById("dc-trends");
+  if (!host) return;
+  const hours = typeof trHours === "function" ? trHours() : 24;
+  // A range change is the only thing that can change these; do not re-fetch on every filter.
+  if (host.dataset.hours === String(hours) && host.dataset.loaded === "1") return;
+  const d = await getJSON("/api/discover/trends?hours=" + encodeURIComponent(hours));
+  host.dataset.hours = String(hours);
+  host.dataset.loaded = "1";
+  host.replaceChildren();
+  const labels = { netflow: "Netflow", zeek: "Zeek", dns: "DNS" };
+  for (const name of ["netflow", "zeek", "dns"]) {
+    const feed = (d.feeds || {})[name] || { available: false, reason: "no answer" };
+    const box = el("button", {
+      class: "trend-box", attrs: { type: "button", title: feed.available
+        ? `open the ${labels[name]} feed in this window`
+        : (feed.reason || "this feed could not be read") },
+      on: { click: () => {
+        const sel = document.getElementById("dc-feed");
+        if (sel) sel.value = name;
+        DC_STATE.offset = 0;
+        loadDiscover().then(clearError).catch(showError);
+      } },
+    }, [
+      el("span", { class: "k", text: labels[name] }),
+      el("span", { class: "v", text: feed.available
+        ? Number(feed.total || 0).toLocaleString()
+        : "unavailable" }),
+    ]);
+    if (feed.available) box.appendChild(dcTrendSvg(feed.points || []));
+    else box.appendChild(el("span", { class: "trend-empty", text: "query failed" }));
+    host.appendChild(box);
+  }
 }
 
 function dcRenderHistogram(d) {

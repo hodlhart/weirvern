@@ -1077,6 +1077,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // DISCOVER: the raw-flow browser. Two rows and two facet values are enough to prove the
   // renderer, the detail expansion, and the bucket drill targets exist.
+  const DISCOVER_TRENDS_PAYLOAD = {
+    available: true, reason: "", bucket_s: 900,
+    feeds: {
+      netflow: { available: true, total: 120, points: [
+        { t: "2026-10-16T00:00:00", n: 10 }, { t: "2026-10-16T00:15:00", n: 30 },
+        { t: "2026-10-16T00:30:00", n: 80 }] },
+      zeek: { available: true, total: 40, points: [
+        { t: "2026-10-16T00:00:00", n: 4 }, { t: "2026-10-16T00:15:00", n: 12 },
+        { t: "2026-10-16T00:30:00", n: 24 }] },
+      dns: { available: true, total: 9, points: [
+        { t: "2026-10-16T00:00:00", n: 1 }, { t: "2026-10-16T00:15:00", n: 3 },
+        { t: "2026-10-16T00:30:00", n: 5 }] },
+    },
+  };
+
   const DISCOVER_PAYLOAD = {
     available: true, reason: "", total: 42, limit: 100, offset: 0, bucket_s: 60,
     rows: [
@@ -1214,7 +1229,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       ],
     },
     ingest: { available: true, points: [] },
-    tables: { available: true, points: [] },
+    tables: { available: true, points: [
+      { table: "flows", rows: 1000, bytes: 4096, trend: "up",
+        history: [ { bytes: 1000 }, { bytes: 2000 }, { bytes: 4096 } ] },
+      { table: "zeek_dns", rows: 800, bytes: 2048, trend: "static",
+        history: [ { bytes: 2048 }, { bytes: 2048 }, { bytes: 2048 } ] },
+      { table: "alert_events", rows: 10, bytes: 512, trend: "down",
+        history: [ { bytes: 900 }, { bytes: 700 }, { bytes: 512 } ] },
+    ] },
     // `alerts`, NOT `alert_audit`: the product's payload key is `alerts` (web_api.py) and the
     // SOC renderer reads `d.alerts`. The stub carried `alert_audit`, so the key was never read
     // and the loader path rendered an EMPTY audit -- meaning the one route that exercises
@@ -1275,6 +1297,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       ] })],
     ["/api/graph", GRAPH_PAYLOAD],
     ["/api/flows", (u) => { FLOW_REQS.push(String(u)); return FLOWS_PAYLOAD; }],
+    ["/api/discover/trends", DISCOVER_TRENDS_PAYLOAD],
     ["/api/discover", (u) => {
       DISCOVER_REQS.push(String(u));
       const s = String(u);
@@ -3360,15 +3383,6 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 250));
     check("a checkbox filter lands in the URL", /an\.unrev=1/.test(window.location.hash),
           window.location.hash.slice(0, 90));
-    check("the header carries a Copy-link affordance",
-          !!doc.getElementById("copy-link") && /link/i.test(doc.getElementById("copy-link").title));
-    const copyBtn = doc.getElementById("copy-link");
-    if (copyBtn) {
-      copyBtn.click();
-      await new Promise((r) => setTimeout(r, 30));
-      check("clicking it gives honest feedback and never throws",
-            /copied|copy failed/.test(copyBtn.textContent), copyBtn.textContent);
-    }
     // THE ROUND TRIP: exactly what opening a shared link does. The checkbox is cleared FIRST,
     // so the restore is observable -- a fixture value left over from the previous check would
     // make any restore look correct.
@@ -4267,6 +4281,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       await sleep(150);
       const pbtn = doc.getElementById("palette-btn");
       check("PALETTE: the chrome carries a visible entry", !!pbtn);
+      check("...and it is named for what it does (Quick links, not palette)",
+            !!pbtn && pbtn.textContent.trim() === "Quick links",
+            pbtn ? pbtn.textContent.trim() : "missing");
+      check("the removed Copy-link button is gone from the header",
+            !doc.getElementById("copy-link"));
       if (pbtn) pbtn.click();
       await sleep(150);
       check("...and a mouse opens the palette with it",
@@ -6969,17 +6988,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
           && scrollTo.some(([x, y]) => x === 0 && y === EXPECT_SCROLL),
           `${H.AN_FILTERS.host} / ${H.trHours()} / ${JSON.stringify(scrollTo)}`);
 
-    // 4) COPY LINK round trip: the URL forces the CURRENT state; re-applying it from a cold
-    //    state reproduces everything (a fresh boot's own path, driven again).
-    let COPIED = "";
-    try {
-      Object.defineProperty(window.navigator, "clipboard",
-        { value: { writeText: async (t) => { COPIED = String(t); } }, configurable: true });
-    } catch (_e) { /* leave it; the check below will say why */ }
-    const cbtn = doc.getElementById("copy-link");
-    if (cbtn) { cbtn.click(); }
+    // 4) URL round trip: syncing the URL forces the CURRENT state; re-applying it from a cold
+    //    state reproduces everything (a fresh boot's own path, driven again). The Copy-link
+    //    button was removed by the operator (2026-10-19); the URL is still the share surface.
+    H.syncURL();
     await sleep(150);
-    check("COPY: the link forces the current state (view + filters + range)",
+    const COPIED = String(window.location.href || "");
+    check("URL: the current state carries view + filters + range",
           /v=anomalies/.test(COPIED) && /an\.host=198\.51\.100\.5/.test(COPIED)
           && /tr=6/.test(COPIED), COPIED);
     H.anClearAllFilters();
@@ -7267,6 +7282,16 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("discover");
     await H.loadDiscover();
     const dcRows = doc.querySelectorAll("#dc-rows tr.dc-row");
+    check("the tab is called Flows, not Discover",
+          /^Flows/.test((doc.querySelector("#view-discover .view-head h2") || {}).textContent || ""));
+    await new Promise((r) => setTimeout(r, 200));
+    const trendBoxes = [...doc.querySelectorAll("#dc-trends .trend-box")];
+    check("the Flows header carries three feed trend boxes",
+          trendBoxes.length === 3
+          && /Netflow/.test(trendBoxes[0].textContent) && /Zeek/.test(trendBoxes[1].textContent)
+          && /DNS/.test(trendBoxes[2].textContent)
+          && trendBoxes.every((b) => b.querySelector("svg")),
+          trendBoxes.map((b) => b.textContent.trim()).join(" | "));
     check("Discover renders the flow rows the server served", dcRows.length === 2,
           "rows=" + dcRows.length);
     if (dcRows[0]) {

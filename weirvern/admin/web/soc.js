@@ -560,10 +560,11 @@ async function loadHealthDeep() {
       el("td", { class: "mono", text: t.table }),
       el("td", { text: t.rows.toLocaleString() }),
       el("td", { text: fmtBytes(t.bytes) }),
+      el("td", { class: "tbl-trend-cell" }, [tableTrend(t)]),
     ]));
   }
   if (!((d.tables || {}).points || []).length) {
-    stbody.appendChild(el("tr", {}, [el("td", { attrs: { colspan: "3" },
+    stbody.appendChild(el("tr", {}, [el("td", { attrs: { colspan: "4" },
       text: (d.tables || {}).available === false ? `unavailable: ${d.tables.reason}` : "no tables" })]));
   }
 
@@ -585,7 +586,37 @@ async function loadHealthDeep() {
   renderAlertAudit(d.alerts || {});
 }
 
-/* The alert audit tables. `reason` is the worker's outcome vocabulary: sent, cooldown,
+/** A table's 24-hour byte trend, as a line + a word. Up is green, flat yellow, down red. */
+function tableTrend(t) {
+  const points = t.history || [];
+  const trend = String(t.trend || "unknown");
+  if (points.length < 2) {
+    return el("span", { class: "muted tbl-trend-unknown", text: "collecting" });
+  }
+  const ns = "http://www.w3.org/2000/svg";
+  const w = 104, h = 24;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "tbl-trend " + trend);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${trend} over the last 24 hours`);
+  const vals = points.map((p) => Number(p.bytes) || 0);
+  const max = Math.max(1, ...vals);
+  const min = Math.min(...vals);
+  const span = Math.max(1, max - min);
+  const x = (i) => (vals.length > 1 ? (i / (vals.length - 1)) * w : w / 2);
+  const y = (v) => h - 2 - ((v - min) / span) * (h - 4);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "));
+  path.setAttribute("class", "tbl-trend-line");
+  svg.appendChild(path);
+  const label = el("span", { class: "tbl-trend-word " + trend,
+    text: trend === "up" ? "building" : (trend === "down" ? "shrinking" : "static") },
+    );
+  return el("span", { class: "tbl-trend-wrap" }, [svg, label]);
+}
+
+/* The alert audit tables./* The alert audit tables. `reason` is the worker's outcome vocabulary: sent, cooldown,
  * cap, log-only, pushover-error. The note deliberately distinguishes SUPPRESSED (cooldown
  * or cap -- the system chose not to deliver) from LOG-ONLY (nothing was configured to
  * deliver): the second is a configuration state, not a withheld alert, and calling it
