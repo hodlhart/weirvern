@@ -852,11 +852,13 @@ def load_or_train(client: Client, detectors, settings,
     # that inference is the same guess that produced the defect.
     trained: list = []
     if if_model.train(start_dt, end_dt, client) and if_model.X_train_unscaled is not None:
-        gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client)
-        # The GB teacher is fitted from IF's own labels, so it counts as trained only when IF
-        # produced them -- which the enclosing condition has just established.
-        trained.extend([if_model, gb_model])
+        trained.append(if_model)
         trained_any = True
+        # The GB teacher is fitted from IF's own labels, but a GB train can still return
+        # False (no anomalies in the teacher, no teacher). A False result must not earn a
+        # training-history row (GitHub #60); the detector still has the previous artifact.
+        if gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client):
+            trained.append(gb_model)
     if db_model.train(start_dt, end_dt, client):
         trained.append(db_model)
         trained_any = True
@@ -942,8 +944,8 @@ def train_if_due(
         if if_model.train(start_dt, end_dt, client):
             trained_any = True
             trained.append(if_model)
-            if if_model.X_train_unscaled is not None:
-                gb_model.train(if_model, if_model.X_train_unscaled, start_dt, end_dt, client)
+            if if_model.X_train_unscaled is not None and gb_model.train(
+                    if_model, if_model.X_train_unscaled, start_dt, end_dt, client):
                 trained.append(gb_model)
         if db_model.train(start_dt, end_dt, client):
             trained_any = True

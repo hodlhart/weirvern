@@ -194,6 +194,10 @@ class IsolationForestDetector(BaseDetector):
                       WHERE window_start BETWEEN '{s}' AND '{e}'
                       ORDER BY unique_dst_ports DESC LIMIT {int(self.cfg.if_extremes)})
               ){excl}
+            -- A LIMIT WITHOUT AN ORDER IS A DIFFERENT SAMPLE ON EVERY RUN (GitHub #61).
+            -- The hash that already selects the sample also orders the cut, so the same
+            -- window trains from the same rows regardless of part layout.
+            ORDER BY sipHash64(a.src_addr, a.window_start)
             LIMIT {int(self.cfg.if_n_samples)}
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
@@ -387,6 +391,9 @@ class DBSCANDetector(BaseDetector):
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
               AND a.total_bytes > 0
               AND sipHash64(a.src_addr) % 5 == 1{excl}
+            -- Same deterministic cut as the Isolation Forest query (GitHub #61). Hash order
+            -- keeps the surviving sample uniform instead of biasing it to one end of the window.
+            ORDER BY sipHash64(a.src_addr, a.window_start)
             LIMIT {int(self.cfg.dbscan_n_samples)}
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
@@ -441,7 +448,11 @@ class DBSCANDetector(BaseDetector):
             )
         logger.info("✅ %s trained: %d clusters, %d outliers", self.name, n_clusters, n_outliers)
         self.save()
-        return True
+        # A RUN WITH NO CENTRES IS NOT A USABLE MODEL (GitHub #60). It saves the diagnostic
+        # artifact -- the metrics retain clusters=0 -- but every score is "no opinion", so
+        # returning True made reports and ml_models history count a detector that cannot
+        # score. This is the same "trained" lie F023 fixed for the other detectors.
+        return bool(self.cluster_centers)
 
     def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:
         if not self.cluster_centers:

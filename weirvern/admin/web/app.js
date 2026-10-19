@@ -4489,7 +4489,7 @@ function renderStaleness(rows, intervalH) {
 
   if (!rows.length) {
     body.appendChild(el("tr", {}, [
-      el("td", { class: "muted", attrs: { colspan: "4" },
+      el("td", { class: "muted", attrs: { colspan: "5" },
                  text: "No detector has recorded a training run yet." }),
     ]));
     return;
@@ -4503,13 +4503,19 @@ function renderStaleness(rows, intervalH) {
     body.appendChild(el("tr", { class: r.stale ? "stale-row" : "" }, [
       el("td", { text: r.model }),
       el("td", { class: "mono muted", text: r.last_trained ? fmtTime(r.last_trained) : "—" }),
+      // LAST USABLE IS NOT LAST RETRAINED (GitHub #60): a DBSCAN run with zero clusters
+      // completes and saves an artifact, but it cannot score. Saying "current" beside that
+      // date was the lie this column exists to stop.
+      el("td", { class: "mono muted", text: r.last_usable ? fmtTime(r.last_usable) : "—" }),
       el("td", {}, [age]),
       el("td", {}, [
         r.never_trained
           ? el("span", { class: "sev-medium", text: "never trained" })
-          : r.stale
-            ? el("span", { class: "sev-high", text: "overdue" })
-            : el("span", { class: "sev-low", text: "current" }),
+          : r.usable === false
+            ? el("span", { class: "sev-medium", text: "not scoring" })
+            : r.stale
+              ? el("span", { class: "sev-high", text: "overdue" })
+              : el("span", { class: "sev-low", text: "current" }),
       ]),
     ]));
   }

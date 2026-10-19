@@ -1,18 +1,21 @@
 """Detector tests: training metadata, artifact persistence roundtrip (the
 warm-start guarantee) — no ClickHouse needed (train paths are mocked)."""
+import math
+import re
 from datetime import datetime
 
 import numpy as np
 import pytest
 
 from weirvern.config import ModelConfig
-from weirvern.features import DBSCAN_FEATURES, IF_FEATURES
+from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, ZEEK_FEATURES
 from weirvern.models.base import ModelMetadata
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
     DBSCANDetector,
     IsolationForestDetector,
 )
+from weirvern.zeek_features import extract_zeek_features
 
 
 class _TrainRows:
@@ -25,8 +28,10 @@ class _TrainClient:
 
     def __init__(self, rows):
         self._rows = rows
+        self.last_query = ""
 
     def query(self, _q, settings=None):  # noqa: ARG002 - signature parity
+        self.last_query = _q
         return _TrainRows(self._rows)
 
 
@@ -128,6 +133,51 @@ def test_adaptive_baseline_predict():
     assert unknown == 0.0
 
 
+def test_both_training_queries_order_the_sample_before_the_limit(tmp_path):
+    """GitHub #61: a bare LIMIT returns a different subset on every run.
+
+    The hash that selects the sample is the order of the cut, so a retrain sees the same
+    rows for the same window regardless of ClickHouse part layout.
+    """
+    start, end = datetime(2026, 1, 1), datetime(2026, 1, 2)
+    for det in (IsolationForestDetector(tmp_path, ModelConfig()),
+                DBSCANDetector(tmp_path, ModelConfig())):
+        client = _TrainClient([])
+        det.train(start, end, client)
+        assert re.search(
+            r"ORDER BY sipHash64\(a\.src_addr, a\.window_start\)\s+LIMIT",
+            client.last_query,
+        ), f"{det.name} has no deterministic order before its sample limit"
+
+
+def test_a_failed_service_history_leaves_rarity_at_zero_and_trains_volume(tmp_path):
+    """GitHub #62: the auxiliary service query can fail while the volume baseline still
+    trains. Every host must stay at rarity 0.0, not be handed a manufactured baseline of 1."""
+    class _HistoryFails(_TrainClient):
+        def query(self, q, settings=None):  # noqa: ARG002
+            if "baseline_service_count" in q:
+                raise RuntimeError("service history unavailable")
+            if "baseline_ja4" in q:
+                return _TrainRows([])
+            return super().query(q, settings)
+
+    def _row(i):
+        # 9 volume/quantile values + 50 feature columns + presence + four sigmas.
+        return (f"198.51.100.{i}", 1, 1, 1, 1, 1, 1, (1, 2, 3), (1, 2, 3),
+                *([0.0] * len(ZEEK_FEATURES)), 1, 0.0, 0.0, 0.0, 0.0)
+
+    det = AdaptiveBaselineDetector(tmp_path, ModelConfig())
+    assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2),
+                     _HistoryFails([_row(i) for i in range(10)]))
+
+    assert len(det.baselines) == 10, "the volume baseline did not train"
+    for baseline in det.baselines.values():
+        assert "baseline_service_count" not in baseline
+    rarity = extract_zeek_features(
+        {"zeek_present": 1, "zeek_service_count": math.log1p(5)}, det.baselines["198.51.100.0"])
+    assert rarity["zeek_service_rarity"] == 0.0
+
+
 def test_dbscan_says_so_when_it_finds_no_clusters(tmp_path, caplog):
     """A trained-but-centreless DBSCAN must be LOUD, not a silent zero-scorer.
 
@@ -141,7 +191,8 @@ def test_dbscan_says_so_when_it_finds_no_clusters(tmp_path, caplog):
     det = DBSCANDetector(tmp_path, ModelConfig())
 
     with caplog.at_level("WARNING"):
-        assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
+        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows)), (
+            "a centreless DBSCAN claimed it could score")
 
     assert not det.cluster_centers, "uniform noise should not form 0.6-eps clusters"
     assert det.metadata.metrics["clusters"] == 0

@@ -688,6 +688,19 @@ def test_only_detectors_that_TRAINED_get_a_metadata_row(monkeypatch):
     assert "Isolation Forest" in names and "Adaptive Baseline" in names
 
 
+def test_a_Gradient_Boosting_run_that_returns_False_is_not_recorded(monkeypatch):
+    """GitHub #60: the scheduled paths used to append GB whenever IF trained, discarding the
+    student's own return value. A failed student earned a training-history row and read as
+    current."""
+    names = _metadata_rows_recorded(monkeypatch, {
+        "Isolation Forest": True, "Gradient Boosting": False,
+        "DBSCAN": True, "Adaptive Baseline": True,
+    })
+    assert "Gradient Boosting" not in names, (
+        f"a GB train that returned False was recorded: {names}")
+    assert "Isolation Forest" in names and "DBSCAN" in names
+
+
 def test_NOTHING_that_failed_to_train_is_recorded(monkeypatch):
     """And when nothing trains, no history is written at all."""
     names = _metadata_rows_recorded(monkeypatch, {

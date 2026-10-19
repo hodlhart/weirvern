@@ -969,7 +969,11 @@ def _fill(out: dict[str, float], row: dict[str, Any],
     # exactly, so this ratio is services/services again.
     svc_logged = out["zeek_service_count"]
     svc = math.expm1(max(svc_logged, 0.0))
-    if baseline and svc:
+    # ONLY COMPARE WHEN THE HISTORY IS PRESENT (GitHub #62). A baseline dict can exist
+    # without `baseline_service_count` when the auxiliary service query failed; treating
+    # that as a baseline of ONE made every host with more than one service look novel
+    # against a manufactured denominator. The JA4 branch below follows the same rule.
+    if baseline and svc and baseline.get("baseline_service_count") is not None:
         known = max(_f(baseline.get("baseline_service_count")), 1.0)
         out["zeek_service_rarity"] = max(0.0, svc - known) / known
 

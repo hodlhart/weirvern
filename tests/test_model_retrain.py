@@ -219,6 +219,28 @@ def test_a_loaded_artifact_cannot_move_the_live_detector_to_the_candidate_direct
     assert written.parent == tmp_path / "live"
 
 
+def test_a_centreless_dbscan_is_reported_trained_but_not_usable():
+    """GitHub #60: the candidate report must state both facts, not only that a run happened."""
+    from types import SimpleNamespace
+
+    from weirvern.models import retrain
+
+    class _Centreless:
+        name = "DBSCAN"
+
+        def is_ready(self):
+            return False
+
+        metadata = SimpleNamespace(sample_count=120,
+                                   metrics={"clusters": 0, "outliers": 120},
+                                   window_start=None, window_end=None)
+
+    report = retrain._detector_report(_Centreless(), trained=False)
+    assert report["trained"] is False
+    assert report["usable"] is False
+    assert report["metrics"]["clusters"] == 0
+
+
 def test_trash_removes_the_candidate_and_leaves_the_live_files_alone(tmp_path):
     from weirvern.models import retrain
 

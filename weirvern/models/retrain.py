@@ -65,9 +65,18 @@ def _json_window(value):
 
 def _detector_report(det, *, trained: bool) -> dict[str, Any]:
     meta = getattr(det, "metadata", None)
+    # "TRAINED" AND "USABLE" ARE DIFFERENT FACTS (GitHub #60). A centreless DBSCAN completes
+    # a run, saves its diagnostic artifact and cannot score; a report that says only
+    # "trained" makes that invisible. The cluster count is already in metrics; this word
+    # states the consequence.
+    try:
+        usable = bool(getattr(det, "is_ready", lambda: False)())
+    except Exception:  # noqa: BLE001 - a broken detector must not break the report
+        usable = False
     return {
         "name": str(getattr(det, "name", "?")),
         "trained": bool(trained),
+        "usable": usable,
         # Host-windows, from the detector's own metadata -- named as the metadata and the
         # `ml_models` column name it, so a reader (and the schema audit) can trace it. A model
         # trained on 12 windows and one trained on 12000 score very differently, and

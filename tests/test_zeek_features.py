@@ -235,3 +235,26 @@ def test_coverage_handles_no_netflow_hosts():
     out = zeek_join_coverage(netflow_hosts=0, zeek_hosts=5, overlapping=0)
     assert out["coverage"] == 0.0
     assert "nothing to join" in out["verdict"]
+
+
+def test_a_missing_service_history_is_not_a_baseline_of_one():
+    """GitHub #62: a failed service-history query leaves the dict without the key.
+
+    Manufacturing a baseline of one made a five-service host score 4.0 of pure novelty.
+    """
+    row = {"zeek_conn_count": math.log1p(5), "zeek_service_count": math.log1p(5),
+           "zeek_present": 1}
+    assert extract_zeek_features(row, {})["zeek_service_rarity"] == 0.0
+    assert extract_zeek_features(row, {"baseline_ja4_set": ["ja4_a"]})[
+        "zeek_service_rarity"] == 0.0
+
+
+def test_rarity_uses_the_real_baseline_when_it_is_present():
+    """The signal still works where the history IS present: 5 services against 5 is 0.0;
+    the same window against a baseline of 1 is exactly 4.0."""
+    row = {"zeek_conn_count": math.log1p(5), "zeek_service_count": math.log1p(5),
+           "zeek_present": 1}
+    assert extract_zeek_features(row, {"baseline_service_count": 5})[
+        "zeek_service_rarity"] == pytest.approx(0.0)
+    assert extract_zeek_features(row, {"baseline_service_count": 1})[
+        "zeek_service_rarity"] == pytest.approx(4.0)

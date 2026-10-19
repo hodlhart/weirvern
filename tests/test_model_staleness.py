@@ -156,6 +156,18 @@ def test_the_payload_carries_staleness_and_the_interval():
     assert fail["available"] is False and "staleness" not in fail
 
 
+def test_last_trained_and_last_usable_are_separate_facts():
+    """GitHub #60: a centreless DBSCAN has a training date but no usable date; it must not be
+    rendered as current."""
+    rows = status._staleness(_stamps(**{"DBSCAN": 1}), interval_h=6,
+                             usable={"Isolation Forest": "2026-01-01T00:00:00"})
+    row = next(r for r in rows if r["model"] == "DBSCAN")
+    assert row["last_trained"]
+    assert row["last_usable"] == ""
+    assert row["usable"] is False
+    assert row["stale"] is False, "recency is still a separate fact"
+
+
 def test_the_view_renders_staleness_and_states_the_remedy():
     """The verdict without a remedy is a number an operator cannot act on."""
     from pathlib import Path
@@ -169,6 +181,8 @@ def test_the_view_renders_staleness_and_states_the_remedy():
         "loadModels does not call the renderer, so the panel would never fill"
     )
     assert 'id="m-stale"' in index, "the staleness table is missing from the Models view"
+    assert "Last usable" in index, "the table does not distinguish trained from usable"
+    assert "not scoring" in app_js, "an unusable detector can still render as current"
     assert "m-stale" in app_js, "the renderer targets an element the markup does not define"
 
     # The words must say what is wrong and what it means, not just show a colour.

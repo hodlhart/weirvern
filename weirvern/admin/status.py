@@ -1290,7 +1290,8 @@ def settings_overview(settings=None, namespace: str = "", backend=None,
             "titles": {key: title for key, title, _ in _SETTINGS_GROUPS}}
 
 
-def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
+def _staleness(newest: dict[str, str], interval_h: float,
+               usable: dict[str, str] | None = None) -> list[dict]:
     """Per-detector age of the last retrain, and whether it exceeds the interval.
 
     Returns a list rather than a dict so the ORDER is stable for a chart legend, sorted stalest
@@ -1306,6 +1307,7 @@ def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
 
     known = ["Isolation Forest", "Gradient Boosting", "DBSCAN", "Adaptive Baseline"]
     rows: list[dict] = []
+    last_usable = usable or {}
     for name in known:
         stamp = newest.get(name)
         age_h: float | None = None
@@ -1315,13 +1317,21 @@ def _staleness(newest: dict[str, str], interval_h: float) -> list[dict]:
                 age_h = (utcnow() - as_aware(when)).total_seconds() / 3600
             except (ValueError, TypeError):
                 age_h = None
+        trained_ok = bool(stamp)
+        is_usable = bool(last_usable.get(name))
         rows.append({
             "model": name,
             "last_trained": stamp or "",
+            # THE LAST TIME THIS DETECTOR COULD ACTUALLY SCORE (GitHub #60). A training run
+            # that completed into an unusable state (DBSCAN with zero centres) is still a
+            # training date; it is not a usable one, and the panel must not call it current.
+            "last_usable": last_usable.get(name, ""),
+            "usable": is_usable,
             "age_h": round(age_h, 2) if age_h is not None else None,
             # Never trained, or older than the configured interval.
             "stale": age_h is None or age_h > interval_h,
             "never_trained": age_h is None,
+            "trained": trained_ok,
         })
     # SORT: never-trained first (the most urgent state -- there is no model at all, not an old
     # one), then by age descending. The key is an explicit tuple rather than arithmetic on a
@@ -1493,8 +1503,20 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         stamps = [run["t"] for run in (runs or []) if run["t"]]
         if stamps:
             newest[mtype] = max(stamps)
+    # WHICH RUNS WERE USABLE. The metrics are the only durable record of whether a run
+    # produced something that can score; DBSCAN's `clusters` is the one that can be zero
+    # while the run itself completed. Other detectors' successful rows are usable by
+    # construction (a failed GB train no longer writes a row after GitHub #60).
+    usable: dict[str, str] = {}
+    for mtype, runs in hist.items():
+        for run in runs or []:
+            metrics = run.get("metrics") or {}
+            if mtype == "DBSCAN" and int(metrics.get("clusters", 0) or 0) <= 0:
+                continue
+            if run.get("t"):
+                usable[mtype] = max(usable.get(mtype, ""), run["t"])
     out["retrain_interval_h"] = interval_h
-    out["staleness"] = _staleness(newest, interval_h)
+    out["staleness"] = _staleness(newest, interval_h, usable)
 
     # 2. Score distribution across EVERY anomaly, including sub-threshold ones, so the
     #    threshold can be judged rather than assumed.

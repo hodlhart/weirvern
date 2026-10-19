@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.17.32 — 2026-10-19
+
+THREE MODEL-INTEGRITY FIXES: HONEST RARITY, STABLE SAMPLES, AND HONEST TRAINING.
+
+- **#62 — a missing service history is not a baseline of one.** A failed `zeek_baseline_sql`
+  left the baseline dict without `baseline_service_count`; rarity then used a floor of 1 and
+  manufactured novelty for every host with more than one service. The extractor now leaves
+  rarity at 0.0 unless the key is present. The volume baseline still trains when the history
+  query fails.
+- **#61 — training samples are deterministic.** Both the Isolation Forest and DBSCAN queries
+  ended with an unordered `LIMIT`, so the same window could train from different rows. Both now
+  order by `sipHash64(src_addr, window_start)` before the outer limit, and a SQL-text test pins
+  the clause.
+- **#60 — "trained" now means "can score".** Gradient Boosting's return value is captured on
+  both scheduled paths, so a failed student no longer gets a training-history row. DBSCAN returns
+  false when it finds zero cluster centres. Candidate reports carry `usable` beside `trained`, and
+  the Models freshness table has a separate **Last usable** column; a detector with a recent
+  training run but no usable model reads **not scoring**, never "current".
+
 ## 0.17.31 — 2026-10-19
 
 A KEPT MODEL KEEPS ITS HOME, AND ZEEK COUNTS ARE LOGGED ONCE.
