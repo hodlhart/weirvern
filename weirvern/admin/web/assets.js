@@ -623,6 +623,9 @@ const FORCE = {
   ringMax: 178,     // the outermost ring stays inside the frame at any hop count
   damp: 0.85,
   maxSpeed: 14,
+  // The circle/label footprint, not a decorative margin: the largest node radius is 14 and a
+  // label sits 18 above it. A clamp of 8 put the circle on the frame and clipped the label.
+  nodeEdge: 34,
   animateMs: 750,
 };
 
@@ -655,7 +658,7 @@ function ringPlan(nodes) {
 function computeLayout(nodes, edges, box, warmStart, pinned) {
   const n = nodes.length;
   const cx = box.cx, cy = box.cy;
-  const radius = Math.min(box.w, box.h) / 2 - 26;
+  const radius = Math.min(box.w, box.h) / 2 - FORCE.nodeEdge;
 
   const ordered = nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0));
   const start = new Map();
@@ -759,8 +762,8 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
   for (let i = 0; i < n; i++) radials.push(Math.hypot(xs[i] - cx, ys[i] - cy));
   radials.sort((a, b) => a - b);
   const fitR = radials[Math.min(radials.length - 1, Math.floor(radials.length * 0.95))] || 1;
-  const room = Math.min(box.w / 2 - 14, box.h / 2 - 14);
-  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, (room - 12) / fitR));
+  const room = Math.min(box.w / 2 - FORCE.nodeEdge, box.h / 2 - FORCE.nodeEdge);
+  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, room / fitR));
   const end = new Map();
   ordered.forEach((nd, i) => {
     end.set(nd.id, {
@@ -823,9 +826,11 @@ function edgeTitle(e) {
  * drag that carries a host and re-settles its neighbours (the interaction Obsidian's graph
  * is known for, and the reason a map is worth arranging by hand). */
 function drawGraph(host, nodes, edges, truncated) {
+  // A graph that is only 460px tall clamps its own outer ring against the frame. Give the
+  // map a taller, more generously inset canvas; the CSS height matches this viewBox.
   const W = 1000;
-  const H = 460;
-  const { svg, plot } = chartFrame(W, H, { l: 20, r: 20, t: 20, b: 20 });
+  const H = 620;
+  const { svg, plot } = chartFrame(W, H, { l: 40, r: 40, t: 40, b: 40 });
   const cx = (plot.l + plot.r) / 2;
   const cy = (plot.t + plot.b) / 2;
   const box = { cx: cx, cy: cy, w: plot.r - plot.l, h: plot.b - plot.t };
@@ -941,8 +946,10 @@ function drawGraph(host, nodes, edges, truncated) {
         const p = toLocal(e2);
         const cur = pos.get(id);
         if (!cur) return;
-        const nx = Math.min(cx + box.w / 2 - 8, Math.max(cx - box.w / 2 + 8, p.x));
-        const ny = Math.min(cy + box.h / 2 - 8, Math.max(cy - box.h / 2 + 8, p.y));
+        const nx = Math.min(cx + box.w / 2 - FORCE.nodeEdge,
+                          Math.max(cx - box.w / 2 + FORCE.nodeEdge, p.x));
+        const ny = Math.min(cy + box.h / 2 - FORCE.nodeEdge,
+                          Math.max(cy - box.h / 2 + FORCE.nodeEdge, p.y));
         if (!state.moved && Math.abs(nx - cur.x) + Math.abs(ny - cur.y) > 2) {
           state.moved = true;
           animSeq++;  // the drag owns the map now; any in-flight settle animation stops

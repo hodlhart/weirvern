@@ -2736,8 +2736,22 @@ function gateForm(a) {
   // US-1: a click inside the form belongs to the form. Without this the row's own click
   // handler swallows it and the Evidence drill opens mid-edit (measured).
   form.addEventListener("click", (e) => e.stopPropagation());
+  // SOURCE, DESTINATION AND DIRECTION ARE PART OF THE RULE (operator, 2026-10-20: "i need
+  // more options, source, destination etc"). The quick block used to hard-code the alert's
+  // source and no destination; the full rule composer already had these fields. Keep the
+  // quick form focused, but let the operator name the other end of the rule.
+  const src = el("input", { attrs: { type: "text", "aria-label": "source address or CIDR",
+                                     placeholder: "source address or CIDR" } });
+  src.value = String(a.src_addr || "");
+  const dst = el("input", { attrs: { type: "text",
+                                     "aria-label": "destination address or CIDR (optional)",
+                                     placeholder: "destination (optional)" } });
+  const direction = el("select", { attrs: { "aria-label": "direction" } }, [
+    el("option", { value: "forward", text: "forwarded", selected: true }),
+    el("option", { value: "in", text: "inbound to this weirling" }),
+  ]);
   const scope = el("select", { attrs: { "aria-label": "what to block" } }, [
-    el("option", { value: "all", text: "all traffic from this host", selected: true }),
+    el("option", { value: "all", text: "all traffic", selected: true }),
     el("option", { value: "port", text: "only one service" }),
   ]);
   const port = el("input", { attrs: { type: "number", min: "1", max: "65535",
@@ -2757,15 +2771,32 @@ function gateForm(a) {
     const scopeTxt = scope.value === "port"
       ? `${proto.value} port ${Number(port.value) || "\u2026"}`
       : "all traffic";
+    const srcTxt = String(src.value || "").trim() || "(missing source)";
+    const dstTxt = String(dst.value || "").trim();
+    const dirTxt = direction.value === "in" ? " inbound" : " forwarded";
     const dur = ttl.value === "0" ? "until revoked" : `${ttl.value} min`;
-    blast.textContent = `Blast radius: ${scopeTxt} from ${a.src_addr} \u2014 enforced at the ` +
-      `gate${g.iface ? ` on ${g.iface}` : ""} (${g.rules_active || 0} rule(s) active) \u2014 ` +
-      `for ${dur}.`;
+    blast.textContent = `Blast radius: ${scopeTxt}${dirTxt} from ${srcTxt}`
+      + (dstTxt ? ` to ${dstTxt}` : "") + ` \u2014 enforced at the `
+      + `gate${g.iface ? ` on ${g.iface}` : ""} (${g.rules_active || 0} rule(s) active) \u2014 `
+      + `for ${dur}.`;
   };
-  [scope, port, proto, ttl].forEach((c) => {
+  [scope, port, proto, ttl, direction].forEach((c) => {
     c.addEventListener("change", refreshBlast);
   });
-  port.addEventListener("input", refreshBlast);
+  [src, dst, port].forEach((c) => {
+    c.addEventListener("input", refreshBlast);
+  });
+  form.appendChild(el("div", { class: "gate-line" }, [
+    el("label", { text: "source" }, [src]),
+    el("label", { text: "destination" }, [dst]),
+    el("label", { text: "direction" }, [direction]),
+  ]));
+  form.appendChild(el("div", { class: "gate-line" }, [
+    el("label", { text: "what" }, [scope]),
+    el("label", { text: "protocol" }, [proto]),
+    el("label", { text: "port" }, [port]),
+    el("label", { text: "for" }, [ttl]),
+  ]));
   refreshBlast();
   const why = el("input", { class: "gate-why", attrs: { type: "text", "aria-label": "reason" },
     value: `alert score ${(a.anomaly_score ?? 0).toFixed(3)} on ${a.src_addr}, ` +
@@ -2782,10 +2813,11 @@ function gateForm(a) {
       }
       // The reason is optional; a blank field posts as an empty string and the row records it.
       const body = {
-        src_cidr: a.src_addr, dst_cidr: "",
+        src_cidr: src.value.trim(), dst_cidr: dst.value.trim(),
         protocol: portMode ? proto.value : "",
         dst_port: portMode ? Number(port.value) : 0,
-        direction: "forward", ttl_minutes: Number(ttl.value), reason: why.value.trim(),
+        direction: direction.value || "forward",
+        ttl_minutes: Number(ttl.value), reason: why.value.trim(),
       };
       submit.disabled = true;
       note.textContent = "recording\u2026";
@@ -2815,12 +2847,6 @@ function gateForm(a) {
       }
     } },
   });
-  form.appendChild(el("div", { class: "gate-line" }, [
-    el("span", { class: "muted", text: "block" }), scope, port, proto,
-  ]));
-  form.appendChild(el("div", { class: "gate-line" }, [
-    el("span", { class: "muted", text: "for" }), ttl,
-  ]));
   form.appendChild(el("div", { class: "gate-line" }, [blast]));
   form.appendChild(el("div", { class: "gate-line" }, [why]));
   form.appendChild(el("div", { class: "gate-line" }, [submit, note]));

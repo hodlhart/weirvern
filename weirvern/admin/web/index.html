@@ -1364,7 +1364,7 @@
         <label class="muted">view <select id="wl-view"></select></label>
         <button id="wl-view-save" class="quiet">Save view</button>
         <label class="muted hidden"><input id="wl-problems-only" type="checkbox"> problems only</label>
-        <label class="muted"><input id="wl-revoked" type="checkbox" checked> include revoked</label>
+        <label class="muted"><input id="wl-revoked" type="checkbox"> include revoked</label>
       </div>
       <div id="wl-bulk" class="controls hidden">
         <span class="muted" id="wl-bulk-n"></span>
@@ -1691,6 +1691,30 @@
         <label>custom domain <input id="sl-bl-custom" type="text" placeholder="ads.example.com" /></label>
         <button id="sl-bl-add">Add</button>
         <span id="sl-bl-note" class="muted"></span>
+      </div>
+      <div class="controls">
+        <label>add a list URL
+          <input id="sl-bl-url" type="url" size="42"
+                 placeholder="https://example.com/blocklist.txt" />
+        </label>
+        <label>name (optional)
+          <input id="sl-bl-name" type="text" size="22" placeholder="my list" />
+        </label>
+        <label>format
+          <select id="sl-bl-format">
+            <option value="domains" selected>one domain per line (recommended)</option>
+            <option value="hosts">hosts file</option>
+            <option value="dnsmasq">dnsmasq</option>
+          </select>
+        </label>
+        <button id="sl-bl-source-add">Add list</button>
+        <button class="info-btn" data-info="sl-bl-format-info" aria-label="which formats a list may use" aria-expanded="false">i</button>
+      </div>
+      <div class="info-text hidden" id="sl-bl-format-info">
+        <p><strong>Format.</strong> One domain per line is the most portable: <code>ads.example.com</code>
+        (a leading <code>*.</code> is accepted and normalized). Hosts: <code>0.0.0.0 ads.example.com</code>.
+        DNSMasq: <code>address=/ads.example.com/</code> or <code>local=/ads.example.com/</code>.
+        Adblock and RPZ are refused — export them as a domain list first.</p>
       </div>
     </div>
 

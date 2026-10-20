@@ -870,7 +870,7 @@ td.num { font-family: var(--mono); text-align: right; }
  * A fixed viewport height with the SVG filling it, so the layout has real bounds to work
  * within instead of growing the page as nodes are added.
  */
-.graph { width: 100%; height: 460px; background: var(--panel2);
+.graph { width: 100%; height: 620px; background: var(--panel2);
   border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .graph svg { display: block; width: 100%; height: 100%; }
 .graph .edge { stroke: var(--border); }
@@ -1180,7 +1180,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
 
   /* The force map: a shorter canvas keeps the 1000x460 drawing from being stretched into a
    * tower, and stays tall enough to tap a host. */
-  .graph { height: 320px; }
+  .graph { height: 380px; }
 
   /* Settings rows stack: the key, then its control at full width -- a control aligned to the
    * far edge of a phone-width row is a control nobody finds. */

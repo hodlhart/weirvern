@@ -645,6 +645,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     loadSluice().then(clearError).catch(showError);
   });
+  const addSource = document.getElementById("sl-bl-source-add");
+  if (addSource) addSource.addEventListener("click", async () => {
+    const note = document.getElementById("sl-bl-note");
+    const url = (document.getElementById("sl-bl-url") || {}).value || "";
+    const name = (document.getElementById("sl-bl-name") || {}).value || "";
+    const format = (document.getElementById("sl-bl-format") || {}).value || "domains";
+    if (!url.trim()) { if (note) note.textContent = "give the list URL first"; return; }
+    try {
+      const out = await postJSON("/api/blocklists/source",
+                                 { url: url.trim(), name: name.trim(), format });
+      if (note) note.textContent = (out && out.note) || "added";
+      const field = document.getElementById("sl-bl-url"); if (field) field.value = "";
+      const nfield = document.getElementById("sl-bl-name"); if (nfield) nfield.value = "";
+    } catch (err) {
+      if (note) note.textContent = String((err && err.message) || err);
+    }
+    loadBlocklistPane().catch(showError);
+  });
   const add = document.getElementById("sl-bl-add");
   if (add) add.addEventListener("click", async () => {
     const note = document.getElementById("sl-bl-note");

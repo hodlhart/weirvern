@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.17.67 — 2026-10-20
+
+FIVE HAGEZI TIERS, A FORMAT-AWARE ADD FORM, A BIGGER NETWORK CANVAS, AND REVOKED OFF.
+
+- The blocklist preload now carries the five Multi tiers — LIGHT (hand brush: basic), NORMAL
+  (broom: all-round), PRO (big broom: extended, recommended), PRO++ (sweeper: advanced), and
+  ULTIMATE (ultimate sweeper: maximum). They build on each other, so enabling one turns the
+  other four off; exactly one tier is active. Each uses the portable one-domain-per-line
+  `wildcard/*-onlydomains.txt` file. Existing Light/Pro rows are migrated to that format
+  without changing the operator's on/off state.
+- The Settings blocklist card now has an add-list form: URL, optional name, and an explicit
+  format. The help text requires one domain per line (wildcards normalized), and also accepts
+  hosts and dnsmasq; Adblock and RPZ are refused by name instead of importing zero domains.
+- The Network connection graph gets a taller canvas (620px desktop, 380px at the phone
+  breakpoint), 40px plot insets, and a 34px node/label boundary; nodes no longer sit on the
+  frame or clip their labels at the top.
+- The quick alert block form now exposes **source**, **destination**, **direction**,
+  protocol and port as explicit fields, with the blast-radius sentence naming both ends. This
+  is the same rule contract the full composer already used; the alert shortcut no longer
+  hard-codes "all traffic from this host".
+- Revoked registrations are opt-in again: the include-revoked box starts unchecked, so the
+  Weirlings list shows the active fleet by default.
+
 ## 0.17.66 — 2026-10-20
 
 THE SYSTEM CARDS REPORT THE SENSOR'S BOUNDARY, NOT THE KERNEL'S BIGGER VIEW.

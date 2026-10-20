@@ -20,9 +20,12 @@ ones -- but a fetch or parse problem never counts as "zero domains".
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
+import re
 import time as _time
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
@@ -33,21 +36,65 @@ logger = logging.getLogger(__name__)
 DEFAULT_SOURCES: list[dict] = [
     {
         "source_id": "hagezi-light",
-        "name": "HaGeZi Multi LIGHT",
-        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/light.txt",
-        "format": "dnsmasq",
+        "name": "HaGeZi Multi LIGHT — hand brush: basic protection",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/light-onlydomains.txt",
+        "format": "domains",
         "enabled": 1,
+        "tier": "light",
+        "risk": "minimal",
+        "recommended": False,
+    },
+    {
+        "source_id": "hagezi-normal",
+        "name": "HaGeZi Multi NORMAL — broom: all-round protection",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/multi-onlydomains.txt",
+        "format": "domains",
+        "enabled": 0,
+        "tier": "normal",
+        "risk": "low",
+        "recommended": False,
+        "mini_url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/light-onlydomains.txt",
     },
     {
         "source_id": "hagezi-pro",
-        "name": "HaGeZi Multi PRO",
-        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/pro.txt",
-        "format": "dnsmasq",
-        # LIGHT is the default that is ON. PRO is an order of magnitude larger and imports
-        # ~300k names; that is the operator's call, so it ships listed and disabled.
+        "name": "HaGeZi Multi PRO — big broom: extended protection (recommended)",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt",
+        "format": "domains",
         "enabled": 0,
+        "tier": "pro",
+        "risk": "low to moderate",
+        "recommended": True,
+        "mini_url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.mini-onlydomains.txt",
+    },
+    {
+        "source_id": "hagezi-proplus",
+        "name": "HaGeZi Multi PRO++ — sweeper: advanced protection (more aggressive)",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus-onlydomains.txt",
+        "format": "domains",
+        "enabled": 0,
+        "tier": "proplus",
+        "risk": "moderate",
+        "recommended": False,
+        "mini_url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus.mini-onlydomains.txt",
+    },
+    {
+        "source_id": "hagezi-ultimate",
+        "name": "HaGeZi Multi ULTIMATE — ultimate sweeper: maximum protection (most aggressive)",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/ultimate-onlydomains.txt",
+        "format": "domains",
+        "enabled": 0,
+        "tier": "ultimate",
+        "risk": "high",
+        "recommended": False,
+        "mini_url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/ultimate.mini-onlydomains.txt",
     },
 ]
+
+# The five Multi versions build on each other: exactly one may be active. Turning one on turns
+# the other four off in the same write, so the watch set cannot accidentally become a union.
+TIER_SOURCE_IDS: tuple[str, ...] = tuple(s["source_id"] for s in DEFAULT_SOURCES)
+SUPPORTED_FORMATS = ("domains", "wildcard", "hosts", "dnsmasq")
+_DEFAULT_BY_ID = {s["source_id"]: s for s in DEFAULT_SOURCES}
 
 FETCH_TIMEOUT_S = 30
 FETCH_MAX_BYTES = 64 * 1024 * 1024
@@ -116,22 +163,40 @@ def parse_list(text: str, fmt: str) -> set[str]:
 
 
 def ensure_default_sources(client) -> int:
-    """Insert any missing DEFAULT_SOURCES rows. Idempotent; returns how many were added."""
-    existing = {str(r[0]) for r in client.query(
-        "SELECT source_id FROM weirvern.blocklist_sources FINAL").result_rows}
+    """Insert missing tiers and refresh their NAME/URL/FORMAT without touching operator state.
+
+    The first release shipped Light and Pro with dnsmasq URLs. The tier update changes to the
+    one-domain-per-line wildcard-onlydomains files; an existing row must move with it, or a
+    deployment keeps importing the old format forever. `enabled`, fetch time, count and error
+    are preserved: this is metadata migration, not a resync.
+    """
+    existing = {s["source_id"]: s for s in load_sources(client)}
     added = 0
     now = datetime.now(UTC)
     for src in DEFAULT_SOURCES:
-        if src["source_id"] in existing:
+        prior = existing.get(src["source_id"])
+        if prior is None:
+            client.insert(
+                "weirvern.blocklist_sources",
+                [[src["source_id"], src["name"], src["url"], src["format"],
+                  int(src["enabled"]), now, now, None, 0, ""]],
+                column_names=["source_id", "name", "url", "format", "enabled", "added_at",
+                              "updated", "fetched_at", "domain_count", "last_error"],
+            )
+            added += 1
+            continue
+        if (prior.get("name"), prior.get("url"), prior.get("format")) == (
+                src["name"], src["url"], src["format"]):
             continue
         client.insert(
             "weirvern.blocklist_sources",
-            [[src["source_id"], src["name"], src["url"], src["format"], int(src["enabled"]),
-              now, now, None, 0, ""]],
+            [[src["source_id"], src["name"], src["url"], src["format"],
+              int(bool(prior.get("enabled"))), prior.get("added_at") or now, now,
+              prior.get("fetched_at") or None, int(prior.get("domain_count") or 0),
+              str(prior.get("last_error") or "")]],
             column_names=["source_id", "name", "url", "format", "enabled", "added_at",
                           "updated", "fetched_at", "domain_count", "last_error"],
         )
-        added += 1
     return added
 
 
@@ -141,11 +206,17 @@ def load_sources(client) -> list[dict]:
         "FROM weirvern.blocklist_sources FINAL ORDER BY source_id").result_rows
     out = []
     for r in rows:
+        sid = str(r[0])
+        meta = _DEFAULT_BY_ID.get(sid) or {}
         out.append({
-            "source_id": str(r[0]), "name": str(r[1]), "url": str(r[2]), "format": str(r[3]),
+            "source_id": sid, "name": str(r[1]), "url": str(r[2]), "format": str(r[3]),
             "enabled": bool(r[4]),
             "fetched_at": r[5].isoformat() if hasattr(r[5], "isoformat") and r[5] else "",
             "domain_count": int(r[6] or 0), "last_error": str(r[7] or ""),
+            "tier": str(meta.get("tier") or ""),
+            "risk": str(meta.get("risk") or ""),
+            "recommended": bool(meta.get("recommended")),
+            "mini_url": str(meta.get("mini_url") or ""),
         })
     return out
 
@@ -176,6 +247,22 @@ def set_source_enabled(client, source_id: str, enabled: bool) -> dict:
     if src is None:
         raise ValueError(f"no such blocklist source: {sid!r}")
     now = datetime.now(UTC)
+    # THE FIVE TIERS ARE ALTERNATIVES, NOT A UNION. Turning one on turns the other four off in
+    # the same write; otherwise an operator who clicks PRO after LIGHT doubles the watch set
+    # and the two lists' overlap hides which tier is actually in force.
+    if enabled and sid in TIER_SOURCE_IDS:
+        for other in load_sources(client):
+            oid = str(other["source_id"])
+            if oid == sid or oid not in TIER_SOURCE_IDS or not other["enabled"]:
+                continue
+            client.insert(
+                "weirvern.blocklist_sources",
+                [[oid, other["name"], other["url"], other["format"], 0, now, now,
+                  other.get("fetched_at") or None, int(other.get("domain_count") or 0),
+                  str(other.get("last_error") or "")]],
+                column_names=["source_id", "name", "url", "format", "enabled", "added_at",
+                              "updated", "fetched_at", "domain_count", "last_error"],
+            )
     client.insert(
         "weirvern.blocklist_sources",
         [[src["source_id"], src["name"], src["url"], src["format"], int(bool(enabled)),
@@ -186,6 +273,45 @@ def set_source_enabled(client, source_id: str, enabled: bool) -> dict:
     )
     logger.info("blocklists: source %s %s", sid, "enabled" if enabled else "disabled")
     return {**src, "enabled": bool(enabled)}
+
+
+def add_source(client, url: str, *, name: str = "", fmt: str = "domains") -> dict:
+    """Add an operator URL, with the format stated and enforced.
+
+    The most portable format is one domain per line (the HaGeZi wildcard-onlydomains shape);
+    hosts and dnsmasq are accepted because third-party lists commonly use them. Adblock and
+    RPZ rules are REFUSED by name rather than parsed as garbage or imported as zero domains:
+    a format a reader cannot interpret is not a success.
+    """
+    fmt = str(fmt or "domains").strip().lower()
+    aliases = {"domain": "domains", "domain-list": "domains", "domainlist": "domains",
+               "wildcard-domains": "domains", "wildcard_domains": "domains",
+               "host": "hosts", "dnsmasq-list": "dnsmasq"}
+    fmt = aliases.get(fmt, fmt)
+    if fmt not in SUPPORTED_FORMATS:
+        raise ValueError(
+            f"format {fmt!r} is not supported; use one domain per line (domains), hosts, "
+            "or dnsmasq. Adblock and RPZ lists are not parsed — export them as a domain list.")
+    parsed = urllib.parse.urlsplit(str(url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("an http(s) URL is required")
+    uid = hashlib.sha1(str(url).encode("utf-8")).hexdigest()[:10]
+    label = re.sub(r"[^a-z0-9]+", "-", (name or parsed.netloc).lower()).strip("-")[:40]
+    sid = f"custom-{label or 'list'}-{uid}"
+    title = str(name or "").strip() or f"{parsed.netloc}{parsed.path}"[:80]
+    existing = {s["source_id"] for s in load_sources(client)}
+    if sid in existing:
+        raise ValueError(f"that list is already added as {sid}")
+    now = datetime.now(UTC)
+    client.insert(
+        "weirvern.blocklist_sources",
+        [[sid, title, str(url).strip(), fmt, 1, now, now, None, 0, ""]],
+        column_names=["source_id", "name", "url", "format", "enabled", "added_at",
+                      "updated", "fetched_at", "domain_count", "last_error"],
+    )
+    logger.info("blocklists: custom source added: %s (%s)", sid, fmt)
+    return {"source_id": sid, "name": title, "url": str(url).strip(), "format": fmt,
+            "enabled": True, "domain_count": 0, "last_error": ""}
 
 
 def sync_source(client, src: dict, *, fetch=fetch_text, now: datetime | None = None) -> dict:

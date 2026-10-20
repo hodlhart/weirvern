@@ -1787,6 +1787,35 @@ def _build_handler(ctx: GuiContext):
                                              "describes": rule.describes(),
                                              "domain": rule.domain}})
 
+        def _blocklists_source(self) -> None:
+            """Add a URL source, with its format named and validated.
+
+            The form is deliberately explicit: a list with no stated format imports nothing and
+            looks like a broken list. The common one-domain-per-line shape is the default; hosts
+            and dnsmasq are accepted; Adblock/RPZ are refused with the reason.
+            """
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            from weirvern import blocklists  # noqa: PLC0415
+            try:
+                with self._with_client() as client:
+                    src = blocklists.add_source(
+                        client, str(body.get("url") or ""),
+                        name=str(body.get("name") or ""),
+                        fmt=str(body.get("format") or "domains"),
+                    )
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist source add failed: %s", exc)
+                return self._error(502, f"the list could not be added: {type(exc).__name__}")
+            self._json({"ok": True, "source": src,
+                        "note": "added. Sync now to fetch it; importing records names, it does not block them."})
+
         def _blocklists_custom(self) -> None:
             """Add or remove one operator-entered name. Validated like a domain rule."""
             if not self._authorize():
@@ -2644,6 +2673,8 @@ def _build_handler(ctx: GuiContext):
             # once a rule blocks, what it stops), which is a change to the configuration.
             if path == "/api/blocklists/sync":
                 return self._blocklists_sync()
+            if path == "/api/blocklists/source":
+                return self._blocklists_source()
             if path == "/api/blocklists/custom":
                 return self._blocklists_custom()
             # Clicking a list to turn it on or off (the operator, 2026-10-16). A write: what the
