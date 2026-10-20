@@ -9,10 +9,11 @@
 </p>
 
 <p align="center">
-  ML-backed detection and enforcement for Kubernetes networks. Weirvern learns from
-  <strong>NetFlow, Zeek, DNS and JA4</strong> fingerprints, explains every alert with the
-  measurements behind it, and can sit <strong>inline to inspect and drop traffic</strong>, redirect
-  a segment with <strong>ARP</strong>, or watch passively from a mirror.
+  ML-backed network detection and enforcement, <strong>built in Kubernetes for easy
+  deployment</strong>. Weirvern learns from <strong>NetFlow, Zeek, DNS and JA4</strong>
+  fingerprints, explains every alert with the measurements behind it, and can sit
+  <strong>inline to inspect and drop traffic</strong>, redirect a segment with <strong>ARP</strong>,
+  or watch passively from a mirror.
 </p>
 
 <p align="center">
