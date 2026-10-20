@@ -758,18 +758,25 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
   // Fit the settle into the frame by SCALING (never distorting), using the 95th-percentile
   // radius so one drifting node cannot shrink the whole picture. A warm start keeps the
   // previous scale so a dragged map does not jump between sizes.
-  const radials = [];
-  for (let i = 0; i < n; i++) radials.push(Math.hypot(xs[i] - cx, ys[i] - cy));
-  radials.sort((a, b) => a - b);
-  const fitR = radials[Math.min(radials.length - 1, Math.floor(radials.length * 0.95))] || 1;
-  const room = Math.min(box.w / 2 - FORCE.nodeEdge, box.h / 2 - FORCE.nodeEdge);
-  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, room / fitR));
+  // THE FRAME IS AN ELLIPSE, NOT A SQUARE. A square clamp puts every outer host on one of
+  // four walls, which is exactly the "everything sits along the edge" picture the operator
+  // rejected. Scale to the widest normalised radial and clamp to an ellipse with the same
+  // 34px node/label margin; the cloud uses the full tile without drawing a rectangle.
+  const rx = Math.max(1, box.w / 2 - FORCE.nodeEdge);
+  const ry = Math.max(1, box.h / 2 - FORCE.nodeEdge);
+  let maxN = 0;
+  for (let i = 0; i < n; i++) {
+    const nx = Math.abs(xs[i] - cx) / rx;
+    const ny = Math.abs(ys[i] - cy) / ry;
+    maxN = Math.max(maxN, Math.hypot(nx, ny));
+  }
+  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, 0.92 / Math.max(1e-9, maxN)));
   const end = new Map();
   ordered.forEach((nd, i) => {
-    end.set(nd.id, {
-      x: Math.min(cx + room, Math.max(cx - room, cx + (xs[i] - cx) * s)),
-      y: Math.min(cy + room, Math.max(cy - room, cy + (ys[i] - cy) * s)),
-    });
+    let dx = (xs[i] - cx) * s, dy = (ys[i] - cy) * s;
+    const norm = Math.hypot(dx / rx, dy / ry);
+    if (norm > 0.97) { dx *= 0.97 / norm; dy *= 0.97 / norm; }
+    end.set(nd.id, { x: cx + dx, y: cy + dy });
   });
   // Rings are drawn only when TTL produced more than one class: a single circle around
   // everything would read as a frame, not a measurement. Each circle sits at the radius its
@@ -946,10 +953,13 @@ function drawGraph(host, nodes, edges, truncated) {
         const p = toLocal(e2);
         const cur = pos.get(id);
         if (!cur) return;
-        const nx = Math.min(cx + box.w / 2 - FORCE.nodeEdge,
-                          Math.max(cx - box.w / 2 + FORCE.nodeEdge, p.x));
-        const ny = Math.min(cy + box.h / 2 - FORCE.nodeEdge,
-                          Math.max(cy - box.h / 2 + FORCE.nodeEdge, p.y));
+        // Drag against the same ellipse: a host can be placed anywhere in the tile, never by
+        // clamping to a rectangular wall that the force map then crowds.
+        const rx = box.w / 2 - FORCE.nodeEdge, ry = box.h / 2 - FORCE.nodeEdge;
+        let dx = p.x - cx, dy = p.y - cy;
+        const norm = Math.hypot(dx / rx, dy / ry);
+        if (norm > 0.97) { dx *= 0.97 / norm; dy *= 0.97 / norm; }
+        const nx = cx + dx, ny = cy + dy;
         if (!state.moved && Math.abs(nx - cur.x) + Math.abs(ny - cur.y) > 2) {
           state.moved = true;
           animSeq++;  // the drag owns the map now; any in-flight settle animation stops

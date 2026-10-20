@@ -4310,7 +4310,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           /unregistered/.test(detText), detText.slice(0, 140));
     const acts = [...doc.querySelectorAll("#anomalies-table .review-acts .review-act")]
       .map((b) => b.textContent);
-    const allowed = new Set(["ack", "resolve", "FP", "clear"]);
+    const allowed = new Set(["Acknowledge", "Resolve", "Ignore", "clear"]);
     check("the disposition vocabulary is closed",
           acts.length >= 1 && acts.every((a) => allowed.has(a)), acts.join(","));
     // US-4: every count cell carries the cue now; target the GROUPED row by its count.
@@ -7083,7 +7083,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           `clicks=${uq3} model=${H.AN_FILTERS.model} asked=${AN_REQS.length ? AN_REQS[AN_REQS.length - 1] : "none"}`);
     note("quiet-detector", "understand", uq3);
     const ackBtn = [...doc.querySelectorAll("#anomalies-table .review-act")]
-      .find((b) => b.textContent === "ack");
+      .find((b) => b.textContent === "Acknowledge");
     clicks = 0;
     if (ackBtn) {
       C(ackBtn);                                 // 1: the disposition -- the actual quieting

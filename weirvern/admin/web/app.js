@@ -1631,7 +1631,7 @@ function reviewChip(state, reviewedAt) {
 function reviewActs(target, state) {
   if (state === "unavailable") return null;
   return el("div", { class: "review-acts" }, [
-    ...[["ack", "ack"], ["resolved", "resolve"], ["false_positive", "FP"]]
+    ...[["ack", "Acknowledge"], ["resolved", "Resolve"], ["false_positive", "Ignore"]]
       .filter(([st]) => st !== state)
       .map(([st, label]) => el("button", {
         class: "review-act", text: label, attrs: { type: "button" },
@@ -1705,7 +1705,14 @@ async function postReview(a, state) {
     showError(err);
     return;
   }
-  await loadAnomalies();
+  // THE EVIDENCE PAGE REFRESHES ITSELF after a disposition. Re-rendering the anomalies
+  // table behind a page the operator is still reading would leave the evidence showing the
+  // old ruling, which is the exact place the decision is supposed to be visible.
+  if (document.getElementById("view-evidence").classList.contains("active")) {
+    await openEvidence(a);
+  } else {
+    await loadAnomalies();
+  }
 }
 
 function anToggleOccurrences(tr, a) {
@@ -3034,10 +3041,17 @@ async function loadEvidence(addr, start, end) {
     }
     // The operator's pivot, on the page where the alert is actually read. Same gate-state check
     // as the anomalies row: offered only when a block would DO something, with the reason stated
-    // when it would not.
+    // when it would not. ACKNOWLEDGE AND IGNORE SIT BESIDE BLOCK (operator, 2026-10-20):
+    // the dispositions existed only inside the anomalies row's disclosure, which is not where
+    // the alert is actually read. The reviewActs builder owns the same API calls.
     await loadGateState();
-    verdict.appendChild(gateAction(Object.assign({}, d.anomaly,
-      { src_addr: d.src_addr, window_start: d.window_start }), { popout: true }));
+    const target = Object.assign({}, d.anomaly,
+      { src_addr: d.src_addr, window_start: d.window_start });
+    const acts = el("div", { class: "ev-actions" });
+    acts.appendChild(gateAction(target, { popout: true }));
+    const dispositions = reviewActs(target, target.review_state || "");
+    if (dispositions) acts.appendChild(dispositions);
+    verdict.appendChild(acts);
     // ── ATT&CK techniques ────────────────────────────────────────────────────
     //
     // Rendered with the evidence and the confidence, never as a bare ID. "T1046" alone

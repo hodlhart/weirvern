@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.70 — 2026-10-20
+
+ACKNOWLEDGE AND IGNORE BESIDE BLOCK; THE GRAPH USES THE WHOLE TILE.
+
+- The evidence page's verdict now carries **Acknowledge**, **Resolve** and **Ignore** beside
+  Block. They use the existing review API and refresh the evidence page after the write, so
+  the ruling changes where the operator is reading instead of only in the anomalies table.
+- Review button labels are words now: Acknowledge, Resolve, Ignore. The anomaly table keeps
+  its disclosure layout, but the same three dispositions.
+- The connection graph clamps to an **ellipse**, not a rectangle. The old square boundary put
+  every outer host on one of four walls; the ellipse scales to the widest normalised radius
+  and keeps a 34px node/label margin. The tile height is responsive
+  (`clamp(420px, 62vh, 760px)`; `clamp(320px, 52vh, 480px)` on phone) so it uses the space it
+  is given.
+- The evidence Block action still opens the Sluice rule sheet from 0.17.69 (source/reason
+  prefilled, all rule fields editable).
+
 ## 0.17.69 — 2026-10-20
 
 AN ALERT'S BLOCK ACTION OPENS THE SLUICE RULE SHEET.
