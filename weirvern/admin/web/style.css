@@ -1374,3 +1374,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 td.wl-perf-cell { white-space: nowrap; }
 td.wl-perf-cell .wl-perf-value { display: block; }
 td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
+
+/* NIC headers under their sensor's name, not a page-wide header over the performance row. */
+#wl-table .wl-colhead th { padding-top: 2px; padding-bottom: 5px; font-size: 11px;
+  letter-spacing: .04em; text-transform: uppercase; }

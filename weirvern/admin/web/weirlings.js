@@ -103,7 +103,7 @@ async function loadWeirlings() {
     summaryBox.appendChild(el("p", { class: "empty",
       text: `Fleet unknown — ${d.reason || "the registry did not answer"}.` }));
     document.getElementById("wl-count").textContent = "";
-    emptyRow(document.querySelector("#wl-table tbody"), 9,
+    emptyRow(document.querySelector("#wl-table tbody"), 7,
       "The fleet cannot be shown while the registry is unreadable.");
     return;
   }
@@ -508,10 +508,6 @@ function wlNicRows(r) {
         el("span", { class: "mono wl-nic-name", text: n.name }),
         el("span", { class: "muted", text: ` ${n.role}` }),
       ]),
-      // CPU and memory are sensor-level; the cells exist here so every NIC row stays aligned
-      // under the real columns.
-      el("td", { class: "muted", text: "—" }),
-      el("td", { class: "muted", text: "—" }),
       el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
                  attrs: { title: n.mode
                    ? (String(r.expected_mode || "").toLowerCase()
@@ -593,7 +589,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
   if (!visible.length) {
     const problemsOnly = document.getElementById("wl-problems-only").checked;
-    emptyRow(tbody, 9,
+    emptyRow(tbody, 7,
       stateFilter
         ? `No sensor is in state "${stateFilter.replace("_", " ")}" right now.`
         : problemsOnly
@@ -653,9 +649,17 @@ function renderWeirlings(rows, revoked, revokedReason) {
       el("span", { class: "wl-perf-value", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }),
       el("span", { class: "wl-perf-label", text: "MEMORY" }),
     ]));
-    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "6" } }));
+    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "4" } }));
 
     tbody.appendChild(tr);
+    // THE HEADERS SIT BELOW THE SENSOR NAME (operator, 2026-10-19): the CPU/memory reading is
+    // the sensor's own row, so the NIC columns are labelled immediately above the NIC lines.
+    tbody.appendChild(el("tr", { class: "wl-colhead" }, [
+      el("th", { text: "interface" }), el("th", { text: "mode" }),
+      el("th", { text: "channel" }), el("th", { text: "networks" }),
+      el("th", { text: "throughput" }), el("th", { text: "flow" }),
+      el("th", { text: "feeds" }),
+    ]));
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
     // row"). Always visible, never behind a control: a NIC list you have to discover is the
     // same dead end the old evidence drill was.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.44 — 2026-10-19
+
+THE NIC HEADERS SIT UNDER THE SENSOR NAME.
+
+- Removed the CPU and memory column headers. The sensor row keeps the value-over-label
+  readings; the remaining `interface`, `mode`, `channel`, `networks`, `throughput`, `flow`
+  and `feeds` headers are rendered beneath each sensor name, directly above its NIC lines.
+
 ## 0.17.43 — 2026-10-19
 
 CPU AND MEMORY KEEP THEIR ORIGINAL READING; THROUGHPUT IS ONE COLUMN.
