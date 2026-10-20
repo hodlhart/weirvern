@@ -736,7 +736,9 @@ function renderWeirlings(rows, revoked, revokedReason) {
              [el("span", { text: r.sensor_id })]),
           el("span", { class: "muted", text: " (revoked)" }),
         ]));
-        tr.appendChild(el("td", { attrs: { colspan: "5" } }, [
+        // SEVEN COLUMNS, not six: first cell plus colspan 6. The old 5 left the revoked row
+        // short one column and it drifted under the wrong header.
+        tr.appendChild(el("td", { attrs: { colspan: "6" } }, [
           el("span", { class: "chip muted", text: "revoked" }),
           el("span", { class: "muted",
                        text: r.revoked_at ? ` retired ${r.revoked_at}` : "" }),

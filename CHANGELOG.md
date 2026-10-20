@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.64 — 2026-10-20
+
+REVOKED REGISTRATIONS ARE INCLUDED BY DEFAULT.
+
+- The Weirlings table's **include revoked** box starts checked, so an operator opening the tab
+  sees the registration history without discovering a filter first. It remains a checkbox: the
+  active fleet is still the primary list; revoked rows sit below it and are visually muted.
+- A revoked row now spans all seven columns (first cell + `colspan=6`). It previously used a
+  five-column span, so it stopped one column short and drifted under the wrong header.
+
 ## 0.17.63 — 2026-10-20
 
 THE MANAGEMENT ADDRESS IS NEVER AN INTERCEPT TARGET, EVEN ON ITS OWN SUBNET.
