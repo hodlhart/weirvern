@@ -406,3 +406,23 @@ def test_the_addressed_case_is_unchanged():
     assert result["ok"] is True
     assert result["swept"] is not None
     assert not result.get("passive_only")
+
+
+def test_a_single_observed_host_is_widened_to_a_surveyable_segment():
+    """/32 observations used to crash: ipaddress .hosts() is a list for a single-host
+    network in CPython 3.11, and next(list) raised TypeError inside the survey job. The
+    survey must widen the assumption, say so, and still return a usable plan."""
+    o = _obs(segment="192.0.2.7/32", gateway="", frames=2)
+    o.observed_mask = None
+    o.sources = {"192.0.2.7": 1}
+    o.arp_pairs = {}
+    o.gratuitous = []
+    result = sonar.survey(
+        "ens19", mac_reader=lambda i: "aa:bb:cc:dd:ee:ff",
+        addr_reader=lambda i: ("", ""), route_reader=lambda i: "",
+        watcher=lambda iface, **kw: o, sweep=lambda *a, **k: {}, watch_s=1,
+    )
+    assert result["ok"] is True
+    assert result["segment"] == "192.0.2.0/24"
+    assert result["recommended"]["intercept_segment"] == "192.0.2.0/24"
+    assert any("too narrow" in n for n in result["notes"])

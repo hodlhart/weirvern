@@ -293,6 +293,21 @@ def survey(iface: str, mgmt_iface: str = "", *,
                 f"mirror configuration."
             )
         net = ipaddress.ip_network(observed["segment"], strict=False)
+        # ONE OBSERVED HOST IS NOT A SEGMENT. The passive inference takes the widest common
+        # prefix of the addresses that spoke; on a quiet window that is a /32 (or a /31), and
+        # the gateway fallback below then calls next() on ipaddress's /32 hosts(), which is a
+        # LIST in CPython 3.11 -- the survey died with "'list' object is not an iterator".
+        # Widen to the conventional /24 and SAY it was assumed, rather than turning a sparse
+        # observation into either a crash or a claim about a one-address network.
+        if net.prefixlen >= 31:
+            base = str(net.network_address)
+            net = ipaddress.ip_network(f"{base}/24", strict=False)
+            notes.append(
+                f"only one address was observed on '{iface}', so the segment "
+                f"{observed['segment']} was too narrow to survey. It is treated as "
+                f"{net} (a /24 around that address), which is an assumption about the "
+                "segment size -- confirm it before enabling siphon."
+            )
         # No local address: the interface is only listening, so there is nothing of ours to
         # exclude from the sweep and nothing to advertise as our source. The sweep still
         # needs a source address the segment will accept, and without our own address the
@@ -331,7 +346,7 @@ def survey(iface: str, mgmt_iface: str = "", *,
         else (observed.get("gateway_source") or "assumed as the first host of the segment")
     )
     if not gateway:
-        first = next(net.hosts(), None)
+        first = next(iter(net.hosts()), None)
         if first is None:
             raise SonarError(f"segment {segment} has no usable host addresses")
         gateway = str(first)

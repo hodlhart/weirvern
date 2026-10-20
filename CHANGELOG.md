@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.47 — 2026-10-19
+
+SONAR SURVIVES A QUIET PASSIVE WINDOW.
+
+- A passive survey that observed only one address inferred a `/32` segment. On CPython 3.11
+  `IPv4Network.hosts()` returns a list for a single-host network, and Sonar's gateway
+  fallback called `next()` on it, so the job failed with `'list' object is not an iterator`.
+  The segment is now widened to the conventional `/24` with an explicit assumption note, and
+  the gateway fallback accepts either a list or an iterator.
+- Regression test covers the single-observed-host case.
+
 ## 0.17.46 — 2026-10-19
 
 THE NIC HEADERS SIT UNDER THE SENSOR NAME AGAIN.
