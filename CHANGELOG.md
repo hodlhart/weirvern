@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.50 — 2026-10-19
+
+THE DHCP PROBE ACTUALLY RUNS ON THE LIVE PATH.
+
+- 0.17.49 gated the DHCP probe on an injected `sweep` being absent, but `survey` replaces
+  `sweep` with its default before that check, so the live path recorded `attempted: false`.
+  The live-path flag is now captured before defaults are applied; a real Sonar run sends the
+  DHCP DISCOVER first and falls back to passive capture only if no OFFER arrives.
+
 ## 0.17.49 — 2026-10-19
 
 SONAR ASKS THE SEGMENT INSTEAD OF ASSUMING.

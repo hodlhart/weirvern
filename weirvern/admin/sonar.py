@@ -306,6 +306,7 @@ def survey(iface: str, mgmt_iface: str = "", *,
     from weirvern.admin import intercept as ic_mod
     from weirvern.admin import segmentwatch, siphonnet
 
+    live_probe_requested = addr_reader is None and watcher is None and sweep is None
     mac_reader = mac_reader or siphonnet.read_mac
     # A passive capture port has NO IPv4 address by design. `iface_ipv4` raises in that case
     # (correct for callers that need an address), but the fallback below is the whole point of
@@ -343,7 +344,7 @@ def survey(iface: str, mgmt_iface: str = "", *,
 
     # A DHCP DISCOVER is a real transmission, so it is only attempted on the live path.
     # Tests inject addr_reader/watcher and must never touch a network.
-    live_probe = addr_reader is None and watcher is None and sweep is None
+    live_probe = live_probe_requested
     dhcp_evidence: dict = {"attempted": bool(live_probe), "ok": False, "error": ""}
     if live_probe:
         try:
