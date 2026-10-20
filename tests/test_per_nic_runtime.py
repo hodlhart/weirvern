@@ -50,3 +50,40 @@ def test_the_nic_sheet_has_its_own_sluice_control():
     assert 'id="wl-nic-sluice"' in html
     assert "sluice: !!(sluiceBox" in js
     assert "sluice.checked = !!plan.sluice" in js
+
+
+def test_a_siphon_plan_arms_without_a_second_sensor_mode_flip():
+    spec = yaml.safe_load(Path("k8s/32-zeek.yaml").read_text())
+    init = spec["spec"]["template"]["spec"]["initContainers"][0]
+    script = "\n".join(init["args"])
+    # The plan is parsed BEFORE the mode exit, and the guard allows a plan-only siphon.
+    assert script.index("PLAN_IFACES=") < script.index('if [ "$MODE" != "siphon" ] && [ -z "$PLAN_IFACES" ]')
+    assert 'plan asks for siphon' in script
+
+
+def test_the_nic_sheet_enables_the_gate_when_a_nic_is_marked_sluice():
+    js = Path("weirvern/admin/web/weirlings.js").read_text()
+    assert "const anySluice = Object.values(plans).some" in js
+    assert 'stageChange("sluice_enabled", "1"' in js
+
+
+def test_nic_rows_use_the_plan_roles_not_the_sensor_capture_interface():
+    js = Path("weirvern/admin/web/weirlings.js").read_text()
+    assert "const plans = wlPlans();" in js
+    assert 'const siphon = planMode === "siphon" || plan.siphon === true;' in js
+    assert 'channel: (siphon && wlChannelEnabled()) ? ((r.channel && r.channel.state) || "") : "",' in js
+    assert "const hasNicPlan = Object.prototype.hasOwnProperty.call(plans, name);" in js
+
+
+def test_sonar_on_a_nic_stages_that_nics_plan_not_the_global_intercept_keys():
+    app = Path("weirvern/admin/web/app.js").read_text()
+    js = Path("weirvern/admin/web/weirlings.js").read_text()
+    assert "opts.stage !== false" in app
+    assert "stage: false" in js
+    assert "if (typeof wlStageNicSettings === \"function\") wlStageNicSettings();" in js
+    # The old global recommendation path must not be called from the NIC scan.
+    start = js.index("async function wlScanNetwork()")
+    rest = js[start + 10:]
+    ends = [i for i in (rest.find("\nfunction "), rest.find("\nasync function ")) if i >= 0]
+    scan = js[start:start + 10 + min(ends)] if ends else js[start:]
+    assert "stageSonarRecommendations" not in scan

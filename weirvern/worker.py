@@ -1937,6 +1937,8 @@ def _heartbeat_thread(settings, siphon=None) -> None:
     # SENSOR_ID still wins when set explicitly: a deployment that names its sensors wants that
     # name everywhere, and the heartbeat is the row an operator reads a sensor's health from.
     sid = (os.environ.get("SENSOR_ID") or "").strip() or _sensor_name(settings)
+    from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
     interval = max(5, int(getattr(settings, "heartbeat_interval_s", 15)))
     logger.info("Sensor heartbeat every %ds, observing %s", interval,
                 sensorwatch._log_dir())
@@ -1951,7 +1953,15 @@ def _heartbeat_thread(settings, siphon=None) -> None:
             if siphon is not None and not siphon.worker_should_publish:
                 _stop.wait(interval)
                 continue
-            fields = sensorwatch.observe()
+            # THE PLAN IS THE MODE. A per-NIC siphon entry must report `siphon` even when the
+            # legacy sensor-level SENSOR_MODE is loch; otherwise applying a plan and watching
+            # the fleet row would look as if nothing happened until a second enable.
+            _plans = NicPlanSet.from_json(getattr(settings, "intercept_plans", ""))
+            _siphon_nics = _plans.siphon_ifaces()
+            fields = sensorwatch.observe(
+                mode="siphon" if _siphon_nics else getattr(settings, "sensor_mode", "loch"),
+                iface=(_siphon_nics[0] if _siphon_nics else ""),
+            )
             # THE SUPERVISOR'S OWN PROBLEMS RIDE ALONG. When siphon mode is
             # configured the worker supervises the intercept (admin/siphon_supervisor);
             # a plan it refused to run, or a child that keeps crashing, is otherwise

@@ -76,6 +76,30 @@ def run_apply_checks(*, changes: dict, current: dict, ch_client=None, now=None) 
         except Exception as exc:  # noqa: BLE001
             results.append(_r(name, "skip", f"the plan could not be validated ({type(exc).__name__})"))
 
+    # ── 1b. the per-NIC plan set is valid and never names the management port ───────────
+    name = "the per-NIC plans are valid"
+    if "INTERCEPT_PLANS" not in upper:
+        results.append(_r(name, "skip", "this change does not touch the per-NIC plans"))
+    else:
+        from weirvern.nic_plans import NicPlanError, NicPlanSet  # noqa: PLC0415
+
+        try:
+            plans = NicPlanSet.from_json(upper.get("INTERCEPT_PLANS", ""))
+            problems = plans.validate(mgmt_iface=merged.get("MGMT_IFACE", ""))
+            if problems:
+                results.append(_r(name, "fail", "; ".join(problems)))
+            else:
+                results.append(_r(
+                    name, "pass",
+                    f"{len(plans.plans)} NIC(s): "
+                    f"capture={','.join(plans.capture_ifaces()) or 'none'}, "
+                    f"siphon={','.join(plans.siphon_ifaces()) or 'none'}, "
+                    f"sluice={','.join(plans.sluice_ifaces()) or 'none'}"))
+        except (NicPlanError, ValueError) as exc:
+            results.append(_r(name, "fail", str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            results.append(_r(name, "skip", f"the per-NIC plans could not be validated ({type(exc).__name__})"))
+
     # ── 2. the capture interface is one the sensors report ───────────────────────────────
     name = "the capture interface is one the sensors report"
     # CAPTURE_IFACE is the setting the GUI writes; INTERCEPT_IFACE is the older plan key.

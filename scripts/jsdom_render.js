@@ -109,6 +109,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
+                     wlNicFacts, wlPlans, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                      loadHost, loadEvidence, loadAudit, loadDetectors,
@@ -3927,7 +3928,78 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               cells[6].querySelectorAll(".tap").length === 2, cells[6].textContent.trim());
         check("the flow cell draws a trend even at a measured zero",
               !!cells[5].querySelector("svg.wl-spark"), cells[5].textContent.trim());
+        // THE PLAN DECIDES EACH NIC'S LINE (operator, 2026-10-20): a survey of eth2 must not
+        // relabel eth1's network, and a siphon on eth1 must not mark eth2's channel enabled.
+        const plansHeld = H.STAGE.changes.intercept_plans;
+        const upHeld = H.SETTINGS_ROWS.channel_upstream;
+        const downHeld = H.SETTINGS_ROWS.channel_downstream;
+        H.STAGE.changes.intercept_plans = JSON.stringify({
+          eth1: { mode: "siphon", segment: "198.51.100.0/24", gateway: "198.51.100.1",
+                  addr: "198.51.100.10", targets: "*" },
+          eth2: { capture: true, segment: "", gateway: "", addr: "", targets: "*" },
+        });
+        H.SETTINGS_ROWS.channel_upstream = { value: "eth1" };
+        H.SETTINGS_ROWS.channel_downstream = { value: "eth2" };
+        const facts = typeof window.wlNicFacts === "function"
+          ? window.wlNicFacts({ local: true, iface: "eth1", interfaces: ["eth1", "eth2"],
+              network_names: {}, channel: { state: "enabled" },
+              reported_mode: "siphon", expected_mode: "siphon", plan: {} })
+          : { rows: [] };
+        const eth1 = facts.rows.find((n) => n.name === "eth1") || {};
+        const eth2 = facts.rows.find((n) => n.name === "eth2") || {};
+        check("a NIC's line uses its own plan segment, not the sensor-level one",
+              eth1.networks === "198.51.100.0/24" && eth2.networks === "",
+              `eth1=${eth1.networks} eth2=${eth2.networks}`);
+        check("a siphon on eth1 does not mark eth2's channel enabled",
+              eth1.channel === "enabled" && eth2.channel === "",
+              `eth1=${eth1.channel} eth2=${eth2.channel}`);
+        check("a capture-only NIC with no mode in its plan reads loch, not the sensor's siphon",
+              eth1.mode === "siphon" && eth2.mode === "loch",
+              `eth1=${eth1.mode} eth2=${eth2.mode}`);
+        if (plansHeld === undefined) delete H.STAGE.changes.intercept_plans;
+        else H.STAGE.changes.intercept_plans = plansHeld;
+        H.SETTINGS_ROWS.channel_upstream = upHeld;
+        H.SETTINGS_ROWS.channel_downstream = downHeld;
       }
+    }
+    // PER-NIC PLAN ISOLATION (operator, 2026-10-20: "It's still cross polluting the two nics").
+    // Run the real helper against two plans; this is the regression for a survey of eth2
+    // relabelling eth1, which the row-level fallback used to do.
+    {
+      const plansHeld = H.STAGE.changes.intercept_plans;
+      const upHeld = H.SETTINGS_ROWS.channel_upstream;
+      const downHeld = H.SETTINGS_ROWS.channel_downstream;
+      H.STAGE.changes.intercept_plans = JSON.stringify({
+        eth1: { mode: "siphon", segment: "198.51.100.0/24", gateway: "198.51.100.1",
+                addr: "198.51.100.10", targets: "*" },
+        eth2: { capture: true, segment: "", gateway: "", addr: "", targets: "*" },
+      });
+      H.SETTINGS_ROWS.channel_upstream = { value: "eth1" };
+      H.SETTINGS_ROWS.channel_downstream = { value: "eth2" };
+      H.STAGE.changes.channel_upstream = "eth1";
+      H.STAGE.changes.channel_downstream = "eth2";
+      const facts = typeof window.wlNicFacts === "function"
+        ? window.wlNicFacts({ local: true, iface: "eth1", interfaces: ["eth1", "eth2"],
+            network_names: {}, channel: { state: "enabled" },
+            reported_mode: "siphon", expected_mode: "siphon", plan: {} })
+        : { rows: [] };
+      const eth1 = facts.rows.find((n) => n.name === "eth1") || {};
+      const eth2 = facts.rows.find((n) => n.name === "eth2") || {};
+      check("a NIC's line uses its own plan segment, not the sensor-level one",
+            eth1.networks === "198.51.100.0/24" && eth2.networks === "",
+            `eth1=${eth1.networks} eth2=${eth2.networks}`);
+      check("a siphon on eth1 does not mark eth2's channel enabled",
+            eth1.channel === "enabled" && eth2.channel === "",
+            `eth1=${eth1.channel} eth2=${eth2.channel}`);
+      check("a capture-only NIC with no mode in its plan reads loch, not the sensor's siphon",
+            eth1.mode === "siphon" && eth2.mode === "loch",
+            `eth1=${eth1.mode} eth2=${eth2.mode}`);
+      if (plansHeld === undefined) delete H.STAGE.changes.intercept_plans;
+      else H.STAGE.changes.intercept_plans = plansHeld;
+      H.SETTINGS_ROWS.channel_upstream = upHeld;
+      H.SETTINGS_ROWS.channel_downstream = downHeld;
+      delete H.STAGE.changes.channel_upstream;
+      delete H.STAGE.changes.channel_downstream;
     }
     // THE STALE TILE, not a never-seen tile: the operator asked for that count to leave the
     // summary row (2026-10-19). The worklist filter itself still exists for declarations.

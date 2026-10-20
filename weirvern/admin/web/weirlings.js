@@ -384,7 +384,8 @@ function wlSituation(r) {
   const cap = [];
   const mode = r.reported_mode || r.expected_mode;
   if (mode) cap.push(`mode ${mode}`);
-  if (r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
+  // The sheet's evidence line makes the same distinction: a siphon is not a channel.
+  if (wlChannelEnabled() && r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
   const nf = r.netflow || {};
   if (nf.known) cap.push(nf.observed ? `${Number(nf.flows || 0).toLocaleString()} flows in 24h` : "no flows in 24h");
   const zk = r.zeek || {};
@@ -481,18 +482,36 @@ function wlNicFacts(r) {
   const mgmt = local ? wlCfg("mgmt_iface") : "";
   const capture = (local ? wlCfg("zeek_iface") : "")
     || String(r.iface || (r.plan && r.plan.iface) || "");
-  const segment = (r.plan && r.plan.segment) || (local ? wlCfg("intercept_segment") : "")
+  const segment = (r.plan && r.plan.segment) || (local ? wlCfgValue("intercept_segment") : "")
     || r.segment || r.reported_segment || "";
   const mode = String(r.reported_mode || r.expected_mode || "").toLowerCase();
   // MANAGEMENT IS NOT A CAPTURE NIC (operator, 2026-10-19): it is excluded from this list,
   // not hidden with a dash. Every remaining interface gets its own line in the sensor's row.
+  const plans = wlPlans();
+  const hasPlans = Object.keys(plans).length > 0;
   const rows = names.filter((name) => !(mgmt && name === mgmt)).map((name) => {
-    const role = (capture && name === capture) ? "capture" : "unassigned";
+    // PER-NIC PLAN, PER-NIC LINE. `capture` used to be the only NIC the row knew about, so
+    // every capture line borrowed the sensor-level channel state. That made eth2 read
+    // "channel enabled" when eth1 was the siphon port. The plan's own roles decide.
+    const plan = plans[name] && typeof plans[name] === "object" ? plans[name] : {};
+    const planMode = String(plan.mode || "").toLowerCase();
+    const siphon = planMode === "siphon" || plan.siphon === true;
+    const captureRole = plan.capture === true || (!hasPlans && capture === name);
+    const role = siphon ? "siphon" : (plan.sluice === true ? "sluice"
+      : (captureRole ? "capture" : "unassigned"));
+    const hasNicPlan = Object.prototype.hasOwnProperty.call(plans, name);
+    const lineMode = siphon ? "siphon"
+      : (planMode || (hasNicPlan ? (captureRole ? "loch" : "")
+        : (captureRole ? mode : "")));
     return {
-      name, role, mode,
+      name, role, mode: lineMode,
       network_name: (r.network_names && r.network_names[name]) || "",
-      networks: role === "capture" ? segment : "",
-      channel: role === "capture" ? ((r.channel && r.channel.state) || "") : "",
+      networks: (role === "capture" || role === "siphon")
+        ? (plan.segment || (role === "capture" ? segment : "")) : "",
+      // A CHANNEL BELONGS TO THE NIC THAT CARRIES IT, AND ONLY WHEN THE BRIDGE PAIR IS SET.
+      // Siphon is an in-path MODE, not a channel; saying "channel enabled" for a siphon-only
+      // NIC read as if the two ports had been bridged. The mode column carries siphon.
+      channel: (siphon && wlChannelEnabled()) ? ((r.channel && r.channel.state) || "") : "",
     };
   });
   return { rows, capture, segment };
@@ -1336,7 +1355,8 @@ function wlShowNicSettings(nic, interfaces) {
   const cap = wlCfgValue("capture_iface");
   const mode = String(wlCfgValue("sensor_mode") || "loch").trim().toLowerCase();
   const plan = wlPlanFor(nic);
-  const siphonOn = String(plan.mode || "").toLowerCase() === "siphon";
+  const siphonOn = String(plan.mode || "").toLowerCase() === "siphon"
+    || plan.siphon === true;
   const zeekOn = listed.length ? listed.includes(nic) : base === nic;
   const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
@@ -1541,6 +1561,14 @@ function wlStageNicSettings() {
   const currentMode = String(wlCfgValue("sensor_mode") || "loch").toLowerCase();
   const wantedMode = anySiphon ? "siphon" : "loch";
   if (wantedMode !== currentMode) stageChange("sensor_mode", wantedMode, currentMode);
+
+  // A CHECKED SLUICE ROLE IS THE ENABLE. Without this the operator applied a plan that said
+  // sluice:true and still had to visit the Sluice tab and flip SLUICE_ENABLED separately.
+  const anySluice = Object.values(plans).some((p) => p && p.sluice === true);
+  const gateOn = /^(1|true|on|yes)$/i.test(String(wlCfgValue("sluice_enabled") || ""));
+  if (anySluice && !gateOn) {
+    stageChange("sluice_enabled", "1", wlCfgValue("sluice_enabled"));
+  }
   const cap = wlCfgValue("capture_iface");
   if (!cap) stageChange("capture_iface", nic, cap);
 
@@ -1578,6 +1606,10 @@ async function wlScanNetwork() {
   const nic = box ? box.dataset.nic : "";
   const res = await runSonar(nic ? {
     interface: nic,
+    // THIS NIC'S PLAN, NOT THE LEGACY GLOBAL INTERCEPT_* KEYS. runSonar used to stage
+    // intercept_segment/gateway/addr globally, so surveying eth2 changed what eth1 showed
+    // and what the next apply wrote. The fields below are staged by wlStageNicSettings.
+    stage: false,
     onProgress: (p) => { if (note && p && p.text) note.textContent = p.text; },
   } : {});
   if (!note) return;
@@ -1605,7 +1637,9 @@ async function wlScanNetwork() {
     (candidate
       ? `Network and gateway are filled below; the intercept IP ${free || "value"} is a candidate ${arpProbed ? "(ARP probe found no owner)" : "(not probed)"}, so confirm it is free before enabling siphon. `
       : "Network, gateway and intercept IP are filled below; ") +
-    "The ARP/spoof settings are staged as pending changes. Review them, then stage this interface.";
+    "The values are staged in this NIC's own plan. Review them, then Apply.";
+  // Write the measured values into THIS NIC's plan, never the global intercept_* keys.
+  if (typeof wlStageNicSettings === "function") wlStageNicSettings();
 }
 
 /** APPLY A MODE CHANGE FROM THE DRILL-DOWN (operator, 2026-10-17: "a mode selection...

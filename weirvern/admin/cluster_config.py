@@ -171,19 +171,24 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
                    "restarts the capture sensor (brief capture gap) and the worker, whose "
                    "intercept relays on this interface"),
     "ZEEK_IFACES": (("ds/zeek",), "restarts the capture sensor (brief capture gap)"),
-    "CAPTURE_IFACE": (("deploy/weirvern-worker",), "restarts the detection worker, whose "
-                      "intercept relays on this interface"),
+    "CAPTURE_IFACE": (("ds/zeek", "deploy/weirvern-worker"),
+                      "restarts the capture sensor (its forwarding init uses this port) and "
+                      "the worker, whose intercept relays on this interface"),
     "INTERFACE_NETWORKS": (("deploy/weirvern-gui",), "restarts the console so anomaly locations "
                             "re-read the interface names"),
     "MGMT_IFACE": (("ds/zeek",), "restarts the capture sensor (brief capture gap)"),
-    # The intercept plan is read by the WORKER's supervisor, not by the sensor: the sensor only
-    # captures. Restarting ds/zeek for these (an earlier mapping) applied nothing.
+    # The LEGACY intercept fields are read by the WORKER's supervisor, not by the sensor, so
+    # restarting ds/zeek for them applied nothing. INTERCEPT_PLANS is different in one respect:
+    # the siphon forwarding init ALSO reads it (to open the path on every siphon NIC), so a plan
+    # change must restart the sensor as well as the worker.
     "INTERCEPT_TARGETS": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_SEGMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_ADDR": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_GATEWAY": (("deploy/weirvern-worker",), "restarts the detection worker"),
-    "INTERCEPT_PLANS": (("deploy/weirvern-worker",), "restarts the detection worker, which "
-                        "supervises one intercept per interface"),
+    "INTERCEPT_PLANS": (("ds/zeek", "deploy/weirvern-worker"),
+                        "restarts the capture sensor (its forwarding init opens every siphon "
+                        "NIC in the plan) and the worker, which supervises one intercept per "
+                        "interface"),
     # The channel keys are read by the WORKER (it verifies the wiring from the kernel and
     # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
     "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),

@@ -1116,7 +1116,9 @@ async function runSonar(opts = {}) {
     // operator is about to review. Stage it through the ordinary dedupe (so an unchanged
     // recommendation stages nothing) and show the value in the control -- the note promised
     // "staged as pending changes below" while the fields stayed blank.
-    if (res && res.ok === true) stageSonarRecommendations(res);
+    // A per-NIC caller owns where the measurement is staged. Staging the legacy global
+    // INTERCEPT_* keys here was how a survey of eth2 overwrote eth1's segment.
+    if (res && res.ok === true && opts.stage !== false) stageSonarRecommendations(res);
     return res;
   } catch (err) {
     SONAR_STATE.error = (err && err.message) || String(err);

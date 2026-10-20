@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.17.58 — 2026-10-20
+
+A SURVEY BELONGS TO THE NIC THAT RAN IT, AND THE PLAN IS THE MODE.
+
+- Sonar on a NIC staged the legacy global `intercept_segment`, `intercept_gateway` and
+  `intercept_addr` rows as well as its per-NIC plan. Surveying eth2 therefore changed the
+  values eth1 displayed and the next Apply wrote. The NIC scan now suppresses that global
+  staging and writes only that interface's entry in `INTERCEPT_PLANS`.
+- The NIC line now reads its own plan: segment, mode and channel come from that interface's
+  entry, not from the sensor-level legacy values. A siphon on eth1 no longer marks eth2's
+  channel enabled, and a capture-only eth2 reads `loch`.
+- A siphon entry in the plan is sufficient to arm: the forwarding init reads the plan before
+  the legacy `SENSOR_MODE` check, and the heartbeat reports `siphon` from the plan. Applying
+  the plan no longer requires a second enable.
+- Applying `INTERCEPT_PLANS` now restarts `ds/zeek` as well as the worker, because the
+  forwarding init reads the plan at pod start. A checked `Sluice` role also stages
+  `SLUICE_ENABLED=1`, so the gate is enabled by the same Apply.
+- The synthetic harness now runs a two-NIC plan through the real `wlNicFacts` and pins all
+  three properties above (864 checks).
+
 ## 0.17.57 — 2026-10-20
 
 THE NIC SHEET CAN BLOCK, NOT ONLY INTERCEPT.

@@ -30,7 +30,7 @@ def test_a_change_that_does_not_touch_anything_is_all_skips():
     out = ac.run_apply_checks(changes={"RETRAIN_EVERY_H": "6"}, current={}, ch_client=_CH())
     assert out["blocked"] is False
     assert all(r["status"] == "skip" for r in out["results"])
-    assert out["summary"] == "0 passed, 3 skipped"
+    assert out["summary"] == "0 passed, 4 skipped"
 
 
 def test_an_incomplete_siphon_plan_blocks_with_the_validators_own_words():
@@ -114,3 +114,33 @@ def test_a_CAPTURE_IFACE_change_is_checked_against_the_heartbeats(monkeypatch):
     out = ac.run_apply_checks(changes={"CAPTURE_IFACE": "eth1"}, current={}, ch_client=_CH())
     r = _names(out)["the capture interface is one the sensors report"]
     assert r["status"] == "pass" and "eth1" in r["detail"]
+
+
+def test_a_per_nic_plan_is_validated_as_a_set_and_reports_each_role():
+    out = ac.run_apply_checks(
+        changes={"INTERCEPT_PLANS": '{"eth1":{"siphon":true,"segment":"192.0.2.0/24",'
+                                     '"addr":"192.0.2.10","gateway":"192.0.2.1"},'
+                                     '"eth2":{"capture":true,"sluice":true}}'},
+        current={}, ch_client=_CH())
+    row = _names(out)["the per-NIC plans are valid"]
+    assert row["status"] == "pass", row
+    assert "siphon=eth1" in row["detail"] and "sluice=eth2" in row["detail"]
+
+
+def test_a_per_nic_plan_that_names_the_management_port_blocks_apply():
+    out = ac.run_apply_checks(
+        changes={"INTERCEPT_PLANS": '{"eth0":{"capture":true}}'},
+        current={"MGMT_IFACE": "eth0"}, ch_client=_CH())
+    row = _names(out)["the per-NIC plans are valid"]
+    assert row["status"] == "fail"
+    assert "management interface" in row["detail"]
+    assert out["blocked"] is True
+
+
+def test_a_plan_change_restarts_the_sensor_that_runs_the_forwarding_init():
+    from weirvern.admin import cluster_config as cc
+
+    workloads, why = cc._RESTART_FOR["INTERCEPT_PLANS"]
+    assert "ds/zeek" in workloads
+    assert "deploy/weirvern-worker" in workloads
+    assert "forwarding init" in why

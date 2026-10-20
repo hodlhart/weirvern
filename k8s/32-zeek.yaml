@@ -111,15 +111,20 @@ spec:
           args:
             - |
               set -eu
+              IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
+              # THE PLAN IS THE AUTHORITY. A per-NIC plan with a siphon entry enables the
+              # forwarding path without a second, sensor-level SENSOR_MODE flip: the operator
+              # already said "this NIC intercepts" in the plan they applied. Legacy deployments
+              # with no plan still use SENSOR_MODE.
+              PLAN_IFACES=$(python3 -c 'import json,os; d=json.loads(os.environ.get("INTERCEPT_PLANS") or "{}"); print(" ".join(k for k,v in d.items() if isinstance(v,dict) and (v.get("siphon") or v.get("mode")=="siphon")))' 2>/dev/null || true)
               MODE="${SENSOR_MODE:-loch}"
-              if [ "$MODE" != "siphon" ]; then
+              if [ "$MODE" != "siphon" ] && [ -z "$PLAN_IFACES" ]; then
                 echo "[siphon-init] mode=$MODE — passive; forwarding unchanged"
                 exit 0
               fi
-              IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
-              # EVERY SIPHON NIC, not just the legacy capture port. The plan document is the
-              # authority; the worker image has python3, so the init container can read it.
-              PLAN_IFACES=$(python3 -c 'import json,os; d=json.loads(os.environ.get("INTERCEPT_PLANS") or "{}"); print(" ".join(k for k,v in d.items() if isinstance(v,dict) and (v.get("siphon") or v.get("mode")=="siphon")))' 2>/dev/null || true)
+              if [ "$MODE" != "siphon" ]; then
+                echo "[siphon-init] plan asks for siphon on $PLAN_IFACES; forwarding enabled by plan"
+              fi
               IFACES="${PLAN_IFACES:-$IFACE}"
               MGMT="${MGMT_IFACE:-}"
               for one in $IFACES; do
