@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.63 — 2026-10-20
+
+THE MANAGEMENT ADDRESS IS NEVER AN INTERCEPT TARGET, EVEN ON ITS OWN SUBNET.
+
+- `never_intercept_hits` knew the management address only from `MGMT_ADDR`. The documented
+  deployment shape sets `MGMT_IFACE` alone, so a whole-segment siphon whose subnet contains the
+  box's management address could forge that mapping — the exact conflict that can cut off the
+  console while the sensor is still relaying.
+- The management interface's IPv4 addresses are now read from the kernel (`ip -4 addr`) and
+  added to the never-intercept set, alongside the resolver, API server, own address and gateway.
+  A named target still refuses with the role named; a whole-segment sweep excludes it and logs
+  the exclusion.
+- The NIC row also falls back to the page's staged `INTERFACE_NETWORKS` value for its label, so
+  `eth2=Data` survives a list payload built before the setting was applied.
+- Regression test covers `MGMT_IFACE` with no `MGMT_ADDR`; the live shape is 203.0.113.176 on
+  eth0 inside a monitored 203.0.113.0/24.
+
 ## 0.17.62 — 2026-10-20
 
 NETWORKS REPLACES PROBLEMS, AND EVERY NIC LINE KEEPS ITS FLOW AND FEEDS.

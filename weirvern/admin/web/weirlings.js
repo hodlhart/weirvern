@@ -503,7 +503,7 @@ function wlNicFacts(r) {
   // but a page loaded before an INTERFACE_NETWORKS apply has the old map; the settings rows it
   // already holds are the same mapping. Without this fallback eth2 rendered its CIDR where
   // eth1 rendered "Servers", which looked like the second NIC had no name at all.
-  const localNames = local ? wlIfaceNames(wlCfgValue("interface_networks")) : {};
+  const localNames = local ? wlIfaceNames(wlStagedValue("interface_networks")) : {};
   const rows = names.filter((name) => !(mgmt && name === mgmt)).map((name) => {
     // PER-NIC PLAN, PER-NIC LINE. `capture` used to be the only NIC the row knew about, so
     // every capture line borrowed the sensor-level channel state. That made eth2 read

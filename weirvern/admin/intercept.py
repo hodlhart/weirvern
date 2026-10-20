@@ -37,6 +37,7 @@ import os
 import signal
 import socket
 import struct
+import subprocess
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -129,6 +130,35 @@ def _resolv_nameservers() -> list[str]:
     return out
 
 
+def management_addresses(iface: str) -> list[str]:
+    """IPv4 addresses configured on the management interface, read from the kernel.
+
+    MGMT_ADDR is an optional explicit override, but most deployments only set MGMT_IFACE.
+    On a two-NIC sensor whose monitored segment contains the management address, the
+    whole-segment path had no way to know that address and could forge its mapping — the
+    exact conflict that cuts the box off from the console managing it. Derive it instead.
+    """
+    name = str(iface or "").strip()
+    if not name:
+        return []
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", name],
+            capture_output=True, text=True, timeout=3, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found: list[str] = []
+    for line in out.splitlines():
+        parts = line.split()
+        for i, token in enumerate(parts):
+            if token == "inet" and i + 1 < len(parts):
+                addr = parts[i + 1].split("/", 1)[0].strip()
+                if addr:
+                    found.append(addr)
+    return found
+
+
 def never_intercept_hits(targets: Iterable[str], *, our_ip: str = "",
                          gateway_ip: str = "") -> dict[str, str]:
     """Which targets match a never-intercept role that is derivable ON THIS HOST.
@@ -163,6 +193,13 @@ def never_intercept_hits(targets: Iterable[str], *, our_ip: str = "",
     mgmt = (os.environ.get("MGMT_ADDR") or "").strip()
     if mgmt:
         known.setdefault(mgmt, "the sensor's management address")
+    # MGMT_IFACE alone is the normal deployment shape. Without this, a monitored segment that
+    # contains the management address (e.g. eth2 siphon on 203.0.113.0/24 while mgmt is
+    # 203.0.113.176 on eth0) could have its mapping forged by the whole-segment sweep.
+    mgmt_iface = (os.environ.get("MGMT_IFACE") or "").strip()
+    if mgmt_iface:
+        for addr in management_addresses(mgmt_iface):
+            known.setdefault(addr, "the sensor's management address")
     api = (os.environ.get("KUBERNETES_SERVICE_HOST") or "").strip()
     if api:
         known.setdefault(api, "the Kubernetes API server")

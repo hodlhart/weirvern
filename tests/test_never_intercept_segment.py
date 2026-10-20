@@ -165,3 +165,23 @@ def test_force_unsafe_cannot_override_a_STRUCTURAL_role(stubbed):
     assert plan is None, (
         "force_unsafe allowed intercepting the sensor's own address, which cannot relay anything"
     )
+
+
+def test_MGMT_IFACE_alone_derives_the_address_that_must_not_be_intercepted(stubbed, monkeypatch):
+    """The live shape: MGMT_IFACE=eth0, no MGMT_ADDR, monitored segment 203.0.113.0/24.
+
+    The explicit MGMT_ADDR was the only source of the management address. A deployment that
+    followed the documented interface setting therefore let the whole-segment sweep include
+    the box's own management address, forging the mapping on the very path the console uses.
+    """
+    monkeypatch.delenv("MGMT_ADDR", raising=False)
+    monkeypatch.setenv("MGMT_IFACE", "ens18")
+    monkeypatch.setattr(ic, "management_addresses",
+                        lambda iface: [MGMT_ADDR] if iface == "ens18" else [])
+    plan = ic.build_plan("ens19", SEGMENT, our_ip=OUR_IP, gateway_ip=GATEWAY)
+    assert plan is not None
+    assert MGMT_ADDR not in plan.hosts, (
+        f"a whole-segment intercept would forge the management address {MGMT_ADDR} "
+        f"when only MGMT_IFACE was configured"
+    )
+    assert MGMT_ADDR not in stubbed, "the management address was swept as a candidate"

@@ -3999,6 +3999,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       H.STAGE.changes.channel_downstream = "eth2";
       const ifaceNamesHeld = H.SETTINGS_ROWS.interface_networks;
       H.SETTINGS_ROWS.interface_networks = { value: "eth1=Servers,eth2=Data" };
+      const ifaceStageHeld = H.STAGE.changes.interface_networks;
+      H.STAGE.changes.interface_networks = "eth1=Servers,eth2=Data";
       const facts = typeof window.wlNicFacts === "function"
         ? window.wlNicFacts({ local: true, iface: "eth1", interfaces: ["eth1", "eth2"],
             network_names: { eth1: "Servers" }, channel: { state: "enabled" },
@@ -4036,6 +4038,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       H.SETTINGS_ROWS.channel_upstream = upHeld;
       H.SETTINGS_ROWS.channel_downstream = downHeld;
       H.SETTINGS_ROWS.interface_networks = ifaceNamesHeld;
+      if (ifaceStageHeld === undefined) delete H.STAGE.changes.interface_networks;
+      else H.STAGE.changes.interface_networks = ifaceStageHeld;
       delete H.STAGE.changes.channel_upstream;
       delete H.STAGE.changes.channel_downstream;
     }
