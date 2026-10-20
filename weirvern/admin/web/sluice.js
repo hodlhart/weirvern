@@ -905,11 +905,12 @@ function slRuleFacts(r) {
   }
 }
 
-function openRuleSheet(rule, domain) {
+function openRuleSheet(rule, domain, prefill) {
   if (typeof showView === "function") showView("sluice");
   const card = document.getElementById("sl-rule-sheet");
   if (!card) return;
   SL_RULE = rule || null;
+  const pre = prefill && typeof prefill === "object" ? prefill : {};
   const creating = !rule;
   const title = document.getElementById("sl-rule-title");
   const id = document.getElementById("sl-rule-id");
@@ -921,8 +922,23 @@ function openRuleSheet(rule, domain) {
   if (detail) detail.classList.toggle("hidden", creating);
   slRuleNote("");
   if (creating) {
-    const dom = document.getElementById("sl-domain");
-    if (dom) dom.value = String(domain || "");
+    // THE SAME COMPOSER THE SLUICE GATE USES (operator, 2026-10-20). An alert's Block action
+    // opens this sheet with its source and reason prefilled instead of growing a second,
+    // weaker inline form. Every field the rule model owns is here, so the quick path and the
+    // full path cannot drift.
+    const set = (id, value) => {
+      const node = document.getElementById(id);
+      if (node && value !== undefined && value !== null) node.value = String(value);
+    };
+    set("sl-domain", domain || pre.domain || "");
+    set("sl-src", pre.src_cidr || "");
+    set("sl-dst", pre.dst_cidr || "");
+    set("sl-mode", pre.mode || "block");
+    set("sl-proto", pre.protocol || "");
+    set("sl-port", pre.dst_port || "");
+    set("sl-direction", pre.direction || "forward");
+    set("sl-ttl", pre.ttl_minutes === undefined ? 60 : pre.ttl_minutes);
+    set("sl-reason", pre.reason || "");
     const btn = document.getElementById("sl-block");
     if (btn) {
       btn.disabled = false;
@@ -966,13 +982,13 @@ function openRuleSheet(rule, domain) {
   }
   openSheet(card, {
     scrimId: "sl-rule-scrim",
-    initialFocus: creating ? "sl-domain" : null,
+    initialFocus: creating ? (pre.focus || (domain ? "sl-domain" : "sl-src")) : null,
   });
 }
 
 /** The DNS/Blocked entry point: same sheet, prefilled with the name. */
-function openRuleComposer(domain) {
-  openRuleSheet(null, domain);
+function openRuleComposer(domain, prefill) {
+  openRuleSheet(null, domain, prefill);
 }
 
 function wireRuleSheet() {

@@ -6989,16 +6989,23 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const evVerb = doc.querySelector("#ev-verdict .gate-open");
     clicks = 0;
     if (evVerb) {
-      C(evVerb);                                 // 1: the block verb (form = the BF-9 echo)
+      C(evVerb);                                 // 1: the block verb opens the Sluice composer
       await sleep(180);
-      const fileBtn = [...doc.querySelectorAll("#ev-verdict .gate-form button")]
-        .find((b) => /File block/.test(b.textContent));
-      if (fileBtn) { C(fileBtn); await sleep(320); }   // 2: file
+      const sheet = doc.getElementById("sl-rule-sheet");
+      check("JOB investigate-anomaly: the evidence Block verb opens the SLUICE rule sheet",
+            !!sheet && !sheet.classList.contains("hidden")
+            && (doc.getElementById("sl-src").value || "") === "198.51.100.5",
+            sheet ? `hidden=${sheet.classList.contains("hidden")}` : "no sheet");
+      const create = doc.getElementById("sl-block");
+      if (create) {
+        C(create); await sleep(100);              // 2: arm the block rule
+        C(create); await sleep(320);              // 3: file it
+      }
     }
     const act1 = clicks;
     const post1 = POSTED.slice(-1)[0] || {};
-    check("JOB investigate-anomaly: acting is TWO clicks (verb + file) and posts the block",
-          act1 === 2 && /\/api\/sluice\/block/.test(post1.url || "")
+    check("JOB investigate-anomaly: acting is the composer + confirm and posts the block",
+          act1 === 3 && /\/api\/sluice\/block/.test(post1.url || "")
           && /198\.51\.100\.5/.test(post1.body || ""),
           `clicks=${act1} post=${(post1.url || "none")} body=${String(post1.body || "").slice(0, 60)}`);
     note("investigate-anomaly", "act", act1);

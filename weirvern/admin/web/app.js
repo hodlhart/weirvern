@@ -2701,7 +2701,7 @@ function watchAction(a) {
 }
 
 /** The block control for one alert: a button, or the reason there is none. */
-function gateAction(a) {
+function gateAction(a, opts = {}) {
   const wrap = el("div", { class: "gate-act" });
   const reason = gateBlockableReason();
   if (reason) {
@@ -2714,8 +2714,28 @@ function gateAction(a) {
   }
   wrap.appendChild(el("button", {
     class: "review-act gate-open", text: "Block\u2026", attrs: { type: "button" },
-    title: "send this host to the Sluice Gate",
-    on: { click: (e) => { e.stopPropagation(); toggleGateForm(wrap, a); } },
+    title: "open the Sluice Gate rule composer for this host",
+    on: { click: (e) => {
+      e.stopPropagation();
+      // THE ALERT SHORTCUT IS THE SLUICE COMPOSER (operator, 2026-10-20). On the evidence
+      // page — where the alert is actually read — use the SAME sheet the Sluice Gate uses.
+      // The compact inline form remains for the anomalies table only, so its row workflow is
+      // unchanged; the evidence pivot gets the full source/destination/direction composer.
+      if (opts.popout && typeof openRuleComposer === "function") {
+        openRuleComposer("", {
+          src_cidr: a.src_addr,
+          dst_cidr: "",
+          mode: "block",
+          direction: "forward",
+          ttl_minutes: 60,
+          reason: `alert score ${(a.anomaly_score ?? 0).toFixed(3)} on ${a.src_addr}, ` +
+                  `window ${fmtTime(a.window_start)}`,
+          focus: "sl-src",
+        });
+      } else {
+        toggleGateForm(wrap, a);
+      }
+    } },
   }));
   return wrap;
 }
@@ -3017,7 +3037,7 @@ async function loadEvidence(addr, start, end) {
     // when it would not.
     await loadGateState();
     verdict.appendChild(gateAction(Object.assign({}, d.anomaly,
-      { src_addr: d.src_addr, window_start: d.window_start })));
+      { src_addr: d.src_addr, window_start: d.window_start }), { popout: true }));
     // ── ATT&CK techniques ────────────────────────────────────────────────────
     //
     // Rendered with the evidence and the confidence, never as a bare ID. "T1046" alone

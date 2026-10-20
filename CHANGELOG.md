@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.69 — 2026-10-20
+
+AN ALERT'S BLOCK ACTION OPENS THE SLUICE RULE SHEET.
+
+- On the evidence page, Block… now opens the same rule sheet the Sluice Gate uses, prefilled
+  with the alert's source and its score/window reason. Destination, direction, protocol,
+  port and duration are all editable there; the alert path no longer grows a second, weaker
+  inline form.
+- The anomalies table keeps its compact inline form so row triage does not change; the
+  evidence pivot is the full composer. The composer still asks for the second click before a
+  block rule is filed.
+- Harness 869 checks; the evidence job now asserts the sheet opens with the source and files
+  the rule through the composer.
+
 ## 0.17.68 — 2026-10-20
 
 EVERY ALERTING DECISION IS AT THE TOP OF LOGS.
