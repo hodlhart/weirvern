@@ -2773,7 +2773,7 @@ function gateForm(a) {
       : "all traffic";
     const srcTxt = String(src.value || "").trim() || "(missing source)";
     const dstTxt = String(dst.value || "").trim();
-    const dirTxt = direction.value === "in" ? " inbound" : " forwarded";
+    const dirTxt = direction.value === "in" ? " inbound" : "";
     const dur = ttl.value === "0" ? "until revoked" : `${ttl.value} min`;
     blast.textContent = `Blast radius: ${scopeTxt}${dirTxt} from ${srcTxt}`
       + (dstTxt ? ` to ${dstTxt}` : "") + ` \u2014 enforced at the `

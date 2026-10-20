@@ -3339,7 +3339,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             !!blastAll && blastAll.textContent.includes("all traffic from 203.0.113.42"),
             blastAll ? blastAll.textContent : "no .gate-blast");
       if (portIn) {
-        const scopeSel = gf.querySelector("select");
+        const scopeSel = gf.querySelector('select[aria-label="what to block"]');
         scopeSel.value = "port";
         scopeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
         check("choosing 'one service' reveals the port fields", portIn.style.display !== "none");

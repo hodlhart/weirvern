@@ -151,7 +151,11 @@ spec:
             failureThreshold: 3
           resources:
             requests: {cpu: "50m", memory: "128Mi"}
-            limits: {cpu: "500m", memory: "512Mi"}
+            # lxcfs virtualizes /proc/meminfo by the READER's cgroup. With the old 512Mi limit,
+            # the host file mount reported the pod limit (512Mi), not the LXC/VM's 10GiB. The
+            # limit is the VM boundary so the system cards can read the same 10GiB `free` sees;
+            # requests stay tiny, and the GUI's actual working set is tens of MiB.
+            limits: {cpu: "500m", memory: "10Gi"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
