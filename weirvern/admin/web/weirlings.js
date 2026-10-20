@@ -117,7 +117,10 @@ async function loadWeirlings() {
   const items = [
     ["weirlings", String(s.total ?? "—"), "", ""],
     ["reporting", String(s.alive ?? "—"), (s.alive ?? 0) > 0 ? "ok" : "", "alive"],
-    ["problems", String(s.problems ?? "—"), (s.problems ?? 0) > 0 ? "bad" : "", "problem"],
+    // NETWORKS REPLACES PROBLEMS (operator, 2026-10-20): the fleet's job is coverage, and
+    // the count is distinct collected segments -- one subnet shared by two NICs is one network.
+    // It is a count, not a filter: there is no per-network state to narrow the worklist by.
+    ["networks", String(s.networks ?? "—"), (s.networks ?? 0) > 0 ? "ok" : "", null],
     ["stale", String(s.stale ?? "—"), (s.stale ?? 0) > 0 ? "warn" : "", "stale"],
     ["unregistered", String(s.unregistered ?? "—"), (s.unregistered ?? 0) > 0 ? "warn" : "", "unregistered"],
     ["disabled", String(s.disabled ?? "—"), (s.disabled ?? 0) > 0 ? "muted" : "", "disabled"],
@@ -125,14 +128,21 @@ async function loadWeirlings() {
   // THE COUNTS ARE FILTERS (BF-7; research: Security Onion's grid grammar). Clicking a count
   // narrows the worklist to exactly it; the active filter is visibly the active one.
   for (const [k, v, cls, state] of items) {
-    const active = state === "problem"
-      ? problemsOnly
-      : (state ? WL_FILTERS.state === state : (!WL_FILTERS.state && !problemsOnly));
+    const countOnly = state === null;
+    const active = countOnly ? false
+      : (state === "problem"
+        ? problemsOnly
+        : (state ? WL_FILTERS.state === state : (!WL_FILTERS.state && !problemsOnly)));
+    const attrs = { type: "button", title: countOnly
+      ? "distinct network segments this fleet is collecting (one per subnet, not one per NIC)"
+      : (state ? `show ${k} only` : "clear every filter") };
+    if (!countOnly) attrs["data-state"] = state;
+    if (countOnly) attrs.disabled = "disabled";
     const tile = el("button", {
-      class: (cls ? `stat clickable ${cls}` : "stat clickable") + (active ? " active" : ""),
-      attrs: { type: "button", "data-state": state,
-               title: state ? `show ${k} only` : "clear every filter" },
-      on: { click: () => wlSetState(state) },
+      class: (cls ? `stat clickable ${cls}` : "stat clickable") + (active ? " active" : "")
+        + (countOnly ? " stat-count" : ""),
+      attrs,
+      on: countOnly ? {} : { click: () => wlSetState(state) },
     }, [
       // TH-5 recipe, built inline: label above value; fleet counts carry no series, so no
       // sparkline is faked onto them.
@@ -489,6 +499,11 @@ function wlNicFacts(r) {
   // not hidden with a dash. Every remaining interface gets its own line in the sensor's row.
   const plans = wlPlans();
   const hasPlans = Object.keys(plans).length > 0;
+  // THE LABEL CAN COME FROM EITHER SIDE. The fleet payload normally carries `network_names`,
+  // but a page loaded before an INTERFACE_NETWORKS apply has the old map; the settings rows it
+  // already holds are the same mapping. Without this fallback eth2 rendered its CIDR where
+  // eth1 rendered "Servers", which looked like the second NIC had no name at all.
+  const localNames = local ? wlIfaceNames(wlCfgValue("interface_networks")) : {};
   const rows = names.filter((name) => !(mgmt && name === mgmt)).map((name) => {
     // PER-NIC PLAN, PER-NIC LINE. `capture` used to be the only NIC the row knew about, so
     // every capture line borrowed the sensor-level channel state. That made eth2 read
@@ -505,7 +520,7 @@ function wlNicFacts(r) {
         : (captureRole ? mode : "")));
     return {
       name, role, mode: lineMode,
-      network_name: (r.network_names && r.network_names[name]) || "",
+      network_name: (r.network_names && r.network_names[name]) || localNames[name] || "",
       networks: (role === "capture" || role === "siphon")
         ? (plan.segment || (role === "capture" ? segment : "")) : "",
       // A CHANNEL BELONGS TO THE NIC THAT CARRIES IT, AND ONLY WHEN THE BRIDGE PAIR IS SET.
@@ -543,10 +558,16 @@ function wlNicRows(r) {
                  attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
       el("td", { class: "mono muted", attrs: { "data-wl-rate": n.name }, text: "—" }),
+      // FLOW AND FEEDS BELONG TO EVERY NIC LINE (operator, 2026-10-20: "the flow trend and
+      // feed indicators are missing"). They were gated on `capture`, so a siphon NIC -- the
+      // one actually carrying traffic in path -- showed a dash in both columns. The trend is
+      // the sensor's measured series (the hub does not split it per NIC), labelled as such;
+      // suppressing it on a siphon line made a working feed look absent.
       (() => {
-        const cell = el("td", { class: "wl-flow-cell" }, [capture ? wlSparkline(r)
-          : el("span", { class: "muted", text: "\u2014" })]);
-        if (capture && typeof discoverDrill === "function") {
+        const cell = el("td", { class: "wl-flow-cell", attrs: {
+          title: "the sensor's measured flow trend (the hub does not split it per NIC)",
+        } }, [wlSparkline(r)]);
+        if (typeof discoverDrill === "function") {
           cell.classList.add("clickable");
           cell.title = "open this sensor's flows in Discover";
           cell.addEventListener("click", (ev) => {
@@ -556,9 +577,8 @@ function wlNicRows(r) {
         }
         return cell;
       })(),
-      el("td", {}, [capture
-        ? el("span", { class: "wl-feeds" }, [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])
-        : el("span", { class: "muted", text: "\u2014" })]),
+      el("td", {}, [el("span", { class: "wl-feeds" },
+        [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])]),
     ]);
     row.addEventListener("click", () => openWeirling(r.sensor_id, { nic: n.name }));
     return row;

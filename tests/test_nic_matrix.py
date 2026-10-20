@@ -185,3 +185,37 @@ def test_a_per_nic_gate_arms_and_disarms_BOTH_of_its_own_tables():
     assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1"] in deletes
     assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1_in"] in deletes
     assert ["nft", "delete", "table", "inet", "weirvern_sluice_in"] not in deletes
+
+
+def test_a_removed_sluice_nic_does_not_leave_its_table_in_the_kernel():
+    """The plan can drop a NIC while the worker keeps running.
+
+    The gate group for the old plan is gone, so its disarm can only know the current NICs. The
+    kernel still has the old table and its drop rule. `sweep_gate_tables(keep)` must delete every
+    sluice table that is not in the current target set, and leave the kept one alone.
+    """
+    from weirvern import sluice as sl
+
+    calls: list[list[str]] = []
+
+    def fake(args, capture=False, stdin=None):
+        calls.append(list(args))
+        if args[:3] == ["nft", "list", "tables"]:
+            return True, ("table inet weirvern_sluice_eth1\n"
+                          "table inet weirvern_sluice_eth1_in\n"
+                          "table inet weirvern_sluice_eth2\n"
+                          "table inet weirvern_sluice_eth2_in\n"
+                          "table inet not_ours\n")
+        return True, ""
+
+    original = sl._nft_run
+    sl._nft_run = fake
+    try:
+        ok, detail = sl.sweep_gate_tables({"weirvern_sluice_eth1",
+                                           "weirvern_sluice_eth1_in"})
+    finally:
+        sl._nft_run = original
+    assert ok is True, detail
+    deletes = [c[4] for c in calls if c[:3] == ["nft", "delete", "table"]]
+    assert deletes == ["weirvern_sluice_eth2", "weirvern_sluice_eth2_in"]
+    assert "not_ours" not in deletes

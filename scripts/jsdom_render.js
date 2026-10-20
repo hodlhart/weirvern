@@ -109,7 +109,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
-                     wlNicFacts, wlPlans, SETTINGS_ROWS,
+                     wlNicFacts, wlNicRows, wlPlans, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                      loadHost, loadEvidence, loadAudit, loadDetectors,
@@ -979,7 +979,7 @@ const WEIRLINGS_PAYLOAD = {
   reason: null,
   heartbeats_available: true,
   heartbeat_reason: null,
-  summary: { total: 6, registered: 5, problems: 4, alive: 1, stale: 1, never_seen: 1,
+  summary: { total: 6, registered: 5, problems: 4, networks: 2, alive: 1, stale: 1, never_seen: 1,
              unregistered: 1, disabled: 1 },
   sensors: [
     {
@@ -3883,6 +3883,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the fleet's counts are filters, not decoration",
           tiles.length >= 6 && tiles.every((t) => t.tagName === "BUTTON"),
           `${tiles.length} tiles, first tag ${tiles[0] ? tiles[0].tagName : "none"}`);
+    const networksTile = tiles.find((t) => /networks/i.test(t.textContent));
+    check("Networks replaces Problems and states the collected subnet count",
+          !!networksTile && /2/.test(networksTile.textContent)
+          && !tiles.some((t) => /problems/i.test(t.textContent)),
+          networksTile ? networksTile.textContent.trim() : "no networks tile");
     // THE TILE MUST NOT WEAR THE BUTTON'S 28px BOX (2026-10-19): the clickable summary tiles
     // are <button>s, so BTN-1's height squeezed a 51px label+number stack out of the pill.
     if (tiles.length) {
@@ -3940,13 +3945,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         });
         H.SETTINGS_ROWS.channel_upstream = { value: "eth1" };
         H.SETTINGS_ROWS.channel_downstream = { value: "eth2" };
+        const fake = { sensor_id: "weirvern", local: true, iface: "eth1",
+          interfaces: ["eth1", "eth2"], network_names: {},
+          channel: { state: "enabled" }, reported_mode: "siphon",
+          expected_mode: "siphon", plan: {},
+          flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
+          netflow: { known: true, observed: true, flows: 78, last_at: "", why: "" },
+          zeek: { known: true, observed: true, last_at: "", why: "" } };
         const facts = typeof window.wlNicFacts === "function"
-          ? window.wlNicFacts({ local: true, iface: "eth1", interfaces: ["eth1", "eth2"],
-              network_names: {}, channel: { state: "enabled" },
-              reported_mode: "siphon", expected_mode: "siphon", plan: {} })
+          ? window.wlNicFacts(fake)
           : { rows: [] };
         const eth1 = facts.rows.find((n) => n.name === "eth1") || {};
         const eth2 = facts.rows.find((n) => n.name === "eth2") || {};
+        if (typeof window.wlNicRows === "function") {
+          const rendered = window.wlNicRows(fake);
+          const siphonRow = rendered.find((tr) => /siphon/.test(tr.textContent));
+          check("a SIPHON NIC line still carries a flow trend and both feed indicators",
+                !!siphonRow && !!siphonRow.children[5].querySelector("svg.wl-spark")
+                && siphonRow.children[6].querySelectorAll(".tap").length === 2,
+                siphonRow ? [...siphonRow.children].map((td) => td.textContent.trim()).join("|")
+                          : "no siphon row");
+        }
         check("a NIC's line uses its own plan segment, not the sensor-level one",
               eth1.networks === "198.51.100.0/24" && eth2.networks === "",
               `eth1=${eth1.networks} eth2=${eth2.networks}`);
@@ -3978,9 +3997,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       H.SETTINGS_ROWS.channel_downstream = { value: "eth2" };
       H.STAGE.changes.channel_upstream = "eth1";
       H.STAGE.changes.channel_downstream = "eth2";
+      const ifaceNamesHeld = H.SETTINGS_ROWS.interface_networks;
+      H.SETTINGS_ROWS.interface_networks = { value: "eth1=Servers,eth2=Data" };
       const facts = typeof window.wlNicFacts === "function"
         ? window.wlNicFacts({ local: true, iface: "eth1", interfaces: ["eth1", "eth2"],
-            network_names: {}, channel: { state: "enabled" },
+            network_names: { eth1: "Servers" }, channel: { state: "enabled" },
             reported_mode: "siphon", expected_mode: "siphon", plan: {} })
         : { rows: [] };
       const eth1 = facts.rows.find((n) => n.name === "eth1") || {};
@@ -3994,10 +4015,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("a capture-only NIC with no mode in its plan reads loch, not the sensor's siphon",
             eth1.mode === "siphon" && eth2.mode === "loch",
             `eth1=${eth1.mode} eth2=${eth2.mode}`);
+      check("eth2 keeps its interface name when the payload map is stale or partial",
+            eth1.network_name === "Servers" && eth2.network_name === "Data",
+            `eth1=${eth1.network_name} eth2=${eth2.network_name} cfg=${typeof window.wlCfgValue === "function" ? window.wlCfgValue("interface_networks") : "no-fn"} parsed=${typeof window.wlIfaceNames === "function" ? JSON.stringify(window.wlIfaceNames("eth1=Servers,eth2=Data")) : "no-fn"}`);
+      const renderedFake = { sensor_id: "weirvern", local: true, iface: "eth1",
+        interfaces: ["eth1", "eth2"], network_names: {}, channel: { state: "enabled" },
+        reported_mode: "siphon", expected_mode: "siphon", plan: {},
+        flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
+        netflow: { known: true, observed: true, flows: 78, last_at: "", why: "" },
+        zeek: { known: true, observed: true, last_at: "", why: "" } };
+      const renderedNic = typeof window.wlNicRows === "function"
+        ? window.wlNicRows(renderedFake).find((tr) => /siphon/.test(tr.textContent)) : null;
+      check("a SIPHON NIC line still carries a flow trend and both feed indicators",
+            !!renderedNic && !!renderedNic.children[5].querySelector("svg.wl-spark")
+            && renderedNic.children[6].querySelectorAll(".tap").length === 2,
+            renderedNic ? [...renderedNic.children].map((td) => td.textContent.trim()).join("|")
+                        : "no siphon row");
       if (plansHeld === undefined) delete H.STAGE.changes.intercept_plans;
       else H.STAGE.changes.intercept_plans = plansHeld;
       H.SETTINGS_ROWS.channel_upstream = upHeld;
       H.SETTINGS_ROWS.channel_downstream = downHeld;
+      H.SETTINGS_ROWS.interface_networks = ifaceNamesHeld;
       delete H.STAGE.changes.channel_upstream;
       delete H.STAGE.changes.channel_downstream;
     }

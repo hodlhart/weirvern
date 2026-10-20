@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.17.62 — 2026-10-20
+
+NETWORKS REPLACES PROBLEMS, AND EVERY NIC LINE KEEPS ITS FLOW AND FEEDS.
+
+- The Weirlings summary's **Problems** tile is replaced by **Networks**, counting the distinct
+  non-empty segments the fleet has a plan or a report for. Two NICs on the same subnet count
+  once; a blank plan is not a network. It is a coverage count, not a filter, so it is shown
+  without the worklist state controls.
+- The flow trend and both feed indicators were gated on `capture`. A siphon NIC — the one
+  actually carrying traffic in path — therefore showed a dash in both columns even while the
+  sensor had a measured flow series and both feeds were observed. The cells are now rendered on
+  every non-management NIC line.
+- The trend is the sensor's measured series (the hub does not split flows per NIC); its title
+  says so, and the indicators keep their existing evidence-based on/subdued states.
+- A per-NIC name could disappear when the fleet payload was built before an
+  `INTERFACE_NETWORKS` apply: the row then fell back to its CIDR while the other NIC showed its
+  label. The NIC row now falls back to the settings rows already in the page, so `eth2=Data`
+  reads as `Data` even from a stale list payload.
+- A per-NIC Sluice table from an older plan could survive a plan change or a disable: the group
+  that owned it was gone, so its disarm only knew the current NICs. The worker now reconciles the
+  kernel against the current target set and removes every `weirvern_sluice*` table not in it —
+  including all of them when `SLUICE_ENABLED=0`.
+- The UI harness now builds a real siphon NIC row and asserts its flow SVG and both `.tap`
+  indicators, and checks the Networks tile has replaced Problems with the summary count.
+
+- The flow cell and the two feed indicators were gated on `capture`. A siphon NIC — the one
+  actually carrying traffic in path — therefore showed a dash in both columns even while the
+  sensor had a measured flow series and both feeds were observed. The cells are now rendered on
+  every non-management NIC line.
+- The trend is the sensor's measured series (the hub does not split flows per NIC); its title
+  says so, and the indicators keep their existing evidence-based on/subdued states.
+- The UI harness now builds a real siphon NIC row and asserts its flow SVG and both `.tap`
+  indicators, so this cannot regress behind a capture-only fixture.
+
 ## 0.17.61 — 2026-10-20
 
 A PER-NIC GATE OWNS TWO TABLES; DISARM DELETES BOTH.

@@ -971,5 +971,49 @@ def summarise(health: list[SensorHealth]) -> dict:
         "total": len(health),
         "registered": sum(1 for h in health if h.registered),
         "problems": sum(1 for h in health if h.is_problem),
+        # WHAT THE FLEET IS COLLECTING, not how many things are wrong. The summary tile used
+        # to count problems; the operator asked for a Networks count instead. A network is a
+        # non-empty segment this fleet has a plan or a report for, counted once even when two
+        # NICs sit on the same subnet. An empty plan/report contributes nothing -- it is not a
+        # network of 0.0.0.0/0.
+        "networks": len(_collected_networks(health)),
         **counts,
     }
+
+
+def _network_key(raw: object) -> str:
+    """A stable identity for one segment: canonical CIDR when possible, raw text otherwise."""
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    try:
+        import ipaddress  # noqa: PLC0415
+
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError:
+        # A named segment ("third floor") is still an operator-declared network; counting it
+        # is more honest than dropping it because it is not CIDR-shaped.
+        return value
+
+
+def _collected_networks(health: list[SensorHealth]) -> set[str]:
+    """Distinct network segments across every sensor's plan and reported/declared segment."""
+    found: set[str] = set()
+    for h in health:
+        for raw in (h.segment, h.reported_segment, h.plan.segment):
+            key = _network_key(raw)
+            if key:
+                found.add(key)
+        if h.plan.nics.strip():
+            try:
+                from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+                for plan in NicPlanSet.from_json(h.plan.nics).plans.values():
+                    key = _network_key(plan.segment)
+                    if key:
+                        found.add(key)
+            except Exception:  # noqa: BLE001
+                # A malformed plan is a problem for the plan editor, not a reason to make the
+                # whole summary unavailable. Its parsed segments are simply not counted.
+                continue
+    return found

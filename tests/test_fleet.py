@@ -679,3 +679,24 @@ def test_revoking_clears_the_plan_so_a_readded_sensor_starts_clean():
     assert out.plan.nics == ""
     assert out.plan.as_dict() == {f: "" for f in ("mode", "iface", "segment", "addr",
                                                   "gateway", "targets")}
+
+
+def test_the_summary_counts_each_collected_network_once_not_each_nic():
+    """Networks is a coverage count, not a NIC count.
+
+    Two sensors whose NICs sit on the same subnet are collecting one network; two NICs on
+    different subnets are two. Blank segments are not a network, and a malformed per-NIC plan
+    must not make the whole summary unavailable.
+    """
+    from weirvern.fleet import SensorHealth, SensorPlan, summarise
+
+    a = SensorHealth(sensor_id="a", state=STATE_ALIVE, segment="198.51.100.0/24",
+                     plan=SensorPlan(nics='{"eth1": {"segment": "198.51.100.0/24"},'
+                                           '"eth2": {"segment": "192.0.2.0/24"}}'))
+    b = SensorHealth(sensor_id="b", state=STATE_ALIVE,
+                     reported_segment="198.51.100.0/24")
+    c = SensorHealth(sensor_id="c", state=STATE_ALIVE,
+                     plan=SensorPlan(nics="not json"))
+    out = summarise([a, b, c])
+    assert out["networks"] == 2, out
+    assert out["total"] == 3 and out["problems"] == 0

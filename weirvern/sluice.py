@@ -447,6 +447,55 @@ def refuse_reason(*, src_cidr: str, dst_cidr: str, iface: str, mgmt_iface: str,
 # ── the enforcement backends ──────────────────────────────────────────────────────────────────
 
 
+def gate_tables_of(supervisor: Any) -> set[str]:
+    """Every nft table a supervisor/group currently owns, for reconciliation."""
+    tables: set[str] = set()
+    supervisors = getattr(supervisor, "supervisors", None)
+    if isinstance(supervisors, dict):
+        for sup in supervisors.values():
+            backend = getattr(sup, "backend", None)
+            for attr in ("table", "table_in"):
+                name = getattr(backend, attr, "")
+                if name:
+                    tables.add(str(name))
+    else:
+        backend = getattr(supervisor, "backend", None)
+        for attr in ("table", "table_in"):
+            name = getattr(backend, attr, "")
+            if name:
+                tables.add(str(name))
+    return tables
+
+
+def sweep_gate_tables(keep: set[str] | None = None) -> tuple[bool, str]:
+    """Delete every Sluice table not in `keep`, including tables from an older plan.
+
+    THE LEAK THIS CLOSES. A gate group creates one table per blocking NIC; when the plan drops
+    a NIC (or the operator clears the plan and turns blocking off) the group that owned that
+    table no longer exists. Its disarm only knew the current NICs, so the old table stayed in
+    the kernel — a block that outlives both its rule and its plan. The kernel is the only
+    source that can enumerate what a previous process left, so reconcile against it.
+    """
+    keep = keep or set()
+    ok, out = _nft_run(["nft", "list", "tables"], capture=True)
+    if not ok:
+        return False, out or "nft could not list tables"
+    removed: list[str] = []
+    failed: list[str] = []
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "table" or parts[1] != "inet":
+            continue
+        name = parts[2]
+        if not name.startswith(NFT_TABLE) or name in keep:
+            continue
+        deleted, err = _nft_run(["nft", "delete", "table", "inet", name], capture=True)
+        (removed if deleted else failed).append(name if deleted else f"{name}: {err}")
+    if failed:
+        return False, "could not remove " + "; ".join(failed)
+    return True, ("removed " + ", ".join(removed)) if removed else "no orphan tables"
+
+
 class Backend:
     """A way of putting rules into the kernel. Separated so the policy is testable without one."""
 

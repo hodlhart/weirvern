@@ -427,6 +427,9 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
 #wl-summary .stat.warn .v { color: var(--warn); }
 #wl-summary .stat.bad .v { color: var(--bad); }
 #wl-summary .stat.muted .v { color: var(--muted); }
+/* A COUNT, NOT A FILTER (Networks). A disabled button would otherwise be dimmed by the
+   browser as if it were unavailable; the number is the point, so keep it at full contrast. */
+#wl-summary .stat-count[disabled] { opacity: 1; cursor: default; }
 
 /* SETTINGS, SECTION BY SECTION (the operator, 2026-10-16): each card collapses to its heading,
    and the heading is the toggle. The chevron is a GLYPH, not an emoji, and the collapsed state

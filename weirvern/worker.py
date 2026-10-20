@@ -234,6 +234,8 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         SluiceSupervisor,
         choose_backend,
         enforcement_pass,
+        gate_tables_of,
+        sweep_gate_tables,
     )
 
     plans = NicPlanSet.from_json(getattr(settings, "intercept_plans", ""))
@@ -274,6 +276,31 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         )
         _SLUICE["supervisor"] = sup
 
+    # ── RECONCILE THE KERNEL WITH THE CURRENT PLAN, EVERY TIME THE TARGET SET MOVES ──────────
+    #
+    # A gate group owns one table per blocking NIC. When a plan drops a sluice NIC -- or the
+    # operator clears the plan and disables blocking -- the group that owned that table is gone,
+    # so nothing in memory knows to delete it. The old table kept its drop rule and outlived both
+    # the rule and the plan. The kernel is the only source that can enumerate what the previous
+    # process left, so sweep every `weirvern_sluice*` table not in the CURRENT target set. This
+    # includes the disabled case, where the target set is empty.
+    first_sweep = not _SLUICE.get("swept")
+    if first_sweep:
+        _SLUICE["swept"] = True
+    desired_tables = gate_tables_of(sup) if settings.sluice_enabled else set()
+    prior_tables = set(_SLUICE.get("tables") or ())
+    if settings.sluice_enabled:
+        if first_sweep or desired_tables != prior_tables:
+            ok, detail = sweep_gate_tables(desired_tables)
+            if not ok:
+                logger.warning("sluice: could not reconcile gate tables: %s", detail)
+        _SLUICE["tables"] = desired_tables
+    else:
+        ok, detail = sweep_gate_tables(set())
+        if not ok:
+            logger.warning("sluice: could not remove gate tables while disabled: %s", detail)
+        _SLUICE["tables"] = set()
+
     if not settings.sluice_enabled:
         # DISARM ONCE, not every pass: re-disarming 1440 times a day would shell out to nft for
         # nothing. But it MUST happen, because `SLUICE_ENABLED=0` has to mean the rules are gone.
@@ -284,9 +311,6 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         # rules lapsed) but present, and "disabled" must mean gone. The kernel is the only source
         # that can tell. Measured on the test box: a disabled restart left `table inet
         # weirvern_sluice` behind, and nothing in the cluster would ever have removed it.
-        first_sweep = not _SLUICE.get("swept")
-        if first_sweep:
-            _SLUICE["swept"] = True
         leftover = bool(first_sweep and sup.backend.installed())
         changed = bool(_SLUICE["armed"] or sup.state.state != GATE_STATE_DISARMED or leftover)
         if changed:
