@@ -103,7 +103,7 @@ async function loadWeirlings() {
     summaryBox.appendChild(el("p", { class: "empty",
       text: `Fleet unknown — ${d.reason || "the registry did not answer"}.` }));
     document.getElementById("wl-count").textContent = "";
-    emptyRow(document.querySelector("#wl-table tbody"), 2,
+    emptyRow(document.querySelector("#wl-table tbody"), 9,
       "The fleet cannot be shown while the registry is unreadable.");
     return;
   }
@@ -497,9 +497,31 @@ function wlNicFacts(r) {
   return { rows, capture, segment };
 }
 
+/** Every sniffing interface across the visible fleet, in stable order. */
+function wlFleetInterfaces(rows) {
+  const names = new Set();
+  for (const r of rows || []) {
+    for (const name of wlSniffingInterfaces(r)) names.add(name);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+/** One throughput column per interface, not a single cell carrying every port's string. */
+function wlRenderFleetHead(interfaces) {
+  const row = document.querySelector("#wl-table thead tr");
+  if (!row) return;
+  const labels = [["weirling", "weirling"], ["cpu", "cpu"], ["memory", "memory"],
+    ["mode", "mode"], ["channel", "channel"], ["networks", "networks"]];
+  row.replaceChildren();
+  for (const [, label] of labels) row.appendChild(el("th", { text: label }));
+  for (const name of interfaces) row.appendChild(el("th", { text: name }));
+  row.appendChild(el("th", { text: "flow" }));
+  row.appendChild(el("th", { text: "feeds" }));
+}
+
 /** Each non-management NIC as its own line, placed immediately under the weirling's row.
  *  What the hub does not know says so; nothing is inferred. */
-function wlNicRows(r) {
+function wlNicRows(r, interfaces = []) {
   const facts = wlNicFacts(r);
   return facts.rows.map((n) => {
     const capture = n.role === "capture";
@@ -508,6 +530,10 @@ function wlNicRows(r) {
         el("span", { class: "mono wl-nic-name", text: n.name }),
         el("span", { class: "muted", text: ` ${n.role}` }),
       ]),
+      // CPU and memory are sensor-level; the cells exist here so every NIC row stays aligned
+      // under the real columns.
+      el("td", { class: "muted", text: "—" }),
+      el("td", { class: "muted", text: "—" }),
       el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
                  attrs: { title: n.mode
                    ? (String(r.expected_mode || "").toLowerCase()
@@ -518,6 +544,11 @@ function wlNicRows(r) {
       el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
                  attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
+      ...interfaces.map((name) => el("td", {
+        class: name === n.name ? "mono" : "mono muted",
+        attrs: name === n.name ? { "data-wl-rate": name } : {},
+        text: name === n.name ? "—" : "",
+      })),
       (() => {
         const cell = el("td", { class: "wl-flow-cell" }, [capture ? wlSparkline(r)
           : el("span", { class: "muted", text: "\u2014" })]);
@@ -550,11 +581,14 @@ function wlSniffingInterfaces(r) {
 /** Put this sensor's own reading in its row; a remote sensor says it has not reported one. */
 function wlLoadRowPerformance(rows) {
   for (const r of rows) {
-    const strip = [...document.querySelectorAll("[data-wl-perf-sensor]")]
-      .find((node) => node.dataset.wlPerfSensor === r.sensor_id);
-    if (!strip) continue;
+    const row = [...document.querySelectorAll("[data-wl-sensor-row]")]
+      .find((node) => node.dataset.wlSensorRow === r.sensor_id);
+    if (!row) continue;
     if (!r.local) {
-      strip.replaceChildren(el("span", { class: "muted", text: "host metrics not reported" }));
+      if (typeof renderSystemMetrics === "function") {
+        renderSystemMetrics({ available: false, sensor: r.sensor_id,
+          reason: "host metrics not reported" }, { sensor: r.sensor_id });
+      }
       continue;
     }
     if (typeof loadSystemMetrics === "function") {
@@ -585,7 +619,7 @@ function renderWeirlings(rows, revoked, revokedReason) {
 
   if (!visible.length) {
     const problemsOnly = document.getElementById("wl-problems-only").checked;
-    emptyRow(tbody, 6,
+    emptyRow(tbody, 9,
       stateFilter
         ? `No sensor is in state "${stateFilter.replace("_", " ")}" right now.`
         : problemsOnly
@@ -602,6 +636,8 @@ function renderWeirlings(rows, revoked, revokedReason) {
         : { label: "How adding works", fn: () => openHelpPanel("wl-info") });
   }
 
+  const fleetIfaces = wlFleetInterfaces(visible);
+  wlRenderFleetHead(fleetIfaces);
   for (const r of visible) {
     // The row's LEFT EDGE carries the state (the .wl-state-* rules); the words below carry
     // only what a reader scans for. Findings prose stays out of the list: the Logs tab owns
@@ -632,18 +668,20 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // sensor name should not have filled in columns, on the nics"). Mode, channel, networks,
     // flow and feeds belong to each NIC line below; repeating them here put two versions of
     // the same fact in one row.
-    // PERFORMANCE RUNS LEFT TO RIGHT, INLINE WITH THE SENSOR NAME (operator, 2026-10-19).
-    // The strip fills this row's remaining width: CPU, memory, then each sniffing port. Labels
-    // sit BELOW their values so the numbers are scanned first.
-    const perf = el("div", { class: "wl-perf-strip", attrs: { "data-wl-perf-sensor": r.sensor_id } },
-      [el("span", { class: "muted", text: "loading performance…" })]);
-    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "5" } }, [perf]));
+    // PERFORMANCE IS REAL TABLE COLUMNS (operator, 2026-10-19): CPU and memory on the sensor
+    // row, throughput on each NIC row, all under their own headers rather than in a strip that
+    // borrowed the mode/channel width.
+    tr.setAttribute("data-wl-sensor-row", r.sensor_id);
+    tr.appendChild(el("td", { class: "mono", attrs: { "data-wl-cpu": r.sensor_id }, text: "—" }));
+    tr.appendChild(el("td", { class: "mono", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }));
+    tr.appendChild(el("td", { class: "wl-sensor-rest",
+      attrs: { colspan: String(fleetIfaces.length + 5) } }));
 
     tbody.appendChild(tr);
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
     // row"). Always visible, never behind a control: a NIC list you have to discover is the
     // same dead end the old evidence drill was.
-    for (const nicRow of wlNicRows(r)) tbody.appendChild(nicRow);
+    for (const nicRow of wlNicRows(r, fleetIfaces)) tbody.appendChild(nicRow);
   }
 
   // Revoked registrations are shown BESIDE the fleet, never inside it: a sensor somebody removed

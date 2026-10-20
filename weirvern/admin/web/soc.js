@@ -544,27 +544,29 @@ function renderSystemMetrics(d, opts = {}) {
     }
   }
   if (!sensor) return;
-  const strip = [...document.querySelectorAll("[data-wl-perf-sensor]")]
-    .find((node) => node.dataset.wlPerfSensor === sensor);
-  if (!strip) return;
+  const row = [...document.querySelectorAll("[data-wl-sensor-row]")]
+    .find((node) => node.dataset.wlSensorRow === sensor);
+  const cpuCell = row ? row.querySelector("[data-wl-cpu]") : null;
+  const memCell = row ? row.querySelector("[data-wl-mem]") : null;
+  const rates = [...document.querySelectorAll("[data-wl-rate]")];
   if (!available) {
-    strip.replaceChildren(el("span", { class: "muted", text: "host metrics not reported" }));
+    if (cpuCell) cpuCell.textContent = "—";
+    if (memCell) memCell.textContent = "—";
+    for (const cell of rates) { cell.textContent = "—"; cell.classList.add("muted"); }
     return;
   }
-  const wanted = new Set((opts.interfaces || []).map(String));
-  const interfaces = (Array.isArray(d.interfaces) ? d.interfaces : [])
-    .filter((iface) => (wanted.size ? wanted.has(iface.name) : /^(eth|ens|eno|enp|bond|wl)/.test(iface.name)));
-  const rows = [
-    sysMetric(d.cpu_percent == null ? "—" : `${d.cpu_percent}%`, "CPU"),
-    sysMetric(d.memory_percent == null ? "—" : `${d.memory_percent}%`, "MEMORY"),
-  ];
-  for (const iface of interfaces) {
+  if (cpuCell) cpuCell.textContent = d.cpu_percent == null ? "—" : `${d.cpu_percent}%`;
+  if (memCell) memCell.textContent = d.memory_percent == null ? "—" : `${d.memory_percent}%`;
+  const byName = new Map((Array.isArray(d.interfaces) ? d.interfaces : [])
+    .map((iface) => [iface.name, iface]));
+  for (const cell of rates) {
+    const iface = byName.get(cell.dataset.wlRate);
+    if (!iface) { cell.textContent = "—"; cell.classList.add("muted"); continue; }
     const drops = (Number(iface.rx_drops) || 0) + (Number(iface.tx_drops) || 0);
-    rows.push(sysMetric(`${fmtBytes(iface.rx_bps)}/s`, `${iface.name} in`,
-      drops ? `${drops} drops` : ""));
-    rows.push(sysMetric(`${fmtBytes(iface.tx_bps)}/s`, `${iface.name} out`));
+    cell.textContent = `${fmtBytes(iface.rx_bps)}/s in · ${fmtBytes(iface.tx_bps)}/s out`
+      + (drops ? ` · ${drops} drops` : "");
+    cell.classList.remove("muted");
   }
-  strip.replaceChildren(...rows);
 }
 
 async function loadHealthDeep() {

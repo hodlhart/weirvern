@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.42 — 2026-10-19
+
+EACH SNIFFING INTERFACE GETS ITS OWN THROUGHPUT COLUMN.
+
+- The single `throughput` column is replaced by one column per sniffing interface in the
+  visible fleet (`eth1`, `eth2`, ...). A NIC row's own rate sits under its own header; the
+  management port and virtual interfaces stay out of the table.
+
 ## 0.17.41 — 2026-10-19
 
 PERFORMANCE SITS WITH THE SENSOR NAME.

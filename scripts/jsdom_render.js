@@ -2802,9 +2802,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         !!doc.getElementById("hp-system")
         && doc.getElementById("view-health").firstElementChild ===
            doc.getElementById("hp-system").closest(".card"));
-  check("the Weirlings fleet carries performance inline with each sensor",
-        !!doc.querySelector("[data-wl-perf-sensor]"),
-        "no sensor performance strip rendered");
+  check("the Weirlings fleet carries CPU, memory and throughput as table columns",
+        !!doc.querySelector("#wl-table thead th:nth-child(2)")
+        && /cpu/i.test(doc.querySelector("#wl-table thead th:nth-child(2)").textContent)
+        && !!doc.querySelector("[data-wl-cpu]")
+        && !!doc.querySelector("[data-wl-rate]"),
+        "performance columns not rendered");
   check("the alert audit panels are on the Health tab (SOC-8)",
         !!doc.getElementById("hp-alerts-reasons")
           && !!doc.getElementById("hp-alerts-recent")
@@ -3889,8 +3892,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
     const heads = [...doc.querySelectorAll("#wl-table thead th")]
       .map((th) => th.textContent.trim().toLowerCase());
-    check("the fleet table is weirling, mode, channel, networks, flow, feeds",
-          heads.join("|") === "weirling|mode|channel|networks|flow|feeds", heads.join("|"));
+    check("the fleet table has CPU, memory, one throughput column per sniffing interface, flow and feeds",
+          heads.slice(0, 6).join("|") === "weirling|cpu|memory|mode|channel|networks"
+          && heads.slice(-2).join("|") === "flow|feeds"
+          && heads.slice(6, -2).every((h) => /^eth|^en|^bond|^wl/.test(h)),
+          heads.join("|"));
     const localRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => {
         const b = tr.querySelector("button.link, .link");
@@ -3898,31 +3904,31 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       });
     if (localRow) {
       // THE SENSOR ROW IS A NAME, NOT A SECOND COPY OF THE FACTS (operator, 2026-10-19).
-      check("the sensor row leaves the fact columns empty",
-            localRow.children.length === 2
-            && localRow.children[1].textContent.trim() === "",
+      check("the sensor row carries CPU and memory, leaving the NIC facts empty",
+            localRow.children.length === 4
+            && localRow.children[3].textContent.trim() === "",
             [...localRow.children].map((td) => td.textContent.trim()).join("|"));
       const nicRows = [...doc.querySelectorAll("#wl-table tbody tr.wl-nic-row")];
       check("every non-management NIC is its own line under the sensor row",
             nicRows.length >= 1 && !doc.querySelector(".wl-nics-open"),
             `${nicRows.length} NIC lines`);
-      check("...each NIC line carries mode, channel, networks, flow and feeds",
-            nicRows.every((tr) => tr.children.length === 6)
+      check("...each NIC line carries mode, channel, networks, throughput, flow and feeds",
+            nicRows.every((tr) => tr.children.length === 9)
             && nicRows.some((tr) => /capture/.test(tr.textContent)),
             nicRows.map((tr) => tr.children.length).join(","));
       const captureRow = nicRows.find((tr) => /capture/.test(tr.textContent));
       if (captureRow) {
         const cells = [...captureRow.children];
         check("mode states only loch or siphon, not the declaration",
-              /^(loch|siphon|\u2014)/i.test(cells[1].textContent.trim())
-              && !/declared/i.test(cells[1].textContent), cells[1].textContent.trim());
+              /^(loch|siphon|\u2014)/i.test(cells[3].textContent.trim())
+              && !/declared/i.test(cells[3].textContent), cells[3].textContent.trim());
         check("the channel column states enabled or disabled",
-              /^(enabled|disabled|\u2014)$/i.test(cells[2].textContent.trim()),
-              cells[2].textContent.trim());
+              /^(enabled|disabled|\u2014)$/i.test(cells[4].textContent.trim()),
+              cells[4].textContent.trim());
         check("the feeds cell keeps both indicators",
-              cells[5].querySelectorAll(".tap").length === 2, cells[5].textContent.trim());
+              cells[8].querySelectorAll(".tap").length === 2, cells[8].textContent.trim());
         check("the flow cell draws a trend even at a measured zero",
-              !!cells[4].querySelector("svg.wl-spark"), cells[4].textContent.trim());
+              !!cells[7].querySelector("svg.wl-spark"), cells[7].textContent.trim());
       }
     }
     // THE STALE TILE, not a never-seen tile: the operator asked for that count to leave the
@@ -4103,8 +4109,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(300);
     const heads = [...doc.querySelectorAll("#wl-table thead th")]
       .map((t) => t.textContent.trim());
-    check("WL-1: the columns are name / mode / channel / networks / flow / feeds",
-          heads.join("|") === "weirling|mode|channel|networks|flow|feeds",
+    check("WL-1: the columns are name / cpu / memory / mode / channel / networks / per-interface throughput / flow / feeds",
+          heads.slice(0, 6).join("|") === "weirling|cpu|memory|mode|channel|networks"
+          && heads.slice(-2).join("|") === "flow|feeds"
+          && heads.slice(6, -2).every((h) => /^eth|^en|^bond|^wl/.test(h)),
           heads.join("|"));
     const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => (tr.textContent || "").includes(id));
@@ -4137,7 +4145,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!stoppedCap && !!stoppedCap.querySelector(".wl-spark-empty")
           && !stoppedCap.querySelector("svg.wl-spark"),
           stoppedCap ? stoppedCap.textContent.slice(0, 80) : "no row");
-    const cidrCell = promisedCap && promisedCap.querySelector("td:nth-child(4)");
+    const cidrCell = promisedCap && promisedCap.querySelector("td:nth-child(6)");
     check("...networks carries the subnet with CIDR",
           !!cidrCell && /198\.51\.100\.0\/24/.test(cidrCell.textContent || ""),
           cidrCell ? cidrCell.textContent : "none");
@@ -5585,7 +5593,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
               }
               return null;
             })() : null;
-            const cell = cap ? cap.querySelector("td:nth-child(2)") : null;
+            const cell = cap ? cap.querySelector("td:nth-child(4)") : null;
             const title = cell ? (cell.getAttribute("title") || "") : "";
             return !!cell && /^siphon$/i.test(cell.textContent.trim())
               && /registry declares loch/.test(title || "");
