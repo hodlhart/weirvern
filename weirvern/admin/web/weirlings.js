@@ -497,31 +497,9 @@ function wlNicFacts(r) {
   return { rows, capture, segment };
 }
 
-/** Every sniffing interface across the visible fleet, in stable order. */
-function wlFleetInterfaces(rows) {
-  const names = new Set();
-  for (const r of rows || []) {
-    for (const name of wlSniffingInterfaces(r)) names.add(name);
-  }
-  return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-}
-
-/** One throughput column per interface, not a single cell carrying every port's string. */
-function wlRenderFleetHead(interfaces) {
-  const row = document.querySelector("#wl-table thead tr");
-  if (!row) return;
-  const labels = [["weirling", "weirling"], ["cpu", "cpu"], ["memory", "memory"],
-    ["mode", "mode"], ["channel", "channel"], ["networks", "networks"]];
-  row.replaceChildren();
-  for (const [, label] of labels) row.appendChild(el("th", { text: label }));
-  for (const name of interfaces) row.appendChild(el("th", { text: name }));
-  row.appendChild(el("th", { text: "flow" }));
-  row.appendChild(el("th", { text: "feeds" }));
-}
-
 /** Each non-management NIC as its own line, placed immediately under the weirling's row.
  *  What the hub does not know says so; nothing is inferred. */
-function wlNicRows(r, interfaces = []) {
+function wlNicRows(r) {
   const facts = wlNicFacts(r);
   return facts.rows.map((n) => {
     const capture = n.role === "capture";
@@ -544,11 +522,7 @@ function wlNicRows(r, interfaces = []) {
       el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
                  attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),
-      ...interfaces.map((name) => el("td", {
-        class: name === n.name ? "mono" : "mono muted",
-        attrs: name === n.name ? { "data-wl-rate": name } : {},
-        text: name === n.name ? "—" : "",
-      })),
+      el("td", { class: "mono muted", attrs: { "data-wl-rate": n.name }, text: "—" }),
       (() => {
         const cell = el("td", { class: "wl-flow-cell" }, [capture ? wlSparkline(r)
           : el("span", { class: "muted", text: "\u2014" })]);
@@ -636,8 +610,6 @@ function renderWeirlings(rows, revoked, revokedReason) {
         : { label: "How adding works", fn: () => openHelpPanel("wl-info") });
   }
 
-  const fleetIfaces = wlFleetInterfaces(visible);
-  wlRenderFleetHead(fleetIfaces);
   for (const r of visible) {
     // The row's LEFT EDGE carries the state (the .wl-state-* rules); the words below carry
     // only what a reader scans for. Findings prose stays out of the list: the Logs tab owns
@@ -672,16 +644,22 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // row, throughput on each NIC row, all under their own headers rather than in a strip that
     // borrowed the mode/channel width.
     tr.setAttribute("data-wl-sensor-row", r.sensor_id);
-    tr.appendChild(el("td", { class: "mono", attrs: { "data-wl-cpu": r.sensor_id }, text: "—" }));
-    tr.appendChild(el("td", { class: "mono", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }));
-    tr.appendChild(el("td", { class: "wl-sensor-rest",
-      attrs: { colspan: String(fleetIfaces.length + 5) } }));
+    // Keep the original reading: the value over its label, not a bare number in a wide cell.
+    tr.appendChild(el("td", { class: "wl-perf-cell" }, [
+      el("span", { class: "wl-perf-value", attrs: { "data-wl-cpu": r.sensor_id }, text: "—" }),
+      el("span", { class: "wl-perf-label", text: "CPU" }),
+    ]));
+    tr.appendChild(el("td", { class: "wl-perf-cell" }, [
+      el("span", { class: "wl-perf-value", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }),
+      el("span", { class: "wl-perf-label", text: "MEMORY" }),
+    ]));
+    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "6" } }));
 
     tbody.appendChild(tr);
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
     // row"). Always visible, never behind a control: a NIC list you have to discover is the
     // same dead end the old evidence drill was.
-    for (const nicRow of wlNicRows(r, fleetIfaces)) tbody.appendChild(nicRow);
+    for (const nicRow of wlNicRows(r)) tbody.appendChild(nicRow);
   }
 
   // Revoked registrations are shown BESIDE the fleet, never inside it: a sensor somebody removed

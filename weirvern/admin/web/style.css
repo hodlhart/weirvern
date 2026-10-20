@@ -1369,3 +1369,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .wl-perf-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
   text-transform: uppercase; }
 .wl-perf-sub { color: var(--dim); font-size: 11px; }
+
+/* The original CPU/memory reading survives inside the fleet table: value first, label under. */
+td.wl-perf-cell { white-space: nowrap; }
+td.wl-perf-cell .wl-perf-value { display: block; }
+td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }

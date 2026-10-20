@@ -3892,10 +3892,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
     const heads = [...doc.querySelectorAll("#wl-table thead th")]
       .map((th) => th.textContent.trim().toLowerCase());
-    check("the fleet table has CPU, memory, one throughput column per sniffing interface, flow and feeds",
-          heads.slice(0, 6).join("|") === "weirling|cpu|memory|mode|channel|networks"
-          && heads.slice(-2).join("|") === "flow|feeds"
-          && heads.slice(6, -2).every((h) => /^eth|^en|^bond|^wl/.test(h)),
+    check("the fleet table is weirling, cpu, memory, mode, channel, networks, throughput, flow, feeds",
+          heads.join("|") === "weirling|cpu|memory|mode|channel|networks|throughput|flow|feeds",
           heads.join("|"));
     const localRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => {
@@ -4109,10 +4107,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(300);
     const heads = [...doc.querySelectorAll("#wl-table thead th")]
       .map((t) => t.textContent.trim());
-    check("WL-1: the columns are name / cpu / memory / mode / channel / networks / per-interface throughput / flow / feeds",
-          heads.slice(0, 6).join("|") === "weirling|cpu|memory|mode|channel|networks"
-          && heads.slice(-2).join("|") === "flow|feeds"
-          && heads.slice(6, -2).every((h) => /^eth|^en|^bond|^wl/.test(h)),
+    check("WL-1: the columns are name / cpu / memory / mode / channel / networks / throughput / flow / feeds",
+          heads.join("|") === "weirling|cpu|memory|mode|channel|networks|throughput|flow|feeds",
           heads.join("|"));
     const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row)")]
       .find((tr) => (tr.textContent || "").includes(id));

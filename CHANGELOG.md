@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.43 — 2026-10-19
+
+CPU AND MEMORY KEEP THEIR ORIGINAL READING; THROUGHPUT IS ONE COLUMN.
+
+- The sensor row's CPU and memory cells show the value over its label again, instead of a
+  bare percentage in a wide cell.
+- The per-interface `eth1`/`eth2` columns collapse back to one `throughput` column; each NIC
+  row reports its own rate there.
+
 ## 0.17.42 — 2026-10-19
 
 EACH SNIFFING INTERFACE GETS ITS OWN THROUGHPUT COLUMN.
