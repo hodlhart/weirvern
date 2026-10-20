@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.51 — 2026-10-19
+
+SONAR SHOWS THE STEP IT IS ON.
+
+- The survey endpoint can stream NDJSON progress (`stream: true`) and the Weirlings sheet
+  reads it: DHCP, passive capture, ARP probe, then the final result. The Settings tab's
+  Sonar note shows the same steps.
+- The Job prints `SONAR_PROGRESS` lines; the GUI tails its pod while waiting and relays them
+  to the browser. A normal non-streaming request still gets the same single JSON payload.
+
 ## 0.17.50 — 2026-10-19
 
 THE DHCP PROBE ACTUALLY RUNS ON THE LIVE PATH.

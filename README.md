@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 baselines, flags the deviations that match real attack shapes, and shows a human *why*, with the
 measurements that fired.
 
-Current release: **0.17.50** · Runs on any conformant Kubernetes · No payload inspection · Alerts
+Current release: **0.17.51** · Runs on any conformant Kubernetes · No payload inspection · Alerts
 via [Pushover](https://pushover.net), or log-only.
 
 ## What it does

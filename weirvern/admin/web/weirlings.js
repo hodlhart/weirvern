@@ -1528,10 +1528,13 @@ async function wlScanNetwork() {
     if (note) note.textContent = "Sonar is unavailable in this build.";
     return;
   }
-  if (note) note.textContent = "Scanning this segment — ARP survey only; nothing is written.";
+  if (note) note.textContent = "Scanning: DHCP, passive capture, then ARP probe — nothing is written.";
   const box = document.getElementById("wl-nic-settings");
   const nic = box ? box.dataset.nic : "";
-  const res = await runSonar(nic ? { interface: nic } : {});
+  const res = await runSonar(nic ? {
+    interface: nic,
+    onProgress: (p) => { if (note && p && p.text) note.textContent = p.text; },
+  } : {});
   if (!note) return;
   if (!res || res.ok !== true) {
     note.textContent = "Scan failed — " + ((res && res.error) || SONAR_STATE.error || "no result");

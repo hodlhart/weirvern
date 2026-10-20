@@ -37,6 +37,7 @@ where they are visible, editable, and inert until Apply.
 """
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import logging
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 # The result line the Job prints and the GUI reads back. A prefix rather than a plain JSON
 # line so diagnostics can sit in the same log without ambiguity about which line is the result.
 SONAR_PREFIX = "SONAR_RESULT "
+SONAR_PROGRESS_PREFIX = "SONAR_PROGRESS "
 
 # How long the GUI waits for the Job. A /24 sweep takes seconds; the budget is generous
 # because a cold image import on a loaded node can add tens of seconds of scheduling delay.
@@ -274,7 +276,7 @@ def _offer_result(iface: str, mgmt_iface: str, our_mac: str, offer, gateway: str
 def survey(iface: str, mgmt_iface: str = "", *,
            sweep=None, mac_reader=None, addr_reader=None, route_reader=None,
            watcher=None, watch_s: float | None = None,
-           sweep_timeout_s: float = SONAR_SWEEP_TIMEOUT_S) -> dict:
+           sweep_timeout_s: float = SONAR_SWEEP_TIMEOUT_S, progress=None) -> dict:
     """Measure the segment on `iface` and produce recommendations. Read-only.
 
     Every side-effecting dependency is injectable -- sweep (ARP), mac_reader, addr_reader,
@@ -305,6 +307,12 @@ def survey(iface: str, mgmt_iface: str = "", *,
     """
     from weirvern.admin import intercept as ic_mod
     from weirvern.admin import segmentwatch, siphonnet
+
+    def say(step: str, text: str) -> None:
+        if callable(progress):
+            # Progress is best-effort: a closed browser must never abort the survey.
+            with contextlib.suppress(Exception):
+                progress({"step": step, "text": text})
 
     live_probe_requested = addr_reader is None and watcher is None and sweep is None
     mac_reader = mac_reader or siphonnet.read_mac
@@ -350,6 +358,7 @@ def survey(iface: str, mgmt_iface: str = "", *,
         try:
             from weirvern.admin import dhcp_probe as _dp  # noqa: PLC0415
 
+            say("dhcp", f"DHCP: sending a DISCOVER on {iface}…")
             offer = _dp.dhcp_offer(iface, our_mac)
             gateway = offer.gateway
             if not gateway:
@@ -373,10 +382,12 @@ def survey(iface: str, mgmt_iface: str = "", *,
                     f"the DHCP-offered address {offer.yiaddr} was already owned by "
                     f"{conflict}; it is not being recommended."
                 )
+            say("dhcp", f"DHCP: offer {offer.yiaddr} / {offer.mask}, gateway {gateway or 'unknown'}")
             return _offer_result(iface, mgmt_iface, our_mac, offer, gateway, gateway_mac,
                                  candidate, candidate_source, dhcp_notes)
         except Exception as exc:  # noqa: BLE001
             dhcp_evidence = {"attempted": True, "ok": False, "error": str(exc)[:300]}
+            say("dhcp", "DHCP: no offer; falling back to passive capture")
 
     notes: list[str] = []
     observed: dict = {}
@@ -386,7 +397,9 @@ def survey(iface: str, mgmt_iface: str = "", *,
         # ── THE PASSIVE PATH. No address on the interface is the NORMAL case for a capture
         # port, not an error, so this is a fallback rather than a refusal.
         window = SONAR_WATCH_S if watch_s is None else watch_s
+        say("passive", f"Passive: watching {iface} for {int(window)}s…")
         obs = watcher(iface, seconds=window)
+        say("passive", f"Passive: {obs.frames} frames seen")
         observed = segmentwatch.summarise(obs)
         notes.extend(segmentwatch.notes_for(obs, observed))
         if not observed.get("segment"):
@@ -487,11 +500,13 @@ def survey(iface: str, mgmt_iface: str = "", *,
                         candidate_ip = str(host)
                         if candidate_ip in (ip, gateway):
                             continue
+                        say("arp", f"ARP: probing candidate {candidate_ip}…")
                         owner = _dp.arp_probe(iface, our_mac, candidate_ip)
                         if not owner:
                             candidate = candidate_ip
                             candidate_source = (
                                 "random free candidate; ARP probe found no owner")
+                            say("arp", f"ARP: no owner answered for {candidate_ip}")
                             break
                     if not candidate:
                         candidate_source = (
@@ -510,7 +525,9 @@ def survey(iface: str, mgmt_iface: str = "", *,
     # ONE SWEEP. It answers both questions -- who is alive, and which addresses are free --
     # so the survey never sends the same frames twice (the CLI's dry-run runs two sweeps
     # because it offers the free list only after the plan; this does it in one pass).
+    say("sweep", f"ARP: sweeping {len(candidates)} addresses…")
     answered = sweep(iface, our_mac, ip, candidates, timeout_s=sweep_timeout_s)
+    say("sweep", f"ARP: {len(answered)} address(es) answered")
     # A MAC equal to ours is us (or a mirror of us); never recommend ourselves.
     hosts = {a: m for a, m in answered.items()
              if (m or "").lower() != our_mac.lower() and a != gateway}
@@ -734,7 +751,8 @@ def _parse_result_line(log_text: str) -> dict | None:
 
 
 def run_survey_job(client, iface: str, mgmt_iface: str = "", *,
-                   timeout_s: float = SONAR_TIMEOUT_S, poll_s: float = SONAR_POLL_S) -> dict:
+                   timeout_s: float = SONAR_TIMEOUT_S, poll_s: float = SONAR_POLL_S,
+                   progress=None) -> dict:
     """Create the survey Job, wait for it, read its result, delete it. Returns the result.
 
     `client` is a ClusterConfig-shaped object (api_json/api_text/namespace). Every failure
@@ -776,6 +794,8 @@ def run_survey_job(client, iface: str, mgmt_iface: str = "", *,
     result: dict | None = None
     failure = ""
     try:
+        pod = ""
+        seen_progress: set[str] = set()
         while time.monotonic() < deadline:
             status: dict = {}
             try:
@@ -784,6 +804,30 @@ def run_survey_job(client, iface: str, mgmt_iface: str = "", *,
             except Exception as exc:  # noqa: BLE001
                 failure = f"could not read the survey job's status: {exc}"
                 break
+            if callable(progress):
+                try:
+                    if not pod:
+                        pods = client.api_json(
+                            "GET",
+                            f"/api/v1/namespaces/{namespace}/pods?labelSelector=job-name%3D{name}")
+                        items = (pods or {}).get("items") or []
+                        pod = items[0]["metadata"]["name"] if items else ""
+                    if pod:
+                        text = client.api_text(
+                            "GET", f"/api/v1/namespaces/{namespace}/pods/{pod}/log?tailLines=80")
+                        for line in (text or "").splitlines():
+                            if not line.startswith(SONAR_PROGRESS_PREFIX):
+                                continue
+                            line = line.strip()
+                            if line in seen_progress:
+                                continue
+                            seen_progress.add(line)
+                            try:
+                                progress(json.loads(line[len(SONAR_PROGRESS_PREFIX):]))
+                            except (ValueError, TypeError):
+                                continue
+                except Exception:  # noqa: BLE001 - progress is best-effort
+                    pass
             if status.get("succeeded"):
                 break
             if status.get("failed"):
@@ -859,7 +903,11 @@ def main() -> int:
         _why = validate_survey_ifaces(iface, mgmt)
         if _why:
             raise SonarError(f"the survey job's environment is unusable: {_why}")
-        result = survey(iface, mgmt)
+
+        def _job_progress(payload: dict) -> None:
+            print(f"{SONAR_PROGRESS_PREFIX}{json.dumps(payload)}", flush=True)
+
+        result = survey(iface, mgmt, progress=_job_progress)
     except SonarError as exc:
         print(f"{SONAR_PREFIX}{json.dumps({'ok': False, 'error': str(exc)})}", flush=True)
         logger.error("sonar refused: %s", exc)

@@ -3221,6 +3221,35 @@ def _build_handler(ctx: GuiContext):
             except ValueError as exc:
                 return self._error(400, str(exc))
 
+            # NDJSON progress: one line per step, then {"result": ...}. A browser fetch reads
+            # the stream so the sheet can say "DHCP" / "passive" / "ARP" while the Job runs;
+            # callers that do not ask for it get the same one-shot JSON as before.
+            stream = bool(body.get("stream"))
+
+            def emit(payload, code: int = 200) -> None:
+                if stream:
+                    with contextlib.suppress(BrokenPipeError, OSError):
+                        self.wfile.write((json.dumps({"result": payload}, default=str) + "\n").encode())
+                        self.wfile.flush()
+                else:
+                    self._json(payload, code)
+
+            def emit_progress(payload) -> None:
+                if stream:
+                    with contextlib.suppress(BrokenPipeError, OSError):
+                        self.wfile.write((json.dumps({"progress": payload}, default=str) + "\n").encode())
+                        self.wfile.flush()
+
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control", NO_CACHE)
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+
             sensor_id = str(body.get("sensor") or "").strip()
             iface = str(body.get("interface") or "").strip()
             mgmt = str(body.get("mgmt_interface") or "").strip()
@@ -3234,10 +3263,10 @@ def _build_handler(ctx: GuiContext):
                     with self._with_client() as ch:
                         reg, refusal = fleet_store.plan_subject(ch, sensor_id)
                         if refusal:
-                            return self._json({"ok": False, "error": refusal}, 400)
+                            return emit({"ok": False, "error": refusal}, 400)
                         hb_rows, _hb_err = fleet_store.read_heartbeats(ch)
                 except Exception as exc:  # noqa: BLE001
-                    return self._json({
+                    return emit({
                         "ok": False,
                         "error": f"the sensor could not be read: {str(exc)[:200]}",
                     }, 503)
@@ -3249,7 +3278,7 @@ def _build_handler(ctx: GuiContext):
                     if len(nics) == 1:
                         iface = nics[0]
                     elif nics:
-                        return self._json({
+                        return emit({
                             "ok": False,
                             "error": (f"{sensor_id} reports several NICs ({', '.join(nics)}), so "
                                       f"which one to survey is a choice, not a guess: name the "
@@ -3258,7 +3287,7 @@ def _build_handler(ctx: GuiContext):
                             "interfaces": nics,
                         }, 400)
                     else:
-                        return self._json({
+                        return emit({
                             "ok": False,
                             "error": (f"{sensor_id} has not reported its NICs and no capture "
                                       f"interface is set in its plan, so there is nothing to "
@@ -3276,7 +3305,7 @@ def _build_handler(ctx: GuiContext):
             if not mgmt:
                 mgmt = (os.environ.get("MGMT_IFACE") or "").strip()
             if not iface:
-                return self._json({
+                return emit({
                     "ok": False,
                     "error": "no capture interface is configured, so there is nothing to "
                              "survey. Set the capture interface (ZEEK_IFACE) in Settings "
@@ -3293,7 +3322,7 @@ def _build_handler(ctx: GuiContext):
             # which for a typo in an interface name is the wrong story.
             _why = sonar_mod.validate_survey_ifaces(iface, mgmt)
             if _why:
-                return self._json({
+                return emit({
                     "ok": False,
                     "error": f"cannot survey: {_why}. {sonar_mod.iface_input_remedy()}",
                 }, 400)
@@ -3304,24 +3333,24 @@ def _build_handler(ctx: GuiContext):
                 try:
                     client = cc.ClusterConfig()
                 except cc.ConfigError as exc:
-                    return self._json({"ok": False, "error": str(exc)}, 503)
+                    return emit({"ok": False, "error": str(exc)}, 503)
 
             try:
-                result = sonar_mod.run_survey_job(client, iface, mgmt)
+                result = sonar_mod.run_survey_job(client, iface, mgmt, progress=emit_progress)
             except sonar_mod.SonarError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 502)
+                return emit({"ok": False, "error": str(exc)}, 502)
 
             # A refusal INSIDE the job (it ran, and said no) is passed through with its reason,
             # distinct from a job that could not run at all.
             if isinstance(result, dict) and result.get("ok") is False:
                 result["sensor"] = sensor_id
-                return self._json(result, 422)
+                return emit(result, 422)
             # STAMPED WITH THE SENSOR IT RAN FOR, so the reply cannot be staged against another
             # one's plan -- the client shows what this survey belongs to, and the harness can
             # assert it. Empty means the hub's own capture port (the pre-existing form).
             if isinstance(result, dict):
                 result["sensor"] = sensor_id
-            self._json(result)
+            emit(result)
 
         def _settings_test(self) -> None:
             """Run the intercept for a bounded TEST window, then revert the mode to loch.

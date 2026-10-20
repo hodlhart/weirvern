@@ -410,6 +410,47 @@ async function postJSON(path, body) {
   return payload || {};
 }
 
+/** POST and read NDJSON progress lines, returning the final result object. */
+async function postNDJSON(path, body, onProgress) {
+  const resp = await window.fetch(path, {
+    method: "POST",
+    headers: requestHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(Object.assign({}, body || {}, { stream: true })),
+  });
+  if (!resp.ok) {
+    let payload = null;
+    try { payload = await resp.json(); } catch (_e) { payload = null; }
+    const err = new Error((payload && payload.error) || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    err.payload = payload;
+    throw err;
+  }
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    return resp.json();
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let at;
+    while ((at = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, at).trim();
+      buffer = buffer.slice(at + 1);
+      if (!line) continue;
+      let msg = null;
+      try { msg = JSON.parse(line); } catch (_e) { continue; }
+      if (msg && msg.progress && typeof onProgress === "function") onProgress(msg.progress);
+      if (msg && msg.result !== undefined) result = msg.result;
+    }
+  }
+  if (result === null) throw new Error("Sonar returned no result");
+  return result;
+}
+
 /* ── staged changes ─────────────────────────────────────────────────────────
  *
  * NOTHING IS WRITTEN UNTIL APPLY. Every edit stages locally; the plan is then fetched from the
@@ -1046,14 +1087,17 @@ async function runSonar(opts = {}) {
   SONAR_STATE.running = true;
   SONAR_STATE.error = "";
   if (btn) { btn.disabled = true; btn.textContent = "Surveying…"; }
-  if (note) note.textContent = "Surveying the segment: one ARP sweep from the sensor node. "
+  if (note) note.textContent = "Surveying: DHCP, then passive capture, then an ARP probe. "
     + "Nothing is changed — this can take a few seconds.";
 
   try {
     // The caller may name the interface to survey. The Weirlings sheet is per-NIC and must
     // measure the port it is open on, not the global capture default (operator, 2026-10-19).
     const body = opts && opts.interface ? { interface: String(opts.interface) } : {};
-    const res = await postJSON("/api/settings/sonar", body);
+    const progress = typeof opts.onProgress === "function" ? opts.onProgress : (p) => {
+      if (note && p && p.text) note.textContent = p.text;
+    };
+    const res = await postNDJSON("/api/settings/sonar", body, progress);
     SONAR_STATE.result = res;
     renderSonarNote(res);
     // SONAR IS A SURVEY, NOT A WRITE, but its measured answer belongs in the fields the
