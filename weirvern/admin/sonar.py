@@ -41,6 +41,7 @@ import ipaddress
 import json
 import logging
 import os
+import random
 import struct
 import time
 import uuid
@@ -152,7 +153,9 @@ def _top_of_range_first(addr: str) -> int:
 
 def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str,
                          observed: dict, gateway: str, gateway_source: str,
-                         notes: list[str], source_ip: str) -> dict:
+                         notes: list[str], source_ip: str, *,
+                         candidate: str = "", candidate_source: str = "",
+                         gateway_mac: str = "") -> dict:
     """A survey that could only WATCH, because there was no address to sweep from.
 
     RETURNED RATHER THAN RAISED, and the shape says which questions it answers. The observation
@@ -173,17 +176,18 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
     # first host after the gateway is a useful candidate. It is labelled as UNPROBED so the
     # operator can change it before siphon starts; an empty field read as "Sonar found
     # nothing" even though the segment and gateway were measured.
-    candidate = ""
-    try:
-        import itertools  # noqa: PLC0415
+    if not candidate:
+        try:
+            import itertools  # noqa: PLC0415
 
-        candidate_net = ipaddress.ip_network(segment, strict=False)
-        for host in itertools.islice(candidate_net.hosts(), 4):
-            if str(host) != gateway:
-                candidate = str(host)
-                break
-    except (ValueError, TypeError):
-        candidate = ""
+            candidate_net = ipaddress.ip_network(segment, strict=False)
+            for host in itertools.islice(candidate_net.hosts(), 4):
+                if str(host) != gateway:
+                    candidate = str(host)
+                    candidate_source = "candidate; the passive survey did not sweep"
+                    break
+        except (ValueError, TypeError):
+            candidate = ""
     recommended = {
         "intercept_segment": segment,
         "intercept_gateway": gateway,
@@ -191,11 +195,19 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
     }
     if candidate:
         recommended["intercept_addr"] = candidate
-        notes.append(
-            f"the suggested intercept address {candidate} is a CANDIDATE, not a probed free "
-            "address: this survey did not transmit, so confirm it is unused before enabling "
-            "siphon. Change it if your records say otherwise."
-        )
+        if "ARP probe" in candidate_source:
+            notes.append(
+                f"the suggested intercept address {candidate} was checked with an ARP probe "
+                "from 0.0.0.0; no host answered for it. An ARP probe is evidence, not proof "
+                "(a quiet or ARP-filtered host can still own it), so confirm it with your "
+                "records before enabling siphon."
+            )
+        else:
+            notes.append(
+                f"the suggested intercept address {candidate} is a CANDIDATE, not a probed "
+                "free address: this survey did not transmit, so confirm it is unused before "
+                "enabling siphon. Change it if your records say otherwise."
+            )
     return {
         "ok": True,
         "interface": iface,
@@ -208,7 +220,7 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
         "segment": segment,
         "segment_derivation": observed.get("segment_derivation", ""),
         "gateway": gateway,
-        "gateway_mac": "",
+        "gateway_mac": gateway_mac,
         "gateway_source": gateway_source,
         "hosts": [{"ip": a, "mac": m} for a, m in sorted(observed.get("arp_pairs", {}).items())],
         "hosts_answered": len(observed.get("arp_pairs", {}) or {}),
@@ -223,7 +235,38 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
         # free address is a liveness fact, not a segment fact. Offer the three fields rather
         # than an empty object that made the sheet look like Sonar found nothing.
         "recommended": recommended,
-        "intercept_addr_source": "candidate; the passive survey did not sweep" if candidate else "",
+        "intercept_addr_source": candidate_source if candidate else "",
+        "notes": notes,
+    }
+
+
+def _offer_result(iface: str, mgmt_iface: str, our_mac: str, offer, gateway: str,
+                  gateway_mac: str, candidate: str, candidate_source: str,
+                  notes: list[str]) -> dict:
+    """A plan measured from a DHCP OFFER, not inferred from a quiet wire."""
+    return {
+        "ok": True, "interface": iface, "mgmt_interface": mgmt_iface or "",
+        "our_mac": our_mac, "address": offer.yiaddr,
+        "address_source": "the DHCP server's OFFER (yiaddr)",
+        "segment": offer.segment,
+        "segment_derivation": "read from the DHCP OFFER (option 1 subnet mask)",
+        "gateway": gateway,
+        "gateway_mac": gateway_mac,
+        "gateway_source": ("the router field of the DHCP OFFER (option 3)" if gateway
+                           else "assumed as the first host of the segment"),
+        "hosts": [], "hosts_answered": 0, "swept": None,
+        "free_addresses": [candidate] if candidate else [],
+        "observed": None, "passive_only": False,
+        "discovered_by": "dhcp",
+        "dhcp": {"attempted": True, "ok": True, "server": offer.server,
+                 "lease_seconds": offer.lease_seconds},
+        "recommended": {
+            "intercept_segment": offer.segment,
+            "intercept_gateway": gateway,
+            "intercept_targets": "*",
+            **({"intercept_addr": candidate} if candidate else {}),
+        },
+        "intercept_addr_source": candidate_source,
         "notes": notes,
     }
 
@@ -297,6 +340,42 @@ def survey(iface: str, mgmt_iface: str = "", *,
             f"cannot read a MAC for '{iface}'; the survey needs the interface to exist on the "
             f"sensor node (check the interface name in Settings against the node's NICs)"
         )
+
+    # A DHCP DISCOVER is a real transmission, so it is only attempted on the live path.
+    # Tests inject addr_reader/watcher and must never touch a network.
+    live_probe = addr_reader is None and watcher is None and sweep is None
+    dhcp_evidence: dict = {"attempted": bool(live_probe), "ok": False, "error": ""}
+    if live_probe:
+        try:
+            from weirvern.admin import dhcp_probe as _dp  # noqa: PLC0415
+
+            offer = _dp.dhcp_offer(iface, our_mac)
+            gateway = offer.gateway
+            if not gateway:
+                first = next(iter(ipaddress.ip_network(offer.segment).hosts()), None)
+                gateway = str(first) if first else ""
+            gateway_mac = _dp.gateway_mac(iface, our_mac, gateway) if gateway else ""
+            candidate = offer.yiaddr
+            candidate_source = "DHCP OFFER (yiaddr); ARP probe found no owner"
+            conflict = _dp.arp_probe(iface, our_mac, candidate) if candidate else ""
+            if conflict:
+                candidate = ""
+                candidate_source = ""
+            dhcp_notes = [
+                f"the DHCP server {offer.server or '(unknown)'} offered {offer.yiaddr} "
+                f"with mask {offer.mask}; the segment and gateway are measured, not inferred.",
+                "this survey sent one DHCP DISCOVER. It did not accept the lease or assign "
+                "the offered address.",
+            ]
+            if conflict:
+                dhcp_notes.append(
+                    f"the DHCP-offered address {offer.yiaddr} was already owned by "
+                    f"{conflict}; it is not being recommended."
+                )
+            return _offer_result(iface, mgmt_iface, our_mac, offer, gateway, gateway_mac,
+                                 candidate, candidate_source, dhcp_notes)
+        except Exception as exc:  # noqa: BLE001
+            dhcp_evidence = {"attempted": True, "ok": False, "error": str(exc)[:300]}
 
     notes: list[str] = []
     observed: dict = {}
@@ -390,9 +469,41 @@ def survey(iface: str, mgmt_iface: str = "", *,
         if observed:
             # Passive-only survey: report what was seen and say the liveness question is
             # unanswered, rather than raising -- the observation IS a useful answer.
-            return _passive_only_result(
+            candidate = ""
+            candidate_source = ""
+            gateway_mac = ""
+            if live_probe:
+                try:
+                    from weirvern.admin import dhcp_probe as _dp  # noqa: PLC0415
+
+                    if gateway:
+                        gateway_mac = _dp.gateway_mac(iface, our_mac, gateway) or ""
+                        if gateway_mac:
+                            gateway_source = "ARP reply from the gateway"
+                    host_addrs = list(net.hosts())
+                    random.shuffle(host_addrs)
+                    for host in host_addrs[:12]:
+                        candidate_ip = str(host)
+                        if candidate_ip in (ip, gateway):
+                            continue
+                        owner = _dp.arp_probe(iface, our_mac, candidate_ip)
+                        if not owner:
+                            candidate = candidate_ip
+                            candidate_source = (
+                                "random free candidate; ARP probe found no owner")
+                            break
+                    if not candidate:
+                        candidate_source = (
+                            "no candidate was verified: the ARP probe could not find a "
+                            "free address, or the port could not transmit")
+                except Exception as exc:  # noqa: BLE001
+                    candidate_source = f"random candidate; probe failed: {str(exc)[:120]}"
+            result = _passive_only_result(
                 iface, mgmt_iface, our_mac, segment, observed, gateway, gateway_source,
-                notes, ip)
+                notes, ip, candidate=candidate, candidate_source=candidate_source,
+                gateway_mac=gateway_mac)
+            result["dhcp"] = dhcp_evidence
+            return result
         raise SonarError(f"segment {segment} has no addresses to survey")
 
     # ONE SWEEP. It answers both questions -- who is alive, and which addresses are free --
@@ -451,6 +562,7 @@ def survey(iface: str, mgmt_iface: str = "", *,
 
     return {
         "ok": True,
+        "dhcp": dhcp_evidence,
         "interface": iface,
         "mgmt_interface": mgmt_iface or "",
         "our_mac": our_mac,

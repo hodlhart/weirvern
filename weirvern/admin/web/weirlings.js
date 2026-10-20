@@ -1550,10 +1550,12 @@ async function wlScanNetwork() {
   const free = (res.recommended && res.recommended.intercept_addr)
     || (Array.isArray(res.free_addresses) ? res.free_addresses[0] : "");
   if (intercept && free) intercept.value = free;
-  const candidate = !!(res.intercept_addr_source && /candidate/i.test(res.intercept_addr_source));
+  const sourceText = String(res.intercept_addr_source || "");
+  const candidate = /candidate/i.test(sourceText);
+  const arpProbed = /ARP probe/i.test(sourceText);
   note.textContent = `Scan complete${where ? ` (${where})` : ""}. ` +
     (candidate
-      ? `Network and gateway are filled below; the intercept IP ${free || "value"} is a CANDIDATE (not probed), so confirm it is free before enabling siphon. `
+      ? `Network and gateway are filled below; the intercept IP ${free || "value"} is a candidate ${arpProbed ? "(ARP probe found no owner)" : "(not probed)"}, so confirm it is free before enabling siphon. `
       : "Network, gateway and intercept IP are filled below; ") +
     "The ARP/spoof settings are staged as pending changes. Review them, then stage this interface.";
 }

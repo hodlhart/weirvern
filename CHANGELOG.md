@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.49 — 2026-10-19
+
+SONAR ASKS THE SEGMENT INSTEAD OF ASSUMING.
+
+- **DHCP first.** Sonar sends one DHCPDISCOVER and reads the OFFER's option 1 (subnet mask)
+  and option 3 (router). That makes the segment and gateway measured, not inferred, on any
+  network with a DHCP server. The lease is not accepted and no address is assigned.
+- **ARP duplicate-address check.** The offered address, or a random candidate from a passive
+  survey, is probed with an ARP request from 0.0.0.0. If another host answers, the candidate
+  is rejected; if none answers, it is reported as evidence, not proof.
+- **Passive fallback.** If DHCP gets no OFFER, the existing capture learns what it can, then
+  picks a random address from the learned segment and probes it before recommending it.
+- The reply says which source produced the segment, gateway and intercept address, and
+  distinguishes DHCP-measured values from ARP-probed candidates and unprobed assumptions.
+
 ## 0.17.48 — 2026-10-19
 
 A PASSIVE SONAR OFFERS A CANDIDATE INTERCEPT ADDRESS.
