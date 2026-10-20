@@ -38,6 +38,7 @@ def test_the_siphon_init_reads_every_siphon_nic_from_the_plan():
     init = spec["spec"]["template"]["spec"]["initContainers"][0]
     script = "\n".join(init["args"])
     assert "INTERCEPT_PLANS" in script
+    assert "write_sysctl() {" in script
     assert "for one in $IFACES" in script
     assert 'write_sysctl "net/ipv4/conf/$one/rp_filter" 0' in script
     assert 'forwarding path ready on $one' in script

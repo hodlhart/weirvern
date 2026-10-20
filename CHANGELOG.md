@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.56 — 2026-10-20
+
+THE PER-NIC SIPHON INIT KEEPS ITS HELPER.
+
+- The 0.17.55 rewrite of the siphon init container accidentally dropped the `write_sysctl`
+  function while adding the per-NIC loop, so a siphon deployment with a plan still exited
+  with `write_sysctl: not found`. The helper is restored, and the per-NIC path is pinned by
+  the runtime test.
+
 ## 0.17.55 — 2026-10-20
 
 EVERY NIC GETS ITS OWN PLAN.
