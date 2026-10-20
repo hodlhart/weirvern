@@ -197,6 +197,10 @@ data:
   INTERCEPT_SEGMENT: ""
   INTERCEPT_ADDR: ""
   INTERCEPT_GATEWAY: ""
+  # PER-INTERFACE PLANS: JSON keyed by interface, e.g.
+  #   {"eth1":{"mode":"siphon","segment":"...","addr":"...","gateway":"...","targets":"*"}}
+  # Each entry gets its own routing table, so two siphons do not flush each other's routes.
+  INTERCEPT_PLANS: ""
 
   # ── Detection loop ─────────────────────────────────────────────────────────
   DETECT_INTERVAL_S: "300"

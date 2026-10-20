@@ -269,3 +269,21 @@ def test_plan_from_changes_can_CLEAR_a_field_with_an_empty_value():
     current = fleet_mod.make_plan(**GOOD)
     cleared = fleet_mod.plan_from_changes(current, {"targets": ""})
     assert cleared.targets == "" and cleared.segment == "198.51.100.0/24"
+
+
+def test_a_remote_sensor_can_carry_two_nic_plans_without_overwriting_either():
+    """The registry shape must hold a set, not one plan with a second NIC's values."""
+    import json
+
+    nics = json.dumps({
+        "eth1": {"capture": True, "siphon": True, "segment": "198.51.100.0/24",
+                 "addr": "198.51.100.10", "gateway": "198.51.100.1", "targets": "*"},
+        "eth2": {"capture": True, "sluice": True},
+    })
+    p = fleet_mod.make_plan(nics=nics)
+    assert p.armed_mode == "siphon"
+    assert len(p.to_intercept_configs()) == 1
+    assert p.to_intercept_configs()[0].iface == "eth1"
+    assert p.nics == nics
+    # The legacy six-field payload is unchanged for every pre-upgrade reader.
+    assert set(p.as_dict()) == {"mode", "iface", "segment", "addr", "gateway", "targets"}

@@ -1436,6 +1436,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--segment", help="CIDR to intercept, e.g. 198.51.100.0/24")
     s.add_argument("--our-ip", dest="our_ip", help="this sensor's address on that segment")
     s.add_argument("--gateway", help="the gateway whose traffic to relay")
+    s.add_argument("--policy-table", type=int, default=0,
+                   help="routing table for this interface's relay (default: 100; the "
+                        "supervisor gives each interface its own)")
     s.add_argument("--dry-run", action="store_true",
                    help="show the plan and preflight results, change nothing")
     s.add_argument("--hosts", action="append",
@@ -1707,7 +1710,8 @@ def cmd_intercept(args: argparse.Namespace) -> int:
 
     plan = ic_mod.build_plan(iface=iface, segment=segment, our_ip=our_ip,
                              gateway_ip=gateway, only=only or None,
-                             force_unsafe=bool(getattr(args, "force_unsafe", False)))
+                             force_unsafe=bool(getattr(args, "force_unsafe", False)),
+                             policy_table=getattr(args, "policy_table", 0) or None)
     if plan is None:
         return EXIT_FAIL
 

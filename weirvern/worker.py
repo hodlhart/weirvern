@@ -227,12 +227,17 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
 
     from weirvern import sluice_store  # noqa: PLC0415
     from weirvern.admin import channel as _channel  # noqa: PLC0415
+    from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
     from weirvern.sluice import (  # noqa: PLC0415
         GATE_STATE_DISARMED,
+        SluiceGateGroup,
         SluiceSupervisor,
         choose_backend,
         enforcement_pass,
     )
+
+    plans = NicPlanSet.from_json(getattr(settings, "intercept_plans", ""))
+    plan_group = bool(plans.sluice_ifaces())
 
     # ── THE ENFORCEMENT TARGET, RESOLVED FROM THE VERIFIED TOPOLOGY ──────────────────────────
     #
@@ -251,7 +256,17 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         or ""
     )
     sup = _SLUICE["supervisor"]
-    if sup is None or sup.iface != _iface:
+    if plan_group:
+        # ONE GATE PER BLOCKING NIC. The group owns a table per interface; the single
+        # `sup.iface` cache key below would collide, so the key is the whole interface list.
+        want = ",".join(plans.sluice_ifaces())
+        if sup is None or getattr(sup, "iface", "") != want:
+            sup = SluiceGateGroup(
+                plans,
+                mgmt_iface=settings.mgmt_iface,
+            )
+            _SLUICE["supervisor"] = sup
+    elif sup is None or getattr(sup, "iface", "") != _iface or isinstance(sup, SluiceGateGroup):
         sup = SluiceSupervisor(
             iface=_iface,
             mgmt_iface=settings.mgmt_iface,
@@ -319,10 +334,11 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
     # not read ARMED on the strength of a ConfigMap. `None` = the evidence could not be read, which
     # the pass treats as "not verified", never as "fine".
     siphon_live: bool | None = None
-    if settings.sensor_mode == "siphon":
+    _mode = "siphon" if plans.siphon_ifaces() else settings.sensor_mode
+    if _mode == "siphon":
         try:
             from weirvern.admin import status as _status  # noqa: PLC0415
-            siphon_live = bool(_status.siphon_liveness(settings.sensor_mode, client).get("live"))
+            siphon_live = bool(_status.siphon_liveness(_mode, client).get("live"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("sluice: could not read siphon intercept evidence: %s", exc)
             siphon_live = None
@@ -333,7 +349,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         auto_score=auto_score,
         detections=detections,
         # So the pass can say plainly WHICH enforcement path is live -- channel, siphon, or none.
-        sensor_mode=settings.sensor_mode,
+        sensor_mode=_mode,
         channel=channel_state,
         siphon_live=siphon_live,
         block_domains=settings.sluice_block_domains,
@@ -2137,7 +2153,9 @@ def main() -> None:
     try:
         from weirvern.admin import siphon_supervisor as siphon_mod
 
-        siphon = siphon_mod.SiphonSupervisor(siphon_mod.config_from_env())
+        # ONE GROUP EVEN FOR ONE NIC: the worker then has the same ownership and
+        # heartbeat rule for every sensor shape, instead of two code paths that drift.
+        siphon = siphon_mod.SiphonSupervisorGroup(siphon_mod.configs_from_env())
         siphon.start()
     except Exception:  # noqa: BLE001
         # Non-fatal BY DESIGN: a supervision problem must not stop ingest, detection

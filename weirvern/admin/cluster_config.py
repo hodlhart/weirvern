@@ -81,6 +81,7 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "INTERCEPT_SEGMENT",
     "INTERCEPT_ADDR",
     "INTERCEPT_GATEWAY",
+    "INTERCEPT_PLANS",
     "CHANNEL_UPSTREAM",
     "CHANNEL_DOWNSTREAM",
     # The channel's flow selection: whether the in-line traffic is summarised into NetFlow.
@@ -181,6 +182,8 @@ _RESTART_FOR: dict[str, tuple[tuple[str, ...], str]] = {
     "INTERCEPT_SEGMENT": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_ADDR": (("deploy/weirvern-worker",), "restarts the detection worker"),
     "INTERCEPT_GATEWAY": (("deploy/weirvern-worker",), "restarts the detection worker"),
+    "INTERCEPT_PLANS": (("deploy/weirvern-worker",), "restarts the detection worker, which "
+                        "supervises one intercept per interface"),
     # The channel keys are read by the WORKER (it verifies the wiring from the kernel and
     # enforces on the bridge); the capture sensor only ever sees the bridge through ZEEK_IFACE.
     "CHANNEL_UPSTREAM": (("deploy/weirvern-worker",), "restarts the detection worker"),
@@ -339,6 +342,7 @@ SETTING_CONTROLS: dict[str, dict] = {
     "INTERCEPT_SEGMENT": {"control": "text"},
     "INTERCEPT_ADDR": {"control": "text"},
     "INTERCEPT_GATEWAY": {"control": "text"},
+    "INTERCEPT_PLANS": {"control": "text"},
     "CHANNEL_UPSTREAM": {"control": "text"},
     "CHANNEL_DOWNSTREAM": {"control": "text"},
     # A CHECKBOX, NOT A THREE-WAY SELECT (operator, 2026-10-17: "I need a check box for

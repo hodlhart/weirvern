@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.55 — 2026-10-20
+
+EVERY NIC GETS ITS OWN PLAN.
+
+- A sensor is now a set of per-interface plans, not one global mode. `INTERCEPT_PLANS` is JSON
+  keyed by NIC with `capture`, `siphon` and `sluice` roles. The NIC sheet writes only its own
+  entry, so configuring eth2 cannot erase eth1.
+- Siphon gets one supervisor and one policy table per NIC. The table is derived from the
+  interface name, so a second relay cannot flush the first one's default route.
+- Sluice gets one gate and one nft table per blocking NIC. Arming eth2 does not replace eth1's
+  sets, and the sensor row is ARMED only when every blocking NIC is armed.
+- Zeek starts one process and one log directory per capture NIC. The old comma-separated
+  `ZEEK_IFACES` path passed repeated `-i` flags to one process and crash-looped; the ingester
+  now walks the per-NIC directories, and the siphon init reads every siphon NIC from the plan.
+- Remote units can store a per-NIC set in the registry (`plan_nics`), so a weirling is not
+  limited to the hub's single-plan shape.
+
 ## 0.17.54 — 2026-10-19
 
 SIPHON CAN OPEN ITS OWN FORWARDING PATH, AND A NIC SHEET DOES NOT BORROW ANOTHER NIC'S PLAN.

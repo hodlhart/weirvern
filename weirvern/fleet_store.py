@@ -59,7 +59,7 @@ TABLE = "weirvern.weirlings"
 # is what keeps a pre-plan reader aligned instead of shifted.
 COLUMNS = ["sensor_id", "address", "segment", "expected_mode", "enabled", "note",
            "added_at", "updated_at", "revoked_at",
-           *[f"plan_{f}" for f in PLAN_FIELDS]]
+           *[f"plan_{f}" for f in PLAN_FIELDS], "plan_nics"]
 
 
 class FleetStoreError(RuntimeError):
@@ -188,7 +188,7 @@ def _write_registration_row(client: Client, reg: Registration, now: datetime) ->
           reg.revoked_at or None,
           # Positional, in COLUMNS order -- which is why the plan's fields are appended last
           # and enumerated from PLAN_FIELDS rather than typed out here.
-          *[plan[f] for f in PLAN_FIELDS]],
+          *[plan[f] for f in PLAN_FIELDS], reg.plan.nics],
         ],
         column_names=COLUMNS,
     )

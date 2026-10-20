@@ -385,9 +385,11 @@ def test_the_zeek_manifest_still_runs_zeek_without_a_filter():
     """The no-filter path must survive, or every deployment that does not set the variable
     stops capturing."""
     text = ZEEK_MANIFEST.read_text()
-    assert "exec zeek $IFARGS" in text
-    assert text.count("exec zeek $IFARGS") == 2, (
-        "expected two exec lines (filtered and unfiltered); one means a path was lost"
+    # The no-filter branch still starts every NIC's own Zeek process with no -f.
+    assert 'zeek -i "$one" -C \\' in text
+    assert 'Log::default_logdir="$LOGDIR"' in text
+    assert text.count('zeek -i "$one" -C') == 2, (
+        "expected the filtered and unfiltered branches; one means a path was lost"
     )
 
 

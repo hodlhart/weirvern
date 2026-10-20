@@ -540,9 +540,15 @@ class NftBackend(Backend):
 
     name = "nft"
 
-    def __init__(self, runner: Any = None) -> None:
+    def __init__(self, runner: Any = None, suffix: str = "") -> None:
         # Injectable so tests can drive the compiled ruleset without touching a kernel.
         self._run = runner or _nft_run
+        # ONE TABLE PER NIC. A sensor with two blocking NICs cannot share the module-level table:
+        # arming eth2 would replace eth1's sets and silently open the first gate. The suffix is
+        # empty for the legacy single-gate path, so existing kernels and tests keep their names.
+        clean = re.sub(r"[^A-Za-z0-9_]", "_", str(suffix or ""))
+        self.table = f"{NFT_TABLE}_{clean}" if clean else NFT_TABLE
+        self.table_in = f"{self.table}_in"
 
     def available(self) -> bool:
         return bool(shutil.which("nft")) and _nft_can_write()
@@ -650,7 +656,7 @@ class NftBackend(Backend):
 
         lines: list[str] = [
             f"# weirvern sluice gate, armed on {iface} at {datetime.now(UTC):%FT%TZ}",
-            f"table inet {NFT_TABLE} {{",
+            f"table inet {self.table} {{",
             _set(NFT_SET_V4, "ipv4_addr", v4),
             _set(NFT_SET_V6, "ipv6_addr", v6),
             _set(NFT_SET_DOMAINS_V4, "ipv4_addr", dom_v4),
@@ -717,7 +723,7 @@ class NftBackend(Backend):
 
             in_v4, in_p4 = _in_split(inbound, v6=False)
             in_v6, in_p6 = _in_split(inbound, v6=True)
-            lines.append(f"table inet {NFT_TABLE_IN} {{")
+            lines.append(f"table inet {self.table_in} {{")
             lines.append(_set("in_v4", "ipv4_addr", in_v4))
             lines.append(_set("in_v6", "ipv6_addr", in_v6))
             for (proto, port), members in sorted(in_p4.items()):
@@ -771,7 +777,7 @@ class NftBackend(Backend):
         #
         # Deleting both tables first makes arm() idempotent in the strong sense: the kernel state
         # after arm() is a function of `rules` alone, never of what was there before.
-        for table in (NFT_TABLE, NFT_TABLE_IN):
+        for table in (self.table, NFT_TABLE_IN):
             # Absence is expected on a first arm, and its error is ignored for the same reason
             # disarm() ignores it.
             self._run(["nft", "delete", "table", "inet", table], capture=True)
@@ -797,15 +803,15 @@ class NftBackend(Backend):
             return False, f"nft rejected the ruleset: {err}"
         # READ BACK. A successful exit is not the same as an installed gate; this is the project's
         # recurring failure mode, so the state is verified rather than assumed.
-        ok, present = self._run(["nft", "list", "table", "inet", NFT_TABLE], capture=True)
-        if not ok or NFT_TABLE not in (present or ""):
+        ok, present = self._run(["nft", "list", "table", "inet", self.table], capture=True)
+        if not ok or self.table not in (present or ""):
             return False, "nft reported success but the table is not present on read-back"
         return True, f"{len(rules)} rule(s) compiled into sets on {iface}"
 
     def installed(self) -> bool:
         # BOTH TABLES, like disarm: a gate that armed an 'in' rule owns that table too, and a
         # leftover there is exactly as live as one in the forward table.
-        for table in (NFT_TABLE, NFT_TABLE_IN):
+        for table in (self.table, NFT_TABLE_IN):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
             # A FAILED LIST IS NOT PRESENCE. nft writes the requested table name into its
             # stderr ("list table inet weirvern_sluice" on ENOENT), so testing the text alone
@@ -820,10 +826,10 @@ class NftBackend(Backend):
         # one would leave input rules enforcing after the operator disarmed -- a block that
         # survives being turned off. Every table this backend can create is deleted, and the
         # absence of each is VERIFIED rather than inferred from an exit code.
-        for table in (NFT_TABLE, NFT_TABLE_IN):
+        for table in (self.table, NFT_TABLE_IN):
             self._run(["nft", "delete", "table", "inet", table], capture=True)
         still = []
-        for table in (NFT_TABLE, NFT_TABLE_IN):
+        for table in (self.table, NFT_TABLE_IN):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
             if ok and present and table in present:
                 still.append(table)
@@ -838,7 +844,7 @@ class NftBackend(Backend):
         would be invisible in the GUI's total, and an operator would conclude the gate was idle.
         """
         packets = bytes_ = 0
-        for table in (NFT_TABLE, NFT_TABLE_IN):
+        for table in (self.table, NFT_TABLE_IN):
             ok, out = self._run(["nft", "-j", "list", "table", "inet", table], capture=True)
             if not ok or not out:
                 continue
@@ -1271,3 +1277,97 @@ def enforcement_pass(
         logger.warning("sluice: gate state could not be recorded: %s", exc)
         state.detail += f" (note: this state could not be recorded: {type(exc).__name__})"
     return state
+
+
+class SluiceGateGroup:
+    """One Sluice gate per blocking NIC, each with its own nft table.
+
+    The hub used to resolve ONE enforcement interface (`SLUICE_IFACE` or the capture port). On a
+    sensor with several NICs that is wrong twice: configuring the second NIC overwrites the first,
+    and a single table cannot represent two interfaces. The group keeps a supervisor and a
+    table (`weirvern_sluice_<iface>`) per NIC, so arming eth2 cannot replace eth1's sets.
+
+    A NIC only enters the group when its plan says `sluice`; the management NIC is refused by
+    `NicPlanSet.validate` before this is constructed.
+    """
+
+    def __init__(self, plans, *, sensor_addrs: list[str] | None = None,
+                 mgmt_iface: str = "", backend_factory=None) -> None:
+        addrs = list(sensor_addrs or [])
+        factory = backend_factory or (lambda iface: NftBackend(suffix=iface))
+        self.supervisors: dict[str, SluiceSupervisor] = {
+            iface: SluiceSupervisor(iface=iface, mgmt_iface=mgmt_iface,
+                                    sensor_addrs=addrs, backend=factory(iface))
+            for iface in plans.sluice_ifaces()
+        }
+        self._last_states: dict[str, GateState] = {}
+
+    @property
+    def iface(self) -> str:
+        return ",".join(self.supervisors)
+
+    @property
+    def mgmt_iface(self) -> str:
+        first = next(iter(self.supervisors.values()), None)
+        return first.mgmt_iface if first is not None else ""
+
+    @property
+    def backend(self) -> Backend:
+        first = next(iter(self.supervisors.values()), None)
+        return first.backend if first is not None else Backend()
+
+    def arm(self, rules: list[Rule]) -> GateState:
+        """Arm every blocking NIC with the same rules; returns the sensor aggregate.
+
+        `states()` still exposes each NIC's own state. The aggregate is what the one
+        sensor_status row can carry without rounding a partial failure up to ARMED.
+        """
+        self._last_states = {iface: sup.arm(rules) for iface, sup in self.supervisors.items()}
+        return self.state
+
+    def disarm(self) -> dict[str, GateState]:
+        self._last_states = {iface: sup.disarm() for iface, sup in self.supervisors.items()}
+        return self._last_states
+
+    def states(self) -> dict[str, GateState]:
+        if self._last_states:
+            return dict(self._last_states)
+        return {iface: sup.state for iface, sup in self.supervisors.items()}
+
+    @property
+    def state(self) -> GateState:
+        """One row for the sensor: ARMED only when EVERY blocking NIC is armed.
+
+        The gate table is one row per sensor, not per NIC, so the aggregate must not round a
+        partial failure up. If eth1 is armed and eth2 is degraded, the sensor is DEGRADED and
+        the detail names both -- that is the fact an operator needs.
+        """
+        states = self.states()
+        if not states:
+            return GateState(iface="", mgmt_iface=self.mgmt_iface,
+                             detail="no blocking NIC is configured")
+        bad = {i: s for i, s in states.items() if s.state != GATE_STATE_ARMED}
+        first = next(iter(states.values()))
+        if bad:
+            detail = "; ".join(f"{i}: {s.detail}" for i, s in bad.items())
+            return GateState(
+                state=GATE_STATE_DEGRADED, iface=self.iface, mgmt_iface=self.mgmt_iface,
+                rules_total=sum(s.rules_total for s in states.values()),
+                rules_active=sum(s.rules_active for s in states.values()),
+                packets_blocked=sum(s.packets_blocked for s in states.values()),
+                bytes_blocked=sum(s.bytes_blocked for s in states.values()),
+                detail=detail, backend=first.backend, backend_expected="nft",
+            )
+        return GateState(
+            state=GATE_STATE_ARMED, iface=self.iface, mgmt_iface=self.mgmt_iface,
+            rules_total=sum(s.rules_total for s in states.values()),
+            rules_active=sum(s.rules_active for s in states.values()),
+            packets_blocked=sum(s.packets_blocked for s in states.values()),
+            bytes_blocked=sum(s.bytes_blocked for s in states.values()),
+            detail="; ".join(f"{i}: {s.detail}" for i, s in states.items()),
+            backend=first.backend, backend_expected="nft",
+        )
+
+    def healthy(self, max_age_s: float = 120.0) -> bool:
+        return bool(self.supervisors) and all(
+            s.healthy(max_age_s=max_age_s) for s in self.supervisors.values())

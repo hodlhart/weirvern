@@ -117,29 +117,28 @@ spec:
                 exit 0
               fi
               IFACE="${CAPTURE_IFACE:-${ZEEK_IFACE:-eth1}}"
+              # EVERY SIPHON NIC, not just the legacy capture port. The plan document is the
+              # authority; the worker image has python3, so the init container can read it.
+              PLAN_IFACES=$(python3 -c 'import json,os; d=json.loads(os.environ.get("INTERCEPT_PLANS") or "{}"); print(" ".join(k for k,v in d.items() if isinstance(v,dict) and (v.get("siphon") or v.get("mode")=="siphon")))' 2>/dev/null || true)
+              IFACES="${PLAN_IFACES:-$IFACE}"
               MGMT="${MGMT_IFACE:-}"
-              if [ -n "$MGMT" ] && [ "$IFACE" = "$MGMT" ]; then
-                echo "[siphon-init] FATAL: capture interface $IFACE is the management interface" >&2
-                exit 1
-              fi
-              write_sysctl() {
-                path="/host-sys/$1"
-                if [ ! -w "$path" ]; then
-                  echo "[siphon-init] FATAL: $path is not writable; cannot configure forwarding" >&2
+              for one in $IFACES; do
+                if [ -n "$MGMT" ] && [ "$one" = "$MGMT" ]; then
+                  echo "[siphon-init] FATAL: siphon interface $one is the management interface" >&2
                   exit 1
                 fi
-                echo "$2" > "$path"
-                echo "[siphon-init] $1=$2"
-              }
+              done
               write_sysctl net/ipv4/ip_forward 1
               write_sysctl net/ipv4/conf/all/rp_filter 0
               write_sysctl net/ipv4/conf/default/rp_filter 0
               write_sysctl net/ipv4/conf/all/send_redirects 0
               write_sysctl net/ipv4/conf/default/send_redirects 0
-              if [ -e "/host-sys/net/ipv4/conf/$IFACE/rp_filter" ]; then
-                write_sysctl "net/ipv4/conf/$IFACE/rp_filter" 0
-                write_sysctl "net/ipv4/conf/$IFACE/send_redirects" 0
-              fi
+              for one in $IFACES; do
+                if [ -e "/host-sys/net/ipv4/conf/$one/rp_filter" ]; then
+                  write_sysctl "net/ipv4/conf/$one/rp_filter" 0
+                  write_sysctl "net/ipv4/conf/$one/send_redirects" 0
+                fi
+              done
               if [ "$(cat /host-sys/net/ipv4/ip_forward)" != "1" ]; then
                 echo "[siphon-init] FATAL: ip_forward did not take" >&2
                 exit 1
@@ -148,13 +147,15 @@ spec:
               # FORWARD policy is DROP, so without these the ARP mapping would forge a path
               # into a black hole. Add the two interface-scoped accepts idempotently.
               if command -v nft >/dev/null 2>&1; then
-                for dir in iifname oifname; do
-                  if ! nft -nn list chain ip filter FORWARD 2>/dev/null | grep -q "$dir "$IFACE" accept"; then
-                    nft insert rule ip filter FORWARD "$dir" "$IFACE" accept comment '"weirvern siphon"' 2>/dev/null \
-                      || nft add rule ip filter FORWARD "$dir" "$IFACE" accept comment '"weirvern siphon"'
-                  fi
+                for one in $IFACES; do
+                  for dir in iifname oifname; do
+                    if ! nft -nn list chain ip filter FORWARD 2>/dev/null | grep -q "$dir "$one" accept"; then
+                      nft insert rule ip filter FORWARD "$dir" "$one" accept comment '"weirvern siphon"' 2>/dev/null \
+                        || nft add rule ip filter FORWARD "$dir" "$one" accept comment '"weirvern siphon"'
+                    fi
+                  done
+                  echo "[siphon-init] forwarding path ready on $one"
                 done
-                echo "[siphon-init] forwarding path ready on $IFACE"
               else
                 echo "[siphon-init] FATAL: nft is not in this image; cannot allow relayed traffic" >&2
                 exit 1
@@ -485,19 +486,43 @@ spec:
                 BPF="not ( ${BPF# or } )"
                 echo "[zeek] capture filter: $BPF"
               fi
-              if [ -n "$BPF" ]; then
-                exec zeek $IFARGS \
-                     -C \
-                     -f "$BPF" \
-                     /zeek/site/weirvern-local.zeek \
-                     Log::default_rotation_interval=1hr \
-                     Log::default_logdir=/zeek/logs
-              fi
-              exec zeek $IFARGS \
-                   -C \
-                   /zeek/site/weirvern-local.zeek \
-                   Log::default_rotation_interval=1hr \
-                   Log::default_logdir=/zeek/logs
+              # ── ONE ZEEK PROCESS PER CAPTURE NIC ──────────────────────────────────────
+              #
+              # Zeek accepts ONE `-i` per process. The previous loop put every interface into
+              # `$IFARGS` and ran a single Zeek, which aborts on the second `-i` and took the
+              # whole capture down (measured: CrashLoopBackOff on a two-NIC sensor). Each NIC
+              # gets its own process AND its own log directory; the ingester walks the
+              # subdirectories, so neither NIC's conn.log is invisible.
+              IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
+              COUNT=0
+              for one in $IFACES; do [ -n "$one" ] && COUNT=$((COUNT + 1)); done
+              [ "$COUNT" -gt 0 ] || { IFACES="$IFACE"; COUNT=1; }
+              PIDS=""
+              for one in $IFACES; do
+                [ -n "$one" ] || continue
+                if [ ! -e "/sys/class/net/$one" ]; then
+                  echo "[zeek] FATAL: capture interface '$one' does not exist on this node." >&2
+                  exit 1
+                fi
+                if [ "$COUNT" -gt 1 ]; then LOGDIR="/zeek/logs/$one"; else LOGDIR=/zeek/logs; fi
+                mkdir -p "$LOGDIR"
+                echo "[zeek] capture process for $one -> $LOGDIR"
+                if [ -n "$BPF" ]; then
+                  zeek -i "$one" -C -f "$BPF" \
+                       /zeek/site/weirvern-local.zeek \
+                       Log::default_rotation_interval=1hr \
+                       Log::default_logdir="$LOGDIR" &
+                else
+                  zeek -i "$one" -C \
+                       /zeek/site/weirvern-local.zeek \
+                       Log::default_rotation_interval=1hr \
+                       Log::default_logdir="$LOGDIR" &
+                fi
+                PIDS="$PIDS $!"
+              done
+              trap 'kill $PIDS 2>/dev/null; wait' TERM INT
+              # `wait` returns when every child exits; the trap makes SIGTERM stop all of them.
+              wait
           env:
             - name: ZEEK_IFACE
               valueFrom:

@@ -1788,22 +1788,23 @@ def save_zeek_state(path: str, state: ZeekTailState) -> None:
 
 
 def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
-    """Existing files for a log type: rotated siblings first (oldest first),
-    then the live file.
+    """Existing files for a log type: rotated siblings first, then the live file.
 
-    Matches Zeek's real rotation naming (`<type>.<timestamp>.log`) AND the
-    `.log.json` variant that `@load tuning/json-logs` would produce, because
-    guessing wrong here silently ingests nothing.
+    ONE DIRECTORY PER CAPTURE NIC. A multi-NIC Zeek supervisor writes
+    `/zeek/logs/eth1/conn.log` and `/zeek/logs/eth2/conn.log`; a flat listdir would find neither
+    and ingest NOTHING while the sensor looked healthy. Paths are RETURNED RELATIVE to
+    `log_dir` (including the NIC directory) because the caller joins them and the state key
+    must stay unique.
 
-    `depth` bounds how many rotated files are read per pass. Zeek rotates hourly
-    and the shipped retention is 24h, so ~24 is the working set; the default of
-    50 leaves headroom without being unbounded.
+    Matches Zeek's real rotation naming (`<type>.<timestamp>.log`) AND the `.log.json`
+    variant. `depth` bounds rotated files per NIC per pass.
     """
-    # (timestamp-from-name, mtime, filename). The name's timestamp is the sort
-    # key; mtime is only a tiebreaker for same-second rotations.
-    rotated: list[tuple[str, float, str]] = []
+    roots: list[tuple[str, str]] = [(log_dir, "")]
     try:
-        entries = os.listdir(log_dir)
+        for entry in os.listdir(log_dir):
+            sub = os.path.join(log_dir, entry)
+            if os.path.isdir(sub) and not os.path.islink(sub):
+                roots.append((sub, entry + "/"))
     except FileNotFoundError:
         return []
     except OSError as exc:
@@ -1811,47 +1812,37 @@ def _zeek_log_names(log_dir: str, log_type: str, depth: int = 50) -> list[str]:
         return []
 
     live_variants = {f"{log_type}.log", f"{log_type}.log.json"}
-    for name in entries:
-        if name in live_variants:
-            continue
-        # <type>.<something>.log  or  <type>.<something>.log.json
-        if not name.startswith(f"{log_type}."):
-            continue
-        rest = name[len(log_type) + 1:]
-        if not (rest.endswith(".log") or rest.endswith(".log.json")):
-            continue
-        # Guard against matching a different log type's prefix, e.g. "conn" vs
-        # "conn_summary": the character after the type must be a digit (the
-        # timestamp) — the shipped types are all lowercase words followed by a
-        # date, so anything else is not ours.
-        if not rest[:1].isdigit():
-            continue
-        path = os.path.join(log_dir, name)
+    names: list[str] = []
+    for root, prefix in roots:
+        rotated: list[tuple[str, float, str]] = []
         try:
-            mtime = os.path.getmtime(path)
+            entries = os.listdir(root)
         except OSError:
             continue
-        # Sort key: the TIMESTAMP IN THE NAME, with mtime only as a tiebreaker.
-        #
-        # The name is authoritative because Zeek embeds the rotation time in it
-        # ('conn.2026-09-15-01-00-00.log'). mtime happens to correlate on a live
-        # sensor, but it breaks the moment the directory is copied, restored from
-        # backup, or rsynced: the names are preserved and the mtimes are not. An
-        # mtime sort then reads the newest file first, which pushes records into
-        # ClickHouse out of order and can close a window before its records
-        # arrive. The timestamp format is fixed-width and zero-padded, so plain
-        # lexicographic order IS chronological order.
-        ts = rest[: len("2026-09-15-00-00-00")]
-        rotated.append((ts, mtime, name))
-        continue
-
-    rotated.sort(key=lambda t: (t[0], t[1]))   # oldest first, by name then mtime
-    rotated = rotated[-depth:]                 # keep the newest `depth`
-    names = [n for _ts, _mtime, n in rotated]
-
-    for live in (f"{log_type}.log", f"{log_type}.log.json"):
-        if os.path.exists(os.path.join(log_dir, live)):
-            names.append(live)
+        for name in entries:
+            if name in live_variants:
+                continue
+            if not name.startswith(f"{log_type}."):
+                continue
+            rest = name[len(log_type) + 1:]
+            if not (rest.endswith(".log") or rest.endswith(".log.json")):
+                continue
+            # Guard against matching a different log type's prefix, e.g. "conn" vs
+            # "conn_summary": the character after the type must be a digit.
+            if not rest[:1].isdigit():
+                continue
+            path = os.path.join(root, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            ts = rest[: len("2026-09-15-00-00-00")]
+            rotated.append((ts, mtime, prefix + name))
+        rotated.sort(key=lambda item: (item[0], item[1]))
+        names.extend(name for _ts, _mtime, name in rotated[-depth:])
+        for live in (f"{log_type}.log", f"{log_type}.log.json"):
+            if os.path.exists(os.path.join(root, live)):
+                names.append(prefix + live)
     return names
 
 

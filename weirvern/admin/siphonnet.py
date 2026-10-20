@@ -32,6 +32,7 @@ import socket
 import struct
 import subprocess
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -539,25 +540,36 @@ def forwarding_rule_text(iface: str) -> str:
     return out if rc == 0 else ""
 
 
-def forwarding_table_text() -> str:
-    """`ip route show table <POLICY_TABLE>` output."""
-    rc, out = _run("ip", "route", "show", "table", str(POLICY_TABLE))
+def policy_table_for(iface: str) -> int:
+    """A stable policy table per interface, so two siphon ports cannot flush each other's routes."""
+    if not iface:
+        return POLICY_TABLE
+    return POLICY_TABLE + 1 + (zlib.crc32(iface.encode()) % 900)
+
+
+def forwarding_table_text(table: int | None = None) -> str:
+    """`ip route show table <table>` output."""
+    table = POLICY_TABLE if table is None else int(table)
+    rc, out = _run("ip", "route", "show", "table", str(table))
     return out if rc == 0 else ""
 
 
-def _rule_installed(iface: str) -> bool:
-    return re.search(rf"iif\s+{re.escape(iface)}\s+lookup\s+{POLICY_TABLE}\b",
+def _rule_installed(iface: str, table: int | None = None) -> bool:
+    table = POLICY_TABLE if table is None else int(table)
+    return re.search(rf"iif\s+{re.escape(iface)}\s+lookup\s+{table}\b",
                      forwarding_rule_text(iface)) is not None
 
 
-def _table_has_default(iface: str, gateway: str) -> bool:
-    text = forwarding_table_text()
+def _table_has_default(iface: str, gateway: str, table: int | None = None) -> bool:
+    table = POLICY_TABLE if table is None else int(table)
+    text = forwarding_table_text(table)
     return re.search(rf"default\s+via\s+{re.escape(gateway)}\s+dev\s+{re.escape(iface)}\b",
                      text) is not None
 
 
 def forwarding_path_problems(iface: str, gateway: str,
-                             sample_src: str | None = None) -> list[str]:
+                             sample_src: str | None = None,
+                             table: int | None = None) -> list[str]:
     """Whether a FORWARDED packet would actually leave by the capture interface.
 
     THE BUG THIS EXISTS FOR, measured on a live boot:
@@ -589,19 +601,20 @@ def forwarding_path_problems(iface: str, gateway: str,
     is used only as corroboration when a representative source address is available.
     """
     problems: list[str] = []
-    remedy = (f"Install it with: ip rule add iif {iface} lookup {POLICY_TABLE}, plus a "
-              f"default via {gateway} dev {iface} in table {POLICY_TABLE}.")
+    table = POLICY_TABLE if table is None else int(table)
+    remedy = (f"Install it with: ip rule add iif {iface} lookup {table}, plus a "
+              f"default via {gateway} dev {iface} in table {table}.")
 
-    if not _rule_installed(iface):
+    if not _rule_installed(iface, table):
         problems.append(
-            f"no policy rule sends traffic arriving on {iface} to table {POLICY_TABLE}, so "
+            f"no policy rule sends traffic arriving on {iface} to table {table}, so "
             f"a FORWARDED packet would match the default route and leave by a different "
             f"interface -- carrying the victim's source address onto the wrong segment, "
             f"where it is dropped upstream. {remedy}"
         )
-    if not _table_has_default(iface, gateway):
+    if not _table_has_default(iface, gateway, table):
         problems.append(
-            f"table {POLICY_TABLE} has no default via {gateway} dev {iface}, so relayed "
+            f"table {table} has no default via {gateway} dev {iface}, so relayed "
             f"traffic has nowhere to go on this interface. {remedy}"
         )
 
@@ -639,7 +652,8 @@ def forwarding_path_problems(iface: str, gateway: str,
 
 def ensure_forwarding_path(iface: str, gateway: str,
                            gateway_mac: str | None = None,
-                           segment: str = "") -> list[str]:
+                           segment: str = "",
+                           table: int | None = None) -> list[str]:
     """Install the policy route that makes forwarded traffic use the capture interface.
 
     Idempotent: deletes and re-adds, so a stale entry from a previous run cannot persist.
@@ -680,6 +694,7 @@ def ensure_forwarding_path(iface: str, gateway: str,
     -- so relying on the lookup alone refuses a perfectly valid plan.
     """
     problems: list[str] = []
+    table = POLICY_TABLE if table is None else int(table)
 
     # Refuse to install a default route via a gateway we cannot reach. Getting this wrong is
     # worse than not installing it: a bad default in table 100 would black-hole all relayed
@@ -689,9 +704,9 @@ def ensure_forwarding_path(iface: str, gateway: str,
         return [f"gateway {gateway} did not resolve on {iface}, so a route via it would "
                 f"black-hole relayed traffic. Check --gateway and the interface."]
 
-    _run("ip", "route", "flush", "table", str(POLICY_TABLE))
+    _run("ip", "route", "flush", "table", str(table))
     rc, out = _run("ip", "route", "add", "default", "via", gateway, "dev", iface,
-                   "table", str(POLICY_TABLE))
+                   "table", str(table))
     if rc != 0:
         problems.append(f"could not add the policy route: {out}")
         # ── THE RULE MUST NOT GO IN WITHOUT THE ROUTE (audit F032, CONFIRMED BY RUNNING IT) ──
@@ -716,27 +731,27 @@ def ensure_forwarding_path(iface: str, gateway: str,
     # once the table can resolve BOTH directions -- the same ordering rule the F032 note above
     # applies to the default route.
     if segment:
-        rc, out = _run("ip", "route", "add", segment, "dev", iface, "table", str(POLICY_TABLE))
+        rc, out = _run("ip", "route", "add", segment, "dev", iface, "table", str(table))
         if rc != 0:
             problems.append(
                 f"could not add the connected segment route {segment} dev {iface} to table "
-                f"{POLICY_TABLE}: {out}. Without it, return traffic for a host on the segment "
+                f"{table}: {out}. Without it, return traffic for a host on the segment "
                 f"matches the default and is sent back at the gateway, so the segment loses its "
                 f"gateway. This is the whole-VLAN failure mode."
             )
             return problems
 
-    _run("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
-    rc, out = _run("ip", "rule", "add", "iif", iface, "lookup", str(POLICY_TABLE),
+    _run("ip", "rule", "del", "iif", iface, "lookup", str(table))
+    rc, out = _run("ip", "rule", "add", "iif", iface, "lookup", str(table),
                    "priority", str(POLICY_PRIORITY))
     if rc != 0:
         problems.append(f"could not add the policy rule: {out}")
 
-    problems.extend(forwarding_path_problems(iface, gateway))
+    problems.extend(forwarding_path_problems(iface, gateway, table=table))
     return problems
 
 
-def remove_forwarding_path(iface: str) -> list[str]:
+def remove_forwarding_path(iface: str, table: int | None = None) -> list[str]:
     """Withdraw the policy route and EVERY rule that references the policy table. Never raises.
 
     RETURNS THE FAILURES, and that return is the point (audit F031, CONFIRMED BY RUNNING IT).
@@ -764,6 +779,7 @@ def remove_forwarding_path(iface: str) -> list[str]:
     usually wrong is a warning an operator stops reading.
     """
     failures: list[str] = []
+    table = POLICY_TABLE if table is None else int(table)
 
     def _attempt(*args: str) -> None:
         rc, out = _run(*args)
@@ -800,13 +816,13 @@ def remove_forwarding_path(iface: str) -> list[str]:
     # By parsing: covers ANY priority selecting the table, including forms we did not anticipate.
     # This is the ONLY priority-based deletion, and it cannot match a rule that selects another
     # table -- which is what makes it safe to run against a shared rule set.
-    for priority in _policy_rule_priorities():
+    for priority in _policy_rule_priorities(table):
         _attempt("ip", "rule", "del", "priority", str(priority))
 
     # Last resort for the exact form, in case the rule has no readable priority.
-    _attempt("ip", "rule", "del", "iif", iface, "lookup", str(POLICY_TABLE))
+    _attempt("ip", "rule", "del", "iif", iface, "lookup", str(table))
 
-    _attempt("ip", "route", "flush", "table", str(POLICY_TABLE))
+    _attempt("ip", "route", "flush", "table", str(table))
     return failures
 
 
@@ -830,13 +846,14 @@ def _is_absence(output: str) -> bool:
     )
 
 
-def _policy_rule_priorities() -> list[int]:
+def _policy_rule_priorities(table: int | None = None) -> list[int]:
     """Priorities of every routing rule that selects the policy table.
 
     Parsed rather than assumed, because the rule set is shared with the host's own networking and a
     wrong guess could delete someone else's rule. Only rules mentioning OUR table number are
     returned.
     """
+    table = POLICY_TABLE if table is None else int(table)
     rc, out = _run("ip", "rule", "show")
     if rc != 0:
         return []
@@ -846,7 +863,7 @@ def _policy_rule_priorities() -> list[int]:
         if not parts or not parts[0].rstrip(":").isdigit():
             continue
         # A rule line looks like: "1000:	from all iif eth1 lookup 100"
-        if f"lookup {POLICY_TABLE}" not in line:
+        if f"lookup {table}" not in line:
             continue
         try:
             found.append(int(parts[0].rstrip(":")))

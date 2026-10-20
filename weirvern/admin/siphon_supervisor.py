@@ -52,6 +52,7 @@ outside this pod, no assumptions that this is the only sensor.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import subprocess
@@ -103,6 +104,7 @@ class InterceptConfig:
     our_ip: str = ""
     gateway: str = ""
     targets: str = ""
+    policy_table: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -225,6 +227,44 @@ def config_from_env(env: Mapping[str, str] | None = None) -> InterceptConfig:
     )
 
 
+def configs_from_env(env: Mapping[str, str] | None = None) -> list[InterceptConfig]:
+    """One config per interface from INTERCEPT_PLANS, else the legacy single plan.
+
+    INTERCEPT_PLANS is JSON: {"eth1": {"mode":"siphon", ...}, "eth2": {...}}. Each plan gets
+    its own policy table so one interface's route flush cannot erase the other's.
+    """
+    e = os.environ if env is None else env
+    raw = (e.get("INTERCEPT_PLANS") or "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"INTERCEPT_PLANS is not valid JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("INTERCEPT_PLANS must be a JSON object keyed by interface")
+        from weirvern.admin import siphonnet  # noqa: PLC0415
+        from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+        parsed = NicPlanSet.from_json(raw)
+        out: list[InterceptConfig] = []
+        for iface, plan in parsed.plans.items():
+            if not plan.siphon:
+                continue
+            out.append(InterceptConfig(
+                mode="siphon",
+                iface=iface,
+                segment=plan.segment,
+                our_ip=plan.addr,
+                gateway=plan.gateway,
+                targets=plan.targets,
+                policy_table=int(siphonnet.policy_table_for(iface)),
+            ))
+        # A plan set with no siphon NICs is an explicit declaration, not a missing one:
+        # returning the legacy ConfigMap config here would arm the old interface anyway.
+        return out
+    return [config_from_env(e)]
+
+
 def build_child_argv(cfg: InterceptConfig, *, python_exe: str | None = None,
                      run_seconds: int = DEFAULT_RUN_S) -> list[str]:
     """The exact `weirvern intercept` command the supervisor runs.
@@ -241,6 +281,7 @@ def build_child_argv(cfg: InterceptConfig, *, python_exe: str | None = None,
         "--gateway", cfg.gateway,
         *cfg.target_args(),
         "--seconds", str(int(run_seconds)),
+        *(["--policy-table", str(cfg.policy_table)] if cfg.policy_table else []),
     ]
 
 
@@ -633,3 +674,35 @@ class SiphonSupervisor:
         finally:
             with suppress(Exception):
                 stream.close()
+
+
+class SiphonSupervisorGroup:
+    """Run one SiphonSupervisor per interface, without sharing a policy table.
+
+    This is what makes a separate siphon per interface possible in one worker. Each child has
+    its own table (`policy_table_for(iface)`) and its own `weirvern intercept` process, so a
+    route flush on one port cannot remove the other's default route.
+    """
+
+    def __init__(self, configs: list[InterceptConfig], **kwargs) -> None:
+        self.supervisors = [SiphonSupervisor(c, **kwargs) for c in configs if c.enabled]
+
+    def start(self) -> None:
+        for supervisor in self.supervisors:
+            supervisor.start()
+
+    def stop(self, timeout_s: float | None = None) -> None:
+        for supervisor in self.supervisors:
+            supervisor.stop(timeout_s=timeout_s)
+
+    @property
+    def intercept_running(self) -> bool:
+        return any(s.intercept_running for s in self.supervisors)
+
+    @property
+    def worker_should_publish(self) -> bool:
+        # If no child owns a heartbeat, the worker must explain the state.
+        return not self.intercept_running
+
+    def status(self) -> dict:
+        return {"interfaces": {s.cfg.iface: s.status() for s in self.supervisors}}

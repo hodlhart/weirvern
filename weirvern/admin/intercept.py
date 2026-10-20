@@ -346,6 +346,7 @@ class InterceptPlan:
     gateway_ip: str
     gateway_mac: str
     hosts: dict[str, str] = field(default_factory=dict)  # host_ip -> host_mac
+    policy_table: int = POLICY_TABLE
 
     @property
     def host_count(self) -> int:
@@ -390,7 +391,8 @@ class InterceptPlan:
 def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
                exclude: set[str] | None = None,
                only: set[str] | None = None,
-               force_unsafe: bool = False) -> InterceptPlan | None:
+               force_unsafe: bool = False,
+               policy_table: int | None = None) -> InterceptPlan | None:
     """Discover what exists on `segment` and decide what to intercept.
 
     `only` restricts interception to named hosts. THAT IS THE SAFER DEFAULT FOR A FIRST
@@ -566,6 +568,7 @@ def build_plan(iface: str, segment: str, our_ip: str, gateway_ip: str,
         hosts = {ip: mac for ip, mac in hosts.items() if ip in only}
 
     return InterceptPlan(iface=iface, segment=segment, our_mac=our_mac, our_ip=our_ip,
+                         policy_table=POLICY_TABLE if policy_table is None else int(policy_table),
                          gateway_ip=gateway_ip, gateway_mac=gateway_mac, hosts=hosts)
 
 
@@ -585,6 +588,7 @@ class Intercept:
                  max_runtime_s: float | None = None,
                  allow_management_iface: bool = False) -> None:
         self.plan = plan
+        self.table = int(getattr(plan, "policy_table", POLICY_TABLE) or POLICY_TABLE)
         self._sender = sender or ArpSender(plan.iface)
         self.refresh_s = refresh_s
         self.forwarding = forwarding
@@ -747,13 +751,17 @@ class Intercept:
         #    wrong, poisoning makes the kernel the next hop for traffic it cannot deliver --
         #    the victim loses the network instead of being relayed. Installing it first means
         #    a failure here aborts with NO poison frames sent.
-        path_problems = ensure_forwarding_path(self.plan.iface, self.plan.gateway_ip,
-                                               gateway_mac=self.plan.gateway_mac,
-                                               # THE SEGMENT, so table 100 gets a connected route and
-                                               # return traffic for a host ON the segment is delivered
-                                               # on-link instead of being sent back at the gateway
-                                               # (glm-5.3 review, measured on a kernel).
-                                               segment=self.plan.segment)
+        # THE SEGMENT, so the policy table gets a connected route and return traffic for a
+        # host ON the segment is delivered on-link instead of being sent back at the gateway.
+        if self.table == POLICY_TABLE:
+            path_problems = ensure_forwarding_path(
+                self.plan.iface, self.plan.gateway_ip,
+                gateway_mac=self.plan.gateway_mac, segment=self.plan.segment)
+        else:
+            path_problems = ensure_forwarding_path(
+                self.plan.iface, self.plan.gateway_ip,
+                gateway_mac=self.plan.gateway_mac, segment=self.plan.segment,
+                table=self.table)
         if path_problems:
             # ── A REFUSED START MUST LEAVE NOTHING BEHIND (audit F032, CONFIRMED BY RUNNING IT) ──
             #
@@ -825,13 +833,14 @@ class Intercept:
         # The policy rule must go too: left behind, it sends ALL traffic arriving on this
         # interface to a table that has no routes once the address is removed, which would
         # break traffic the operator never asked us to touch.
-        failures = remove_forwarding_path(self.plan.iface)
+        failures = (remove_forwarding_path(self.plan.iface) if self.table == POLICY_TABLE
+                    else remove_forwarding_path(self.plan.iface, table=self.table))
         if failures:
             logger.warning(
                 "could NOT withdraw %d forwarding rule(s) or route(s) on %s: %s. A rule left "
                 "behind sends matching traffic to policy table %s, which now has no routes, so "
                 "that traffic is being DROPPED. Check with: ip rule show; ip route show table %s",
-                len(failures), self.plan.iface, "; ".join(failures), POLICY_TABLE, POLICY_TABLE,
+                len(failures), self.plan.iface, "; ".join(failures), self.table, self.table,
             )
         close = getattr(self._sender, "close", None)
         if callable(close):

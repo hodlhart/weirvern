@@ -151,7 +151,7 @@ def test_the_policy_rule_is_NOT_installed_when_the_route_fails(fake_ip, monkeypa
     """THE DEFECT, and the ordering that prevents it. An absent route changes nothing; a rule
     pointing at an empty table DROPS traffic. So the route is the precondition."""
     monkeypatch.setattr(siphonnet, "resolve_mac", lambda iface, gw: "aa:bb:cc:dd:ee:ff")
-    monkeypatch.setattr(siphonnet, "forwarding_path_problems", lambda iface, gw: [])
+    monkeypatch.setattr(siphonnet, "forwarding_path_problems", lambda iface, gw, **kw: [])
     fake_ip["results"] = {"route add": (2, "RTNETLINK answers: Network is unreachable")}
 
     problems = siphonnet.ensure_forwarding_path("eth1", "198.51.100.1")
@@ -168,7 +168,7 @@ def test_a_successful_setup_still_installs_both(fake_ip, monkeypatch):
     """And the normal path must be unaffected, or the fix would trade a black-hole for a broken
     intercept."""
     monkeypatch.setattr(siphonnet, "resolve_mac", lambda iface, gw: "aa:bb:cc:dd:ee:ff")
-    monkeypatch.setattr(siphonnet, "forwarding_path_problems", lambda iface, gw: [])
+    monkeypatch.setattr(siphonnet, "forwarding_path_problems", lambda iface, gw, **kw: [])
     fake_ip["results"] = {}
 
     problems = siphonnet.ensure_forwarding_path("eth1", "198.51.100.1")

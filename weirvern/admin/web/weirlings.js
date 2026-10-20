@@ -1309,6 +1309,22 @@ function wlIfaceNames(value) {
   return out;
 }
 
+/** The per-interface plans, from the staged value when one exists. */
+function wlPlans() {
+  const raw = wlStagedValue("intercept_plans") || wlCfgValue("intercept_plans") || "";
+  try {
+    const parsed = JSON.parse(String(raw || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+function wlPlanFor(nic) {
+  const plan = wlPlans()[nic];
+  return plan && typeof plan === "object" ? plan : {};
+}
+
 /** Scope the local settings to ONE NIC. The panel edits that port's two capture choices and
  *  nothing else; all other settings remain behind the explicit "All hub settings" link. */
 function wlShowNicSettings(nic, interfaces) {
@@ -1319,7 +1335,8 @@ function wlShowNicSettings(nic, interfaces) {
   const listed = wlIfaceList(wlCfgValue("zeek_ifaces"));
   const cap = wlCfgValue("capture_iface");
   const mode = String(wlCfgValue("sensor_mode") || "loch").trim().toLowerCase();
-  const siphonOn = mode === "siphon" && cap === nic;
+  const plan = wlPlanFor(nic);
+  const siphonOn = String(plan.mode || "").toLowerCase() === "siphon";
   const zeekOn = listed.length ? listed.includes(nic) : base === nic;
   const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
@@ -1331,28 +1348,27 @@ function wlShowNicSettings(nic, interfaces) {
   const names = wlIfaceNames(wlCfgValue("interface_networks"));
   const netInput = document.getElementById("wl-nic-network");
   if (netInput) netInput.value = names[nic] || "";
-  // THE NETWORK PLAN BELONGS TO THE CAPTURE NIC, NOT TO THE SHEET. The survey settings are
-  // sensor-level (one INTERCEPT_* plan) and used to be copied into whichever NIC sheet was
-  // opened, so eth2 showed eth1's segment, gateway and intercept IP. Only the capture port
-  // owns those values; every other sheet is blank and read-only.
-  const ownsPlan = cap === nic;
+  // EACH NIC OWNS ITS OWN PLAN (operator, 2026-10-20). The old sheet copied the single
+  // sensor-level INTERCEPT_* plan into every NIC, so eth2 showed eth1's values and applying
+  // one overwrote the other. Plans now live in INTERCEPT_PLANS keyed by interface; the
+  // supervisor starts one intercept per entry with its own policy table.
   const cidrInput = document.getElementById("wl-nic-cidr");
   if (cidrInput) {
-    cidrInput.value = ownsPlan ? wlStagedValue("intercept_segment") : "";
-    cidrInput.disabled = !ownsPlan;
-    cidrInput.title = ownsPlan ? "" : `no network plan for ${nic}; Sonar configures the capture interface (${cap || "none"})`;
+    cidrInput.value = plan.segment || "";
+    cidrInput.disabled = false;
+    cidrInput.title = `the segment ${nic} intercepts`;
   }
   const gatewayInput = document.getElementById("wl-nic-gateway");
   if (gatewayInput) {
-    gatewayInput.value = ownsPlan ? wlStagedValue("intercept_gateway") : "";
-    gatewayInput.disabled = !ownsPlan;
-    gatewayInput.title = ownsPlan ? "" : `no network plan for ${nic}`;
+    gatewayInput.value = plan.gateway || "";
+    gatewayInput.disabled = false;
+    gatewayInput.title = `the gateway ${nic} relays through`;
   }
   const interceptInput = document.getElementById("wl-nic-intercept-ip");
   if (interceptInput) {
-    interceptInput.value = ownsPlan ? wlStagedValue("intercept_addr") : "";
-    interceptInput.disabled = !ownsPlan;
-    interceptInput.title = ownsPlan ? "" : `no network plan for ${nic}`;
+    interceptInput.value = plan.addr || "";
+    interceptInput.disabled = false;
+    interceptInput.title = `the address ${nic} claims while intercepting`;
   }
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
@@ -1499,26 +1515,29 @@ function wlStageNicSettings() {
     stageChange("interface_networks", nextNames, wlCfgValue("interface_networks"));
   }
 
-  // MODE: one weirling runs one mode. Choosing it here applies to the sensor, not just the NIC.
-  // THE NETWORKS SECTION IS PART OF THIS INTERFACE'S STAGE. Sonar fills these fields; the
-  // operator may also edit them. They are sensor-level settings, written in the same plan.
-  // Only the capture NIC owns the sensor-level network plan. Staging the blank fields from
-  // another NIC would erase the plan the capture port just measured.
-  if (String(wlCfgValue("capture_iface") || "") === nic) {
-    for (const [id, key] of [["wl-nic-cidr", "intercept_segment"],
-                             ["wl-nic-gateway", "intercept_gateway"],
-                             ["wl-nic-intercept-ip", "intercept_addr"]]) {
-      const field = document.getElementById(id);
-      if (field) stageChange(key, String(field.value || "").trim(), wlCfgValue(key));
-    }
-  }
+  // THIS NIC'S PLAN ONLY. A blank field clears only this interface's plan; it cannot
+  // erase another port's segment, gateway or intercept address.
+  const plans = wlPlans();
+  const existing = plans[nic] && typeof plans[nic] === "object" ? plans[nic] : {};
+  const cidrField = document.getElementById("wl-nic-cidr");
+  const gatewayField = document.getElementById("wl-nic-gateway");
+  const interceptField = document.getElementById("wl-nic-intercept-ip");
+  plans[nic] = {
+    mode: siphonOn ? "siphon" : "loch",
+    segment: String((cidrField && cidrField.value) || "").trim(),
+    addr: String((interceptField && interceptField.value) || "").trim(),
+    gateway: String((gatewayField && gatewayField.value) || "").trim(),
+    targets: String(existing.targets || "*"),
+  };
+  stageChange("intercept_plans", JSON.stringify(plans), wlCfgValue("intercept_plans"));
 
+  const anySiphon = Object.values(plans).some(
+    (p) => p && String(p.mode || "").toLowerCase() === "siphon");
   const currentMode = String(wlCfgValue("sensor_mode") || "loch").toLowerCase();
-  const wantedMode = siphonOn ? "siphon" : "loch";
+  const wantedMode = anySiphon ? "siphon" : "loch";
   if (wantedMode !== currentMode) stageChange("sensor_mode", wantedMode, currentMode);
   const cap = wlCfgValue("capture_iface");
-  if (wantedMode === "siphon") stageChange("capture_iface", nic, cap);
-  else if (cap === nic) stageChange("capture_iface", "", cap);
+  if (!cap) stageChange("capture_iface", nic, cap);
 
   // NETFLOW SOURCE: passive leaves the router's export alone; active makes this NIC the probe.
   const currentSource = String(wlCfgValue("netflow_mode") || "auto").toLowerCase();

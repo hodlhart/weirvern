@@ -243,6 +243,11 @@ class Settings:
     sluice_block_domains: bool = field(
         default_factory=lambda: _env_bool("SLUICE_BLOCK_DOMAINS", True))
     sluice_iface: str = field(default_factory=lambda: os.environ.get("SLUICE_IFACE", ""))
+    # PER-NIC PLANS for this sensor. Empty keeps the legacy single plan (SENSOR_MODE +
+    # CAPTURE_IFACE + SLUICE_IFACE); a non-empty document is authoritative, so a plan set with
+    # no siphon NICs does not silently fall back to the old global mode.
+    intercept_plans: str = field(
+        default_factory=lambda: os.environ.get("INTERCEPT_PLANS", ""))
     # The criticality policy: whether detections may block on their own, and how aggressively. The
     # default is OFF even when the gate is enabled -- auto-blocking on ML output is a decision an
     # operator makes deliberately, having seen what the ensemble calls high severity on their own

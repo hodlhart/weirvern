@@ -144,15 +144,24 @@ class SensorPlan:
     addr: str = ""
     gateway: str = ""
     targets: str = ""
+    # PER-NIC PLANS for a sensor with more than one usable NIC. JSON keyed by interface;
+    # empty means the legacy single plan above. This is what lets a remote weirling carry
+    # eth1=siphon + eth2=sluice instead of one plan overwriting the other.
+    nics: str = ""
 
     @property
     def configured(self) -> bool:
         """Whether ANY field is set. False is the pre-existing state of a registration."""
-        return any(str(getattr(self, f) or "").strip() for f in PLAN_FIELDS)
+        return bool(self.nics.strip()) or any(
+            str(getattr(self, f) or "").strip() for f in PLAN_FIELDS)
 
     @property
     def armed_mode(self) -> str:
         """The mode a sensor's agent should RUN. Empty plan -> `loch`, the safe resting state."""
+        if self.nics.strip():
+            from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+            return "siphon" if NicPlanSet.from_json(self.nics).siphon_ifaces() else "loch"
         return self.mode if self.mode in KNOWN_MODES else ""
 
     def as_dict(self) -> dict[str, str]:
@@ -174,6 +183,25 @@ class SensorPlan:
             our_ip=self.addr, gateway=self.gateway, targets=self.targets,
         )
 
+    def to_intercept_configs(self) -> list:
+        """Every siphon NIC's config, or the legacy single config when no per-NIC set exists."""
+        if not self.nics.strip():
+            return [self.to_intercept_config()] if self.armed_mode == "siphon" else []
+        from weirvern.admin import (
+            siphon_supervisor,  # noqa: PLC0415
+            siphonnet,  # noqa: PLC0415
+        )
+        from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+        return [
+            siphon_supervisor.InterceptConfig(
+                mode="siphon", iface=iface, segment=plan.segment,
+                our_ip=plan.addr, gateway=plan.gateway, targets=plan.targets,
+                policy_table=siphonnet.policy_table_for(iface),
+            )
+            for iface, plan in NicPlanSet.from_json(self.nics).plans.items() if plan.siphon
+        ]
+
     @classmethod
     def from_row(cls, row: Mapping[str, object]) -> SensorPlan:
         """A plan read back from a stored registry row (`plan_*` columns).
@@ -181,7 +209,9 @@ class SensorPlan:
         Missing keys read as "" rather than raising: an upgraded deployment's rows predate
         the columns, and a plan that cannot be read must not take the fleet view down.
         """
-        return cls(**{f: str(row.get(f"plan_{f}") or "") for f in PLAN_FIELDS})
+        values = {f: str(row.get(f"plan_{f}") or "") for f in PLAN_FIELDS}
+        values["nics"] = str(row.get("plan_nics") or "")
+        return cls(**values)
 
     def problems(self) -> list[str]:
         """What stops this plan from arming RIGHT NOW, in the supervisor's own words.
@@ -190,16 +220,18 @@ class SensorPlan:
         be complete). Used by the fleet view to warn at staging time and by the sensor agent's
         supervisor at arm time -- one source for one fact.
         """
-        if self.armed_mode != "siphon":
+        configs = self.to_intercept_configs()
+        if not configs:
             return []
-        cfg = self.to_intercept_config()
-        out = list(cfg.missing())
-        out += list(cfg.target_problems())
-        if not cfg.target_args():
-            out.append(
-                "no intercept targets: an empty target list diverts no traffic, so the "
-                "sensor will refuse to arm until hosts (or '*') are named"
-            )
+        out: list[str] = []
+        for cfg in configs:
+            out.extend(cfg.missing())
+            out.extend(cfg.target_problems())
+            if not cfg.target_args():
+                out.append(
+                    f"{cfg.iface}: no intercept targets: an empty target list diverts no "
+                    "traffic, so the sensor will refuse to arm until hosts (or '*') are named"
+                )
         return out
 
     def warnings(self) -> list[str]:
@@ -215,7 +247,7 @@ class SensorPlan:
 
 
 def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str = "",
-              gateway: str = "", targets: str = "") -> SensorPlan:
+              gateway: str = "", targets: str = "", nics: str = "") -> SensorPlan:
     """A validated plan, or FleetError naming the field that is wrong.
 
     SHAPES ONLY -- see the block comment above: a half-filled plan is stored, and the sensor
@@ -274,9 +306,23 @@ def make_plan(*, mode: str = "", iface: str = "", segment: str = "", addr: str =
         if why:
             raise FleetError(why)
 
+    raw_nics = str(nics or "").strip()
+    if raw_nics:
+        from weirvern.nic_plans import NicPlanError, NicPlanSet  # noqa: PLC0415
+
+        try:
+            plan_set = NicPlanSet.from_json(raw_nics)
+        except NicPlanError as exc:
+            raise FleetError(f"per-NIC plans cannot be stored: {exc}") from exc
+        problems = plan_set.validate()
+        if problems:
+            raise FleetError("per-NIC plans cannot be stored: " + "; ".join(problems))
+        if not m:
+            m = "siphon" if plan_set.siphon_ifaces() else "loch"
+
     return SensorPlan(mode=m, iface=iface, segment=segment,
                       addr=str(addr or "").strip(), gateway=str(gateway or "").strip(),
-                      targets=targets)
+                      targets=targets, nics=raw_nics)
 
 
 def _targets_problem(targets: str) -> str:

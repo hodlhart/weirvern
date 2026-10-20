@@ -854,6 +854,9 @@ _SETTINGS_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("intercept_segment", "intercept segment"),
         ("intercept_addr", "intercept address"),
         ("intercept_gateway", "intercept gateway"),
+        # The per-NIC document. One row, but it holds a plan per interface; the NIC sheets
+        # write it. Kept visible so an operator can inspect the exact JSON being applied.
+        ("intercept_plans", "per-NIC plans (JSON)"),
         # The IN-LINE channel: two ports, one bridge, enforcement without siphon.
         ("channel_upstream", "channel upstream port"),
                 ("channel_downstream", "channel downstream port"),
@@ -1082,6 +1085,12 @@ _SETTINGS_HELP: dict[str, str] = {
         "The gateway address whose identity is forged for the targeted hosts during a "
         "siphon intercept. The watchdog restores these mappings on every exit path, "
         "including crashes. Never name the sensor's own management gateway address."),
+    "intercept_plans": (
+        "Per-interface plans, one entry per NIC, e.g. "
+        "{\"eth1\":{\"capture\":true,\"siphon\":true,\"segment\":\"192.0.2.0/24\","
+        "\"addr\":\"192.0.2.10\",\"gateway\":\"192.0.2.1\"}}. The NIC sheets write this "
+        "document; each interface gets its own forwarding table and its own gate, so "
+        "configuring one NIC never edits another. The management NIC is refused."),
     "reverse_dns": (
         "'private' (default) resolves only private addresses, so lookups stay on your network. "
         "'all' also resolves public addresses, which sends every external destination in your "

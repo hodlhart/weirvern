@@ -66,7 +66,8 @@ def newest_activity(log_dir: Path | None = None) -> tuple[str, float] | None:
     now = time.time()
     for stem in LIVENESS_LOGS:
         # Both the live file and rotations, since a rotation moves the mtime to the new file.
-        for path in list(d.glob(f"{stem}.log")) + list(d.glob(f"{stem}.*.log")):
+        # `rglob` because a multi-NIC supervisor gives each NIC its own log directory.
+        for path in list(d.rglob(f"{stem}.log")) + list(d.rglob(f"{stem}.*.log")):
             try:
                 age = now - path.stat().st_mtime
             except OSError:
@@ -84,7 +85,7 @@ def capture_loss(log_dir: Path | None = None, tail_lines: int = 50) -> float | N
     healthy-looking number.
     """
     d = log_dir or _log_dir()
-    files = sorted(list(d.glob("capture_loss.log")) + list(d.glob("capture_loss.*.log")),
+    files = sorted(list(d.rglob("capture_loss.log")) + list(d.rglob("capture_loss.*.log")),
                    key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     for path in files:
         try:
@@ -129,7 +130,7 @@ def capture_counters(log_dir: Path | None = None, tail_lines: int = 50) -> tuple
     stand-in for "packets missed" and is a real measurement rather than a placeholder.
     """
     d = log_dir or _log_dir()
-    files = sorted(list(d.glob("capture_loss.log")) + list(d.glob("capture_loss.*.log")),
+    files = sorted(list(d.rglob("capture_loss.log")) + list(d.rglob("capture_loss.*.log")),
                    key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     for path in files:
         try:

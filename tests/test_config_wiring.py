@@ -175,6 +175,8 @@ def test_the_startup_script_and_the_env_list_agree(docs):
         # assigned before use (`BPF=""` then appended to). Requiring it in env: would be wrong for
         # the same reason MODE and MGMT are wrong -- it is derived, not configured.
         "BPF",
+        # Locals of the per-NIC startup loop and the siphon init's plan-derived list.
+        "IFACES", "COUNT", "LOGDIR", "PIDS", "PLAN_IFACES",
     }
     missing = {v for v in referenced if v not in declared and v not in internal}
     assert not missing, (

@@ -226,9 +226,10 @@ class InterceptController:
     instead of a toggle that appears to have worked.
     """
 
-    def __init__(self, sid: str, *, supervisor_factory=None) -> None:
+    def __init__(self, sid: str, *, supervisor_factory=None, group_factory=None) -> None:
         self.sid = sid
         self._factory = supervisor_factory or self._default_factory
+        self._group_factory = group_factory or self._default_group_factory
         # `Any` on purpose: the factory is injectable (the tests build the REAL supervisor with
         # faked spawn/readiness hooks), so the attribute's type is "whatever the factory builds"
         # -- annotating it `SiphonSupervisor | None` would be a claim the injection point makes
@@ -249,11 +250,19 @@ class InterceptController:
 
         return siphon_supervisor.SiphonSupervisor(cfg)
 
+    @staticmethod
+    def _default_group_factory(configs):
+        from weirvern.admin import siphon_supervisor  # noqa: PLC0415
+
+        return siphon_supervisor.SiphonSupervisorGroup(configs)
+
     def apply(self, plan) -> None:
         """Make reality match the declared plan. Never raises."""
-        want = plan.armed_mode if plan is not None else ""
+        configs = plan.to_intercept_configs() if plan is not None else []
         key = plan.as_dict() if plan is not None else None
-        if want != "siphon":
+        if key is not None:
+            key = {**key, "nics": plan.nics}
+        if not configs:
             self.stop(why="the plan does not ask for an intercept")
             self.mode = "loch"
             return
@@ -267,10 +276,14 @@ class InterceptController:
         # arm", the same collapse the hub's worker avoids). The refusal itself rides `failures`.
         self.mode = "siphon"
         try:
-            self._supervisor = self._factory(plan.to_intercept_config())
+            if len(configs) == 1:
+                self._supervisor = self._factory(configs[0])
+            else:
+                self._supervisor = self._group_factory(configs)
             self._supervisor.start()
             self._built_from = key
-            logger.info("intercept: supervising this unit's siphon intercept from its own plan")
+            logger.info("intercept: supervising %d siphon NIC(s) from this unit's own plan",
+                        len(configs))
         except Exception as exc:  # noqa: BLE001 -- a monitoring feature must not kill capture
             self._supervisor = None
             self._built_from = None
