@@ -1382,6 +1382,7 @@ function wlShowNicSettings(nic, interfaces) {
   const sip = document.getElementById("wl-nic-siphon");
   const loch = document.getElementById("wl-nic-loch");
   const net = document.getElementById("wl-nic-netflow");
+  const sluice = document.getElementById("wl-nic-sluice");
   const channelOn = wlChannelEnabled();
   if (z) z.checked = zeekOn;
   if (sip) { sip.checked = siphonOn && !channelOn; sip.disabled = channelOn; }
@@ -1395,6 +1396,7 @@ function wlShowNicSettings(nic, interfaces) {
       ? "Sonar is available when siphon is selected" : "survey this segment";
   }
   if (loch) loch.checked = channelOn || !siphonOn;
+  if (sluice) sluice.checked = !!plan.sluice;
   if (net) { net.checked = channelOn ? true : netflowOn; net.disabled = !flowActive && !channelOn; }
   const passive = document.getElementById("wl-nic-netflow-passive");
   const active = document.getElementById("wl-nic-netflow-active");
@@ -1450,6 +1452,7 @@ function wlNicChannelChanged() {
 function wlNicNetflowSourceChanged() {
   const active = document.getElementById("wl-nic-netflow-active");
   const net = document.getElementById("wl-nic-netflow");
+  const sluice = document.getElementById("wl-nic-sluice");
   if (!active || !net || active.disabled) return;
   if (active.checked) {
     net.disabled = false;
@@ -1522,8 +1525,10 @@ function wlStageNicSettings() {
   const cidrField = document.getElementById("wl-nic-cidr");
   const gatewayField = document.getElementById("wl-nic-gateway");
   const interceptField = document.getElementById("wl-nic-intercept-ip");
+  const sluiceBox = document.getElementById("wl-nic-sluice");
   plans[nic] = {
     mode: siphonOn ? "siphon" : "loch",
+    sluice: !!(sluiceBox && sluiceBox.checked),
     segment: String((cidrField && cidrField.value) || "").trim(),
     addr: String((interceptField && interceptField.value) || "").trim(),
     gateway: String((gatewayField && gatewayField.value) || "").trim(),

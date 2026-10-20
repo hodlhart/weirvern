@@ -42,3 +42,11 @@ def test_the_siphon_init_reads_every_siphon_nic_from_the_plan():
     assert "for one in $IFACES" in script
     assert 'write_sysctl "net/ipv4/conf/$one/rp_filter" 0' in script
     assert 'forwarding path ready on $one' in script
+
+
+def test_the_nic_sheet_has_its_own_sluice_control():
+    html = Path("weirvern/admin/web/index.html").read_text()
+    js = Path("weirvern/admin/web/weirlings.js").read_text()
+    assert 'id="wl-nic-sluice"' in html
+    assert "sluice: !!(sluiceBox" in js
+    assert "sluice.checked = !!plan.sluice" in js

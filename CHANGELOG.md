@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.57 — 2026-10-20
+
+THE NIC SHEET CAN BLOCK, NOT ONLY INTERCEPT.
+
+- Each NIC sheet now carries a `Sluice — block on this NIC` control. It writes the `sluice`
+  role into that interface's own plan, so a sensor can capture + siphon on eth1 and block on
+  eth2 without either entry editing the other.
+
 ## 0.17.56 — 2026-10-20
 
 THE PER-NIC SIPHON INIT KEEPS ITS HELPER.
