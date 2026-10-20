@@ -164,8 +164,8 @@ def validate(mode: str, *, has_net_admin: bool = False,
         v.ok = False
         v.blockers.append(
             "CAP_NET_ADMIN is required in siphon mode: forwarding, rp_filter and "
-            "send_redirects must be configured. The passive sensor deliberately does "
-            "NOT have it — enabling siphon widens the container's privileges"
+            "send_redirects must be configured. The passive deployment deliberately does "
+            "NOT grant it — enabling siphon widens the worker's privileges"
         )
     if not watchdog_available:
         v.ok = False

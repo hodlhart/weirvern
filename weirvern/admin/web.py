@@ -3448,30 +3448,33 @@ def _build_handler(ctx: GuiContext):
             return f"cannot enable {normalised}: {reasons or 'prerequisites are missing'}"
 
         def _sensor_caps(self) -> tuple[bool, bool]:
-            """(net_admin, net_raw) for the SENSOR, read from the cluster's own DaemonSet.
+            """(net_admin, net_raw) for the WORKER, which is what runs the intercept.
+
+            WHY THE WORKER AND NOT ZEEK: `weirvern intercept` is a control-plane command; it
+            executes in the worker pod. The worker forges the ARP frames, installs the
+            policy route and drives the forwarding path. The zeek pod only captures, and
+            giving the packet parser NET_ADMIN widens the wrong process. The worker's
+            Deployment is therefore the authoritative place to read the capabilities that
+            siphon actually needs.
 
             WHY THE CLUSTER AND NOT THIS PROCESS: the GUI runs in its own pod, and its
-            effective capabilities describe the wrong container. The sensor is the thing
-            that must forward, so its DaemonSet is authoritative -- an overlay applied or
-            reverted on the cluster is visible here whatever any checkout says.
+            effective capabilities describe the wrong container.
 
             A capability that cannot be verified is reported ABSENT, never assumed: the
             gate exists so the in-path mode cannot be enabled without the ability to
-            forward. (This began as a stub that answered "no" unconditionally, which made
-            the mode impossible to enable from the GUI even where the sensor held the
-            capabilities -- reported live as "I can't apply siphon mode".)
+            forward. (This began as a stub that answered "no" unconditionally.)
             """
             from weirvern.admin import cluster_config as cc
 
             client = getattr(ctx, "config_client", None) or cc.ClusterConfig()
             try:
-                ds = client.get_json(
-                    f"/apis/apps/v1/namespaces/{cc.NAMESPACE}/daemonsets/zeek")
+                dep = client.get_json(
+                    f"/apis/apps/v1/namespaces/{cc.NAMESPACE}/deployments/weirvern-worker")
                 containers = (
-                    ((ds.get("spec") or {}).get("template") or {}).get("spec") or {}
+                    ((dep.get("spec") or {}).get("template") or {}).get("spec") or {}
                 ).get("containers") or []
                 for container in containers:
-                    if container.get("name") == "zeek":
+                    if container.get("name") == "worker":
                         adds = ((container.get("securityContext") or {})
                                 .get("capabilities") or {}).get("add") or []
                         return ("NET_ADMIN" in adds), ("NET_RAW" in adds)

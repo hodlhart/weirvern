@@ -1058,9 +1058,9 @@ def cmd_mode(args: argparse.Namespace) -> int:
     if wanted == mode_mod.MODE_SIPHON:
         caps = detect_capabilities(project_dir())
         if caps.kubectl and caps.cluster_available:
-            # NET_ADMIN on the zeek container is what siphon mode needs; read it back
-            # from the manifest render rather than trusting the checked-in file.
-            r = _run(["kubectl", "-n", NAMESPACE, "get", "ds", "zeek", "-o",
+            # The WORKER runs the intercept; its capabilities are what siphon needs. The
+            # zeek container keeps its narrow NET_RAW capture posture.
+            r = _run(["kubectl", "-n", NAMESPACE, "get", "deploy", "weirvern-worker", "-o",
                       "jsonpath={.spec.template.spec.containers[0].securityContext.capabilities.add}"],
                      project_dir(), timeout=20)
             adds = (r.stdout or "") if r.ok else ""

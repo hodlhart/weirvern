@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.52 — 2026-10-19
+
+THE SIPHON GATE READS THE PROCESS THAT ACTUALLY INTERCEPTS.
+
+- The GUI's mode gate asked the **zeek** DaemonSet for CAP_NET_ADMIN, but `weirvern intercept`
+  runs in the **worker** pod, and the passive capture container is deliberately the narrower
+  one. The gate now reads the worker Deployment.
+- With the existing worker overlay (hostNetwork + NET_RAW + NET_ADMIN) and the privileged
+  `siphon-forwarding-init` container, siphon can be enabled without granting the packet
+  parser NET_ADMIN. The refusal text now says "worker" rather than "sensor".
+- The CLI's `weirvern mode siphon` prerequisite check reads the same Deployment.
+
 ## 0.17.51 — 2026-10-19
 
 SONAR SHOWS THE STEP IT IS ON.

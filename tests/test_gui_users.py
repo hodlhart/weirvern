@@ -624,7 +624,7 @@ class _DSCli:
         if self.exc:
             raise self.exc
         return {"spec": {"template": {"spec": {"containers": [
-            {"name": "zeek", "securityContext": {"capabilities": {"add": self.adds}}},
+            {"name": "worker", "securityContext": {"capabilities": {"add": self.adds}}},
         ]}}}}
 
 

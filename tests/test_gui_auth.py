@@ -361,13 +361,13 @@ def test_the_mode_gate_blocks_when_prerequisites_are_missing():
 
 def test_the_gui_reads_sensor_capabilities_from_the_CLUSTER_and_defaults_to_ABSENT():
     """Reading THIS process's capabilities would describe the wrong container, so the probe
-    asks the cluster's own DaemonSet. And a probe that cannot answer must report ABSENT:
+    asks the cluster's own worker Deployment. And a probe that cannot answer must report ABSENT:
     the default is what keeps in-path interception from being enabled on a sensor that
     cannot forward."""
     src = WEB.read_text()
     i = src.index("def _sensor_caps(")
     body = src[i:src.index("\n        def ", i + 10)]
-    assert "get_json" in body and "daemonsets/zeek" in body, (
+    assert "get_json" in body and "deployments/weirvern-worker" in body, (
         "the capability probe does not read the sensor's DaemonSet from the cluster"
     )
     assert "return False, False" in body, (
