@@ -1365,16 +1365,20 @@ def _local_sensor_filter(client, sensor: str) -> tuple[bool, str]:
 
 def _weirling_facet(client, total: int) -> list[dict]:
     labels = weirling_labels(client)
-    out: list[dict] = []
-    seen: set[str] = set()
-    for addr, name in sorted(labels.items()):
-        # weirling_labels fills every loopback spelling; one option per weirling is enough.
+    # weirling_labels fills every loopback spelling; one option per weirling is enough, and
+    # 127.0.0.1 is the value the live NetFlow facet uses. Choosing 0.0.0.0 here made a local
+    # selection return DNS/Zeek rows but zero NetFlow rows when the operator switched feeds.
+    by_name: dict[str, str] = {}
+    for addr, name in labels.items():
         key = str(name)
-        if key in seen:
+        if not key:
             continue
-        seen.add(key)
-        out.append({"value": str(addr), "label": key, "count": int(total)})
-    return out
+        if key not in by_name or str(addr) == "127.0.0.1":
+            by_name[key] = str(addr)
+    # The hub's own weirling is the first option; a remote name sorts after it.
+    return [{"value": addr, "label": name, "count": int(total)}
+            for name, addr in sorted(by_name.items(),
+                                     key=lambda kv: (kv[1] != "127.0.0.1", kv[0]))]
 
 
 def discover_dns(client, *, hours: int = 24, limit: int = 100, offset: int = 0,

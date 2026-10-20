@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.72 — 2026-10-20
+
+THE LOCAL WEIRLING'S FLOW FILTER VALUE IS THE ONE NETFLOW USES.
+
+- DNS and Zeek payloads carried the local weirling as `0.0.0.0` because every loopback spelling
+  mapped to the same name. Selecting it and switching back to NetFlow produced zero rows: the
+  NetFlow facet uses `127.0.0.1`. The local facet now prefers `127.0.0.1`, and the hub's row
+  sorts first.
+
 ## 0.17.71 — 2026-10-20
 
 BROWSER BACK/FORWARD, AND A WEIRLING FILTER ON EVERY FLOW FEED.
