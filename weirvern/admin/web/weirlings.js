@@ -1331,12 +1331,29 @@ function wlShowNicSettings(nic, interfaces) {
   const names = wlIfaceNames(wlCfgValue("interface_networks"));
   const netInput = document.getElementById("wl-nic-network");
   if (netInput) netInput.value = names[nic] || "";
+  // THE NETWORK PLAN BELONGS TO THE CAPTURE NIC, NOT TO THE SHEET. The survey settings are
+  // sensor-level (one INTERCEPT_* plan) and used to be copied into whichever NIC sheet was
+  // opened, so eth2 showed eth1's segment, gateway and intercept IP. Only the capture port
+  // owns those values; every other sheet is blank and read-only.
+  const ownsPlan = cap === nic;
   const cidrInput = document.getElementById("wl-nic-cidr");
-  if (cidrInput) cidrInput.value = wlStagedValue("intercept_segment");
+  if (cidrInput) {
+    cidrInput.value = ownsPlan ? wlStagedValue("intercept_segment") : "";
+    cidrInput.disabled = !ownsPlan;
+    cidrInput.title = ownsPlan ? "" : `no network plan for ${nic}; Sonar configures the capture interface (${cap || "none"})`;
+  }
   const gatewayInput = document.getElementById("wl-nic-gateway");
-  if (gatewayInput) gatewayInput.value = wlStagedValue("intercept_gateway");
+  if (gatewayInput) {
+    gatewayInput.value = ownsPlan ? wlStagedValue("intercept_gateway") : "";
+    gatewayInput.disabled = !ownsPlan;
+    gatewayInput.title = ownsPlan ? "" : `no network plan for ${nic}`;
+  }
   const interceptInput = document.getElementById("wl-nic-intercept-ip");
-  if (interceptInput) interceptInput.value = wlStagedValue("intercept_addr");
+  if (interceptInput) {
+    interceptInput.value = ownsPlan ? wlStagedValue("intercept_addr") : "";
+    interceptInput.disabled = !ownsPlan;
+    interceptInput.title = ownsPlan ? "" : `no network plan for ${nic}`;
+  }
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
@@ -1485,11 +1502,15 @@ function wlStageNicSettings() {
   // MODE: one weirling runs one mode. Choosing it here applies to the sensor, not just the NIC.
   // THE NETWORKS SECTION IS PART OF THIS INTERFACE'S STAGE. Sonar fills these fields; the
   // operator may also edit them. They are sensor-level settings, written in the same plan.
-  for (const [id, key] of [["wl-nic-cidr", "intercept_segment"],
-                           ["wl-nic-gateway", "intercept_gateway"],
-                           ["wl-nic-intercept-ip", "intercept_addr"]]) {
-    const field = document.getElementById(id);
-    if (field) stageChange(key, String(field.value || "").trim(), wlCfgValue(key));
+  // Only the capture NIC owns the sensor-level network plan. Staging the blank fields from
+  // another NIC would erase the plan the capture port just measured.
+  if (String(wlCfgValue("capture_iface") || "") === nic) {
+    for (const [id, key] of [["wl-nic-cidr", "intercept_segment"],
+                             ["wl-nic-gateway", "intercept_gateway"],
+                             ["wl-nic-intercept-ip", "intercept_addr"]]) {
+      const field = document.getElementById(id);
+      if (field) stageChange(key, String(field.value || "").trim(), wlCfgValue(key));
+    }
   }
 
   const currentMode = String(wlCfgValue("sensor_mode") || "loch").toLowerCase();

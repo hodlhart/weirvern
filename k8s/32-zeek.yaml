@@ -150,8 +150,8 @@ spec:
               if command -v nft >/dev/null 2>&1; then
                 for dir in iifname oifname; do
                   if ! nft -nn list chain ip filter FORWARD 2>/dev/null | grep -q "$dir "$IFACE" accept"; then
-                    nft insert rule ip filter FORWARD "$dir" "$IFACE" accept comment "weirvern siphon" 2>/dev/null \
-                      || nft add rule ip filter FORWARD "$dir" "$IFACE" accept comment "weirvern siphon"
+                    nft insert rule ip filter FORWARD "$dir" "$IFACE" accept comment '"weirvern siphon"' 2>/dev/null \
+                      || nft add rule ip filter FORWARD "$dir" "$IFACE" accept comment '"weirvern siphon"'
                   fi
                 done
                 echo "[siphon-init] forwarding path ready on $IFACE"

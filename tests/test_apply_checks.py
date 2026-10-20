@@ -101,3 +101,16 @@ def test_the_plan_validator_is_the_fleets_own():
     """The check and the sensor must never disagree about what a complete plan is."""
     with pytest.raises(fleet_mod.FleetError):
         fleet_mod.make_plan(mode="siphon", iface="not an iface")
+
+
+def test_a_CAPTURE_IFACE_change_is_checked_against_the_heartbeats(monkeypatch):
+    """The GUI writes CAPTURE_IFACE; the check used to read only INTERCEPT_IFACE."""
+    monkeypatch.setattr("weirvern.fleet_store.read_heartbeats",
+                        lambda client: ([{"sensor_id": "weirvern", "interfaces": ["eth1", "eth2"]}], None))
+    out = ac.run_apply_checks(changes={"CAPTURE_IFACE": "eth9"}, current={}, ch_client=_CH())
+    r = _names(out)["the capture interface is one the sensors report"]
+    assert r["status"] == "fail" and "eth9" in r["detail"]
+
+    out = ac.run_apply_checks(changes={"CAPTURE_IFACE": "eth1"}, current={}, ch_client=_CH())
+    r = _names(out)["the capture interface is one the sensors report"]
+    assert r["status"] == "pass" and "eth1" in r["detail"]

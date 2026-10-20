@@ -140,3 +140,23 @@ def test_neither_manifest_weakened_the_rest_of_the_security_context():
             f"{target}: not uid 0. Kubernetes drops added capabilities for non-root "
             f"containers, so the grants would be decorative and capture would fail."
         )
+
+
+def test_the_forwarding_init_quotes_the_nft_comment():
+    """nft needs the comment QUOTED; unquoted it aborts the init container.
+
+    Measured on the live node (2026-10-20): the init container exited with
+    "syntax error, unexpected string" at `comment weirvern siphon`, leaving zeek Pending
+    and the intercept refusing to poison because the FORWARD path was not open.
+    """
+    ds = _zeek(_render("k8s/"))
+    inits = ds["spec"]["template"]["spec"].get("initContainers") or []
+    script = "\n".join("\n".join(str(x) for x in (i.get("args") or [])) for i in inits)
+    assert "weirvern siphon" in script, "the forwarding init disappeared"
+    assert "comment '\"weirvern siphon\"'" in script, (
+        "the nft comment is not shell-quoted; nft parses the two words as separate tokens "
+        "and the init container aborts"
+    )
+    assert 'comment "weirvern siphon"' not in script, (
+        "the shell strips these quotes before nft sees them, which was the live failure"
+    )

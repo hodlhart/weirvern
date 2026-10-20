@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.17.54 — 2026-10-19
+
+SIPHON CAN OPEN ITS OWN FORWARDING PATH, AND A NIC SHEET DOES NOT BORROW ANOTHER NIC'S PLAN.
+
+- The `siphon-forwarding-init` container passed `comment weirvern siphon` to nft without
+  quoting. nft parsed the comment as two tokens and exited with a syntax error, so zeek
+  stayed Pending and every intercept refused to poison — on eth1 and eth2 alike. The comment
+  is now shell-quoted (`comment '"weirvern siphon"'`); a regression test pins the quoting.
+- The per-NIC sheet copied the sensor-level `INTERCEPT_*` plan into whichever NIC was open, so
+  eth2 displayed eth1's network, gateway and intercept IP. Only the capture interface owns
+  those values now; every other NIC shows blank, read-only fields and does not stage blanks
+  over the capture port's plan.
+
+## 0.17.53 — 2026-10-19
+
+THE APPLY RECEIPT SHOWS LOCAL TIME, AND A CAPTURE_IFACE CHANGE IS ACTUALLY CHECKED.
+
+- The receipt and the settings provenance line printed the server's UTC ISO time by slicing
+  `HH:MM` out of it, with no zone: 02:50 UTC read as "02:50" even where the operator's clock
+  said the previous evening. Both now format the timestamp in the browser's local zone with
+  its abbreviation.
+- The "capture interface is one the sensors report" apply-time check read only
+  `INTERCEPT_IFACE`; the GUI writes `CAPTURE_IFACE`, so a real interface change was skipped
+  with "the change does not name a capture interface". It now checks the key that changed
+  (preferring `CAPTURE_IFACE`) and validates it against the heartbeats.
+- The other skip was accurate: `BASE_THRESHOLD` was not part of that apply, so the threshold
+  check had nothing to test. Its hover already says so.
+
 ## 0.17.52 — 2026-10-19
 
 THE SIPHON GATE READS THE PROCESS THAT ACTUALLY INTERCEPTS.

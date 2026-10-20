@@ -78,9 +78,19 @@ def run_apply_checks(*, changes: dict, current: dict, ch_client=None, now=None) 
 
     # ── 2. the capture interface is one the sensors report ───────────────────────────────
     name = "the capture interface is one the sensors report"
-    chosen = merged.get("INTERCEPT_IFACE", "").strip()
-    if not chosen:
+    # CAPTURE_IFACE is the setting the GUI writes; INTERCEPT_IFACE is the older plan key.
+    # Reading only the latter made a real CAPTURE_IFACE change skip this check and report
+    # "the change does not name a capture interface" -- a skipped check explaining nothing
+    # about the interface the operator had just chosen.
+    touched = set(upper) & {"CAPTURE_IFACE", "INTERCEPT_IFACE"}
+    chosen = (upper.get("CAPTURE_IFACE", "").strip()
+              or upper.get("INTERCEPT_IFACE", "").strip()
+              or merged.get("CAPTURE_IFACE", "").strip()
+              or merged.get("INTERCEPT_IFACE", "").strip())
+    if not touched:
         results.append(_r(name, "skip", "the change does not name a capture interface"))
+    elif not chosen:
+        results.append(_r(name, "skip", "the capture interface is empty"))
     elif ch_client is None:
         results.append(_r(name, "skip", "no live connection to the heartbeat store"))
     else:

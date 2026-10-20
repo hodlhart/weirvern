@@ -814,11 +814,23 @@ function renderApplyResults() {
   }
 }
 
+/** Server timestamps are UTC ISO strings; show them in the browser's own zone. */
+function localStamp(iso) {
+  const raw = String(iso || "");
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 function renderApplyInto(out) {
   out.replaceChildren();
   const R = LAST_APPLY.results;
   if (!R) return;
-  const stamp = R.at ? String(R.at).slice(11, 16) : "";
+  const stamp = localStamp(R.at);
   const failed = [];
   for (const item of (R.items || [])) {
     const row = el("div", { class: "stage-res-item", attrs: { "data-key": item.key } }, [
@@ -1368,7 +1380,7 @@ async function loadSettings() {
         (data.provenance || {})[r.key] ? (() => {
           const prov = data.provenance[r.key];
           return el("div", { class: "setting-prov" }, [
-            el("span", { text: `set via GUI ${prov.at || "?"}` + (prov.by ? ` by ${prov.by}` : "") }),
+            el("span", { text: `set via GUI ${prov.at ? localStamp(prov.at) : "?"}` + (prov.by ? ` by ${prov.by}` : "") }),
             prov.reason ? el("span", { text: ` \u00b7 ${prov.reason}` }) : null,
             el("button", { class: "link", text: "trail", attrs: { type: "button",
               title: "where did this value come from \u2014 jump to its write-trail entries" },
