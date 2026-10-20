@@ -1,164 +1,143 @@
-# Weirvern
-
-<p align="left">
-  <img src="docs/logo.png" alt="Weirvern" width="220">
+<p align="center">
+  <img src="docs/logo.png" alt="Weirvern" width="150">
 </p>
 
-**Network flow anomaly detection for Kubernetes.** Weirvern turns the NetFlow/sFlow your
-network already exports — plus a Zeek sensor for the protocol layer — into per-host behavioural
-baselines, flags the deviations that match real attack shapes, and shows a human *why*, with the
-measurements that fired.
+<h1 align="center">Weirvern</h1>
 
-Current release: **0.17.72** · Runs on any conformant Kubernetes · No payload inspection · Alerts
-via [Pushover](https://pushover.net), or log-only.
+<p align="center">
+  <strong>Know what your network is doing. Prove why. Stop what should not happen.</strong>
+</p>
 
-## What it does
+<p align="center">
+  Behavioral anomaly detection for Kubernetes networks — built from the NetFlow, Zeek and DNS
+  your network already produces, with an evidence trail for every decision and a kernel-level
+  gate when you need one.
+</p>
 
-Weirvern reads traffic and turns it into per-host behaviour, alerts with evidence, and — where you
-allow it — kernel-level blocks. There are three ways to put it on a network, and choosing between
-them is a question about your topology rather than about the software: a copy of the traffic is
-safe and can stop nothing, standing in line is what makes blocking possible, and how you get in
-line decides which NICs you need. The table after the three placements says it in one screen, for
-the person holding the cables.
+<p align="center">
+  Current release: <strong>0.17.73</strong> · MIT · no payload inspection
+</p>
 
-**`channel` — be the wire.** The box is plugged *in line*: one NIC faces upstream toward the
-network, one faces downstream toward the device or segment being protected, and the two are joined
-into a bridge. Traffic now passes **through** the box, and by default everything is forwarded
-exactly as before — nothing is redirected, no address is forged, and the sensor keeps observing
-(`SENSOR_MODE` stays `loch`). What the placement buys is a point where the **Sluice Gate** can drop
-a packet: the kernel enforces the rules and forwards everything else. Put it anywhere you are
-willing to have a box in the middle — between a segment and its uplink, between two switches, in
-front of a lab — as long as you can re-route the cable run through it. It also does not need
-anything exotic from the hardware: two ordinary NICs and the kernel's own bridge.
+<p align="center">
+  <a href="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.17.73-2f81f7"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2f81f7"></a>
+  <a href="https://kubernetes.io/"><img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-conformant-326ce5"></a>
+  <a href="SECURITY.md"><img alt="Security" src="https://img.shields.io/badge/security-policy-2f81f7"></a>
+</p>
 
-**`siphon` — redirect, without rewiring.** When you cannot (or will not) move cables, the sensor
-can put itself in the path at layer 2: it answers ARP for the addresses it is told to intercept, so
-the hosts (and the gateway) send their traffic to it, and it relays each packet onward in the
-kernel. That is the same mechanism a man-in-the-middle uses, employed deliberately and briefly —
-hence the gates: it is opt-in, it needs `NET_ADMIN` (which a passive sensor deliberately does not
-have), a preflight refuses to start if the box cannot actually relay, and a **fail-open watchdog**
-restores every forged mapping on stop, crash, or a stalled forward, with a hard self-destruct
-deadline as the last resort. Nothing is decrypted: TLS sessions still authenticate end to end, and
-this is a redirect, not an interception of content. Place it on a single flat segment you want to
-watch in-line for a bounded time — a lab, a VLAN under investigation — with the sensor on that
-broadcast domain.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="docs/deployment.md">Deploy</a> ·
+  <a href="docs/detection.md">Detection</a> ·
+  <a href="docs/operations.md">Operations</a>
+</p>
 
-**`loch` — watch a copy.** The default, and the one that cannot hurt anything: Zeek listens on a
-promiscuous NIC fed by a switch SPAN/mirror port or a passive TAP. It only ever receives. Nothing
-is in the path, nothing can drop or delay a frame, no payload is inspected — and that is also why
-the Sluice Gate cannot enforce here: a rule compiled on this box would match traffic that never
-crosses it. The gate says `degraded` and blocks nothing rather than pretending, which is the honest
-behaviour for a mirror port.
+![Weirvern anomalies, with the measurements behind every alert](docs/screenshots/anomalies.png)
 
-**The hub** — the database, detection and the console — sits wherever you run Kubernetes, and its
-management NIC is never a capture port. It needs no capture NIC of its own; it needs the sensors
-and exporters to reach it.
+## What you get
 
-### Placement, NICs, and what can enforce
+**An answer, not just an alert.** Every anomaly carries the measurements that produced it — the
+z-scores, the baseline, the model votes and the raw flows, Zeek sessions, TLS records and DNS
+answers behind the window. Click an alert and the evidence is on the same screen.
 
-| Placed as | NICs to dedicate | In the path? | Sluice Gate enforces? | Where the flow records come from |
-|---|---|---|---|---|
-| `loch` — mirror / SPAN / TAP | 1 capture NIC, promiscuous, `NET_RAW`. Never the management NIC. | No | **No.** Reports `degraded`; nothing it drops would have crossed it. | An **exporter** on the segment sends NetFlow/sFlow/IPFIX — to the hub, or to **this sensor**, which collects it (`WEIRLING_NETFLOW`) and ships it into the hub. See below. |
-| `siphon` — ARP redirect | 1 NIC on the segment, promiscuous, plus `NET_ADMIN` | Yes, **while a supervised intercept is live** | **Yes, while it is live** — recorded as `enforcement: siphon`. When the intercept ends, the gate says so instead of holding. | Same as `loch`, plus `SIPHON_NETFLOW` meters the intercept while it is live. |
-| `channel` — in-line bridge | **2 NICs** (upstream + downstream) joined into one bridge, plus `NET_ADMIN` | Yes, continuously — it *is* the wire | **Yes** — the intended enforcement placement, recorded as `enforcement: channel` once verified from the kernel (both ports on one bridge, forwarding, carrier up, bridge-nf in effect, and the node's FORWARD path admitting the bridge). | **Weirvern extracts its own**: `CHANNEL_NETFLOW` samples one port of the bridge and summarises it into IPFIX locally. No external exporter needed for the traffic it carries. |
-| hub only | none (its management NIC is never a sensor) | No | No | From the exporters and sensors above. |
+**Four detectors, one verdict.** Isolation Forest, Gradient Boosting, DBSCAN and a per-host
+adaptive baseline are trained independently and fused into one score. A corroboration gate
+decides when the ensemble is confident enough to raise severity. ATT&CK techniques appear as
+hypotheses with their measurements, never as bare conclusions.
 
-A box can play more than one of these roles, and the placement is a **setting**, not an install:
-the same image runs the hub, and a sensor can move from `loch` to `channel` without being rebuilt.
+**The whole network, not one box.** A hub runs the database, models and the console; lightweight
+weirlings sit on the segments you want to watch. Each weirling carries its own intercept plan and
+reports its own health, interfaces and flow feed.
 
-A fleet makes that a per-**sensor** question. **Each weirling carries its own intercept plan** —
-its mode, capture interface, segment, redirect address, gateway and targets — stored on its own
-registration in the hub's registry, because the hub cannot reach a remote box's manifest. The mode
-is toggled (and the plan edited) in that weirling's drill-down in the **Weirlings** view, with
-**Sonar** surveying *that sensor's* capture port first; the sensor's own agent reads its plan every
-refresh (about 30 seconds) and arms — or refuses — itself, inside its own deployment, through the
-same supervised intercept the hub runs. An in-cluster weirling needs the opt-in capability patch
-beside its unit manifest; one that has not been granted it refuses to arm and says so on its own
-heartbeat, with the mode it was asked for and zero mappings, rather than a control that claims to
-have worked.
+**Enforcement with a paper trail.** The Sluice Gate compiles rules to the kernel only where it can
+actually see the traffic. Every block names its source, destination, direction, duration and
+reason; every alerting decision — sent, suppressed or log-only — is recorded.
 
-A channel is still a `loch` sensor in the sense that matters — it observes, and it only stops what
-a rule names.
-
-**Flow records: who exports them.** The volume features and the per-host baselines are built from
-flow records, and **any sensor can collect NetFlow**. Three ways the records arrive, and a
-deployment needs only one of them:
-
-- An exporter on the network sends NetFlow/sFlow/IPFIX **to the hub** (router, switch, hypervisor
-  vSwitch) — the conventional arrangement.
-- An exporter sends **to a sensor on its own segment** instead. Every sensor can run the hub's own
-  collector, and with `WEIRLING_NETFLOW=1` its agent ships those records into the hub's `flows`
-  table. A deployment can therefore collect from any segment that has a sensor on it, with no
-  exporter pointed at the hub and no second transport to secure.
-- Weirvern reads its own traffic where it stands: a `channel` samples a port of its bridge
-  (`CHANNEL_NETFLOW`), and a `siphon` meters the segment it is intercepting while the intercept is
-  live (`SIPHON_NETFLOW`). No exporter is needed for what they carry.
-
-Zeek's behavioural features work in every placement; only the flow model depends on a flow source,
-and the console states which is missing rather than drawing an empty chart that reads as a quiet
-network.
-
-**The console — what you look at.** Overview (health, workloads, freshest anomalies, top talkers) ·
-Assets (a real inventory: names, vendors, OS families, per-host anomalies) · Network (a
-deterministic force map of who talks to whom) · Anomalies with a **raw-evidence pivot** per alert
-(flows, Zeek sessions, TLS records with their JA4 fingerprints, DNS, notices) · Models, including
-**force a retrain** — it trains a candidate on the last window, reports what it found (and whether
-the window already held detections, which a retrain would learn as normal) and waits for you to keep
-or trash it · Flows (the raw flows themselves, filterable down to every field) · DNS (port-53
-questions and answers, with a reverse lookup: which names pointed at an address recently, out of
-what DNS actually answered) · Netflow (volume, protocols, ports, fan-out) · Zeek log volumes ·
-Identity (passive OS identification, and a lookup by TLS fingerprint for "who else presents this
-stack") · Weirlings (the fleet: registered-but-silent is a different fact from never installed, and
-each weirling carries its own intercept plan — mode, segment, address, gateway, targets — which
-that sensor reads and applies itself; this hub's own weirling carries its capture settings in the
-same sheet) ·
-Sluice (rules, domain blocklists imported from the internet or your own names, and every gate that
-is enforcing, including the ones on other sensors) · **Blocked** (what has been caught — the
-recorded name hits — and what is doing the catching: the live rules split by whether they block
-or only alert, with the addresses a domain's name currently resolves to) · Settings (the
-deployment's knobs — detection, Sluice, blocklists, storage — with bounds, help, and the restart
-it costs).
-
-**Detection — what the models conclude.** Four independently trained detectors — Isolation Forest,
-Gradient Boosting, DBSCAN and a per-host Adaptive Baseline — fused into one score with a
-corroboration gate for severity, over features from NetFlow *and* twelve Zeek logs including JA4 TLS
-fingerprints. ATT&CK techniques are presented as hypotheses with their measurements, never as bare
-conclusions. Quality is *measured*: a seeded-attack harness runs the real pipeline in CI and asserts
-the final verdicts.
-
-**Identity — what the hosts are.** Operating-system family from application banners, DHCP leases,
-NIC vendors and TLS ClientHello fingerprints, derived passively: nothing is probed and nothing is
-sent. Confidence counts how many independent sources agree, and contradicting sources are flagged
-rather than smoothed over.
+**No payload inspection.** Weirvern reads flow records and Zeek metadata. TLS still authenticates
+end to end. Nothing is decrypted, and nothing is probed.
 
 ## Screenshots
 
-> **Placeholder — screenshots land here before publishing.** The console runs on synthetic data
-> (RFC 5737 addresses) for these: `scripts/extract_demo_payloads.js` pulls the same payload set the
-> UI harness is proven against into `docs/demo/`, so every screenshot shows the real renderer
-> rendering fake traffic. Planned: Overview, Anomalies with the gate action, Evidence with the TLS
-> section, Sluice (gates + rules), the force map, and Identity with the fingerprint lookup.
+Every image is the shipping console rendered against synthetic, RFC 5737 documentation addresses.
 
-> **WARNING**: This tool is for monitoring networks **you own or are explicitly
-> authorized to monitor**. See [USAGE_POLICY.md](USAGE_POLICY.md). Unauthorized
-> monitoring is illegal in most jurisdictions. You have been warned.
+![Force map of hosts and connections](docs/screenshots/network.png)
+
+The connection map is a deterministic force layout: nodes are hosts, edges are conversations,
+size is bytes, and hop rings come from measured IP TTL where the export carries it. Click a node
+to track it; click an edge for its exact source, destination and ports.
+
+## How it works
+
+```mermaid
+flowchart LR
+  E[NetFlow / sFlow / IPFIX<br/>router · switch · hypervisor] --> H[Weirvern hub<br/>ClickHouse · models · console]
+  Z[Zeek sensor<br/>conn · DNS · TLS · DHCP · notices] --> H
+  W[Remote weirlings<br/>one plan per sensor] --> H
+  H --> D[Four detectors<br/>fused score + corroboration]
+  D --> A[Alert with evidence<br/>flows · sessions · JA4 · DNS]
+  A --> G{Sluice Gate}
+  G -->|block| K[Kernel rules<br/>on the sensor that sees the traffic]
+  G -->|alert| L[Log-only decision<br/>recorded, never silently dropped]
+```
+
+The hub needs no capture NIC. A sensor can watch a copy (`loch`), redirect a segment with ARP
+(`siphon`), or sit in-line as a bridge (`channel`). Only the in-path shapes can enforce; the
+console says `degraded` rather than pretending when a mirror port cannot drop anything.
+
+| Placement | What it needs | Can enforce? | Best for |
+|---|---|---|---|
+| **`loch`** — mirror / SPAN / TAP | 1 capture NIC, `NET_RAW` | No | Safe observation; the default |
+| **`siphon`** — ARP redirect | 1 NIC on the segment, `NET_ADMIN` | Yes, while a supervised intercept is live | A flat segment or VLAN under investigation |
+| **`channel`** — in-line bridge | 2 NICs (upstream + downstream), `NET_ADMIN` | Yes, continuously | A segment uplink you can route through the box |
+
+The same image runs every shape; the placement is a setting, not an install. See
+[Architecture](docs/architecture.md) for the full model and [Deployment](docs/deployment.md) for
+the manifests, capabilities and checks.
+
+## Product tour
+
+- **Anomalies** — the alert queue, severity tallies, model attribution and a per-row evidence
+  drill.
+- **Evidence** — the five-stage chain: observed, detected, explained, ruled, done. Block,
+  acknowledge, resolve or ignore from the same page.
+- **Network** — the connection map, busiest edges and per-host conversations.
+- **Flows** — the raw NetFlow records with filterable fields, plus the DNS and Zeek feeds.
+- **DNS** — questions and answers, the reverse map from an address to the names that pointed at
+  it, and the blocklist state that governs port 53.
+- **Sluice Gate** — rules split by block vs alert, live gate state, recent hits and domain
+  blocklists managed from the console.
+- **Blocked** — what the gate caught, which rule caught it, and the addresses a blocked domain
+  currently resolves to.
+- **Weirlings** — the fleet: registered, silent, never-seen and revoked are different facts, and
+  each sensor's plan is edited in its own sheet.
+- **Logs** — every alerting decision at the top, then the write trail and the pipeline's own
+  audit.
 
 ## Quick start
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh | sudo bash
+
 # with in-path capability pre-provisioned (the mode is still switched in Settings):
 curl -fsSL https://raw.githubusercontent.com/hodlhart/weirvern/main/install.sh | sudo bash -s -- --siphon
 ```
 
-The full procedure — requirements, the checks that refuse to run, the sensor node's capture port
-and the ConfigMap — is in [docs/deployment.md](docs/deployment.md).
+The installer creates the namespace, database, schema, workloads and the `weirvern-secrets`
+Secret. The full procedure — requirements, refusal checks, the sensor's capture port and the
+ConfigMap — is in [Deployment](docs/deployment.md).
+
+**Requirements:** a conformant Kubernetes cluster, a Linux sensor node for capture, and one of:
+NetFlow/sFlow/IPFIX export, a SPAN/mirror port, or a TAP. The hub can run on the same node for a
+lab, or separately for a production segment.
 
 ### The deployment Secret
 
-The installer creates it for you; by hand it is one command. `weirvern-secrets` holds the
-ClickHouse password, the break-glass operator token, and the Pushover credentials (left empty
-by default, which selects log-only alerting):
+The installer creates `weirvern-secrets` for you. By hand it is one command — the ClickHouse
+password, break-glass operator token, and Pushover credentials (empty by default, which selects
+log-only alerting):
 
 ```sh
 kubectl -n weirvern create secret generic weirvern-secrets \
@@ -168,33 +147,37 @@ kubectl -n weirvern create secret generic weirvern-secrets \
   --from-literal=PUSHOVER_API_TOKEN=''
 ```
 
-To read the break-glass token again later:
+Read the break-glass token again with:
 
 ```sh
-kubectl -n weirvern get secret weirvern-secrets \
-  -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d
+kubectl -n weirvern get secret weirvern-secrets -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d
 ```
 
-The worker and the schema Job read the Secret at start; see
-[docs/deployment.md](docs/deployment.md) for the full procedure.
+## Security and trust
+
+- **No payload inspection.** Flow metadata and Zeek protocol logs only; TLS is never decrypted.
+- **Break-glass access is explicit.** The GUI token is a Secret, not a URL parameter; sessions
+  and roles are recorded.
+- **Every write is audited.** Settings, plans, revocations and rules carry actor, time and reason.
+- **Fail-open by default.** A sensor that cannot enforce says so; the siphon watchdog restores
+  every mapping on stop, crash or a stalled forward.
+- **Your data stays yours.** No telemetry, no cloud dependency, no phone-home.
+
+Read [Security and privacy](docs/security.md) and [USAGE_POLICY.md](USAGE_POLICY.md). This tool is
+for networks you own or are explicitly authorized to monitor.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — workloads, the two sensor modes, the channel, TLS
-- [Theme](docs/theme.md) — the console's visual system: principles, tokens, component recipes, phases
-  fingerprinting, passive identity, and what this design does not scale to yet.
-- [Deployment](docs/deployment.md) — requirements, one-command install, step by step, verify,
-  upgrade, remove.
-- [Detection and alerting](docs/detection.md) — the ensemble, what the models see, ATT&CK mapping,
-  the console views, alert hygiene, tuning.
-- [Operations](docs/operations.md) — the CLI, lifecycle, backups, key settings, troubleshooting.
-- [Security and privacy](docs/security.md) — privileges, RBAC, data sensitivity, network exposure.
-- [Development](docs/development.md) — repository layout, tests, and the gate.
-- [Branding](docs/README.md) — the project mark and how the favicons are regenerated.
-
----
+- [Architecture](docs/architecture.md) — workloads, sensor modes, the channel, TLS
+- [Theme](docs/theme.md) — the console's visual system and component recipes
+- [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
+- [Detection and alerting](docs/detection.md) — the ensemble, ATT&CK mapping, alert hygiene
+- [Operations](docs/operations.md) — CLI, lifecycle, backups, key settings, troubleshooting
+- [Security and privacy](docs/security.md) — privileges, RBAC, data sensitivity, exposure
+- [Development](docs/development.md) — repository layout, tests and the gate
+- [Branding](docs/README.md) — the project mark and favicon regeneration
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party components and their licenses are
-listed in [NOTICE](NOTICE).
+MIT — see [LICENSE](LICENSE). Third-party components and their licenses are listed in
+[NOTICE](NOTICE).

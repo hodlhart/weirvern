@@ -74,8 +74,13 @@ def test_the_readme_links_every_document_in_the_set():
     # The front page still leads with the feature set; these are the words a reader arrives with.
     for word in ("loch", "siphon", "Sluice Gate", "console"):
         assert word in README, f"the README no longer mentions {word}"
-    # And the screenshots are a stated placeholder until publishing, never claimed as done.
-    assert "Placeholder" in README and "screenshots" in README.lower()
+    # The product page carries real, checked-in screenshots of the shipping renderer. A
+    # placeholder is no longer allowed: the README names files that must exist.
+    assert "docs/screenshots/anomalies.png" in README
+    assert "docs/screenshots/network.png" in README
+    shots = ROOT / "docs" / "screenshots"
+    for name in ("anomalies.png", "network.png"):
+        assert (shots / name).is_file(), f"README screenshot is missing: docs/screenshots/{name}"
 
 
 # ── the images, which is where the doc was most wrong ────────────────────────────

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.73 — 2026-10-20
+
+THE FRONT PAGE IS A PRODUCT PAGE, AND THE GRAPH USES ITS FULL WIDTH.
+
+- README is now a product page: hero, badges, real console screenshots, a concise feature
+  summary, a Mermaid pipeline diagram, the three deployment shapes, quick start, trust notes
+  and the documentation index. The old 200-line architecture essay is reduced to the places
+  a new reader needs first; the detail remains in docs/.
+- Added `docs/screenshots/anomalies.png` and `docs/screenshots/network.png`, captured from the
+  shipping console against synthetic RFC 5737 data. No private addresses are in the images.
+- The connection graph fits X and Y independently instead of one shared scale, so a circular
+  force cloud uses the wide tile rather than occupying only its centre.
+
 ## 0.17.72 — 2026-10-20
 
 THE LOCAL WEIRLING'S FLOW FILTER VALUE IS THE ONE NETFLOW USES.

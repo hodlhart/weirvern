@@ -764,16 +764,20 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
   // 34px node/label margin; the cloud uses the full tile without drawing a rectangle.
   const rx = Math.max(1, box.w / 2 - FORCE.nodeEdge);
   const ry = Math.max(1, box.h / 2 - FORCE.nodeEdge);
-  let maxN = 0;
+  let maxNx = 0, maxNy = 0;
   for (let i = 0; i < n; i++) {
-    const nx = Math.abs(xs[i] - cx) / rx;
-    const ny = Math.abs(ys[i] - cy) / ry;
-    maxN = Math.max(maxN, Math.hypot(nx, ny));
+    maxNx = Math.max(maxNx, Math.abs(xs[i] - cx) / rx);
+    maxNy = Math.max(maxNy, Math.abs(ys[i] - cy) / ry);
   }
-  let s = warmStart ? 1 : Math.min(1.35, Math.max(0.55, 0.92 / Math.max(1e-9, maxN)));
+  // STRETCH X AND Y SEPARATELY. A circular force cloud fitted into a wide tile leaves half
+  // the panel empty; one shared scale cannot use the width and the height at once. The two
+  // axes are normalized independently, with the cap stopping a sparse graph from becoming a
+  // letterbox smear.
+  const sx = warmStart ? 1 : Math.min(1.35, Math.max(0.55, 0.94 / Math.max(1e-9, maxNx)));
+  const sy = warmStart ? 1 : Math.min(1.35, Math.max(0.55, 0.94 / Math.max(1e-9, maxNy)));
   const end = new Map();
   ordered.forEach((nd, i) => {
-    let dx = (xs[i] - cx) * s, dy = (ys[i] - cy) * s;
+    let dx = (xs[i] - cx) * sx, dy = (ys[i] - cy) * sy;
     const norm = Math.hypot(dx / rx, dy / ry);
     if (norm > 0.97) { dx *= 0.97 / norm; dy *= 0.97 / norm; }
     end.set(nd.id, { x: cx + dx, y: cy + dy });
