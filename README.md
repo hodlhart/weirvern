@@ -18,7 +18,7 @@
 
 <p align="center">
   <code>inline bridge</code> · <code>ARP redirection</code> · <code>passive mirror</code> ·
-  <code>NetFlow · Zeek · DNS · JA4</code> · <code>kernel blocking</code>
+  <code>distributed weirlings</code> · <code>NetFlow · Zeek · DNS · JA4</code> · <code>kernel blocking</code>
 </p>
 
 <p align="center">
@@ -55,9 +55,10 @@ adaptive baseline are trained independently and fused into one score. A corrobor
 decides when the ensemble is confident enough to raise severity. ATT&CK techniques appear as
 hypotheses with their measurements, never as bare conclusions.
 
-**The whole network, not one box.** A hub runs the database, models and the console; lightweight
-weirlings sit on the segments you want to watch. Each weirling carries its own intercept plan and
-reports its own health, interfaces and flow feed.
+**Sensors where the network is.** A hub runs the database, models and the console; a weirling is
+the sensor you place on a host or node anywhere in the infrastructure. It can carry several NICs,
+each bound to a different segment with its own capture, redirect and blocking plan. See
+[Weirlings: one hub, sensors throughout the infrastructure](#weirlings-one-hub-sensors-throughout-the-infrastructure).
 
 **Inline when you need it.** Put two NICs in a bridge and the box becomes the wire: traffic
 passes through, Zeek sees the protocol layer, and the Sluice Gate can drop a packet at the kernel.
@@ -71,9 +72,35 @@ reason; every alerting decision — sent, suppressed or log-only — is recorded
 **No payload inspection.** Weirvern reads flow records and Zeek metadata. TLS still authenticates
 end to end. Nothing is decrypted, and nothing is probed.
 
+## Weirlings: one hub, sensors throughout the infrastructure
+
+A weirling is a sensor, not a remote-agent afterthought. The hub can run with no capture NIC at
+all; each weirling registers with it, reports its health, interfaces and flow feed, and receives
+its own plan. Deploy as many as the infrastructure needs — one per rack, one per site, one per
+isolated segment.
+
+**Each NIC is planned independently.** A single weirling can have several NICs on different
+segments, and each one carries its own roles:
+
+- **capture** — mirror/SPAN/TAP traffic into Zeek for that segment
+- **siphon** — ARP redirect on that NIC's segment, with its own routing table and gateway
+- **sluice** — kernel blocking rules on that NIC, with its own nftables table pair
+- **management** — refused for every active role, so the console path is never intercepted
+
+One NIC's plan never overwrites another's. A weirling with one NIC on VLAN 21 and another on a
+separate segment can watch one, redirect the other, or block on either independently. Add more
+weirlings and the same per-NIC model extends across racks, sites and networks that do not route to
+each other.
+
+The fleet view keeps the facts separate: registered, silent, never-seen and revoked are different
+states; every row shows its mode, networks, flow trend and NetFlow/Zeek feed indicators, with each
+NIC's role on its own line. Revoking a weirling clears its plans and settings, so re-adopting it
+starts clean rather than inheriting the old cross-segment roles.
+
 ## Screenshots
 
 Every image is the shipping console rendered against synthetic, RFC 5737 documentation addresses.
+No address from a real network appears in any screenshot.
 
 ![Force map of hosts and connections](docs/screenshots/network.png)
 
@@ -87,7 +114,7 @@ to track it; click an edge for its exact source, destination and ports.
 flowchart LR
   E[NetFlow / sFlow / IPFIX<br/>router · switch · hypervisor] --> H[Weirvern hub<br/>ClickHouse · models · console]
   Z[Zeek sensor<br/>conn · DNS · TLS · DHCP · notices] --> H
-  W[Remote weirlings<br/>one plan per sensor] --> H
+  W[Distributed weirlings<br/>multi-NIC · per-segment plans] --> H
   H --> D[Four detectors<br/>fused score + corroboration]
   D --> A[Alert with evidence<br/>flows · sessions · JA4 · DNS]
   A --> G{Sluice Gate}
@@ -124,7 +151,8 @@ the manifests, capabilities and checks.
 - **Blocked** — what the gate caught, which rule caught it, and the addresses a blocked domain
   currently resolves to.
 - **Weirlings** — the fleet: registered, silent, never-seen and revoked are different facts, and
-  each sensor's plan is edited in its own sheet.
+  each sensor's plan is edited in its own sheet. One row per weirling, one line per NIC, one
+  plan per segment.
 - **Logs** — every alerting decision at the top, then the write trail and the pipeline's own
   audit.
 
