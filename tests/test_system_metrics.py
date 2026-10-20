@@ -32,3 +32,15 @@ def test_netdev_reads_rx_and_tx_counters_per_interface() -> None:
     assert rows["eth1"]["tx_bytes"] == 700
     assert rows["eth1"]["rx_drops"] == 2
     assert rows["eth1"]["tx_drops"] == 1
+
+
+def test_a_configured_host_proc_boundary_wins_over_a_larger_kernel_view(tmp_path, monkeypatch) -> None:
+    """The live confusion: the pod's /proc reports 40 GiB, the LXC/VM file mount 10 GiB.
+
+    A configured HOST_PROC names the sensor's boundary; size is only the fallback when the
+    deployment did not mount one.
+    """
+    (tmp_path / "meminfo").write_text(
+        "MemTotal:       10485760 kB\nMemAvailable:    8388608 kB\n", encoding="utf-8")
+    monkeypatch.setenv("HOST_PROC", str(tmp_path))
+    assert sm.proc_root() == tmp_path

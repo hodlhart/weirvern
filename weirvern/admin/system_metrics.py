@@ -31,7 +31,20 @@ def proc_root() -> Path:
     neither is readable, keep `/proc` so the caller gets a real error rather than a guess.
     """
     configured = os.environ.get("HOST_PROC", "").strip()
-    candidates = ([Path(configured)] if configured else []) + [Path("/proc"), Path("/host-proc")]
+    if configured:
+        # A CONFIGURED BOUNDARY IS AUTHORITATIVE. The file-mounted host procfs in the GUI
+        # reports the LXC/VM's 10 GiB; the pod's own /proc reports the 40 GiB kernel view.
+        # Picking the larger MemTotal therefore selected the wrong machine. The deployment
+        # sets HOST_PROC to the file-mounted boundary; only fall back to size if it is not
+        # readable.
+        candidate = Path(configured)
+        try:
+            text = (candidate / "meminfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if "MemTotal:" in text:
+            return candidate
+    candidates = [Path("/proc"), Path("/host-proc")]
     best: tuple[int, Path] = (-1, Path("/proc"))
     for candidate in candidates:
         try:

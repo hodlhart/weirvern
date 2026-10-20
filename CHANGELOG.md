@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.66 — 2026-10-20
+
+THE SYSTEM CARDS REPORT THE SENSOR'S BOUNDARY, NOT THE KERNEL'S BIGGER VIEW.
+
+- `proc_root()` preferred the candidate with the largest `MemTotal`. On this box the pod's
+  `/proc` reports the 40 GiB kernel view, while the sensor is a 10 GiB LXC; `/host-proc` as a
+  directory reported the 512 MiB pod limit. The cards therefore showed the wrong machine.
+- The GUI now mounts `/proc/meminfo` and `/proc/stat` as host FILES into `/host-proc`, sets
+  `HOST_PROC=/host-proc`, and the reader treats a configured boundary as authoritative. The
+  live sample reports `MemTotal 10,485,760 kB` and 4 CPUs — the sensor's own allocation.
+- Size comparison remains only the fallback when no configured procfs is readable.
+
 ## 0.17.65 — 2026-10-20
 
 THE LOCAL EXPORTER IS LOOPBACK, AND THE PLAN OWNS THE CAPTURE PORTS.
