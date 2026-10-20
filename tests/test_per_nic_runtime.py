@@ -87,3 +87,18 @@ def test_sonar_on_a_nic_stages_that_nics_plan_not_the_global_intercept_keys():
     ends = [i for i in (rest.find("\nfunction "), rest.find("\nasync function ")) if i >= 0]
     scan = js[start:start + 10 + min(ends)] if ends else js[start:]
     assert "stageSonarRecommendations" not in scan
+
+
+def test_a_revoked_sensor_idles_instead_of_capturing_the_management_port():
+    """The revoke path clears ZEEK_IFACE/ZEEK_IFACES. The script must not then default to
+    eth0: that is the management NIC, and the live log after the first revoke showed Zeek
+    sniffing it and warning that it was capturing the host's own traffic as the network."""
+    import yaml
+
+    d = yaml.safe_load(Path("k8s/32-zeek.yaml").read_text())
+    z = next(c for c in d["spec"]["template"]["spec"]["containers"] if c["name"] == "zeek")
+    script = z["args"][0]
+    assert 'IFACE="${ZEEK_IFACE:-}"' in script
+    assert 'IFACE="${ZEEK_IFACE:-eth0}"' not in script
+    assert script.count("no capture interface configured") == 2
+    assert "while :; do sleep 3600; done" in script

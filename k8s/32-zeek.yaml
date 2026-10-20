@@ -226,7 +226,11 @@ spec:
           args:
             - |
               set -eu
-              IFACE="${ZEEK_IFACE:-eth0}"
+              # NO DEFAULT TO eth0. After a revocation both capture keys are cleared; falling
+              # back to the first NIC here put Zeek on the MANAGEMENT port, where it captured
+              # the host's own traffic and broadcast noise and called it the network. An
+              # unconfigured sensor idles instead of guessing.
+              IFACE="${ZEEK_IFACE:-}"
               # MULTIPLE CAPTURE PORTS (operator, 2026-10-19): ZEEK_IFACES is a comma-separated
               # list (eth1,eth2). Empty means just ZEEK_IFACE, so every existing deployment is
               # unchanged. Zeek accepts repeated -i and merges both streams into one capture.
@@ -235,7 +239,10 @@ spec:
                 [ -n "$one" ] || continue
                 IFARGS="$IFARGS -i $one"
               done
-              [ -n "$IFARGS" ] || IFARGS="-i $IFACE"
+              if [ -z "$IFARGS" ]; then
+                echo "[zeek] no capture interface configured — capture disabled."
+                while :; do sleep 3600; done
+              fi
               MGMT="${MGMT_IFACE:-}"
               MODE="${SENSOR_MODE:-loch}"
               # ── WHICH MODE ARE WE IN, AND WHAT DOES IT COST IF WE FAIL? ──────
@@ -510,7 +517,10 @@ spec:
               IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
               COUNT=0
               for one in $IFACES; do [ -n "$one" ] && COUNT=$((COUNT + 1)); done
-              [ "$COUNT" -gt 0 ] || { IFACES="$IFACE"; COUNT=1; }
+              if [ "$COUNT" -eq 0 ]; then
+                echo "[zeek] no capture interface configured — capture disabled."
+                while :; do sleep 3600; done
+              fi
               PIDS=""
               for one in $IFACES; do
                 [ -n "$one" ] || continue

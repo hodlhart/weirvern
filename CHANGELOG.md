@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.60 — 2026-10-20
+
+A REVOKED SENSOR IDLES. IT DOES NOT SNIFF THE MANAGEMENT PORT.
+
+- Clearing `ZEEK_IFACE`/`ZEEK_IFACES` on revoke exposed a hidden default: the capture script
+  fell back to `eth0` when no interface was configured. On this host that is the management
+  NIC, so the revoked sensor immediately started capturing the box's own traffic and broadcast
+  noise while logging a warning that it was doing so. An unconfigured sensor now prints
+  `no capture interface configured — capture disabled` and idles; it never guesses a port.
+- The check is in both places the script resolves the interface list, including the per-NIC
+  loop, so a future edit cannot reintroduce the default in only one path.
+
 ## 0.17.59 — 2026-10-20
 
 REVOKING A WEIRLING CLEARS ITS SETTINGS. A ROW IS NOT A CONFIGURATION.
