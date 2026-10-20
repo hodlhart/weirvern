@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.46 — 2026-10-19
+
+THE NIC HEADERS SIT UNDER THE SENSOR NAME AGAIN.
+
+- Restored the layout the operator preferred: the sensor row carries the CPU/memory reading
+  with no CPU or memory headers, and the `interface`, `mode`, `channel`, `networks`,
+  `throughput`, `flow` and `feeds` headers follow it above that sensor's NIC lines.
+- Each NIC line names its interface and the operator's network label (`eth1 capture -
+  Servers`); the removed CPU/memory columns leave no empty dashes behind.
+
 ## 0.17.45 — 2026-10-19
 
 REMOVE THE EMPTY CPU/MEMORY COLUMNS, KEEP THE READING.

@@ -1444,8 +1444,13 @@ def _build_handler(ctx: GuiContext):
             # for every other one.
             local_name = _gate_sensor_name()
             payload["local_sensor"] = local_name
+            network_names = _interface_network_names(
+                str(getattr(ctx.settings, "interface_networks", "") or ""))
             for row in payload.get("sensors") or []:
                 row["local"] = (row.get("sensor_id") == local_name)
+                # The operator's own label for each interface (eth1=Servers). The fleet row
+                # carries it so a NIC line can read "eth1 - Servers", not only a CIDR.
+                row["network_names"] = network_names
 
             # WL-1: the flow trend and the tap indicators, from the flows' own exporter
             # address. One query each for the whole fleet; a failure leaves the fields ABSENT

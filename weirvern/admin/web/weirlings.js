@@ -490,6 +490,7 @@ function wlNicFacts(r) {
     const role = (capture && name === capture) ? "capture" : "unassigned";
     return {
       name, role, mode,
+      network_name: (r.network_names && r.network_names[name]) || "",
       networks: role === "capture" ? segment : "",
       channel: role === "capture" ? ((r.channel && r.channel.state) || "") : "",
     };
@@ -506,8 +507,11 @@ function wlNicRows(r) {
     const row = el("tr", { class: "wl-nic-row clickable" }, [
       el("td", {}, [
         el("span", { class: "mono wl-nic-name", text: n.name }),
-        el("span", { class: "muted", text: n.networks && n.networks !== "—" && n.networks !== "(not set)"
-          ? ` ${n.role} - ${n.networks}` : ` ${n.role}` }),
+        el("span", { class: "muted", text: (() => {
+          const label = n.network_name
+            || (n.networks && n.networks !== "—" && n.networks !== "(not set)" ? n.networks : "");
+          return label ? ` ${n.role} - ${label}` : ` ${n.role}`;
+        })() }),
       ]),
       el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
                  attrs: { title: n.mode
@@ -657,6 +661,14 @@ function renderWeirlings(rows, revoked, revokedReason) {
     ]));
 
     tbody.appendChild(tr);
+    // THE HEADERS SIT BELOW THE SENSOR NAME: the sensor's CPU/memory reading has no columns,
+    // so the NIC headers follow it, directly above that sensor's interface lines.
+    tbody.appendChild(el("tr", { class: "wl-colhead" }, [
+      el("th", { text: "interface" }), el("th", { text: "mode" }),
+      el("th", { text: "channel" }), el("th", { text: "networks" }),
+      el("th", { text: "throughput" }), el("th", { text: "flow" }),
+      el("th", { text: "feeds" }),
+    ]));
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
     // row"). Always visible, never behind a control: a NIC list you have to discover is the
     // same dead end the old evidence drill was.
