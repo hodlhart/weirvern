@@ -777,9 +777,11 @@ class NftBackend(Backend):
         #
         # Deleting both tables first makes arm() idempotent in the strong sense: the kernel state
         # after arm() is a function of `rules` alone, never of what was there before.
-        for table in (self.table, NFT_TABLE_IN):
-            # Absence is expected on a first arm, and its error is ignored for the same reason
-            # disarm() ignores it.
+        for table in (self.table, self.table_in):
+            # BOTH of THIS BACKEND's tables. Using the module-level NFT_TABLE_IN here deleted
+            # the legacy input table while the per-NIC one (`weirvern_sluice_<iface>_in`)
+            # survived: a stale input block outlived every re-arm and every disarm. The
+            # empty-suffix case is identical to the old name, so legacy kernels are unchanged.
             self._run(["nft", "delete", "table", "inet", table], capture=True)
         # A rule the compiler refuses must fail the ARM and be reported: the same reason the
         # rule-count check above exists -- a partial install (or a silently wider one) is worse
@@ -811,7 +813,7 @@ class NftBackend(Backend):
     def installed(self) -> bool:
         # BOTH TABLES, like disarm: a gate that armed an 'in' rule owns that table too, and a
         # leftover there is exactly as live as one in the forward table.
-        for table in (self.table, NFT_TABLE_IN):
+        for table in (self.table, self.table_in):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
             # A FAILED LIST IS NOT PRESENCE. nft writes the requested table name into its
             # stderr ("list table inet weirvern_sluice" on ENOENT), so testing the text alone
@@ -826,10 +828,10 @@ class NftBackend(Backend):
         # one would leave input rules enforcing after the operator disarmed -- a block that
         # survives being turned off. Every table this backend can create is deleted, and the
         # absence of each is VERIFIED rather than inferred from an exit code.
-        for table in (self.table, NFT_TABLE_IN):
+        for table in (self.table, self.table_in):
             self._run(["nft", "delete", "table", "inet", table], capture=True)
         still = []
-        for table in (self.table, NFT_TABLE_IN):
+        for table in (self.table, self.table_in):
             ok, present = self._run(["nft", "list", "table", "inet", table], capture=True)
             if ok and present and table in present:
                 still.append(table)
@@ -844,7 +846,7 @@ class NftBackend(Backend):
         would be invisible in the GUI's total, and an operator would conclude the gate was idle.
         """
         packets = bytes_ = 0
-        for table in (self.table, NFT_TABLE_IN):
+        for table in (self.table, self.table_in):
             ok, out = self._run(["nft", "-j", "list", "table", "inet", table], capture=True)
             if not ok or not out:
                 continue

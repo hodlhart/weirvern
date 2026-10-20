@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.61 — 2026-10-20
+
+A PER-NIC GATE OWNS TWO TABLES; DISARM DELETES BOTH.
+
+- `NftBackend(suffix=iface)` compiled input rules into `weirvern_sluice_<iface>_in`, but
+  `arm()`, `disarm()`, `installed()` and `counters()` still named the legacy module-level
+  `weirvern_sluice_in`. A per-NIC inbound block survived every re-arm and every disarm, and
+  `disarm()` reported the gate removed while that table was still installed — a block that
+  outlived being turned off, the worst failure this gate can have.
+- All four methods now use `self.table_in`. With no suffix the name is identical to the legacy
+  table, so single-gate kernels are unchanged.
+- The matrix now asserts a suffixed backend deletes its own forward and input tables and never
+  touches the legacy input table.
+
 ## 0.17.60 — 2026-10-20
 
 A REVOKED SENSOR IDLES. IT DOES NOT SNIFF THE MANAGEMENT PORT.

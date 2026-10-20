@@ -152,3 +152,36 @@ def plans_json(plans):
                 "segment": p.segment, "addr": p.addr,
                 "gateway": p.gateway, "targets": p.targets}
         for iface, p in plans.plans.items()})
+
+
+def test_a_per_nic_gate_arms_and_disarms_BOTH_of_its_own_tables():
+    """The forward table was per-NIC; the input table was not.
+
+    `NftBackend(suffix="eth1")` compiles its input rules into
+    `weirvern_sluice_eth1_in`, but arm/disarm/installed/counters still named the module-level
+    `weirvern_sluice_in`. A per-NIC input block therefore survived every disarm and every
+    re-arm, and `disarm()` reported the gate removed while that table was still installed.
+    """
+    calls: list[list[str]] = []
+
+    def runner(args, capture=False, stdin=None):
+        calls.append(list(args))
+        if args[:3] == ["nft", "list", "table"]:
+            return False, ""          # absence is the normal state in this stub
+        return True, ""
+
+    b = NftBackend(runner=runner, suffix="eth1")
+    b.arm([Rule(rule_id="r", src_cidr="192.0.2.66/32", protocol="tcp",
+                dst_port=443, direction="in")], iface="eth1")
+    deletes = [c for c in calls if c[:3] == ["nft", "delete", "table"]]
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1"] in deletes
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1_in"] in deletes
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_in"] not in deletes
+
+    calls.clear()
+    ok, _ = b.disarm()
+    assert ok is True
+    deletes = [c for c in calls if c[:3] == ["nft", "delete", "table"]]
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1"] in deletes
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_eth1_in"] in deletes
+    assert ["nft", "delete", "table", "inet", "weirvern_sluice_in"] not in deletes
