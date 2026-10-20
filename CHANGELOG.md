@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.48 — 2026-10-19
+
+A PASSIVE SONAR OFFERS A CANDIDATE INTERCEPT ADDRESS.
+
+- When the capture port cannot transmit, Sonar has no measured free-address list. It now
+  offers the conventional first host after the gateway as an explicit CANDIDATE, with a note
+  that it was not probed, so the settings sheet is filled for review instead of looking like
+  the survey found nothing.
+- The scan note distinguishes a measured address from a candidate; siphon still stages the
+  value through the ordinary review path.
+
 ## 0.17.47 — 2026-10-19
 
 SONAR SURVIVES A QUIET PASSIVE WINDOW.

@@ -385,7 +385,8 @@ def test_passive_only_survey_does_not_report_a_swept_count():
     # The segment/gateway were learned; the address could not be, and must not be invented.
     assert result["recommended"]["intercept_segment"] == result["segment"]
     assert result["recommended"]["intercept_gateway"] == "198.51.100.1"
-    assert "intercept_addr" not in result["recommended"]
+    assert result["recommended"]["intercept_addr"] == "198.51.100.2"
+    assert any("CANDIDATE" in n for n in result["notes"])
     assert any("DID NOT SWEEP" in n for n in result["notes"])
 
 

@@ -168,6 +168,34 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
         "quiet host is invisible. Give the capture interface an address on the segment (or run "
         "the intercept, which has one) to sweep it."
     )
+    # A PLAN THE OPERATOR CAN REVIEW IS BETTER THAN AN EMPTY FIELD (operator, 2026-10-19).
+    # With no address to sweep from there is no VERIFIED free address, but the conventional
+    # first host after the gateway is a useful candidate. It is labelled as UNPROBED so the
+    # operator can change it before siphon starts; an empty field read as "Sonar found
+    # nothing" even though the segment and gateway were measured.
+    candidate = ""
+    try:
+        import itertools  # noqa: PLC0415
+
+        candidate_net = ipaddress.ip_network(segment, strict=False)
+        for host in itertools.islice(candidate_net.hosts(), 4):
+            if str(host) != gateway:
+                candidate = str(host)
+                break
+    except (ValueError, TypeError):
+        candidate = ""
+    recommended = {
+        "intercept_segment": segment,
+        "intercept_gateway": gateway,
+        "intercept_targets": "*",
+    }
+    if candidate:
+        recommended["intercept_addr"] = candidate
+        notes.append(
+            f"the suggested intercept address {candidate} is a CANDIDATE, not a probed free "
+            "address: this survey did not transmit, so confirm it is unused before enabling "
+            "siphon. Change it if your records say otherwise."
+        )
     return {
         "ok": True,
         "interface": iface,
@@ -194,11 +222,8 @@ def _passive_only_result(iface: str, mgmt_iface: str, our_mac: str, segment: str
         # inferred and said so); the intercept ADDRESS cannot be, because no sweep ran and a
         # free address is a liveness fact, not a segment fact. Offer the three fields rather
         # than an empty object that made the sheet look like Sonar found nothing.
-        "recommended": {
-            "intercept_segment": segment,
-            "intercept_gateway": gateway,
-            "intercept_targets": "*",
-        },
+        "recommended": recommended,
+        "intercept_addr_source": "candidate; the passive survey did not sweep" if candidate else "",
         "notes": notes,
     }
 
