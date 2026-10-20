@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.74 — 2026-10-20
+
+THE GRAPH IS CENTRED BY ITS BOX, NOT ITS BUSIEST HUB.
+
+- A few high-degree hubs pull the mean to one side; recentring the settled force map by its
+  bounding box removes the empty third of the panel that the mean left behind. The independent
+  X/Y fit from 0.17.73 now starts from a centred cloud.
+
 ## 0.17.73 — 2026-10-20
 
 THE FRONT PAGE IS A PRODUCT PAGE, AND THE GRAPH USES ITS FULL WIDTH.

@@ -749,10 +749,16 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
   // leaves the cloud visibly off to one side, and an off-centre map reads as a fault. A
   // warm start skips this -- it would fight the operator's own arrangement.
   if (!warmStart && n) {
-    let cmx = 0, cmy = 0;
-    for (let i = 0; i < n; i++) { cmx += xs[i]; cmy += ys[i]; }
-    cmx /= n; cmy /= n;
-    for (let i = 0; i < n; i++) { xs[i] += cx - cmx; ys[i] += cy - cmy; }
+    // CENTRE THE BOUNDING BOX, NOT THE MEAN. A few heavy hubs pull the mean to their side,
+    // leaving a third of the panel empty on the other side; the box is what the eye reads.
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < n; i++) {
+      minX = Math.min(minX, xs[i]); maxX = Math.max(maxX, xs[i]);
+      minY = Math.min(minY, ys[i]); maxY = Math.max(maxY, ys[i]);
+    }
+    const shiftX = cx - (minX + maxX) / 2;
+    const shiftY = cy - (minY + maxY) / 2;
+    for (let i = 0; i < n; i++) { xs[i] += shiftX; ys[i] += shiftY; }
   }
 
   // Fit the settle into the frame by SCALING (never distorting), using the 95th-percentile
