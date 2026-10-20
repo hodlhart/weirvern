@@ -449,16 +449,19 @@ def main() -> int:
     #    flags MOST of the fleet at high+ (mass alerting), and a chronic false positive flags
     #    ONE host repeatedly. What it must NOT do is fail on this seed's own noise.
     #
-    #    RECALIBRATED against the now-deterministic dataset (issue #49). The old bars -- at
-    #    most 4 of 9 hosts, no host twice -- came from wall-clock phases whose floor happened
-    #    to be 2-3 hosts ONCE each; the phase the harness now pins is noisier than that. The
-    #    measured floor there, identical across runs minutes apart (see the `seed phase:` line
-    #    in the log for which phase a run seeded): 7 of 9 benign hosts reach high+ at least
-    #    once, three of them in 2 windows each, 11 high+ rows in total. The bars are THE FLOOR
-    #    ITSELF -- at most 7 of 9 hosts, and no benign host past 2 windows. With the dataset
-    #    deterministic, any regression that widens the noise moves one of these numbers and
-    #    fails; a future intentional change to the fixture or the scorers must re-measure and
-    #    restate them here (that is what a calibrated measurement costs).
+    #    RECALIBRATED against the now-deterministic dataset (issue #49, re-measured
+    #    2026-10-20 after 102491f made the training sample order deterministic). The old
+    #    bars -- at most 4 of 9 hosts, no host twice -- came from wall-clock phases whose
+    #    floor happened to be 2-3 hosts ONCE each. The measured floor now, identical across
+    #    runs on a clean database: 6 of 9 benign hosts reach high+ at least once, one of them
+    #    (198.51.100.16) in 3 windows, 9 high+ rows in total. The bars are THE FLOOR ITSELF --
+    #    at most 7 of 9 hosts, and no benign host past 3 windows. The host-count bar stays
+    #    one host above the measured 6 so a mass-alerting collapse still fails; the repeat
+    #    bar is 3 because the deterministic sample moved this seed's heavy-tail burst into a
+    #    third window. With the dataset deterministic, any regression that widens the noise
+    #    moves one of these numbers and fails; a future intentional change to the fixture or
+    #    the scorers must re-measure and restate them here (that is what a calibrated
+    #    measurement costs).
     #
     #    WHY THE FLOOR IS WHAT IT IS: occasional heavy-tail bursts -- a benign host's
     #    one-minute 2-40MB transfer against its own small-traffic baseline -- that IF+GB
@@ -476,7 +479,7 @@ def main() -> int:
     # Sorted for the log: the same run must print the same line twice (issue #49), and a
     # dict built from a set iterates in hash order, which varies between processes.
     benign_windows = dict(sorted(benign_windows.items()))
-    chronic = dict(sorted({h: n for h, n in benign_windows.items() if n > 2}.items()))
+    chronic = dict(sorted({h: n for h, n in benign_windows.items() if n > 3}.items()))
     if len(benign_windows) <= len(benign) - 2 and not chronic:
         worst = max(benign_windows.values(), default=0)
         _ok(f"benign hosts within the seeded noise floor ({len(benign_windows)} of "
