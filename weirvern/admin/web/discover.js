@@ -240,7 +240,10 @@ function dcApplyFeedChrome(d) {
   const feed = (d && d.feed) || "netflow";
   const net = feed === "netflow";
   const show = (id, on) => { const e = document.getElementById(id); if (e) e.classList.toggle("hidden", !on); };
-  show("dc-lab-sensor", net);
+  // THE WEIRLING SELECTOR APPLIES TO EVERY FEED (operator, 2026-10-20). DNS/Zeek rows are
+  // written by the hub's Zeek and have no sampler column; the server accepts the selection and
+  // returns an explicit empty reason for a remote weirling instead of dropping the filter.
+  show("dc-lab-sensor", true);
   show("dc-lab-proto", net);
   show("dc-lab-port", net);
   const lab = document.getElementById("dc-lab-addr");

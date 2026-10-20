@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.71 — 2026-10-20
+
+BROWSER BACK/FORWARD, AND A WEIRLING FILTER ON EVERY FLOW FEED.
+
+- View changes now push a browser history entry; filter and time-range edits replace it. The
+  Back and Forward buttons restore the page, its evidence drill, its filters and its time
+  range. `popstate` and hash edits both restore through the same URL state reader.
+- The Flows tab's weirling selector now appears for DNS and Zeek as well as NetFlow. The hub's
+  own weirling returns its DNS/Zeek records; another registered weirling returns an explicit
+  empty reason ("captured by the hub's Zeek") instead of silently showing the hub's rows.
+- DNS and Zeek payloads now carry a weirlings facet, so the selector is populated without
+  visiting NetFlow first.
+
 ## 0.17.70 — 2026-10-20
 
 ACKNOWLEDGE AND IGNORE BESIDE BLOCK; THE GRAPH USES THE WHOLE TILE.

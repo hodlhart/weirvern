@@ -1342,28 +1342,75 @@ def dns_reverse_for(client, ip: str, *, hours: int = 24, limit: int = 20) -> dic
 # counted in a feed is a record counted in its tab -- and reshaped into Discover's payload
 # (rows / total / histogram / bucket_s / facets) so ONE renderer draws all three.
 
+def _local_sensor_filter(client, sensor: str) -> tuple[bool, str]:
+    """Whether a selected weirling is the hub whose Zeek logs these feeds read.
+
+    Zeek/DNS tables have no sampler column: the hub's Zeek owns them. Selecting that hub is
+    therefore a no-op (all rows); selecting another registered weirling is an honest empty
+    result with the reason, never silently ignored.
+    """
+    selected = str(sensor or "").strip()
+    if not selected:
+        return True, ""
+    labels = weirling_labels(client)
+    # The loopback sampler is the hub's exporter; a registered local address may also be
+    # selected from the netflow facet. Compare NAMES so either representation works.
+    if selected in _LOOPBACK_SAMPLERS:
+        return True, ""
+    if labels.get(selected) and labels.get(selected) == labels.get("127.0.0.1"):
+        return True, ""
+    return False, (f"this feed is captured by the hub's Zeek; {selected} has no Zeek/DNS "
+                   "records in this deployment")
+
+
+def _weirling_facet(client, total: int) -> list[dict]:
+    labels = weirling_labels(client)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for addr, name in sorted(labels.items()):
+        # weirling_labels fills every loopback spelling; one option per weirling is enough.
+        key = str(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"value": str(addr), "label": key, "count": int(total)})
+    return out
+
+
 def discover_dns(client, *, hours: int = 24, limit: int = 100, offset: int = 0,
-                 client_ip: str = "") -> dict:
+                 client_ip: str = "", sensor: str = "") -> dict:
     """The DNS feed: Q/A records with the per-bucket chart counting RECORDS (feed health is
     records arriving, not bytes moved). The address box filters the CLIENT here -- in this
     feed the host you are looking for is the one asking the questions."""
+    allowed, why = _local_sensor_filter(client, sensor)
+    if not allowed:
+        return {"feed": "dns", "available": True, "reason": why,
+                "rows": [], "total": 0, "histogram": [], "bucket_s": _discover_bucket_s(hours),
+                "facets": {"clients": [], "weirlings": _weirling_facet(client, 0)}}
     payload = dns_rows(client, hours=hours, client_ip=client_ip, limit=limit, offset=offset)
+    total = int(payload.get("total") or 0)
     return {
         "feed": "dns",
         "available": bool(payload.get("available", True)),
         "reason": payload.get("reason", ""),
         "rows": payload.get("rows") or [],
-        "total": int(payload.get("total") or 0),
+        "total": total,
         "histogram": payload.get("histogram") or [],
         "bucket_s": payload.get("bucket_s") or _discover_bucket_s(hours),
-        "facets": {"clients": (payload.get("facets") or {}).get("clients") or []},
+        "facets": {"clients": (payload.get("facets") or {}).get("clients") or [],
+                   "weirlings": _weirling_facet(client, total)},
     }
 
 
-def discover_zeek(client, *, hours: int = 24) -> dict:
+def discover_zeek(client, *, hours: int = 24, sensor: str = "") -> dict:
     """The Zeek feed: every log the sensors write, with its count in the window, its all-time
     total, and when a row last arrived. A feed is healthy when its counts move, so the row
     itself is the chart; `rows` stays empty and the renderer draws the log list instead."""
+    allowed, why = _local_sensor_filter(client, sensor)
+    if not allowed:
+        return {"feed": "zeek", "available": True, "reason": why, "rows": [], "logs": [],
+                "unreadable": [], "total": 0,
+                "facets": {"weirlings": _weirling_facet(client, 0)}}
     counts = zeek_counts(client, hours=hours)
     # zeek_counts() files its per-log rows under "points" -- read by contract, keyed directly,
     # for the same reason the row count below is: the phantom-reference audit reads .get()
@@ -1381,4 +1428,6 @@ def discover_zeek(client, *, hours: int = 24) -> dict:
         # against produced columns -- so the field is read the way a field with a contract is.
         "total": sum(int(row["rows"] if "rows" in row else row.get("in_window") or 0)
                      for row in logs),
+        "facets": {"weirlings": _weirling_facet(client, sum(
+            int(row["rows"] if "rows" in row else row.get("in_window") or 0) for row in logs))},
     }

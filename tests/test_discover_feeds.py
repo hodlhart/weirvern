@@ -67,3 +67,32 @@ def test_discover_params_carry_the_chosen_feed():
     js = (WEB / "discover.js").read_text()
     assert '\"feed=\" + encodeURIComponent(feed)' in js
     assert "dcFeedColumns" in js and '"dns"' in js and '"zeek"' in js
+
+
+def test_dns_and_zeek_accept_the_weirling_filter_and_name_the_remote_case(monkeypatch):
+    from weirvern.admin import soc
+
+    calls = {"dns": 0}
+
+    def fake_dns_rows(client, *, hours=24, client_ip="", limit=100, offset=0):
+        calls["dns"] += 1
+        return {"available": True, "rows": [], "total": 0, "histogram": [], "bucket_s": 1440,
+                "facets": {"clients": []}}
+
+    monkeypatch.setattr(soc, "dns_rows", fake_dns_rows)
+    monkeypatch.setattr(soc, "weirling_labels",
+                        lambda client: {"127.0.0.1": "weirvern", "192.0.2.5": "edge"})
+    local = soc.discover_dns(object(), sensor="127.0.0.1")
+    assert local["available"] and calls["dns"] == 1
+    assert local["facets"]["weirlings"][0]["label"] == "weirvern"
+
+    remote = soc.discover_dns(object(), sensor="192.0.2.5")
+    assert remote["available"] is True and remote["total"] == 0
+    assert "captured by the hub's Zeek" in remote["reason"]
+    assert calls["dns"] == 1, "the remote case must not read the hub's DNS rows as if filtered"
+
+
+def test_the_weirling_selector_is_not_hidden_for_dns_or_zeek():
+    js = (WEB / "discover.js").read_text()
+    assert 'show("dc-lab-sensor", true)' in js, (
+        "DNS and Zeek must expose the same weirling selector as NetFlow")

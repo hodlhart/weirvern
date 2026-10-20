@@ -4449,6 +4449,7 @@ async function bootAuthed() {
   }
   showGate("");
   applyURLState();
+  wireHistoryNavigation();
   refreshAll();
   refreshAutoBlockPill();   // quiet read; the pill appears only if the threshold is armed
   startAuto(15);
@@ -5495,6 +5496,11 @@ let PENDING_SCROLL = null;
  * can say WHY the list looks short and offer the way out. */
 let ARRIVED_FROM_LINK = false;
 let PENDING_WL = "";   // a sensor drill-down a link asked for, opened once the fleet loads
+// BROWSER BACK/FORWARD (operator, 2026-10-20). Every view change used to replaceState, so the
+// browser had one history entry for the whole session. A PAGE change now pushes; filter and
+// time-range edits within that page still replace, or a slider would fill the history stack.
+let LAST_HISTORY_VIEW = "";
+let HISTORY_NAVIGATING = false;
 
 function scheduleURLSync() {
   if (urlSyncTimer) clearTimeout(urlSyncTimer);
@@ -5580,7 +5586,19 @@ function syncURL() {
   }
   const qs = p.toString();
   const target = location.pathname + location.search + (qs ? "#" + qs : "");
-  try { history.replaceState(null, "", target); } catch (_e) { location.hash = qs; }
+  const viewChanged = viewForURL && LAST_HISTORY_VIEW && viewForURL !== LAST_HISTORY_VIEW;
+  try {
+    if (viewChanged && !HISTORY_NAVIGATING) {
+      history.pushState({ view: viewForURL }, "", target);
+    } else {
+      history.replaceState({ view: viewForURL }, "", target);
+    }
+  } catch (_e) {
+    // A browser that refuses pushState (or a file:// surface) still gets a usable URL; the
+    // hash assignment makes its own history entry, which is the fallback browser behavior.
+    location.hash = qs;
+  }
+  LAST_HISTORY_VIEW = viewForURL || "";
 }
 
 function applyURLState() {
@@ -5696,6 +5714,23 @@ function applyURLState() {
   }
   return true;
 }
+/** Back/forward restores the PAGE the operator left, not just its filters. */
+function wireHistoryNavigation() {
+  const restore = () => {
+    HISTORY_NAVIGATING = true;
+    try { applyURLState(); } catch (err) { showError(err); }
+    // The showView/loaders schedule their own URL sync; keep this turn's writes replacing,
+    // then release the flag for the next real click.
+    setTimeout(() => { HISTORY_NAVIGATING = false; }, 450);
+  };
+  window.addEventListener("popstate", restore);
+  // A manual hash edit is a navigation too; popstate is not guaranteed for every browser's
+  // hash-only move, and the two events must not restore the same entry twice.
+  window.addEventListener("hashchange", () => {
+    if (!HISTORY_NAVIGATING) restore();
+  });
+}
+
 // THE PER-VIEW TIME CONTROLS AND RELOAD BUTTONS ARE GONE (the operator's instruction,
 // 2026-10-16, twice over): "remove any redundant time controls" ... "That needs removed I
 // think. We should use universal time filters through out." One control owns the range; a

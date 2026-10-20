@@ -1052,10 +1052,10 @@ def _build_handler(ctx: GuiContext):
                         # apply to DNS records and the view hides them.
                         payload = soc_mod.discover_dns(
                             client, hours=hours, limit=limit, offset=offset,
-                            client_ip=addr,
+                            client_ip=addr, sensor=sensor,
                         )
                     elif feed == "zeek":
-                        payload = soc_mod.discover_zeek(client, hours=hours)
+                        payload = soc_mod.discover_zeek(client, hours=hours, sensor=sensor)
                     else:
                         payload = soc_mod.discover(
                             client, hours=hours, proto=proto, addr=addr or None, port=port,
