@@ -20,6 +20,7 @@ operator sent to a never-seen sensor's LOGS will find no logs, because it never 
 from __future__ import annotations
 
 import datetime
+from dataclasses import replace
 
 import pytest
 
@@ -654,3 +655,27 @@ def test_the_hide_rule_does_not_touch_a_REGISTERED_sensor_that_went_quiet():
     ids = [s["sensor_id"] for s in payload["sensors"]]
     assert ids == ["edge-quiet"], f"a registered stale sensor was hidden: {ids}"
     assert payload["sensors"][0]["state"] == STATE_STALE, payload["sensors"][0]["state"]
+
+
+def test_revoking_clears_the_plan_so_a_readded_sensor_starts_clean():
+    """The row survives; the settings do not.
+
+    A revoked registration kept its per-NIC plan, so removing a sensor and adopting it again
+    brought back the exact plan the operator was trying to clear. Revocation is the boundary:
+    history stays, configuration goes.
+    """
+    from weirvern.fleet import SensorPlan
+
+    signed = make_registration("edge-clean", segment="198.51.100.0/24",
+                               expected_mode="siphon", now=NOW)
+    signed = replace(signed, plan=SensorPlan(
+        mode="siphon", iface="eth1", segment="198.51.100.0/24",
+        addr="198.51.100.10", gateway="198.51.100.1", targets="*",
+        nics='{"eth1":{"siphon":true,"segment":"198.51.100.0/24",'
+             '"addr":"198.51.100.10","gateway":"198.51.100.1"}}'))
+    out = revoke(signed, now=NOW)
+    assert out.revoked_at == NOW and out.enabled is False
+    assert not out.plan.configured
+    assert out.plan.nics == ""
+    assert out.plan.as_dict() == {f: "" for f in ("mode", "iface", "segment", "addr",
+                                                  "gateway", "targets")}

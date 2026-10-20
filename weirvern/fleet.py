@@ -514,13 +514,20 @@ def revoke(reg: Registration, now: datetime | None = None) -> Registration:
         sensor that broke and was pulled indistinguishable from one that never existed. When
         someone asks "was this covered?", the answer has to survive the cleanup.
       * The heartbeat rows keyed by this sensor id are NOT deleted -- a sensor's reported
-        history is evidence. Deleting the registration while the heartbeats remain would turn
-        every past reading into an `unregistered` alert, which is a fleet view that alarms
-        about sensors somebody deliberately removed.
+        history is evidence. Its PLAN is cleared, though: settings are not history, and a
+        re-added sensor must start from the safe resting state rather than inherit a route.
+        Deleting the registration while the heartbeats remain would turn every past reading
+        into an `unregistered` alert, which is a fleet view that alarms about sensors somebody
+        deliberately removed.
     """
     if reg.revoked_at is not None:
         return reg
-    return replace(reg, revoked_at=now or datetime.now(UTC), enabled=False)
+    # THE SETTINGS GO WITH THE REGISTRATION. A revoked sensor that keeps a plan in the registry
+    # is a sensor that comes back with the old cross-polluted NIC roles the moment somebody
+    # re-adds it. Clear the plan fields (including the per-NIC JSON) here, in the decision
+    # layer, so every caller gets the same clean slate; the row itself and its heartbeats stay.
+    return replace(reg, revoked_at=now or datetime.now(UTC), enabled=False,
+                   plan=SensorPlan())
 
 
 def channel_state(mode: str, mappings: int, running: bool, fresh: bool) -> dict:

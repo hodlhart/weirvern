@@ -124,6 +124,33 @@ ROW_TO_CONFIGMAP: dict[str, str] = {
 }
 
 
+# WHAT REVOKING A LOCAL SENSOR CLEARS. A registration is not just a row in the fleet view:
+# the hub's worker reads the plan and the capture settings from this ConfigMap, and it keeps
+# enforcing them whether or not the sensor is registered. Leaving the plan behind after a
+# revoke meant "remove and re-add" inherited the old cross-polluted NIC plan. These are the
+# keys that describe THIS sensor's role; detection thresholds, block lists and account
+# settings deliberately stay (they belong to the deployment, not to the registration).
+REVOCATION_CLEARS: dict[str, str] = {
+    "SENSOR_MODE": "loch",
+    "CAPTURE_IFACE": "",
+    "ZEEK_IFACE": "",
+    "ZEEK_IFACES": "",
+    "INTERCEPT_PLANS": "",
+    "INTERCEPT_SEGMENT": "",
+    "INTERCEPT_ADDR": "",
+    "INTERCEPT_GATEWAY": "",
+    "INTERCEPT_TARGETS": "",
+    "CHANNEL_UPSTREAM": "",
+    "CHANNEL_DOWNSTREAM": "",
+    "CHANNEL_NETFLOW": "off",
+    "SIPHON_NETFLOW": "0",
+    "NETFLOW_IFACE": "",
+    "SLUICE_ENABLED": "0",
+    "SLUICE_IFACE": "",
+    "INTERFACE_NETWORKS": "",
+}
+
+
 def apply_semantics(key: str) -> str:
     """How a change to this key takes effect, in one sentence for the settings row's badge.
 

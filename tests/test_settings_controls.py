@@ -351,3 +351,24 @@ def test_the_payload_rows_carry_how_they_apply():
     base = flat.get("base_threshold")
     if base is not None:
         assert "restarts the detection worker" in base["applies"]
+
+
+def test_revoking_a_sensor_clears_every_sensor_role_key_and_nothing_global():
+    """The revoke path writes this table into the ConfigMap.
+
+    It must be writable (every key editable), valid (empty values allowed), and scoped to the
+    sensor's own role: detection thresholds and the block list belong to the deployment and
+    must survive removing one registration.
+    """
+    from weirvern.admin import cluster_config as cc
+
+    for key, value in cc.REVOCATION_CLEARS.items():
+        assert key in cc.EDITABLE_KEYS, key
+        cc.validate(key, value)  # raises if the clear value is not accepted
+    assert cc.REVOCATION_CLEARS["SENSOR_MODE"] == "loch"
+    assert cc.REVOCATION_CLEARS["INTERCEPT_PLANS"] == ""
+    assert cc.REVOCATION_CLEARS["SLUICE_ENABLED"] == "0"
+    assert "BASE_THRESHOLD" not in cc.REVOCATION_CLEARS
+    assert "SLUICE_BLOCK_DOMAINS" not in cc.REVOCATION_CLEARS
+    p = cc.plan(dict(cc.REVOCATION_CLEARS), {})
+    assert "ds/zeek" in p.restart_targets and "deploy/weirvern-worker" in p.restart_targets

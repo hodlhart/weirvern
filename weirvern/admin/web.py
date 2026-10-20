@@ -2362,15 +2362,53 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("weirling revoke failed: %s", exc)
                 return self._json({"ok": False, "error": f"could not save: {str(exc)[:200]}"},
                                   code=500)
+            ident = self._identity()
+            # THE LOCAL SENSOR'S SETTINGS LIVE IN THE CONFIGMAP, NOT IN THE REGISTRY ROW. Clearing
+            # only the row left the worker forwarding and intercepting after a revoke: the plan
+            # is read from the cluster environment, not from ClickHouse. Clear the sensor-role
+            # keys here so "revoke, then adopt" is a clean start, and restart what read them.
+            settings_cleared = None
+            settings_error = ""
+            if reg.sensor_id == _gate_sensor_name():
+                try:
+                    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+                    config_client = ctx.config_client or cc.ClusterConfig()
+                    current = config_client.read()
+                    p = cc.plan(dict(cc.REVOCATION_CLEARS), current)
+                    config_client.apply(
+                        dict(cc.REVOCATION_CLEARS),
+                        reason=f"weirling {reg.sensor_id} revoked: {reason}",
+                        by=(ident.username if ident else "operator"),
+                    )
+                    restarted: list[str] = []
+                    restart_errors: list[str] = []
+                    for target in p.restart_targets:
+                        try:
+                            config_client.restart(target)
+                            restarted.append(target)
+                        except Exception as exc:  # noqa: BLE001
+                            restart_errors.append(f"{target}: {exc}")
+                    settings_cleared = True
+                    if restart_errors:
+                        settings_error = ("the settings were cleared but a restart failed: "
+                                          + "; ".join(restart_errors))
+                except Exception as exc:  # noqa: BLE001
+                    # The revoke itself is already durable. Report the settings failure rather
+                    # than pretending the sensor is clean, and do not make a retry impossible.
+                    settings_cleared = False
+                    settings_error = f"the sensor was revoked but its settings were not cleared: {exc}"
+                    logger.warning("weirling revoke settings clear failed: %s", exc)
             try:
-                ident = self._identity()
                 with self._with_client() as client:
                     fleet_store.write_audit(
                         client, scope="fleet", action="revoke", target=reg.sensor_id,
                         reason=reason, actor=(ident.username if ident else "operator"))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fleet audit write failed: %s", exc)
-            self._json({"ok": True, "sensor_id": reg.sensor_id})
+            self._json({"ok": True, "sensor_id": reg.sensor_id,
+                        "settings_cleared": settings_cleared,
+                        "settings_error": settings_error})
 
 
         def _require_read(self) -> bool:

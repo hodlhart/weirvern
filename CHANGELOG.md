@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.17.59 — 2026-10-20
+
+REVOKING A WEIRLING CLEARS ITS SETTINGS. A ROW IS NOT A CONFIGURATION.
+
+- Revocation used to flip `enabled=0` and stop there. The local hub's worker did not read the
+  registry for its plan -- it read the ConfigMap -- so the sensor kept forwarding, kept
+  intercepting, and kept its old per-NIC plan after the operator removed it. Re-adopting it
+  therefore brought the same cross-polluted settings straight back.
+- `fleet.revoke()` now clears the registry plan, including the per-NIC JSON, while keeping the
+  row and its heartbeat evidence.
+- Revoking the **local** sensor now writes the sensor-role keys to their resting values
+  (`SENSOR_MODE=loch`, empty capture/Zeek/plan/channel/NetFlow/Sluice-interface values,
+  `SLUICE_ENABLED=0`) through the same verified ConfigMap path, records the revoke reason in the
+  provenance annotation, and restarts `ds/zeek` and the worker. Detection thresholds, block
+  lists and account settings are untouched: they belong to the deployment, not the registration.
+- The route reports `settings_cleared` separately from `ok`, so a registry revoke that could not
+  clear the ConfigMap is visible instead of looking clean.
+- The deploy wrapper builds with `--network host`, which is what made the 0.17.58 image
+  buildable here; the default build network could resolve the registry host but not PyPI.
+
 ## 0.17.58 — 2026-10-20
 
 A SURVEY BELONGS TO THE NIC THAT RAN IT, AND THE PLAN IS THE MODE.

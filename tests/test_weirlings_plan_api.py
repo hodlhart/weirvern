@@ -380,3 +380,65 @@ def test_a_survey_REFUSES_to_guess_when_the_sensor_reports_several_nics(monkeypa
 def test_a_survey_for_an_unknown_sensor_is_refused(unit_ch):
     out = _post(_ctx(unit_ch), "_settings_sonar", {"sensor": "ghost"})
     assert out["ok"] is False and "Adopt it" in out["error"], out
+
+
+class _StubConfig:
+    def __init__(self):
+        self.applied = None
+        self.reason = ""
+        self.restarted = []
+
+    def read(self):
+        return {}
+
+    def apply(self, changes, *, reason="", by=""):
+        from weirvern.admin import cluster_config as cc
+
+        self.applied = dict(changes)
+        self.reason = reason
+        return {cc.to_configmap_key(k): v for k, v in changes.items()}
+
+    def restart(self, target):
+        self.restarted.append(target)
+
+
+def test_revoking_the_LOCAL_sensor_clears_its_configmap_settings_and_restarts(monkeypatch):
+    """The registry row is not where this hub's settings live.
+
+    Revoking only the row left the worker forwarding and intercepting from the ConfigMap, so a
+    revoked-then-re-adopted sensor inherited its old plan. The route must clear the sensor-role
+    keys and restart the readers, not just flip `enabled`.
+    """
+    _hub_named(monkeypatch)
+    ch = _StubCh([_row("hub-sensor", mode="siphon", segment="198.51.100.0/24",
+                       plan={"mode": "siphon", "iface": "eth1",
+                             "segment": "198.51.100.0/24", "addr": "198.51.100.10",
+                             "gateway": "198.51.100.1", "targets": "*"})])
+    cfg = _StubConfig()
+    ctx = _ctx(ch)
+    ctx.config_client = cfg
+    out = _post(ctx, "_weirlings_revoke", {"sensor_id": "hub-sensor",
+                                           "reason": "clean re-adoption"})
+
+    assert out["ok"] is True and out["settings_cleared"] is True, out
+    assert cfg.applied["INTERCEPT_PLANS"] == ""
+    assert cfg.applied["SENSOR_MODE"] == "loch"
+    assert cfg.applied["SLUICE_ENABLED"] == "0"
+    assert "ds/zeek" in cfg.restarted and "deploy/weirvern-worker" in cfg.restarted
+    assert "clean re-adoption" in cfg.reason
+    from weirvern import fleet_store
+
+    stored = dict(zip(fleet_store.COLUMNS, ch.rows[0], strict=False))
+    assert stored["revoked_at"] is not None
+    assert stored["plan_mode"] == "" and stored["plan_nics"] == ""
+
+
+def test_revoking_a_REMOTE_sensor_does_not_touch_the_hubs_configmap(monkeypatch):
+    _hub_named(monkeypatch)
+    ch = _StubCh([_row("unit-a")])
+    cfg = _StubConfig()
+    ctx = _ctx(ch)
+    ctx.config_client = cfg
+    out = _post(ctx, "_weirlings_revoke", {"sensor_id": "unit-a", "reason": "retire"})
+    assert out["ok"] is True and out["settings_cleared"] is None, out
+    assert cfg.applied is None and cfg.restarted == []
