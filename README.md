@@ -5,17 +5,23 @@
 <h1 align="center">Weirvern</h1>
 
 <p align="center">
-  <strong>Know what your network is doing. Prove why. Stop what should not happen.</strong>
+  <strong>See the network. Prove the anomaly. Block the traffic.</strong>
 </p>
 
 <p align="center">
-  Behavioral anomaly detection for Kubernetes networks — built from the NetFlow, Zeek and DNS
-  your network already produces, with an evidence trail for every decision and a kernel-level
-  gate when you need one.
+  ML-backed detection and enforcement for Kubernetes networks. Weirvern learns from
+  <strong>NetFlow, Zeek, DNS and JA4</strong> fingerprints, explains every alert with the
+  measurements behind it, and can sit <strong>inline to inspect and drop traffic</strong>, redirect
+  a segment with <strong>ARP</strong>, or watch passively from a mirror.
 </p>
 
 <p align="center">
-  Current release: <strong>0.17.74</strong> · MIT · no payload inspection
+  <code>inline bridge</code> · <code>ARP redirection</code> · <code>passive mirror</code> ·
+  <code>NetFlow · Zeek · DNS · JA4</code> · <code>kernel blocking</code>
+</p>
+
+<p align="center">
+  Current release: <strong>0.17.74</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
@@ -51,6 +57,11 @@ hypotheses with their measurements, never as bare conclusions.
 **The whole network, not one box.** A hub runs the database, models and the console; lightweight
 weirlings sit on the segments you want to watch. Each weirling carries its own intercept plan and
 reports its own health, interfaces and flow feed.
+
+**Inline when you need it.** Put two NICs in a bridge and the box becomes the wire: traffic
+passes through, Zeek sees the protocol layer, and the Sluice Gate can drop a packet at the kernel.
+No host agents, no SPAN port, no re-architecture. Or redirect a segment with ARP for a bounded
+intercept, or stay passive on a mirror.
 
 **Enforcement with a paper trail.** The Sluice Gate compiles rules to the kernel only where it can
 actually see the traffic. Every block names its source, destination, direction, duration and
