@@ -2808,7 +2808,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         && !!doc.querySelector("[data-wl-rate]")
         && !!doc.querySelector("#wl-table .wl-colhead"),
         "performance columns not rendered");
-  check("the alert audit panels are on the Health tab (SOC-8)",
+  check("the alert audit panels are at the top of the Logs tab (operator, 2026-10-20)",
         !!doc.getElementById("hp-alerts-reasons")
           && !!doc.getElementById("hp-alerts-recent")
           && !!doc.getElementById("hp-alerts-note"));

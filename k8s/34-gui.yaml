@@ -109,14 +109,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # THE SENSOR'S BOUNDARY, NOT THE KERNEL'S BIGGER VIEW. File-mounting the host's
-            # /proc/meminfo and /proc/stat gives the LXC/VM's 10 GiB and 4 CPUs; the pod's
-            # /proc reports the 40 GiB kernel view, and a directory hostPath of /proc reported
-            # the 512 MiB pod limit. The explicit path is authoritative in system_metrics.
-            - name: HOST_PROC
-              value: "/host-proc"
-            - name: HOST_SYS
-              value: "/host-sys"
           envFrom:
             - configMapRef:
                 name: weirvern-env
@@ -151,11 +143,7 @@ spec:
             failureThreshold: 3
           resources:
             requests: {cpu: "50m", memory: "128Mi"}
-            # lxcfs virtualizes /proc/meminfo by the READER's cgroup. With the old 512Mi limit,
-            # the host file mount reported the pod limit (512Mi), not the LXC/VM's 10GiB. The
-            # limit is the VM boundary so the system cards can read the same 10GiB `free` sees;
-            # requests stay tiny, and the GUI's actual working set is tens of MiB.
-            limits: {cpu: "500m", memory: "10Gi"}
+            limits: {cpu: "500m", memory: "512Mi"}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -167,17 +155,8 @@ spec:
             # THE HOST'S PROCFS, READ-ONLY (operator, 2026-10-19). The system cards must
             # describe the sensor box, not this container's cgroup: /proc inside the pod is
             # the wrong machine. Mounted at /host-proc; the route never writes it.
-            # The parent is an emptyDir; the two files are host file mounts. A hostPath
-            # DIRECTORY of /proc was measured at 512 MiB (the pod limit), not the VM; a
-            # hostPath FILE of /proc/meminfo is the 10 GiB VM boundary.
             - name: host-proc
               mountPath: /host-proc
-              readOnly: true
-            - name: host-proc-meminfo
-              mountPath: /host-proc/meminfo
-              readOnly: true
-            - name: host-proc-stat
-              mountPath: /host-proc/stat
               readOnly: true
             # Interface counters live in sysfs, not procfs: /proc/net follows the pod's
             # network namespace even when procfs is the host's.
@@ -190,15 +169,9 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: host-proc
-          emptyDir: {}
-        - name: host-proc-meminfo
           hostPath:
-            path: /proc/meminfo
-            type: File
-        - name: host-proc-stat
-          hostPath:
-            path: /proc/stat
-            type: File
+            path: /proc
+            type: Directory
         - name: host-sys
           hostPath:
             path: /sys

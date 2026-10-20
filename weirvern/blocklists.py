@@ -192,12 +192,24 @@ def ensure_default_sources(client) -> int:
             "weirvern.blocklist_sources",
             [[src["source_id"], src["name"], src["url"], src["format"],
               int(bool(prior.get("enabled"))), prior.get("added_at") or now, now,
-              prior.get("fetched_at") or None, int(prior.get("domain_count") or 0),
+              _dt_or_none(prior.get("fetched_at")), int(prior.get("domain_count") or 0),
               str(prior.get("last_error") or "")]],
             column_names=["source_id", "name", "url", "format", "enabled", "added_at",
                           "updated", "fetched_at", "domain_count", "last_error"],
         )
     return added
+
+
+def _dt_or_none(value):
+    """ClickHouse wants a datetime, not the ISO text the GUI payload carries."""
+    if not value:
+        return None
+    if hasattr(value, "timestamp"):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
 
 
 def load_sources(client) -> list[dict]:
@@ -258,7 +270,7 @@ def set_source_enabled(client, source_id: str, enabled: bool) -> dict:
             client.insert(
                 "weirvern.blocklist_sources",
                 [[oid, other["name"], other["url"], other["format"], 0, now, now,
-                  other.get("fetched_at") or None, int(other.get("domain_count") or 0),
+                  _dt_or_none(other.get("fetched_at")), int(other.get("domain_count") or 0),
                   str(other.get("last_error") or "")]],
                 column_names=["source_id", "name", "url", "format", "enabled", "added_at",
                               "updated", "fetched_at", "domain_count", "last_error"],
@@ -266,7 +278,7 @@ def set_source_enabled(client, source_id: str, enabled: bool) -> dict:
     client.insert(
         "weirvern.blocklist_sources",
         [[src["source_id"], src["name"], src["url"], src["format"], int(bool(enabled)),
-          now, now, src.get("fetched_at") or None,
+          now, now, _dt_or_none(src.get("fetched_at")),
           int(src.get("domain_count") or 0), str(src.get("last_error") or "")]],
         column_names=["source_id", "name", "url", "format", "enabled", "added_at",
                       "updated", "fetched_at", "domain_count", "last_error"],

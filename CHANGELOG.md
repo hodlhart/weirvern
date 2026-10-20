@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.68 — 2026-10-20
+
+EVERY ALERTING DECISION IS AT THE TOP OF LOGS.
+
+- The alert audit moved from Health to the top of the Logs tab. It still carries sent,
+  suppressed (cooldown/cap), and log-only decisions, with the same outcome counts and paged
+  event table; Logs loads the deep-health payload directly so the audit is never blank because
+  Health was not visited first.
+- The blocklist tier migration now converts the stored `fetched_at` ISO text back to a datetime
+  before inserting; the 0.17.67 seed failed on the live box with `'str' object has no attribute
+  'timestamp'`. Five tiers will seed on the worker's next pass.
+- The system-card VM-boundary experiment was reverted after its 10 GiB pod limit prevented the
+  GUI from starting; the System card remains on the existing host reading until its own card is
+  implemented. The GUI is back on the 512 MiB limit and running.
+
 ## 0.17.67 — 2026-10-20
 
 FIVE HAGEZI TIERS, A FORMAT-AWARE ADD FORM, A BIGGER NETWORK CANVAS, AND REVOKED OFF.

@@ -193,7 +193,30 @@
   <section id="view-logs" class="view">
     <!-- THE LOGS TAB (the operator, 2026-10-18): everything that changed the system and
          everything wrong with it, in ONE place. The write trail left the Weirlings and
-         Settings cards; the self-audit left Health -- a log is read where logs live. -->
+         Settings cards; the self-audit and the alert audit left Health -- a log is read
+         where logs live. Every alerting decision, including withheld ones, is at the top. -->
+    <div class="card">
+      <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span> <button class="info-btn" data-info="hp-audit-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+<div class="info-text hidden" id="hp-audit-info">
+  <p><strong>What it is.</strong> Every alerting decision the worker made, not just the deliveries.</p>
+  <p><strong>What writes it.</strong> The worker, at decision time.</p>
+  <p><strong>Last changed.</strong> Appends every alerting cycle.</p>
+  <p><strong>Where to see it.</strong> Here — a cooldown-eaten or rate-capped alert leaves a row, which is the only way to tell 'nothing fired' apart from 'it fired and was withheld'.</p>
+</div>
+      <div id="hp-alerts-note"><p class="muted">loading…</p></div>
+      <div class="grid">
+        <div>
+          <table id="hp-alerts-reasons"><thead><tr><th>Outcome</th><th>Count</th>
+          <th>Last</th></tr></thead><tbody></tbody></table>
+          <div id="hp-alerts-reasons-pager" class="pager"></div>
+        </div>
+        <div>
+          <table id="hp-alerts-recent"><thead><tr><th>Time</th><th>Host</th><th>Severity</th>
+          <th>Score</th><th>Outcome</th><th>Detail</th></tr></thead><tbody></tbody></table>
+          <div id="hp-alerts-recent-pager" class="pager"></div>
+        </div>
+      </div>
+    </div>
     <div class="card">
       <h2>Setting changes <span class="muted">who changed what, why, and when</span>
         <button class="info-btn" data-info="lg-trail-info" aria-label="what the write trail is"
@@ -975,16 +998,16 @@
       <div id="hp-system"><p class="muted">loading…</p></div>
     </div>
     <div class="card">
-      <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks and what the audit means" aria-expanded="false" title="what this page checks and what the audit means">i</button> <span class="muted" id="hp-window"></span></h2>
+      <h2>Health <button class="info-btn" data-info="hp-info" aria-label="what this page checks" aria-expanded="false" title="what this page checks">i</button> <span class="muted" id="hp-window"></span></h2>
       <p class="muted" id="hp-summary">loading…</p>
       <div class="controls">
         
       </div>
       <div class="info-text hidden" id="hp-info">
-  <p><strong>What it is.</strong> The pipeline's own health: the ingestion pulse, the alert audit, and the checks.</p>
-  <p><strong>What writes it.</strong> Each stage's own counters, and every decision the worker made — sent, suppressed by cooldown, capped, or log-only.</p>
+  <p><strong>What it is.</strong> The pipeline's own health: the ingestion pulse and the checks.</p>
+  <p><strong>What writes it.</strong> Each stage's own counters.</p>
   <p><strong>Last changed.</strong> Refreshes on this page's own cadence.</p>
-  <p><strong>Where to see it.</strong> An alert you expected is missing? The audit table says which decision ate it; 'nothing fired' and 'it fired and was withheld' never look alike here.</p>
+  <p><strong>Where to see it.</strong> An alert you expected is missing? The alert audit at the top of the Logs tab says which decision ate it.</p>
 </div>
 
     </div>
@@ -1011,28 +1034,6 @@
   <p><strong>Where to see it.</strong> Here for the host's view; the Weirlings tab for the fleet and, for this hub, its settings.</p>
 </div>
       <div id="hp-sensor"><p class="muted">loading…</p></div>
-    </div>
-    <div class="card">
-      <h2>Alert audit <span class="muted">every alerting decision — sent, suppressed, or log-only</span> <button class="info-btn" data-info="hp-audit-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-<div class="info-text hidden" id="hp-audit-info">
-  <p><strong>What it is.</strong> Every alerting decision the worker made, not just the deliveries.</p>
-  <p><strong>What writes it.</strong> The worker, at decision time.</p>
-  <p><strong>Last changed.</strong> Appends every alerting cycle.</p>
-  <p><strong>Where to see it.</strong> Here — a cooldown-eaten or rate-capped alert leaves a row, which is the only way to tell 'nothing fired' apart from 'it fired and was withheld'.</p>
-</div>
-      <div id="hp-alerts-note"><p class="muted">loading…</p></div>
-      <div class="grid">
-        <div>
-          <table id="hp-alerts-reasons"><thead><tr><th>Outcome</th><th>Count</th>
-          <th>Last</th></tr></thead><tbody></tbody></table>
-          <div id="hp-alerts-reasons-pager" class="pager"></div>
-        </div>
-        <div>
-          <table id="hp-alerts-recent"><thead><tr><th>Time</th><th>Host</th><th>Severity</th>
-          <th>Score</th><th>Outcome</th><th>Detail</th></tr></thead><tbody></tbody></table>
-          <div id="hp-alerts-recent-pager" class="pager"></div>
-        </div>
-      </div>
     </div>
   </section>
 

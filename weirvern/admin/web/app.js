@@ -3866,9 +3866,12 @@ function showView(name) {
     catch (_e) { /* older browsers: the tab stays wherever it is */ }
   }
   if (name === "logs") {
-    // THE LOGS TAB: the write trail and the pipeline's self-audit, read together.
+    // THE LOGS TAB: every alerting decision at the top, then the write trail and the
+    // pipeline's self-audit. The audit rides the deep-health payload, so load it here too;
+    // opening Logs must never show an empty audit because Health was not visited first.
     if (typeof refreshWriteTrails === "function") refreshWriteTrails();
     loadAudit().then(clearError).catch(showError);
+    loadHealthDeep().then(clearError).catch(showError);
   }
   if (name === "anomalies") loadAnomalies().then(clearError).catch(showError);
   if (name === "models") {
@@ -3914,7 +3917,7 @@ function showView(name) {
  * finish time when it is whole, "paused" when the operator has paused it. */
 const VIEW_LOADERS = {
   health: () => loadHealthDeep(), anomalies: () => loadAnomalies(),
-  logs: () => Promise.all([refreshWriteTrails(), loadAudit()]),
+  logs: () => Promise.all([refreshWriteTrails(), loadAudit(), loadHealthDeep()]),
   netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
