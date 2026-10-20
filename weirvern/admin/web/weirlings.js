@@ -1379,7 +1379,15 @@ function wlShowNicSettings(nic, interfaces) {
   const plan = wlPlanFor(nic);
   const siphonOn = String(plan.mode || "").toLowerCase() === "siphon"
     || plan.siphon === true;
-  const zeekOn = listed.length ? listed.includes(nic) : base === nic;
+  // THE PLAN IS THE AUTHORITY WHEN A PER-NIC PLAN EXISTS (operator, 2026-10-20: "settings
+  // don't match the visual"). The sheet used to read only the legacy ZEEK_IFACES list, so
+  // opening eth2 after eth1's siphon plan showed "capture - Zeek on" while the fleet row
+  // (which reads the plan) said unassigned. Same rule as wlNicFacts: capture+siphon roles
+  // come from the plan; the global list is the fallback only when there is no plan at all.
+  const hasPlans = Object.keys(wlPlans()).length > 0;
+  const planCapture = plan.capture === true;
+  const zeekOn = siphonOn || (hasPlans ? planCapture
+    : (listed.length ? listed.includes(nic) : base === nic));
   const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
   const flowIface = String(wlCfgValue("netflow_iface") || "").trim();

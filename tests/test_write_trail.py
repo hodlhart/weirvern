@@ -47,8 +47,9 @@ def test_a_settings_apply_writes_one_audit_row_PER_KEY():
     src = (PY / "admin" / "web.py").read_text()
     seg = src.split('# US-10: THE TRAIL GETS THE SETTINGS WRITE TOO.', 1)[1].split("self._json({", 1)[0]
     assert 'action = "revert" if body.get("revert") else "apply"' in seg
-    assert "for key in changes:" in seg, \
-        "one row per key keeps a single-key provenance link an EXACT match"
+    assert "for key in raw_changes:" in seg, (
+        "one row per key keeps a single-key provenance link an EXACT match; derived keys "
+        "such as the reconciled ZEEK_IFACES are real writes and must be audited too")
     assert 'scope="settings"' in seg and "write_audit(" in seg
     assert "except Exception" in seg, "an audit failure must not fail a write that landed"
 

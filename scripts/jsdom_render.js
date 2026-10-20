@@ -109,7 +109,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
-                     wlNicFacts, wlNicRows, wlPlans, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
+                     wlNicFacts, wlNicRows, wlPlans, wlShowNicSettings, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
                      loadHost, loadEvidence, loadAudit, loadDetectors,
@@ -4033,6 +4033,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && renderedNic.children[6].querySelectorAll(".tap").length === 2,
             renderedNic ? [...renderedNic.children].map((td) => td.textContent.trim()).join("|")
                         : "no siphon row");
+      if (typeof window.wlShowNicSettings === "function") {
+        const zeekHeld = H.SETTINGS_ROWS.zeek_ifaces;
+        const plansForSheet = H.STAGE.changes.intercept_plans;
+        H.STAGE.changes.intercept_plans = JSON.stringify({
+          eth1: { mode: "siphon", segment: "198.51.100.0/24", gateway: "198.51.100.1",
+                  addr: "198.51.100.10", targets: "*" } });
+        H.SETTINGS_ROWS.zeek_ifaces = { value: "eth2,eth1" };
+        window.wlShowNicSettings("eth2", ["eth1", "eth2"]);
+        const roleText = (doc.getElementById("wl-nic-role") || {}).textContent || "";
+        const zeekChecked = !!doc.getElementById("wl-nic-zeek").checked;
+        check("the eth2 SETTINGS sheet agrees with the visual: unassigned, Zeek off",
+              /unassigned/i.test(roleText) && zeekChecked === false,
+              `role=${roleText.trim()} zeek=${zeekChecked}`);
+        H.SETTINGS_ROWS.zeek_ifaces = zeekHeld;
+        H.STAGE.changes.intercept_plans = plansForSheet;
+        if (typeof window.wlCloseNicSettings === "function") window.wlCloseNicSettings();
+      }
       if (plansHeld === undefined) delete H.STAGE.changes.intercept_plans;
       else H.STAGE.changes.intercept_plans = plansHeld;
       H.SETTINGS_ROWS.channel_upstream = upHeld;

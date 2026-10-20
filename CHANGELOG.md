@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.65 — 2026-10-20
+
+THE LOCAL EXPORTER IS LOOPBACK, AND THE PLAN OWNS THE CAPTURE PORTS.
+
+- The fleet's flow evidence queried the sensor's heartbeat address first. Once the hub was
+  registered with its management address, it looked for `192.0.2.176` while every row in
+  ClickHouse came from `127.0.0.1`: `netflow observed=false`, `flows=0`, no trend — beside a
+  Netflow tab full of flows. The local row now queries loopback (and its address, if present);
+  a remote row still queries only its own address.
+- The per-NIC settings sheet read the legacy `ZEEK_IFACES` list while the fleet row read the
+  per-NIC plan. Opening an unassigned NIC showed "capture / Zeek on" next to a row that said
+  unassigned. The sheet now uses the plan whenever a plan exists; the legacy list is the
+  fallback only when there is no plan.
+- Applying `INTERCEPT_PLANS` now reconciles `ZEEK_IFACES` to the plan's capture plus siphon
+  ports, and moves `CAPTURE_IFACE` to a plan port when the old one is not in it. Zeek no longer
+  sniffs a port the plan leaves unassigned, and Settings and the fleet row read one authority.
+
 ## 0.17.64 — 2026-10-20
 
 REVOKED REGISTRATIONS ARE INCLUDED BY DEFAULT.

@@ -30,3 +30,18 @@ def test_the_management_nic_is_refused_for_every_active_role():
 def test_malformed_json_says_so():
     with pytest.raises(NicPlanError):
         NicPlanSet.from_json("[1, 2]")
+
+
+def test_capture_ports_include_siphon_nics_so_settings_and_visual_agree():
+    """A siphon NIC must still be sniffed; a sluice-only NIC must not be added.
+
+    The Settings write derives ZEEK_IFACES from this list. If siphon ports were omitted, the
+    sensor would arm an intercept whose traffic Zeek never sees; if unassigned ports were kept,
+    Settings would say capture where the fleet row says unassigned.
+    """
+    from weirvern.nic_plans import NicPlanSet
+
+    plans = NicPlanSet.from_json('''
+      {"eth1": {"mode": "siphon"}, "eth2": {"capture": true}, "eth3": {"sluice": true}}
+    ''')
+    assert plans.capture_ports() == ["eth1", "eth2"]

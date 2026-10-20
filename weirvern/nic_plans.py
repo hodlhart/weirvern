@@ -84,6 +84,10 @@ class NicPlanSet:
     def capture_ifaces(self) -> list[str]:
         return [i for i, p in self.plans.items() if p.capture]
 
+    def capture_ports(self) -> list[str]:
+        """Ports Zeek must sniff: capture roles plus siphon ports (siphon needs the packet too)."""
+        return [i for i, p in self.plans.items() if p.capture or p.siphon]
+
     def siphon_ifaces(self) -> list[str]:
         return [i for i, p in self.plans.items() if p.siphon]
 

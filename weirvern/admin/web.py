@@ -222,6 +222,27 @@ def _interface_network_names(raw: str) -> dict[str, str]:
     return out
 
 
+def _flow_exporters(sensors: list[dict]) -> dict[str, list[str]]:
+    """Which sampler addresses belong to each sensor.
+
+    A LOCAL sensor's goflow2 writes from loopback even when the sensor's heartbeat carries a
+    management address. Checking the address first made the local row query 192.0.2.176 while
+    every row in ClickHouse said 127.0.0.1: the fleet showed netflow "not observed" and an
+    empty trend beside a Netflow tab full of flows. A remote sensor uses its own address.
+    """
+    out: dict[str, list[str]] = {}
+    for r in sensors or []:
+        sid = str(r.get("sensor_id") or "")
+        addr = str(r.get("address") or "").strip()
+        if r.get("local"):
+            addrs = [addr] if addr else []
+            addrs.extend(["127.0.0.1", "::1"])
+            out[sid] = list(dict.fromkeys(a for a in addrs if a))
+        else:
+            out[sid] = [addr] if addr else []
+    return out
+
+
 def _attach_anomaly_locations(rows: list, sensors: list,
                              network_names: dict[str, str] | None = None) -> None:
     """Where each alert happened: the weirling that sees that network, and the network.
@@ -1459,16 +1480,7 @@ def _build_handler(ctx: GuiContext):
             # LOOPBACK on its node, and its heartbeat carries no address, so the local row
             # looks up the loopback samplers instead -- without that, the one sensor the hub can
             # see exporting would show an empty trend while nine thousand flows sit in the table.
-            exporters: dict[str, list[str]] = {}
-            for r in payload.get("sensors") or []:
-                sid = str(r.get("sensor_id") or "")
-                addr = str(r.get("address") or "").strip()
-                if addr:
-                    exporters[sid] = [addr]
-                elif r.get("local"):
-                    exporters[sid] = ["127.0.0.1", "::1"]
-                else:
-                    exporters[sid] = []
+            exporters = _flow_exporters(payload.get("sensors") or [])
             addresses = sorted({a for group in exporters.values() for a in group})
             try:
                 with self._with_client() as ev_client:
@@ -3096,10 +3108,11 @@ def _build_handler(ctx: GuiContext):
                              "is required and is recorded with your name and the time",
                 }, 400)
 
+            raw_changes = {k: str(v) for k, v in changes.items()}
             client = ctx.config_client or cc.ClusterConfig()
             try:
                 current = client.read()
-                p = cc.plan({k: str(v) for k, v in changes.items()}, current)
+                p = cc.plan(raw_changes, current)
             except cc.ConfigError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
@@ -3123,6 +3136,33 @@ def _build_handler(ctx: GuiContext):
             if mode_error:
                 return self._json({"ok": False, "error": mode_error}, 409)
 
+            # THE PLAN OWNS THE CAPTURE PORT LIST. A per-NIC plan already says which ports
+            # capture and which siphon; the legacy ZEEK_IFACES list can still name a NIC the
+            # plan leaves unassigned, and then Settings says "capture" where the fleet row says
+            # "unassigned" -- the mismatch the operator reported. Reconcile in the same write:
+            # siphon needs Zeek too, so the effective list is capture ports ∪ siphon ports.
+            if "intercept_plans" in raw_changes:
+                try:
+                    from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
+
+                    plans = NicPlanSet.from_json(raw_changes.get("intercept_plans") or "")
+                    ports = plans.capture_ports()
+                    if ports:
+                        raw_changes["zeek_ifaces"] = ",".join(ports)
+                        current_capture = str(current.get("CAPTURE_IFACE") or "").strip()
+                        if current_capture not in ports:
+                            raw_changes["capture_iface"] = ports[0]
+                except Exception as exc:  # noqa: BLE001
+                    # A malformed plan is refused by ClusterConfig.plan below with its own
+                    # message; do not turn it into a derivation traceback here.
+                    logger.warning("could not derive capture ports from intercept_plans: %s", exc)
+            # The effective plan, including the reconciled keys, is what every later step uses
+            # (apply-time checks, restart targets, write and receipt).
+            try:
+                p = cc.plan(raw_changes, current)
+            except cc.ConfigError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+
             # APPLY-TIME CHECKS (BF-14): named assertions between the plan and the write. A
             # failure BLOCKS the apply and names itself; a check that cannot run says why
             # (the UI's "N passed, M skipped -- why?" reads this payload). The checks judge
@@ -3130,7 +3170,7 @@ def _build_handler(ctx: GuiContext):
             from weirvern import apply_checks  # noqa: PLC0415
 
             try:
-                norm_changes = {cc.to_configmap_key(k): str(v) for k, v in changes.items()}
+                norm_changes = {cc.to_configmap_key(k): v for k, v in raw_changes.items()}
                 with self._with_client() as ch:
                     checks = apply_checks.run_apply_checks(
                         changes=norm_changes, current=current, ch_client=ch)
@@ -3151,7 +3191,7 @@ def _build_handler(ctx: GuiContext):
 
             ident = self._identity()
             try:
-                landed = client.apply({k: str(v) for k, v in changes.items()}, reason=reason,
+                landed = client.apply(raw_changes, reason=reason,
                                       by=(ident.username if ident else "operator"))
             except cc.ConfigError as exc:
                 # A REFUSED WRITE STILL OWES A PER-ITEM RECEIPT. The apply's read-back raised, but
@@ -3166,7 +3206,7 @@ def _build_handler(ctx: GuiContext):
                     "ok": False,
                     "error": str(exc),
                     "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-                    "items": cc.receipt_items({k: str(v) for k, v in changes.items()},
+                    "items": cc.receipt_items(raw_changes,
                                               None, after=after, error=str(exc)),
                 }, 502)
 
@@ -3186,7 +3226,7 @@ def _build_handler(ctx: GuiContext):
             action = "revert" if body.get("revert") else "apply"
             try:
                 with self._with_client() as ch:
-                    for key in changes:
+                    for key in raw_changes:
                         fleet_store.write_audit(
                             ch, scope="settings", action=action, target=str(key),
                             reason=reason, actor=(ident.username if ident else "operator"))
@@ -3200,7 +3240,7 @@ def _build_handler(ctx: GuiContext):
                 # key, so the confirmation read `saved: reverse_dns=(empty)` AFTER A WRITE
                 # THAT ACTUALLY LANDED -- the report contradicted the read-back that had
                 # just proved it. The write was right; the receipt lied.
-                "applied": {k: landed.get(cc.to_configmap_key(k), "") for k in changes},
+                "applied": {k: landed.get(cc.to_configmap_key(k), "") for k in raw_changes},
                 "restarted": restarted,
                 # A saved-but-not-restarted change is INERT, so it is reported as a failure of
                 # applying rather than quietly folded into success.
@@ -3209,7 +3249,7 @@ def _build_handler(ctx: GuiContext):
                         else "no workload needed a restart",
                 "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
                 # THE RECEIPT: per key, the value, the verdict and (on failure) the reason.
-                "items": cc.receipt_items({k: str(v) for k, v in changes.items()}, landed),
+                "items": cc.receipt_items(raw_changes, landed),
                 # ...and the apply-time checks that let this write through.
                 "tests": checks.get("results") or [],
                 "summary": checks.get("summary") or "",
