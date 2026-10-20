@@ -506,7 +506,8 @@ function wlNicRows(r) {
     const row = el("tr", { class: "wl-nic-row clickable" }, [
       el("td", {}, [
         el("span", { class: "mono wl-nic-name", text: n.name }),
-        el("span", { class: "muted", text: ` ${n.role}` }),
+        el("span", { class: "muted", text: n.networks && n.networks !== "—" && n.networks !== "(not set)"
+          ? ` ${n.role} - ${n.networks}` : ` ${n.role}` }),
       ]),
       el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
                  attrs: { title: n.mode
@@ -640,26 +641,22 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // row, throughput on each NIC row, all under their own headers rather than in a strip that
     // borrowed the mode/channel width.
     tr.setAttribute("data-wl-sensor-row", r.sensor_id);
-    // Keep the original reading: the value over its label, not a bare number in a wide cell.
-    tr.appendChild(el("td", { class: "wl-perf-cell" }, [
-      el("span", { class: "wl-perf-value", attrs: { "data-wl-cpu": r.sensor_id }, text: "—" }),
-      el("span", { class: "wl-perf-label", text: "CPU" }),
+    // The CPU/memory reading has no column headers (operator, 2026-10-19), but keeps the
+    // original value-over-label presentation in the sensor row.
+    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "6" } }, [
+      el("div", { class: "wl-perf-strip" }, [
+        el("div", { class: "wl-perf-metric" }, [
+          el("span", { class: "wl-perf-value", attrs: { "data-wl-cpu": r.sensor_id }, text: "—" }),
+          el("span", { class: "wl-perf-label", text: "CPU" }),
+        ]),
+        el("div", { class: "wl-perf-metric" }, [
+          el("span", { class: "wl-perf-value", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }),
+          el("span", { class: "wl-perf-label", text: "MEMORY" }),
+        ]),
+      ]),
     ]));
-    tr.appendChild(el("td", { class: "wl-perf-cell" }, [
-      el("span", { class: "wl-perf-value", attrs: { "data-wl-mem": r.sensor_id }, text: "—" }),
-      el("span", { class: "wl-perf-label", text: "MEMORY" }),
-    ]));
-    tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "4" } }));
 
     tbody.appendChild(tr);
-    // THE HEADERS SIT BELOW THE SENSOR NAME (operator, 2026-10-19): the CPU/memory reading is
-    // the sensor's own row, so the NIC columns are labelled immediately above the NIC lines.
-    tbody.appendChild(el("tr", { class: "wl-colhead" }, [
-      el("th", { text: "interface" }), el("th", { text: "mode" }),
-      el("th", { text: "channel" }), el("th", { text: "networks" }),
-      el("th", { text: "throughput" }), el("th", { text: "flow" }),
-      el("th", { text: "feeds" }),
-    ]));
     // EACH NON-MANAGEMENT NIC, IN PLACE (operator, 2026-10-19: "placed within the weirling
     // row"). Always visible, never behind a control: a NIC list you have to discover is the
     // same dead end the old evidence drill was.

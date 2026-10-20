@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.45 — 2026-10-19
+
+REMOVE THE EMPTY CPU/MEMORY COLUMNS, KEEP THE READING.
+
+- The fleet headers stay at the top but no longer include CPU or memory; those columns had
+  only dashes in the NIC rows. The sensor row keeps its value-over-label CPU/memory reading.
+- Each NIC line now carries its network name beside the interface (`eth1 capture - Servers`)
+  instead of leaving the removed columns empty.
+
 ## 0.17.44 — 2026-10-19
 
 THE NIC HEADERS SIT UNDER THE SENSOR NAME.

@@ -2805,7 +2805,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the Weirlings fleet carries CPU and memory in the sensor row and throughput in the NIC rows",
         !!doc.querySelector("[data-wl-cpu]")
         && !!doc.querySelector("[data-wl-rate]")
-        && !!doc.querySelector("#wl-table .wl-colhead"),
+        && !!doc.querySelector("#wl-table thead"),
         "performance columns not rendered");
   check("the alert audit panels are on the Health tab (SOC-8)",
         !!doc.getElementById("hp-alerts-reasons")
@@ -3889,11 +3889,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("...and a tile is sized by its content, not the button height",
             !/^28px$/.test(tileH), tileH);
     }
-    const headRow = doc.querySelector("#wl-table .wl-colhead");
-    const heads = headRow ? [...headRow.children]
-      .map((th) => th.textContent.trim().toLowerCase()) : [];
-    check("the NIC headers sit below the sensor row: interface, mode, channel, networks, throughput, flow, feeds",
-          heads.join("|") === "interface|mode|channel|networks|throughput|flow|feeds",
+    const heads = [...doc.querySelectorAll("#wl-table thead th")]
+      .map((th) => th.textContent.trim().toLowerCase());
+    check("the fleet headers are weirling, mode, channel, networks, throughput, flow, feeds",
+          heads.join("|") === "weirling|mode|channel|networks|throughput|flow|feeds",
           heads.join("|"));
     const localRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row):not(.wl-colhead)")]
       .find((tr) => {
@@ -3902,9 +3901,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       });
     if (localRow) {
       // THE SENSOR ROW IS A NAME, NOT A SECOND COPY OF THE FACTS (operator, 2026-10-19).
-      check("the sensor row carries CPU and memory, leaving the NIC facts empty",
-            localRow.children.length === 4
-            && localRow.children[3].textContent.trim() === "",
+      check("the sensor row carries CPU and memory without column headers",
+            localRow.children.length === 2
+            && /CPU/i.test(localRow.textContent) && /MEMORY/i.test(localRow.textContent),
             [...localRow.children].map((td) => td.textContent.trim()).join("|"));
       const nicRows = [...doc.querySelectorAll("#wl-table tbody tr.wl-nic-row")];
       check("every non-management NIC is its own line under the sensor row",
@@ -4106,10 +4105,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     H.showView("weirlings");
     await H.loadWeirlings();
     await sleep(300);
-    const headRow = doc.querySelector("#wl-table .wl-colhead");
-    const heads = headRow ? [...headRow.children].map((t) => t.textContent.trim()) : [];
-    check("WL-1: the NIC columns are interface / mode / channel / networks / throughput / flow / feeds",
-          heads.join("|") === "interface|mode|channel|networks|throughput|flow|feeds",
+    const heads = [...doc.querySelectorAll("#wl-table thead th")]
+      .map((t) => t.textContent.trim());
+    check("WL-1: the columns are weirling / mode / channel / networks / throughput / flow / feeds",
+          heads.join("|") === "weirling|mode|channel|networks|throughput|flow|feeds",
           heads.join("|"));
     const row = (id) => [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row):not(.wl-colhead)")]
       .find((tr) => (tr.textContent || "").includes(id));
