@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.78 — 2026-10-21
+
+THE TREND KEEPS THE WINDOWS THE TABLE ACTUALLY RETURNED.
+
+- Live verification found the blue occurrence line empty on recent rows: the table's timestamps
+  can sit ahead of the browser clock (server timezone offset), and the trend filtered them out
+  as future. The selected range still leads; the occurrence span now widens just enough to
+  include every window in the payload. A count of 2 can no longer draw a blank line.
+
 ## 0.17.77 — 2026-10-21
 
 THE ANOMALY COUNT FOLDS THE VISIBLE VERDICT, NOT ITS LAST DECIMAL.

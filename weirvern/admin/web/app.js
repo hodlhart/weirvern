@@ -2013,14 +2013,25 @@ function anTrend(a, hours) {
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `${Number(a.n || 1)} occurrence(s) in the selected window`);
   const hrs = Math.max(1, Number(hours) || 24);
-  const end = Date.now();
-  const start = end - hrs * 3600 * 1000;
+  const times = (a.windows || [])
+    .map((raw) => new Date(raw).getTime())
+    .filter((t) => Number.isFinite(t));
+  if (!times.length) {
+    svg.setAttribute("class", "an-trend an-trend-empty");
+    return svg;
+  }
+  // DO NOT DROP A WINDOW FOR BEING "IN THE FUTURE" (found on live data, 2026-10-21). The
+  // table's timestamps can be ahead of the browser clock (server timezone offset), and the
+  // old strict [now-hours, now] filter skipped every one of them -- the count said 2 and the
+  // trend rendered empty. The selected range still leads; the occurrence span widens it just
+  // enough to include what the table actually returned.
+  const now = Date.now();
+  const end = Math.max(now, Math.max(...times));
+  const start = Math.min(now - hrs * 3600 * 1000, Math.min(...times));
   const counts = Array(buckets).fill(0);
   let placed = 0;
-  for (const raw of (a.windows || [])) {
-    const t = new Date(raw).getTime();
-    if (!Number.isFinite(t) || t < start || t > end) continue;
-    const i = Math.min(buckets - 1, Math.max(0, Math.floor(((t - start) / (end - start)) * buckets)));
+  for (const t of times) {
+    const i = Math.min(buckets - 1, Math.max(0, Math.floor(((t - start) / Math.max(1, end - start)) * buckets)));
     counts[i] += 1;
     placed += 1;
   }
