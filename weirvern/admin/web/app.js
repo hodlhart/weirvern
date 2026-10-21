@@ -2013,8 +2013,11 @@ function anTrend(a, hours) {
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `${Number(a.n || 1)} occurrence(s) in the selected window`);
   const hrs = Math.max(1, Number(hours) || 24);
+  // `windows` is NOT a list of ISO strings by the time it reaches the renderer: the review
+  // merge turns each entry into {window, review_state, ...}. `new Date(object)` is Invalid Date,
+  // which is how the first live build drew 100 empty trends beside counts of 2. Accept both.
   const times = (a.windows || [])
-    .map((raw) => new Date(raw).getTime())
+    .map((entry) => new Date(entry && typeof entry === "object" ? entry.window : entry).getTime())
     .filter((t) => Number.isFinite(t));
   if (!times.length) {
     svg.setAttribute("class", "an-trend an-trend-empty");

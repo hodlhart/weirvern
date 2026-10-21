@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.79 — 2026-10-21
+
+THE TREND READS THE WINDOW OBJECTS THE REVIEW MERGE ACTUALLY SENDS.
+
+- 0.17.78 fixed the range but still parsed each `windows` entry as a bare ISO string. By render
+  time the review merge has turned every entry into `{window, review_state, ...}`, so
+  `new Date(object)` was Invalid Date and every trend stayed empty beside a real count. Both
+  shapes are accepted now.
+
 ## 0.17.78 — 2026-10-21
 
 THE TREND KEEPS THE WINDOWS THE TABLE ACTUALLY RETURNED.
