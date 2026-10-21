@@ -759,6 +759,12 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 .bar-val { font-family: var(--mono); font-size: 12px; text-align: right; }
 
 td.num { font-family: var(--mono); text-align: right; }
+/* A grouped anomaly's count and its occurrence trend share one narrow cell: the number is the
+   fact, the blue line is WHEN. The line is not a second score and does not imply a threshold. */
+td .an-count { display: block; font-weight: 600; line-height: 1.1; }
+.an-trend { display: block; width: 58px; height: 18px; margin: 2px 0 0 auto; overflow: visible; }
+.an-trend path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.an-trend-empty { opacity: .4; }
 
 /* ── MITRE ATT&CK technique block ─────────────────────────────────────────────
    Rendered only when a technique matched. The ID is monospaced and the evidence is

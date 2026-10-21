@@ -1141,6 +1141,12 @@ function wireRuleSheet() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  // SLUICE IS THE PARENT OF THE BLOCK LEDGER. Blocks is a drill view, not a peer tab
+  // (operator, 2026-10-21); the one entry point lives on Gate overview.
+  const viewBlocks = document.getElementById("sl-view-blocks");
+  if (viewBlocks) viewBlocks.addEventListener("click", () => {
+    if (typeof showView === "function") showView("blocked");
+  });
   const blk = document.getElementById("dn-block");
   if (blk) blk.addEventListener("click", () => {
     const field = document.getElementById("dn-domain");

@@ -2023,13 +2023,19 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
                      "splitByChar(',', detected_by_models))")
         params["model"] = str(model)
     result = client.query(
-        "SELECT detected_at, src_addr, anomaly_score, confidence, severity, "
+        # COUNT OCCURRENCES, NOT DETECTION PASSES (operator, 2026-10-21: "These are almost
+        # exactly the same. The count should go up"). `detected_at` used to be in the GROUP BY,
+        # so the same host/score/severity/models/why seen by two sweeps produced two rows with
+        # count 1 each -- the duplicate the count column exists to prevent. It is now the
+        # headline timestamp only: MAX(detected_at), never a grouping key. `uniqExact(window_start)`
+        # counts the windows that actually occurred, so re-seeing one window cannot inflate it.
+        "SELECT max(detected_at) AS detected_at, src_addr, anomaly_score, confidence, severity, "
         "detected_by_models, model_agreement, isolation_forest_score, gradient_boosting_score, "
         "dbscan_score, baseline_score, primary_deviation_feature, primary_deviation_zscore, "
         "deviation_magnitude, feature_contributions, baseline_comparison, "
-        "count() AS n, arraySlice(arraySort(groupArray(window_start)), 1, 50) AS windows "
+        "uniqExact(window_start) AS n, arraySlice(arraySort(groupUniqArray(window_start)), 1, 50) AS windows "
         "FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where) + " "
-        "GROUP BY detected_at, src_addr, anomaly_score, confidence, severity, "
+        "GROUP BY src_addr, anomaly_score, confidence, severity, "
         "detected_by_models, model_agreement, isolation_forest_score, "
         "gradient_boosting_score, dbscan_score, baseline_score, primary_deviation_feature, "
         "primary_deviation_zscore, deviation_magnitude, feature_contributions, "

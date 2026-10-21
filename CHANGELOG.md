@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.76 — 2026-10-21
+
+SLUICE OWNS THE GATE; BLOCKS IS ITS DRILL, AND ANOMALY COUNTS ACCUMULATE.
+
+- The Blocked tab is gone. Sluice Gate is the one enforcement surface; its Gate overview carries
+  one `View blocks` control, the Sluice tab stays lit on the Blocks drill, and `#v=blocked`
+  remains a compatible URL with a visible crumb back.
+- Blocks no longer carries a second rule editor or the duplicate `Blocking now` / `Alerting`
+  rule tables. It is the recorded-block ledger: a row opens a detail card with the hit, the
+  matching rule, the reason, the mode and the action actually taken. A hit's rule chip opens
+  the existing Sluice rule sheet.
+- Anomalies group by the stable verdict, not by `detected_at`. Two sweeps of the same
+  host/score/models/why now produce ONE row whose count is the number of distinct windows; a
+  re-seen window cannot inflate it. The count cell carries a blue occurrence sparkline showing
+  when those windows happened in the selected range. Clicking the count still expands every
+  occurrence.
+
 ## 0.17.75 — 2026-10-21
 
 THE ATT&CK SECTION IS ALWAYS ON THE EVIDENCE PAGE.

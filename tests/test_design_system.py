@@ -168,8 +168,9 @@ def test_every_tab_id_agrees_with_its_view_and_its_ledger_entry():
     ledger = json.loads((repo / "docs/design/ledger.json").read_text(encoding="utf-8"))
 
     tabs = _re.findall(r'<button class="tab[^"]*" data-view="([^"]+)">([^<]+)</button>', html)
-    # 14 since Identity was folded into Assets (operator, 2026-10-19).
-    assert len(tabs) == 14, len(tabs)
+    # 13 since Blocks became a Sluice drill (operator, 2026-10-21); the old Blocked tab
+    # was a second rules surface.
+    assert len(tabs) == 13, len(tabs)
     for view_id, label in tabs:
         assert f'id="view-{view_id}"' in html, f"{view_id}: tab points at a view that does not exist"
         entry = next((v for v in ledger["views"] if v.get("id") == view_id), None)

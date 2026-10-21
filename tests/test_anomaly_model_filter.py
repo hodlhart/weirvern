@@ -55,3 +55,21 @@ def test_the_route_reads_and_passes_the_model_filter():
     assert 'query.get("model")' in seg, "the route no longer reads ?model="
     assert "model=model_f" in seg, "the route reads ?model= but drops it before the query"
     assert "implausibly long" in seg
+
+
+def test_grouping_counts_windows_not_detection_passes():
+    """Operator, 2026-10-21: two almost-identical rows each read count 1.
+
+    `detected_at` was a GROUP BY key, so two sweeps of the same verdict produced separate rows
+    and the count could never rise. It is now MAX(detected_at) only, and n is the number of
+    distinct windows -- a re-seen window cannot inflate the count either.
+    """
+    c = _Capture()
+    status.anomalies_grouped(c)
+    sql = " ".join(c.sql.split())
+    assert "GROUP BY detected_at" not in sql, (
+        "detected_at is still a grouping key, so repeated sweeps produce count-1 duplicates"
+    )
+    assert "max(detected_at) AS detected_at" in sql
+    assert "uniqExact(window_start) AS n" in sql
+    assert "groupUniqArray(window_start)" in sql

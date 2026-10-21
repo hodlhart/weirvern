@@ -68,10 +68,11 @@
     },
     {
       "id": "blocked",
-      "label": "Blocked",
-      "job": "what is being stopped, and why",
-      "tab": true,
-      "module": "blocked.js"
+      "label": "Blocks",
+      "job": "the record behind one block, reached from Sluice Gate",
+      "tab": false,
+      "module": "blocked.js",
+      "debt": "drill-only: reached from Sluice Gate; #v=blocked remains a compatible URL"
     },
     {
       "id": "weirlings",

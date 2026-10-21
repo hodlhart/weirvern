@@ -2283,18 +2283,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       : null);
     await H.loadBlocked();
     check("a FAILED blocked read says why instead of inviting a new rule",
-          textOf("bl-block-rows").includes("Cannot list these:")
+          textOf("bl-summary").includes("Blocks unavailable")
             && textOf("bl-hit-rows").includes("Cannot list these:"),
-          `${textOf("bl-block-rows").slice(0, 60)} | ${textOf("bl-hit-rows").slice(0, 60)}`);
+          `${textOf("bl-summary").slice(0, 80)} | ${textOf("bl-hit-rows").slice(0, 60)}`);
     fetchOverride = (u) => (String(u).includes("/api/blocked")
       ? serve({ available: true, reason: "", hits: [], total: 0, blocks: [], alerts: [],
                 gate: {}, data_error: null })
       : null);
     await H.loadBlocked();
     check("an EMPTY blocked read keeps the real empty copies",
-          textOf("bl-block-rows").includes("No blocking rules")
+          /0 recorded hits/.test(textOf("bl-summary"))
             && textOf("bl-hit-rows").includes("Nothing recorded in this window"),
-          textOf("bl-block-rows").slice(0, 60));
+          textOf("bl-summary").slice(0, 80));
     fetchOverride = null;
   }
 
@@ -4685,10 +4685,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && doc.querySelectorAll("#tabs .tab-group-label").length === 0,
           groups.map((g) => g.querySelectorAll(".tab").length + " tab(s)").join(", "));
     const views = [...doc.querySelectorAll("#tabs .tab")].map((t) => t.dataset.view);
-    check("...and all fourteen tabs survive the regrouping",
-          views.length === 14 && new Set(views).size === 14
+    check("...and all thirteen tabs survive the regrouping",
+          views.length === 13 && new Set(views).size === 13
           && ["health", "anomalies", "logs", "network", "netflow", "discover", "dns", "zeek",
-              "sluice", "blocked", "weirlings", "models", "assets", "settings"]
+              "sluice", "weirlings", "models", "assets", "settings"]
              .every((v) => views.includes(v)),
           views.join(","));
     check("...nothing collapses into a sub-menu", !doc.querySelector("#tabs select, #tabs details"));
@@ -4713,7 +4713,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           crumbs.textContent.trim());
     check("...and the nav stays on screen inside the detail view",
           !doc.getElementById("tabs").classList.contains("hidden")
-          && doc.querySelectorAll("#tabs .tab").length === 14);
+          && doc.querySelectorAll("#tabs .tab").length === 13);
     const back = [...crumbs.querySelectorAll("button.crumb")].find((b) => /Weirlings/.test(b.textContent));
     check("...with a real, clickable way back out of the drill", !!back);
     if (back) back.click();
@@ -6736,12 +6736,11 @@ check("...a contradicted segment names BOTH segments on the issues list",
         if (receipt) {
           receipt.click();
           await sleep(300);
-          check("...and clicking it lands on that rule's card",
-                doc.getElementById("view-blocked").classList.contains("active")
-                && !doc.getElementById("bl-rule-card").classList.contains("hidden")
-                && /r-filed-1/.test(doc.getElementById("bl-rule-id").textContent)
-                && doc.getElementById("bl-rule-card").classList.contains("flash-hit"),
-                "rule id=" + doc.getElementById("bl-rule-id").textContent);
+          check("...and clicking it lands on that rule in Sluice",
+                doc.getElementById("view-sluice").classList.contains("active")
+                && !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
+                && /r-filed-1/.test(doc.getElementById("sl-rule-id").textContent),
+                "rule id=" + doc.getElementById("sl-rule-id").textContent);
         }
       }
     }
@@ -6785,11 +6784,11 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (blFix) {
       blFix.click();
       await sleep(300);
-      check("a stuck-rule fix lands on the rule's card on Blocked",
-            doc.getElementById("view-blocked").classList.contains("active")
-            && /r1/.test(doc.getElementById("bl-rule-id").textContent)
-            && doc.getElementById("bl-rule-card").classList.contains("flash-hit"),
-            "id=" + doc.getElementById("bl-rule-id").textContent);
+      check("a stuck-rule fix lands on the rule in Sluice",
+            doc.getElementById("view-sluice").classList.contains("active")
+            && /r1/.test(doc.getElementById("sl-rule-id").textContent)
+            && !doc.getElementById("sl-rule-sheet").classList.contains("hidden"),
+            "id=" + doc.getElementById("sl-rule-id").textContent);
     }
     const detFix = fixBtns.find((b) => /registry/.test(b.textContent));
     if (detFix) {
@@ -7631,17 +7630,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !!wSel && /all weirlings/.test(wSel.options[0].textContent),
           wSel ? wSel.options[0].textContent : "");
 
-  // ── THE BLOCKED TAB (the operator's ask: "We need a blocked tab too") ──────────────────────
+  // ── BLOCKS IS A DRILL FROM SLUICE (operator, 2026-10-21) ────────────────────────────────
   {
     H.showView("blocked");
     await H.loadBlocked();
     const sum = doc.getElementById("bl-summary").textContent;
-    check("the blocked summary counts hits and blocking rules", /3 recorded hits/.test(sum) &&
-          /1 blocking rule/.test(sum), sum.slice(0, 130));
+    check("the blocks summary counts hits and the live rules", /3 recorded hits/.test(sum) &&
+          /1 blocking rule/.test(sum) && /1 alerting rule/.test(sum), sum.slice(0, 160));
+    const sluiceTab = doc.querySelector('.tab[data-view="sluice"]');
+    check("the Blocks view is a Sluice drill, not a peer tab",
+          H.CURRENT_VIEW === "blocked"
+          && !!sluiceTab && sluiceTab.classList.contains("active")
+          && /Sluice Gate/.test(doc.querySelector("#crumbs") ? doc.querySelector("#crumbs").textContent : ""));
     const hitRows = doc.querySelectorAll("#bl-hit-rows tr");
-    // The old escape hatch here (`|| hitRows.length === 2`) was written against the sluice
-    // hits panel, which is gone (the hits are read HERE now). The label check is the real one:
-    // the first row must carry its rule/list chip.
     check("the hits table renders with rule/list labels",
           hitRows.length === 2 &&
           /rule|list/.test((doc.querySelector("#bl-hit-rows tr .chip") || {}).textContent || ""),
@@ -7650,47 +7651,49 @@ check("...a contradicted segment names BOTH segments on the issues list",
           /rule/.test(doc.querySelector("#bl-hit-rows tr td:nth-child(2)").textContent) &&
           /list/.test(doc.querySelectorAll("#bl-hit-rows tr")[1].textContent),
           doc.querySelector("#bl-hit-rows tr").textContent.slice(0, 80));
-    check("the blocking rules table names what it covers",
-          /203\.0\.113\.7/.test(doc.getElementById("bl-block-rows").textContent),
-          doc.getElementById("bl-block-rows").textContent.slice(0, 110));
-    check("and the alerting rules are separate from the blockers",
-          /ads\.example\.com/.test(doc.getElementById("bl-block-rows").textContent) &&
-          !/track\.example\.net/.test(doc.getElementById("bl-block-rows").textContent) &&
-          /track\.example\.net/.test(doc.getElementById("bl-alert-rows").textContent),
-          "");
+    // THE DUPLICATE RULE AUTHORITY IS GONE. Rules live in Sluice; this view must not carry a
+    // second editable rule table or card.
+    check("Blocks carries no duplicate rule tables",
+          !doc.getElementById("bl-block-rows") && !doc.getElementById("bl-alert-rows"));
+    check("Blocks carries no second rule editor",
+          !doc.getElementById("bl-rule-card") && !doc.getElementById("bl-rule-mode"));
+    // ROW -> DETAIL, the anomaly pattern.
+    const first = doc.querySelector("#bl-hit-rows tr.clickable");
+    if (first) first.click();
+    await new Promise((r) => setTimeout(r, 120));
+    const detail = doc.getElementById("bl-detail-card");
+    check("a block row opens its detail card",
+          !!detail && !detail.classList.contains("hidden")
+          && /ads\.example\.com/.test(doc.getElementById("bl-detail-body").textContent)
+          && /DNS answered|recorded|blocklist/.test(doc.getElementById("bl-detail-body").textContent),
+          detail ? doc.getElementById("bl-detail-body").textContent.slice(0, 120) : "no detail");
+    if (detail) H.closeModal(detail);
   }
 
-  // ── OPENING A RULE'S CARD ON A FRESH CONSOLE (#15) ──────────────────────────────────────────
+  // ── OPENING A RULE ON A FRESH CONSOLE (#15) ─────────────────────────────────────────────
   //
-  // The rule card is fed from BLOCKED_STATE.data. Opening it with the store in its fresh state
-  // used to fabricate a "not among the live rules / expired or revoked" placeholder whenever that
-  // payload had not been fetched yet -- i.e. on every fresh console until the Blocked tab was
-  // visited, telling the operator a live rule was dead. These checks drive the REAL entry point,
-  // assert the card opens editable with the real rule, prove the payload is fetched ONCE (not
-  // once per click), and keep the genuine not-live case working. (Sluice rows open the rule
-  // sheet; this card is reached from its "Open on the Blocked page" button.)
+  // A hit carries only a rule id. The click path must fetch the live sets on demand (once),
+  // then open the ONE rule editor -- Sluice's sheet. It must not fabricate "expired or revoked"
+  // from a payload that was never read, and it must not re-fetch on every click.
   {
     fetchOverride = null;
     H.showView("sluice");
     await H.loadSluice();
     const savedBlocked = H.BLOCKED_STATE.data;
-    H.BLOCKED_STATE.data = null;                 // the console never visited Blocked
+    H.BLOCKED_STATE.data = null;                 // the console never visited Blocks
     const fetches0 = BLOCKED_FETCHES;
-    check("a live rule is listed on Sluice before Blocked was ever loaded",
+    check("a live rule is listed on Sluice before Blocks was ever loaded",
           [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
             .some((tr) => tr.textContent.includes("ads.example.com")));
     await H.blOpenRuleById("r1");
     await new Promise((r) => setTimeout(r, 160));
-    const modeSel = doc.getElementById("bl-rule-mode");
-    check("clicking it opens the card EDITABLE -- not the fabricated not-live state",
-          !!modeSel && !modeSel.disabled
-          && doc.getElementById("bl-rule-id").textContent === "r1"
-          && !/not among the live rules/.test(doc.getElementById("bl-rule-note").textContent),
-          `id=${doc.getElementById("bl-rule-id").textContent} disabled=${modeSel ? modeSel.disabled : "missing"}`);
-    check("the card carries the REAL rule (its mode and name, not a placeholder)",
-          !!modeSel && modeSel.value === "block"
-          && /ads\.example\.com/.test(doc.getElementById("bl-rule-body").textContent),
-          modeSel ? `mode=${modeSel.value}` : "no mode select");
+    const modeSel = doc.getElementById("sl-rule-mode");
+    check("clicking a hit's rule opens the Sluice sheet with the real rule",
+          !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
+          && doc.getElementById("sl-rule-id").textContent === "r1"
+          && !!modeSel && !modeSel.disabled && modeSel.value === "block"
+          && /ads\.example\.com/.test(doc.getElementById("sl-rule-facts").textContent),
+          `id=${doc.getElementById("sl-rule-id").textContent} mode=${modeSel ? modeSel.value : "missing"}`);
     check("the payload was fetched ON DEMAND, exactly once",
           BLOCKED_FETCHES === fetches0 + 1,
           `${BLOCKED_FETCHES - fetches0} fetch(es)`);
@@ -7698,13 +7701,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await new Promise((r) => setTimeout(r, 160));
     check("opening a second rule does not refetch it",
           BLOCKED_FETCHES === fetches0 + 1
-          && doc.getElementById("bl-rule-id").textContent === "r2",
-          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${doc.getElementById("bl-rule-id").textContent}`);
+          && doc.getElementById("sl-rule-id").textContent === "r2",
+          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${doc.getElementById("sl-rule-id").textContent}`);
     await H.blOpenRuleById("r-revoked");         // not among the live sets
     await new Promise((r) => setTimeout(r, 160));
-    check("a genuinely non-live rule still renders the not-live copy",
-          /not among the live rules/.test(doc.getElementById("bl-rule-note").textContent)
-          && doc.getElementById("bl-rule-mode").disabled === true);
+    check("a genuinely non-live rule opens the sheet read-only, not as a live decision",
+          doc.getElementById("sl-rule-id").textContent === "r-revoked"
+          && doc.getElementById("sl-rule-mode").disabled === true);
+    const ruleClose = doc.getElementById("sl-rule-close");
+    if (ruleClose) ruleClose.click();
     H.BLOCKED_STATE.data = savedBlocked;
   }
 

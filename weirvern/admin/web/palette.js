@@ -152,7 +152,7 @@ function paletteCommands() {
                   b.click();
                 }, 160);
               } });
-  cmds.push({ label: "Blocked: filter the hits by domain", path: "actions \u203a blocked \u203a filter",
+  cmds.push({ label: "Blocks: filter the recorded blocks by domain", path: "actions \u203a blocks \u203a filter",
               run: () => { showView("blocked");
                            setTimeout(() => { const el2 = document.getElementById("bl-domain"); if (el2) el2.focus(); }, 120); } });
   cmds.push({ label: "Pause or resume auto-refresh", path: "actions \u203a console \u203a live",

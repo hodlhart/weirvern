@@ -1998,6 +1998,45 @@ async function loadDetectors() {
   registryApplyFlash();
 }
 
+/** A 24-bucket occurrence sparkline for one grouped anomaly.
+ *
+ * The count says HOW MANY windows; this says WHEN they happened. Same grouping, same windows
+ * payload, so the line cannot disagree with the number above it. Bucket boundaries follow the
+ * selected range, and a quiet bucket is a zero -- not a gap that reads as missing data.
+ */
+function anTrend(a, hours) {
+  const ns = "http://www.w3.org/2000/svg";
+  const h = 18, w = 58, buckets = 24;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "an-trend");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${Number(a.n || 1)} occurrence(s) in the selected window`);
+  const hrs = Math.max(1, Number(hours) || 24);
+  const end = Date.now();
+  const start = end - hrs * 3600 * 1000;
+  const counts = Array(buckets).fill(0);
+  let placed = 0;
+  for (const raw of (a.windows || [])) {
+    const t = new Date(raw).getTime();
+    if (!Number.isFinite(t) || t < start || t > end) continue;
+    const i = Math.min(buckets - 1, Math.max(0, Math.floor(((t - start) / (end - start)) * buckets)));
+    counts[i] += 1;
+    placed += 1;
+  }
+  if (!placed) {
+    svg.setAttribute("class", "an-trend an-trend-empty");
+    return svg;
+  }
+  const max = Math.max(1, ...counts);
+  const x = (i) => (i / (buckets - 1)) * w;
+  const y = (v) => h - 2 - (v / max) * (h - 4);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", counts.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "));
+  svg.appendChild(path);
+  return svg;
+}
+
 function anRenderSeverity(sc) {
   const box = document.getElementById("an-sev");
   if (!box) return;
@@ -2101,13 +2140,16 @@ async function loadAnomalies() {
       // US-4: the expansion cue rides the cell at rest (chevron + aria-expanded), and the
       // handler exists for EVERY n -- with n==1 the cell used to be inert while a chip beside
       // it pointed at it as the target, a dead end for the server's single-occurrence case.
-      el("td", { class: "num dcell expander", text: String(a.n || 1),
+      el("td", { class: "num dcell expander",
                  attrs: { title: anReviewSummary(a).title + " \u2014 click to list them",
                           "aria-expanded": "false" },
                  on: { click: (e) => {
                    e.stopPropagation();
                    anToggleOccurrences(e.target.closest("tr"), a);
-                 } } }),
+                 } } }, [
+        el("span", { class: "an-count", text: String(a.n || 1) }),
+        anTrend(a, trHours()),
+      ]),
       el("td", { class: "dcell", attrs: { title: "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); openHost(a.src_addr); } } },
          [hostCell(a.src_addr, a.hostname),
@@ -3860,7 +3902,7 @@ function returnWithScroll(view, scroll) {
 /* US-3: a DRILL VIEW keeps its family's tab lit (Evidence belongs to Anomalies), and the URL
  * follows the VIEW NAME rather than whichever tab happens to match: `v=evidence` was
  * previously unwritable because no tab carried it, so a shared link lost the drill. */
-const TAB_FOR_DRILL = { evidence: "anomalies" };
+const TAB_FOR_DRILL = { evidence: "anomalies", blocked: "sluice" };
 let CURRENT_VIEW = "";
 // ONE ASSETS TAB, ONE NETWORK SCOPE (operator, 2026-10-19). "monitored" means a private or
 // link-local address -- the networks this deployment's sensors actually sit on; "external" is

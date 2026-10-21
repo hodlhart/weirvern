@@ -1,11 +1,14 @@
 /**
- * The Blocked tab: what has been caught, and what is doing the catching (the operator's ask:
- * "We need a blocked tab too").
+ * Blocks: the recorded-block ledger, reached from Sluice Gate.
  *
- * TWO QUESTIONS, ONE SCREEN. "Has anything been stopped" is the gate's counters plus the live
- * BLOCK-mode rules and the addresses they currently cover; "what did the watches see" is the
- * recorded hits -- a device asked for a name a rule or a list watches. A hit is NOT a block,
- * which is why the mode is a column the reader can see, not a colour they must infer.
+ * THE OPERATOR'S DECISION (2026-10-21). Sluice Gate is the one enforcement surface. `Blocked`
+ * was a peer tab with its own rule tables and its own rule editor, so the two surfaces
+ * disagreed about the same rules. This file is now the drill, in the shape the Anomalies queue
+ * already uses: a row opens the detail behind one block, and rule editing belongs to the
+ * Sluice rule sheet.
+ *
+ * A hit is still not a block: a watched name was asked for, and the row says whether a rule or
+ * an imported list matched. The detail card states the action actually taken.
  */
 const BLOCKED_STATE = { offset: 0, limit: 200, data: null };
 
@@ -20,39 +23,9 @@ function blParams() {
 
 function blCell(text, cls) { return el("td", { class: cls || "", text: String(text) }); }
 
-/**
- * CLICK-TO-FILTER (the operator, 2026-10-16): a value clicked anywhere in this tab becomes the
- * tab's filter and the WHOLE tab re-reads with it -- server-side, so the count in the summary is
- * the filtered truth, not a number the browser worked out by hiding rows.
- */
-/**
- * THE RULE CARD (the operator, 2026-10-16: "if i click on the rule button it should open the
- * rule and allow me to see it or modify it"). Filled from the payload row the click came from;
- * a hit's chip finds its rule by id in the last payload, and when the rule is no longer among
- * the live sets the card SAYS that instead of pretending: a revoked rule is a decision that
- * ended, and the ledger of its hits is why it is still reachable from here.
- */
-function blRuleEls() {
-  return {
-    card: document.getElementById("bl-rule-card"),
-    id: document.getElementById("bl-rule-id"),
-    body: document.getElementById("bl-rule-body"),
-    mode: document.getElementById("bl-rule-mode"),
-    apply: document.getElementById("bl-rule-apply"),
-    revoke: document.getElementById("bl-rule-revoke"),
-    close: document.getElementById("bl-rule-close"),
-    note: document.getElementById("bl-rule-note"),
-  };
-}
-
-/** Fetch the live rule sets ONCE, on demand (issue #15).
- *
- * Sluice rows are clickable before the Blocked tab has ever been visited, and the rule card is
- * fed from BLOCKED_STATE.data. Fetching here -- with one in-flight promise, so N quick clicks
- * make one request -- is what lets a live rule open in its REAL state. Before this, a missing
- * payload was rendered as "not among the live rules / expired or revoked", which told the
- * operator a live rule was dead with no way to tell that the payload had simply never loaded.
- */
+/** Fetch the live rule sets ONCE, on demand. A hit carries only a rule id; the rule sheet
+ * needs the full object, and a fresh console must not fabricate "expired or revoked" from a
+ * payload it never read. */
 let blLiveSets = null;
 
 async function blEnsureLiveSets() {
@@ -64,156 +37,9 @@ async function blEnsureLiveSets() {
   return BLOCKED_STATE.data;
 }
 
-async function blOpenRuleById(ruleId, hit) {
-  let d = BLOCKED_STATE.data;
-  if (!d) {
-    await blEnsureLiveSets();
-    d = BLOCKED_STATE.data;
-  }
-  const all = [...((d || {}).blocks || []), ...((d || {}).alerts || [])];
-  const found = all.find((x) => x.rule_id === ruleId);
-  if (found) return blOpenRule(found);
-  blOpenRule({ rule_id: ruleId, describes: (hit && hit.domain) || ruleId, mode: "",
-               resolved_count: 0, resolved: [], origin: "", expires_at: null,
-               not_live: true, lookup_failed: !d });
-}
-
-function blOpenRule(r) {
-  const els = blRuleEls();
-  if (!els.card) return;
-  // US-3: show the card, and when a receipt or an audit fix just LANDED here, say so once.
-  els.card.classList.remove("hidden");
-  els.card.classList.remove("flash-hit");
-  void els.card.offsetWidth;
-  els.card.classList.add("flash-hit");
-  els.id.textContent = r.rule_id || "";
-  els.body.replaceChildren();
-  const covers = r.resolved_error
-    ? `lookup failed — ${r.resolved_error}`
-    : `${r.resolved_count || 0} address(es) now` +
-      ((r.resolved || []).length ? `: ${r.resolved.slice(0, 6).join(", ")}` +
-        (r.resolved.length > 6 ? " …" : "") : "");
-  const rows = [
-    ["name", r.domain || "(addresses, not a name)"],
-    ["mode", r.mode ? (r.mode === "alert" ? "alert \u2014 records hits, does not block"
-                                          : "block \u2014 enforced in the kernel") : "unknown"],
-    ["origin", r.origin || "manual"],
-    ["expires", r.expires_at ? fmtTime(new Date(r.expires_at)) : "until revoked"],
-    ["covers", covers],
-  ];
-  for (const [k, v] of rows) {
-    els.body.appendChild(el("div", { class: "rl-row" }, [
-      el("span", { class: "rl-k", text: k }),
-      el("span", { class: "rl-v", text: String(v) }),
-    ]));
-  }
-  const editable = !r.not_live && !!r.mode;
-  // The NAME is editable too ("modify it like adding a *"): a `*.` marker is accepted and stored
-  // as typed; a name already covers its subdomains, the marker is how operators say it.
-  const domInput = document.getElementById("bl-rule-domain");
-  const domSave = document.getElementById("bl-rule-save-domain");
-  if (domInput) {
-    domInput.value = r.domain || "";
-    domInput.disabled = !editable || !r.domain;
-    if (domSave) domSave.disabled = !editable || !r.domain;
-  }
-  els.mode.value = r.mode === "block" ? "block" : "alert";
-  els.mode.disabled = !editable;
-  els.apply.disabled = !editable;
-  els.revoke.disabled = !editable;
-  // THREE NOTES, THREE FACTS (issue #15): a rule genuinely absent from the live sets; the live
-  // sets UNREADABLE (a failed read is not a decision that ended, so it must not borrow the
-  // not-live copy either); or an ordinary editable rule, which gets no note at all.
-  els.note.textContent = r.lookup_failed
-    ? "The live rule set could not be read, so this rule's state is unknown. Reload to try again."
-    : (r.not_live
-        ? "This rule is not among the live rules \u2014 it has expired or was revoked. That is why the "
-          + "card has no controls: revoking a decision that already ended, or re-arming it, would "
-          + "both be new decisions. Create a new rule if you want one."
-        : "");
-  els.apply.textContent = "Apply mode";
-  delete els.apply.dataset.armed;
-
-  els.apply.onclick = async () => {
-    const want = els.mode.value;
-    if (want === "block" && !els.apply.dataset.armed) {
-      els.apply.dataset.armed = "1";
-      els.apply.textContent = "Confirm: enforce in kernel";
-      els.note.textContent = "Moving to block changes what the kernel drops. Click again to "
-        + "confirm.";
-      return;
-    }
-    delete els.apply.dataset.armed;
-    els.apply.disabled = true;
-    try {
-      const out = await postJSON("/api/sluice/rule/mode",
-        Object.assign({ rule_id: r.rule_id, mode: want }, want === "block" ? { confirmed: true } : {}));
-      els.note.textContent = out && out.ok
-        ? `Mode changed to ${want}. The gate re-reads rules on its own cycle.`
-        : ((out && out.error) || "the change was refused");
-      await loadBlocked();
-    } catch (err) {
-      els.note.textContent = String(err.message || err);
-    } finally {
-      els.apply.disabled = false;
-      els.apply.textContent = "Apply mode";
-    }
-  };
-  els.revoke.onclick = async () => {
-    // BF-9: revoking a rule stops enforcement and keeps the record -- but "why" is what the
-    // review will read, so the echo comes first and the reason rides the write. (Standalone
-    // renders without the dialog machinery fall through to the plain post below.)
-    let reason = "";
-    if (typeof confirmDestructive === "function") {
-      const verdict = await confirmDestructive({
-        title: "Revoke this rule: enforcement stops at the next gate cycle.",
-        target: `${r.rule_id}${r.domain ? " (" + r.domain + ")" : ""}`,
-        blast: "whatever this rule was holding stops being dropped; the hits and the record "
-               + "stay readable",
-        reasonHint: "why this rule is being retired",
-      });
-      if (!verdict.ok) return;
-      reason = verdict.reason;
-    }
-    els.revoke.disabled = true;
-    try {
-      const out = await postJSON("/api/sluice/revoke", { rule_id: r.rule_id, reason });
-      els.note.textContent = (out && out.ok === false)
-        ? ((out.error) || "the revoke was refused")
-        : "Revoked. The record stays readable; enforcement stops at the next gate cycle.";
-      await loadBlocked();
-    } catch (err) {
-      els.note.textContent = String(err.message || err);
-    } finally {
-      els.revoke.disabled = false;
-    }
-  };
-  const domSave2 = document.getElementById("bl-rule-save-domain");
-  if (domSave2) domSave2.onclick = async () => {
-    const domInput2 = document.getElementById("bl-rule-domain");
-    const want = String((domInput2 && domInput2.value) || "").trim();
-    if (!want) { els.note.textContent = "a name is required."; return; }
-    domSave2.disabled = true;
-    try {
-      const out = await postJSON("/api/sluice/rule/domain", { rule_id: r.rule_id, domain: want });
-      els.note.textContent = (out && out.ok)
-        ? `name saved as ${(out.rule && out.rule.domain) || want}.`
-        : ((out && out.error) || "the edit was refused");
-      await loadBlocked();
-    } catch (err) {
-      els.note.textContent = String((err && err.message) || err);
-    } finally {
-      domSave2.disabled = false;
-    }
-  };
-  els.close.onclick = () => closeModal(els.card);
-  openModal(els.card);
-}
-
-/** The block's REASON, in the reader's words (the operator, 2026-10-16: "the reason in the
- * table, like ML, custom, dns"). Detection-derived rules are stamped by the derivation path;
- * "dns" is a rule pushed from the DNS tab; anything else is an operator's own rule, with their
- * note when one was written. */
+/** The Blocked's REASON, in the reader's words. Detection-derived rules are stamped by the
+ * derivation path; "dns" is a rule pushed from the DNS tab; anything else is an operator's own
+ * rule, with their note when one was written. */
 function blReason(r) {
   const origin = String(r.origin || "manual");
   let label;
@@ -246,17 +72,22 @@ function blEmptyRow(body, span, text, action) {
 function blRenderSummary(d) {
   const node = document.getElementById("bl-summary");
   if (!node) return;
+  if (d.available === false) {
+    node.textContent = `Blocks unavailable \u2014 ${d.reason || "the query did not run"}.`;
+    return;
+  }
   const g = d.gate || {};
-  const covered = (d.blocks || []).reduce((a, r) => a + (r.resolved_count || 0), 0);
-  const bits = [`${Number(d.total || 0).toLocaleString()} recorded hit${d.total === 1 ? "" : "s"}`];
-  bits.push(`${(d.blocks || []).length} blocking rule(s) covering ${covered} address(es)`);
-  if ((d.alerts || []).length) bits.push(`${d.alerts.length} alerting`);
+  const bits = [`${Number(d.total || 0).toLocaleString()} recorded hit${d.total === 1 ? "" : "s"}`,
+                `${(d.blocks || []).length} blocking rule(s)`, `${(d.alerts || []).length} alerting rule(s)`];
   bits.push(`gate ${g.state || "unknown"}${g.enforcement ? " via " + g.enforcement : ""}` +
             (g.packets_blocked != null
               ? `, ${Number(g.packets_blocked).toLocaleString()} packet(s) dropped` : ""));
+  bits.push("rules are edited in Sluice Gate");
   node.textContent = bits.join(" \u00b7 ");
 }
 
+/** A row opens the detail card, like an anomaly row opens Evidence. The domain/client cells
+ * still filter the ledger; they stop the row click so one gesture cannot do two jobs. */
 function blRenderHits(d) {
   const body = document.getElementById("bl-hit-rows");
   if (!body) return;
@@ -273,85 +104,128 @@ function blRenderHits(d) {
     return;
   }
   for (const h of hits) {
-    const tr = el("tr", {}, [
+    const tr = el("tr", { class: "clickable",
+      on: { click: () => blOpenHit(h) } }, [
       blCell(fmtTime(new Date(h.ts)), "muted"),
       (() => {
         const td = el("td", {}, [el("span", { class: "chip " + (h.rule_id ? "ok" : "muted"),
                                             text: h.rule_id ? "rule" : "list" })]);
         if (h.rule_id) {
-          // The "rule" chip is the rule's door (the operator, 2026-10-16). A LIST hit has no
-          // rule to open -- the list is not an object this view can edit -- so its chip stays
-          // inert rather than opening an empty card.
           td.classList.add("dcell");
-          td.title = "open this rule";
-          td.addEventListener("click", () => blOpenRuleById(h.rule_id, h));
+          td.addEventListener("click", (e) => { e.stopPropagation(); blOpenRuleById(h.rule_id, h); });
         }
         return td;
       })(),
       (() => { const td = blCell(h.domain, "mono dcell");
         td.title = "filter the hits to this domain: " + h.domain;
-        td.addEventListener("click", () => blFilterTo("domain", h.domain));
+        td.addEventListener("click", (e) => { e.stopPropagation(); blFilterTo("domain", h.domain); });
         return td; })(),
       blCell(h.query),
       (() => { const td = blCell(h.client, "muted dcell");
         td.title = "filter the hits to this client: " + h.client;
-        td.addEventListener("click", () => blFilterTo("client", h.client));
+        td.addEventListener("click", (e) => { e.stopPropagation(); blFilterTo("client", h.client); });
         return td; })(),
     ]);
     body.appendChild(tr);
   }
 }
 
-function blRenderRules(d) {
-  for (const [id, rows] of [["bl-block-rows", d.blocks || []],
-                            ["bl-alert-rows", d.alerts || []]]) {
-    const body = document.getElementById(id);
-    if (!body) continue;
-    body.replaceChildren();
-    if (d.available === false) {
-      // A FAILED READ IS NOT AN EMPTY LIST (issue #13): the old copy invited the operator to
-      // create a rule while nothing could be read at all.
-      blEmptyRow(body, 4, `Cannot list these: ${d.reason || "the query did not run"}.`);
-      continue;
-    }
-    if (!rows.length) {
-      blEmptyRow(body, 4, id === "bl-block-rows"
-        ? "No blocking rules. Create one in Sluice Gate; a domain rule blocks what its name " +
-          "resolves to."
-        : "No alert rules.");
-      continue;
-    }
-    for (const r of rows) {
-      const addr = r.resolved_error
-        ? el("span", { class: "chip bad", text: "lookup failed" })
-        : el("span", { class: "mono",
-            text: `${r.resolved_count || 0} now` +
-                  ((r.resolved || []).length ? ` (${r.resolved.slice(0, 3).join(", ")}` +
-                    (r.resolved.length > 3 ? "\u2026)" : ")") : "") });
-      const nameCell = blCell(r.describes || r.rule_id, "mono dcell");
-      nameCell.title = "open this rule";
-      nameCell.addEventListener("click", () => blOpenRule(r));
-      body.appendChild(el("tr", {}, [
-        nameCell,
-        blCell(blReason(r), "muted"),
-        el("td", {}, [addr]),
-        blCell(r.origin || "manual", "muted"),
-        blCell(r.expires_at ? fmtTime(new Date(r.expires_at)) : "until revoked", "muted"),
-      ]));
-    }
+function blDetailEls() {
+  return {
+    card: document.getElementById("bl-detail-card"),
+    id: document.getElementById("bl-detail-id"),
+    body: document.getElementById("bl-detail-body"),
+    rule: document.getElementById("bl-detail-rule"),
+    note: document.getElementById("bl-detail-note"),
+    close: document.getElementById("bl-detail-close"),
+  };
+}
+
+function blFindRule(ruleId) {
+  const d = BLOCKED_STATE.data || {};
+  return [...(d.blocks || []), ...(d.alerts || [])].find((r) => r.rule_id === ruleId) || null;
+}
+
+function blOpenHit(h) {
+  const els = blDetailEls();
+  if (!els.card) return;
+  const rule = h.rule_id ? blFindRule(h.rule_id) : null;
+  const action = !rule ? "blocklist match \u2014 no editable rule"
+    : (String(rule.mode).toLowerCase() === "alert"
+        ? "alert only \u2014 the DNS answer was recorded, not blocked"
+        : "DNS answered with a block answer");
+  const gate = (BLOCKED_STATE.data && BLOCKED_STATE.data.gate) || {};
+  els.id.textContent = h.rule_id || "list";
+  els.body.replaceChildren();
+  const rows = [
+    ["time", fmtTime(new Date(h.ts))],
+    ["what", h.rule_id ? "rule" : "blocklist / imported list"],
+    ["domain", h.domain || "\u2014"],
+    ["query", h.query || "\u2014"],
+    ["client", h.client || "\u2014"],
+    ["rule", rule ? `${rule.describes || rule.rule_id} (${rule.rule_id})` : (h.rule_id || "no rule object")],
+    ["reason", rule ? blReason(rule) : "list match"],
+    ["mode", rule ? (rule.mode || "unknown") : "list"],
+    ["action", action],
+    ["gate", `${gate.state || "unknown"}${gate.enforcement ? " via " + gate.enforcement : ""}`],
+  ];
+  for (const [k, v] of rows) {
+    els.body.appendChild(el("div", { class: "rl-row" }, [
+      el("span", { class: "rl-k", text: k }),
+      el("span", { class: "rl-v", text: String(v) }),
+    ]));
   }
+  els.rule.disabled = !h.rule_id;
+  els.note.textContent = rule ? "" : "The rule behind this hit is not in the live set; the record remains readable.";
+  if (els.close) els.close.onclick = () => closeModal(els.card);
+  if (els.rule) els.rule.onclick = () => {
+    closeModal(els.card);
+    blOpenRuleById(h.rule_id, h);
+  };
+  openModal(els.card);
+}
+
+/** A rule hit's chip, or a fix from another view, opens the SAME Sluice rule sheet. The
+ * Blocked page no longer owns a second rule editor. */
+async function blOpenRuleById(ruleId, hit) {
+  let d = BLOCKED_STATE.data;
+  if (!d) {
+    await blEnsureLiveSets();
+    d = BLOCKED_STATE.data;
+  }
+  const found = blFindRule(ruleId);
+  if (found) {
+    if (typeof openRuleSheet === "function") return openRuleSheet(found);
+    if (typeof showView === "function") showView("sluice");
+    return;
+  }
+  // A genuinely absent rule is a record with no live editor. Open the sheet in its non-live
+  // state rather than inventing a second edit surface -- the lookup_failed wording is the
+  // signal that the set could not be read, not that the decision ended.
+  if (typeof openRuleSheet === "function") {
+    return openRuleSheet({
+      rule_id: ruleId, describes: (hit && hit.domain) || ruleId,
+      domain: (hit && hit.domain) || "", mode: "", live: false, revoked: true,
+      origin: "", expires_at: "", resolved_count: 0, resolved: [],
+      lookup_failed: !d, not_live: true,
+    });
+  }
+  if (typeof showView === "function") showView("sluice");
 }
 
 async function loadBlocked() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
+  if (typeof setCrumbs === "function") {
+    setCrumbs([{ label: "Sluice Gate", run: () => showView("sluice"),
+                 title: "back to the rules that made these blocks" }]);
+  }
   const d = await getJSON(`${API.blocked}?${blParams()}`);
-  // Kept so a click can find the FULL rule behind a row or a hit's chip (the hit itself carries
-  // only the id) without a second fetch.
   BLOCKED_STATE.data = d;
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
+  const win = document.getElementById("bl-window");
+  if (win) win.textContent = `${trHours()}h window`;
   blRenderSummary(d);
   blRenderHits(d);
-  blRenderRules(d);
   const page = document.getElementById("bl-page");
   if (page) {
     const from = d.total ? Number(d.offset || 0) + 1 : 0;
@@ -375,6 +249,8 @@ document.addEventListener("DOMContentLoaded", () => {
     BLOCKED_STATE.offset = 0;
     loadBlocked().then(clearError).catch(showError);
   });
+  const back = document.getElementById("bl-back-rules");
+  if (back) back.addEventListener("click", () => showView("sluice"));
   const newer = document.getElementById("bl-newer");
   if (newer) newer.addEventListener("click", () => {
     BLOCKED_STATE.offset = Math.max(0, BLOCKED_STATE.offset - BLOCKED_STATE.limit);
