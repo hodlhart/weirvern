@@ -73,3 +73,7 @@ def test_grouping_counts_windows_not_detection_passes():
     assert "max(detected_at) AS detected_at" in sql
     assert "uniqExact(window_start) AS n" in sql
     assert "groupUniqArray(window_start)" in sql
+    # The visible verdict is the identity; a 0.0005 model-score difference must not split it.
+    assert "GROUP BY src_addr, anomaly_score, severity, detected_by_models" in sql
+    assert "GROUP BY src_addr, anomaly_score, confidence" not in sql
+    assert "isolation_forest_score," not in sql.split("GROUP BY", 1)[1]

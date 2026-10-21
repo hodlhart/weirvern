@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.77 — 2026-10-21
+
+THE ANOMALY COUNT FOLDS THE VISIBLE VERDICT, NOT ITS LAST DECIMAL.
+
+- 0.17.76 removed `detected_at` from the group key, but still grouped every detector score,
+  confidence and per-feature z value. Two windows the operator saw as identical differed only by
+  a 0.0005 model score, so the count stayed 1. The group key is now what the row displays --
+  host, score, severity, models, primary feature, why -- and the per-model detail is carried as
+  MAX for display. Counts rise for the same visible verdict; a re-seen window still cannot
+  inflate them.
+
 ## 0.17.76 — 2026-10-21
 
 SLUICE OWNS THE GATE; BLOCKS IS ITS DRILL, AND ANOMALY COUNTS ACCUMULATE.

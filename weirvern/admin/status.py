@@ -2029,17 +2029,22 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         # count 1 each -- the duplicate the count column exists to prevent. It is now the
         # headline timestamp only: MAX(detected_at), never a grouping key. `uniqExact(window_start)`
         # counts the windows that actually occurred, so re-seeing one window cannot inflate it.
-        "SELECT max(detected_at) AS detected_at, src_addr, anomaly_score, confidence, severity, "
-        "detected_by_models, model_agreement, isolation_forest_score, gradient_boosting_score, "
-        "dbscan_score, baseline_score, primary_deviation_feature, primary_deviation_zscore, "
-        "deviation_magnitude, feature_contributions, baseline_comparison, "
+        "SELECT max(detected_at) AS detected_at, src_addr, anomaly_score, "
+        "max(confidence) AS confidence, severity, detected_by_models, "
+        "max(model_agreement) AS model_agreement, max(isolation_forest_score) AS isolation_forest_score, "
+        "max(gradient_boosting_score) AS gradient_boosting_score, "
+        "max(dbscan_score) AS dbscan_score, max(baseline_score) AS baseline_score, "
+        "primary_deviation_feature, max(primary_deviation_zscore) AS primary_deviation_zscore, "
+        "max(deviation_magnitude) AS deviation_magnitude, "
+        "any(feature_contributions) AS feature_contributions, baseline_comparison, "
         "uniqExact(window_start) AS n, arraySlice(arraySort(groupUniqArray(window_start)), 1, 50) AS windows "
         "FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where) + " "
-        "GROUP BY src_addr, anomaly_score, confidence, severity, "
-        "detected_by_models, model_agreement, isolation_forest_score, "
-        "gradient_boosting_score, dbscan_score, baseline_score, primary_deviation_feature, "
-        "primary_deviation_zscore, deviation_magnitude, feature_contributions, "
-        "baseline_comparison "
+        # THE IDENTITY IS WHAT THE OPERATOR READS, NOT EVERY SCORE'S LAST DECIMAL. The old
+        # GROUP BY included each detector's score, confidence and the per-feature z values, so
+        # the same visible verdict differed only by a 0.0005 model score and could never fold.
+        # Group by the row's visible identity; carry the per-model detail as MAX for display.
+        "GROUP BY src_addr, anomaly_score, severity, detected_by_models, "
+        "primary_deviation_feature, baseline_comparison "
         "ORDER BY detected_at DESC LIMIT %(n)s",
         parameters=params,
     )
