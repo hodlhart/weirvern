@@ -6986,6 +6986,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
           clicks === 1 && doc.getElementById("view-evidence").classList.contains("active"),
           `clicks=${clicks}`);
     note("investigate-anomaly", "understand", clicks);
+    const attack = doc.querySelector("#ev-verdict .attack");
+    check("every evidence selection carries a MITRE ATT&CK section",
+          !!attack && /MITRE ATT&CK/.test(attack.textContent),
+          attack ? attack.textContent.slice(0, 120) : "no .attack block");
+    check("...and the no-technique state says it is not a benign verdict",
+          !!attack && /No technique in the network-observable ATT&CK set/.test(attack.textContent)
+          && /not a benign verdict/.test(attack.textContent),
+          attack ? attack.textContent.slice(0, 180) : "no .attack block");
     const evVerb = doc.querySelector("#ev-verdict .gate-open");
     clicks = 0;
     if (evVerb) {

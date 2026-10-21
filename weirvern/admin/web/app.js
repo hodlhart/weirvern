@@ -3059,35 +3059,47 @@ async function loadEvidence(addr, start, end) {
     // (threshold 100)" can be checked, argued with, and dismissed. Only the second is
     // usable, and only the second is honest.
     //
-    // NOTHING is rendered when no technique matched. An empty frame or an explicit "no
-    // technique" line would read as a clearance, and absence of a mapping is not that.
+    // THE SECTION IS STABLE. An earlier version drew nothing when no technique matched, which
+    // made a real feature look absent and left no way to tell "nothing was supported" from
+    // "this page does not show ATT&CK". The empty state below is explicit and says it is NOT
+    // a benign verdict.
     const techs = parseTechniques(d.anomaly.attack_techniques);
+    const attackBox = el("div", { class: "attack" }, [
+      el("div", { class: "muted", text: "MITRE ATT&CK — hypotheses supported by these measurements" }),
+    ]);
     if (techs.length) {
-      const box = el("div", { class: "attack" }, [
-        el("div", { class: "muted", text: "MITRE ATT&CK — hypotheses supported by these measurements" }),
-      ]);
       for (const t of techs) {
-        box.appendChild(el("div", { class: "attack-row" }, [
+        attackBox.appendChild(el("div", { class: "attack-row" }, [
           el("span", { class: "mono attack-id", text: t.id }),
           el("span", { text: t.name }),
           el("span", { class: "attack-meta", text: `${t.tactic} · ${t.confidence} confidence` }),
         ]));
         if (t.evidence && t.evidence.length) {
-          box.appendChild(el("ul", { class: "attack-evidence" },
+          attackBox.appendChild(el("ul", { class: "attack-evidence" },
             t.evidence.map((e) => el("li", { class: "muted", text: e }))));
         }
         if (t.network_visibility) {
-          box.appendChild(el("div", {
+          attackBox.appendChild(el("div", {
             class: "muted attack-vis",
             text: `network visibility: ${t.network_visibility}`,
-            }));
-          }
+          }));
         }
-        verdict.appendChild(box);
       }
+    } else {
+      // A STABLE SECTION, NOT A CLEARANCE (operator, 2026-10-20: "I am not seeing mitre attack
+      // frame work when I select an anomaly"). The old code drew NOTHING when no technique
+      // matched, which made a real feature look absent and gave the reader no way to tell
+      // "nothing was supported" from "this page does not show ATT&CK". State the absence, and
+      // state that it is not evidence of benign traffic.
+      attackBox.appendChild(el("p", { class: "muted attack-none", text:
+        "No technique in the network-observable ATT&CK set is supported by this window's " +
+        "measurements. This is not a benign verdict: the mapping only covers what flow and " +
+        "protocol metadata can see." }));
     }
+    verdict.appendChild(attackBox);
+  }
 
-    const s = d.flow_summary;
+  const s = d.flow_summary;
   const stats = document.getElementById("ev-stats");
   stats.replaceChildren();
   if (s) {

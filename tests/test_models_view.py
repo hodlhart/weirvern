@@ -385,16 +385,26 @@ def test_the_technique_block_renders_evidence_not_just_the_id():
         assert field in app, f"the GUI does not render {field}"
 
 
-def test_the_gui_renders_nothing_when_no_technique_matched():
-    """THE KEY ASSERTION. An empty state or an explicit "no technique matched" line would read
-    as an all-clear. Absence of a mapping is not evidence of absence, so the block is simply
-    not drawn -- and the check is that the render is guarded by a non-empty list."""
+def test_the_gui_shows_an_explicit_absence_instead_of_hiding_the_attack_section():
+    """The section is a product surface, not a conditional extra.
+
+    Operator, 2026-10-20: "I am not seeing mitre attack frame work when I select an anomaly."
+    Drawing nothing made the feature invisible. The stable section must say no network-observable
+    technique was supported AND that this is not a benign verdict -- an empty frame is still a
+    clearance, so the sentence carries the meaning.
+    """
     app = (WEB / "app.js").read_text()
     region = app[app.index("parseTechniques(d.anomaly.attack_techniques)"):]
-    region = region[:600]
+    region = region[:2200]
     assert "if (techs.length)" in region, (
-        "the technique block is not guarded by a non-empty list, so it may render an empty "
-        "frame that reads as a clearance"
+        "the technique rows are not guarded by a non-empty list"
+    )
+    assert "No technique in the network-observable ATT&CK set" in region, (
+        "the evidence page hides ATT&CK when nothing matched; the operator cannot tell a "
+        "missing feature from a missing technique"
+    )
+    assert "not a benign verdict" in region, (
+        "the absence state must not read as an all-clear"
     )
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.75 — 2026-10-21
+
+THE ATT&CK SECTION IS ALWAYS ON THE EVIDENCE PAGE.
+
+- The evidence page drew nothing when no network-observable technique matched. That is
+  indistinguishable from a page that does not show ATT&CK at all — the operator reported
+  "I am not seeing mitre attack frame work when I select an anomaly." The section is now
+  stable: mapped techniques render with their evidence, confidence and network visibility;
+  no match renders an explicit sentence saying the mapping found nothing and that this is
+  not a benign verdict.
+- The empty state is pinned in the test suite and the jsdom harness, so a future cleanup
+  cannot turn the section back into a conditional extra.
+
 ## 0.17.74 — 2026-10-20
 
 THE GRAPH IS CENTRED BY ITS BOX, NOT ITS BUSIEST HUB.

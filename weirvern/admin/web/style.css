@@ -788,6 +788,11 @@ td.num { font-family: var(--mono); text-align: right; }
   font-size: 0.85em;
   font-style: italic;
 }
+.attack-none {
+  margin: 0.45rem 0 0;
+  max-width: 70ch;
+  font-size: 0.9em;
+}
 /* The list-view column is narrow: the label is built to fit, and truncating here rather
    than wrapping keeps the row height uniform across a long table. */
 .attack-cell {
