@@ -761,9 +761,11 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 td.num { font-family: var(--mono); text-align: right; }
 /* A grouped anomaly's count and its occurrence trend share one narrow cell: the number is the
    fact, the blue line is WHEN. The line is not a second score and does not imply a threshold. */
-td .an-count { display: block; font-weight: 600; line-height: 1.1; }
-.an-trend { display: block; width: 58px; height: 18px; margin: 2px 0 0 auto; overflow: visible; }
-.an-trend path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: right; }
+/* The count is the number. The dotted line underneath is only WHEN those occurrences landed;
+   it is deliberately not labelled as a second metric and does not set the column's width. */
+.an-trend { display: block; width: 58px; height: 18px; margin: 2px auto 0; overflow: visible; }
+.an-trend path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
 .an-trend-empty { opacity: .4; }
 
 /* ── MITRE ATT&CK technique block ─────────────────────────────────────────────

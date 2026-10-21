@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.80 — 2026-10-21
+
+THE COUNT STANDS ALONE; THE TREND IS A DOTTED LINE BENEATH IT.
+
+- The count column no longer carries a "trend" label that crowded the next header. `count` is
+  the number of distinct windows. The dotted blue line below it is the occurrence timing — one
+  line, inside the count cell, with no second metric beside the host.
+
 ## 0.17.79 — 2026-10-21
 
 THE TREND READS THE WINDOW OBJECTS THE REVIEW MERGE ACTUALLY SENDS.
