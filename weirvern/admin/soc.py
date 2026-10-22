@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+from typing import Any
 
 from weirvern import addressing
 from weirvern.admin import timewindow
@@ -53,6 +54,175 @@ def _unavailable(reason: str, **extra) -> dict:
     "the query failed", and an empty series cannot express that difference.
     """
     return {"available": False, "reason": reason, "points": [], **extra}
+
+
+# ── FLOW DIRECTION: WHAT CAN ACTUALLY BE PROVED ─────────────────────────────────────────────
+# A NetFlow/IPFIX record is UNIDIRECTIONAL. The reply half of an outbound HTTPS request is a
+# real row whose source is the remote service and whose destination is the local ephemeral
+# port; drawing that row as "the connection" is what made the Flows tab look backwards.
+#
+# There is no honest way to infer an initiator from one record that contains neither a
+# handshake nor a service port. So this classifier never returns a guess disguised as a fact:
+# it returns the role, the evidence behind it, and an explicit "unknown" when the evidence is
+# absent. The order is deliberate, strongest evidence first:
+#
+#   1. tcp-syn       this record carries a bare SYN: its source opened the conversation
+#   2. tcp-syn-ack   this record carries a bare SYN-ACK: its source answered one
+#   3. reverse-*     the reverse half carries the handshake, so this half is the other role
+#   4. service-port  one endpoint is a service port and the other is not: inferred, not proved
+#   5. unknown       no handshake and no service-port shape; do not claim a direction
+#
+# TCP flags are cumulative ORs in a flow record. A record with SYN+ACK+FIN+PSH (27 in
+# practice) does NOT prove a SYN-ACK; it is an aggregate, so only the exact bare-SYN and
+# bare-SYN-ACK values are treated as handshake evidence. This avoids turning a request into
+# a reply merely because later packets set more bits.
+_SERVICE_PORTS = frozenset({
+    20, 21, 22, 23, 25, 53, 67, 68, 69, 80, 88, 110, 111, 123, 135, 137, 138, 139,
+    143, 161, 162, 179, 389, 443, 445, 465, 514, 515, 548, 587, 631, 636, 853, 873,
+    989, 990, 993, 995, 1194, 1433, 1521, 1723, 2049, 2082, 2083, 2181, 2375, 2376,
+    3128, 3306, 3389, 3690, 5060, 5061, 5432, 5672, 5900, 5984, 6379, 8080, 8443,
+    8883, 9000, 9092, 9200, 9300, 11211, 27017,
+})
+_TCP_SYN = 0x02
+_TCP_ACK = 0x10
+
+
+def _is_service_port(port: int) -> bool:
+    """True for a port a service could reasonably listen on (not "everything below 32768").
+
+    The old graph code treated every port below the IANA ephemeral boundary as a service.
+    That classified a peer-to-peer source port such as 10021 as a service and could reverse
+    a conversation whose real service port was above the boundary. The explicit list plus
+    the well-known range keeps the inference narrow enough to be useful.
+    """
+    return 0 < int(port) <= 1024 or int(port) in _SERVICE_PORTS
+
+
+def _tcp_role(flags: Any) -> str:
+    """The handshake role a TCP flags byte proves, or '' when it proves none.
+
+    Only the two exact handshake values are evidence. A cumulative flags byte is not a
+    handshake packet; see the block comment above.
+    """
+    try:
+        value = int(flags or 0)
+    except (TypeError, ValueError):
+        return ""
+    if value == _TCP_SYN:
+        return "request"
+    if value == (_TCP_SYN | _TCP_ACK):
+        return "reply"
+    return ""
+
+
+def _port_role(src_port: int, dst_port: int) -> str:
+    """The role the port shape suggests, or '' when both/neither side is a service.
+
+    This is labelled `service-port` evidence by the caller. It is deliberately symmetric
+    and refuses to decide when both ports look like services (a proxy-to-proxy flow) or
+    neither does (two ephemeral peers).
+    """
+    src_service = _is_service_port(src_port)
+    dst_service = _is_service_port(dst_port)
+    if dst_service and not src_service:
+        return "request"
+    if src_service and not dst_service:
+        return "reply"
+    return ""
+
+
+def _flow_direction(row: dict, reverse_flags: list[int] | tuple[int, ...] = ()) -> tuple[str, str]:
+    """(role, evidence) for one unidirectional flow row.
+
+    `reverse_flags` are the TCP flags of the reverse 5-tuple seen in the same window. They
+    are used only for a handshake that the row itself does not carry; a port inference stays
+    a port inference even when a reverse row exists.
+    """
+    proto = int(row.get("proto") or 0)
+    direct = _tcp_role(row.get("tcp_flags")) if proto == 6 else ""
+    reverse = {_tcp_role(f) for f in reverse_flags} if proto == 6 else set()
+    reverse.discard("")
+
+    if direct:
+        # A reverse handshake for the SAME role would mean both halves claim to have opened
+        # (simultaneous open, a duplicated flow, or a malformed exporter): no safe call.
+        if not reverse or reverse == ({"reply"} if direct == "request" else {"request"}):
+            return direct, "tcp-syn" if direct == "request" else "tcp-syn-ack"
+    elif len(reverse) == 1:
+        # The other half opened; this one is its opposite.
+        return ("reply", "reverse-tcp-syn") if "request" in reverse else (
+            "request", "reverse-tcp-syn-ack")
+
+    role = _port_role(int(row.get("src_port") or 0), int(row.get("dst_port") or 0))
+    if role:
+        return role, "service-port"
+    return "unknown", ""
+
+
+def _opened_by(row: dict, role: str) -> str:
+    """The address:port that opened the conversation, when the role lets us name it."""
+    if role == "request":
+        addr, port = row.get("src_addr"), row.get("src_port")
+    elif role == "reply":
+        addr, port = row.get("dst_addr"), row.get("dst_port")
+    else:
+        return ""
+    if not addr:
+        return ""
+    return f"{addr}:{port}" if port else str(addr)
+
+
+def _reverse_direction_flags(client, rows: list[dict], params: dict) -> dict[tuple, list[int]]:
+    """TCP flags for the reverse half of each row, keyed by the row's own 5-tuple.
+
+    ONE bounded query for the page, not a query per row. If it cannot run, the page still
+    renders and each row keeps whatever its own flags/ports can prove -- direction evidence
+    must not turn a readable flow page into an error page.
+    """
+    keys: list[tuple] = []
+    for row in rows:
+        key = (str(row.get("dst_addr") or ""), int(row.get("dst_port") or 0),
+               str(row.get("src_addr") or ""), int(row.get("src_port") or 0),
+               int(row.get("proto") or 0))
+        if key[0] and key[2]:
+            keys.append(key)
+    if not keys:
+        return {}
+
+    parts: list[str] = []
+    query_params = {"since": params.get("since"), "until": params.get("until")}
+    for i, (src, sport, dst, dport, proto) in enumerate(keys):
+        parts.append(
+            f"(%(d{i}a)s, %(d{i}sp)s, %(d{i}b)s, %(d{i}dp)s, %(d{i}p)s)")
+        query_params[f"d{i}a"] = src
+        query_params[f"d{i}sp"] = sport
+        query_params[f"d{i}b"] = dst
+        query_params[f"d{i}dp"] = dport
+        query_params[f"d{i}p"] = proto
+    sql = (
+        "/* flow-direction reverse halves */ SELECT src_addr, src_port, dst_addr, dst_port, "
+        "proto, tcp_flags FROM weirvern.flows "
+        "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
+        "AND (src_addr, src_port, dst_addr, dst_port, proto) IN ("
+        + ", ".join(parts) + ")")
+    try:
+        result = client.query(sql, parameters=query_params).result_rows
+    except Exception as exc:  # noqa: BLE001
+        # Direction stays an evidence question, not a page failure.
+        logger.warning("flow reverse-direction query failed: %s", exc)
+        return {}
+
+    out: dict[tuple, list[int]] = {}
+    for r in result:
+        try:
+            key = (str(r[0]), int(r[1] or 0), str(r[2]), int(r[3] or 0), int(r[4] or 0))
+            flags = int(r[5] or 0)
+        except (IndexError, TypeError, ValueError):
+            # A reverse row is evidence, not the page's reason to exist. A malformed one is
+            # dropped; the direct flags/ports still classify the row it belonged to.
+            continue
+        out.setdefault(key, []).append(flags)
+    return out
 
 
 # ── THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard it should
@@ -1046,23 +1216,39 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
                 "rows": [], "total": 0, "histogram": [], "facets": {"protos": [], "weirlings": []},
                 "data_error": str(exc)}
 
+    payload_rows = [
+        {
+            "timestamp": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+            "sensor": str(r[1]),
+            "weirling": labels.get(str(r[1]), str(r[1])),
+            "src_addr": str(r[2]), "src_port": int(r[3] or 0),
+            "dst_addr": str(r[4]), "dst_port": int(r[5] or 0),
+            "proto": int(r[6] or 0), "proto_label": proto_label(r[6]),
+            "bytes": int(r[7] or 0), "packets": int(r[8] or 0),
+            "tcp_flags": int(r[9] or 0), "ip_ttl": int(r[10] or 0),
+            "next_hop": str(r[11] or ""), "src_as": int(r[12] or 0), "dst_as": int(r[13] or 0),
+        }
+        for r in rows
+    ]
+    # The reverse half's handshake is the only way to prove the role of a record that does
+    # not itself carry one. Keyed by this row's own 5-tuple, so a response finds its request
+    # and a request finds its response. A failed lookup is not a page failure: the direct
+    # flags/ports below still classify what they can, and the rest stays "unknown".
+    reverse = _reverse_direction_flags(client, payload_rows, params)
+    for row in payload_rows:
+        key = (row["dst_addr"], row["dst_port"], row["src_addr"], row["src_port"], row["proto"])
+        role, evidence = _flow_direction(row, reverse.get(key, ()))
+        row["direction"] = role
+        row["direction_evidence"] = evidence
+        row["direction_confidence"] = (
+            "proven" if evidence in ("tcp-syn", "tcp-syn-ack", "reverse-tcp-syn", "reverse-tcp-syn-ack")
+            else "inferred" if evidence == "service-port" else "unknown")
+        row["opened_by"] = _opened_by(row, role)
+
     return {
         "available": True,
         "reason": "",
-        "rows": [
-            {
-                "timestamp": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
-                "sensor": str(r[1]),
-                "weirling": labels.get(str(r[1]), str(r[1])),
-                "src_addr": str(r[2]), "src_port": int(r[3] or 0),
-                "dst_addr": str(r[4]), "dst_port": int(r[5] or 0),
-                "proto": int(r[6] or 0), "proto_label": proto_label(r[6]),
-                "bytes": int(r[7] or 0), "packets": int(r[8] or 0),
-                "tcp_flags": int(r[9] or 0), "ip_ttl": int(r[10] or 0),
-                "next_hop": str(r[11] or ""), "src_as": int(r[12] or 0), "dst_as": int(r[13] or 0),
-            }
-            for r in rows
-        ],
+        "rows": payload_rows,
         "total": int(total_row[0][0]) if total_row else 0,
         "limit": limit,
         "offset": offset,

@@ -839,6 +839,12 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * these carried no rule at all, so the only cue was a title attribute nobody sees. */
 .dc-row { cursor: pointer; }
 .dc-row:hover { background: var(--panel2); }
+/* The direction column names the ROLE OF THIS RECORD, not an arrow to interpret. Request
+   and reply are deliberately quiet: this is a fact about a row, not an alert. */
+.dc-dir { white-space: nowrap; font-size: var(--fs-2); color: var(--muted); }
+.dc-dir.request { color: var(--accent); }
+.dc-dir.reply { color: var(--ok); }
+.dc-dir.unknown { color: var(--muted); font-style: italic; }
 /* THE ONE entity-link cue (US-4), single-sourced for EVERY element and both class names:
  * an inline value that opens somewhere wears the accent colour plus a dotted underline AT
  * REST; hover only amplifies (solid). The two vocabularies this replaces (accent-only links

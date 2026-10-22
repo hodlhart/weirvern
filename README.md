@@ -22,12 +22,12 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.17.88</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.17.89</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
   <a href="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.17.88-2f81f7"></a>
+  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.17.89-2f81f7"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2f81f7"></a>
   <a href="https://kubernetes.io/"><img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-conformant-326ce5"></a>
   <a href="SECURITY.md"><img alt="Security" src="https://img.shields.io/badge/security-policy-2f81f7"></a>
@@ -222,6 +222,8 @@ for networks you own or are explicitly authorized to monitor.
 - [Theme](docs/theme.md) — the console's visual system and component recipes
 - [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
 - [Detection and alerting](docs/detection.md) — the ensemble, ATT&CK mapping, alert hygiene
+- [Flow direction](docs/design/flow-direction.md) — request/reply evidence in the Flows tab
+- [Remote weirling gaps](docs/weirling-remote-gaps.md) — what a remote sensor still cannot do
 - [Operations](docs/operations.md) — CLI, lifecycle, backups, key settings, troubleshooting
 - [Security and privacy](docs/security.md) — privileges, RBAC, data sensitivity, exposure
 - [Development](docs/development.md) — repository layout, tests and the gate

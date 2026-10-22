@@ -31,6 +31,11 @@ class _Client:
         self.params.append(dict(parameters or {}))
         if "FROM weirvern.weirlings" in sql:
             return _Result(self.registry)
+        # The direction evidence probe is a second flows query. This fake has no reverse
+        # rows, which is the honest "no handshake captured" case; tests that need one use
+        # _DirectionClient below.
+        if "flow-direction reverse halves" in sql:
+            return _Result([])
         # Order matters: the HISTOGRAM query also selects count(), so it must be matched first
         # or the histogram gets the scalar count's shape and the row builder indexes past it.
         if "toStartOfInterval" in sql:
@@ -183,3 +188,86 @@ def test_the_discover_route_and_script_are_served():
     assert '"/discover.js"' in web, "the file is not in STATIC_FILES: the tab would 404 its code"
     assert '<script src="/discover.js">' in html
     assert 'data-view="discover"' in html
+
+
+# ── FLOW DIRECTION: PROOF, INFERENCE, OR UNKNOWN ────────────────────────────────────────────
+# The Flows tab is a list of UNIDIRECTIONAL records. The reply half of an outbound HTTPS call
+# has the remote service as its source; that is correct packet direction and a misleading
+# "connection direction" unless the row says which half it is. These tests pin the evidence
+# ladder: a bare SYN/SYN-ACK is proof, a reverse handshake is proof of the opposite role, a
+# service port is only an inference, and no evidence stays unknown.
+
+@pytest.mark.parametrize("flags,src_port,dst_port,expect", [
+    (0x02, 51515, 443, ("request", "tcp-syn")),       # bare SYN: source opened
+    (0x12, 443, 51515, ("reply", "tcp-syn-ack")),     # bare SYN-ACK: source answered
+    (0x00, 51515, 443, ("request", "service-port")),  # request shape, no handshake
+    (0x00, 443, 51515, ("reply", "service-port")),    # reply shape, no handshake
+    (0x00, 10021, 28715, ("unknown", "")),            # two peers: no claim
+    (0x1b, 10021, 28715, ("unknown", "")),            # cumulative SYN+ACK+FIN+PSH: no claim
+    (0x1b, 51515, 443, ("request", "service-port")),  # aggregate does not override a port
+    (0x00, 443, 8443, ("unknown", "")),               # both service ports: ambiguous
+])
+def test_flow_direction_never_turns_a_guess_into_a_fact(flags, src_port, dst_port, expect):
+    row = {"proto": 6, "tcp_flags": flags, "src_port": src_port, "dst_port": dst_port,
+           "src_addr": "198.51.100.20", "dst_addr": "203.0.113.10"}
+    assert soc._flow_direction(row) == expect
+
+
+def test_udp_dns_uses_the_service_port_without_pretending_it_is_a_handshake():
+    row = {"proto": 17, "tcp_flags": 0, "src_port": 51515, "dst_port": 53,
+           "src_addr": "198.51.100.20", "dst_addr": "198.51.100.1"}
+    assert soc._flow_direction(row) == ("request", "service-port")
+    row["src_port"], row["dst_port"] = 53, 51515
+    assert soc._flow_direction(row) == ("reply", "service-port")
+
+
+def test_the_reverse_halves_bare_syn_proves_this_half_is_the_reply():
+    row = {"proto": 6, "tcp_flags": 0, "src_addr": "203.0.113.10", "src_port": 443,
+           "dst_addr": "198.51.100.20", "dst_port": 51515}
+    assert soc._flow_direction(row, [0x02]) == ("reply", "reverse-tcp-syn")
+
+
+def test_the_reverse_halves_syn_ack_proves_this_half_is_the_request():
+    row = {"proto": 6, "tcp_flags": 0, "src_addr": "198.51.100.20", "src_port": 51515,
+           "dst_addr": "203.0.113.10", "dst_port": 443}
+    assert soc._flow_direction(row, [0x12]) == ("request", "reverse-tcp-syn-ack")
+
+
+def test_conflicting_reverse_handshakes_are_ambiguous_not_reversed():
+    row = {"proto": 6, "tcp_flags": 0, "src_addr": "198.51.100.20", "src_port": 51515,
+           "dst_addr": "203.0.113.10", "dst_port": 443}
+    assert soc._flow_direction(row, [0x02, 0x12]) == ("request", "service-port")
+
+
+class _DirectionClient(_Client):
+    def __init__(self, row, reverse_rows):
+        super().__init__()
+        self.row = row
+        self.reverse_rows = reverse_rows
+
+    def query(self, sql, parameters=None, **kw):
+        if "flow-direction reverse halves" in sql:
+            self.sql.append(sql)
+            self.params.append(dict(parameters or {}))
+            return _Result(self.reverse_rows)
+        if "ORDER BY timestamp DESC" in sql:
+            self.sql.append(sql)
+            self.params.append(dict(parameters or {}))
+            return _Result([self.row])
+        return super().query(sql, parameters=parameters, **kw)
+
+
+def test_discover_puts_the_direction_and_opener_on_each_row():
+    row = ("2026-10-16 06:00:00", "127.0.0.1", "203.0.113.10", 443,
+           "198.51.100.20", 51515, 6, 900, 8, 0, 64, "", 0, 0)
+    c = _DirectionClient(row, [("198.51.100.20", 51515, "203.0.113.10", 443, 6, 0x02)])
+    out = soc.discover(c, hours=6)
+    got = out["rows"][0]
+    assert (got["direction"], got["direction_evidence"], got["direction_confidence"]) == (
+        "reply", "reverse-tcp-syn", "proven")
+    assert got["opened_by"] == "198.51.100.20:51515", (
+        "the opener is the local ephemeral side, not the remote service that sent this half")
+    reverse_sql = next(s for s in c.sql if "flow-direction reverse halves" in s)
+    reverse_params = c.params[c.sql.index(reverse_sql)]
+    assert "IN (" in reverse_sql and "203.0.113.10" not in reverse_sql
+    assert reverse_params["d0a"] == "198.51.100.20", "the reverse key must be bound, not interpolated"

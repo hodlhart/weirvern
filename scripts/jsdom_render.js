@@ -1099,11 +1099,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       { timestamp: "2026-10-16 06:00:00", sensor: "127.0.0.1", weirling: "weirvern",
         src_addr: "198.51.100.20",
         src_port: 4444, dst_addr: "198.51.100.10", dst_port: 443, proto: 6, proto_label: "tcp",
-        bytes: 1234, packets: 12, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
+        bytes: 1234, packets: 12, tcp_flags: 2, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0,
+        direction: "request", direction_evidence: "tcp-syn", direction_confidence: "proven",
+        opened_by: "198.51.100.20:4444" },
       { timestamp: "2026-10-16 06:01:00", sensor: "127.0.0.1", weirling: "weirvern",
         src_addr: "198.51.100.20",
         src_port: 4445, dst_addr: "198.51.100.10", dst_port: 53, proto: 17, proto_label: "udp",
-        bytes: 300, packets: 4, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0 },
+        bytes: 300, packets: 4, tcp_flags: 0, ip_ttl: 64, next_hop: "", src_as: 0, dst_as: 0,
+        direction: "request", direction_evidence: "service-port", direction_confidence: "inferred",
+        opened_by: "198.51.100.20:4445" },
     ],
     histogram: [
       { t: "2026-10-16 06:00:00", n: 30, bytes: 9000 },
@@ -7557,11 +7561,22 @@ check("...a contradicted segment names BOTH segments on the issues list",
           trendBoxes.map((b) => b.textContent.trim()).join(" | "));
     check("Discover renders the flow rows the server served", dcRows.length === 2,
           "rows=" + dcRows.length);
+    const dirCell = doc.querySelector("#dc-rows tr.dc-row td.dc-dir");
+    check("a flow row states which half of the conversation it is",
+          !!dirCell && dirCell.dataset.direction === "request" && /request/.test(dirCell.textContent),
+          dirCell ? (dirCell.dataset.direction + ":" + dirCell.textContent) : "no direction cell");
+    const dirHeads = [...doc.querySelectorAll("#view-discover thead th")].map((th) => th.textContent);
+    check("the direction column has a heading, not a blank arrow cell",
+          dirHeads.some((h) => /direction/i.test(h)), dirHeads.join(" | "));
     if (dcRows[0]) {
       dcRows[0].click();
       const detail = doc.querySelector("#dc-rows tr.dc-detail");
       check("a row opens its every-field detail", !!detail && /flow started/.test(detail.textContent),
             detail ? detail.textContent.slice(0, 60) : "no detail row");
+      check("the detail names the opener and the evidence behind the direction",
+            !!detail && /opened by: 198\.51\.100\.20:4444/.test(detail.textContent)
+            && /direction evidence: tcp-syn/.test(detail.textContent),
+            detail ? detail.textContent.slice(0, 180) : "no detail");
       check("and offers to filter on the fields it shows",
             !!(detail && detail.querySelectorAll("button").length >= 3),
             "fewer than three action buttons");

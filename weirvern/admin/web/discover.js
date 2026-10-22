@@ -225,7 +225,7 @@ function dcRenderFacets(d) {
 function dcFeedColumns(feed) {
   if (feed === "dns") return ["time", "client", "type", "rcode", "query", "answers"];
   if (feed === "zeek") return ["log", "rows in window", "all time", "last row"];
-  return ["time", "weirling", "source", "sport", "", "destination", "dport", "type", "bytes",
+  return ["time", "weirling", "source", "sport", "direction", "destination", "dport", "type", "bytes",
           "packets"];
 }
 
@@ -283,6 +283,27 @@ function dcRenderZeekBars(d) {
 }
 
 function dcCell(text, cls) { return el("td", { class: cls || "", text: String(text) }); }
+
+// FLOW DIRECTION IS AN EVIDENCE CLAIM, NOT AN ARROW. A NetFlow row is one half of a
+// conversation; the reply half of an outbound HTTPS call legitimately has the remote service
+// as its source. The server classifies each row as request/reply/unknown and sends the
+// evidence, so the table can say "reply" instead of inviting the reader to reverse the
+// conversation in their head. Unknown is shown as unknown -- never guessed.
+function dcDirection(r) {
+  const role = r.direction || "unknown";
+  const evidence = {
+    "tcp-syn": "TCP SYN in this record: the source opened the conversation",
+    "tcp-syn-ack": "TCP SYN-ACK in this record: the source answered the conversation",
+    "reverse-tcp-syn": "the reverse half carried the TCP SYN: this half is the reply",
+    "reverse-tcp-syn-ack": "the reverse half carried the TCP SYN-ACK: this half is the request",
+    "service-port": "inferred from the service ports; no handshake was captured",
+  }[r.direction_evidence] || "no handshake or service port: direction not claimed";
+  const td = el("td", { class: "dc-dir " + role, text: role });
+  td.dataset.direction = role;
+  td.title = evidence + (r.direction_confidence ? " (" + r.direction_confidence + ")" : "");
+  td.setAttribute("aria-label", "direction: " + role + " — " + evidence);
+  return td;
+}
 
 function dcRenderRows(d) {
   const body = document.getElementById("dc-rows");
@@ -364,7 +385,7 @@ function dcRenderRows(d) {
                         "weirling = " + (r.weirling || r.sensor), "muted"));
     tr.appendChild(cell(r.src_addr, "src", "src = " + r.src_addr));
     tr.appendChild(cell(r.src_port || "\u00b7", r.src_port ? "sport" : "", r.src_port ? "sport = " + r.src_port : ""));
-    tr.appendChild(dcCell("\u2192"));
+    tr.appendChild(dcDirection(r));
     tr.appendChild(cell(r.dst_addr, "dst", "dst = " + r.dst_addr));
     tr.appendChild(cell(r.dst_port || "\u00b7", r.dst_port ? "dport" : "", r.dst_port ? "dport = " + r.dst_port : ""));
     tr.appendChild(cell(r.proto_label, "proto", "type = " + r.proto_label));
@@ -387,7 +408,11 @@ function dcToggleDetail(tr, r) {
   (dnsRow ? [["time", r.ts], ["client", r.client], ["query", r.query],
              ["type", r.qtype_label || r.qtype], ["rcode", r.rcode_label || r.rcode],
              ["answers", (r.answer_ips || []).join(", ") || "none recorded"]]
-          : [["flow started", r.timestamp], ["sensor", r.sensor], ["source", r.src_addr + ":" + r.src_port],
+          : [["flow started", r.timestamp], ["direction", (r.direction || "unknown") +
+             (r.direction_confidence ? " (" + r.direction_confidence + ")" : "")],
+             ["opened by", r.opened_by || "not proven"],
+             ["direction evidence", r.direction_evidence || "none"],
+             ["sensor", r.sensor], ["source", r.src_addr + ":" + r.src_port],
              ["destination", r.dst_addr + ":" + r.dst_port], ["flow type", r.proto_label + " (" + r.proto + ")"],
              ["bytes / packets", fmtBytes(r.bytes) + " / " + Number(r.packets).toLocaleString()],
              ["TTL", r.ip_ttl || "not measured"], ["next hop", r.next_hop || "not measured"],

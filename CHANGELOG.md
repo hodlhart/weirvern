@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.89 — 2026-10-22
+
+FLOWS SAY WHICH HALF THEY ARE.
+
+- The Flows table now has a **direction** column and every row says `request`, `reply`, or
+  `unknown`. The detail panel names the opener and the evidence behind the claim.
+- Direction is classified from the strongest available evidence: a bare TCP SYN or SYN-ACK in
+  the record, a handshake in the reverse 5-tuple, then service ports. Cumulative TCP flags are
+  not treated as handshakes; port-only classification is labelled an inference; flows with no
+  evidence are left `unknown` instead of being reversed.
+- The reverse-half lookup is one bounded query for the page. Its failure does not fail the page.
+- Rationale and limits are in `docs/design/flow-direction.md`.
+
 ## 0.17.88 — 2026-10-22
 
 SETTINGS FINDS ITS FRONT DOOR.
