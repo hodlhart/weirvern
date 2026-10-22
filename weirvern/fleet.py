@@ -103,6 +103,9 @@ SENSOR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 # and `auto` would be an expectation that cannot be checked, which defeats the point of
 # recording one.
 KNOWN_MODES = ("loch", "siphon")
+# A remote deployment's physical role. `capture` is a SPAN/TAP sensor; `inline` is the explicit
+# two-NIC bridge. Never inferred from a mode or a heartbeat: the field is a declaration.
+TOPOLOGIES = ("capture", "inline")
 
 # The intercept plan's fields, in one place. Every reader (the store's column mapping, the
 # API's per-field view, the GUI's controls) iterates THIS tuple, so a field cannot be added
@@ -407,6 +410,9 @@ class Registration:
     note: str = ""
     added_at: datetime | None = None
     revoked_at: datetime | None = None
+    # EXPLICIT DEPLOYMENT TOPOLOGY. `capture` is the passive SPAN/TAP unit (default); `inline`
+    # is the two-NIC bridge. It is declared, never inferred from a mode or a heartbeat.
+    topology: str = "capture"
     # THE SENSOR'S OWN INTERCEPT PLAN (see SensorPlan above). Defaulting to an empty plan is
     # what keeps this additive: a registration made before the field existed behaves exactly
     # as it did, and the plan only exists for a sensor somebody declared one for.
@@ -488,8 +494,24 @@ def validate_mode(mode: str) -> str:
 
 
 
+def validate_topology(topology: str) -> str:
+    """A deployment topology, or raise FleetError.
+
+    An unknown value is refused rather than accepted and ignored: the topology decides which
+    test is truthful and whether an inline unit is allowed at all.
+    """
+    t = (topology or "").strip().lower()
+    if not t:
+        return "capture"
+    if t not in TOPOLOGIES:
+        raise FleetError(
+            f"{topology!r} is not a weirling topology: expected one of {', '.join(TOPOLOGIES)}."
+        )
+    return t
+
+
 def make_registration(sensor_id: str, *, address: str = "", segment: str = "",
-                      expected_mode: str = "loch", note: str = "",
+                      expected_mode: str = "loch", note: str = "", topology: str = "capture",
                       now: datetime | None = None) -> Registration:
     """A validated registration. The single place a new sensor is constructed."""
     return Registration(
@@ -501,6 +523,7 @@ def make_registration(sensor_id: str, *, address: str = "", segment: str = "",
         note=(note or "").strip()[:500],
         added_at=now or datetime.now(UTC),
         revoked_at=None,
+        topology=validate_topology(topology),
     )
 
 
@@ -577,6 +600,8 @@ class SensorHealth:
     reported_address: str = ""
     expected_mode: str = ""
     reported_mode: str = ""
+    # DECLARED DEPLOYMENT TOPOLOGY: capture or inline. Never inferred.
+    topology: str = "capture"
     # THE SENSOR'S DECLARED INTERCEPT PLAN, carried on the row so the drill-down can show and
     # edit it without a second read that could disagree with the list it was opened from.
     plan: SensorPlan = field(default_factory=SensorPlan)
@@ -672,6 +697,7 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         reported_segment=str((newest or {}).get("segment") or ""),
         expected_mode=(reg.expected_mode if reg else ""),
         reported_mode=reported_mode,
+        topology=(reg.topology if reg else "capture"),
         plan=(reg.plan if reg else SensorPlan()),
         interfaces=list((newest or {}).get("interfaces") or []),
         iface=str((newest or {}).get("iface") or ""),

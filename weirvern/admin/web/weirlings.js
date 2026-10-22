@@ -1803,7 +1803,7 @@ function wlRenderPlan(r) {
   if (state) {
     const declared = plan.mode || "(no mode declared)";
     const reported = r.reported_mode || "(not reported)";
-    state.textContent = `declared: ${declared} · last reported: ${reported}`;
+    state.textContent = `topology: ${r.topology || "capture"} · declared: ${declared} · last reported: ${reported}`;
   }
   const note = document.getElementById("wl-plan-note");
   if (note) {

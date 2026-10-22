@@ -53,6 +53,11 @@
 #                 Explicitly opt OUT of mTLS and give the unit a ClickHouse credential. This is
 #                 a migration path for a hub whose gateway is not yet reachable; it is not the
 #                 default and must be asked for.
+#   --inline      This unit captures on an EXISTING two-NIC bridge. The bridge must be created
+#                 first with scripts/weirling-inline.sh; this flag validates it and disables the
+#                 trunk probe (a bridge is not a trunk parent). It does not create a bridge.
+#   --no-trunk    Do not run the trunk/VLAN probe. Use with a manually managed bridge if you do
+#                 not pass --inline.
 #   --remove      stop and remove the containers on the target (logs kept; --purge too)
 #   --purge       with --remove: also delete the env file, helper and log directory
 #   --dry-run     run every CHECK (including the refusals) and print the plan; change nothing
@@ -68,6 +73,8 @@ EXPOSE=0
 GATE=0
 GATE_IFACE=""
 NETFLOW=0
+INLINE=0
+NO_TRUNK=0
 MTLS=1
 MTLS_TOKEN=""
 REMOVE=0
@@ -93,6 +100,8 @@ while [ $# -gt 0 ]; do
         --mtls-token) MTLS_TOKEN="${2:?--mtls-token needs a value}"; MTLS=1; shift 2 ;;
         --legacy-clickhouse) MTLS=0; shift ;;
         --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
+        --inline) INLINE=1; NO_TRUNK=1; shift ;;
+        --no-trunk) NO_TRUNK=1; shift ;;
         --remove) REMOVE=1; shift ;;
         --purge) PURGE=1; shift ;;
         --dry-run) DRY=1; shift ;;
@@ -201,6 +210,21 @@ if [ "$IFACE" = "$DEFROUTE" ]; then
 fi
 case "$IFACE" in lo) die "REFUSING: 'lo' is the loopback interface" ;; esac
 say "  capture port: $IFACE (target's management port is $DEFROUTE -- untouched)"
+
+if [ "$INLINE" = "1" ]; then
+    # INLINE IS A TOPOLOGY, NOT A MODE. The bridge must already exist and have exactly two
+    # enslaved, address-free ports. This script does not create one: `scripts/weirling-inline.sh`
+    # does that, visibly, and a unit deployment must not silently rewire a host.
+    rsh "$TARGET" "ip -d link show '$IFACE' 2>/dev/null | grep -q 'bridge'" \
+        || die "--inline needs '$IFACE' to be an existing Linux bridge; create it first with scripts/weirling-inline.sh"
+    PORT_COUNT="$(rsh "$TARGET" "ip -o link show master '$IFACE' 2>/dev/null | wc -l" | tr -d ' ')"
+    [ "$PORT_COUNT" = "2" ] \
+        || die "--inline needs exactly two ports enslaved to '$IFACE' (found ${PORT_COUNT:-0}); create the bridge with scripts/weirling-inline.sh"
+    rsh "$TARGET" "ip -4 -o addr show dev '$IFACE' 2>/dev/null | grep -q 'inet '" \
+        && die "--inline bridge '$IFACE' has an IPv4 address; an inline bridge must be transparent and address-free"
+    [ "$GATE" = "1" ] && die "--gate on an inline bridge is not implemented yet; do not claim bridge enforcement"
+    say "  inline bridge: $IFACE (two enslaved ports; trunk probe disabled)"
+fi
 
 # ── docker on the target ────────────────────────────────────────────────────────────────────
 rsh "$TARGET" "command -v docker >/dev/null 2>&1" \
@@ -396,6 +420,7 @@ AGENT_USER='10001:10001'
 # Every unit owns one trunk-state directory. It survives a restart so the next probe can
 # remove VLAN devices this unit created when the port is moved back to an access port.
 TRUNKSTATE="/var/lib/weirvern-weirling/trunk-$ID"
+[ "$INLINE" = "1" ] && TRUNKSTATE="/var/lib/weirvern-weirling/inline-$ID"
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
   stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true ;;
@@ -409,13 +434,17 @@ case "\${1:-status}" in
     # no tags -> the state file names the parent; tags -> it names one VLAN device per tag and
     # this helper creates them in the host namespace with NET_ADMIN. The capture command then
     # reads the same state file, so an access port and a trunk take the identical path.
+    # --inline/--no-trunk skip this: a bridge is not a trunk parent, and creating VLAN devices
+    # on the bridge would be a second topology nobody asked for.
     mkdir -p "\$TRUNKSTATE"
     chmod 0755 "\$TRUNKSTATE" 2>/dev/null || true
+    if [ "$NO_TRUNK" = "0" ]; then
     docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
       --security-opt no-new-privileges -v "\$TRUNKSTATE":/state -e MGMT_IFACE="\$MGMT" \
       --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.trunk detect \
       --parent "\$IFACE" --state /state --seconds "\${TRUNK_DETECT_S:-12}" \
       >/tmp/weirvern-trunk-\$ID.log 2>&1 || echo "weirvern-trunk: probe failed; capture will use \$IFACE (see /tmp/weirvern-trunk-\$ID.log)"
+    fi
     docker run -d --name "weirvern-capture-\$ID" --restart unless-stopped \\
       --network host --cap-drop ALL --cap-add NET_RAW --security-opt no-new-privileges \\
       -v "\$LOGDIR":/zeek/logs -v /etc/weirvern-weirling/site:/zeek/site:ro \\
@@ -437,8 +466,8 @@ case "\${1:-status}" in
     docker run -d --name "weirvern-agent-\$ID" --restart unless-stopped \\
       --network host --env-file "\$ENVF" --user "$AGENT_USER" \\
       --cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN \\
-      -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
-      -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state \\
+      -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \
+      -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state -e TRUNK_DISABLE="$NO_TRUNK" \
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
       -v "\$TRUNKSTATE":/state \\

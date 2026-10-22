@@ -374,3 +374,22 @@ def test_a_NAIVE_added_at_is_read_as_UTC_rather_than_raising():
         f"a naive added_at 40 days old did not produce the retention caveat, so it was not read as "
         f"UTC. findings: {h.findings}"
     )
+
+
+# ── topology: declared, preserved across an ordinary edit, never guessed ─────────────────────
+
+def test_topology_round_trips_and_survives_an_edit():
+    client = _StubClient()
+    reg = store.register(client, "s1", topology="inline")
+    assert reg.topology == "inline"
+    assert client.rows[-1][store.COLUMNS.index("topology")] == "inline"
+
+    # Adding an address is an ordinary edit; it must not downgrade the declared topology.
+    store.register(client, "s1", address="198.51.100.20")
+    assert client.rows[-1][store.COLUMNS.index("topology")] == "inline"
+
+
+def test_an_old_row_without_topology_reads_as_capture():
+    client = _StubClient([_row(sensor_id="s1")])
+    regs = store.read_registrations(client)
+    assert regs[0].topology == "capture"

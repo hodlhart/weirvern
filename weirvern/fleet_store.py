@@ -44,6 +44,7 @@ from weirvern.fleet import (
     validate_address,
     validate_mode,
     validate_sensor_id,
+    validate_topology,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ TABLE = "weirvern.weirlings"
 # is what keeps a pre-plan reader aligned instead of shifted.
 COLUMNS = ["sensor_id", "address", "segment", "expected_mode", "enabled", "note",
            "added_at", "updated_at", "revoked_at",
-           *[f"plan_{f}" for f in PLAN_FIELDS], "plan_nics"]
+           *[f"plan_{f}" for f in PLAN_FIELDS], "plan_nics", "topology"]
 
 
 class FleetStoreError(RuntimeError):
@@ -88,6 +89,7 @@ def _row_to_registration(row: dict) -> Registration:
         note=str(row.get("note") or ""),
         added_at=added,
         revoked_at=revoked,
+        topology=str(row.get("topology") or "capture"),
         # Same defensive read as the timestamps: a row from before the plan columns existed
         # (or from a stub fixture that predates them) reads as NO PLAN rather than raising.
         plan=SensorPlan.from_row(row),
@@ -188,7 +190,7 @@ def _write_registration_row(client: Client, reg: Registration, now: datetime) ->
           reg.revoked_at or None,
           # Positional, in COLUMNS order -- which is why the plan's fields are appended last
           # and enumerated from PLAN_FIELDS rather than typed out here.
-          *[plan[f] for f in PLAN_FIELDS], reg.plan.nics],
+          *[plan[f] for f in PLAN_FIELDS], reg.plan.nics, reg.topology],
         ],
         column_names=COLUMNS,
     )
@@ -237,7 +239,8 @@ def read_audit(client: Client, *, scope: str = "", action: str = "", target: str
 
 
 def register(client: Client, sensor_id: str, *, address: str = "", segment: str = "",
-             expected_mode: str = "loch", note: str = "", now: datetime | None = None,
+             expected_mode: str = "loch", note: str = "", topology: str = "",
+             now: datetime | None = None,
              clear: set[str] | None = None, plan: SensorPlan | None = None) -> Registration:
     """Create or update a registration. Raises FleetError on bad input, FleetStoreError on a
     storage failure.
@@ -260,7 +263,8 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
     """
     sid = validate_sensor_id(sensor_id)
     reg = make_registration(sid, address=address, segment=segment,
-                            expected_mode=expected_mode, note=note, now=now)
+                            expected_mode=expected_mode, note=note,
+                            topology=(topology or "capture"), now=now)
     existing = None
     try:
         for r in read_registrations(client, include_revoked=True):
@@ -283,6 +287,10 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
                 # Not named (or named empty) and the caller did not ask to clear it: keep what the
                 # operator already declared rather than blanking it.
                 merged[field_name] = getattr(existing, field_name, "")
+        # Topology follows the same "empty means unset" rule. A blank argument on an ordinary
+        # edit must not silently downgrade an inline unit to capture; naming it changes it.
+        merged["topology"] = (validate_topology(topology) if str(topology or "").strip()
+                              else existing.topology)
         # `expected_mode` is not merged: it defaults to a real value ("loch"), so an absent argument
         # is indistinguishable from "loch" and merging it would make the mode unchangeable.
         reg = Registration(**merged)
@@ -640,6 +648,7 @@ def _health_to_json(h: SensorHealth) -> dict:
         "reported_segment": h.reported_segment,
         "expected_mode": h.expected_mode,
         "reported_mode": h.reported_mode,
+        "topology": h.topology,
         # THE DECLARED PLAN, as plain strings, always present. The drill-down renders one
         # control per field from THIS payload, so a missing key would kill the panel at the
         # first formatter call -- and an absent key is exactly how a per-sensor control ends
@@ -700,5 +709,6 @@ __all__ = [
     "validate_address",
     "validate_mode",
     "validate_sensor_id",
+    "validate_topology",
     "write_registration",
 ]

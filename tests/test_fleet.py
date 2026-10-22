@@ -700,3 +700,22 @@ def test_the_summary_counts_each_collected_network_once_not_each_nic():
     out = summarise([a, b, c])
     assert out["networks"] == 2, out
     assert out["total"] == 3 and out["problems"] == 0
+
+
+# ── topology: a declaration, not an inference ────────────────────────────────────────────────
+
+def test_topology_defaults_to_capture_and_rejects_unknown():
+    from weirvern.fleet import validate_topology
+
+    assert validate_topology("") == "capture"
+    assert validate_topology("CAPTURE") == "capture"
+    assert validate_topology("inline") == "inline"
+    with pytest.raises(FleetError):
+        validate_topology("tap")
+
+
+def test_classify_carries_the_declared_topology():
+    h = classify(reg("edge-1", topology="inline"), [hb("edge-1", age_s=5)], now=NOW)
+    assert h.topology == "inline"
+    # An old registration still reads as capture; no row silently becomes inline.
+    assert classify(reg("edge-1"), [hb("edge-1", age_s=5)], now=NOW).topology == "capture"

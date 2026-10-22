@@ -2487,6 +2487,7 @@ def _build_handler(ctx: GuiContext):
                         segment=str(body.get("segment") or ""),
                         expected_mode=str(body.get("expected_mode") or "loch"),
                         note=str(body.get("note") or ""),
+                        topology=str(body.get("topology") or ""),
                     )
             except fleet_store.FleetError as exc:
                 # The message names the fix, so it is passed through verbatim rather than

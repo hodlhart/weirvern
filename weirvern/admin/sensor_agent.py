@@ -101,6 +101,9 @@ def sync_trunk(iface: str) -> None:
     the heartbeat keeps naming the port the unit was installed on, while `interfaces` reports
     the real devices this process can see.
     """
+    if str(os.environ.get("TRUNK_DISABLE", "")).strip().lower() in ("1", "true", "yes", "on"):
+        logger.info("trunk: disabled on this unit (bridge/--no-trunk topology)")
+        return
     try:
         from weirvern.admin import trunk  # noqa: PLC0415
 

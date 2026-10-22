@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.2 — 2026-10-22
+
+INLINE IS A TOPOLOGY, NOT A TOGGLE.
+
+- Weirling registrations carry an explicit `topology` (`capture` default, `inline`). It is a
+  declaration, never inferred from a mode or heartbeat; old rows read `capture`.
+- `scripts/weirling-inline.sh` creates/tears down a reviewed two-NIC transparent bridge with
+  `dry-run|create|status|teardown`. It refuses the management/default-route port, address-bearing
+  ports, and never deletes a bridge it did not create.
+- `deploy-weirling.sh --inline` validates an EXISTING bridge with exactly two enslaved ports and
+  refuses `--gate` on it; `--no-trunk` disables the VLAN probe for a bridge. The deploy helper
+  does not rewire a host silently.
+- The fleet payload/detail header now shows the declared topology.
+
 ## 0.19.1 — 2026-10-22
 
 REMOTE CAPTURE-LIVENESS TEST.
