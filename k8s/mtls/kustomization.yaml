@@ -1,8 +1,9 @@
 # The mTLS weirling ingest edge.
 #
-# Separate from k8s/ because it needs cert-manager and the Weirling intermediate
-# Secret, and because the gateway is an optional deployment: a hub with only local
-# sensors does not need it.
+# This overlay is the OPTIONAL cert-manager path. The default installer creates the CA and
+# server certificate with scripts/bootstrap-mtls.sh and the gateway is part of the base
+# kustomization, so a fresh deployment does not depend on cert-manager. Keep this overlay for
+# sites that already run cert-manager and want Certificate objects to manage renewal.
 namespace: weirvern
 resources:
   - certificate.yaml

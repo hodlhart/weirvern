@@ -177,6 +177,8 @@ def test_the_startup_script_and_the_env_list_agree(docs):
         "BPF",
         # Locals of the per-NIC startup loop and the siphon init's plan-derived list.
         "IFACES", "COUNT", "LOGDIR", "PIDS", "PLAN_IFACES",
+        # The trunk init's own local: it is assigned from CAPTURE_IFACE/ZEEK_IFACE.
+        "PARENT",
     }
     missing = {v for v in referenced if v not in declared and v not in internal}
     assert not missing, (
@@ -254,8 +256,9 @@ def test_root_containers_are_only_ones_with_a_documented_reason(docs):
     """
     # siphon-forwarding-init is deliberately root: it writes the host's /proc/sys and netfilter
     # through a privileged hostPath, the one job the capture container must not do. It is inert
-    # outside siphon mode.
-    expected_root = {"zeek", "fix-permissions", "siphon-forwarding-init"}
+    # outside siphon mode. trunk-init is root because creating VLAN devices needs NET_ADMIN,
+    # which Kubernetes only grants to a root container.
+    expected_root = {"zeek", "fix-permissions", "siphon-forwarding-init", "trunk-init"}
     # Containers whose uid is unspecified at BOTH levels. They inherit the image's USER, which for
     # most images is root, so each one needs an explicit decision like root does.
     expected_unspecified: set[str] = set()

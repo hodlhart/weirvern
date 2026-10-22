@@ -1328,6 +1328,31 @@ def _insert_batch(client: Inserter, table: str, batch: list[list[Any]],
     return landed
 
 
+def insert_zeek_records(client: Inserter, log_type: str, records: list[dict[str, Any]]) -> int:
+    """Insert raw Zeek records through the SAME mappers the hub's local tailer uses.
+
+    THE GATEWAY MUST NOT GROW A SECOND ZEEK MAPPER. A remote unit sends the log type and the
+    records it parsed from its own TSV; this function routes each through `ZEEK_MAPPERS`, so a
+    connection row from a remote sensor has exactly the shape (and validation) of one written
+    by the hub's own capture. Log types with no table (`software`) are refused by name.
+    """
+    target = ZEEK_MAPPERS.get(str(log_type or ""))
+    if target is None:
+        raise ValueError(f"unknown Zeek log type: {log_type!r}")
+    table, mapper = target
+    columns = ZEEK_COLUMNS[log_type]
+    rows: list[list[Any]] = []
+    for raw in records:
+        if not isinstance(raw, dict):
+            continue
+        mapped = mapper({str(k): str(v) for k, v in raw.items()})
+        if mapped is not None:
+            rows.append([mapped.get(c) for c in columns])
+    if not rows:
+        return 0
+    return _insert_batch(client, table, rows, columns)
+
+
 def tail_zeek_log(client: Inserter, path: str, state: ZeekTailState | None = None,
                   offset: int | None = None, known_inode: int | None = None,
                   header: tuple[str, list[str]] | None = None

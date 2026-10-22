@@ -18,18 +18,29 @@ import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 from weirvern.fleet import SensorPlan
 
 
 class GatewayError(RuntimeError):
-    """A gateway call failed. Callers decide whether that is retryable."""
+    """A gateway call failed. Callers decide whether that is retryable.
+
+    `status` is the HTTP status when the gateway answered, or 0 for a transport failure.
+    The distinction matters to the sensor: a 403 on the plan means the hub has revoked this
+    identity, which is a command to stop an in-path intercept, not a transient registry blip.
+    """
+
+    def __init__(self, message: str, *, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = int(status or 0)
+
 
 
 @dataclass(frozen=True)
@@ -54,7 +65,7 @@ def _open(request: urllib.request.Request, context: ssl.SSLContext, timeout: flo
         return urllib.request.urlopen(request, timeout=timeout, context=context)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
-        raise GatewayError(f"gateway returned HTTP {exc.code}: {detail}") from exc
+        raise GatewayError(f"gateway returned HTTP {exc.code}: {detail}", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise GatewayError(f"gateway is unreachable: {exc.reason}") from exc
 
@@ -177,6 +188,16 @@ class GatewayClient:
             return 0
         return int(self._request("POST", "/v1/flows", {"records": records}).get("inserted") or 0)
 
+    def send_zeek(self, log_type: str, records: list[dict]) -> int:
+        if not records:
+            return 0
+        return int(self._request("POST", "/v1/zeek",
+                                 {"log_type": log_type, "records": records}).get("inserted") or 0)
+
+    def renew(self, csr_pem: str) -> dict:
+        """Sign a fresh CSR for THIS already-authenticated identity."""
+        return self._request("POST", "/v1/renew", {"csr": csr_pem})
+
     def sonar_next(self) -> dict | None:
         """Claim a pending remote survey, or None when the hub has not queued one."""
         request = self._request("GET", "/v1/sonar/next").get("request")
@@ -201,6 +222,54 @@ class GatewayClient:
 
     def close(self) -> None:  # symmetry with the ClickHouse client; the transport owns no pool
         return None
+
+
+def certificate_expiry(cert_path: str) -> datetime | None:
+    """The leaf's not-after time, or None when the file cannot be read as a certificate."""
+    try:
+        cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+        expires = cert.not_valid_after_utc
+        return expires if expires.tzinfo else expires.replace(tzinfo=UTC)
+    except (OSError, ValueError):
+        return None
+
+
+def renew_certificate(client: GatewayClient, *, cert_path: str, key_path: str) -> datetime | None:
+    """Generate a CSR from the EXISTING private key, have the hub sign it, replace the chain.
+
+    Reusing the key is deliberate: the hub binds the new certificate to the same URI SAN and
+    identity, and the sensor does not have to distribute a new key just to extend validity.
+    The certificate file is replaced atomically; the in-memory TLS context is discarded so the
+    next request loads the new chain.
+    """
+    from cryptography.hazmat.primitives import serialization  # noqa: PLC0415
+
+    key = serialization.load_pem_private_key(Path(key_path).read_bytes(), password=None)
+    if not isinstance(key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
+        raise GatewayError("the sensor's private key is not an RSA or EC key")
+    current = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+    names = current.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    common_name = names[0].value if names else "weirling"
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]))
+        .sign(key, hashes.SHA256())
+    )
+    payload = client.renew(csr.public_bytes(serialization.Encoding.PEM).decode("ascii"))
+    chain = str(payload.get("certificate") or "")
+    if not chain:
+        raise GatewayError("the gateway returned no renewed certificate")
+    if payload.get("intermediate"):
+        chain += "\n" + str(payload["intermediate"])
+    target = Path(cert_path)
+    tmp = target.with_name(target.name + ".renew")
+    tmp.write_text(chain)
+    with contextlib.suppress(OSError):
+        tmp.chmod(0o644)
+    os.replace(tmp, target)
+    # The client caches a context built from the old chain; rebuild on the next call.
+    client._ctx = None  # noqa: SLF001 -- this function owns the client's credential lifecycle
+    return certificate_expiry(cert_path)
 
 
 def _main(argv: list[str] | None = None) -> int:

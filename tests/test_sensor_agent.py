@@ -429,3 +429,32 @@ def test_the_plan_refresh_is_bounded_so_a_toggle_is_picked_up_quickly():
     that makes that sentence true, and its absence would make it a guess."""
     assert 5.0 <= sensor_agent.PLAN_REFRESH_S <= 60.0
     assert threading.Event  # the module drives the supervisor from a loop, not a one-shot
+
+
+def test_a_revoked_gateway_stops_a_live_intercept_instead_of_preserving_it():
+    """A 403 is a command. Treating it like a transient read failure would leave a revoked
+    sensor relaying traffic forever -- the one case where fail-safe becomes fail-open."""
+    from weirvern.weirling_client import GatewayError
+
+    class RevokingGateway:
+        is_gateway = True
+
+        def __init__(self):
+            self.revoked = False
+
+        def plan(self):
+            if self.revoked:
+                raise GatewayError("gateway returned HTTP 403: sensor is revoked", status=403)
+            return fleet_mod.make_plan(**SIPHON_PLAN)
+
+    client = RevokingGateway()
+    factory = SpawningFactory()
+    controller = sensor_agent.InterceptController("unit-a", supervisor_factory=factory)
+    sensor_agent.refresh_plan(client, "unit-a", controller)
+    assert _wait(lambda: controller.intercept_running), "the intercept never armed"
+
+    client.revoked = True
+    sensor_agent.refresh_plan(client, "unit-a", controller)
+    assert _wait(lambda: factory.children[0].terminated == 1), (
+        "the revoked unit kept an in-path intercept alive")
+    assert controller.mode == "loch"

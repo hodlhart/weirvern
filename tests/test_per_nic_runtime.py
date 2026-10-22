@@ -33,9 +33,17 @@ def test_the_ingester_finds_one_conn_log_per_nic_directory(tmp_path):
     assert _zeek_log_names(str(flat), "conn") == ["conn.log"]
 
 
+def _init_named(spec, name):
+    for c in spec["spec"]["template"]["spec"].get("initContainers") or []:
+        if c.get("name") == name:
+            return c
+    raise AssertionError(f"no init container named {name}")
+
+
 def test_the_siphon_init_reads_every_siphon_nic_from_the_plan():
     spec = yaml.safe_load(Path("k8s/32-zeek.yaml").read_text())
-    init = spec["spec"]["template"]["spec"]["initContainers"][0]
+    init = _init_named(spec, "siphon-forwarding-init")
+
     script = "\n".join(init["args"])
     assert "INTERCEPT_PLANS" in script
     assert "write_sysctl() {" in script
@@ -54,7 +62,8 @@ def test_the_nic_sheet_has_its_own_sluice_control():
 
 def test_a_siphon_plan_arms_without_a_second_sensor_mode_flip():
     spec = yaml.safe_load(Path("k8s/32-zeek.yaml").read_text())
-    init = spec["spec"]["template"]["spec"]["initContainers"][0]
+    init = _init_named(spec, "siphon-forwarding-init")
+
     script = "\n".join(init["args"])
     # The plan is parsed BEFORE the mode exit, and the guard allows a plan-only siphon.
     assert script.index("PLAN_IFACES=") < script.index('if [ "$MODE" != "siphon" ] && [ -z "$PLAN_IFACES" ]')

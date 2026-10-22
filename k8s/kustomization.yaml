@@ -40,6 +40,11 @@ resources:
   - 35-prune-cronjob.yaml
   - 50-schema-job.yaml
   - 60-rbac.yaml
+  # THE mTLS INGEST EDGE IS NOT OPTIONAL. Every adopted weirling talks to this gateway, and
+  # every flow/heartbeat/Zeek upload crosses it; the installer creates the CA and server
+  # certificate before applying (scripts/bootstrap-mtls.sh). The cert-manager overlay remains
+  # available for sites that want Certificate objects, but a fresh deployment must not need it.
+  - mtls/gateway.yaml
   # NetworkPolicy is OPTIONAL and commented out by default: it only takes effect
   # on a CNI that enforces policy, and an incomplete allow-list would silently
   # cut the worker off from Pushover. Read the file before enabling it.
@@ -109,4 +114,4 @@ images:
   # A roll-forward must change THIS value, not the live object:
   #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.13.0
   - name: weirvern-worker
-    newTag: "0.17.89"
+    newTag: "0.18.0"

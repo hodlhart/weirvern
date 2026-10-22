@@ -45,11 +45,14 @@ entire point, and an env var inherited through `envFrom` is exactly the leak tha
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import signal
 import threading
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from weirvern import db
@@ -59,6 +62,36 @@ logger = logging.getLogger("weirvern.sensor_agent")
 
 DEFAULT_INTERVAL_S = 15
 FLOW_SHIP_INTERVAL_S = 5.0
+
+
+def trunk_state_dir() -> str:
+    return (os.environ.get("TRUNK_STATE_DIR") or "/run/weirvern/trunk").strip()
+
+
+def sync_trunk(iface: str) -> None:
+    """Adapt this unit to an access port or a trunk, as the port actually is.
+
+    THE DEFAULT IS THE ADAPTIVE PATH, NOT A MODE. Sonar's observation already records every
+    802.1Q tag it sees; `trunk.sync` turns those tags into host VLAN devices when they exist,
+    and records the parent alone when they do not. It never changes the configured parent:
+    the heartbeat keeps naming the port the unit was installed on, while `interfaces` reports
+    the real devices this process can see.
+    """
+    try:
+        from weirvern.admin import trunk  # noqa: PLC0415
+
+        state = trunk.sync(iface, state_dir=trunk_state_dir(),
+                           seconds=float(os.environ.get("TRUNK_DETECT_S", trunk.DEFAULT_WATCH_S)))
+        if state.error:
+            logger.warning("trunk: %s", state.error)
+        elif state.vlans:
+            logger.info("trunk: %s carries VLANs %s -> capture ports %s",
+                        iface, ",".join(map(str, state.vlans)), ", ".join(state.ifaces))
+        else:
+            logger.info("trunk: no VLAN tags observed on %s; using the parent port", iface)
+    except Exception as exc:  # noqa: BLE001 -- a trunk probe must not take the unit down
+        logger.warning("trunk: probe failed on %s: %s", iface, exc)
+
 
 
 def gateway_client():
@@ -170,6 +203,181 @@ def _ship_flows_gateway(client, *, path: str = "", state=None) -> int:
     state.note_read(st, end)
     ingester_mod.save_tail_state(path, state)
     return int(inserted)
+
+
+RENEW_CHECK_S = 6 * 3600.0
+RENEW_BEFORE_DAYS = 30
+ZEEK_SHIP_INTERVAL_S = 5.0
+ZEEK_SHIP_BATCH = 500
+
+
+def zeek_log_dir() -> str:
+    return (os.environ.get("ZEEK_LOG_DIR") or "/zeek/logs").strip()
+
+
+def zeek_ship_state_path() -> str:
+    return (os.environ.get("WEIRLING_ZEEK_STATE")
+            or os.path.join(trunk_state_dir(), "zeek-offsets.json"))
+
+
+def _load_zeek_offsets(path: str) -> dict:
+    try:
+        data = json.loads(Path(path).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_zeek_offsets(path: str, state: dict) -> None:
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(path).with_name(Path(path).name + ".tmp")
+        tmp.write_text(json.dumps(state, sort_keys=True))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _parse_zeek_chunk(path: str, *, offset: int, fields: list[str], separator: str,
+                     limit: int = ZEEK_SHIP_BATCH) -> tuple[list[dict], int, list[str], str]:
+    """Read complete records from a Zeek TSV log, preserving the header for a mid-file resume."""
+    from weirvern import ingester  # noqa: PLC0415
+
+    records: list[dict] = []
+    consumed = offset
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            while len(records) < limit:
+                raw = fh.readline()
+                if not raw:
+                    break
+                if not raw.endswith("\n"):
+                    # An async writer is mid-line; leave it for the next pass.
+                    break
+                consumed = fh.tell()
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    sep, parsed = ingester.parse_zeek_header([line])
+                    if parsed:
+                        fields, separator = parsed, sep
+                    elif line.startswith("#separator"):
+                        separator = sep
+                    continue
+                if not fields:
+                    # A data line without a header is not safe to interpret.
+                    continue
+                cols = line.split(separator)
+                if len(cols) != len(fields):
+                    continue
+                records.append(dict(zip(fields, cols, strict=False)))
+    except OSError:
+        return [], offset, fields, separator
+    return records, consumed, fields, separator
+
+
+def _ship_zeek_once(client, *, root: str = "", state_path: str = "") -> int:
+    """Ship new rows from every supported Zeek log, with a persisted byte cursor.
+
+    The remote unit's own capture writes the same TSV logs the hub's local tailer understands.
+    Sending parsed records (not a file copy) lets the gateway reuse `insert_zeek_records`, so
+    a remote row is mapped and validated by the same code as a local one. Cursors advance only
+    after a successful POST; a failure retries the same batch.
+    """
+    from weirvern import ingester  # noqa: PLC0415
+
+    root = root or zeek_log_dir()
+    state_path = state_path or zeek_ship_state_path()
+    state = _load_zeek_offsets(state_path)
+    total = 0
+    base = Path(root)
+    if not base.exists():
+        return 0
+    supported = set(ingester.ZEEK_MAPPERS)
+    for path in sorted(base.rglob("*.log")):
+        log_type = path.name.split(".", 1)[0]
+        if log_type not in supported:
+            continue
+        key = str(path)
+        old = state.get(key)
+        if not isinstance(old, dict):
+            old = {}
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        offset = int(old.get("offset") or 0)
+        inode = int(old.get("inode") or 0)
+        fields = [str(f) for f in (old.get("fields") or [])]
+        separator = str(old.get("separator") or "\t")
+        if inode and inode != st.st_ino or st.st_size < offset:
+            offset, fields, separator = 0, [], "\t"
+        records, new_offset, fields, separator = _parse_zeek_chunk(
+            key, offset=offset, fields=fields, separator=separator)
+        if not records:
+            # Still record a header-only read so a restart does not have to re-read it.
+            if new_offset != offset:
+                state[key] = {"offset": new_offset, "inode": st.st_ino,
+                              "fields": fields, "separator": separator}
+            continue
+        inserted = client.send_zeek(log_type, records)
+        # Only advance after the gateway accepted the batch. `inserted` may be less than the
+        # record count when the mapper rejects a row; the bytes are still consumed because the
+        # gateway has seen them and a retry cannot repair a malformed source row.
+        del inserted
+        state[key] = {"offset": new_offset, "inode": st.st_ino,
+                      "fields": fields, "separator": separator}
+        total += len(records)
+    _save_zeek_offsets(state_path, state)
+    return total
+
+
+def _zeek_shipper(settings, stop: threading.Event) -> None:
+    """A separate thread: a slow log upload must never take the heartbeat down."""
+    client = None
+    logger.info("zeek: shipping %s to the hub over the authenticated gateway", zeek_log_dir())
+    while not stop.is_set():
+        try:
+            if client is None:
+                client = connect(settings)
+            if getattr(client, "is_gateway", False):
+                _ship_zeek_once(client)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("zeek: shipping pass failed: %s", exc)
+            client = None
+        stop.wait(ZEEK_SHIP_INTERVAL_S)
+
+
+def _maybe_renew_certificate(client) -> None:
+    """Renew this unit's certificate before its 90-day life ends.
+
+    The gateway's `/v1/renew` route existed but nothing called it, so a correctly enrolled
+    sensor still went dark on day 90. This runs on the plan-refresh cadence (cheap local check,
+    one request only when the leaf is inside the window) and writes the new chain atomically.
+    A failed renewal is logged and retried; it does not stop capture or an intercept.
+    """
+    if not getattr(client, "is_gateway", False):
+        return
+    cert_path = str(getattr(client, "cert_path", "") or "")
+    key_path = str(getattr(client, "key_path", "") or "")
+    if not cert_path or not key_path:
+        return
+    try:
+        from weirvern.weirling_client import certificate_expiry, renew_certificate  # noqa: PLC0415
+
+        expires = certificate_expiry(cert_path)
+        if expires is None:
+            logger.warning("renew: could not read the certificate at %s", cert_path)
+            return
+        remaining = (expires - datetime.now(UTC)).total_seconds()
+        if remaining > RENEW_BEFORE_DAYS * 86400:
+            return
+        renewed = renew_certificate(client, cert_path=cert_path, key_path=key_path)
+        logger.info("renew: certificate replaced; now valid until %s", renewed)
+    except Exception as exc:  # noqa: BLE001 -- a renewal failure must not kill the sensor
+        logger.warning("renew: failed (will retry): %s", exc)
 
 
 def _run_pending_sonar(client, default_iface: str) -> None:
@@ -328,6 +536,12 @@ def plan_for(client, sid: str) -> tuple[object | None, str]:
         try:
             return client.plan(), ""
         except Exception as exc:  # noqa: BLE001
+            # A REVOKED IDENTITY IS A COMMAND, NOT A READ FAILURE. The gateway answers 403
+            # when this certificate is no longer registered; keeping a live in-path intercept
+            # would be the one case where fail-safe means fail-open forever. The caller stops
+            # the intercept on this marker; every transport/5xx failure still preserves it.
+            if int(getattr(exc, "status", 0) or 0) == 403:
+                return None, f"REVOKED: {str(exc)[:180]}"
             return None, str(exc)[:200]
     try:
         for reg in fleet_store.read_registrations(client):
@@ -471,6 +685,12 @@ def refresh_plan(client, sid: str, controller: InterceptController) -> None:
     """
     plan, why = plan_for(client, sid)
     if why:
+        if why.startswith("REVOKED:"):
+            logger.error("intercept: this unit was revoked (%s); stopping any in-path intercept",
+                         why)
+            controller.stop(why="the hub revoked this unit")
+            controller.mode = "loch"
+            return
         logger.warning(
             "intercept: this unit's plan could not be read (%s); keeping the current "
             "intercept state until the registry is readable again", why)
@@ -542,12 +762,27 @@ def main() -> None:
     logger.info("sensor unit %r: heartbeat every %ds, observing %s on %s",
                 sid, interval, os.environ.get("ZEEK_LOG_DIR") or "/zeek/logs", iface)
 
+    # THE DEFAULT PORT ADAPTATION. An access port has no tags and this is a no-op; a trunk
+    # gets one host VLAN device per observed tag before the heartbeat reports its interfaces.
+    # The capture helper runs the same probe before starting Zeek, so both ends agree about
+    # which ports exist. A unit that has not been granted NET_ADMIN records the reason.
+    sync_trunk(iface)
+
     if flow_shipping_enabled():
         threading.Thread(target=_flow_shipper, args=(settings, stop), daemon=True,
                          name="netflow-shipper").start()
     else:
         logger.info("netflow: not enabled on this unit (WEIRLING_NETFLOW is unset) -- an exporter "
                     "here has nowhere to land")
+
+    # REMOTE ZEEK SHIPPING. A gateway unit has no database credential, so its DNS/TLS/HTTP/
+    # connection rows otherwise stay on the sensor and the hub's views are blind to that
+    # segment. The shipper is mTLS-only and sends parsed records through the hub's own mapper.
+    if ((os.environ.get("WEIRLING_GATEWAY_URL") or "").strip()
+            and str(os.environ.get("WEIRLING_ZEEK", "1")).strip().lower()
+            not in ("0", "false", "no", "off")):
+        threading.Thread(target=_zeek_shipper, args=(settings, stop), daemon=True,
+                         name="zeek-shipper").start()
 
     # THE UNIT'S OWN INTERCEPT, FROM ITS OWN PLAN. Nothing is armed until a plan says so: this
     # object starts inert and `refresh_plan` (below, once per PLAN_REFRESH_S) is the only thing
@@ -556,6 +791,7 @@ def main() -> None:
     # the HUB's sensor; the units inherit it through envFrom and must not obey it).
     controller = InterceptController(sid)
     last_plan_read = 0.0
+    last_renew_check = 0.0
 
     client = None
     while not stop.is_set():
@@ -563,6 +799,9 @@ def main() -> None:
             if client is None:
                 client = connect(settings)
             now = time.monotonic()
+            if now - last_renew_check >= RENEW_CHECK_S:
+                last_renew_check = now
+                _maybe_renew_certificate(client)
             if now - last_plan_read >= PLAN_REFRESH_S:
                 last_plan_read = now
                 refresh_plan(client, sid, controller)

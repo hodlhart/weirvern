@@ -126,7 +126,7 @@ def test_enrollment_schema_keeps_token_hashes_without_secret_columns():
 
 def test_gateway_routes_and_mtls_are_wired():
     src = (ROOT / "weirvern" / "weirling_gateway.py").read_text()
-    for route in ("/v1/enroll", "/v1/heartbeat", "/v1/flows", "/v1/plan", "/v1/renew",
+    for route in ("/v1/enroll", "/v1/heartbeat", "/v1/flows", "/v1/zeek", "/v1/plan", "/v1/renew",
                   "/v1/sonar/next", "/v1/sonar/result"):
         assert route in src
     assert "ssl.CERT_OPTIONAL" in src

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.18.0 — 2026-10-22
+
+TRUNK BY DEFAULT; THE REMOTE SENSOR GROWS UP.
+
+- A sensor observes its capture port before capture starts. No 802.1Q tags means the parent
+  port is captured; tags mean one host VLAN device per tag (`eth1.10`, `eth1.20`) and one
+  Zeek per VLAN. There is no trunk/access mode to choose. The state lives on the node and
+  moving the cable back to an access port removes the devices the manager created.
+- Remote weirlings ship parsed Zeek/DNS/HTTP/TLS/conn records through the authenticated
+  gateway (`/v1/zeek`), mapped by the hub's own `ZEEK_MAPPERS`. They also renew certificates
+  inside the 30-day window and stop an in-path intercept on a revoked identity (403) rather
+  than preserving it as a transient read failure.
+- The remote agent now carries `NET_ADMIN` as well as `NET_RAW`, so an adopted unit can run
+  an in-path plan rather than only reporting the refusal.
+- The remaining gaps are documented in `docs/weirling-remote-gaps.md`: remote resolver
+  blocking, host telemetry, the remote test run, install-time NetFlow/capture changes,
+  hub-driven updates, and remote domain-hit records.
+- Trunk design and limits: `docs/design/trunk-default.md`.
+
 ## 0.17.89 — 2026-10-22
 
 FLOWS SAY WHICH HALF THEY ARE.

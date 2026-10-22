@@ -580,6 +580,15 @@ docker save "weirvern-zeek:$ZEEK_TAG" | k3s ctr images import - >/dev/null
 ok "imported $(k3s ctr images ls 2>/dev/null | grep -c 'weirvern-') weirvern image(s)"
 
 # ── deploy ────────────────────────────────────────────────────────────────────────
+# THE mTLS INGEST EDGE IS PART OF THE DEFAULT INSTALL. Generate the CA and server certificate
+# before the first apply, because the gateway is in the base kustomization. The script reuses
+# existing CA secrets, so re-running this installer never invalidates enrolled sensors.
+log "mTLS ingest PKI"
+WEIRVERN_GATEWAY_HOST="$(hostname -f 2>/dev/null || hostname)" \
+    sh "$PROJECT_DIR/scripts/bootstrap-mtls.sh" \
+    || die "could not bootstrap the hub mTLS PKI; the gateway is required for weirling adoption"
+ok "hub CA, server certificate and gateway secrets ready"
+
 log "Applying manifests"
 kubectl apply -k k8s/ >/dev/null
 ok "namespace, workloads and the schema Job applied"
@@ -630,7 +639,7 @@ fi
 log "Re-applying for the schema Job and restarting readers"
 kubectl -n "$NAMESPACE" delete job weirvern-schema --ignore-not-found >/dev/null
 kubectl apply -k k8s/ >/dev/null
-kubectl -n "$NAMESPACE" rollout restart deploy/weirvern-worker deploy/weirvern-gui >/dev/null 2>&1 || \
+kubectl -n "$NAMESPACE" rollout restart deploy/weirvern-worker deploy/weirvern-gui deploy/weirvern-ingest >/dev/null 2>&1 || \
     warn "rollout restart failed; the worker will still recover on its own within ~30s"
 
 if [ "$SIPHON" = "1" ]; then

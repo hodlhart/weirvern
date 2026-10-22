@@ -104,6 +104,70 @@ spec:
       # and configures the forwarding path only when SENSOR_MODE says siphon. The worker still
       # verifies the same facts at apply time; this makes the healthy state the default.
       initContainers:
+        - name: trunk-init
+          # THE DEFAULT PORT ADAPTER. This is not a mode: every sensor observes its capture
+          # port before Zeek starts. An access port yields a state file naming the parent; a
+          # trunk yields one host VLAN device per tag and a state file naming eth1.<vid>.
+          # The capture container reads the same file, so both topologies take one path.
+          image: weirvern-worker
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              PARENT="${CAPTURE_IFACE:-${ZEEK_IFACE:-}}"
+              if [ -z "$PARENT" ]; then
+                mkdir -p /state
+                echo "[trunk-init] no capture parent configured; capture will idle"
+                : > /state/ifaces
+                exit 0
+              fi
+              mkdir -p /state
+              # A probe failure must not stop capture: the state file records the parent and
+              # the reason in trunk.json, and the capture fallback preserves the old behavior.
+              python3 -m weirvern.admin.trunk detect \
+                --parent "$PARENT" --state /state --seconds "${TRUNK_DETECT_S:-12}" \
+                || echo "[trunk-init] probe failed; capture will use $PARENT"
+          env:
+            - name: ZEEK_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: ZEEK_IFACE
+                  optional: true
+            - name: CAPTURE_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: CAPTURE_IFACE
+                  optional: true
+            - name: MGMT_IFACE
+              valueFrom:
+                configMapKeyRef:
+                  name: weirvern-env
+                  key: MGMT_IFACE
+                  optional: true
+            - name: TRUNK_DETECT_S
+              value: "12"
+          securityContext:
+            # Creating VLAN devices and bringing them up is NET_ADMIN; observing tags is
+            # NET_RAW. The capture container keeps its narrower NET_RAW-only posture.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN", "NET_RAW"]
+            runAsUser: 0
+            runAsGroup: 0
+          volumeMounts:
+            - name: trunk-state
+              mountPath: /state
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
         - name: siphon-forwarding-init
           image: weirvern-worker
           imagePullPolicy: IfNotPresent
@@ -514,7 +578,11 @@ spec:
               # whole capture down (measured: CrashLoopBackOff on a two-NIC sensor). Each NIC
               # gets its own process AND its own log directory; the ingester walks the
               # subdirectories, so neither NIC's conn.log is invisible.
-              IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
+              # TRUNK DEFAULT: the init container below observed this port and wrote the real
+              # capture set. No tags -> the file names the parent; tags -> it names eth1.<vid>
+              # devices. Fall back to ZEEK_IFACES only when there is no state (older pod).
+              IFACES=$(cat /state/ifaces 2>/dev/null | tr '\n' ' ' || true)
+              [ -n "$IFACES" ] || IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
               COUNT=0
               for one in $IFACES; do [ -n "$one" ] && COUNT=$((COUNT + 1)); done
               if [ "$COUNT" -eq 0 ]; then
@@ -620,6 +688,9 @@ spec:
             - name: zeek-site
               mountPath: /zeek/site
               readOnly: true
+            - name: trunk-state
+              mountPath: /state
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -680,6 +751,12 @@ spec:
           hostPath:
             path: /proc/sys
             type: Directory
+        - name: trunk-state
+          hostPath:
+            # Persistent on the node: a later probe can remove VLAN devices this manager
+            # created if the port is moved back to an access port.
+            path: /var/lib/weirvern/trunk
+            type: DirectoryOrCreate
         - name: zeek-logs
           hostPath:
             path: /var/lib/weirvern/zeek

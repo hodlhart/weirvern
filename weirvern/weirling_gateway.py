@@ -312,6 +312,29 @@ class Gateway:
         finally:
             client.close()
 
+    def zeek(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Raw Zeek log records from a remote capture, mapped by the hub's own ingester."""
+        log_type = str(body.get("log_type") or "").strip()
+        records = body.get("records") if isinstance(body, dict) else None
+        if not log_type:
+            return 400, {"error": "log_type is required"}
+        if not isinstance(records, list):
+            return 400, {"error": "records must be a list"}
+        if len(records) > 5000:
+            return 413, {"error": "too many records in one request"}
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            try:
+                inserted = ingester.insert_zeek_records(client, log_type, records)
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
+            return 200, {"ok": True, "inserted": inserted}
+        finally:
+            client.close()
+
     def _sonar_row(self, client, request_id: str) -> dict[str, Any] | None:
         rows = list(client.query(
             "SELECT request_id, sensor_id, iface, mgmt_iface, status, result, error "
@@ -563,6 +586,8 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.heartbeat(sid, body))
             if path == "/v1/flows":
                 return self._json(*gateway.flows(sid, body))
+            if path == "/v1/zeek":
+                return self._json(*gateway.zeek(sid, body))
             if path == "/v1/renew":
                 return self._json(*gateway.renew(sid, body))
             if path == "/v1/sonar/result":

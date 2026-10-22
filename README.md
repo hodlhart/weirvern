@@ -22,12 +22,12 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.17.89</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.18.0</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
   <a href="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.17.89-2f81f7"></a>
+  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.18.0-2f81f7"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2f81f7"></a>
   <a href="https://kubernetes.io/"><img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-conformant-326ce5"></a>
   <a href="SECURITY.md"><img alt="Security" src="https://img.shields.io/badge/security-policy-2f81f7"></a>
@@ -175,9 +175,10 @@ create the Weirvern local CA, install its root on the devices that will use the 
 browse `https://sensor.example` (replace with your internal name). The certificate chains to the
 Weirvern root and is renewed by cert-manager; no public CA or internet-facing port is involved.
 
-Remote weirlings can use the separate mTLS ingest gateway in
-[`k8s/mtls`](k8s/mtls/README.md): one-time enrollment tokens, per-sensor client
-certificates, and no database credential on the sensor.
+Remote weirlings use the mTLS ingest gateway in [`k8s/mtls`](k8s/mtls/README.md): one-time
+enrollment tokens, per-sensor client certificates, and no database credential on the sensor.
+The gateway is part of the default install and `scripts/deploy-weirling.sh` adopts over mTLS by
+default; `--legacy-clickhouse` is only for migrating a hub whose gateway is not reachable yet.
 
 **Requirements:** a conformant Kubernetes cluster, a Linux sensor node for capture, and one of:
 NetFlow/sFlow/IPFIX export, a SPAN/mirror port, or a TAP. The hub can run on the same node for a
@@ -223,6 +224,7 @@ for networks you own or are explicitly authorized to monitor.
 - [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
 - [Detection and alerting](docs/detection.md) — the ensemble, ATT&CK mapping, alert hygiene
 - [Flow direction](docs/design/flow-direction.md) — request/reply evidence in the Flows tab
+- [Trunk ports](docs/design/trunk-default.md) — adaptive VLAN devices, the default topology
 - [Remote weirling gaps](docs/weirling-remote-gaps.md) — what a remote sensor still cannot do
 - [Operations](docs/operations.md) — CLI, lifecycle, backups, key settings, troubleshooting
 - [Security and privacy](docs/security.md) — privileges, RBAC, data sensitivity, exposure

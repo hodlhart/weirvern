@@ -17,10 +17,10 @@
 # view ("who is this and whose is it"); the row appears as UNREGISTERED until someone says so.
 # That is the view's entire point.
 #
-# THE TRANSPORT IS DIRECT: the agent writes sensor_status into the hub's ClickHouse. When the
-# target is not the hub, that needs clickhouse-external reachable from the target -- pass
-# --expose to let this script open the NodePort (it prints exactly what it changed), or open
-# it yourself. The documented durable alternative (a broker) is a later design change.
+# THE TRANSPORT IS mTLS BY DEFAULT: the agent enrolls once, then writes heartbeats, plans,
+# flows and Zeek records through the hub gateway with a client certificate. No database
+# credential is written to the target. `--legacy-clickhouse` is the explicit migration path
+# for a hub whose gateway is not reachable yet; it opens clickhouse-external with --expose.
 #
 # USAGE
 #   scripts/deploy-weirling.sh --hub root@hub --target root@sensor-box \
@@ -47,12 +47,12 @@
 #                 the hub's `flows` table (goflow2 on 2055/6343 -> the unit's agent -> ClickHouse).
 #                 This is how an exporter somewhere else in the network gets its records into
 #                 Weirvern without a route to the hub. Inert until an exporter is pointed at it.
-#   --mtls        ADOPT this unit through the hub's mTLS gateway instead of giving it a
-#                 ClickHouse credential. The script obtains a one-time token (unless
-#                 --mtls-token is supplied), enrolls a locally generated key/CSR, writes only
-#                 the certificate chain under /etc/weirvern-weirling, and starts the agent in
-#                 gateway mode. The default remains the direct-ClickHouse path.
+#   --mtls        Accepted for compatibility; mTLS is now the DEFAULT.
 #   --mtls-token  use this already-issued one-time token instead of asking the hub CLI.
+#   --legacy-clickhouse
+#                 Explicitly opt OUT of mTLS and give the unit a ClickHouse credential. This is
+#                 a migration path for a hub whose gateway is not yet reachable; it is not the
+#                 default and must be asked for.
 #   --remove      stop and remove the containers on the target (logs kept; --purge too)
 #   --purge       with --remove: also delete the env file, helper and log directory
 #   --dry-run     run every CHECK (including the refusals) and print the plan; change nothing
@@ -68,7 +68,7 @@ EXPOSE=0
 GATE=0
 GATE_IFACE=""
 NETFLOW=0
-MTLS=0
+MTLS=1
 MTLS_TOKEN=""
 REMOVE=0
 PURGE=0
@@ -91,6 +91,7 @@ while [ $# -gt 0 ]; do
         --netflow) NETFLOW=1; shift ;;
         --mtls) MTLS=1; shift ;;
         --mtls-token) MTLS_TOKEN="${2:?--mtls-token needs a value}"; MTLS=1; shift 2 ;;
+        --legacy-clickhouse) MTLS=0; shift ;;
         --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
         --remove) REMOVE=1; shift ;;
         --purge) PURGE=1; shift ;;
@@ -231,11 +232,10 @@ if [ "$MTLS" = "1" ]; then
     # credential is written to the target. The gateway must already be deployed; this
     # script refuses to invent a second transport when it is absent.
     INGEST_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc weirvern-ingest -o jsonpath='{.spec.ports[0].nodePort}'" 2>/dev/null || true)"
-    [ -n "$INGEST_PORT" ] || die "the hub has no weirvern-ingest NodePort; apply k8s/mtls first, then re-run with --mtls"
+    [ -n "$INGEST_PORT" ] || die "the hub has no weirvern-ingest NodePort; its default mTLS edge is missing. Re-run the hub installer (scripts/bootstrap-mtls.sh + k8s/) before adopting."
     INGEST_HOST="${HUB##*@}"
-    case "$INGEST_HOST" in
-        *[0-9].[0-9]*) die "--mtls needs a hostname whose certificate the gateway carries (use --hub root@<name>, not an IP)" ;;
-    esac
+    # The default installer puts every node IPv4 in the server certificate's SAN, so an
+    # address is valid here as well as a hostname. Do not reject either form.
     GATEWAY_URL="https://${INGEST_HOST}:${INGEST_PORT}"
     say "  gateway for the agent: $GATEWAY_URL (mTLS; no database credential)"
 else
@@ -306,7 +306,7 @@ if [ "$MTLS" = "1" ]; then
     step "adopting the weirling over mTLS"
     rsh "$TARGET" "mkdir -p /etc/weirvern-weirling/pki && chown 0:0 /etc/weirvern-weirling/pki && chmod 0700 /etc/weirvern-weirling/pki"
     ROOT_B64="$(rsh "$HUB" "kubectl -n weirvern get secret weirling-root -o jsonpath='{.data.root-ca\.crt}'")"
-    [ -n "$ROOT_B64" ] || die "the hub has no weirling-root Secret; apply k8s/mtls before adopting"
+    [ -n "$ROOT_B64" ] || die "the hub has no weirling-root Secret; its default mTLS PKI is missing. Re-run the hub installer (scripts/bootstrap-mtls.sh) before adopting."
     printf '%s' "$ROOT_B64" | rsh "$TARGET" "base64 -d > /etc/weirvern-weirling/pki/root-ca.crt && chown 0:0 /etc/weirvern-weirling/pki/root-ca.crt && chmod 0644 /etc/weirvern-weirling/pki/root-ca.crt"
     if [ -z "$MTLS_TOKEN" ]; then
         TOKEN_JSON="$(rsh "$HUB" "kubectl -n weirvern exec deploy/weirvern-gui -- weirvern weirlings token --sensor-id '$SENSOR_ID' --mode loch --segment '$SEGMENT' --json")" \
@@ -393,6 +393,9 @@ ENVF=/etc/weirvern-weirling.env
 # effective NET_RAW capability, which Docker does not grant to a non-root UID.
 AGENT_USER='10001:10001'
 [ "$MTLS" = "1" ] && AGENT_USER='0:0'
+# Every unit owns one trunk-state directory. It survives a restart so the next probe can
+# remove VLAN devices this unit created when the port is moved back to an access port.
+TRUNKSTATE="/var/lib/weirvern-weirling/trunk-$ID"
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
   stop)   docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true ;;
@@ -402,10 +405,22 @@ case "\${1:-status}" in
       echo "weirvern-weirling: REFUSING to capture on '\$IFACE' -- management NIC" >&2; exit 1
     fi
     docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true
+    # TRUNK IS THE DEFAULT, NOT A MODE. Sonar's observation is run before capture starts:
+    # no tags -> the state file names the parent; tags -> it names one VLAN device per tag and
+    # this helper creates them in the host namespace with NET_ADMIN. The capture command then
+    # reads the same state file, so an access port and a trunk take the identical path.
+    mkdir -p "\$TRUNKSTATE"
+    chmod 0755 "\$TRUNKSTATE" 2>/dev/null || true
+    docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
+      --security-opt no-new-privileges -v "\$TRUNKSTATE":/state -e MGMT_IFACE="\$MGMT" \
+      --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.trunk detect \
+      --parent "\$IFACE" --state /state --seconds "\${TRUNK_DETECT_S:-12}" \
+      >/tmp/weirvern-trunk-\$ID.log 2>&1 || echo "weirvern-trunk: probe failed; capture will use \$IFACE (see /tmp/weirvern-trunk-\$ID.log)"
     docker run -d --name "weirvern-capture-\$ID" --restart unless-stopped \\
       --network host --cap-drop ALL --cap-add NET_RAW --security-opt no-new-privileges \\
       -v "\$LOGDIR":/zeek/logs -v /etc/weirvern-weirling/site:/zeek/site:ro \\
-      --entrypoint /bin/sh "$ZEEK_IMG" -c "set -eu; IFACE='$IFACE'; [ -e /sys/class/net/$IFACE ] || exit 1; exec zeek -i $IFACE -C /zeek/site/weirvern-local.zeek Log::default_rotation_interval=1hr Log::default_logdir=/zeek/logs" >/dev/null
+      -v "\$TRUNKSTATE":/state:ro -e FALLBACK_IFACE="$IFACE" \\
+      --entrypoint /bin/sh "$ZEEK_IMG" -c 'set -eu; IFACES=\$(cat /state/ifaces 2>/dev/null || true); : "\${IFACES:=\$FALLBACK_IFACE}"; PIDS=""; for one in \$IFACES; do [ -e /sys/class/net/\$one ] || { echo "no such interface: \$one" >&2; exit 1; }; mkdir -p /zeek/logs/\$one; zeek -i \$one -C /zeek/site/weirvern-local.zeek Log::default_rotation_interval=1hr Log::default_logdir=/zeek/logs/\$one & PIDS="\$PIDS \$!"; done; trap "kill \$PIDS 2>/dev/null; wait" TERM INT; wait' >/dev/null
     if [ "\$NETFLOW" = "1" ]; then
       # THE COLLECTOR. Runs the hub's own collector image with the hub's own arguments, so a record
       # written here is the record the hub writes for its exporters; the agent above ships them into
@@ -421,11 +436,12 @@ case "\${1:-status}" in
     fi
     docker run -d --name "weirvern-agent-\$ID" --restart unless-stopped \\
       --network host --env-file "\$ENVF" --user "$AGENT_USER" \\
-      --cap-drop ALL --cap-add NET_RAW \\
+      --cap-drop ALL --cap-add NET_RAW --cap-add NET_ADMIN \\
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
-      -e MGMT_IFACE="\$MGMT" \\
+      -e MGMT_IFACE="\$MGMT" -e TRUNK_STATE_DIR=/state \\
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
+      -v "\$TRUNKSTATE":/state \\
       -v "\$PKIDIR":"\$PKIDIR":ro \\
       --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.sensor_agent >/dev/null
     # NOTE ON THE EXPANSIONS: this whole block was written by the deploy script (the heredoc is
