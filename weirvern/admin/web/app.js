@@ -1999,59 +1999,6 @@ async function loadDetectors() {
   registryApplyFlash();
 }
 
-/** A 24-bucket occurrence sparkline for one grouped anomaly.
- *
- * The count says HOW MANY windows; this says WHEN they happened. Same grouping, same windows
- * payload, so the line cannot disagree with the number above it. Bucket boundaries follow the
- * selected range, and a quiet bucket is a zero -- not a gap that reads as missing data.
- */
-function anTrend(a, hours) {
-  const ns = "http://www.w3.org/2000/svg";
-  const h = 18, w = 58, buckets = 24;
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-  svg.setAttribute("class", "an-trend");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `${Number(a.n || 1)} occurrence(s) in the selected window`);
-  const hrs = Math.max(1, Number(hours) || 24);
-  // `windows` is NOT a list of ISO strings by the time it reaches the renderer: the review
-  // merge turns each entry into {window, review_state, ...}. `new Date(object)` is Invalid Date,
-  // which is how the first live build drew 100 empty trends beside counts of 2. Accept both.
-  const times = (a.windows || [])
-    .map((entry) => new Date(entry && typeof entry === "object" ? entry.window : entry).getTime())
-    .filter((t) => Number.isFinite(t));
-  if (!times.length) {
-    svg.setAttribute("class", "an-trend an-trend-empty");
-    return svg;
-  }
-  // DO NOT DROP A WINDOW FOR BEING "IN THE FUTURE" (found on live data, 2026-10-21). The
-  // table's timestamps can be ahead of the browser clock (server timezone offset), and the
-  // old strict [now-hours, now] filter skipped every one of them -- the count said 2 and the
-  // trend rendered empty. The selected range still leads; the occurrence span widens it just
-  // enough to include what the table actually returned.
-  const now = Date.now();
-  const end = Math.max(now, Math.max(...times));
-  const start = Math.min(now - hrs * 3600 * 1000, Math.min(...times));
-  const counts = Array(buckets).fill(0);
-  let placed = 0;
-  for (const t of times) {
-    const i = Math.min(buckets - 1, Math.max(0, Math.floor(((t - start) / Math.max(1, end - start)) * buckets)));
-    counts[i] += 1;
-    placed += 1;
-  }
-  if (!placed) {
-    svg.setAttribute("class", "an-trend an-trend-empty");
-    return svg;
-  }
-  const max = Math.max(1, ...counts);
-  const x = (i) => (i / (buckets - 1)) * w;
-  const y = (v) => h - 2 - (v / max) * (h - 4);
-  const path = document.createElementNS(ns, "path");
-  path.setAttribute("d", counts.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "));
-  svg.appendChild(path);
-  return svg;
-}
-
 function anRenderSeverity(sc) {
   const box = document.getElementById("an-sev");
   if (!box) return;
@@ -2163,7 +2110,6 @@ async function loadAnomalies() {
                    anToggleOccurrences(e.target.closest("tr"), a);
                  } } }, [
         el("span", { class: "an-count", text: String(a.n || 1) }),
-        anTrend(a, trHours()),
       ]),
       el("td", { class: "dcell", attrs: { title: "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); openHost(a.src_addr); } } },

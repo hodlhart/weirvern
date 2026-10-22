@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.84 — 2026-10-22
+
+ANOMALIES: THE COUNT IS THE COUNT.
+
+- Removed the occurrence trend line beneath the anomaly count column. The count, the
+  click-to-list occurrence interaction, the review/severity/model cells and every other
+  surface are unchanged. The explanation no longer promises a line that is not there.
+
 ## 0.17.83 — 2026-10-22
 
 WEIRLING TRUST: mTLS ENROLLMENT AND A HUB INGEST GATEWAY.
