@@ -7,7 +7,8 @@ NodePort from the user path.
 ## Prerequisites
 
 1. cert-manager is installed (the manifests use its `Certificate` and
-   `ClusterIssuer` CRDs).
+   `ClusterIssuer` CRDs). The live deployment used v1.21.2:
+   `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.yaml`
 2. A two-tier internal CA exists. The root key stays offline; only the
    intermediate certificate and key are stored in the `weirvern-ca` TLS Secret
    in cert-manager's cluster-resource namespace.
