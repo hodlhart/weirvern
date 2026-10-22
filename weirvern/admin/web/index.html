@@ -1519,6 +1519,7 @@
         <div class="controls">
           <label>mode <select id="wl-plan-mode"></select></label>
           <button id="wl-plan-sonar" type="button">Sonar for this weirling</button>
+          <button id="wl-plan-probe" type="button">Test capture (30s)</button>
           <button id="wl-plan-apply" type="button" disabled>Apply to this weirling</button>
         </div>
         <div class="controls">
@@ -1529,6 +1530,7 @@
           <label>targets <input id="wl-plan-targets" class="setting-input" type="text" spellcheck="false" autocomplete="off"></label>
         </div>
         <p id="wl-plan-note" class="muted sonar-note"></p>
+        <p id="wl-plan-probe-note" class="muted sonar-note" role="status" aria-live="polite"></p>
         <div class="info-text hidden" id="wl-plan-info">
   <p><strong>What it is.</strong> The plan the sensor itself will run, stored on its own registration: its mode (loch, or siphon for in-path), and for siphon the capture interface, the segment, the address it borrows, the gateway whose hosts are relayed, and the targets.</p>
   <p><strong>What writes it.</strong> The operator, here.</p>

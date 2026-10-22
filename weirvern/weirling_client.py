@@ -208,6 +208,16 @@ class GatewayClient:
                                   {"request_id": request_id, "result": result,
                                    "error": error}).get("ok"))
 
+    def probe_next(self) -> dict | None:
+        """Claim a pending capture-liveness probe, or None when none is queued."""
+        request = self._request("GET", "/v1/probe/next").get("request")
+        return request if isinstance(request, dict) else None
+
+    def probe_result(self, request_id: str, result: dict, error: str = "") -> bool:
+        return bool(self._request("POST", "/v1/probe/result",
+                                  {"request_id": request_id, "result": result,
+                                   "error": error}).get("ok"))
+
     def gate_rules(self) -> dict:
         return self._request("GET", "/v1/gate/rules")
 

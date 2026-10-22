@@ -129,6 +129,8 @@ def test_gateway_routes_and_mtls_are_wired():
     for route in ("/v1/enroll", "/v1/heartbeat", "/v1/flows", "/v1/zeek", "/v1/plan", "/v1/renew",
                   "/v1/sonar/next", "/v1/sonar/result"):
         assert route in src
+    assert "/v1/probe/next" in src
+    assert "/v1/probe/result" in src
     assert "ssl.CERT_OPTIONAL" in src
     assert "ctx.load_verify_locations" in src
     assert "URI_PREFIX" in src

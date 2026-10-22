@@ -446,6 +446,61 @@ def _run_pending_sonar(client, default_iface: str) -> None:
         logger.warning("sonar: could not post the survey result: %s", exc)
 
 
+_PROBE_LOCK = threading.Lock()
+
+
+def _run_pending_probe(client, default_iface: str) -> None:
+    """Claim one hub-requested CAPTURE probe and run it on a worker thread.
+
+    The probe is read-only and takes up to `seconds`; it must not stall the heartbeat loop for
+    the whole window. One probe at a time per unit: the lock is released by the worker's finally,
+    including when it refuses before posting a result.
+    """
+    if not getattr(client, "is_gateway", False):
+        return
+    if not _PROBE_LOCK.acquire(blocking=False):
+        return
+    request = None
+    try:
+        request = client.probe_next()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("probe: could not claim a capture request: %s", exc)
+    if not request:
+        _PROBE_LOCK.release()
+        return
+    request_id = str(request.get("request_id") or "")
+    target = str(request.get("iface") or default_iface or "").strip()
+    try:
+        seconds = int(request.get("seconds") or 30)
+    except (TypeError, ValueError):
+        seconds = 30
+    if not request_id or not target:
+        _PROBE_LOCK.release()
+        if request_id:
+            with contextlib.suppress(Exception):
+                client.probe_result(request_id, {"ok": False, "error":
+                                   "the probe request has no capture interface"})
+        return
+
+    def _work() -> None:
+        from weirvern.admin import probe as probe_mod  # noqa: PLC0415
+
+        try:
+            result = probe_mod.run_capture_probe(target, seconds=seconds)
+            error = "" if result.get("ok") else str(result.get("error") or "")
+            with contextlib.suppress(Exception):
+                client.probe_result(request_id, result, error=error)
+        except Exception as exc:  # noqa: BLE001 -- a probe refusal is a result
+            logger.warning("probe: capture window failed: %s", exc)
+            with contextlib.suppress(Exception):
+                client.probe_result(request_id, {"ok": False, "error": str(exc)}, error=str(exc))
+        finally:
+            _PROBE_LOCK.release()
+
+    threading.Thread(target=_work, daemon=True, name="capture-probe").start()
+    logger.info("probe: measuring %s for %ss for a hub request", target, seconds)
+
+
 def _flow_shipper(settings, stop: threading.Event) -> None:
     """The thread: its OWN connection, its own retries, and no way to hurt the heartbeat.
 
@@ -832,6 +887,7 @@ def main() -> None:
                 last_plan_read = now
                 refresh_plan(client, sid, controller)
                 _run_pending_sonar(client, iface)
+                _run_pending_probe(client, iface)
             if not controller.should_publish:
                 # A live intercept child owns this sensor's `(sensor_id, 'siphon')` row with the
                 # authoritative numbers (see `should_publish`); writing here would clobber it.

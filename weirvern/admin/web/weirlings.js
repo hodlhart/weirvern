@@ -1195,6 +1195,8 @@ function wireWeirlings() {
   if (planMode) planMode.addEventListener("change", () => wlPlanModeChanged().catch(showError));
   const planSonar = document.getElementById("wl-plan-sonar");
   if (planSonar) planSonar.addEventListener("click", () => wlRunPlanSonar().catch(showError));
+  const planProbe = document.getElementById("wl-plan-probe");
+  if (planProbe) planProbe.addEventListener("click", () => wlRunPlanProbe().catch(showError));
   const planApply = document.getElementById("wl-plan-apply");
   if (planApply) planApply.addEventListener("click", () => {
     if (!Object.keys(WL_PLAN.changes).length) return;
@@ -1810,6 +1812,7 @@ function wlRenderPlan(r) {
         + "survey its capture port, or set the fields below and apply."
       : "";
   }
+  wlRenderPlanProbeNote("");
   wlRenderPlanStage();
 }
 
@@ -1851,6 +1854,69 @@ function wlPlanChangesFromSurvey(res) {
   if (gateway) changes.gateway = String(gateway);
   if (rec.intercept_targets) changes.targets = String(rec.intercept_targets);
   return changes;
+}
+
+/** The capture probe's own note, cleared when the sheet opens on a different sensor. */
+function wlRenderPlanProbeNote(text, isError = false) {
+  const note = document.getElementById("wl-plan-probe-note");
+  if (!note) return;
+  note.textContent = text || "";
+  note.classList.toggle("sonar-err", Boolean(isError));
+}
+
+/** A READ-ONLY capture-liveness test for THIS sensor. No mode, plan or sysctl is written. */
+async function wlRunPlanProbe() {
+  const sid = WL_PLAN.sensor_id;
+  if (!sid) return null;
+  const ifaceInput = document.getElementById("wl-plan-iface");
+  const iface = (ifaceInput && ifaceInput.value || "").trim();
+  const btn = document.getElementById("wl-plan-probe");
+  if (!iface) {
+    wlRenderPlanProbeNote("Set the capture iface first — the probe measures a named NIC.", true);
+    return null;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = "Testing capture…"; }
+  wlRenderPlanProbeNote("Measuring the capture port for 30 seconds. Nothing is changed; this "
+    + "only reads the NIC counters and Zeek's conn log.");
+  try {
+    const created = await postJSON("/api/weirlings/probe",
+      { sensor_id: sid, iface, seconds: 30 });
+    if (!created || !created.ok) throw new Error((created && created.error) || "the probe was refused");
+    let row = created;
+    const deadline = Date.now() + 45000;
+    while (row && (row.status === "pending" || row.status === "running")) {
+      if (Date.now() > deadline) {
+        wlRenderPlanProbeNote("The probe was queued but no result arrived within 45s. The sensor "
+          + "may be offline or between plan polls; refresh to see whether it completed.", true);
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      row = await getJSON("/api/weirlings/probe?request=" + encodeURIComponent(created.request_id));
+    }
+    if (!row || !row.ok) throw new Error((row && row.error) || "the probe result could not be read");
+    if (row.status === "failed" || row.error) {
+      wlRenderPlanProbeNote("The probe could not run: " + (row.error || "the sensor refused it"), true);
+      return row;
+    }
+    const r = row.result || {};
+    if (r.observed) {
+      wlRenderPlanProbeNote(
+        `Capture is live: ${r.packets_recv || 0} packet(s) and ${r.conn_bytes || 0} byte(s) of `
+        + `Zeek conn log growth on ${r.iface || iface} over ${r.elapsed_s || r.seconds || 30}s.`);
+    } else {
+      wlRenderPlanProbeNote(
+        `No traffic observed on ${r.iface || iface} during the ${r.seconds || 30}s window. `
+        + "The port exists, but the mirror/segment was silent or Zeek is not attached to this NIC. "
+        + "This is a valid measurement, not a failed request.", false);
+    }
+    return row;
+  } catch (err) {
+    wlRenderPlanProbeNote("The probe failed: "
+      + ((err && err.payload && err.payload.error) || (err && err.message) || String(err)), true);
+    return null;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Test capture (30s)"; }
+  }
 }
 
 /** Sonar, FOR THIS SENSOR: the survey runs against its capture port, not the hub's. */

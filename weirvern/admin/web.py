@@ -498,6 +498,8 @@ def _build_handler(ctx: GuiContext):
                 return self._weirlings(query)
             if path == "/api/weirlings/detail":
                 return self._weirlings_detail(query)
+            if path == "/api/weirlings/probe":
+                return self._weirlings_probe_get(query)
             # The DEEP health view. Distinct from /api/healthz on purpose: that one is the
             # Kubernetes liveness probe and must NOT read ClickHouse (a slow database would
             # restart the GUI and hide the real problem); this one exists precisely to answer
@@ -1601,6 +1603,112 @@ def _build_handler(ctx: GuiContext):
                     payload["revoked"] = []
                     payload["revoked_reason"] = str(exc)
             self._json(payload)
+
+        def _weirlings_probe_get(self, query: dict) -> None:
+            """Read one queued/complete capture probe. A read: no login required."""
+            from weirvern import probe_store  # noqa: PLC0415
+
+            request_id = str((query.get("request") or [""])[0]).strip()
+            if not request_id:
+                return self._error(400, "a request id is required: /api/weirlings/probe?request=ID")
+            try:
+                with self._with_client() as client:
+                    row = probe_store.get_request(client, request_id)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False,
+                                   "error": f"the probe could not be read: {str(exc)[:200]}"}, 503)
+            if row is None:
+                return self._json({"ok": False, "error": "no such capture probe"}, 404)
+            result = None
+            if row.get("result"):
+                try:
+                    result = json.loads(str(row["result"]))
+                except ValueError:
+                    result = None
+            return self._json({
+                "ok": True,
+                "request_id": row["request_id"],
+                "sensor_id": row["sensor_id"],
+                "iface": row.get("iface", ""),
+                "seconds": int(row.get("seconds") or 0),
+                "status": row.get("status", ""),
+                "result": result,
+                "error": row.get("error", ""),
+            })
+
+        def _weirlings_probe_post(self) -> None:
+            """Queue a READ-ONLY capture-liveness probe for a remote weirling.
+
+            Body: `{sensor_id, iface?, seconds?}`. The sensor's own agent claims it on its plan
+            poll and measures its own NIC; the hub never reaches into the box. This does not
+            change a mode, a plan, a sysctl or an interface. An inline/ARP test is a different
+            capability and is deliberately not served here.
+            """
+            if not self._authorize():
+                return
+            from weirvern import fleet_store, probe_store  # noqa: PLC0415
+
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
+            sensor_id = str(body.get("sensor_id") or "").strip()
+            if not sensor_id:
+                return self._json({"ok": False, "error": "sensor_id is required"}, 400)
+            if sensor_id == _gate_sensor_name():
+                return self._json({
+                    "ok": False,
+                    "error": ("this is the hub's own sensor; use the Settings test run there. "
+                              "The remote capture probe is for units with an mTLS agent."),
+                }, 400)
+            try:
+                with self._with_client() as client:
+                    row = fleet_store.classify_one(client, sensor_id)
+                    regs = fleet_store.read_registrations(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False,
+                                   "error": f"the sensor could not be read: {str(exc)[:200]}"}, 503)
+            reg = next((r for r in regs if r.sensor_id == sensor_id), None)
+            if reg is None:
+                return self._json({"ok": False,
+                                   "error": f"no registered weirling named {sensor_id!r}"}, 404)
+            iface = str(body.get("iface") or (reg.plan.iface if reg.plan else "") or "").strip()
+            if not iface:
+                nics = list((row or {}).get("interfaces") or [])
+                if len(nics) == 1:
+                    iface = nics[0]
+                elif nics:
+                    return self._json({
+                        "ok": False,
+                        "error": (f"{sensor_id} reports several NICs ({', '.join(nics)}); name "
+                                  "the capture interface to probe."),
+                    }, 400)
+            if not iface:
+                return self._json({
+                    "ok": False,
+                    "error": (f"{sensor_id} has no capture interface in its plan and has not "
+                              "reported exactly one NIC; name the interface to probe."),
+                }, 400)
+            try:
+                seconds = int(body.get("seconds") or probe_store.DEFAULT_SECONDS)
+            except (TypeError, ValueError):
+                return self._json({"ok": False, "error": "seconds must be a number"}, 400)
+            try:
+                with self._with_client() as client:
+                    created = probe_store.create_request(
+                        client, sensor_id=sensor_id, iface=iface, seconds=seconds)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"ok": False,
+                                   "error": f"the probe could not be queued: {str(exc)[:200]}"}, 503)
+            return self._json({
+                "ok": True,
+                "request_id": created["request_id"],
+                "sensor_id": created["sensor_id"],
+                "iface": created["iface"],
+                "seconds": created["seconds"],
+                "status": created["status"],
+                "scope": "capture-liveness",
+            }, 202)
 
         def _weirlings_detail(self, query: dict) -> None:
             """One sensor, for the drill-down.
@@ -2746,6 +2854,8 @@ def _build_handler(ctx: GuiContext):
                 return self._weirlings_plan()
             if path == "/api/weirlings/apply":
                 return self._weirlings_apply()
+            if path == "/api/weirlings/probe":
+                return self._weirlings_probe_post()
             self._error(404, f"no write route at {path}")
 
         # -- accounts -------------------------------------------------------

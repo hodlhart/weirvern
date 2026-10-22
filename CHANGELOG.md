@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.0 — 2026-10-22
+
+REMOTE CAPTURE-LIVENESS TEST.
+
+- A remote weirling can now be asked for a bounded, READ-ONLY capture probe. The hub queues it
+  over mTLS; the sensor's own agent reads its NIC counters and its Zeek conn-log growth for the
+  window and posts the evidence back. No mode, plan, interface or sysctl is written.
+- `observed:false` is a valid measurement (silent mirror/segment), not a failed test; a probe
+  that cannot read its inputs says why in `error`.
+- The Weirlings sheet has **Test capture (30s)** beside Sonar. It measures the named NIC, not
+  the hub's. In-path/ARP testing remains a separate capability and is not served by this route.
+- New schema: `027_weirling_probe.sql`.
+
 ## 0.18.1 — 2026-10-22
 
 REMOTE HOST TELEMETRY.

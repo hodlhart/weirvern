@@ -39,7 +39,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from weirvern import db, fleet, fleet_store, ingester, sluice_store
+from weirvern import db, fleet, fleet_store, ingester, probe_store, sluice_store
 from weirvern.admin import status as status_mod
 from weirvern.config import get_settings
 from weirvern.sluice import GateState
@@ -411,6 +411,57 @@ class Gateway:
         finally:
             client.close()
 
+    def probe_next(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        """Claim the oldest pending CAPTURE probe for this authenticated sensor.
+
+        The request changes to `running` before the reply is sent, so a second poll cannot run
+        the same window twice. This is read-only on the sensor: no plan, mode or sysctl changes.
+        """
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            row = probe_store.claim_next(client, sensor_id)
+            if row is None:
+                return 200, {"request": None}
+            return 200, {"request": {
+                "request_id": row["request_id"],
+                "iface": row.get("iface", ""),
+                "seconds": int(row.get("seconds") or probe_store.DEFAULT_SECONDS),
+            }}
+        finally:
+            client.close()
+
+    def probe_result(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Record a capture probe's measured result (or the reason it could not run)."""
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            request_id = str(body.get("request_id") or "").strip()
+            if not request_id:
+                return 400, {"error": "request_id is required"}
+            row = probe_store.get_request(client, request_id)
+            if row is None:
+                return 404, {"error": "unknown capture probe request"}
+            if str(row.get("sensor_id")) != sensor_id:
+                return 403, {"error": "capture probe belongs to a different sensor"}
+            result = body.get("result")
+            error = str(body.get("error") or "").strip()
+            if isinstance(result, dict) and result.get("ok") is False and not error:
+                error = str(result.get("error") or "the sensor could not run the capture probe")
+            if error:
+                probe_store.finish(client, row, status="failed", error=error[:2000])
+            else:
+                if not isinstance(result, dict):
+                    return 400, {"error": "result must be a JSON object"}
+                probe_store.finish(client, row, status="done", result=result)
+            return 200, {"ok": True, "request_id": request_id}
+        finally:
+            client.close()
+
     def gate_rules(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
         """The live rule set and resolved domain addresses for a remote gate."""
         client = self.client()
@@ -555,6 +606,11 @@ def _make_handler(gateway: Gateway):
                 if not sid:
                     return
                 return self._json(*gateway.sonar_next(sid))
+            if path == "/v1/probe/next":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.probe_next(sid))
             if path == "/v1/gate/rules":
                 sid = self._sensor()
                 if not sid:
@@ -592,6 +648,8 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.renew(sid, body))
             if path == "/v1/sonar/result":
                 return self._json(*gateway.sonar_result(sid, body))
+            if path == "/v1/probe/result":
+                return self._json(*gateway.probe_result(sid, body))
             if path == "/v1/gate/state":
                 return self._json(*gateway.gate_write_state(sid, body))
             if path == "/v1/gate/events":
