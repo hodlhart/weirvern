@@ -1556,16 +1556,39 @@
 
   <section id="view-settings" class="view">
 
-    <div class="card">
-      <h2>Settings <span class="muted" id="st-window"></span> <button class="info-btn" data-info="st-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-      <p class="muted" id="st-summary"></p>
+    <!-- THE SETTINGS FRONT DOOR (operator audit, 2026-10-22). The tab used to open on a card
+         that contained only a copy of its own title and a summary that rendered empty, then a
+         stack of equally weighted cards. The other tabs lead with a view header and a readable
+         summary; Settings now does the same, and gives the operator one place to find, expand,
+         or jump to the changes they staged. -->
+    <div class="view-head settings-head">
+      <div>
+        <h2>Settings <span class="muted" id="st-window"></span>
+          <button class="info-btn" data-info="st-info" aria-label="how to read this tab"
+                  aria-expanded="false" title="how to read this tab">i</button>
+        </h2>
+        <p class="muted" id="st-summary"></p>
+      </div>
+      <div class="settings-tools">
+        <label class="settings-search">Find
+          <input id="st-filter" type="search" placeholder="name or explanation"
+                 autocomplete="off" spellcheck="false" aria-label="find a setting">
+        </label>
+        <button id="st-expand" class="quiet" type="button">Expand all</button>
+        <button id="st-collapse" class="quiet" type="button">Collapse all</button>
+        <button id="st-stage-jump" class="quiet" type="button" hidden>
+          Review pending <span id="st-stage-jump-count"></span>
+        </button>
+      </div>
+    </div>
 <div class="info-text hidden" id="st-info">
   <p><strong>What it is.</strong> The values the running deployment is using, read from the cluster — each shown as the control that changes it, with an i in a circle beside every row explaining what it does and what happens when it moves.</p>
   <p><strong>What writes it.</strong> Operators with admin rights here — staged and then applied; from a shell, <code>weirvern config set</code> on the hub itself.</p>
   <p><strong>Last changed.</strong> Plan → review → Apply; the header chip counts anything pending.</p>
   <p><strong>Where to see it.</strong> Changes appear in the audit; who may change what is per-role.</p>
 </div>
-    </div>
+
+    <h3 class="settings-section" id="st-section-access">Access and security</h3>
 
     <!--
       WHO YOU ARE, on the page where it changes what the controls do. Renders from the
@@ -1642,6 +1665,8 @@
 </div>
     </div>
 
+    <h3 class="settings-section" id="st-section-detection">Detection</h3>
+
     <div class="card">
       <h2>Detection <button class="info-btn" data-info="st-model-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="st-model-info">
@@ -1663,6 +1688,8 @@
 </div>
       <div id="st-dns" class="grid-inline"></div>
     </div>
+
+    <h3 class="settings-section" id="st-section-operations">Operations</h3>
 
     <div class="card">
       <h2>Storage and runtime</h2>
@@ -1712,6 +1739,8 @@
         Adblock and RPZ are refused — export them as a domain list first.</p>
       </div>
     </div>
+
+    <h3 class="settings-section" id="st-section-changes">Changes</h3>
 
     <!-- STAGED CHANGES. Nothing here writes until Apply. The plan is fetched from the server so
          the blast radius comes from the same code that will perform the write, not from a second

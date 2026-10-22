@@ -2432,6 +2432,19 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // replaced the state it needed.
   H.showView("settings");
   await H.loadSettings();
+  // SETTINGS AUDIT (2026-10-22): the tab now has the same scan layer as the rest of the console.
+  check("Settings has a view header with a find control",
+        !!doc.querySelector("#view-settings .settings-head") &&
+        !!doc.getElementById("st-filter"),
+        "settings header or find control missing");
+  check("Settings groups its cards under section labels",
+        ["st-section-access", "st-section-detection", "st-section-operations", "st-section-changes"]
+          .every((id) => !!doc.getElementById(id)),
+        "a settings section label is missing");
+  check("Settings offers expand and collapse for the card stack",
+        !!doc.getElementById("st-expand") && !!doc.getElementById("st-collapse"));
+  check("Settings has a jump to the one pending set",
+        !!doc.getElementById("st-stage-jump"));
   const inputs = [...doc.querySelectorAll("#view-settings .setting-input")];
   const editableKeys = inputs.map((n) => n.dataset.key);
   check("editable settings render as inputs", editableKeys.includes("base_threshold"),

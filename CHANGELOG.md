@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.88 — 2026-10-22
+
+SETTINGS FINDS ITS FRONT DOOR.
+
+- Removed the redundant opening card and gave Settings the same view-header treatment as
+  the rest of the console: title, version, a **Find** control, **Expand all**, **Collapse
+  all**, and a **Review pending** jump that appears only while changes are staged.
+- Grouped the card stack under **Access and security**, **Detection**, **Operations**, and
+  **Changes**. The one pending-changes card is sticky on wide screens and static on phones.
+- No settings value, write route, apply semantic, account control or blocklist behavior
+  changed. The audit notes live in `docs/design/settings-audit.md`.
+- Gateway JSON responses now serialize datetimes (the remote gate state carries
+  `updated_at`), and the mTLS remote-gate/rules boundary is documented.
+
 ## 0.17.87 — 2026-10-22
 
 REMOTE TRAFFIC GATES OVER mTLS.

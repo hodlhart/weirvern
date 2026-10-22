@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_rule_wire_round_trip_preserves_expiry_and_resolved_addresses():
-    rule = Rule(rule_id="r1", src_cidr="10.0.0.7/32", domain="example.com",
+    rule = Rule(rule_id="r1", src_cidr="198.51.100.7/32", domain="example.com",
                 resolved_ips=["192.0.2.10"], expires_at=datetime(2030, 1, 1, tzinfo=UTC))
     back = sluice_store.rule_from_wire(sluice_store.rule_to_wire(rule))
     assert back.rule_id == "r1"
@@ -26,7 +26,7 @@ def test_gate_store_reads_rules_and_writes_state_without_a_clickhouse_client():
 
     class Gateway:
         def gate_rules(self):
-            return {"rules": [{"rule_id": "r1", "src_cidr": "10.0.0.7/32",
+            return {"rules": [{"rule_id": "r1", "src_cidr": "198.51.100.7/32",
                                "mode": "block", "resolved_ips": []}], "problems": []}
 
         def gate_state(self):

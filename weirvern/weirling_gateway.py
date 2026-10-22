@@ -491,7 +491,7 @@ def _make_handler(gateway: Gateway):
             logger.debug("%s - %s", self.address_string(), fmt % args)
 
         def _json(self, code: int, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload).encode()
+            body = json.dumps(payload, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

@@ -98,10 +98,10 @@ container already carries NET_RAW; the agent does not receive NET_ADMIN.
   domain rules are evaluated by the hub's DNS path; a remote sensor does not answer DNS
   for its segment, so it cannot make a remote client's resolver return a block answer.
 - **Traffic gates** do run on a remote unit when it is installed with `--gate` and sits
-  in the path. That path currently expects the direct-ClickHouse transport for its rule
-  reads and state writes. The `--mtls` install does not yet provide a rules/state
-  endpoint for the gate; do not describe an mTLS remote gate as enforcing until that is
-  built and proved.
+  in the path. An mTLS gate reads the live rules and writes its state through
+  `/v1/gate/rules`, `/v1/gate/state` and `/v1/gate/events`; no database credential is
+  placed on the sensor. Domain rules are enforced as resolved-address packet drops,
+  which is not the same as a DNS answer block.
 
 ## Boundary
 

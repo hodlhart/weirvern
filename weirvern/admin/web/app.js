@@ -483,11 +483,18 @@ function persistStage() {
 
 /** The header chip: how many settings changes are staged, visible from EVERY tab. */
 function renderStagePill() {
-  const pill = document.getElementById("stage-pill");
-  if (!pill) return;
   const n = Object.keys(STAGE.changes).length;
-  pill.classList.toggle("hidden", n === 0);
-  pill.textContent = n ? `${n} staged` : "";
+  const pill = document.getElementById("stage-pill");
+  if (pill) {
+    pill.classList.toggle("hidden", n === 0);
+    pill.textContent = n ? `${n} staged` : "";
+  }
+  // THE SETTINGS HEADER CARRIES THE SAME FACT, as a jump, because a long card stack can leave
+  // the pending set below the fold. It is the one STAGE; this is a second way to reach it.
+  const jump = document.getElementById("st-stage-jump");
+  const count = document.getElementById("st-stage-jump-count");
+  if (jump) jump.hidden = n === 0;
+  if (count) count.textContent = n ? `(${n})` : "";
 }
 
 /* The last settings payload's rows, keyed by row key. SONAR stages its recommendations
@@ -3600,6 +3607,13 @@ async function withReadBack(opts) {
 function settingsAccordion() {
   const view = document.getElementById("view-settings");
   if (!view) return;
+  // The find control is an input event, not a click; wire it here because it operates on the
+  // same card set as the accordion.
+  const settingsFind = document.getElementById("st-filter");
+  if (settingsFind && !settingsFind.dataset.wired) {
+    settingsFind.dataset.wired = "1";
+    settingsFind.addEventListener("input", () => settingsFilter(settingsFind.value));
+  }
   for (const card of view.querySelectorAll(":scope > .card")) {
     if (card.dataset.acc === "1" || card.id === "st-stage-card") continue;
     const h2 = card.querySelector(":scope > h2");
@@ -3611,6 +3625,42 @@ function settingsAccordion() {
       if (e.target.closest("button, a, input, select")) return;
       card.classList.toggle("collapsed");
     });
+  }
+}
+
+/** Expand or collapse every settings card from the view header, one action. */
+function settingsSetAll(open) {
+  const view = document.getElementById("view-settings");
+  if (!view) return;
+  for (const card of view.querySelectorAll(":scope > .card")) {
+    if (card.id === "st-stage-card") continue;
+    card.classList.toggle("collapsed", !open);
+  }
+}
+
+/** Find a setting by its visible name or its help text, then open the card that holds it. */
+function settingsFilter(query) {
+  const view = document.getElementById("view-settings");
+  if (!view) return;
+  const q = String(query || "").trim().toLowerCase();
+  for (const card of view.querySelectorAll(":scope > .card")) {
+    const text = (card.textContent || "").toLowerCase();
+    const hit = !q || text.includes(q);
+    card.classList.toggle("hidden", !hit);
+    if (q && hit) card.classList.remove("collapsed");
+  }
+}
+
+/** Jump from the header to the one staged set, without a second copy of its state. */
+function settingsJumpToStage() {
+  const card = document.getElementById("st-stage-card");
+  if (!card) return;
+  card.classList.remove("collapsed");
+  card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  const heading = card.querySelector("h2");
+  if (heading) {
+    heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
   }
 }
 
@@ -4172,6 +4222,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }],
     ["st-stage-apply", () => applyStage().catch(showError)],
     ["st-stage-discard", async () => discardStage()],
+    ["st-expand", async () => settingsSetAll(true)],
+    ["st-collapse", async () => settingsSetAll(false)],
+    ["st-stage-jump", async () => settingsJumpToStage()],
     // THE SHEET'S APPLY IS THE SAME APPLY (WSM-2): same STAGE, same plan, same write route,
     // same receipt. Nothing here is a second settings mechanism.
     ["wl-stage-apply", () => applyStage(true, {

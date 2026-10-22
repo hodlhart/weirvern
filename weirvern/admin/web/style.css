@@ -444,6 +444,30 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
   font-weight: 400; }
 #view-settings > .card:not(.collapsed) > h2.acc::after { content: "\25BE"; }
 
+/* SETTINGS HAD NO SCAN LAYER (operator audit, 2026-10-22). It opened on a redundant card,
+   then a stack of equally weighted sections. The heading, the find control and the section
+   labels give the tab the same "where am I / where do I start" layer every other view has. */
+.settings-head { align-items: flex-end; margin-bottom: 10px; }
+.settings-head h2 { font-size: var(--fs-4); letter-spacing: -.2px; }
+.settings-tools { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.settings-search { display: flex; flex-direction: column; gap: 4px;
+  font-size: var(--fs-1); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.settings-search input { width: 230px; height: var(--btn-h); padding: 0 10px;
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
+  border-radius: var(--btn-r); font-family: var(--mono); font-size: 13px; }
+.settings-search input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.settings-section { margin: 28px 0 9px; padding-bottom: 7px;
+  border-bottom: 1px solid var(--border); color: var(--accent);
+  font-size: var(--fs-1); font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+.settings-section:first-of-type { margin-top: 18px; }
+#view-settings > .card { margin-bottom: 12px; }
+#view-settings > .card > h2 { margin-bottom: 14px; }
+#view-settings > .card.collapsed > h2.acc { margin-bottom: 0; }
+/* The staged set is the one thing on this tab that must not be missed. It stays in reach while
+   the operator reads a long card; it is still the same single STAGE and the same Apply. */
+#st-stage-card { position: sticky; bottom: 14px; z-index: 4;
+  border: 1px solid var(--border-solid); box-shadow: var(--shadow-low); }
+
 /* The title row: heading left, the tile strip right. */
 .view-head { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; }
@@ -1392,3 +1416,13 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 /* NIC headers under their sensor's name, not a page-wide header over the performance row. */
 #wl-table .wl-colhead th { padding-top: 2px; padding-bottom: 5px; font-size: 11px;
   letter-spacing: .04em; text-transform: uppercase; }
+
+/* SETTINGS PHONE LAYOUT (2026-10-22): the desktop jump tools stack, and the sticky pending
+   card becomes a normal card so it cannot cover the page on a small screen. */
+@media (max-width: 720px) {
+  .settings-head { align-items: flex-start; }
+  .settings-tools { width: 100%; }
+  .settings-search { width: 100%; }
+  .settings-search input { width: 100%; }
+  #st-stage-card { position: static; }
+}
