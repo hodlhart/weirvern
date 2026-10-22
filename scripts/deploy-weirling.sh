@@ -304,10 +304,10 @@ say "  loaded: $ZEEK_IMG , $WORKER_IMG"
 if [ "$MTLS" = "1" ]; then
     # ── adoption: one token in, one certificate out ─────────────────────────────────────────
     step "adopting the weirling over mTLS"
-    rsh "$TARGET" "mkdir -p /etc/weirvern-weirling/pki && chmod 0700 /etc/weirvern-weirling/pki"
+    rsh "$TARGET" "mkdir -p /etc/weirvern-weirling/pki && chown 10001:10001 /etc/weirvern-weirling/pki && chmod 0700 /etc/weirvern-weirling/pki"
     ROOT_B64="$(rsh "$HUB" "kubectl -n weirvern get secret weirling-root -o jsonpath='{.data.root-ca\.crt}'")"
     [ -n "$ROOT_B64" ] || die "the hub has no weirling-root Secret; apply k8s/mtls before adopting"
-    printf '%s' "$ROOT_B64" | rsh "$TARGET" "base64 -d > /etc/weirvern-weirling/pki/root-ca.crt && chmod 0644 /etc/weirvern-weirling/pki/root-ca.crt"
+    printf '%s' "$ROOT_B64" | rsh "$TARGET" "base64 -d > /etc/weirvern-weirling/pki/root-ca.crt && chown 10001:10001 /etc/weirvern-weirling/pki/root-ca.crt && chmod 0644 /etc/weirvern-weirling/pki/root-ca.crt"
     if [ -z "$MTLS_TOKEN" ]; then
         TOKEN_JSON="$(rsh "$HUB" "kubectl -n weirvern exec deploy/weirvern-gui -- weirvern weirlings token --sensor-id '$SENSOR_ID' --mode loch --segment '$SEGMENT' --json")" \
             || die "could not obtain an enrollment token from the hub's GUI; issue one and re-run with --mtls-token"
@@ -316,7 +316,7 @@ if [ "$MTLS" = "1" ]; then
     fi
     # THE KEY IS GENERATED ON THE TARGET. The hub sees only the CSR; the token appears in
     # this one docker run and is not written to the target's env file.
-    rsh "$TARGET" "docker run --rm --network host --entrypoint python3 \
+    rsh "$TARGET" "docker run --rm --network host --user 10001:10001 --entrypoint python3 \
         -v /etc/weirvern-weirling:/etc/weirvern-weirling \
         $WORKER_IMG -m weirvern.weirling_client enroll \
         --hub '$GATEWAY_URL' --token '$MTLS_TOKEN' --sensor-id '$SENSOR_ID' \

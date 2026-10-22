@@ -43,7 +43,7 @@ def test_enroll_writes_private_key_chain_and_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(wc, "_open", fake_open)
     result = wc.enroll("https://hub.example:30443", "one-time", "sensor-a", str(tmp_path),
-                       address="10.0.0.2", segment="lab")
+                       address="198.51.100.2", segment="lab")
     assert result.sensor_id == "sensor-a"
     assert seen["url"].endswith("/v1/enroll")
     assert seen["body"]["token"] == "one-time"
@@ -66,8 +66,8 @@ def test_gateway_plan_maps_the_nics_field_without_a_database():
 def test_gateway_client_reads_a_plan_payload(monkeypatch):
     client = wc.GatewayClient("https://hub.example:30443", "c", "k", "ca")
     payload = {"sensor_id": "s", "enabled": True,
-               "plan": {"mode": "siphon", "iface": "eth1", "segment": "10.0.0.0/24",
-                        "addr": "10.0.0.2", "gateway": "10.0.0.1", "targets": "",
+               "plan": {"mode": "siphon", "iface": "eth1", "segment": "198.51.100.0/24",
+                        "addr": "198.51.100.2", "gateway": "198.51.100.1", "targets": "",
                         "nics": '[{"iface":"eth1","siphon":true}]'}}
     monkeypatch.setattr(client, "_request", lambda *a, **k: payload)
     plan = client.plan()

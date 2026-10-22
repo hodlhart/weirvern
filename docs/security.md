@@ -160,7 +160,8 @@ plan, heartbeat and flow traffic goes over an authenticated HTTPS connection. Th
 sensor receives no database password.
 
 The gateway enforces the URI SAN `spiffe://weirvern/sensor/<sensor-id>` and checks the
-registry's enabled/revoked state on every request. The existing `sensor_agent` remains
-on the legacy path in this release; migrating it is a separate change.
+registry's enabled/revoked state on every request. The agent switches to this transport
+only when `WEIRLING_GATEWAY_URL` is set; the default install still uses the per-sensor
+ClickHouse credential, so an existing unit does not change transport silently.
 
 ---

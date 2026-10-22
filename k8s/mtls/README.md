@@ -59,8 +59,30 @@ Issuer:  Weirling Intermediate CA
 The gateway checks the URI SAN, then the registry row's `enabled` and `revoked_at` on
 every request. A revoked sensor is refused on its next request.
 
+## Adopting a unit
+
+On the target, enrollment is one command against the hub:
+
+```sh
+python3 -m weirvern.weirling_client enroll \
+  --hub https://ingest.sensor.example:30443 \
+  --token "<one-time token>" \
+  --sensor-id weirvern-basement \
+  --dir /etc/weirvern-weirling/pki \
+  --root-ca /etc/weirvern-weirling/pki/root-ca.crt
+```
+
+The key and CSR are generated on the target; only the CSR is sent. The command writes
+`weirling.key` (0600), `weirling.crt` (leaf + intermediate) and `root-ca.crt`.
+
+`scripts/deploy-weirling.sh --mtls` does this automatically for a new unit: it obtains
+a token, copies the root, enrolls, writes the gateway URL and certificate paths to the
+env file, and starts the agent with `WEIRLING_GATEWAY_URL` set. `--mtls-token` accepts an
+already-issued token.
+
 ## Boundary
 
-The existing `sensor_agent` still writes directly to ClickHouse. This gateway is the
-secure path for new and migrated units; switching the old agent is a separate change
-so an existing sensor cannot silently change behavior during this rollout.
+The default deploy path still uses a per-sensor ClickHouse credential, and an existing
+unit keeps that behaviour until it is re-installed or given the gateway env. The
+`sensor_agent` now switches to mTLS when `WEIRLING_GATEWAY_URL` is present; the default
+is unchanged so a live unit cannot change transport silently.
