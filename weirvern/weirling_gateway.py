@@ -126,6 +126,7 @@ class CertificateAuthority:
             serialization.load_pem_private_key(Path(key_path).read_bytes(), password=None),
         )
         self.root_pem = Path(root_path).read_bytes()
+        self.intermediate_pem = Path(cert_path).read_bytes()
 
     def sign_csr(self, csr_pem: bytes, sensor_id: str) -> tuple[bytes, dt.datetime]:
         csr = x509.load_pem_x509_csr(csr_pem)
@@ -244,6 +245,7 @@ class Gateway:
                 "sensor_id": sid,
                 "certificate": certificate.decode("utf-8"),
                 "ca": self.ca.root_pem.decode("utf-8"),
+                "intermediate": self.ca.intermediate_pem.decode("utf-8"),
                 "expires_at": expires.isoformat(),
             }
         finally:
@@ -285,7 +287,8 @@ class Gateway:
             return 200, {
                 "sensor_id": sensor_id,
                 "enabled": reg.enabled,
-                "plan": reg.plan.as_dict() if reg.plan else None,
+                "plan": ({**reg.plan.as_dict(), "nics": reg.plan.nics}
+                         if reg.plan else None),
             }
         finally:
             client.close()
@@ -321,6 +324,7 @@ class Gateway:
             except Exception as exc:  # noqa: BLE001
                 return 400, {"error": f"the CSR could not be signed: {exc}"}
             return 200, {"sensor_id": sensor_id, "certificate": certificate.decode("utf-8"),
+                         "intermediate": self.ca.intermediate_pem.decode("utf-8"),
                          "expires_at": expires.isoformat()}
         finally:
             client.close()

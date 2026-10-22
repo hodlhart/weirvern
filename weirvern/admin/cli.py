@@ -1254,6 +1254,10 @@ def cmd_weirlings(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         _bad(f"could not create the enrollment token: {exc}")
         return EXIT_FAIL
+    if getattr(args, "json", False):
+        print(json.dumps({"sensor_id": args.sensor_id, "token": token,
+                          "expires_at": expires.isoformat()}))
+        return EXIT_OK
     print(_c("bold", "Weirling enrollment token"))
     print(f"  sensor id:  {args.sensor_id}")
     print(f"  expires:    {expires.isoformat()}")
@@ -1512,6 +1516,8 @@ def build_parser() -> argparse.ArgumentParser:
     wl_token.add_argument("--address", default="", help="known sensor address, if any")
     wl_token.add_argument("--ttl", type=int, default=3600,
                           help="token lifetime in seconds (default: 3600)")
+    wl_token.add_argument("--json", action="store_true",
+                          help="print one JSON object (for an installer), not prose")
     wl_token.set_defaults(func=cmd_weirlings)
     s.set_defaults(func=cmd_weirlings)
 

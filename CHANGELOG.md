@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.85 — 2026-10-22
+
+WEIRLING ADOPTION REACHES THE SENSOR.
+
+- New `weirvern.weirling_client`: generates the sensor's P-256 key and CSR locally, redeems
+  a one-time token over HTTPS, writes the leaf+intermediate chain and root, and exposes the
+  authenticated heartbeat, plan and flow calls.
+- `weirvern.admin.sensor_agent` now has an opt-in gateway mode (`WEIRLING_GATEWAY_URL` plus
+  certificate paths). It reports heartbeat/plan/flows over mTLS and never falls back to a
+  database credential when the gateway is configured. Units without these variables keep
+  the existing ClickHouse path unchanged.
+- `scripts/deploy-weirling.sh --mtls` obtains a token (or accepts `--mtls-token`), enrolls
+  the target, writes only certificates under `/etc/weirvern-weirling`, and starts the agent
+  in gateway mode. The default direct-ClickHouse install is untouched.
+
 ## 0.17.84 — 2026-10-22
 
 ANOMALIES: THE COUNT IS THE COUNT.

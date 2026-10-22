@@ -60,6 +60,38 @@ DEFAULT_INTERVAL_S = 15
 FLOW_SHIP_INTERVAL_S = 5.0
 
 
+def gateway_client():
+    """The mTLS transport when this unit was adopted through the gateway, else None.
+
+    THE ABSENCE OF THE URL IS THE SWITCH. Existing units keep their ClickHouse client
+    untouched; a unit that has WEIRLING_GATEWAY_URL must have a certificate and key,
+    because silently falling back to a database credential would defeat the adoption.
+    """
+    url = (os.environ.get("WEIRLING_GATEWAY_URL") or "").strip()
+    if not url:
+        return None
+    cert = (os.environ.get("WEIRLING_CLIENT_CERT") or "").strip()
+    key = (os.environ.get("WEIRLING_CLIENT_KEY") or "").strip()
+    ca = (os.environ.get("WEIRLING_ROOT_CA") or "").strip()
+    if not cert or not key or not ca:
+        raise SystemExit(
+            "sensor unit: WEIRLING_GATEWAY_URL is set but WEIRLING_CLIENT_CERT, "
+            "WEIRLING_CLIENT_KEY or WEIRLING_ROOT_CA is missing -- refusing to fall "
+            "back to a database credential"
+        )
+    from weirvern.weirling_client import GatewayClient  # noqa: PLC0415
+
+    return GatewayClient(url, cert, key, ca)
+
+
+def connect(settings):
+    """One transport for this unit: mTLS when configured, ClickHouse otherwise."""
+    gateway = gateway_client()
+    if gateway is not None:
+        return gateway
+    return db.connect(settings, retries=1, delay_s=2)
+
+
 def flow_shipping_enabled() -> bool:
     """Whether this unit should ship a local collector's records into the hub.
 
@@ -94,6 +126,51 @@ def ship_flows_once(client, *, path: str = "", state=None, allow: str = "") -> i
     return int(read or 0)
 
 
+def _ship_flows_gateway(client, *, path: str = "", state=None) -> int:
+    """Read complete goflow2 JSONL lines and POST them to the gateway.
+
+    The cursor is advanced only after the POST succeeds, so a failed upload retries the
+    same records instead of losing them. The gateway maps and filters them exactly as the
+    hub's own ingester does.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from weirvern import ingester as ingester_mod  # noqa: PLC0415
+
+    path = path or flow_file()
+    if state is None:
+        state = ingester_mod.load_tail_state(path)
+    if not os.path.exists(path):
+        return 0
+    st = os.stat(path)
+    why = state.reset_reason(st, path)
+    start = 0 if why else state.offset
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        raw = fh.read()
+    end = start + len(raw)
+    # A trailing line without a newline is a write in progress; leave it for the next pass.
+    if raw and not raw.endswith(b"\n"):
+        cut = raw.rfind(b"\n") + 1
+        raw = raw[:cut]
+        end = start + cut
+    records = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = _json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            records.append(row)
+    inserted = client.send_flows(records) if records else 0
+    state.note_read(st, end)
+    ingester_mod.save_tail_state(path, state)
+    return int(inserted)
+
+
 def _flow_shipper(settings, stop: threading.Event) -> None:
     """The thread: its OWN connection, its own retries, and no way to hurt the heartbeat.
 
@@ -107,8 +184,11 @@ def _flow_shipper(settings, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             if client is None:
-                client = db.connect(settings, retries=1, delay_s=2)
-            ship_flows_once(client, allow=allow)
+                client = connect(settings)
+            if getattr(client, "is_gateway", False):
+                _ship_flows_gateway(client)
+            else:
+                ship_flows_once(client, allow=allow)
         except Exception as exc:  # noqa: BLE001
             logger.warning("netflow: shipping pass failed: %s", exc)
             client = None
@@ -201,6 +281,11 @@ def plan_for(client, sid: str) -> tuple[object | None, str]:
     """
     from weirvern import fleet_store  # noqa: PLC0415
 
+    if getattr(client, "is_gateway", False):
+        try:
+            return client.plan(), ""
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)[:200]
     try:
         for reg in fleet_store.read_registrations(client):
             if reg.sensor_id == sid:
@@ -367,6 +452,12 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
     # carried [] while the hub's carried its NICs -- this call site predated the column).
     fields.setdefault("interfaces", status.sensor_interfaces())
+    if getattr(client, "is_gateway", False):
+        try:
+            return bool(client.heartbeat(fields))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gateway heartbeat failed: %s", exc)
+            return False
     return status.heartbeat(client, sensor_id=sid, **fields)
 
 
@@ -380,7 +471,10 @@ def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
         fields = sensorwatch.observe(mode=mode, iface=iface)
         fields["running"] = False
         fields.setdefault("interfaces", status.sensor_interfaces())
-        status.heartbeat(client, sensor_id=sid, **fields)
+        if getattr(client, "is_gateway", False):
+            client.heartbeat(fields)
+        else:
+            status.heartbeat(client, sensor_id=sid, **fields)
     except Exception:  # noqa: BLE001
         pass
 
@@ -424,7 +518,7 @@ def main() -> None:
     while not stop.is_set():
         try:
             if client is None:
-                client = db.connect(settings, retries=1, delay_s=2)
+                client = connect(settings)
             now = time.monotonic()
             if now - last_plan_read >= PLAN_REFRESH_S:
                 last_plan_read = now
@@ -453,7 +547,7 @@ def main() -> None:
 
     try:
         if client is None:
-            client = db.connect(settings, retries=1, delay_s=2)
+            client = connect(settings)
         _final_beat(client, sid, iface, mode=controller.mode)
     except Exception:  # noqa: BLE001
         pass

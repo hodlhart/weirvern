@@ -47,6 +47,12 @@
 #                 the hub's `flows` table (goflow2 on 2055/6343 -> the unit's agent -> ClickHouse).
 #                 This is how an exporter somewhere else in the network gets its records into
 #                 Weirvern without a route to the hub. Inert until an exporter is pointed at it.
+#   --mtls        ADOPT this unit through the hub's mTLS gateway instead of giving it a
+#                 ClickHouse credential. The script obtains a one-time token (unless
+#                 --mtls-token is supplied), enrolls a locally generated key/CSR, writes only
+#                 the certificate chain under /etc/weirvern-weirling, and starts the agent in
+#                 gateway mode. The default remains the direct-ClickHouse path.
+#   --mtls-token  use this already-issued one-time token instead of asking the hub CLI.
 #   --remove      stop and remove the containers on the target (logs kept; --purge too)
 #   --purge       with --remove: also delete the env file, helper and log directory
 #   --dry-run     run every CHECK (including the refusals) and print the plan; change nothing
@@ -57,10 +63,13 @@ HUB=""
 TARGET=""
 IFACE=""
 SENSOR_ID=""
+SEGMENT=""
 EXPOSE=0
 GATE=0
 GATE_IFACE=""
 NETFLOW=0
+MTLS=0
+MTLS_TOKEN=""
 REMOVE=0
 PURGE=0
 DRY=0
@@ -76,9 +85,12 @@ while [ $# -gt 0 ]; do
         --target) TARGET="${2:?--target needs a value}"; shift 2 ;;
         --iface) IFACE="${2:?--iface needs a value}"; shift 2 ;;
         --sensor-id) SENSOR_ID="${2:?--sensor-id needs a value}"; shift 2 ;;
+        --segment) SEGMENT="${2:?--segment needs a value}"; shift 2 ;;
         --expose) EXPOSE=1; shift ;;
         --gate) GATE=1; shift ;;
         --netflow) NETFLOW=1; shift ;;
+        --mtls) MTLS=1; shift ;;
+        --mtls-token) MTLS_TOKEN="${2:?--mtls-token needs a value}"; MTLS=1; shift 2 ;;
         --gate-iface) GATE_IFACE="${2:?--gate-iface needs a value}"; shift 2 ;;
         --remove) REMOVE=1; shift ;;
         --purge) PURGE=1; shift ;;
@@ -205,47 +217,65 @@ SITE_CM="${SITE_CM#configmap/}"
 say "  images: $WORKER_IMG , $ZEEK_IMG"
 say "  site policy: $SITE_CM"
 
-# ── the ClickHouse endpoint as seen FROM THE TARGET ─────────────────────────────────────────
-# ONE DOOR FOR EVERY TARGET: clickhouse-external. The in-cluster `clickhouse` Service is
+# ── the transport endpoint as seen FROM THE TARGET ─────────────────────────────────────────
+# THE DIRECT PATH (default): clickhouse-external. The in-cluster `clickhouse` Service is
 # HEADLESS (clusterIP: None -- MEASURED: the first version of this script read the literal
 # string "None" out of it and shipped that into the agent's config, where it retried forever),
 # so it offers no stable address even to a client on the hub itself. clickhouse-external is
 # the door built for outside clients; when it has no NodePort yet, --expose opens one and this
 # script says exactly what it changed (revert by re-applying k8s/).
-CH_HOST="$(rsh "$HUB" "hostname -I" | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)"
-[ -n "$CH_HOST" ] || die "could not determine the hub's LAN address"
-CH_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].nodePort}'")"
-if [ -z "$CH_PORT" ]; then
-    if [ "$EXPOSE" = "1" ]; then
-        P_NAME="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].name}'")"
-        P_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].port}'")"
-        P_TARGET="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].targetPort}'")"
-        if [ "$DRY" = "1" ]; then :; else
-            # Change ONLY the type and let Kubernetes assign the nodePort, then read it back.
-            # (The first version rebuilt the whole ports list and tripped over `targetPort:
-            # http` -- a NAMED container port, i.e. a string, which interpolated as bare JSON
-            # and became "invalid character 'h' looking for beginning of value".)
-            printf '{"spec":{"type":"NodePort"}}\n' | rsh "$HUB" "cat > /tmp/weirvern-expose.json"
-            rsh "$HUB" "kubectl -n weirvern patch svc clickhouse-external --type merge --patch-file /tmp/weirvern-expose.json" >/dev/null
-            CH_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].nodePort}'")"
-            [ -n "$CH_PORT" ] || die "the service did not get a nodePort; check 'kubectl -n weirvern get svc clickhouse-external'"
+HUB_LAN="$(rsh "$HUB" "hostname -I" | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)"
+[ -n "$HUB_LAN" ] || die "could not determine the hub's LAN address"
+if [ "$MTLS" = "1" ]; then
+    # THE mTLS PATH: one outbound HTTPS door and a client certificate. No database
+    # credential is written to the target. The gateway must already be deployed; this
+    # script refuses to invent a second transport when it is absent.
+    INGEST_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc weirvern-ingest -o jsonpath='{.spec.ports[0].nodePort}'" 2>/dev/null || true)"
+    [ -n "$INGEST_PORT" ] || die "the hub has no weirvern-ingest NodePort; apply k8s/mtls first, then re-run with --mtls"
+    INGEST_HOST="${HUB##*@}"
+    case "$INGEST_HOST" in
+        *[0-9].[0-9]*) die "--mtls needs a hostname whose certificate the gateway carries (use --hub root@<name>, not an IP)" ;;
+    esac
+    GATEWAY_URL="https://${INGEST_HOST}:${INGEST_PORT}"
+    say "  gateway for the agent: $GATEWAY_URL (mTLS; no database credential)"
+else
+    CH_HOST="$HUB_LAN"
+    CH_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].nodePort}'")"
+    if [ -z "$CH_PORT" ]; then
+        if [ "$EXPOSE" = "1" ]; then
+            if [ "$DRY" = "1" ]; then :; else
+                # Change ONLY the type and let Kubernetes assign the nodePort, then read it back.
+                printf '{"spec":{"type":"NodePort"}}\n' | rsh "$HUB" "cat > /tmp/weirvern-expose.json"
+                rsh "$HUB" "kubectl -n weirvern patch svc clickhouse-external --type merge --patch-file /tmp/weirvern-expose.json" >/dev/null
+                CH_PORT="$(rsh "$HUB" "kubectl -n weirvern get svc clickhouse-external -o jsonpath='{.spec.ports[0].nodePort}'")"
+                [ -n "$CH_PORT" ] || die "the service did not get a nodePort; check 'kubectl -n weirvern get svc clickhouse-external'"
+            fi
+            say "  clickhouse-external opened as NodePort $CH_PORT (a change on the hub; revert by re-applying k8s/)"
+        else
+            die "clickhouse-external has no NodePort; the agent needs a door from the target. Re-run with --expose (or open one yourself)."
         fi
-        say "  clickhouse-external opened as NodePort $CH_PORT (a change on the hub; revert by re-applying k8s/)"
-    else
-        die "clickhouse-external has no NodePort; the agent needs a door from the target. Re-run with --expose (or open one yourself)."
     fi
+    say "  ClickHouse for the agent: hub $CH_HOST : $CH_PORT via clickhouse-external"
 fi
-say "  ClickHouse for the agent: hub $CH_HOST : $CH_PORT via clickhouse-external"
 
 if [ "$DRY" = "1" ]; then
     step "DRY RUN -- plan for weirling \"$SENSOR_ID\" on $TARGET"
     say "  1. stream $ZEEK_IMG and $WORKER_IMG from $HUB to $TARGET (docker save | docker load)"
-    say "  2. write /etc/weirvern-weirling.env (0600: ClickHouse endpoint + credentials from the hub's Secret)"
+    if [ "$MTLS" = "1" ]; then
+        say "  2. obtain a one-time adoption token and enroll a local key/CSR over mTLS"
+        say "     write /etc/weirvern-weirling.env (gateway URL + certificate paths only)"
+    else
+        say "  2. write /etc/weirvern-weirling.env (0600: ClickHouse endpoint + credentials from the hub's Secret)"
+    fi
     say "  3. install the site policy from ConfigMap $SITE_CM and a local helper /usr/local/bin/weirvern-weirling"
     say "  4. start weirvern-capture-$SENSOR_ID (Zeek on $IFACE, host network, NET_RAW) and"
     say "     weirvern-agent-$SENSOR_ID (heartbeats, restart unless-stopped)"
     say "  5. verify a fresh heartbeat for \"$SENSOR_ID\" lands in the hub's database"
-    say "  then: register it in the Weirlings view -- it appears as UNREGISTERED until you do"
+    if [ "$MTLS" = "1" ]; then
+        say "  then: the token enrollment registers the sensor; no separate Adopt click is needed"
+    else
+        say "  then: register it in the Weirlings view -- it appears as UNREGISTERED until you do"
+    fi
     exit 0
 fi
 
@@ -271,40 +301,73 @@ step "shipping the images to the target"
 rsh "$HUB" "docker save $ZEEK_IMG $WORKER_IMG" | rsh "$TARGET" "docker load" >/dev/null
 say "  loaded: $ZEEK_IMG , $WORKER_IMG"
 
-# The agent retries forever by design, so a wrong address would spin silently until someone
-# reads its logs -- the first live install DID exactly that (the headless-service address
-# "None" went into its config). Knock on the door now, with the real client, before anything
-# is started.
-step "checking the target can reach ClickHouse"
-rsh "$TARGET" "docker run --rm --network host --entrypoint python3 $WORKER_IMG -c 'import urllib.request; urllib.request.urlopen(\"http://$CH_HOST:$CH_PORT/ping\", timeout=5); print(\"reachable\")'" \
-    || die "the target cannot reach ClickHouse at $CH_HOST:$CH_PORT -- open the door (--expose) or fix the route, then re-run"
-say "  ClickHouse answers at $CH_HOST:$CH_PORT"
+if [ "$MTLS" = "1" ]; then
+    # ── adoption: one token in, one certificate out ─────────────────────────────────────────
+    step "adopting the weirling over mTLS"
+    rsh "$TARGET" "mkdir -p /etc/weirvern-weirling/pki && chmod 0700 /etc/weirvern-weirling/pki"
+    ROOT_B64="$(rsh "$HUB" "kubectl -n weirvern get secret weirling-root -o jsonpath='{.data.root-ca\.crt}'")"
+    [ -n "$ROOT_B64" ] || die "the hub has no weirling-root Secret; apply k8s/mtls before adopting"
+    printf '%s' "$ROOT_B64" | rsh "$TARGET" "base64 -d > /etc/weirvern-weirling/pki/root-ca.crt && chmod 0644 /etc/weirvern-weirling/pki/root-ca.crt"
+    if [ -z "$MTLS_TOKEN" ]; then
+        TOKEN_JSON="$(rsh "$HUB" "kubectl -n weirvern exec deploy/weirvern-gui -- weirvern weirlings token --sensor-id '$SENSOR_ID' --mode loch --segment '$SEGMENT' --json")" \
+            || die "could not obtain an enrollment token from the hub's GUI; issue one and re-run with --mtls-token"
+        MTLS_TOKEN="$(printf '%s' "$TOKEN_JSON" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p' | tail -1)"
+        [ -n "$MTLS_TOKEN" ] || die "the hub returned no token; issue one and re-run with --mtls-token"
+    fi
+    # THE KEY IS GENERATED ON THE TARGET. The hub sees only the CSR; the token appears in
+    # this one docker run and is not written to the target's env file.
+    rsh "$TARGET" "docker run --rm --network host --entrypoint python3 \
+        -v /etc/weirvern-weirling:/etc/weirvern-weirling \
+        $WORKER_IMG -m weirvern.weirling_client enroll \
+        --hub '$GATEWAY_URL' --token '$MTLS_TOKEN' --sensor-id '$SENSOR_ID' \
+        --dir /etc/weirvern-weirling/pki --root-ca /etc/weirvern-weirling/pki/root-ca.crt \
+        --segment '$SEGMENT'" \
+        || die "the target could not enroll with $GATEWAY_URL; check the gateway, DNS, and the token"
+    rsh "$TARGET" "test -s /etc/weirvern-weirling/pki/weirling.crt && test -s /etc/weirvern-weirling/pki/weirling.key" \
+        || die "enrollment returned success but the certificate or key is missing"
+    say "  adopted: certificate issued, private key stays on the target"
+    {
+        printf 'WEIRLING_GATEWAY_URL=%s\n' "$GATEWAY_URL"
+        printf 'WEIRLING_CLIENT_CERT=/etc/weirvern-weirling/pki/weirling.crt\n'
+        printf 'WEIRLING_CLIENT_KEY=/etc/weirvern-weirling/pki/weirling.key\n'
+        printf 'WEIRLING_ROOT_CA=/etc/weirvern-weirling/pki/root-ca.crt\n'
+    } | rsh "$TARGET" "cat > /etc/weirvern-weirling.env && chmod 0600 /etc/weirvern-weirling.env"
+else
+    # The agent retries forever by design, so a wrong address would spin silently until someone
+    # reads its logs -- the first live install DID exactly that (the headless-service address
+    # "None" went into its config). Knock on the door now, with the real client, before anything
+    # is started.
+    step "checking the target can reach ClickHouse"
+    rsh "$TARGET" "docker run --rm --network host --entrypoint python3 $WORKER_IMG -c 'import urllib.request; urllib.request.urlopen(\"http://$CH_HOST:$CH_PORT/ping\", timeout=5); print(\"reachable\")'" \
+        || die "the target cannot reach ClickHouse at $CH_HOST:$CH_PORT -- open the door (--expose) or fix the route, then re-run"
+    say "  ClickHouse answers at $CH_HOST:$CH_PORT"
 
-# ── creds + site policy on the target ───────────────────────────────────────────────────────
-step "writing the target's configuration"
-# PER-WEIRLING CLICKHOUSE CREDENTIAL (HD-25, GitHub #25). This used to copy the HUB's own
-# ClickHouse user and password to every sensor: one compromised weirling yielded the database
-# credential for the whole deployment, and revoking one sensor meant rotating all of them.
-# Now each sensor gets its own user, INSERT-only on the weirvern database (flows, the zeek_*
-# tables and sensor_status all go through that one code path), and the password is generated
-# here, written only to the target's 0600 env file, and never printed.
-CH_USER="wv_$(printf '%s' "$SENSOR_ID" | tr '-' '_')"
-CH_PASS="$(rand_hex)"
-CRED_SQL="CREATE USER IF NOT EXISTS ${CH_USER} IDENTIFIED WITH sha256_password BY '${CH_PASS}';
+    # ── creds + site policy on the target ───────────────────────────────────────────────────
+    step "writing the target's configuration"
+    # PER-WEIRLING CLICKHOUSE CREDENTIAL (HD-25, GitHub #25). This used to copy the HUB's own
+    # ClickHouse user and password to every sensor: one compromised weirling yielded the database
+    # credential for the whole deployment, and revoking one sensor meant rotating all of them.
+    # Now each sensor gets its own user, INSERT-only on the weirvern database (flows, the zeek_*
+    # tables and sensor_status all go through that one code path), and the password is generated
+    # here, written only to the target's 0600 env file, and never printed.
+    CH_USER="wv_$(printf '%s' "$SENSOR_ID" | tr '-' '_')"
+    CH_PASS="$(rand_hex)"
+    CRED_SQL="CREATE USER IF NOT EXISTS ${CH_USER} IDENTIFIED WITH sha256_password BY '${CH_PASS}';
 ALTER USER ${CH_USER} IDENTIFIED WITH sha256_password BY '${CH_PASS}';
 GRANT INSERT ON weirvern.* TO ${CH_USER};"
-printf '%s\n' "$CRED_SQL" | rsh "$HUB" "kubectl -n weirvern exec -i clickhouse-0 -- clickhouse-client --multiquery" \
-    || die "could not create the per-weirling ClickHouse user ${CH_USER} on the hub -- refusing to fall back to the hub's shared credential"
-# WHICH USER BELONGS TO WHICH SENSOR, so one sensor can be revoked without touching the rest.
-rsh "$HUB" "install -d -m 0700 /var/lib/weirvern && printf '%s\t%s\t%s\n' '$SENSOR_ID' '$CH_USER' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /var/lib/weirvern/sensor-credentials.tsv && chmod 0600 /var/lib/weirvern/sensor-credentials.tsv" \
-    || say "  warning: could not record the sensor credential in /var/lib/weirvern/sensor-credentials.tsv"
-say "  credential: ${CH_USER} (INSERT only, per sensor)"
-{
-    printf 'CLICKHOUSE_HOST=%s\n' "$CH_HOST"
-    printf 'CLICKHOUSE_PORT=%s\n' "$CH_PORT"
-    printf 'CLICKHOUSE_USER=%s\n' "$CH_USER"
-    printf 'CLICKHOUSE_PASSWORD=%s\n' "$CH_PASS"
-} | rsh "$TARGET" "cat > /etc/weirvern-weirling.env && chmod 0600 /etc/weirvern-weirling.env"
+    printf '%s\n' "$CRED_SQL" | rsh "$HUB" "kubectl -n weirvern exec -i clickhouse-0 -- clickhouse-client --multiquery" \
+        || die "could not create the per-weirling ClickHouse user ${CH_USER} on the hub -- refusing to fall back to the hub's shared credential"
+    # WHICH USER BELONGS TO WHICH SENSOR, so one sensor can be revoked without touching the rest.
+    rsh "$HUB" "install -d -m 0700 /var/lib/weirvern && printf '%s\t%s\t%s\n' '$SENSOR_ID' '$CH_USER' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /var/lib/weirvern/sensor-credentials.tsv && chmod 0600 /var/lib/weirvern/sensor-credentials.tsv" \
+        || say "  warning: could not record the sensor credential in /var/lib/weirvern/sensor-credentials.tsv"
+    say "  credential: ${CH_USER} (INSERT only, per sensor)"
+    {
+        printf 'CLICKHOUSE_HOST=%s\n' "$CH_HOST"
+        printf 'CLICKHOUSE_PORT=%s\n' "$CH_PORT"
+        printf 'CLICKHOUSE_USER=%s\n' "$CH_USER"
+        printf 'CLICKHOUSE_PASSWORD=%s\n' "$CH_PASS"
+    } | rsh "$TARGET" "cat > /etc/weirvern-weirling.env && chmod 0600 /etc/weirvern-weirling.env"
+fi
 
 POLICY="$(rsh "$HUB" "kubectl -n weirvern get cm $SITE_CM -o go-template='{{index .data \"weirvern-local.zeek\"}}'")"
 [ -n "$POLICY" ] || die "the site policy ConfigMap came back empty -- refusing to install a policy-less sensor"
@@ -324,6 +387,7 @@ ID='$SENSOR_ID'; IFACE='$IFACE'; MGMT='$DEFROUTE'
 ZEEK_IMG='$ZEEK_IMG'; WORKER_IMG='$WORKER_IMG'
 NETFLOW='$NETFLOW'; GOFLOW_IMG='netsampler/goflow2:v2.2.6'
 LOGDIR=/var/lib/weirvern-weirling/logs; FLOWDIR=/var/lib/weirvern-weirling/flows
+PKIDIR=/etc/weirvern-weirling/pki
 ENVF=/etc/weirvern-weirling.env
 case "\${1:-status}" in
   status) docker ps --filter "name=weirvern-.*-\$ID" --format '{{.Names}} {{.Status}}' ;;
@@ -356,6 +420,7 @@ case "\${1:-status}" in
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
+      -v "\$PKIDIR":"\$PKIDIR":ro \\
       --entrypoint python3 "\$WORKER_IMG" -m weirvern.admin.sensor_agent >/dev/null
     # NOTE ON THE EXPANSIONS: this whole block was written by the deploy script (the heredoc is
     # unquoted), so `$GATE` and `$GATE_IFACE` are decided NOW, while `\$ID` and `\$GATE_IF` are left
