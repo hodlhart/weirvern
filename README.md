@@ -175,6 +175,10 @@ create the Weirvern local CA, install its root on the devices that will use the 
 browse `https://sensor.example` (replace with your internal name). The certificate chains to the
 Weirvern root and is renewed by cert-manager; no public CA or internet-facing port is involved.
 
+Remote weirlings can use the separate mTLS ingest gateway in
+[`k8s/mtls`](k8s/mtls/README.md): one-time enrollment tokens, per-sensor client
+certificates, and no database credential on the sensor.
+
 **Requirements:** a conformant Kubernetes cluster, a Linux sensor node for capture, and one of:
 NetFlow/sFlow/IPFIX export, a SPAN/mirror port, or a TAP. The hub can run on the same node for a
 lab, or separately for a production segment.

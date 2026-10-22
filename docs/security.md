@@ -150,4 +150,17 @@ DROP USER IF EXISTS wv_<sensor_id>;
 
 The other weirlings keep shipping. The hub's own credential is no longer copied anywhere.
 
+### Remote weirlings over mTLS
+
+The per-sensor database credential above is the **legacy** direct-ClickHouse path. New
+remote units should use the mTLS ingest gateway in [`k8s/mtls`](../k8s/mtls/README.md):
+the operator issues a one-time enrollment token, the sensor generates its own key and
+CSR, the hub signs a client certificate with the **Weirling Intermediate CA**, and all
+plan, heartbeat and flow traffic goes over an authenticated HTTPS connection. The
+sensor receives no database password.
+
+The gateway enforces the URI SAN `spiffe://weirvern/sensor/<sensor-id>` and checks the
+registry's enabled/revoked state on every request. The existing `sensor_agent` remains
+on the legacy path in this release; migrating it is a separate change.
+
 ---
