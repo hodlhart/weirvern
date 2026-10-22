@@ -491,7 +491,17 @@ function wlCfg(key) {
 
 /** Every NON-MANAGEMENT NIC the heartbeat reports, with only the roles this hub can justify. */
 function wlNicFacts(r) {
-  const names = [...(r.interfaces || [])];
+  // THE HEARTBEAT LIST IS NOT THE CONFIGURATION. The local hub's worker runs in a pod network
+  // namespace and can only see its own eth0 while the host capture port is eth1; filtering the
+  // reported list alone made the whole NIC table disappear. A configured capture port is still
+  // a fact the hub knows, so it gets a line -- marked "configured, not reported" and without a
+  // mode claim, because the heartbeat did not prove it.
+  const reportedNames = new Set(Array.isArray(r.interfaces) ? r.interfaces : []);
+  const configuredName = String((r.plan && r.plan.iface) || r.iface || "").trim();
+  const names = [...reportedNames];
+  if (configuredName && configuredName !== "lo" && !reportedNames.has(configuredName)) {
+    names.push(configuredName);
+  }
   const local = !!r.local;
   const mgmt = local ? wlCfg("mgmt_iface") : "";
   const capture = (local ? wlCfg("zeek_iface") : "")
@@ -519,11 +529,13 @@ function wlNicFacts(r) {
     const role = siphon ? "siphon" : (plan.sluice === true ? "sluice"
       : (captureRole ? "capture" : "unassigned"));
     const hasNicPlan = Object.prototype.hasOwnProperty.call(plans, name);
-    const lineMode = siphon ? "siphon"
-      : (planMode || (hasNicPlan ? (captureRole ? "loch" : "")
-        : (captureRole ? mode : "")));
+    const reported = reportedNames.has(name);
+    const lineMode = !reported ? ""
+      : (siphon ? "siphon"
+        : (planMode || (hasNicPlan ? (captureRole ? "loch" : "")
+          : (captureRole ? mode : ""))));
     return {
-      name, role, mode: lineMode,
+      name, role, mode: lineMode, reported,
       network_name: (r.network_names && r.network_names[name]) || localNames[name] || "",
       networks: (role === "capture" || role === "siphon")
         ? (plan.segment || (role === "capture" ? segment : "")) : "",
@@ -548,16 +560,19 @@ function wlNicRows(r) {
         el("span", { class: "muted", text: (() => {
           const label = n.network_name
             || (n.networks && n.networks !== "—" && n.networks !== "(not set)" ? n.networks : "");
-          return label ? ` ${n.role} - ${label}` : ` ${n.role}`;
+          const provenance = n.reported ? "" : " (configured, not reported)";
+          return label ? ` ${n.role} - ${label}${provenance}` : ` ${n.role}${provenance}`;
         })() }),
       ]),
       el("td", { class: "mono" + (n.mode ? "" : " muted"), text: n.mode || "—",
-                 attrs: { title: n.mode
-                   ? (String(r.expected_mode || "").toLowerCase()
-                      && String(r.expected_mode).toLowerCase() !== n.mode
-                        ? `the sensor reports ${n.mode}; the registry declares ${String(r.expected_mode).toLowerCase()}`
-                        : "the mode the sensor reports running")
-                   : "the sensor has not reported a mode" } }),
+                 attrs: { title: !n.reported
+                   ? "configured capture; this sensor's heartbeat did not list the interface"
+                   : (n.mode
+                     ? (String(r.expected_mode || "").toLowerCase()
+                        && String(r.expected_mode).toLowerCase() !== n.mode
+                          ? `the sensor reports ${n.mode}; the registry declares ${String(r.expected_mode).toLowerCase()}`
+                          : "the mode the sensor reports running")
+                     : "the sensor has not reported a mode") } }),
       el("td", { class: "mono" + (n.channel ? "" : " muted"), text: n.channel || "—",
                  attrs: { title: capture && r.channel ? (r.channel.why || "") : "no channel on this NIC" } }),
       el("td", { class: "mono" + (n.networks ? "" : " muted"), text: n.networks || "—" }),

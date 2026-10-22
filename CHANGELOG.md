@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.7 — 2026-10-22
+
+THE FLEET SHOWS THE CONFIGURED CAPTURE PORT WHEN THE HEARTBEAT CANNOT SEE IT.
+
+- The local hub's worker runs in a pod network namespace: its heartbeat can report only the pod's
+  `eth0` while the host capture port is `eth1`. The NIC table was built from the reported list
+  alone, so filtering management `eth0` left no rows and the Fleet tab showed headers with no
+  interfaces.
+- The table now adds the configured capture interface (`plan.iface` or the sensor's `iface`) when
+  the heartbeat did not report it. That row is explicitly `configured, not reported`, has no mode
+  claim, and still carries its known segment, sensor-scoped flow trend and feeds. A reported NIC
+  is unchanged.
+
 ## 0.19.6 — 2026-10-22
 
 SLUICE GATE SHOWS THE STATE IT ACTUALLY HAS.

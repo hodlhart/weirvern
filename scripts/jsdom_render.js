@@ -3997,6 +3997,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         const facts = typeof window.wlNicFacts === "function"
           ? window.wlNicFacts(fake)
           : { rows: [] };
+        // THE POD-SCOPED HEARTBEAT CASE (measured live 2026-10-22): the local worker can see
+        // only its own eth0 while the host capture port is eth1. The configured port must still
+        // get a line, with no mode claim and an explicit "configured, not reported" note.
+        const configuredFake = Object.assign({}, fake, { interfaces: ["eth0"], iface: "eth3" });
+        const configuredFacts = typeof window.wlNicFacts === "function"
+          ? window.wlNicFacts(configuredFake) : { rows: [] };
+        const configuredEth1 = configuredFacts.rows.find((n) => n.name === "eth3") || {};
+        check("a configured capture NIC survives a pod-scoped heartbeat",
+              configuredEth1.role === "capture" && configuredEth1.reported === false
+              && configuredEth1.mode === "",
+              JSON.stringify(configuredEth1));
+        if (typeof window.wlNicRows === "function") {
+          const configuredRendered = window.wlNicRows(configuredFake);
+          check("...and its row says configured, not reported",
+                configuredRendered.length === 1
+                && /configured, not reported/.test(configuredRendered[0].textContent),
+                configuredRendered.map((tr) => tr.textContent.trim()).join(" | "));
+        }
         const eth1 = facts.rows.find((n) => n.name === "eth1") || {};
         const eth2 = facts.rows.find((n) => n.name === "eth2") || {};
         if (typeof window.wlNicRows === "function") {
