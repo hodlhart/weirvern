@@ -101,7 +101,8 @@ def test_the_new_columns_are_last_in_the_positional_insert():
     i = src.index("column_names=[\"sensor_id\"")
     names = src[i:src.index("]", i)]
     order = re.findall(r'"(\w+)"', names)
-    assert order[-4:] == ["capture_loss_pct", "packets_recv", "packets_dropped", "interfaces"], (
+    assert order[-5:] == ["capture_loss_pct", "packets_recv", "packets_dropped",
+                         "host_stats", "interfaces"], (
         f"the newest columns are not last in column_names: {order}"
     )
     # And the value tuples must have the same length as the names.

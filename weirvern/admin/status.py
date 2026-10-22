@@ -2727,6 +2727,9 @@ def sensor_status(client, now: datetime.datetime | None = None) -> dict:
           "packets_recv": (None if r.get("packets_recv") is None else int(r["packets_recv"])),
           "packets_dropped": (None if r.get("packets_dropped") is None
                               else int(r["packets_dropped"])),
+          # An empty string means this reporter did not measure host counters. The UI
+          # renders a dash, never 0%, for that case.
+          "host_stats": str(r.get("host_stats") or ""),
     })
 
     ts = r.get("ts")
@@ -2762,7 +2765,7 @@ def _sensor_rows(client) -> tuple[list[dict], str | None]:
         rows = list(client.query(
             "SELECT sensor_id, mode, iface, segment, hosts, mappings, running, uptime_s, "
               "restores, refreshes, failures, ts, "
-              "capture_loss_pct, packets_recv, packets_dropped, interfaces "
+              "capture_loss_pct, packets_recv, packets_dropped, host_stats, interfaces "
             "FROM weirvern.sensor_status FINAL "
             "ORDER BY ts DESC"
         ).named_results())
@@ -3446,6 +3449,7 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
               capture_loss_pct: float | None = None,
               packets_recv: int | None = None,
               packets_dropped: int | None = None,
+              host_stats: str = "",
               interfaces: list[str] | None = None) -> bool:
     """Write one heartbeat row. Returns whether it landed.
 
@@ -3464,13 +3468,15 @@ def heartbeat(client, *, sensor_id: str, mode: str, iface: str = "", segment: st
               # read as a perfect one.
               None if capture_loss_pct is None else float(capture_loss_pct),
               _opt_count(packets_recv), _opt_count(packets_dropped),
+              str(host_stats or ""),
               [str(n) for n in (interfaces or [])]]],
             column_names=["sensor_id", "mode", "iface", "segment", "hosts", "mappings",
                           "running", "uptime_s", "restores", "refreshes", "failures",
                           "ts",
                           # NEW COLUMNS GO LAST, so the positional list above cannot
                           # misalign against a reader or table that predates them.
-                          "capture_loss_pct", "packets_recv", "packets_dropped", "interfaces"],
+                          "capture_loss_pct", "packets_recv", "packets_dropped",
+                          "host_stats", "interfaces"],
         )
         return True
     except Exception as exc:  # noqa: BLE001

@@ -688,6 +688,10 @@ function renderWeirlings(rows, revoked, revokedReason) {
     // row, throughput on each NIC row, all under their own headers rather than in a strip that
     // borrowed the mode/channel width.
     tr.setAttribute("data-wl-sensor-row", r.sensor_id);
+    // Remote host counters are carried on the row as the raw JSON the agent measured. The
+    // system sampler only knows the hub, so this is what lets a remote weirling show its own
+    // CPU/memory instead of a dash.
+    tr.setAttribute("data-wl-host", r.host_stats || "");
     // The CPU/memory reading has no column headers (operator, 2026-10-19), but keeps the
     // original value-over-label presentation in the sensor row.
     tr.appendChild(el("td", { class: "wl-sensor-rest", attrs: { colspan: "6" } }, [

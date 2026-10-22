@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.1 — 2026-10-22
+
+REMOTE HOST TELEMETRY.
+
+- A sensor heartbeat now carries a compact host reading (CPU, memory, proc boundary) in
+  `sensor_status.host_stats`. Remote weirlings show their own CPU and memory in the fleet
+  row instead of a dash, and an unmeasured value still renders as a dash rather than 0%.
+- The schema migration is `026_sensor_host_stats.sql`.
+
 ## 0.18.0 — 2026-10-22
 
 TRUNK BY DEFAULT; THE REMOTE SENSOR GROWS UP.

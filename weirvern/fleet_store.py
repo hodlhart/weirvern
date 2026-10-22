@@ -658,6 +658,7 @@ def _health_to_json(h: SensorHealth) -> dict:
         "capture_loss_pct": h.capture_loss_pct,
         "packets_recv": h.packets_recv,
         "packets_dropped": h.packets_dropped,
+        "host_stats": h.host_stats,
         "hosts": h.hosts,
         "note": h.note,
         "findings": list(h.findings),

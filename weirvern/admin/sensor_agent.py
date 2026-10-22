@@ -68,6 +68,30 @@ def trunk_state_dir() -> str:
     return (os.environ.get("TRUNK_STATE_DIR") or "/run/weirvern/trunk").strip()
 
 
+def host_stats() -> str:
+    """A compact CPU/memory reading for the fleet row, or '' when this host cannot be read.
+
+    The remote agent runs in its own container but hostNetwork; `/proc` is the node's view on
+    this deployment, and the empty string is the honest "not measured" answer if it is not.
+    The UI must render an empty value as a dash, never 0%.
+    """
+    try:
+        from weirvern.admin import system_metrics  # noqa: PLC0415
+
+        sample = system_metrics.sample()
+        payload = {
+            "cpu_pct": sample.get("cpu_percent"),
+            "mem_pct": sample.get("memory_percent"),
+            "mem_total_bytes": sample.get("memory_total_bytes"),
+            "mem_used_bytes": sample.get("memory_used_bytes"),
+            "scope": "sensor",
+            "proc_root": str(system_metrics.proc_root()),
+        }
+        return json.dumps(payload, separators=(",", ":"))
+    except Exception:  # noqa: BLE001 -- host stats are optional evidence
+        return ""
+
+
 def sync_trunk(iface: str) -> None:
     """Adapt this unit to an access port or a trunk, as the port actually is.
 
@@ -712,6 +736,7 @@ def beat(client, sid: str, iface: str, *, mode: str = "loch",
     fields = sensorwatch.observe(mode=mode, iface=iface)
     if failures:
         fields["failures"] = list(fields.get("failures") or []) + list(failures)
+    fields["host_stats"] = host_stats()
     # THE WEIRLING AGENTS' OWN PATH (measured missing on the box, 2026-10-17: their rows
     # carried [] while the hub's carried its NICs -- this call site predated the column).
     fields.setdefault("interfaces", status.sensor_interfaces())
@@ -733,6 +758,7 @@ def _final_beat(client, sid: str, iface: str, *, mode: str = "loch") -> None:
 
         fields = sensorwatch.observe(mode=mode, iface=iface)
         fields["running"] = False
+        fields["host_stats"] = host_stats()
         fields.setdefault("interfaces", status.sensor_interfaces())
         if getattr(client, "is_gateway", False):
             client.heartbeat(fields)

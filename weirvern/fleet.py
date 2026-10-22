@@ -598,6 +598,8 @@ class SensorHealth:
     capture_loss_pct: float | None = None
     packets_recv: int | None = None
     packets_dropped: int | None = None
+    # Raw JSON reported by the agent. Empty means NOT MEASURED -- never 0%.
+    host_stats: str = ""
     hosts: int = 0
     note: str = ""
     # Short, operator-facing sentences. Never a bare state word: "stale" alone does not say
@@ -682,6 +684,7 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         capture_loss_pct=(newest.get("capture_loss_pct") if newest else None),
         packets_recv=(newest.get("packets_recv") if newest else None),
         packets_dropped=(newest.get("packets_dropped") if newest else None),
+        host_stats=str((newest or {}).get("host_stats") or ""),
         hosts=int((newest or {}).get("hosts") or 0),
         note=(reg.note if reg else ""),
     )

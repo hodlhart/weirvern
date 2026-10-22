@@ -565,9 +565,22 @@ function renderSystemMetrics(d, opts = {}) {
   const cpuCell = row ? row.querySelector("[data-wl-cpu]") : null;
   const memCell = row ? row.querySelector("[data-wl-mem]") : null;
   const rates = [...document.querySelectorAll("[data-wl-rate]")];
+  let host = {};
+  try {
+    host = JSON.parse((row && row.getAttribute("data-wl-host")) || "{}") || {};
+  } catch (_e) { host = {}; }
+  const hasHost = host.cpu_pct != null || host.mem_pct != null;
   if (!available) {
-    if (cpuCell) cpuCell.textContent = "—";
-    if (memCell) memCell.textContent = "—";
+    // A remote weirling has no hub-side /api/system reading; its own heartbeat carries the
+    // measurement. Use that rather than painting an unavailable hub metric over it.
+    if (cpuCell) {
+      if (hasHost) cpuCell.textContent = host.cpu_pct == null ? "—" : `${host.cpu_pct}%`;
+      else cpuCell.textContent = "—";
+    }
+    if (memCell) {
+      if (hasHost) memCell.textContent = host.mem_pct == null ? "—" : `${host.mem_pct}%`;
+      else memCell.textContent = "—";
+    }
     for (const cell of rates) { cell.textContent = "—"; cell.classList.add("muted"); }
     return;
   }
