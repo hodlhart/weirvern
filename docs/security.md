@@ -98,7 +98,7 @@ Once the proxy answers, restrict the NodePort at the firewall to the proxy's hos
 plain HTTP door is still open beside the TLS one.
 
 **2. One operator, no extra components.** `kubectl -n weirvern port-forward svc/weirvern-gui
-30088:80`, or `ssh -L 30088:127.0.0.1:30088 <hub>`, then browse `http://127.0.0.1:30088`. The
+8088:8088`, or `ssh -L 8088:localhost:8088 <hub>`, then browse `http://127.0.0.1:8088`. The
 tunnel is the transport security; nothing else listens.
 
 If neither path is in place and the console is reachable from an untrusted segment, **the operator

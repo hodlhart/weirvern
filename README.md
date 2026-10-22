@@ -169,6 +169,12 @@ The installer creates the namespace, database, schema, workloads and the `weirve
 Secret. The full procedure — requirements, refusal checks, the sensor's capture port and the
 ConfigMap — is in [Deployment](docs/deployment.md).
 
+The base install still exposes the console on plain HTTP NodePort `30088` for break-glass. The
+supported local path is the HTTPS ingress: follow [`k8s/tls/README.md`](k8s/tls/README.md) once to
+create the Weirvern local CA, install its root on the devices that will use the console, and
+browse `https://sensor.example` (replace with your internal name). The certificate chains to the
+Weirvern root and is renewed by cert-manager; no public CA or internet-facing port is involved.
+
 **Requirements:** a conformant Kubernetes cluster, a Linux sensor node for capture, and one of:
 NetFlow/sFlow/IPFIX export, a SPAN/mirror port, or a TAP. The hub can run on the same node for a
 lab, or separately for a production segment.
