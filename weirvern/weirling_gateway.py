@@ -94,11 +94,11 @@ def create_token(settings, sensor_id: str, *, ttl_s: int = DEFAULT_TTL_S,
 
 
 def _token_row(client, token: str) -> dict[str, Any] | None:
-    rows = client.query(
+    rows = list(client.query(
         "SELECT token_hash, sensor_id, address, segment, expected_mode, expires_at, used_at "
         f"FROM {ENROLLMENT_TABLE} FINAL WHERE token_hash = %(h)s LIMIT 1",
         parameters={"h": token_hash(token)},
-    ).named_results()
+    ).named_results())
     return dict(rows[0]) if rows else None
 
 

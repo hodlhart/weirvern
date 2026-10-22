@@ -22,6 +22,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
+        runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
@@ -30,6 +31,7 @@ spec:
       containers:
         - name: gateway
           image: weirvern-worker
+          imagePullPolicy: IfNotPresent
           command: ["python", "-m", "weirvern.weirling_gateway"]
           env:
             - name: WEIRLING_GATEWAY_HOST
@@ -73,6 +75,7 @@ spec:
             requests: {cpu: "20m", memory: "64Mi"}
             limits: {cpu: "250m", memory: "256Mi"}
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
