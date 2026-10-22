@@ -101,6 +101,14 @@ def _exists(iface: str) -> bool:
     return Path("/sys/class/net", iface).exists()
 
 
+def _iface_mac(iface: str) -> str:
+    """The parent's MAC, or '' when it cannot be read. Never a reason to fail the probe."""
+    try:
+        return Path("/sys/class/net", iface, "address").read_text().strip().lower()
+    except OSError:
+        return ""
+
+
 def _read_state(state_dir: Path) -> dict:
     try:
         data = json.loads((state_dir / STATE_JSON).read_text())
@@ -161,8 +169,17 @@ def sync(parent: str, *, seconds: float = DEFAULT_WATCH_S, state_dir: str = "/ru
         from weirvern.admin import segmentwatch  # noqa: PLC0415
 
         watcher = segmentwatch.observe_segment
+        # Ignore the parent's own MAC. The VLAN devices this manager creates inherit it, and
+        # their IPv6 neighbour discovery is emitted tagged on the parent; counting it would
+        # make a trunk impossible to fall back to an access port.
+        own_mac = _iface_mac(parent)
+    else:
+        own_mac = ""
     try:
-        obs = watcher(parent, seconds=float(seconds))
+        if own_mac:
+            obs = watcher(parent, seconds=float(seconds), ignore_source_mac=own_mac)
+        else:
+            obs = watcher(parent, seconds=float(seconds))
     except Exception as exc:  # noqa: BLE001 -- an observation refusal is a state, not a crash
         # A sensor whose port is quiet can still capture the parent. Record WHY it is not a
         # trunk rather than failing the capture start; the operator sees the reason in state.

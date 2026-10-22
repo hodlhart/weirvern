@@ -51,11 +51,20 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import struct
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
+
+# Linux packet-socket ancillary data. Not every Python exposes SOL_PACKET; the value is
+# stable on Linux (263). PACKET_AUXDATA is what lets us see a tag the NIC stripped into
+# skb metadata instead of leaving in the frame -- the difference between "this port is an
+# access port" and "this port is a trunk" on a driver with VLAN offload enabled.
+SOL_PACKET = getattr(socket, "SOL_PACKET", 263)
+PACKET_AUXDATA = 8
+TPACKET_AUXDATA_LEN = 20
 
 # Ethernet
 ETH_P_IP = 0x0800
@@ -148,11 +157,17 @@ def _parse_dhcp_options(payload: bytes) -> dict[int, bytes]:
     return out
 
 
-def _observe_frame(frame: bytes, obs: SegmentObservations) -> None:
+def _observe_frame(frame: bytes, obs: SegmentObservations, *, ignore_source_mac: str = "") -> None:
     """Fold one captured frame into the observations. Never raises: a malformed frame on a
     monitor port must not end the observation."""
     try:
         if len(frame) < 14:
+            return
+        # A VLAN device created by the trunk manager uses its parent's MAC. Its own IPv6
+        # neighbour discovery goes out tagged on the parent, and an unfiltered second probe
+        # would see those tags and keep the trunk forever -- the manager cannot fall back to
+        # an access port. Ignore frames sourced by the port we are observing.
+        if ignore_source_mac and ":".join(f"{b:02x}" for b in frame[6:12]) == ignore_source_mac.lower():
             return
         ethertype = int.from_bytes(frame[12:14], "big")
         offset = 14
@@ -241,7 +256,7 @@ def _observe_frame(frame: bytes, obs: SegmentObservations) -> None:
 
 def observe_segment(iface: str, *, seconds: float = DEFAULT_WATCH_S,
                     max_frames: int = 200_000,
-                    reader=None) -> SegmentObservations:
+                    reader=None, ignore_source_mac: str = "") -> SegmentObservations:
     """Watch `iface` for `seconds` and report what the segment is.
 
     READ-ONLY BY CONSTRUCTION: an AF_PACKET socket opened with ETH_P_ALL is bound and read,
@@ -261,7 +276,7 @@ def observe_segment(iface: str, *, seconds: float = DEFAULT_WATCH_S,
     try:
         for frame in reader(iface, seconds=seconds, max_frames=max_frames, obs=obs):
             obs.frames += 1
-            _observe_frame(frame, obs)
+            _observe_frame(frame, obs, ignore_source_mac=ignore_source_mac)
     except PermissionError as exc:
         raise SegmentError(
             f"cannot observe '{iface}': opening a capture socket needs NET_RAW. The survey "
@@ -281,6 +296,23 @@ class SegmentError(RuntimeError):
     """The segment could not be observed. Message names the remedy."""
 
 
+def _reconstruct_vlan(frame: bytes, tci: int, tpid: int) -> bytes:
+    """Put an offloaded 802.1Q header back into the frame the parser sees.
+
+    MEASURED ON A VETH PAIR: the sender put `81 00 00 0a` in the frame, the receiver's packet
+    socket got a 60-byte untagged frame and the tag arrived as `tp_vlan_tci=10` in PACKET_AUXDATA.
+    Without this step the trunk observer calls a tagged port an access port -- the exact
+    wrong answer the adaptive default must never produce. A frame that still carries its tag
+    is left alone, so a driver that does not offload is unaffected.
+    """
+    if not tci or len(frame) < 14:
+        return frame
+    if frame[12:14] in (b"\x81\x00", b"\x88\xa8"):
+        return frame
+    tag_tpid = tpid or 0x8100
+    return frame[:12] + tag_tpid.to_bytes(2, "big") + (tci & 0xFFFF).to_bytes(2, "big") + frame[12:]
+
+
 def _read_frames(iface: str, *, seconds: float, max_frames: int,
                  obs: SegmentObservations) -> list[bytes]:
     """Capture frames from `iface` for a bounded window. Local, because it is the only part
@@ -289,25 +321,39 @@ def _read_frames(iface: str, *, seconds: float, max_frames: int,
     A NON-BLOCKING READ WITH A DEADLINE, so the window is honoured even on a silent segment:
     a blocking recv on a port with no traffic would hang past the deadline and the operator
     would see a survey that never returns.
+
+    PACKET_AUXDATA is enabled because VLAN tags can be stripped by the NIC (or a veth) into
+    skb metadata. The parser must see a normal 802.1Q frame, so the tag is reinserted here.
     """
     frames: list[bytes] = []
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
     try:
         sock.bind((iface, 0))
         sock.settimeout(0.5)
+        sock.setsockopt(SOL_PACKET, PACKET_AUXDATA, 1)
         deadline = time.monotonic() + max(0.1, seconds)
         while time.monotonic() < deadline and len(frames) < max_frames:
             try:
-                frames.append(sock.recv(65535))
+                data, ancillary, _flags, _addr = sock.recvmsg(
+                    65535, socket.CMSG_SPACE(TPACKET_AUXDATA_LEN))
             except TimeoutError:
                 continue
             except OSError:
                 # The window ended or the socket was interrupted. Either way the frames
                 # already read are real, so return them rather than discarding the work.
                 break
+            tci = tpid = 0
+            for level, kind, payload in ancillary:
+                if (level == SOL_PACKET and kind == PACKET_AUXDATA
+                        and len(payload) >= TPACKET_AUXDATA_LEN):
+                    values = struct.unpack("=IIIHHHH", payload[:TPACKET_AUXDATA_LEN])
+                    tci, tpid = values[5], values[6]
+                    break
+            frames.append(_reconstruct_vlan(data, tci, tpid))
     finally:
         sock.close()
     return frames
+
 
 
 def derive_network(obs: SegmentObservations) -> tuple[ipaddress.IPv4Network | None, str]:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.4 — 2026-10-22
+
+TRUNK OBSERVATION SURVIVES VLAN OFFLOAD — AND A SYNTHETIC TRUNK PROVES IT.
+
+- The packet reader now enables PACKET_AUXDATA and reinserts a VLAN tag the NIC (or a veth)
+  stripped into skb metadata. Measured on a synthetic trunk: without this, three tagged VLANs
+  arrived as untagged frames and the adapter called the port an access port.
+- The trunk manager ignores frames whose source MAC is the parent port itself. Its own VLAN
+  devices inherit that MAC, and their IPv6 neighbour discovery is emitted tagged on the parent;
+  counting it kept the port classified as a trunk forever and blocked the return to access.
+- `scripts/synthetic-trunk-test.sh` builds a veth trunk, sends 802.1Q frames for VLANs 10/20/30,
+  asserts the VLAN devices exist, runs a capture probe on one, then removes the tags and asserts
+  the devices are removed. It needs root but touches no existing NIC; it removes everything on
+  exit.
+
 ## 0.19.3 — 2026-10-22
 
 MTLS IS THE WHOLE REMOTE PATH — AND A BAD HEARTBEAT IS A 400, NOT A DROPPED CONNECTION.

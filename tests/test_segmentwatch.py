@@ -306,3 +306,28 @@ def test_the_window_is_reported_so_a_short_observation_is_visible():
     report = sw.summarise(obs)
     assert report["window_s"] is not None
     assert report["started_at"] is not None
+
+
+def test_an_offloaded_vlan_tag_is_reinserted_before_parsing():
+    frame = b"\xff" * 6 + b"\x02\x00\x00\x00\x00\x01" + b"\x08\x00" + b"\x00" * 46
+    reconstructed = sw._reconstruct_vlan(frame, 10, 0x8100)
+    assert reconstructed[12:18] == b"\x81\x00\x00\x0a\x08\x00"
+    obs = sw.SegmentObservations(iface="wvtest")
+    sw._observe_frame(reconstructed, obs)
+    assert obs.vlans == {10}
+
+    # A frame that still carries its tag is not tagged twice.
+    already = frame[:12] + b"\x81\x00\x00\x0a" + frame[12:]
+    assert sw._reconstruct_vlan(already, 10, 0x8100) == already
+
+
+def test_the_ports_own_tagged_frames_are_ignored():
+    # A managed VLAN device inherits the parent MAC; its own IPv6 ND must not keep the parent
+    # classified as a trunk forever.
+    own = "00:00:5e:00:53:01"
+    frame = b"\xff" * 6 + bytes.fromhex(own.replace(":", "")) + b"\x81\x00\x00\x0a\x86\xdd" + b"\x00" * 40
+    obs = sw.SegmentObservations(iface="wvtest")
+    sw._observe_frame(frame, obs, ignore_source_mac=own)
+    assert obs.vlans == set()
+    sw._observe_frame(frame, obs)
+    assert obs.vlans == {10}
