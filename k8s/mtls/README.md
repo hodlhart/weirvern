@@ -75,10 +75,11 @@ python3 -m weirvern.weirling_client enroll \
 The key and CSR are generated on the target; only the CSR is sent. The command writes
 `weirling.key` (0600), `weirling.crt` (leaf + intermediate) and `root-ca.crt`.
 
-`scripts/deploy-weirling.sh --mtls` does this automatically for a new unit: it obtains
-a token, copies the root, enrolls, writes the gateway URL and certificate paths to the
-env file, and starts the agent with `WEIRLING_GATEWAY_URL` set. `--mtls-token` accepts an
-already-issued token.
+`scripts/deploy-weirling.sh` does this automatically for a new unit: it obtains a token,
+copies the root, enrolls, writes the gateway URL and certificate paths to the env file, and
+starts the agent with `WEIRLING_GATEWAY_URL` set. mTLS is the default; `--mtls-token`
+accepts an already-issued token, and `--legacy-clickhouse` is the explicit opt-out for a
+hub whose gateway is not reachable yet.
 
 ## Remote Sonar
 
@@ -89,8 +90,9 @@ never creates a Job on the hub, so a same-named hub interface cannot be measured
 mistake.
 
 This is why the mTLS agent runs as root with NET_RAW: an ARP survey needs an effective
-`NET_RAW` capability, and Docker does not grant one to a non-root UID. The capture
-container already carries NET_RAW; the agent does not receive NET_ADMIN.
+`NET_RAW` capability, and Docker does not grant one to a non-root UID. The agent also carries
+`NET_ADMIN` so an adopted unit can run a per-NIC in-path plan and create its trunk VLAN
+devices; the capture container still keeps only NET_RAW.
 
 ## What still runs hub-side
 
@@ -105,7 +107,7 @@ container already carries NET_RAW; the agent does not receive NET_ADMIN.
 
 ## Boundary
 
-The default deploy path still uses a per-sensor ClickHouse credential, and an existing
-unit keeps that behaviour until it is re-installed or given the gateway env. The
-`sensor_agent` now switches to mTLS when `WEIRLING_GATEWAY_URL` is present; the default
-is unchanged so a live unit cannot change transport silently.
+mTLS is the default deploy path. The hub installer creates the CA and server certificate
+and applies the gateway; `deploy-weirling.sh` enrolls a new unit over mTLS without asking
+for a certificate decision. `--legacy-clickhouse` remains only as an explicit migration
+path for a hub whose gateway is not reachable yet.

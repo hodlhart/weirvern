@@ -12,6 +12,10 @@ TRUNK BY DEFAULT; THE REMOTE SENSOR GROWS UP.
   gateway (`/v1/zeek`), mapped by the hub's own `ZEEK_MAPPERS`. They also renew certificates
   inside the 30-day window and stop an in-path intercept on a revoked identity (403) rather
   than preserving it as a transient read failure.
+- **mTLS is the default edge.** The hub installer creates the root/intermediate/server
+  certificates and applies the ingest gateway before anything else; `deploy-weirling.sh`
+  adopts every new unit over mTLS without an operator certificate decision. The old
+  per-sensor ClickHouse credential is available only through `--legacy-clickhouse`.
 - The remote agent now carries `NET_ADMIN` as well as `NET_RAW`, so an adopted unit can run
   an in-path plan rather than only reporting the refusal.
 - The remaining gaps are documented in `docs/weirling-remote-gaps.md`: remote resolver

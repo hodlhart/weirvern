@@ -152,16 +152,17 @@ The other weirlings keep shipping. The hub's own credential is no longer copied 
 
 ### Remote weirlings over mTLS
 
-The per-sensor database credential above is the **legacy** direct-ClickHouse path. New
-remote units should use the mTLS ingest gateway in [`k8s/mtls`](../k8s/mtls/README.md):
-the operator issues a one-time enrollment token, the sensor generates its own key and
-CSR, the hub signs a client certificate with the **Weirling Intermediate CA**, and all
-plan, heartbeat and flow traffic goes over an authenticated HTTPS connection. The
-sensor receives no database password.
+The per-sensor database credential above is the **legacy** direct-ClickHouse path and is
+now an explicit opt-in. The default is the mTLS ingest gateway in
+[`k8s/mtls`](../k8s/mtls/README.md): the hub installer creates the CA and server
+certificate, `deploy-weirling.sh` obtains a one-time enrollment token, the sensor
+generates its own key and CSR, the hub signs a client certificate with the **Weirling
+Intermediate CA**, and all plan, heartbeat, flow and Zeek traffic goes over an
+authenticated HTTPS connection. The sensor receives no database password.
 
 The gateway enforces the URI SAN `spiffe://weirvern/sensor/<sensor-id>` and checks the
-registry's enabled/revoked state on every request. The agent switches to this transport
-only when `WEIRLING_GATEWAY_URL` is set; the default install still uses the per-sensor
-ClickHouse credential, so an existing unit does not change transport silently.
+registry's enabled/revoked state on every request. A revoked identity stops a live
+intercept on its next plan poll rather than waiting for ARP expiry. `--legacy-clickhouse`
+is the explicit migration path, not the default.
 
 ---
