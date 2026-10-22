@@ -46,6 +46,7 @@ from weirvern.config import get_settings
 logger = logging.getLogger("weirvern.weirling_gateway")
 
 ENROLLMENT_TABLE = "weirvern.weirling_enrollments"
+SONAR_TABLE = "weirvern.weirling_sonar_requests"
 CERT_DAYS = 90
 MAX_BODY = 8 * 1024 * 1024
 URI_PREFIX = "spiffe://weirvern/sensor/"
@@ -310,6 +311,82 @@ class Gateway:
         finally:
             client.close()
 
+    def _sonar_row(self, client, request_id: str) -> dict[str, Any] | None:
+        rows = list(client.query(
+            "SELECT request_id, sensor_id, iface, mgmt_iface, status, result, error "
+            f"FROM {SONAR_TABLE} FINAL WHERE request_id = %(id)s LIMIT 1",
+            parameters={"id": request_id},
+        ).named_results())
+        return dict(rows[0]) if rows else None
+
+    def _sonar_update(self, client, row: dict[str, Any], status: str,
+                      result: str = "", error: str = "") -> None:
+        now = dt.datetime.now(dt.UTC)
+        client.insert(
+            SONAR_TABLE,
+            [[row["request_id"], row["sensor_id"], row.get("iface", ""),
+              row.get("mgmt_iface", ""), status, result, error,
+              row.get("requested_at") or now, now]],
+            column_names=["request_id", "sensor_id", "iface", "mgmt_iface", "status",
+                          "result", "error", "requested_at", "updated_at"],
+        )
+
+    def sonar_next(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        """Claim the oldest pending survey for this authenticated sensor.
+
+        ONE REQUEST PER CLAIM, and the status changes to `running` before the reply is
+        sent: a second poll cannot run the same survey twice. The caller's certificate
+        already names the sensor, so a unit can never claim another unit's request.
+        """
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            rows = list(client.query(
+                "SELECT request_id, sensor_id, iface, mgmt_iface, status, result, error, requested_at "
+                f"FROM {SONAR_TABLE} FINAL WHERE sensor_id = %(s)s AND status = 'pending' "
+                "ORDER BY requested_at ASC LIMIT 1",
+                parameters={"s": sensor_id},
+            ).named_results())
+            if not rows:
+                return 200, {"request": None}
+            row = dict(rows[0])
+            self._sonar_update(client, row, "running")
+            return 200, {"request": {"request_id": row["request_id"],
+                                     "iface": row.get("iface", ""),
+                                     "mgmt_iface": row.get("mgmt_iface", "")}}
+        finally:
+            client.close()
+
+    def sonar_result(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            request_id = str(body.get("request_id") or "").strip()
+            if not request_id:
+                return 400, {"error": "request_id is required"}
+            row = self._sonar_row(client, request_id)
+            if row is None:
+                return 404, {"error": "unknown survey request"}
+            if str(row.get("sensor_id")) != sensor_id:
+                return 403, {"error": "survey request belongs to a different sensor"}
+            result = body.get("result")
+            error = str(body.get("error") or "").strip()
+            if isinstance(result, dict) and result.get("ok") is False and not error:
+                error = str(result.get("error") or "the sensor refused the survey")
+            if error:
+                self._sonar_update(client, row, "failed", "", error[:2000])
+            else:
+                if not isinstance(result, dict):
+                    return 400, {"error": "result must be a JSON object"}
+                self._sonar_update(client, row, "done", json.dumps(result), "")
+            return 200, {"ok": True, "request_id": request_id}
+        finally:
+            client.close()
+
     def renew(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         client = self.client()
         try:
@@ -375,6 +452,11 @@ def _make_handler(gateway: Gateway):
                 if not sid:
                     return
                 return self._json(*gateway.plan(sid))
+            if path == "/v1/sonar/next":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.sonar_next(sid))
             return self._json(404, {"error": "no route"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -398,6 +480,8 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.flows(sid, body))
             if path == "/v1/renew":
                 return self._json(*gateway.renew(sid, body))
+            if path == "/v1/sonar/result":
+                return self._json(*gateway.sonar_result(sid, body))
             return self._json(404, {"error": "no route"})
 
     return Handler

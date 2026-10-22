@@ -327,16 +327,29 @@ def test_a_survey_for_a_weirling_resolves_the_SENSORS_own_port(monkeypatch, unit
     unit_ch.rows = [_row("unit-a", plan={"iface": "eth2"})]
     seen = {}
 
-    def fake_job(client, iface, mgmt_iface="", **kw):
-        seen.update({"iface": iface, "mgmt": mgmt_iface})
+    def fake_remote(client, sensor_id, iface, mgmt_iface="", **kw):
+        seen.update({"sensor": sensor_id, "iface": iface, "mgmt": mgmt_iface})
         return {"ok": True, "interface": iface, "segment": "198.51.100.0/24",
                 "recommended": {"intercept_segment": "198.51.100.0/24"}, "notes": []}
 
-    monkeypatch.setattr(sonar_mod, "run_survey_job", fake_job)
+    monkeypatch.setattr(sonar_mod, "run_remote_survey", fake_remote)
     out = _post(_ctx(unit_ch), "_settings_sonar", {"sensor": "unit-a"})
-    assert seen["iface"] == "eth2", seen
+    assert seen["sensor"] == "unit-a" and seen["iface"] == "eth2", seen
     assert out["sensor"] == "unit-a", (
         "the reply must say which sensor it surveyed, so it cannot be staged against another")
+
+
+def test_a_remote_survey_never_creates_a_hub_job(monkeypatch, unit_ch):
+    from weirvern.admin import sonar as sonar_mod
+
+    unit_ch.rows = [_row("unit-a", plan={"iface": "eth2"})]
+    jobs = []
+    monkeypatch.setattr(sonar_mod, "run_survey_job",
+                        lambda *a, **kw: jobs.append(a) or {"ok": True})
+    monkeypatch.setattr(sonar_mod, "run_remote_survey",
+                        lambda *a, **kw: {"ok": True, "interface": "eth2"})
+    _post(_ctx(unit_ch), "_settings_sonar", {"sensor": "unit-a"})
+    assert jobs == [], "a remote survey ran the hub-side Job"
 
 
 def test_a_survey_falls_back_to_the_sensors_single_reported_nic(monkeypatch, unit_ch):
@@ -348,8 +361,9 @@ def test_a_survey_falls_back_to_the_sensors_single_reported_nic(monkeypatch, uni
     try:
         monkeypatch.setattr(fleet_store, "read_heartbeats",
                             lambda client: ([{"sensor_id": "unit-a", "interfaces": ["eth3"]}], None))
-        monkeypatch.setattr(sonar_mod, "run_survey_job",
-                            lambda client, iface, mgmt_iface="", **kw: {"ok": True, "interface": iface})
+        monkeypatch.setattr(sonar_mod, "run_remote_survey",
+                            lambda client, sensor_id, iface, mgmt_iface="", **kw:
+                            {"ok": True, "interface": iface})
         out = _post(_ctx(unit_ch), "_settings_sonar", {"sensor": "unit-a"})
     finally:
         fleet_store.read_heartbeats = original_hb

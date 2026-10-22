@@ -417,7 +417,9 @@ case "\${1:-status}" in
     fi
     docker run -d --name "weirvern-agent-\$ID" --restart unless-stopped \\
       --network host --env-file "\$ENVF" \\
+      --cap-drop ALL --cap-add NET_RAW \\
       -e SENSOR_ID="\$ID" -e ZEEK_IFACE="\$IFACE" -e ZEEK_LOG_DIR=/zeek/logs \\
+      -e MGMT_IFACE="\$MGMT" \\
       -e WEIRLING_NETFLOW="\$NETFLOW" -e WEIRLING_FLOW_FILE=/flows/flows.jsonl \\
       -v "\$LOGDIR":/zeek/logs:ro -v "\$FLOWDIR":/flows:ro \\
       -v "\$PKIDIR":"\$PKIDIR":ro \\

@@ -177,6 +177,16 @@ class GatewayClient:
             return 0
         return int(self._request("POST", "/v1/flows", {"records": records}).get("inserted") or 0)
 
+    def sonar_next(self) -> dict | None:
+        """Claim a pending remote survey, or None when the hub has not queued one."""
+        request = self._request("GET", "/v1/sonar/next").get("request")
+        return request if isinstance(request, dict) else None
+
+    def sonar_result(self, request_id: str, result: dict, error: str = "") -> bool:
+        return bool(self._request("POST", "/v1/sonar/result",
+                                  {"request_id": request_id, "result": result,
+                                   "error": error}).get("ok"))
+
     def close(self) -> None:  # symmetry with the ClickHouse client; the transport owns no pool
         return None
 

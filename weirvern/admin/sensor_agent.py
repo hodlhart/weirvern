@@ -44,6 +44,7 @@ entire point, and an env var inherited through `envFrom` is exactly the leak tha
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import signal
@@ -169,6 +170,48 @@ def _ship_flows_gateway(client, *, path: str = "", state=None) -> int:
     state.note_read(st, end)
     ingester_mod.save_tail_state(path, state)
     return int(inserted)
+
+
+def _run_pending_sonar(client, default_iface: str) -> None:
+    """Run one hub-requested survey on THIS unit and post the measured result.
+
+    REMOTE, NOT A HUB JOB. The request arrived through the authenticated gateway; this
+    process is on the sensor, with hostNetwork, so `sonar.survey()` sees the same NICs
+    the capture does. NET_RAW is required for the ARP probe and is granted to this
+    container by the deploy helper; without it the survey refuses with a reason and the
+    refusal is posted rather than turned into a fake empty result.
+    """
+    if not getattr(client, "is_gateway", False):
+        return
+    try:
+        request = client.sonar_next()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sonar: could not claim a remote survey: %s", exc)
+        return
+    if not request:
+        return
+    from weirvern.admin import sonar as sonar_mod  # noqa: PLC0415
+
+    request_id = str(request.get("request_id") or "")
+    target = str(request.get("iface") or default_iface or "").strip()
+    if not request_id or not target:
+        return
+    logger.info("sonar: surveying %s for a hub request", target)
+    try:
+        result = sonar_mod.survey(
+            target, mgmt_iface=str(request.get("mgmt_iface") or os.environ.get("MGMT_IFACE") or ""),
+            progress=lambda payload: logger.info("sonar: %s", payload.get("step") or payload),
+        )
+    except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+        logger.warning("sonar: survey failed: %s", exc)
+        with contextlib.suppress(Exception):
+            client.sonar_result(request_id, {"ok": False, "error": str(exc)})
+        return
+    try:
+        client.sonar_result(request_id, result if isinstance(result, dict) else {"ok": False,
+                          "error": "the survey returned a non-object result"})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sonar: could not post the survey result: %s", exc)
 
 
 def _flow_shipper(settings, stop: threading.Event) -> None:
@@ -523,6 +566,7 @@ def main() -> None:
             if now - last_plan_read >= PLAN_REFRESH_S:
                 last_plan_read = now
                 refresh_plan(client, sid, controller)
+                _run_pending_sonar(client, iface)
             if not controller.should_publish:
                 # A live intercept child owns this sensor's `(sensor_id, 'siphon')` row with the
                 # authoritative numbers (see `should_publish`); writing here would clobber it.

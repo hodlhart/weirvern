@@ -38,6 +38,7 @@ where they are visible, editable, and inert until Apply.
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import ipaddress
 import json
 import logging
@@ -644,6 +645,81 @@ def iface_input_remedy() -> str:
     """
     return ("Interface names come from the sensor node's own NICs -- check the name against "
             "`ip link` on that node (Sonar surveys the node, not the pod).")
+
+
+REMOTE_TABLE = "weirvern.weirling_sonar_requests"
+
+
+def _remote_status(client, request_id: str) -> dict | None:
+    rows = list(client.query(
+        "SELECT request_id, status, result, error FROM " + REMOTE_TABLE +
+        " FINAL WHERE request_id = %(id)s LIMIT 1",
+        parameters={"id": request_id},
+    ).named_results())
+    return dict(rows[0]) if rows else None
+
+
+def run_remote_survey(client, sensor_id: str, iface: str, mgmt_iface: str = "",
+                      *, timeout_s: float = SONAR_TIMEOUT_S,
+                      poll_s: float = SONAR_POLL_S, progress=None) -> dict:
+    """Queue a survey on a remote weirling and wait for its measured result.
+
+    THE HUB DOES NOT RUN A JOB FOR A REMOTE SENSOR. A Job is pinned to this cluster's
+    sensor node; it cannot see another box's interfaces, and if the hub happens to have
+    an interface with the same name it would return a confident measurement of the wrong
+    machine. The request therefore goes through the same ClickHouse handoff the remote
+    agent already polls, and the sensor's own certificate identifies who may claim it.
+
+    Raises SonarError on a queue/write failure or timeout. A refusal from the sensor is
+    returned as `{ok: false, error: ...}` so the GUI can show the sensor's own words.
+    """
+    why = validate_survey_ifaces(iface, mgmt_iface)
+    if why:
+        raise SonarError(f"cannot survey: {why}")
+    if not str(iface or "").strip():
+        raise SonarError("the remote survey needs a capture interface; none was given")
+
+    request_id = uuid.uuid4().hex
+    now = dt.datetime.now(dt.UTC)
+    try:
+        client.insert(
+            REMOTE_TABLE,
+            [[request_id, sensor_id, iface, mgmt_iface or "", "pending", "", "", now, now]],
+            column_names=["request_id", "sensor_id", "iface", "mgmt_iface", "status",
+                          "result", "error", "requested_at", "updated_at"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise SonarError(f"could not queue the remote survey: {exc}") from exc
+
+    if callable(progress):
+        with contextlib.suppress(Exception):
+            progress({"step": "queued", "sensor": sensor_id,
+                      "message": "waiting for the weirling to claim the survey"})
+
+    deadline = time.monotonic() + max(5.0, float(timeout_s))
+    seen = ""
+    while time.monotonic() < deadline:
+        row = _remote_status(client, request_id) or {}
+        status = str(row.get("status") or "")
+        if status != seen and callable(progress):
+            seen = status
+            with contextlib.suppress(Exception):
+                progress({"step": status or "waiting", "sensor": sensor_id})
+        if status == "done":
+            try:
+                result = json.loads(str(row.get("result") or "{}"))
+            except ValueError:
+                return {"ok": False, "error": "the sensor returned a malformed survey result"}
+            return result if isinstance(result, dict) else {"ok": False,
+                                                            "error": "the sensor returned a non-object result"}
+        if status == "failed":
+            return {"ok": False, "error": str(row.get("error") or "the sensor refused the survey")}
+        time.sleep(max(0.5, float(poll_s)))
+    raise SonarError(
+        f"{sensor_id} did not complete the survey within {int(timeout_s)}s. The sensor must be "
+        "adopted through the mTLS gateway and its agent must be running; a legacy "
+        "direct-ClickHouse unit does not poll this queue."
+    )
 
 
 def build_job(name: str, image: str, iface: str, mgmt_iface: str = "",

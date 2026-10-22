@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.86 — 2026-10-22
+
+SONAR REACHES THE REMOTE SENSOR.
+
+- The Weirlings "Sonar for this weirling" action now queues a durable survey request in
+  `weirling_sonar_requests` instead of creating a hub-side Job. The remote agent claims
+  it over mTLS, runs `sonar.survey()` on its own capture interface with NET_RAW, and
+  posts the measured result back; the hub route waits and returns it stamped with the
+  sensor id.
+- A legacy direct-ClickHouse sensor has no queue poller. It now times out with an
+  explicit explanation rather than returning a survey of a hub interface with the same
+  name.
+- The remote agent container gains NET_RAW (the same capability the capture container
+  already has) so the ARP survey can run on the sensor's network namespace.
+- Schema 022 adds the request/result handoff with a one-day TTL.
+
 ## 0.17.85 — 2026-10-22
 
 WEIRLING ADOPTION REACHES THE SENSOR.

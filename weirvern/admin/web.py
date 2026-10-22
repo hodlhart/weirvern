@@ -3484,6 +3484,22 @@ def _build_handler(ctx: GuiContext):
                     "error": f"cannot survey: {_why}. {sonar_mod.iface_input_remedy()}",
                 }, 400)
 
+            # A NAMED REMOTE SENSOR IS NOT A JOB IN THIS CLUSTER. The request goes through
+            # the same ClickHouse handoff the remote agent already polls; the sensor runs
+            # sonar.survey() on its own network and posts the measured result back. This
+            # branch must come BEFORE ClusterConfig/Job creation, or a hub interface with
+            # the same name would be surveyed and returned under the remote sensor's id.
+            if sensor_id and sensor_id != _gate_sensor_name():
+                try:
+                    with self._with_client() as ch:
+                        result = sonar_mod.run_remote_survey(
+                            ch, sensor_id, iface, mgmt, progress=emit_progress)
+                except sonar_mod.SonarError as exc:
+                    return emit({"ok": False, "error": str(exc), "sensor": sensor_id}, 502)
+                if isinstance(result, dict):
+                    result["sensor"] = sensor_id
+                return emit(result, 200 if result.get("ok") else 422)
+
             if ctx.config_client is not None:
                 client = ctx.config_client
             else:
