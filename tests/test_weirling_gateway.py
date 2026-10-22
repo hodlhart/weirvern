@@ -124,6 +124,16 @@ def test_enrollment_schema_keeps_token_hashes_without_secret_columns():
     assert "password" not in sql.lower()
 
 
+def test_an_unknown_heartbeat_field_is_a_readable_refusal_not_a_dropped_connection():
+    fields, unknown = gw.heartbeat_fields({"mode": "loch", "iface": "eth0", "note": "stray"})
+    assert fields == {"mode": "loch", "iface": "eth0", "note": "stray"}
+    assert unknown == ["note"]
+    # sensor_id is the authenticated identity, never a body field to forward.
+    fields, unknown = gw.heartbeat_fields({"sensor_id": "s1", "mode": "loch"})
+    assert fields == {"mode": "loch"}
+    assert unknown == []
+
+
 def test_gateway_routes_and_mtls_are_wired():
     src = (ROOT / "weirvern" / "weirling_gateway.py").read_text()
     for route in ("/v1/enroll", "/v1/heartbeat", "/v1/flows", "/v1/zeek", "/v1/plan", "/v1/renew",

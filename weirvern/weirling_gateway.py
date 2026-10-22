@@ -15,10 +15,11 @@ certificate plus the root. The private key never reaches the hub. Subsequent cal
 present the certificate; the gateway reads the URI SAN, checks the registry row's
 enabled/revoked state, and writes ClickHouse with hub credentials.
 
-WHAT IT DOES NOT DO YET. The existing sensor_agent still uses its direct-ClickHouse
-path. This gateway is the secure path for new/migrated units; the migration of the
-agent's heartbeat/flow/plan loop is a separate change, deliberately kept out of this
-module so the old path cannot silently change behavior for an existing sensor.
+WHAT IT DOES. The existing sensor_agent uses this gateway whenever WEIRLING_GATEWAY_URL is
+set: enrollment, plan, heartbeat, flows, Zeek records, Sonar and probe results all travel
+through the mTLS edge. The direct-ClickHouse path remains only for units explicitly deployed
+with --legacy-clickhouse; it is not the default and cannot be entered by silently dropping a
+gateway URL.
 """
 from __future__ import annotations
 
@@ -52,6 +53,23 @@ CERT_DAYS = 90
 MAX_BODY = 8 * 1024 * 1024
 URI_PREFIX = "spiffe://weirvern/sensor/"
 DEFAULT_TTL_S = 3600
+# The fields status.heartbeat() actually accepts. A body is an untyped JSON object from a
+# remote unit; passing an unknown key straight through raises TypeError inside a request
+# thread, which closes the connection with no response (measured live: a stray "note" made a
+# heartbeat return curl 56, not a 400). Keep the contract explicit so a version mismatch is a
+# readable refusal rather than a dropped connection.
+HEARTBEAT_FIELDS = frozenset({
+    "mode", "iface", "segment", "hosts", "mappings", "running", "uptime_s",
+    "restores", "refreshes", "failures", "capture_loss_pct", "packets_recv",
+    "packets_dropped", "host_stats", "interfaces",
+})
+
+
+def heartbeat_fields(body: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return (accepted fields, unknown field names) without mutating the caller's body."""
+    fields = dict(body or {})
+    fields.pop("sensor_id", None)
+    return fields, sorted(set(fields) - HEARTBEAT_FIELDS)
 
 
 def token_hash(token: str) -> str:
@@ -269,8 +287,9 @@ class Gateway:
             reg, err = self._registered(client, sensor_id)
             if err:
                 return err
-            fields = dict(body or {})
-            fields.pop("sensor_id", None)
+            fields, unknown = heartbeat_fields(body)
+            if unknown:
+                return 400, {"error": "unknown heartbeat field(s): " + ", ".join(unknown)}
             fields.setdefault("mode", reg.expected_mode or "loch")
             fields.setdefault("iface", reg.plan.iface if reg.plan else "")
             ok = status_mod.heartbeat(client, sensor_id=sensor_id, **fields)

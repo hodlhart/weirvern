@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.3 — 2026-10-22
+
+MTLS IS THE WHOLE REMOTE PATH — AND A BAD HEARTBEAT IS A 400, NOT A DROPPED CONNECTION.
+
+- Verified live: enrollment (201), plan, heartbeat, flows and gate routes all return 200 with
+  an enrolled client certificate; every data route returns 401 without one. The server chain
+  verifies to the root and TLS 1.3 is in use.
+- The gateway now checks heartbeat field names against the fields `status.heartbeat` accepts.
+  A stray field used to raise TypeError inside the request thread and close the connection
+  with no response; it now returns `400 unknown heartbeat field(s): ...`.
+- Corrected the module docstring: the sensor agent uses the gateway whenever
+  `WEIRLING_GATEWAY_URL` is set; direct ClickHouse is the explicit `--legacy-clickhouse` path.
+
 ## 0.19.2 — 2026-10-22
 
 INLINE IS A TOPOLOGY, NOT A TOGGLE.
