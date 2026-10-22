@@ -13,7 +13,9 @@ SONAR REACHES THE REMOTE SENSOR.
   explicit explanation rather than returning a survey of a hub interface with the same
   name.
 - The remote agent container gains NET_RAW (the same capability the capture container
-  already has) so the ARP survey can run on the sensor's network namespace.
+  already has) so the ARP survey can run on the sensor's network namespace. In mTLS
+  mode it runs as root because Docker does not grant an effective NET_RAW capability
+  to a non-root UID; the certificate directory is root-owned in that mode.
 - Schema 022 adds the request/result handoff with a one-day TTL.
 
 ## 0.17.85 — 2026-10-22

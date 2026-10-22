@@ -80,6 +80,29 @@ a token, copies the root, enrolls, writes the gateway URL and certificate paths 
 env file, and starts the agent with `WEIRLING_GATEWAY_URL` set. `--mtls-token` accepts an
 already-issued token.
 
+## Remote Sonar
+
+The Weirlings sheet's **Sonar for this weirling** action queues a durable request in
+`weirling_sonar_requests`. The remote agent claims it over mTLS, runs
+`sonar.survey()` on its own capture interface, and posts the measured result back. It
+never creates a Job on the hub, so a same-named hub interface cannot be measured by
+mistake.
+
+This is why the mTLS agent runs as root with NET_RAW: an ARP survey needs an effective
+`NET_RAW` capability, and Docker does not grant one to a non-root UID. The capture
+container already carries NET_RAW; the agent does not receive NET_ADMIN.
+
+## What still runs hub-side
+
+- **Domain blocking** is a DNS/resolver action, not a packet action. The blocklists and
+  domain rules are evaluated by the hub's DNS path; a remote sensor does not answer DNS
+  for its segment, so it cannot make a remote client's resolver return a block answer.
+- **Traffic gates** do run on a remote unit when it is installed with `--gate` and sits
+  in the path. That path currently expects the direct-ClickHouse transport for its rule
+  reads and state writes. The `--mtls` install does not yet provide a rules/state
+  endpoint for the gate; do not describe an mTLS remote gate as enforcing until that is
+  built and proved.
+
 ## Boundary
 
 The default deploy path still uses a per-sensor ClickHouse credential, and an existing
