@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.19.0 — 2026-10-22
+## 0.19.1 — 2026-10-22
 
 REMOTE CAPTURE-LIVENESS TEST.
 
@@ -12,6 +12,8 @@ REMOTE CAPTURE-LIVENESS TEST.
 - The Weirlings sheet has **Test capture (30s)** beside Sonar. It measures the named NIC, not
   the hub's. In-path/ARP testing remains a separate capability and is not served by this route.
 - New schema: `027_weirling_probe.sql`.
+- The sheet waits 90 seconds for a result: a sensor may need one 30-second plan poll before it
+  claims the request, then the 30-second measurement itself.
 
 ## 0.18.1 — 2026-10-22
 

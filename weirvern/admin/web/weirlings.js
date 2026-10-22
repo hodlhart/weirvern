@@ -1883,10 +1883,10 @@ async function wlRunPlanProbe() {
       { sensor_id: sid, iface, seconds: 30 });
     if (!created || !created.ok) throw new Error((created && created.error) || "the probe was refused");
     let row = created;
-    const deadline = Date.now() + 45000;
+    const deadline = Date.now() + 90000;
     while (row && (row.status === "pending" || row.status === "running")) {
       if (Date.now() > deadline) {
-        wlRenderPlanProbeNote("The probe was queued but no result arrived within 45s. The sensor "
+        wlRenderPlanProbeNote("The probe was queued but no result arrived within 90s. The sensor "
           + "may be offline or between plan polls; refresh to see whether it completed.", true);
         return null;
       }

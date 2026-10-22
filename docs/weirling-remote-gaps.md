@@ -20,6 +20,10 @@ features that do and do not cross that boundary.
   capture.
 - **Sonar** — a hub request is queued durably; the remote agent runs the survey against
   its own NIC and posts the measured result back.
+- **Capture-liveness test** — the hub queues a bounded, read-only 30-second probe; the
+  sensor measures its own NIC packet counters and Zeek `conn.log` growth and posts the
+  evidence. A silent port returns `observed:false`; it is not a failed test. No mode,
+  plan, interface or sysctl is written.
 - **Traffic gate** — an mTLS gate reads live rules and writes state through
   `/v1/gate/rules`, `/v1/gate/state` and `/v1/gate/events`; it still needs `--gate`,
   `--gate-iface`, `NET_ADMIN`, and a genuinely in-path port.
@@ -33,9 +37,10 @@ features that do and do not cross that boundary.
 1. **Remote domain blocking.** Domain blocking is a DNS/resolver action. A remote unit
    does not answer DNS for its segment, so it cannot return a block answer. A gate can
    drop resolved addresses as packets, which is not the same guarantee.
-2. **Remote test run / live probe.** The hub's bounded test run drives its own ConfigMap;
-   it does not reach a remote unit. Remote Sonar is available, but the 30-second siphon
-   probe has no remote equivalent.
+2. **Remote in-path test / live probe.** The capture-liveness test is available, but it
+   measures capture evidence only. The hub's 30-second siphon probe (ARP forging, kernel
+   relay, drop enforcement) has no remote equivalent; that is an inline-topology capability,
+   not a flag on a capture-only unit.
 3. **Remote capture/NIC changes after install.** Trunk VLAN devices are automatic; turning
    the NetFlow collector on/off or changing the capture parent is still install-time.
 4. **Remote update/rollout.** There is no hub-driven image update or health-driven restart
