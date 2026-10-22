@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.87 — 2026-10-22
+
+REMOTE TRAFFIC GATES OVER mTLS.
+
+- The Sluice gate's rule/state store now has a gateway-backed adapter. A remote gate
+  fetches the live rule set (including resolved domain addresses) and writes its state
+  through `/v1/gate/rules`, `/v1/gate/state` and `/v1/gate/events`; it never needs a
+  ClickHouse credential. The compiler, supervisor and safety checks remain the hub's
+  own, and a remote gate still never derives rules.
+- `WEIRVERN_ROLE=gate` checks the gateway environment before opening ClickHouse; the
+  legacy direct-ClickHouse gate path is unchanged.
+- The gate container runs as root with NET_ADMIN because Docker does not grant an
+  effective capability to a non-root UID.
+- Domain rules are enforced as resolved-address packet drops on the remote gate. This
+  is not DNS-answer blocking; the resolver remains a hub-side action.
+
 ## 0.17.86 — 2026-10-22
 
 SONAR REACHES THE REMOTE SENSOR.

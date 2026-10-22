@@ -207,7 +207,7 @@ def _sluice_dns_maybe(settings, client) -> None:
             logger.warning("sluice dns: could not record hits: %s", exc)
 
 
-def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
+def _sluice_maybe(settings, client, *, derive: bool = True, store=None) -> None:
     """Run one Sluice Gate pass if it is enabled and its interval has elapsed.
 
     `derive` is False on a weirling gate: it enforces the rule set the hub wrote, and does not
@@ -227,6 +227,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
 
     from weirvern import sluice_store  # noqa: PLC0415
     from weirvern.admin import channel as _channel  # noqa: PLC0415
+    store = store or sluice_store
     from weirvern.nic_plans import NicPlanSet  # noqa: PLC0415
     from weirvern.sluice import (  # noqa: PLC0415
         GATE_STATE_DISARMED,
@@ -325,7 +326,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
         # and the panel kept showing a fault on a box with no nft table at all.
         if first_sweep:
             try:
-                prior = sluice_store.load_gate_state(client, _sensor_name(settings))
+                prior = store.load_gate_state(client, _sensor_name(settings))
                 stale = (prior.get("state") != GATE_STATE_DISARMED
                          or not prior.get("iface")
                          or not prior.get("backend"))
@@ -335,7 +336,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
                     # "interface —" and warn about a '' backend on a gate that uses nft on eth1.
                     if not changed:
                         sup.disarm()
-                    sluice_store.write_gate_state(client, _sensor_name(settings), sup.state)
+                    store.write_gate_state(client, _sensor_name(settings), sup.state)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sluice: could not record the disarmed state: %s", exc)
         return
@@ -368,7 +369,7 @@ def _sluice_maybe(settings, client, *, derive: bool = True) -> None:
             siphon_live = None
 
     state = enforcement_pass(
-        sluice_store, sup, client=client, sensor=_sensor_name(settings),
+        store, sup, client=client, sensor=_sensor_name(settings),
         policy=settings.sluice_criticality, max_block_s=settings.sluice_max_block_s,
         auto_score=auto_score,
         detections=detections,
@@ -2046,6 +2047,36 @@ def main() -> None:
     except ValueError as exc:
         logger.error("Detection configuration is unalertable: %s", exc)
         raise SystemExit(2) from exc
+
+    # ── A GATEWAY-BACKED REMOTE GATE ─────────────────────────────────────────────────────────────
+    # The direct-ClickHouse gate path below still exists for legacy installs, but an mTLS unit
+    # has no database credential. The adapter supplies rules and state over the same
+    # authenticated gateway the agent uses; the compiler, supervisor and safety checks are the
+    # hub's own. This branch must come before db.connect(), or a gateway gate would try to open
+    # a database it deliberately does not have.
+    if _is_gate_only(settings) and (os.environ.get("WEIRLING_GATEWAY_URL") or "").strip():
+        from weirvern.gateway_gate import GatewayGateStore  # noqa: PLC0415
+        from weirvern.weirling_client import GatewayClient  # noqa: PLC0415
+
+        gateway = GatewayClient(
+            os.environ["WEIRLING_GATEWAY_URL"],
+            os.environ.get("WEIRLING_CLIENT_CERT", ""),
+            os.environ.get("WEIRLING_CLIENT_KEY", ""),
+            os.environ.get("WEIRLING_ROOT_CA", ""),
+        )
+        store = GatewayGateStore(gateway)
+        logger.info(
+            "WEIRVERN_ROLE=gate — enforcing the hub's rules over mTLS as %s",
+            _sensor_name(settings) or "unnamed",
+        )
+        while not _stop.is_set():
+            try:
+                _sluice_maybe(settings, None, derive=False, store=store)
+            except Exception:  # noqa: BLE001
+                logger.exception("gate pass failed; retrying next interval")
+            _stop.wait(max(5, int(settings.sluice_interval_s)))
+        logger.info("gate role stopping")
+        return
 
     client = db.connect(settings)
     db.apply_schema(client, settings)

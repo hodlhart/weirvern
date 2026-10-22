@@ -96,6 +96,73 @@ def _row_to_rule(row: Sequence[Any]) -> Rule:
     )
 
 
+def rule_to_wire(rule: Rule) -> dict[str, Any]:
+    """Serialize one Rule for the mTLS gate endpoint.
+
+    Datetimes become ISO strings because JSON has no datetime; `rule_from_wire` restores
+    the exact fields the gate's `is_live` check needs. `resolved_ips` travels because the
+    gateway resolves domain rules against the hub's reverse map before sending.
+    """
+    def stamp(value):
+        return value.isoformat() if isinstance(value, datetime) else value
+
+    return {
+        "rule_id": rule.rule_id,
+        "src_cidr": rule.src_cidr,
+        "dst_cidr": rule.dst_cidr,
+        "domain": rule.domain,
+        "mode": rule.mode,
+        "resolved_ips": list(rule.resolved_ips or []),
+        "protocol": rule.protocol,
+        "dst_port": int(rule.dst_port),
+        "direction": rule.direction,
+        "expires_at": stamp(rule.expires_at),
+        "created_by": rule.created_by,
+        "reason": rule.reason,
+        "origin": rule.origin,
+        "origin_ref": rule.origin_ref,
+        "severity": rule.severity,
+        "revoked_at": stamp(rule.revoked_at),
+        "disabled_at": stamp(rule.disabled_at),
+    }
+
+
+def rule_from_wire(row: dict[str, Any]) -> Rule:
+    """The inverse of `rule_to_wire`; tolerant of absent optional times."""
+    def when(value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+    try:
+        resolved = row["resolved_ips"]
+    except KeyError:
+        resolved = []
+    return Rule(
+        rule_id=str(row.get("rule_id") or ""),
+        src_cidr=str(row.get("src_cidr") or ""),
+        dst_cidr=str(row.get("dst_cidr") or ""),
+        domain=str(row.get("domain") or ""),
+        mode=str(row.get("mode") or "block"),
+        resolved_ips=[str(x) for x in (resolved or [])],
+        protocol=str(row.get("protocol") or ""),
+        dst_port=int(row.get("dst_port") or 0),
+        direction=str(row.get("direction") or "forward"),
+        expires_at=when(row.get("expires_at")),
+        created_by=str(row.get("created_by") or ""),
+        reason=str(row.get("reason") or ""),
+        origin=str(row.get("origin") or "manual"),
+        origin_ref=str(row.get("origin_ref") or ""),
+        severity=str(row.get("severity") or ""),
+        revoked_at=when(row.get("revoked_at")),
+        disabled_at=when(row.get("disabled_at")),
+    )
+
+
 def load_live_rules(client: Client) -> list[Rule]:
     """Every rule that is in force right now. RAISES on failure -- see the module docstring."""
     result = client.query(LIVE_RULE_SQL)

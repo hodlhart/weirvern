@@ -39,9 +39,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from weirvern import db, fleet, fleet_store, ingester
+from weirvern import db, fleet, fleet_store, ingester, sluice_store
 from weirvern.admin import status as status_mod
 from weirvern.config import get_settings
+from weirvern.sluice import GateState
 
 logger = logging.getLogger("weirvern.weirling_gateway")
 
@@ -387,6 +388,80 @@ class Gateway:
         finally:
             client.close()
 
+    def gate_rules(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        """The live rule set and resolved domain addresses for a remote gate."""
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            rules = sluice_store.load_live_rules(client)
+            rules, problems = sluice_store.attach_resolved_ips(client, rules)
+            return 200, {
+                "rules": [sluice_store.rule_to_wire(rule) for rule in rules],
+                "problems": list(problems),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return 503, {"error": f"the gate rules could not be read: {exc}"}
+        finally:
+            client.close()
+
+    def gate_state(self, sensor_id: str) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            return 200, {"state": sluice_store.load_gate_state(client, sensor_id)}
+        finally:
+            client.close()
+
+    def gate_write_state(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            # Only the known GateState fields are accepted; a gate cannot smuggle another
+            # sensor's name or arbitrary columns into the store.
+            try:
+                state = GateState(
+                    state=str(body.get("state") or "disarmed"),
+                    iface=str(body.get("iface") or ""),
+                    mgmt_iface=str(body.get("mgmt_iface") or ""),
+                    rules_active=int(body.get("rules_active") or 0),
+                    rules_total=int(body.get("rules_total") or 0),
+                    packets_blocked=int(body.get("packets_blocked") or 0),
+                    bytes_blocked=int(body.get("bytes_blocked") or 0),
+                    detail=str(body.get("detail") or ""),
+                    backend=str(body.get("backend") or ""),
+                    backend_expected=str(body.get("backend_expected") or "nft"),
+                    enforcement=str(body.get("enforcement") or ""),
+                )
+            except (TypeError, ValueError) as exc:
+                return 400, {"error": f"invalid gate state: {exc}"}
+            sluice_store.write_gate_state(client, sensor_id, state)
+            return 200, {"ok": True}
+        finally:
+            client.close()
+
+    def gate_write_events(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        client = self.client()
+        try:
+            _reg, err = self._registered(client, sensor_id)
+            if err:
+                return err
+            events = body.get("events")
+            if not isinstance(events, list):
+                return 400, {"error": "events must be a list"}
+            if len(events) > 10000:
+                return 413, {"error": "too many events in one request"}
+            clean = [e for e in events if isinstance(e, dict)]
+            written = sluice_store.write_events(client, clean)
+            return 200, {"ok": True, "written": written}
+        finally:
+            client.close()
+
     def renew(self, sensor_id: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         client = self.client()
         try:
@@ -457,6 +532,16 @@ def _make_handler(gateway: Gateway):
                 if not sid:
                     return
                 return self._json(*gateway.sonar_next(sid))
+            if path == "/v1/gate/rules":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.gate_rules(sid))
+            if path == "/v1/gate/state":
+                sid = self._sensor()
+                if not sid:
+                    return
+                return self._json(*gateway.gate_state(sid))
             return self._json(404, {"error": "no route"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -482,6 +567,10 @@ def _make_handler(gateway: Gateway):
                 return self._json(*gateway.renew(sid, body))
             if path == "/v1/sonar/result":
                 return self._json(*gateway.sonar_result(sid, body))
+            if path == "/v1/gate/state":
+                return self._json(*gateway.gate_write_state(sid, body))
+            if path == "/v1/gate/events":
+                return self._json(*gateway.gate_write_events(sid, body))
             return self._json(404, {"error": "no route"})
 
     return Handler

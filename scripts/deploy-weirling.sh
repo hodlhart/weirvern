@@ -444,7 +444,7 @@ case "\${1:-status}" in
         echo "weirvern-gate: REFUSING to enforce on '\$GATE_IF' -- management NIC" >&2; exit 1
       fi
       docker run -d --name "weirvern-gate-\$ID" --restart unless-stopped \\
-        --network host --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges \\
+        --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges \\
         --env-file "\$ENVF" \\
         -e WEIRVERN_ROLE=gate -e SENSOR_ID="\$ID" \\
         -e SLUICE_ENABLED=1 -e SLUICE_IFACE="\$GATE_IF" \\

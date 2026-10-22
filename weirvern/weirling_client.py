@@ -187,6 +187,18 @@ class GatewayClient:
                                   {"request_id": request_id, "result": result,
                                    "error": error}).get("ok"))
 
+    def gate_rules(self) -> dict:
+        return self._request("GET", "/v1/gate/rules")
+
+    def gate_state(self) -> dict:
+        return self._request("GET", "/v1/gate/state").get("state") or {}
+
+    def gate_write_state(self, state: dict) -> bool:
+        return bool(self._request("POST", "/v1/gate/state", state).get("ok"))
+
+    def gate_write_events(self, events: list[dict]) -> dict:
+        return self._request("POST", "/v1/gate/events", {"events": events})
+
     def close(self) -> None:  # symmetry with the ClickHouse client; the transport owns no pool
         return None
 
