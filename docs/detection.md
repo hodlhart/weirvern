@@ -121,7 +121,8 @@ Three design points matter when reading the numbers:
 
 ### The web GUI
 
-**Accounts and roles**, served from the worker image on **NodePort 30088**. It cannot start,
+**Accounts and roles**, served from the worker image on **HTTPS 443 via Traefik** (the base
+NodePort 30088 is break-glass only). It cannot start,
 stop, or apply anything: a monitoring surface that can mutate the thing it monitors turns a
 UI bug into an outage — but it does manage the deployment's configuration and its own
 accounts, and both are gated.

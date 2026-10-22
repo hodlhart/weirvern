@@ -1,0 +1,49 @@
+# The console is reachable only through Traefik on 443. The HTTP router is only a
+# redirect; it never proxies the application.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: weirvern-gui-http
+  namespace: weirvern
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: weirvern-redirect-https@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: sensor.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: weirvern-gui
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: weirvern-gui
+  namespace: weirvern
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: weirvern-hsts@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - sensor.example
+      secretName: weirvern-tls
+  rules:
+    - host: sensor.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: weirvern-gui
+                port:
+                  name: http

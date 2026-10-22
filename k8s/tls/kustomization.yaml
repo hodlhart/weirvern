@@ -1,0 +1,16 @@
+# Local HTTPS edge for the Weirvern console.
+#
+# This overlay is deliberately separate from `k8s/`:
+#   * it needs cert-manager CRDs, which a bare `kubectl apply -k k8s/` must not require;
+#   * it changes the GUI Service from NodePort to ClusterIP, so applying it is the
+#     moment the plaintext door closes;
+#   * the TLS Secret is created by cert-manager, not committed to git.
+#
+# Apply only after the internal CA Secret and cert-manager are ready:
+#     kubectl apply -k k8s/tls
+namespace: weirvern
+resources:
+  - middlewares.yaml
+  - certificate.yaml
+  - ingress.yaml
+  - service-clusterip.yaml

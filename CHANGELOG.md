@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.82 — 2026-10-22
+
+WEIRVERN ISSUES ITS OWN CERTIFICATES: THE CONSOLE NOW HAS A LOCAL HTTPS 443 EDGE.
+
+- A local two-tier PKI: the **Weirvern Local Root CA** signs an intermediate, and
+  cert-manager issues a 90-day `weirvern-gui` leaf from that intermediate. The root key
+  stays off-cluster; only the intermediate is in a Secret, and cert-manager renews the leaf
+  30 days before expiry.
+- `k8s/tls` adds the Traefik TLS Ingress for `sensor.example`, a redirect-only HTTP Ingress,
+  and a `ClusterIP` GUI Service. The base NodePort 30088 remains only as a break-glass path
+  and is removed from the user path by the overlay.
+- The app now redirects HTTP to HTTPS when the ingress says `X-Forwarded-Proto: http`, and
+  emits HSTS only when the ingress says `https`; a direct port-forward is not mislabelled.
+- The sign-in gate and the operator-token note now state the HTTPS path and the one-time
+  root trust step instead of telling users passwords cross the network in clear text.
+- Local certificate setup and verification are documented in `k8s/tls/README.md`.
+
 ## 0.17.81 — 2026-10-21
 
 THE OPEN GITHUB BATCH: THE QUEUE HONOURS THE RANGE, THE FLEET NAMES ITS STATE, AXES

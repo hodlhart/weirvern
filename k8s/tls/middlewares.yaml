@@ -1,0 +1,23 @@
+# Redirect plaintext to HTTPS and label every secure response.
+#
+# The HTTP Ingress and the HTTPS Ingress are separate resources because a middleware
+# that redirects to HTTPS must not run on the HTTPS router (it would redirect to itself).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: weirvern-redirect-https
+  namespace: weirvern
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: weirvern-hsts
+  namespace: weirvern
+spec:
+  headers:
+    customResponseHeaders:
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains"

@@ -60,18 +60,22 @@ externally-reachable Service with `type: NodePort` commented out).
 
 ### Transport and the trust boundary
 
-**The console serves plain HTTP.** That is a deliberate choice for a management segment: no
-certificate to renew, no proxy to keep alive, and the CLI and port-forward paths work without one.
-The boundary it assumes is explicit: **anything beyond the trusted management segment must
-terminate TLS in front of the console.** Nothing in the repository provides a certificate,
-renewal, or HSTS.
+**The supported console path is HTTPS 443 through local Traefik.** The k3s cluster already
+runs Traefik and owns host port 443. Apply `k8s/tls` after the internal CA Secret exists: it
+creates a cert-manager `Certificate` for `sensor.example`, adds the TLS `Ingress`, redirects HTTP,
+adds HSTS, and changes the GUI Service to ClusterIP. The certificate chains to the **Weirvern
+Local Root CA**; install that root once on each managed device. Renewal is automatic.
 
-Two supported paths:
+**The base manifest still serves plain HTTP on NodePort 30088.** That remains useful for
+break-glass and for a development workstation, but it is not the user path. It has no TLS
+listener and must be firewalled off the management segment once the ingress is healthy.
 
-**1. Terminate TLS at a reverse proxy** (anything long-lived). Point nginx or Traefik at the GUI
-NodePort. The console is same-origin, sends its token as headers (`X-Weirvern-Token`; it also
-accepts a session cookie), and uses no websockets, so the proxy only has to preserve the host and
-the scheme:
+The two older paths remain valid for recovery:
+
+**1. Alternate reverse proxy.** The shipped ingress is Traefik; if you deliberately run a
+different proxy, point it at the GUI Service. The console is same-origin, sends its token as
+headers (`X-Weirvern-Token`; it also accepts a session cookie), and uses no websockets, so the
+proxy only has to preserve the host and the scheme:
 
 ```nginx
 server {

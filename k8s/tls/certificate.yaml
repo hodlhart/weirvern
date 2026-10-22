@@ -1,0 +1,30 @@
+# The console certificate. The CA is the local intermediate created out of band;
+# cert-manager renews this leaf well before it expires.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: weirvern-ca
+spec:
+  ca:
+    # This Secret lives in cert-manager's cluster-resource namespace and contains
+    # the INTERMEDIATE CA only. The root key stays offline.
+    secretName: weirvern-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: weirvern-tls
+  namespace: weirvern
+spec:
+  secretName: weirvern-tls
+  duration: 2160h          # 90 days
+  renewBefore: 720h        # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - sensor.example
+  issuerRef:
+    name: weirvern-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -57,23 +57,27 @@ public or production-deployed.
     which addresses have actually sent records, and it prints the ready-to-paste
     value.
 - `.env` contains Pushover tokens — `chmod 600` and keep out of git.
-- **The GUI is plain HTTP on a NodePort — there is no TLS.** Credentials and session
-  cookies cross the network in cleartext, so anyone who can observe the path between
-  your browser and the sensor node can read them and act as you. This is a deliberate
-  boundary rather than an oversight: the module's own threat model names it, and it
-  defends against another host on the LAN reaching the port and changing settings, and
-  against a token being guessed — not against a network attacker who can observe traffic.
+- **The supported console path is HTTPS 443 through the local Traefik, with a
+  certificate issued by the Weirvern local CA.** Apply `k8s/tls` after the CA
+  secret exists; it creates the TLS `Certificate`, routes `sensor.example:443`,
+  redirects HTTP, and changes the GUI Service to ClusterIP. Install the Weirvern
+  root certificate once on each managed device; after that the browser trusts the
+  console and every renewal. The base Service still defines a plain HTTP NodePort
+  (30088) as a break-glass path; it has no TLS listener and must not be the path
+  users browse. It is closed as soon as the overlay is applied.
 
   What that means in practice:
   - Do not expose the GUI NodePort beyond the segment you administer from. It has never
     been intended as a public service.
-  - Administer it over a trusted path, or through a tunnel that terminates TLS for you:
+  - Prefer `https://sensor.example` once the root is trusted. For a one-off recovery,
+    the NodePort/tunnel still works, but never send a password over it:
 
     ```bash
     kubectl -n weirvern port-forward svc/weirvern-gui 8088:8088
     ssh -L 8088:localhost:8088 <sensor-node>
     ```
-  - If you need TLS at the edge, terminate it in front of the Service rather than
-    expecting the pod to gain a certificate; the GUI has no TLS listener to configure.
+  - The certificate's SAN is `sensor.example`; it is issued by Weirvern's intermediate
+    CA, which chains to the Weirvern root. Do not add a public suffix or a wildcard
+    that the local CA did not sign.
 - ClickHouse HTTP port (8123) should not be exposed outside the cluster
   network.

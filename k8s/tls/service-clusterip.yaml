@@ -1,0 +1,19 @@
+# Applying this overlay is the cut-over from the plaintext NodePort to the TLS edge.
+# Keep the base Service manifest for upgrades that do not include TLS, but once the
+# Ingress is healthy the console should not be reachable on 30088 at all.
+apiVersion: v1
+kind: Service
+metadata:
+  name: weirvern-gui
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-gui
+    app.kubernetes.io/part-of: weirvern
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: weirvern-gui
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http

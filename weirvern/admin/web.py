@@ -302,6 +302,44 @@ def _build_handler(ctx: GuiContext):
             logger.debug("%s - %s", self.address_string(), fmt % args)
 
         # -- helpers -------------------------------------------------------
+        def _forwarded_proto(self) -> str:
+            """The scheme Traefik saw, not the scheme it used to reach this pod.
+
+            The GUI still speaks HTTP to its Service; TLS terminates at the local ingress.
+            `X-Forwarded-Proto` is the only place the browser-facing scheme exists. Treat a
+            missing header as direct/plain HTTP so a port-forward never silently loses the
+            HSTS/redirect guard rails.
+            """
+            value = (self.headers.get("X-Forwarded-Proto", "") or "").split(",", 1)[0]
+            return value.strip().lower()
+
+        def _security_headers(self) -> None:
+            """Add HSTS only on the secure path, where a browser can honour it."""
+            proto = self._forwarded_proto()
+            if proto == "https":
+                self.send_header("Strict-Transport-Security",
+                                 "max-age=31536000; includeSubDomains")
+
+        def _redirect_to_https(self) -> bool:
+            """Return True when this request was redirected before it reached a route.
+
+            The HTTP Ingress exists only to make this redirect. The app sees the ingress's
+            `X-Forwarded-Proto: http`; without the header (direct NodePort or a port-forward)
+            we deliberately do not guess a public scheme.
+            """
+            if self._forwarded_proto() != "http":
+                return False
+            host = (self.headers.get("Host", "") or "").strip()
+            if not host:
+                return False
+            location = "https://" + host + self.path
+            self.send_response(308)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", NO_CACHE)
+            self.end_headers()
+            return True
+
         def _send(self, code: int, body: bytes, content_type: str) -> None:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
@@ -311,6 +349,7 @@ def _build_handler(ctx: GuiContext):
             # free and removes a class of browser-side abuse.
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            self._security_headers()
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -324,6 +363,8 @@ def _build_handler(ctx: GuiContext):
 
         # -- routing -------------------------------------------------------
         def do_GET(self) -> None:  # noqa: N802
+            if self._redirect_to_https():
+                return
             # The time window a request sets (from/to, absolute) lives in a ContextVar that
             # query builders read. A thread serves many requests, so a window left over from
             # the previous one would answer this request against the wrong stretch of time:
@@ -670,6 +711,7 @@ def _build_handler(ctx: GuiContext):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -2578,6 +2620,8 @@ def _build_handler(ctx: GuiContext):
             return parsed
 
         def do_POST(self) -> None:  # noqa: N802
+            if self._redirect_to_https():
+                return
             """The only write surface. Every route here is token-gated.
 
             Reads stay on GET and stay open. This exists so an operator can manage settings from
@@ -3359,6 +3403,7 @@ def _build_handler(ctx: GuiContext):
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Connection", "close")
+                self._security_headers()
                 self.end_headers()
                 self.close_connection = True
 

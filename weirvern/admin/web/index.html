@@ -30,9 +30,9 @@
       <button id="gate-submit" class="primary" type="submit">Sign in</button>
       <p id="gate-error" class="gate-error" role="alert"></p>
     </form>
-    <p class="muted gate-foot">This page is served over plain HTTP with no TLS, so a password
-      entered here crosses the network in the clear — use it on a trusted network, and treat
-      these credentials as LAN credentials rather than secrets of record.</p>
+    <p class="muted gate-foot">This page is served over HTTPS by the local Weirvern ingress.
+      Its certificate is issued by the Weirvern local CA; install that root once on each device
+      you use. If the address bar still says HTTP, stop and open the HTTPS address instead.</p>
     <!--
       THE BREAK-GLASS DOOR, ON THE GATE ITSELF. The operator token recovers a lost admin
       password, but its input lived only on the Settings tab -- which is behind this gate, so
@@ -1638,7 +1638,7 @@
   <p><strong>What it is.</strong> Break-glass access: a token that grants admin rights without an account, kept in this browser tab only and sent as the X-Weirvern-Token header.</p>
   <p><strong>What writes it.</strong> You, from the sign-in page, when the accounts cannot help.</p>
   <p><strong>Last changed.</strong> It lives until the tab closes or you sign out.</p>
-  <p><strong>Where to see it.</strong> Use it to recover a lost admin password or from scripts, not for day-to-day reading — and never over an untrusted network: this page is plain HTTP with no TLS.</p>
+  <p><strong>Where to see it.</strong> Use it to recover a lost admin password or from scripts, not for day-to-day reading. The console is served over HTTPS by the local Weirvern ingress; never present this token over plain HTTP or an untrusted network.</p>
 </div>
     </div>
 

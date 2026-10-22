@@ -25,7 +25,7 @@ and Pushover carries the alerts that pass the hygiene gates.
 | `goflow2` | Deployment | `netsampler/goflow2:v2.2.6` | NetFlow v5/v9/IPFIX + sFlow collector, JSONL to a host path |
 | `zeek` | **DaemonSet** | `weirvern-zeek:0.5.0` | Packet sniffer: conn/DNS/TLS/notice + Tier-1 logs from a NIC or mirror port |
 | `weirvern-worker` | Deployment | `weirvern-worker:0.13.0` | Ingest (both sources), ensemble detection, Pushover alerts |
-| `weirvern-gui` | Deployment | `weirvern-worker:0.13.0` | Web UI with accounts on NodePort 30088; admins edit, viewers read |
+| `weirvern-gui` | Deployment | `weirvern-worker:0.13.0` | Web UI with accounts on HTTPS 443 via Traefik; base NodePort 30088 is break-glass only. Admins edit, viewers read. |
 | `weirvern-prune` | **CronJob** | `weirvern-worker:0.13.0` | Enforces the per-component disk caps |
 | `weirvern-schema` | Job | `weirvern-worker:0.13.0` | Applies the ClickHouse schema |
 

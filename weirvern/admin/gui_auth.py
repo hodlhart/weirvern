@@ -18,8 +18,10 @@ against:
   * a browser or script guessing the token.
 
 It does NOT defend against: someone with cluster access (they can read the Secret), someone with
-the token, or a network attacker who can terminate TLS (there is no TLS here -- the Service is
-plain HTTP on a NodePort). Those are accepted, and the boundary is stated rather than implied.
+the token, or a network attacker who can terminate TLS. The supported deployment terminates TLS at
+the local Traefik ingress (`k8s/tls`), and the base Service still exposes a plain HTTP NodePort for
+break-glass only; the latter must stay on the trusted management segment. Those limits are stated
+rather than implied.
 
 DESIGN CHOICES:
 
