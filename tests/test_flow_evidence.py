@@ -87,3 +87,16 @@ def test_the_row_is_a_scan_line_not_a_fact_dump():
     assert "wlSparkline(r)" in seg
     assert "(r.plan && r.plan.segment)" in seg and "r.reported_segment" in seg
     assert "el(\"li\", { text: f }" not in seg, "findings prose came back into the list"
+
+
+def test_netflow_is_labelled_sensor_scoped_not_per_nic():
+    src = (PY / "admin" / "web.py").read_text()
+    seg = src.split("def _weirlings(self, query: dict) -> None:", 1)[1].split("def _weirlings_", 1)[0]
+    assert '"scope": "sensor"' in seg
+    assert '"scope_label": "sensor feed"' in seg
+    assert "attribute it to this NIC" in seg
+
+    js = (WEB / "weirlings.js").read_text()
+    tap = js.split("function wlTap(", 1)[1].split("function wlCfg(", 1)[0]
+    assert '"sensor feed"' in tap
+    assert "not attributed to this NIC" in tap

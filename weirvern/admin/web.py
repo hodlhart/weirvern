@@ -1560,6 +1560,13 @@ def _build_handler(ctx: GuiContext):
                     "observed": flows > 0,
                     "flows": flows,
                     "last_at": last,
+                    # NETFLOW IS SENSOR-SCOPED, NOT PER-NIC. NETFLOW_IFACE is one sensor-level
+                    # setting and the exporter address belongs to the box, so a NIC line must
+                    # not imply it owns a local probe. The label is part of the evidence.
+                    "scope": "sensor",
+                    "scope_label": "sensor feed",
+                    "scope_note": ("the hub sees one sensor-wide NetFlow feed; it cannot "
+                                   "attribute it to this NIC"),
                     "why": ("" if flows else
                             ("no flows from this sensor's exporter in 24h" if keys
                              else ("the sensor has not reported an address yet"

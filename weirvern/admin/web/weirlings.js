@@ -469,13 +469,17 @@ function wlSparkline(r) {
  *  is always present -- colour is never the only signal. */
 function wlTap(kind, info) {
   const i = info || {};
-  const label = kind === "netflow" ? "netflow" : "zeek";
+  const label = kind === "netflow"
+    ? (i.scope === "sensor" || i.scope_label === "sensor feed" ? "sensor feed" : "netflow")
+    : "zeek";
+  const scope = kind === "netflow" && label === "sensor feed"
+    ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}` : "";
   if (i.observed) {
     return el("span", { class: "tap on", text: label,
-      attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") } });
+      attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") + scope } });
   }
   return el("span", { class: "tap off", text: label,
-    attrs: { title: `${label} not observed — ${i.why || "no evidence"}` } });
+    attrs: { title: `${label} not observed — ${i.why || "no evidence"}${scope}` } });
 }
 
 /** One local capture setting, by key, from the Settings payload the app already loaded. */

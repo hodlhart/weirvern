@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.5 — 2026-10-22
+
+HEALTH EXPLAINS CAPACITY — AND NETFLOW SAYS IT IS SENSOR-WIDE.
+
+- The Health System card now shows a capacity bar and used/total for memory, CPU cores and
+  1/5/15m load per core, per-core bars, available memory and swap, uptime, running/blocked
+  tasks, physical-network throughput with drops/errors, and whole-disk read/write. A missing
+  reading is a dash with its reason, never a zero.
+- `/api/system` now names its scope. This deployment reads the kernel host's procfs (the
+  container cannot see the sensor LXC's 10 GiB boundary), and the card says exactly that
+  instead of presenting 40 GiB of kernel memory as "the sensor". HOST_PROC, when a deployment
+  mounts a real boundary, is named as the configured boundary.
+- NetFlow evidence is explicitly `scope=sensor`. The NIC lines render `sensor feed` with the
+  reason, instead of repeating a chip that implied every NIC owned a local probe.
+
 ## 0.19.4 — 2026-10-22
 
 TRUNK OBSERVATION SURVIVES VLAN OFFLOAD — AND A SYNTHETIC TRUNK PROVES IT.

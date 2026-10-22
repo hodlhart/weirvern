@@ -1395,12 +1395,37 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sys-card .sys-value { color: var(--fg); font-size: 19px; font-weight: 600; line-height: 1.1;
   margin-top: 2px; }
 .sys-card .sys-sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.sys-scope { margin: 0 0 10px; font-size: 11px; line-height: 1.45; }
+.sys-card .sys-bar { height: 6px; margin-top: 8px; background: var(--border); border-radius: 999px;
+  overflow: hidden; }
+.sys-card .sys-bar.empty { opacity: .45; }
+.sys-card .sys-bar-fill { display: block; height: 100%; border-radius: 999px;
+  background: var(--accent); transition: width .3s ease; }
+.sys-card .sys-bar-fill.memory { background: var(--warn); }
+.sys-card .sys-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px; margin-top: 10px; }
+.sys-fact { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sys-fact-value { color: var(--fg); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.sys-fact-label { color: var(--muted); font-size: var(--fs-1); letter-spacing: .03em;
+  text-transform: uppercase; }
+.sys-fact-sub { color: var(--dim); font-size: var(--fs-1); }
+.sys-card .sys-cores { display: grid; grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
+  gap: 4px 8px; margin-top: 10px; }
+.sys-core { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 4px;
+  min-width: 0; }
+.sys-core-name { color: var(--dim); font-size: var(--fs-1); font-family: var(--mono); }
+.sys-core-bar { height: 4px; background: var(--border); border-radius: 999px; overflow: hidden; }
+.sys-core-fill { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.sys-core-pct { color: var(--muted); font-size: var(--fs-1); font-variant-numeric: tabular-nums; }
+.sys-facts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .sys-card svg { display: block; width: 100%; height: 46px; margin-top: 8px; overflow: visible; }
 .sys-card .sys-empty { color: var(--dim); font-size: 11px; margin-top: 8px; }
 .sys-ifaces { margin-top: 12px; }
 .sys-ifaces table { width: 100%; }
 .sys-ifaces th { text-align: left; }
-@media (max-width: 640px) { .sys-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .sys-grid { grid-template-columns: 1fr; }
+  .sys-facts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* ── PERFORMANCE IN THE SENSOR ROW (operator, 2026-10-19) ─────────────────────────────────
  * Values first, labels underneath: the row reads left to right beside the sensor name and

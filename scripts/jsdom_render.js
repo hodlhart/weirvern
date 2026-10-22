@@ -3967,7 +3967,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           channel: { state: "enabled" }, reported_mode: "siphon",
           expected_mode: "siphon", plan: {},
           flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
-          netflow: { known: true, observed: true, flows: 78, last_at: "", why: "" },
+          netflow: { known: true, observed: true, flows: 78, last_at: "", why: "",
+                     scope: "sensor", scope_label: "sensor feed" },
           zeek: { known: true, observed: true, last_at: "", why: "" } };
         const facts = typeof window.wlNicFacts === "function"
           ? window.wlNicFacts(fake)
@@ -3982,6 +3983,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                 && siphonRow.children[6].querySelectorAll(".tap").length === 2,
                 siphonRow ? [...siphonRow.children].map((td) => td.textContent.trim()).join("|")
                           : "no siphon row");
+          check("the netflow chip states a sensor-wide feed, not a per-NIC probe",
+                !!siphonRow && /sensor feed/.test(siphonRow.children[6].textContent),
+                siphonRow ? siphonRow.children[6].textContent.trim() : "no siphon row");
         }
         check("a NIC's line uses its own plan segment, not the sensor-level one",
               eth1.networks === "198.51.100.0/24" && eth2.networks === "",
@@ -4041,7 +4045,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         interfaces: ["eth1", "eth2"], network_names: {}, channel: { state: "enabled" },
         reported_mode: "siphon", expected_mode: "siphon", plan: {},
         flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
-        netflow: { known: true, observed: true, flows: 78, last_at: "", why: "" },
+        netflow: { known: true, observed: true, flows: 78, last_at: "", why: "",
+                   scope: "sensor", scope_label: "sensor feed" },
         zeek: { known: true, observed: true, last_at: "", why: "" } };
       const renderedNic = typeof window.wlNicRows === "function"
         ? window.wlNicRows(renderedFake).find((tr) => /siphon/.test(tr.textContent)) : null;

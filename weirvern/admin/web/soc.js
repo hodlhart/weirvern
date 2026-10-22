@@ -519,11 +519,75 @@ function sysSpark(values, cls) {
   return svg;
 }
 
-function sysCard(label, percent, sub, values, cls) {
+function sysBar(percent, cls, label) {
+  const value = percent === null || percent === undefined ? null : Math.max(0, Math.min(100, Number(percent)));
+  return el("div", {
+    class: "sys-bar" + (value === null ? " empty" : ""),
+    attrs: {
+      role: "meter", "aria-label": label,
+      "aria-valuemin": "0", "aria-valuemax": "100",
+      ...(value === null ? {} : { "aria-valuenow": String(value) }),
+    },
+  }, [
+    value === null ? null : el("span", {
+      class: `sys-bar-fill ${cls || ""}`.trim(),
+      attrs: { style: `width:${value}%` },
+    }),
+  ].filter(Boolean));
+}
+
+function sysFact(value, label, extra) {
+  return el("div", { class: "sys-fact" }, [
+    el("span", { class: "sys-fact-value", text: value === null || value === undefined || value === "" ? "—" : String(value) }),
+    el("span", { class: "sys-fact-label", text: label }),
+    extra ? el("span", { class: "sys-fact-sub", text: extra }) : null,
+  ].filter(Boolean));
+}
+
+function sysDuration(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s < 0) return "—";
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+function sysLoad(load) {
+  const one = load && load.one;
+  const five = load && load.five;
+  const fifteen = load && load.fifteen;
+  if (![one, five, fifteen].every((v) => Number.isFinite(Number(v)))) return "—";
+  return `${Number(one).toFixed(2)} / ${Number(five).toFixed(2)} / ${Number(fifteen).toFixed(2)}`;
+}
+
+function sysRate(value, hasHistory) {
+  return hasHistory && value !== null && value !== undefined
+    ? `${fmtBytes(Number(value) || 0)}/s` : "—";
+}
+
+function sysCard(label, percent, sub, values, cls, extra = {}) {
+  const facts = Array.isArray(extra.facts) ? extra.facts : [];
+  const cores = Array.isArray(extra.cores) ? extra.cores : [];
   return el("div", { class: "sys-card" }, [
     el("div", { class: "sys-label", text: label }),
     el("div", { class: "sys-value", text: percent === null || percent === undefined ? "—" : `${percent}%` }),
     sub ? el("div", { class: "sys-sub", text: sub }) : null,
+    sysBar(percent, cls, `${label} percentage`),
+    facts.length ? el("div", { class: "sys-facts" }, facts.map((f) => sysFact(f.value, f.label, f.extra))) : null,
+    cores.length ? el("div", { class: "sys-cores", attrs: { "aria-label": "per-core CPU" } },
+      cores.map((c) => el("div", { class: "sys-core" }, [
+        el("span", { class: "sys-core-name", text: c.name }),
+        el("span", { class: "sys-core-bar" }, [
+          c.percent === null || c.percent === undefined ? null : el("span", {
+            class: "sys-core-fill",
+            attrs: { style: `width:${Math.max(0, Math.min(100, Number(c.percent)))}%` },
+          }),
+        ].filter(Boolean)),
+        el("span", { class: "sys-core-pct", text: c.percent === null || c.percent === undefined ? "—" : `${c.percent}%` }),
+      ]))) : null,
     sysSpark(values, cls),
   ].filter(Boolean));
 }
@@ -551,12 +615,57 @@ function renderSystemMetrics(d, opts = {}) {
     } else {
       const memTotal = Number(d.memory_total_bytes) || 0;
       const memUsed = Number(d.memory_used_bytes) || 0;
-      health.replaceChildren(el("div", { class: "sys-grid" }, [
-        sysCard("CPU", d.cpu_percent,
-          history.length > 1 ? `${history.length} samples` : "first sample", cpu, "cpu"),
-        sysCard("Memory", d.memory_percent,
-          memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "", mem, "memory"),
-      ]));
+      const memAvailable = Number(d.memory_available_bytes) || 0;
+      const swapTotal = Number(d.swap_total_bytes) || 0;
+      const swapUsed = Number(d.swap_used_bytes) || 0;
+      const load = d.load || {};
+      const net = d.network || {};
+      const disk = d.disk || {};
+      const tasks = d.tasks || {};
+      const hasHistory = history.length > 1;
+      const scope = d.scope_label || d.scope || "not reported";
+      const scopeNote = d.scope_note || "the payload did not name a scope";
+      const cpuFacts = [
+        { value: d.cpu_count ? `${d.cpu_count} cores` : "—", label: "cores" },
+        { value: sysLoad(load), label: "load 1/5/15",
+          extra: load.per_core === null || load.per_core === undefined ? "" : `${load.per_core}/core` },
+        { value: tasks.procs_running === null || tasks.procs_running === undefined ? "—" : String(tasks.procs_running),
+          label: "tasks running",
+          extra: tasks.procs_blocked === null || tasks.procs_blocked === undefined
+            ? "" : `${tasks.procs_blocked} blocked` },
+        { value: sysDuration(d.uptime_s), label: "uptime" },
+      ];
+      const memFacts = [
+        { value: memTotal ? fmtBytes(memAvailable) : "—", label: "available" },
+        { value: swapTotal ? `${fmtBytes(swapUsed)} of ${fmtBytes(swapTotal)}` : "none",
+          label: "swap", extra: swapTotal ? `${d.swap_percent == null ? "—" : `${d.swap_percent}%`} used` : "" },
+      ];
+      const drops = (Number(net.rx_drops) || 0) + (Number(net.tx_drops) || 0);
+      const errors = (Number(net.rx_errors) || 0) + (Number(net.tx_errors) || 0);
+      const secondary = [
+        sysFact(sysRate(net.rx_bps, hasHistory), "network in", "physical NICs"),
+        sysFact(sysRate(net.tx_bps, hasHistory), "network out", "physical NICs"),
+        sysFact(`${drops} / ${errors}`, "drops / errors", "physical NICs"),
+        sysFact(sysRate(disk.read_bps, hasHistory), "disk read", "whole disks"),
+        sysFact(sysRate(disk.write_bps, hasHistory), "disk write", "whole disks"),
+        sysFact(d.tasks && d.tasks.procs_blocked != null ? String(d.tasks.procs_blocked) : "—",
+          "blocked tasks", "kernel task state"),
+      ];
+      health.replaceChildren(
+        el("p", { class: "sys-scope" }, [
+          el("strong", { text: `Scope: ${scope}` }),
+          el("span", { class: "muted", text: ` — ${scopeNote}` }),
+        ]),
+        el("div", { class: "sys-grid" }, [
+          sysCard("CPU", d.cpu_percent,
+            d.cpu_count ? `${d.cpu_count} cores · load ${sysLoad(load)}` : "core count not reported",
+            cpu, "cpu", { facts: cpuFacts, cores: d.per_core }),
+          sysCard("Memory", d.memory_percent,
+            memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "total not reported",
+            mem, "memory", { facts: memFacts }),
+        ]),
+        el("div", { class: "sys-facts-grid" }, secondary),
+      );
     }
   }
   if (!sensor) return;
