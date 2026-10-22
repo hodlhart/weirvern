@@ -1123,6 +1123,7 @@
         <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
         <span class="muted" id="sl-bc-note"></span>
       </div>
+      <p id="sl-gate-warning" class="muted hidden"></p>
     </div>
     </div>
 
@@ -1193,6 +1194,15 @@
       <!-- CREATE -->
       <div id="sl-rule-create">
         <div class="grid2">
+          <label>what to block
+            <select id="sl-target-type">
+              <option value="domain" selected>a domain — answered by the Domain Gate</option>
+              <option value="address">an address or CIDR — dropped by the Traffic Gate</option>
+            </select>
+          </label>
+          <p id="sl-gate-hint" class="muted">Domain rules are answered in DNS by the Domain Gate; address rules are dropped by the Traffic Gate.</p>
+        </div>
+        <div class="grid2">
           <label>source address or CIDR
             <input id="sl-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24">
           </label>
@@ -1200,7 +1210,7 @@
             <input id="sl-dst" type="text" placeholder="block traffic to this address">
           </label>
           <label>or block a domain
-            <input id="sl-domain" type="text" placeholder="ads.example.com — blocks what it resolves to">
+            <input id="sl-domain" type="text" placeholder="ads.example.com">
           </label>
           <label>mode
             <select id="sl-mode">

@@ -37,9 +37,11 @@ function sluiceDuration(seconds) {
   return past ? `${text} ago` : `in ${text}`;
 }
 
-function sluiceStateChip(state) {
+function sluiceStateChip(state, stale) {
+  const label = state || "unknown";
   const cls = state === "armed" ? "ok" : (state === "degraded" ? "bad" : "muted");
-  return el("span", { class: `chip ${cls}`, text: state || "unknown" });
+  const text = stale ? `${label} \u00b7 stale` : label;
+  return el("span", { class: `chip ${cls}`, text });
 }
 
 async function loadSluice() {
@@ -53,7 +55,8 @@ async function loadSluice() {
   // So the failure is caught HERE and rendered through the same banner the rest of the GUI uses.
   let d;
   try {
-    d = await getJSON("/api/sluice");
+    const slHours = typeof trHours === "function" ? trHours() : 24;
+    d = await getJSON(`/api/sluice?hours=${slHours}`);
   } catch (err) {
     showDataError(`the gate query failed: ${(err && err.message) || err}`);
     // NOT RE-THROWN. `showView` attaches `.catch(showError)` to this call, and re-throwing would
@@ -119,7 +122,7 @@ async function loadSluice() {
               : el("span", { class: "mono", text: "—" }),
             g.local ? el("span", { class: "muted", text: "  (this hub)" }) : null,
           ]),
-          el("td", {}, [sluiceStateChip(g.state)]),
+          el("td", {}, [sluiceStateChip(g.state, g.stale)]),
           el("td", { class: "mono", text: g.iface || "—" }),
           el("td", { class: "mono", text: `${g.rules_active ?? 0} / ${g.rules_total ?? 0}` }),
           el("td", { class: "mono",
@@ -194,6 +197,7 @@ async function loadSluice() {
         const alertMode = all.filter((r) => r.mode === "alert").length;
         const dropMode = all.length - alertMode;
         const hits = d.hits || [];
+        const hitHours = Number(d.hits_hours || 24);
         const chips = [
           [`${all.length}`, all.length === 1 ? "rule" : "rules"],
           [`${live}`, "live"],
@@ -203,7 +207,7 @@ async function loadSluice() {
         if (lapsed) chips.push([`${lapsed}`, "lapsed"]);
         if (parked) chips.push([`${parked}`, "disabled"]);
         if (revoked) chips.push([`${revoked}`, "revoked"]);
-        if (hits.length) chips.push([`${hits.length}`, "recent hits"]);
+        if (hits.length) chips.push([`${hits.length}`, `hits in ${hitHours}h`]);
         for (const [v, k] of chips) {
           box.appendChild(el("span", { class: "stat-chip" }, [
             el("strong", { text: v }), el("span", { class: "muted", text: " " + k }),
@@ -221,7 +225,8 @@ async function loadSluice() {
           counts.set(n, (counts.get(n) || 0) + 1);
         }
         const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-        names.appendChild(el("span", { class: "muted", text: "recent names: " }));
+        const hitHours = Number(d.hits_hours || 24);
+        names.appendChild(el("span", { class: "muted", text: `names in ${hitHours}h: ` }));
         for (const [n, c] of top) {
           names.appendChild(el("span", { class: "stat-chip" }, [
             el("span", { class: "mono", text: n }),
@@ -238,12 +243,29 @@ async function loadSluice() {
 
   if (!rules.length) {
     // The distinction the whole project cares about: an empty list from a WORKING server is a
-    // legitimate answer; an empty list from a FAILED one is not.
-    empty.textContent = d.available
-      ? (liveOnly
-          ? "No rule is currently enforced. Untick 'live rules only' to see rules that exist but have lapsed; tick 'show revoked' to see deleted ones."
-          : "No blocking rules exist. Traffic is being watched, not stopped.")
-      : "";
+    // legitimate answer; an empty list from a FAILED one is not. The sentence must not deny a
+    // rule that the glance strip above is counting: an all-revoked store is not "no rules",
+    // and Domain Gate is a separate enforcement path that may still be on.
+    const allRules = d.rules || [];
+    const hiddenRevoked = allRules.filter((r) => r.revoked && !showRevoked).length;
+    const hiddenByLive = liveOnly ? allRules.filter((r) => !r.live).length : 0;
+    if (d.available) {
+      const parts = [liveOnly
+        ? "No live traffic-gate rules match."
+        : "No traffic-gate rules match the current filters."];
+      if (hiddenByLive) {
+        parts.push(`${hiddenByLive} non-live rule${hiddenByLive === 1 ? "" : "s"} `
+          + "are hidden by 'live rules only'.");
+      }
+      if (hiddenRevoked) {
+        parts.push(`${hiddenRevoked} revoked rule${hiddenRevoked === 1 ? "" : "s"} `
+          + "are hidden; tick 'show revoked' to see them.");
+      }
+      parts.push("Domain blocking is a separate gate; read its state above.");
+      empty.textContent = parts.join(" ");
+    } else {
+      empty.textContent = "";
+    }
     // Leave the table hidden rather than showing an empty grid with headers.
     return;
   }
@@ -798,18 +820,47 @@ async function loadBlockingControls() {
 
   const gstate = String((gateLive && gateLive.state) || "");
   const gdetail = String((gateLive && gateLive.detail) || "");
+  const stale = Boolean(gateLive && gateLive.stale);
   const healthy = !gstate || ["ok", "armed", "disabled", "running"].includes(gstate.toLowerCase());
-  gateState.textContent = (gateOn
+  const warningText = (!healthy || stale)
+    ? String((gateLive && (gateLive.warning || gdetail)) || "") : "";
+  const stateBits = [gateOn
     ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced` : "armed \u00b7 nothing enforced")
-    : "off") + (healthy ? "" : ` \u00b7 ${gstate}`);
+    : "off"];
+  if (!healthy) stateBits.push(gstate);
+  if (stale) stateBits.push("stale");
+  gateState.textContent = stateBits.join(" \u00b7 ");
   gateState.className = gateOn ? "sl-on" : "sl-off";
 
-  // THE REASON MOVED TO THE TOOLTIP (operator, 2026-10-19: the visible cleanup sentence is
-  // noise). The state word still names an unhealthy gate; hovering it still gives the server's
-  // own sentence, so the cause is not lost -- it just stops occupying a line.
-  if (gateState) gateState.title = healthy ? "" : (gdetail || `${gstate} \u2014 the gate gave no reason`);
+  // THE REASON MUST BE VISIBLE, NOT A HOVER FACT (SL1). A stale gate is not a live-but-imperfect
+  // one: the server says its state is HISTORICAL, and the operator needs that sentence on the
+  // surface before deciding to trust or repair it. The title stays as a secondary copy.
+  const gateWarning = document.getElementById("sl-gate-warning");
+  if (gateWarning) {
+    gateWarning.textContent = warningText;
+    gateWarning.classList.toggle("hidden", !warningText);
+  }
+  if (gateState) gateState.title = warningText || (healthy ? "" : `${gstate} \u2014 the gate gave no reason`);
+
+  // ARM IS NOT A DECORATION. The server's own state says which backend is running and how many
+  // rules exist; offering "Arm the gate" over `none`/zero rules is a no-op that looks like a
+  // repair. Name the precondition and disable the action; a stale state alone is not a reason
+  // to forbid a real repair when rules and backend exist.
+  const backend = String((gateLive && gateLive.backend) || "").toLowerCase();
+  const backendMissing = !backend || backend === "none";
+  const rulesTotal = Number((gateLive && gateLive.rules_total) || 0);
+  let armBlocked = "";
+  if (!gateOn) {
+    if (backendMissing) {
+      armBlocked = "Arm unavailable: no nft backend is running; the gate would report degraded.";
+    } else if (live === 0 && rulesTotal === 0) {
+      armBlocked = "Arm unavailable: file a rule first; there is nothing to enforce.";
+    }
+  }
   gateBtn.textContent = gateOn ? "Disarm the gate" : "Arm the gate";
+  gateBtn.disabled = Boolean(armBlocked);
   gateBtn.onclick = () => slApplyChange("SLUICE_ENABLED", gateOn ? "0" : "1", gateBtn, note);
+  if (armBlocked && note) note.textContent = armBlocked;
 
   if (domState) {
     domState.textContent = domOn ? "on" : "off";
@@ -851,7 +902,7 @@ async function loadBlockingControls() {
     autoPause.onclick = () => slApplyChange("SLUICE_AUTO_SCORE", "0", autoPause, note);
   }
   if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(autoVal);
-  note.textContent = "";
+  if (!armBlocked) note.textContent = "";
 }
 
 
@@ -881,6 +932,7 @@ function closeRuleSheet() {
   const card = document.getElementById("sl-rule-sheet");
   if (!card || !sheetIsOpen(card)) return;
   closeSheet(card);            // the sheet standard hides the card and its scrim
+  slCreateDisarm(true);
   SL_RULE = null;
 }
 
@@ -903,6 +955,85 @@ function slRuleFacts(r) {
       el("span", { class: "setting-val", text: String(v) }),
     ]));
   }
+}
+
+function slRuleTargetType() {
+  const s = document.getElementById("sl-target-type");
+  return s && s.value === "address" ? "address" : "domain";
+}
+
+/** The target is the rule's unit (vision §12.4): Domain first, Address only when chosen.
+ *  Hiding a field is not enough if its value can still ride the POST; wireRuleSheet clears the
+ *  other side of the pair so a hidden stale value can never become the target. */
+function slSyncRuleTargetType() {
+  const address = slRuleTargetType() === "address";
+  const show = (id, visible) => {
+    const field = document.getElementById(id);
+    const label = field && field.closest("label");
+    if (label) label.classList.toggle("hidden", !visible);
+  };
+  show("sl-domain", !address);
+  show("sl-src", address);
+  show("sl-dst", address);
+  const hint = document.getElementById("sl-gate-hint");
+  if (hint) {
+    hint.textContent = address
+      ? "Address rules are dropped by the Traffic Gate on the capture interface."
+      : "Domain rules are answered in DNS by the Domain Gate; no packet rule is written.";
+  }
+}
+
+function slRuleTargetType() {
+  const s = document.getElementById("sl-target-type");
+  return s && s.value === "address" ? "address" : "domain";
+}
+
+/** The target is the rule's unit (vision §12.4): Domain first, Address only when chosen.
+ *  Hiding a field is not enough if its value can still ride the POST; wireRuleSheet clears the
+ *  other side of the pair so a hidden stale value can never become the target. */
+function slSyncRuleTargetType() {
+  const address = slRuleTargetType() === "address";
+  const show = (id, visible) => {
+    const field = document.getElementById(id);
+    const label = field && field.closest("label");
+    if (label) label.classList.toggle("hidden", !visible);
+  };
+  show("sl-domain", !address);
+  show("sl-src", address);
+  show("sl-dst", address);
+  const hint = document.getElementById("sl-gate-hint");
+  if (hint) {
+    hint.textContent = address
+      ? "Address rules are dropped by the Traffic Gate on the capture interface."
+      : "Domain rules are answered in DNS by the Domain Gate; no packet rule is written.";
+  }
+}
+
+let SL_CREATE_ARM_TIMER = null;
+
+function slCreateDisarm(clearNote = true) {
+  const btn = document.getElementById("sl-block");
+  if (SL_CREATE_ARM_TIMER) {
+    clearTimeout(SL_CREATE_ARM_TIMER);
+    SL_CREATE_ARM_TIMER = null;
+  }
+  if (!btn) return;
+  delete btn.dataset.armed;
+  btn.textContent = "Create rule";
+  const note = document.getElementById("sl-block-note");
+  if (clearNote && note) note.textContent = "";
+}
+
+/** Name the target and the enforcing gate in the confirm: "block" is not one consequence.
+ *  Domain blocking is a DNS answer; address blocking is a kernel drop. */
+function slCreateSummary(body) {
+  const target = body.domain
+    ? `domain ${body.domain}`
+    : `${body.src_cidr || "any source"} to ${body.dst_cidr || "any destination"}`;
+  const gate = body.domain ? "Domain Gate (DNS answer)" : "Traffic Gate (packet drop)";
+  const duration = Number(body.ttl_minutes) === 0 ? "until revoked" : `${body.ttl_minutes} minutes`;
+  return `Create a ${body.mode === "alert" ? "alert-only" : "blocking"} rule for ${target} `
+    + `at the ${gate}, for ${duration}?`;
 }
 
 function openRuleSheet(rule, domain, prefill) {
@@ -939,11 +1070,15 @@ function openRuleSheet(rule, domain, prefill) {
     set("sl-direction", pre.direction || "forward");
     set("sl-ttl", pre.ttl_minutes === undefined ? 60 : pre.ttl_minutes);
     set("sl-reason", pre.reason || "");
+    // A prefilled source is an address rule; a prefilled domain is a domain rule. The empty
+    // composer starts on Domain because that is the Sluice Gate's unit (vision §12.4).
+    set("sl-target-type", (domain || pre.domain) ? "domain"
+      : ((pre.src_cidr || pre.dst_cidr) ? "address" : "domain"));
+    slSyncRuleTargetType();
     const btn = document.getElementById("sl-block");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Create rule";
-      delete btn.dataset.armed;
+      slCreateDisarm(false);
     }
   } else {
     slRuleFacts(rule);
@@ -996,6 +1131,16 @@ function wireRuleSheet() {
   if (!card) return;
   // THE SHEET STANDARD (sheets.js): one close control, one scrim, one Escape for every sheet.
   wireSheet(card, { scrimId: "sl-rule-scrim" });
+  // An armed block confirmation is about the values on screen at that moment. Any edit, including
+  // changing the target type, disarms it; the timer in the click handler bounds the arm too.
+  for (const field of card.querySelectorAll("#sl-rule-create input, #sl-rule-create select")) {
+    field.addEventListener("input", () => slCreateDisarm(true));
+    field.addEventListener("change", () => {
+      if (field.id === "sl-target-type") slSyncRuleTargetType();
+      slCreateDisarm(true);
+    });
+  }
+  slSyncRuleTargetType();
 
   const create = document.getElementById("sl-block");
   if (create) create.addEventListener("click", async () => {
@@ -1004,10 +1149,26 @@ function wireRuleSheet() {
       const node = document.getElementById(id);
       return node ? String(node.value || "").trim() : "";
     };
+    // THE TARGET IS ONE CHOICE, NOT THREE COMPETING FIELDS. A hidden field must never ride the
+    // POST: the server writes what it is given, so selecting Domain after typing a CIDR (or the
+    // reverse) would otherwise file the hidden value. The fallback also keeps pre-W3 links and
+    // the alert prefill honest when only one side is populated.
+    let targetType = value("sl-target-type") === "address" ? "address" : "domain";
+    const domain = value("sl-domain");
+    const src = value("sl-src");
+    const dst = value("sl-dst");
+    if (targetType === "domain" && !domain && (src || dst)) targetType = "address";
+    if (targetType === "address" && !src && !dst && domain) targetType = "domain";
+    const target = targetType === "domain" ? domain : (src || dst);
+    if (!target) {
+      slCreateDisarm(true);
+      if (note) note.textContent = "Choose a domain or an address first.";
+      return;
+    }
     const body = {
-      src_cidr: value("sl-src"),
-      dst_cidr: value("sl-dst"),
-      domain: value("sl-domain"),
+      src_cidr: targetType === "address" ? src : "",
+      dst_cidr: targetType === "address" ? dst : "",
+      domain: targetType === "domain" ? domain : "",
       mode: value("sl-mode") || "alert",
       protocol: value("sl-proto"),
       dst_port: Number(value("sl-port") || 0),
@@ -1015,20 +1176,21 @@ function wireRuleSheet() {
       ttl_minutes: Number(value("sl-ttl") || 60),
       reason: value("sl-reason"),
     };
-    // A BLOCKING RULE STILL ASKS TWICE (retained from the old composer): mode=block makes the
-    // kernel drop what this matches, so the first click arms and names the consequence, the
-    // second commits. Alert rules write on one click; they enforce nothing.
+    // A BLOCKING RULE STILL ASKS TWICE (retained from the old composer): the first click arms
+    // and names the consequence and the target; the second commits. A field edit disarms, and
+    // the arm expires, so "I changed the rule after confirming" cannot create something the
+    // operator did not see.
     if (body.mode === "block" && create.dataset.armed !== "1") {
       create.dataset.armed = "1";
       create.textContent = "Confirm: create a blocking rule";
-      if (note) {
-        note.textContent = "Block mode makes the kernel drop what this rule matches. "
-          + "Click again to confirm.";
-      }
+      if (note) note.textContent = `${slCreateSummary(body)} Click again to confirm.`;
+      if (SL_CREATE_ARM_TIMER) clearTimeout(SL_CREATE_ARM_TIMER);
+      SL_CREATE_ARM_TIMER = setTimeout(() => {
+        if (create.dataset.armed === "1") slCreateDisarm(true);
+      }, 5000);
       return;
     }
-    delete create.dataset.armed;
-    create.textContent = "Create rule";
+    slCreateDisarm(true);
     // NO REASON CHECK (2026-10-16): the reason is optional and blank stays blank.
     create.disabled = true;
     if (note) note.textContent = "recording…";

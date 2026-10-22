@@ -5776,6 +5776,14 @@ function applyURLState() {
       return true;
     }
   }
+  // BLOCKS IS A DRILL, NOT A TAB (ledger: blocked, tab=false), so `v=blocked` must be handled
+  // before the tab lookup below: a drill has no .tab[data-view] to match, and the old code
+  // silently fell through to Health on a fresh load. The tab stays lit on Sluice through
+  // TAB_FOR_DRILL, and `showView` loads /api/blocked.
+  if (v === "blocked") {
+    showView("blocked");
+    return true;
+  }
   if (v) {
     const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === v);
     if (tab) showView(v);

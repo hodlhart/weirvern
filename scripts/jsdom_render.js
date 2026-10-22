@@ -3823,6 +3823,30 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && !!doc.getElementById(sheet.getAttribute("aria-labelledby"))
             && sheet.querySelectorAll(".sheet-close").length === 1,
             sheet.getAttribute("aria-labelledby") || "no label");
+      const targetType = doc.getElementById("sl-target-type");
+      check("...it starts with one Domain/Address target choice and names its gate",
+            !!targetType && targetType.value === "domain"
+            && [...targetType.options].every((o) => /Domain Gate|Traffic Gate/.test(o.textContent))
+            && /Domain Gate/.test((doc.getElementById("sl-gate-hint") || {}).textContent || ""),
+            targetType ? targetType.value : "no target type");
+      // THE CONFIRM IS ABOUT THE VALUES ON SCREEN. Arm it, edit the target, and the button must
+      // fall back to Create rule; no write is attempted here.
+      const target = doc.getElementById("sl-domain");
+      const createBtn = doc.getElementById("sl-block");
+      if (target && createBtn) {
+        target.value = "ads.example.com";
+        createBtn.click();
+        await new Promise((r) => setTimeout(r, 40));
+        check("...a blocking rule arms with a target-and-gate sentence",
+              /Confirm/.test(createBtn.textContent)
+              && /Domain Gate \(DNS answer\)/.test((doc.getElementById("sl-block-note") || {}).textContent || ""),
+              createBtn.textContent + " / " + ((doc.getElementById("sl-block-note") || {}).textContent || ""));
+        target.dispatchEvent(new window.Event("input", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20));
+        check("...and editing the target disarms the confirmation",
+              createBtn.textContent === "Create rule" && createBtn.dataset.armed !== "1",
+              createBtn.textContent);
+      }
       // THE SHEET STANDARD: Escape is the documented exit, handled once in sheets.js.
       doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await new Promise((r) => setTimeout(r, 60));
@@ -5541,6 +5565,10 @@ check("every gate is listed, with the local one marked as this hub",
 check("a gate that STOPPED is called out, not merely listed",
       /stopped reporting/i.test(slText()),
       "a stale gate must not read like a covered segment");
+const labWestRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
+check("a stale gate's own row says stale, not merely degraded",
+      !!labWestRow && /stale/i.test(labWestRow.textContent),
+      labWestRow ? labWestRow.textContent : "no lab-west row");
 check("each gate states the path it is enforcing by",
       slText().includes("channel") && slText().includes("siphon"),
       "which of the two paths is live is the difference between armed and claimed");

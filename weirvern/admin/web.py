@@ -485,7 +485,7 @@ def _build_handler(ctx: GuiContext):
             # pass the operator gate like every other mutation, so a viewer cannot block a host.
             # Reads stay open: looking at what is blocked never requires a password.
             if path == "/api/sluice":
-                return self._sluice()
+                return self._sluice(query)
             if path == "/api/blocklists":
                 return self._blocklists_get()
             if path == "/api/sluice/state":
@@ -1360,7 +1360,7 @@ def _build_handler(ctx: GuiContext):
                 })
             self._json(payload)
 
-        def _sluice(self) -> None:
+        def _sluice(self, query: dict) -> None:
             """Every rule -- live AND lapsed -- plus the gate's own state.
 
             Both sets, deliberately: "this rule exists but is not enforced" is a different statement
@@ -1368,9 +1368,13 @@ def _build_handler(ctx: GuiContext):
             block look DELETED, which is exactly the question an operator asks after a block stops
             working.
             """
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             payload: dict = {
                 "available": False, "reason": "", "rules": [], "live": 0, "gate": {},
                 "policies": {}, "criticality": "", "enabled": False, "iface": "",
+                "hits_hours": hours,
             }
             # The policies are STATIC, so they are populated even when the database is unreachable:
             # an operator can read what each level does, and the GUI can render the choice, without
@@ -1406,9 +1410,14 @@ def _build_handler(ctx: GuiContext):
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("blocklist sources unavailable: %s", exc)
                     try:
+                        # SAME WINDOW AS THE BLOCKS DRILL (SL3). "Recent" is not a window: the
+                        # overview chip and the ledger must count the same interval, or the
+                        # operator sees 5 hits on one surface and 0 on the other and cannot tell
+                        # which is current.
                         hit_rows = client.query(
                             "SELECT ts, rule_id, domain, query, src_addr "
                             "FROM weirvern.sluice_events WHERE kind = 'dns' "
+                            f"AND ts >= now() - INTERVAL {int(hours)} HOUR "
                             "ORDER BY ts DESC LIMIT 50").result_rows
                         payload["hits"] = [
                             {"ts": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),

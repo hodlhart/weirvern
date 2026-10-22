@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.19.6 — 2026-10-22
+
+SLUICE GATE SHOWS THE STATE IT ACTUALLY HAS.
+
+- A stale gate now says `stale` on its state line and on its fleet row, and the server's warning is
+  visible text instead of a hover title. "Degraded" is no longer allowed to stand in for "this
+  gate stopped reporting and its counters are historical".
+- Gate overview and Blocks now share the selected time window. The old "recent hits" was an
+  unbounded latest-50 read: five six-day-old hits beside a Blocks view that correctly showed zero
+  in 24h. The chip names the window it counted.
+- The rules empty state names hidden revoked rules and says Domain blocking is a separate gate,
+  instead of denying that any blocking exists while the Domain Gate is on.
+- The rule composer starts with the rule's unit — Domain or Address — names the gate that will
+  enforce it, hides the fields that do not apply, and never sends a hidden target field. The
+  blocking confirmation names the target, gate and duration, expires after five seconds, and
+  disarms on any field edit; domain rules say DNS, not kernel drop.
+- "Arm the gate" is disabled with a visible reason when there is no nft backend or no rule to
+  enforce; a stale state alone does not forbid a real repair.
+- A fresh `#v=blocked` load opens Blocks with the Sluice tab lit, and the tab's filter checkboxes
+  are full 44px touch targets on phones.
+
 ## 0.19.5 — 2026-10-22
 
 HEALTH EXPLAINS CAPACITY — AND NETFLOW SAYS IT IS SENSOR-WIDE.
