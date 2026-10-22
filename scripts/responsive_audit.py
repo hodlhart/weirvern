@@ -149,10 +149,13 @@ AUDIT_JS = r"""
   const api = performance.getEntriesByType('resource')
     .filter((r) => r.name.includes('/api/')).length;
 
+  const activeView = document.querySelector('.view.active');
+  const viewTitle = activeView ? ((activeView.querySelector('h2') || {}).innerText || '').slice(0, 40) : '';
   return JSON.stringify({
-    view: (document.querySelector('#tabs .tab.active') || {}).textContent || '',
-    activeId: ((document.querySelector('#tabs .tab.active') || {}).getAttribute
-               ? document.querySelector('#tabs .tab.active').getAttribute('data-view') : ''),
+    view: viewTitle || ((document.querySelector('#tabs .tab.active') || {}).textContent || ''),
+    // A DRILL HAS NO TAB. Blocks is reached from Sluice Gate, so reading the lit tab reported
+    // `sluice` for a correct `#v=blocked` page; measure the VIEW the operator is looking at.
+    activeId: activeView ? activeView.id.replace(/^view-/, '') : '',
     overflow, clipped, small: small.slice(0, 8), smallCount: small.length,
     verySmall: verySmall.slice(0, 8), verySmallCount: verySmall.length,
     widest, controlsTotal, detailsOpen,
