@@ -64,7 +64,8 @@ function loadAssets() {
   // "—" and says why, never as a guessed label.
   return Promise.all([
     getJSON(ASSET_API.assets(hours)),
-    getJSON(`/api/identity?hours=${encodeURIComponent(String(hours))}`)
+    // Identity is a current snapshot; the inventory's window does not filter it (issue #63).
+    getJSON("/api/identity")
       .catch((err) => ({ available: false, hosts: [], reason: err.message })),
   ])
     .then(([d, ids]) => {

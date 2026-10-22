@@ -18,6 +18,9 @@ const PALETTE_TAB_KEYS = {
 };
 
 let PALETTE = { open: false, rows: [], active: 0, gArmedAt: 0, sensors: null, settings: null,
+                // The element that had focus before this overlay opened. Kept beside the open
+                // flag so close() cannot restore a stale opener from an earlier invocation.
+                returnTo: null,
                 // US-8: the last commands this session ran (views and actions), newest first.
                 recents: [] };
 const PALETTE_RECENT_MAX = 6;
@@ -30,6 +33,7 @@ function paletteEl() {
   pal.className = "hidden";
   pal.setAttribute("role", "dialog");
   pal.setAttribute("aria-label", "quick links");
+  pal.setAttribute("aria-hidden", "true");
   const box = document.createElement("div");
   box.className = "palette-box";
   const input = document.createElement("input");
@@ -56,7 +60,12 @@ function paletteEl() {
 
 function paletteOpen() {
   const pal = paletteEl();
+  // THE SHEET STANDARD'S FIRST GUARANTEE (issue #64): remember the control that opened us.
+  // Capture only when we were closed; a second open call must not replace the opener with the
+  // palette input itself.
+  if (!PALETTE.open) PALETTE.returnTo = document.activeElement;
   pal.classList.remove("hidden");
+  pal.setAttribute("aria-hidden", "false");
   PALETTE.open = true;
   PALETTE.active = 0;
   const input = document.getElementById("palette-input");
@@ -67,8 +76,60 @@ function paletteOpen() {
 
 function paletteClose() {
   const pal = document.getElementById("palette");
-  if (pal) pal.classList.add("hidden");
+  const back = PALETTE.returnTo;
+  PALETTE.returnTo = null;
+  if (pal) {
+    pal.classList.add("hidden");
+    pal.setAttribute("aria-hidden", "true");
+  }
   PALETTE.open = false;
+  // THE SHEET STANDARD'S SECOND GUARANTEE (issue #64): return focus to the opener. Without
+  // this the focused element stayed inside the now-hidden overlay, so the next Tab continued
+  // from an element the operator could not see. Guard against an opener that was removed, or
+  // one that is itself inside the palette (e.g. a caller closes before opening).
+  if (back && document.contains(back) && !(pal && pal.contains(back))
+      && typeof back.focus === "function") {
+    back.focus();
+  }
+}
+
+/** The focusable nodes inside the palette: input plus any future controls. */
+function paletteFocusables() {
+  const pal = document.getElementById("palette");
+  if (!pal) return [];
+  if (typeof sheetFocusables === "function") return sheetFocusables(pal);
+  return [...pal.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+    + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((n) => !n.closest(".hidden"));
+}
+
+/** Keep Tab and Shift+Tab inside the open palette, exactly as sheets.js does. */
+function paletteTrapTab(e) {
+  const pal = document.getElementById("palette");
+  if (!pal) return;
+  const nodes = paletteFocusables();
+  if (!nodes.length) {
+    e.preventDefault();
+    const input = document.getElementById("palette-input");
+    if (input) input.focus();
+    return;
+  }
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  const active = document.activeElement;
+  if (!pal.contains(active)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+    return;
+  }
+  if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 /** The lazy sources: sensors and settings are fetched once, then cached for the session. */
@@ -334,14 +395,22 @@ function paletteGlobalKey(e) {
     if (PALETTE.open) paletteClose(); else paletteOpen();
     return;
   }
-  if (paletteTypingIn(e)) return;   // a field is being typed into: hands off
   if (PALETTE.open) {
+    // THE PALETTE OWNS TAB WHILE IT IS OPEN (issue #64). Checked before `paletteTypingIn`
+    // because the palette's own input is an INPUT: returning there for a field would let Tab
+    // walk out of the overlay into the page behind it.
+    if (e.key === "Tab") {
+      e.preventDefault();
+      paletteTrapTab(e);
+      return;
+    }
     // The palette input owns the keyboard while it is open (its own handler navigates) --
     // except Escape, which closes from ANYWHERE: an overlay you cannot dismiss with the
     // documented key is a trap.
     if (e.key === "Escape") { e.preventDefault(); paletteClose(); }
     return;
   }
+  if (paletteTypingIn(e)) return;   // a field is being typed into: hands off
   if (e.ctrlKey || e.metaKey || e.altKey) return;
 
   if (Date.now() - PALETTE.gArmedAt < 1400) {

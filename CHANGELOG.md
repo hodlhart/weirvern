@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.8 — 2026-10-22
+
+THE PALETTE OBEYS THE SHEET CONTRACT, AND IDENTITY STOPS PRETENDING TO BE WINDOWED.
+
+- The quick-links palette now captures the opener when it opens, restores focus when it closes,
+  and traps Tab/Shift+Tab inside the overlay (issue #64). Escape, the backdrop, and a command
+  that navigates all use the same close path. jsdom pins opener focus, Tab containment and the
+  navigating-command case; a mutation removing either guarantee turns its checks red.
+- Identity is a current snapshot, not a windowed read (issue #63). The client no longer sends
+  `hours` (the route discards it), both callers use `/api/identity`, and the payload states
+  `snapshot`, `window_independent`, and its seven-day observation window. The Identity card
+  names the snapshot in its heading and coverage copy; the global time control says the Identity
+  snapshot is the exception.
+
 ## 0.19.7 — 2026-10-22
 
 THE FLEET SHOWS THE CONFIGURED CAPTURE PORT WHEN THE HEARTBEAT CANNOT SEE IT.

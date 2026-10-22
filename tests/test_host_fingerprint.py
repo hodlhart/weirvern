@@ -493,6 +493,11 @@ def test_the_identity_view_survives_an_aware_timestamp_from_the_client():
     )
     assert out["hosts"], "no host was returned"
     assert out["hosts"][0]["age_s"] is not None
+    # ISSUE #63: identity is a current snapshot, not a windowed read. The payload must say so,
+    # because a client that sends `hours` is sending a filter this view does not apply.
+    assert out.get("window_independent") is True
+    assert out.get("snapshot") is True
+    assert "current snapshot" in str(out.get("window_note") or "")
 
 
 # ── defects found by an independent read-only audit (glm-5.3), each reproduced before fixing ──

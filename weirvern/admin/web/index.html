@@ -118,7 +118,7 @@
           </div>
         </div>
         <div class="tr-sec" id="tr-recent-sec" hidden><span class="muted">Recent</span><div id="tr-recent" class="tr-row"></div></div>
-        <p class="muted" id="tr-note">Applies to every tab. An absolute range is sent to the server as from/to and honoured exactly; each panel prints the rounded span.</p>
+        <p class="muted" id="tr-note">Applies to every tab except the Identity snapshot, which has its own 7-day observation window. An absolute range is sent to the server as from/to and honoured exactly; each panel prints the rounded span.</p>
         <p class="muted" id="tr-tz"></p>
       </div>
     </div>
@@ -920,7 +920,7 @@
       </div>
     </div>
     <div class="card">
-      <h2>Passive host identification <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
+      <h2>Passive host identification <span class="muted" id="id-window"></span> <button class="info-btn" data-info="id-info" aria-label="where identities come from and what confidence means" aria-expanded="false" title="where identities come from and what confidence means">i</button></h2>
       <div class="controls">
         
       </div>

@@ -5309,8 +5309,10 @@ async function loadIdentity() {
   // an older link or a future test mounts it.
   const legacyHosts = document.getElementById("id-hosts-card");
   if (legacyHosts) legacyHosts.classList.add("hidden");
-  const hours = String(trHours());
-  const d = await getJSON(`/api/identity?hours=${encodeURIComponent(hours)}`);
+  // NO `hours` HERE (issue #63). Identity is a CURRENT SNAPSHOT with its own 7-day observation
+  // window, not a windowed read. Sending the header's range implied a filter the route never
+  // applied, so the header could say 15 minutes while this view answered seven days.
+  const d = await getJSON("/api/identity");
 
   // AN EMPTY LIST AND A FAILED QUERY MUST NOT LOOK ALIKE. A read failure names its cause; an
   // empty list says nothing has been identified yet, which is a legitimate answer.
@@ -5343,8 +5345,14 @@ async function loadIdentity() {
   // A FOLDED SPELLING IS NAMED, NOT SILENTLY DROPPED (QA-1-D2): the operator saw two rows and
   // is owed the reason there is now one.
   const folded = Number(d.merged || 0);
+  const idWindow = document.getElementById("id-window");
+  if (idWindow) {
+    idWindow.textContent = cov.available
+      ? `current snapshot · ${cov.window_days}-day observation window`
+      : "current snapshot";
+  }
   document.getElementById("id-coverage-note").textContent = cov.available
-    ? `Of ${cov.hosts_seen} hosts seen in the last ${cov.window_days} days, ${cov.hosts_classified} have an identity. The rest have produced no identifying signal yet.`
+    ? `Current snapshot: ${cov.hosts_seen} hosts observed in the last ${cov.window_days} days, ${cov.hosts_classified} have an identity. The rest have produced no identifying signal yet. The header range does not apply to this identity card; identity is a current verdict, not a windowed read.`
       + (folded ? ` ${folded} duplicate spelling${folded === 1 ? "" : "s"} folded into the host it belongs to.` : "")
     : "";
 

@@ -1948,8 +1948,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // ── ONE BOX, ONE IDENTITY (QA-1-D2) ─────────────────────────────────────────────────────────
   {
     const origFetch = window.fetch;
-    window.fetch = (u) => (String(u).includes("/api/identity")
-      ? Promise.resolve({ ok: true, json: async () => ({
+    const identityUrls = [];
+    window.fetch = (u) => {
+      if (String(u).includes("/api/identity")) identityUrls.push(String(u));
+      return String(u).includes("/api/identity")
+        ? Promise.resolve({ ok: true, json: async () => ({
           available: true, merged: 1,
           coverage: { available: true, hosts_seen: 20, hosts_classified: 2, coverage_pct: 10,
                       high_confidence: 1, medium_confidence: 1, unknown: 0, window_days: 7 },
@@ -1959,7 +1962,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             { host: "other-box", score: 0.7, confidence: "medium", agreeing_sources: 1,
               os_label: "Linux", signals: [], age_s: 90 },
           ] }) })
-      : origFetch(u));
+        : origFetch(u);
+    };
     H.showView("identity");
     await H.loadIdentity();
     await new Promise((r) => setTimeout(r, 120));
@@ -1967,6 +1971,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const note = doc.getElementById("id-coverage-note").textContent;
     check("a folded host spelling is named in the coverage note",
           /1 duplicate spelling folded/.test(note), note.slice(0, 160));
+    // ISSUE #63: no discarded `hours` and no unlabelled second window.
+    check("the identity request carries NO header range",
+          identityUrls.length > 0 && identityUrls.every((u) => !/[?&]hours=/.test(u)),
+          identityUrls.join(" | "));
+    check("...and the coverage copy names the current snapshot and its own window",
+          /Current snapshot/.test(note) && /header range does not apply/.test(note)
+          && /7 days/.test(note), note.slice(0, 220));
     const rowText = doc.querySelector("#id-table tbody tr").textContent;
     check("...and the surviving row shows what else it was called",
           /also seen as Weirvern/.test(rowText), rowText.slice(0, 120));
@@ -4551,6 +4562,47 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(40);
     check("escape closes it again",
           doc.getElementById("palette").classList.contains("hidden"));
+    // ISSUE #64: focus must go BACK to the opener, and Tab must not leave the open overlay.
+    // This is the runtime probe from the issue, kept beside the palette suite.
+    {
+      const opener = doc.getElementById("palette-btn");
+      opener.focus();
+      const focusBefore = doc.activeElement;
+      fire("k", { ctrlKey: true });
+      await sleep(120);
+      const openInput = doc.getElementById("palette-input");
+      check("PALETTE FOCUS: opening moves focus into the palette",
+            doc.activeElement === openInput,
+            doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
+      openInput.dispatchEvent(new window.KeyboardEvent(
+        "keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      await sleep(40);
+      check("PALETTE FOCUS: Tab stays inside the open palette",
+            doc.getElementById("palette").contains(doc.activeElement),
+            doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
+      openInput.dispatchEvent(new window.KeyboardEvent(
+        "keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+      await sleep(40);
+      check("PALETTE FOCUS: Shift+Tab stays inside the open palette",
+            doc.getElementById("palette").contains(doc.activeElement),
+            doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
+      fire("Escape");
+      await sleep(80);
+      check("PALETTE FOCUS: closing returns focus to the opener",
+            doc.activeElement === focusBefore,
+            doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
+      // A COMMAND THAT NAVIGATES IS A CLOSE TOO. `paletteRun` closes first; if that ever stops
+      // returning focus, this check catches it even though the view changed.
+      opener.focus();
+      const commandBefore = doc.activeElement;
+      H.paletteOpen();
+      await sleep(100);
+      H.paletteRun(0);
+      await sleep(200);
+      check("PALETTE FOCUS: a navigating command returns focus to the opener",
+            doc.activeElement === commandBefore,
+            doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
+    }
     fire("g");
     fire("n");
     await sleep(300);

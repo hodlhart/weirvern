@@ -1732,6 +1732,15 @@ def host_identity_view(client) -> dict:
     return {
         "available": True,
         "window_days": IDENTITY_WINDOW_DAYS,
+        # IDENTITY IS A CURRENT SNAPSHOT, NOT A WINDOWED READ (issue #63). The verdict table
+        # is current state; its observation window is the classifier's own 7 days. Say so in
+        # the payload so no client can send a window and mistake it for an answer.
+        "window_independent": True,
+        "snapshot": True,
+        "window_note": (
+            "current snapshot; derived from the last "
+            f"{IDENTITY_WINDOW_DAYS} days of observations"
+        ),
         "hosts": hosts,
         "count": len(hosts),
         # HOW MANY KEYS WERE FOLDED, named rather than silently deduped: the operator saw two
