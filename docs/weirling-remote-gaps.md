@@ -27,6 +27,10 @@ features that do and do not cross that boundary.
 - **Traffic gate** — an mTLS gate reads live rules and writes state through
   `/v1/gate/rules`, `/v1/gate/state` and `/v1/gate/events`; it still needs `--gate`,
   `--gate-iface`, `NET_ADMIN`, and a genuinely in-path port.
+- **Inline topology declaration** — a registration can declare `topology: inline`; the unit is
+  expected to capture on a two-NIC bridge. `scripts/weirling-inline.sh` creates/tears down the
+  bridge explicitly, and `deploy-weirling.sh --inline` refuses unless that bridge already has
+  exactly two address-free ports. The deploy helper never rewires a host on its own.
 - **Certificate renewal** — the agent renews inside the 30-day window, reusing its private
   key and atomically replacing the chain.
 - **Revocation** — the gateway refuses a revoked client on its next request; the agent stops
