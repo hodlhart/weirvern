@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weirvern"
-version = "0.17.82"
+version = "0.17.83"
 description = "Home-lab network flow anomaly detection: GoFlow2 -> ClickHouse -> scikit-learn ensemble -> Pushover"
 readme = "README.md"
 license = { text = "MIT" }
@@ -16,6 +16,9 @@ dependencies = [
     "scikit-learn>=1.5,<2",
     "requests>=2.31,<3",
     "PyYAML>=6.0,<7",
+    # Certificate signing for the mTLS weirling gateway. It was deliberately not a
+    # dependency of the read-only console; the gateway needs CSR parsing and signing.
+    "cryptography>=44,<47",
 ]
 
 [project.optional-dependencies]

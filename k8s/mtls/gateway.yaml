@@ -1,0 +1,124 @@
+# The mTLS ingest gateway. It deliberately runs as an ordinary non-root pod: it
+# needs no host network, no capabilities and no hostPath. The only files it reads
+# are the Weirling CA, the root certificate, and the server certificate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirvern-ingest
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-ingest
+    app.kubernetes.io/part-of: weirvern
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weirvern-ingest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirvern-ingest
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: weirvern-worker
+          command: ["python", "-m", "weirvern.weirling_gateway"]
+          env:
+            - name: WEIRLING_GATEWAY_HOST
+              value: "0.0.0.0"
+            - name: WEIRLING_GATEWAY_PORT
+              value: "8443"
+            - name: WEIRLING_CA_CERT
+              value: /etc/weirling-ca/tls.crt
+            - name: WEIRLING_CA_KEY
+              value: /etc/weirling-ca/tls.key
+            - name: WEIRLING_ROOT_CA
+              value: /etc/weirling-root/root-ca.crt
+            - name: WEIRLING_SERVER_CERT
+              value: /etc/weirling-tls/tls.crt
+            - name: WEIRLING_SERVER_KEY
+              value: /etc/weirling-tls/tls.key
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            - secretRef:
+                name: weirvern-secrets
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: {cpu: "20m", memory: "64Mi"}
+            limits: {cpu: "250m", memory: "256Mi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: ca
+              mountPath: /etc/weirling-ca
+              readOnly: true
+            - name: root
+              mountPath: /etc/weirling-root
+              readOnly: true
+            - name: server-tls
+              mountPath: /etc/weirling-tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: ca
+          secret:
+            secretName: weirling-ca
+        - name: root
+          secret:
+            secretName: weirling-root
+            items:
+              - key: root-ca.crt
+                path: root-ca.crt
+        - name: server-tls
+          secret:
+            secretName: weirling-ingest-tls
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weirvern-ingest
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-ingest
+    app.kubernetes.io/part-of: weirvern
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: weirvern-ingest
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      nodePort: 30443

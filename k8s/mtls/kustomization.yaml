@@ -1,0 +1,9 @@
+# The mTLS weirling ingest edge.
+#
+# Separate from k8s/ because it needs cert-manager and the Weirling intermediate
+# Secret, and because the gateway is an optional deployment: a hub with only local
+# sensors does not need it.
+namespace: weirvern
+resources:
+  - certificate.yaml
+  - gateway.yaml

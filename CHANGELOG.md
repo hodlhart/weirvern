@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.17.83 — 2026-10-22
+
+WEIRLING TRUST: mTLS ENROLLMENT AND A HUB INGEST GATEWAY.
+
+- A separate **Weirling Intermediate CA** under the Weirvern root signs sensor client
+  certificates; the console certificate issuer is unchanged. Sensor keys and CSRs are
+  generated on the sensor; the private key never reaches the hub.
+- New `weirvern.weirling_gateway` service: one-time token enrollment, URI-SAN
+  (`spiffe://weirvern/sensor/<id>`) identity, plan delivery, heartbeat and flow ingest,
+  and certificate renewal. It writes ClickHouse with hub credentials and rejects
+  unknown, disabled and revoked sensors.
+- `weirvern weirlings token` issues a one-time, hashed, expiring adoption token. The
+  token is the operator's declaration and is consumed by the first successful enrollment.
+- `k8s/mtls` deploys the gateway on NodePort 30443 behind a server certificate issued by
+  the Weirling intermediate. It is deliberately separate from the console TLS overlay.
+- The existing `sensor_agent` direct-ClickHouse path is unchanged in this release; moving
+  it onto the gateway is the migration boundary, so an existing sensor cannot change
+  behavior silently.
+
 ## 0.17.82 — 2026-10-22
 
 WEIRVERN ISSUES ITS OWN CERTIFICATES: THE CONSOLE NOW HAS A LOCAL HTTPS 443 EDGE.

@@ -1232,6 +1232,39 @@ def cmd_version(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_weirlings(args: argparse.Namespace) -> int:
+    """Create a one-time enrollment token for the mTLS ingest gateway.
+
+    The token is printed exactly once and stored only as a SHA-256 hash. Creating it is
+    the operator's adoption declaration: the sensor id, mode and segment are bound into
+    the token row, and the gateway registers that identity when the token is redeemed.
+    """
+    if getattr(args, "weirlings_command", "") != "token":
+        _bad("use `weirvern weirlings token --sensor-id <id>`")
+        return EXIT_USAGE
+    from weirvern.config import get_settings
+    from weirvern.weirling_gateway import create_token
+
+    settings = get_settings()
+    try:
+        token, expires = create_token(
+            settings, args.sensor_id, ttl_s=args.ttl,
+            address=args.address, segment=args.segment, expected_mode=args.mode,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _bad(f"could not create the enrollment token: {exc}")
+        return EXIT_FAIL
+    print(_c("bold", "Weirling enrollment token"))
+    print(f"  sensor id:  {args.sensor_id}")
+    print(f"  expires:    {expires.isoformat()}")
+    print(f"  token:      {token}")
+    print()
+    print("  Give this to the sensor exactly once. It is stored only as a hash and")
+    print("  is consumed on the first successful enrollment. The sensor must present")
+    print("  the token with a CSR; the hub returns its certificate and the root CA.")
+    return EXIT_OK
+
+
 def cmd_exporters(args: argparse.Namespace) -> int:
     """Report which devices are sending flow records, so an allow-list can be written from fact.
 
@@ -1464,6 +1497,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "API). The sensor's own address and the gateway remain refused "
                         "regardless: forging them cannot relay anything")
     s.set_defaults(func=cmd_intercept)
+
+    s = sub.add_parser(
+        "weirlings",
+        help="issue one-time enrollment tokens for remote mTLS weirlings",
+    )
+    wl = s.add_subparsers(dest="weirlings_command", metavar="<action>")
+    wl_token = wl.add_parser("token", help="issue a one-time enrollment token")
+    wl_token.add_argument("--sensor-id", required=True, dest="sensor_id",
+                          help="the fleet identity this token authorizes")
+    wl_token.add_argument("--mode", default="loch", choices=["loch", "siphon"],
+                          help="expected mode recorded at adoption (default: loch)")
+    wl_token.add_argument("--segment", default="", help="operator's segment label")
+    wl_token.add_argument("--address", default="", help="known sensor address, if any")
+    wl_token.add_argument("--ttl", type=int, default=3600,
+                          help="token lifetime in seconds (default: 3600)")
+    wl_token.set_defaults(func=cmd_weirlings)
+    s.set_defaults(func=cmd_weirlings)
 
     s = sub.add_parser("version", help="show version and detected runtime")
     s.set_defaults(func=cmd_version)

@@ -1,0 +1,30 @@
+# The server certificate is issued by the Weirling intermediate, not by the console
+# issuer. Both chain to the Weirvern root, so a sensor that already trusts the root
+# can verify this endpoint without a second trust anchor.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: weirling-ca
+spec:
+  ca:
+    secretName: weirling-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: weirling-ingest-tls
+  namespace: weirvern
+spec:
+  secretName: weirling-ingest-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - ingest.sensor.example
+    - sensor.example
+  issuerRef:
+    name: weirling-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
