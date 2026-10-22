@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.81 — 2026-10-21
+
+THE OPEN GITHUB BATCH: THE QUEUE HONOURS THE RANGE, THE FLEET NAMES ITS STATE, AXES
+USE SI MAGNITUDES.
+
+- GitHub #54: `/api/anomalies` now receives and applies the global time range. Rows, the
+  severity tiles, the fired/acted line and the "of Y" total all answer the same window; an
+  absolute range still wins through the existing timewindow context.
+- GitHub #56: every fleet row carries the state word (`alive`, `stale`, `never seen`,
+  `unregistered`, `disabled`) beside the sensor name, not only as a border colour. The
+  never-seen summary TILE and saved VIEW remain removed.
+- GitHub #57: timeline Y axes use one SI formatter (`1k`, `10k`, `100k`, `1M`, `10M`, `100M`,
+  `1G`), so a byte series no longer prints `100000k`. Values and legends keep `fmtBytes`.
+- #51 is resolved by removal (no raw byte tile remains); #55 is measured fixed (the header
+  stays one row at 1280 and the tab strip scrolls at 1024). The rest of the open issue batch
+  is verified fixed in the tree by the tests named on its kanban cards.
+
 ## 0.17.80 — 2026-10-21
 
 THE COUNT STANDS ALONE; THE TREND IS A DOTTED LINE BENEATH IT.

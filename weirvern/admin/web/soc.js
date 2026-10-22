@@ -32,6 +32,22 @@ const SOC_COLORS = {
 const SOC_PALETTE = ["#4797ff", "#37be5f", "#e79613", "#a78bfa", "#ee6368", "#8899aa",
                      "#53c4d4", "#d98cb3", "#a8b545", "#7f8cff"];
 
+/** ONE SI FORMATTER FOR AXIS TICKS (GitHub #57).
+ *
+ * The tick loop used `${v / 1000}k` for everything above 999, so a byte axis maxing near
+ * 340 MB printed 100000k. That is wrong at any width. These are decimal magnitudes on a log
+ * grid; `fmtBytes` stays the right formatter for a VALUE or a legend, where a unit and one
+ * decimal are useful -- an axis wants short, distinct decade labels.
+ */
+function fmtAxis(v) {
+  const n = Math.abs(Number(v) || 0);
+  if (n >= 1e12) return (n / 1e12).toFixed(0) + "T";
+  if (n >= 1e9) return (n / 1e9).toFixed(0) + "G";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + "k";
+  return String(n);
+}
+
 /** A panel that states which of the three states it is in, in words. */
 function socPanel(hostId, res, emptyText) {
   const host = document.getElementById(hostId);
@@ -132,7 +148,7 @@ function renderTimeline(hostId, res, opts = {}) {
     const y = plot.b - (d / lmax) * (plot.b - plot.t);
     svg.appendChild(svgEl("line", { x1: plot.l, y1: y, x2: plot.r, y2: y, class: "grid" }));
     const v = Math.pow(10, d);
-    axisLabel(svg, plot.l - 6, y + 4, v >= 1000 ? `${v / 1000}k` : String(v), "end");
+    axisLabel(svg, plot.l - 6, y + 4, fmtAxis(v), "end");
   }
   svg.appendChild(svgEl("line", { x1: plot.l, y1: plot.b, x2: plot.r, y2: plot.b, class: "axis" }));
   svg.appendChild(svgEl("line", { x1: plot.l, y1: plot.t, x2: plot.l, y2: plot.b, class: "axis" }));

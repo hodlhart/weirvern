@@ -5617,7 +5617,9 @@ check("the Weirlings tab exists and renders the fleet",
       wlText().includes("edge-alive") && wlText().includes("edge-stopped"));
 
 check("the never-seen tile and view are gone; stale remains",
-      !wlText().toLowerCase().includes("never seen")
+      // The summary tile and saved view are what the operator removed. A row's state CHIP may
+      // still say "never seen" (GitHub #56): the state word is the row's fact, not a tile.
+      ![...doc.querySelectorAll("#wl-summary .tile")].some((t) => /never seen/i.test(t.textContent))
       && !doc.querySelector("#wl-view option[value='never-seen']")
       && wlText().toLowerCase().includes("stale"),
       "the operator removed both the summary tile and the saved view");

@@ -669,6 +669,10 @@ function renderWeirlings(rows, revoked, revokedReason) {
         attrs: { title: "open this sensor's actions" },
         on: { click: (ev) => { ev.stopPropagation(); openSensorActions(r); } },
       }),
+      // A WORD IN THE ROW, NOT ONLY A BORDER COLOUR (GitHub #56). "Stale", "never seen" and
+      // "unregistered" are three different problems with three different fixes; the sheet had
+      // the word, the fleet list did not. The chip carries it where the operator scans.
+      wlStateChip(r.state),
       r.is_problem
         ? el("span", { class: "wl-problem-dot",
             attrs: { title: (r.findings || [])[0] || "needs attention",

@@ -1983,7 +1983,7 @@ def reason_code(detected_by_models: str, feature: str = "") -> str:
     return f"{det}:{feat}"
 
 
-def anomalies_total_count(client, min_score: float = 0.0) -> int:
+def anomalies_total_count(client, min_score: float = 0.0, *, hours: float = 24) -> int:
     """The UNFILTERED count under the same min-score -- the Y in "showing X of Y".
 
     Deliberately carries NONE of the page's filters (host/severity/model): its whole job is to
@@ -1992,14 +1992,16 @@ def anomalies_total_count(client, min_score: float = 0.0) -> int:
     here would read as a quiet network rather than a broken query.
     """
     res = client.query(
-        "SELECT count() FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s",
-        parameters={"s": float(min_score)},
+        "SELECT count() FROM weirvern.netflow_anomalies "
+        "WHERE anomaly_score >= %(s)s AND window_start >= %(since)s AND window_start <= %(until)s",
+        parameters={"s": float(min_score), **timewindow.w(hours)},
     )
     return int(res.result_rows[0][0]) if res.result_rows else 0
 
 
 def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
-                      host: str = "", severity: str = "", model: str = "") -> list[dict]:
+                      host: str = "", severity: str = "", model: str = "",
+                      hours: float = 24) -> list[dict]:
     """One row per DISTINCT anomaly, with its occurrence count and its windows.
 
     The operator, 2026-10-16: "These are identical in anomalies. Add a count column instead of
@@ -2009,8 +2011,13 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
     windows ride along, CAPPED at 50 per row while the count keeps the true total. Raises on
     failure, like anomalies_detailed: an empty list must mean "nothing", never "the query broke".
     """
-    where = ["anomaly_score >= %(s)s"]
-    params: dict = {"s": float(min_score), "n": int(limit)}
+    # THE GLOBAL TIME RANGE REACHES THE QUEUE TOO (GitHub #54). This builder used to read
+    # every anomaly in the table regardless of the header's range, so the panel claimed a
+    # window it never applied. `timewindow.w()` honours an absolute request range when one
+    # is installed by the route; otherwise it is the last `hours` hours, like every peer.
+    where = ["anomaly_score >= %(s)s",
+             "window_start >= %(since)s AND window_start <= %(until)s"]
+    params: dict = {"s": float(min_score), "n": int(limit), **timewindow.w(hours)}
     if host:
         where.append("src_addr = %(host)s")
         params["host"] = str(host)
@@ -2113,7 +2120,8 @@ def attach_group_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | 
     return rows
 
 
-def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "") -> dict:
+def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "",
+                            hours: float = 24) -> dict:
     """How many anomalies carry each severity, under the page's current filters.
 
     THE SEVERITY FILTER IS DELIBERATELY NOT APPLIED. These counts are the tiles an operator
@@ -2122,8 +2130,9 @@ def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "") -
     the answer hidden. Min-score and host ARE applied -- they are the questions the tiles answer
     ("of what this page is showing, how much is high"). A failed read is a state, not a zero.
     """
-    where = ["anomaly_score >= %(s)s"]
-    params: dict = {"s": float(min_score)}
+    where = ["anomaly_score >= %(s)s",
+             "window_start >= %(since)s AND window_start <= %(until)s"]
+    params: dict = {"s": float(min_score), **timewindow.w(hours)}
     if host:
         where.append("src_addr = %(host)s")
         params["host"] = str(host)
@@ -3168,7 +3177,8 @@ def detectors_overview(client) -> dict:
     return {"available": True, "reason": "", "detectors": out}
 
 
-def anomaly_discipline_counts(client, *, min_score: float = 0.0, host: str = "") -> dict:
+def anomaly_discipline_counts(client, *, min_score: float = 0.0, host: str = "",
+                              hours: float = 24) -> dict:
     """Fired vs acted-on, the alert-budget line (BF-12; SRE workbook [S58]).
 
     `fired` counts the anomaly rows under the same min-score/host filters the severity tiles
@@ -3176,8 +3186,9 @@ def anomaly_discipline_counts(client, *, min_score: float = 0.0, host: str = "")
     carries no score, so the score floor cannot apply to it; host can, and does. A failed
     read is a state with its reason, never zeros that would read as a calm queue.
     """
-    where = ["anomaly_score >= %(s)s"]
-    params: dict = {"s": float(min_score)}
+    where = ["anomaly_score >= %(s)s",
+             "window_start >= %(since)s AND window_start <= %(until)s"]
+    params: dict = {"s": float(min_score), **timewindow.w(hours)}
     if host:
         where.append("src_addr = %(host)s")
         params["host"] = str(host)

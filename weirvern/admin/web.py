@@ -547,6 +547,9 @@ def _build_handler(ctx: GuiContext):
         def _anomalies(self, query: dict) -> None:
             limit = _int_arg(query, "limit", 100, 1, 1000)
             min_score = _float_arg(query, "min_score", 0.0, 0.0, 1.0)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
             unreviewed_only = (_query_bool(query, "unreviewed") is True)
             watched_only = (_query_bool(query, "watched") is True)
             try:
@@ -564,15 +567,15 @@ def _build_handler(ctx: GuiContext):
                     # duplicate-consuming list would quietly shrink the queue's coverage.
                     rows = status_mod.anomalies_grouped(
                         client, limit=limit, min_score=min_score, host=host_f, severity=sev_f,
-                        model=model_f)
+                        model=model_f, hours=hours)
                     # The header tiles: counts per severity under min-score + host, NOT under the
                     # severity filter itself (see status.anomaly_severity_counts for why).
                     severity_counts = status_mod.anomaly_severity_counts(
-                        client, min_score=min_score, host=host_f)
+                        client, min_score=min_score, host=host_f, hours=hours)
                     # FIRED VS ACTED-ON (BF-12): the alert-budget line. Same self-guarding
                     # shape as the severity counts -- a failed read is its own state.
                     discipline = status_mod.anomaly_discipline_counts(
-                        client, min_score=min_score, host=host_f)
+                        client, min_score=min_score, host=host_f, hours=hours)
                     # SOC-1: merge review state. Read separately (one small query) rather
                     # than joined in SQL because the reviews table may not exist yet on a
                     # deployment whose schema job has not re-run -- a join would make the
@@ -590,7 +593,7 @@ def _build_handler(ctx: GuiContext):
                     # carried as None (the header omits "of Y") -- never as a zero.
                     try:
                         total_unfiltered = status_mod.anomalies_total_count(
-                            client, min_score=min_score)
+                            client, min_score=min_score, hours=hours)
                     except Exception:  # noqa: BLE001
                         total_unfiltered = None
                     watch_set, watch_err = status_mod.watch_index(client)

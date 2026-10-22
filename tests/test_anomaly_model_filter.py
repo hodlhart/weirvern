@@ -77,3 +77,25 @@ def test_grouping_counts_windows_not_detection_passes():
     assert "GROUP BY src_addr, anomaly_score, severity, detected_by_models" in sql
     assert "GROUP BY src_addr, anomaly_score, confidence" not in sql
     assert "isolation_forest_score," not in sql.split("GROUP BY", 1)[1]
+
+
+def test_the_alert_queue_honours_the_global_time_window():
+    """GitHub #54: the header range must reach /api/anomalies.
+
+    The query used to read every anomaly row regardless of the selected range, and the UI's
+    API builder never sent `hours` at all. Both halves are pinned: the SQL has the window and
+    the route passes the parsed value through.
+    """
+    c = _Capture()
+    status.anomalies_grouped(c, hours=6)
+    sql = " ".join(c.sql.split())
+    assert "window_start >= %(since)s AND window_start <= %(until)s" in sql
+    assert c.params["since"] and c.params["until"]
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    web = (root / "weirvern/admin/web.py").read_text()
+    seg = web.split("def _anomalies(self, query: dict) -> None:", 1)[1].split("def ", 1)[0]
+    assert "_window_arg(query, 24" in seg
+    assert "hours=hours" in seg
+    app = (root / "weirvern/admin/web/app.js").read_text()
+    assert "&hours=${trHours()}" in app

@@ -17,7 +17,8 @@
 const API = {
   overview: "/api/overview",
   anomalies: (min, limit, unreviewed) =>
-    `/api/anomalies?min_score=${min}&limit=${limit}` + (unreviewed ? "&unreviewed=1" : ""),
+    `/api/anomalies?min_score=${min}&limit=${limit}&hours=${trHours()}` +
+    (unreviewed ? "&unreviewed=1" : ""),
   review: "/api/review",
   watch: "/api/watch",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,

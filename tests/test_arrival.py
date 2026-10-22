@@ -56,7 +56,10 @@ def test_the_total_count_ignores_every_filter():
     for clause in ("src_addr", "severity =", "splitByChar"):
         assert clause not in captured["sql"], (
             f"the 'of Y' number must be the UNFILTERED total; found {clause!r} in it")
-    assert captured["params"] == {"s": 0.4}
+    assert captured["params"]["s"] == 0.4
+    assert captured["params"]["since"] and captured["params"]["until"], (
+        "the total must use the same global window as the rows it counts"
+    )
 
 
 def test_the_payload_carries_the_total_and_degrades_to_none():
