@@ -74,6 +74,13 @@ def _rows(client, sql: str, params: dict, what: str) -> list | None:
         return None
 
 
+def _has_curated_service_port(ports: list[int]) -> bool:
+    """A port named in the shared curated service table (not merely a low-numbered port)."""
+    from weirvern.admin import soc  # noqa: PLC0415
+
+    return any(int(p) in soc._SERVICE_PORTS for p in ports if p)
+
+
 def _port_shape(ports: list[int], src_ports: list[int]) -> tuple[str, str]:
     """The role a port pair suggests, and the evidence name for it.
 
@@ -85,6 +92,14 @@ def _port_shape(ports: list[int], src_ports: list[int]) -> tuple[str, str]:
     registered service such as NNTP on 5563 or Bitcoin on 8333 from becoming 'unknown' merely
     because it is not in the curated list.
     """
+    # A CURATED SERVICE OUTRANKS THE BROAD LOW-PORT RANGE. A client's ephemeral 978 beside
+    # an NFS 2049 must not read as "two services"; 2049 is the fact, 978 is the client.
+    dst_curated = _has_curated_service_port(ports)
+    src_curated = _has_curated_service_port(src_ports)
+    if dst_curated and not src_curated:
+        return "request", "service-port"
+    if src_curated and not dst_curated:
+        return "reply", "service-port"
     dst_service = _has_service_port(ports)
     src_service = _has_service_port(src_ports)
     if dst_service and not src_service:
@@ -217,6 +232,7 @@ def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
                 consumed.add(key)
                 merged.append({
                     "source": req["source"], "target": req["target"],
+                    "proto": int(req.get("proto") or 0),
                     "ports": list(req.get("ports") or []),
                     "source_ports": list(rep.get("ports") or []),
                     "_source_port_total": max(1, len(rep.get("ports") or [])),

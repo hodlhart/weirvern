@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.25 — 2026-10-23
+
+THE NETWORK DEDUP AND THE NFS CLIENT PORT.
+
+- Folded edges now carry the protocol, so a merged request/reply edge and its one-sided reply
+  half stopped appearing twice after the service fold.
+- A curated service port now outranks the broad low-port range: NFS on 2049 with a client
+  source port of 978 is a request, not two services.
+
 ## 0.19.24 — 2026-10-23
 
 THE NETWORK GRAPH FOLDS CONNECTIONS, NOT DIRECTIONS.

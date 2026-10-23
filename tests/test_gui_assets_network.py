@@ -747,3 +747,35 @@ def test_a_registered_service_above_the_old_boundary_still_orientates_a_reply():
     assert (e["source"], e["target"]) == ("198.51.100.20", "203.0.113.9")
     assert e["ports"] == [5563] and e["source_ports"] == [41352]
     assert "reply half" in e["direction"]
+
+
+def test_service_connections_are_folded_after_direction_is_decided():
+    """One browser can open dozens of connections to one service.
+
+    Direction is decided per 5-tuple; after that, the drawn graph should carry one edge per
+    service, not one per client port. Unknown edges must not fold across a reverse direction.
+    """
+    from weirvern.admin.assets import _coalesce_service_edges, _merge_direction_pairs
+
+    raw = []
+    for sport in (51515, 51516):
+        raw.extend([
+            {"source": "198.51.100.20", "target": "203.0.113.9",
+             "src_port": sport, "dst_port": 443, "proto": 6,
+             "ports": [443], "src_ports": [sport], "bytes": 100, "flows": 1,
+             "ttl_min": 63, "ttl_max": 63, "first_seen": "2026-10-23T00:00:00",
+             "last_seen": "2026-10-23T00:01:00"},
+            {"source": "203.0.113.9", "target": "198.51.100.20",
+             "src_port": 443, "dst_port": sport, "proto": 6,
+             "ports": [sport], "src_ports": [443], "bytes": 200, "flows": 1,
+             "ttl_min": 52, "ttl_max": 52, "first_seen": "2026-10-23T00:00:00",
+             "last_seen": "2026-10-23T00:01:00"},
+        ])
+    merged = _merge_direction_pairs(raw)
+    assert len(merged) == 2, "the two client ports are two conversations before folding"
+    out = _coalesce_service_edges(merged)
+    assert len(out) == 1, f"the service edge was not folded: {len(out)}"
+    e = out[0]
+    assert e["direction"] == "request/reply" and e["ports"] == [443]
+    assert e["source_ports"] == [51515, 51516]
+    assert e["bytes"] == 600 and e["flows"] == 4
