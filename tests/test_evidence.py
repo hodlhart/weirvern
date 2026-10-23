@@ -310,7 +310,7 @@ def test_logo_assets_are_shipped_and_served():
     # served (and still parses) but is no longer the chrome's identity: one brand, one source.
     assert 'src="/logo.png"' in html, "the header does not use the README's mark"
     assert 'src="/logo.svg"' not in html, "the retired geometric mark is still in the chrome"
-    assert 'href="/logo.png"' in html, "the tab icon is not the same mark as the header"
+    assert 'href="/apple-touch-icon.png"' in html, "the iOS touch icon is not the README's mark"
     # AN SVG THAT DOES NOT PARSE RENDERS AS THE BROKEN-IMAGE GLYPH (found by looking at the
     # rendered page: an ASCII double hyphen inside a comment makes the XML malformed). The
     # vectors must parse as XML, every byte of them.

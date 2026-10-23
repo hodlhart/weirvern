@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.27 — 2026-10-23
+
+THE PHONE HOME-SCREEN ICON IS THE MARK, NOT A LETTER TILE.
+
+- iOS ignored the previous touch link's missing size/path convention and generated a "W"
+  letter tile. The page now names the conventional `/apple-touch-icon.png` at 180×180 with
+  an explicit size and serves it from the static allow-list.
+- The launcher icons are the opaque dragon mark, not a transparent crop and not the tiny
+  wordmark canvas: transparent strips were being left for the OS to interpret, and the
+  wordmark is illegible at launcher size.
+
 ## 0.19.26 — 2026-10-23
 
 THE INSTALLED WEB APP WEARS THE LOGO.

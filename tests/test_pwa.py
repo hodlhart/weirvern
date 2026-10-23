@@ -34,12 +34,14 @@ def test_the_manifest_is_valid_and_names_the_logo_at_install_sizes():
         assert icon["type"] == "image/png"
         assert (WEB / icon["src"].lstrip("/")).is_file(), f"missing {icon['src']}"
         assert _png_size(WEB / icon["src"].lstrip("/")) == tuple(map(int, size.split("x")))
+    assert _png_size(WEB / "apple-touch-icon.png") == (180, 180)
 
 
 def test_the_manifest_icons_are_served_and_the_head_links_the_manifest():
     from weirvern.admin.web import STATIC_FILES
 
     for path, name in (("/manifest.webmanifest", "manifest.webmanifest"),
+                       ("/apple-touch-icon.png", "apple-touch-icon.png"),
                        ("/icon-192.png", "icon-192.png"),
                        ("/icon-512.png", "icon-512.png"),
                        ("/sw.js", "sw.js")):
@@ -50,7 +52,7 @@ def test_the_manifest_icons_are_served_and_the_head_links_the_manifest():
     assert 'rel="manifest" href="/manifest.webmanifest"' in html
     assert 'name="theme-color"' in html
     assert 'name="apple-mobile-web-app-capable"' in html
-    assert 'rel="apple-touch-icon" href="/logo.png"' in html
+    assert 'rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"' in html
 
 
 def test_the_installed_shell_registers_a_network_only_worker():

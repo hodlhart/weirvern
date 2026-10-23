@@ -116,6 +116,9 @@ STATIC_FILES = {
     # Installable web app: the manifest, its two raster sizes, and the network-only service
     # worker that gives the installed app an app shell without caching stale dashboards.
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    # iOS asks for this conventional root path; explicit sizes are what stops Safari from
+    # falling back to a generated letter tile when the link had no size metadata.
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
     "/icon-192.png": ("icon-192.png", "image/png"),
     "/icon-512.png": ("icon-512.png", "image/png"),
     "/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
