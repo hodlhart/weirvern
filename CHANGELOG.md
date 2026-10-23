@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.3 — 2026-10-23
+
+CHANGE-POINT NOISE FIX.
+
+- Page-Hinkley now runs on a z-normalised series and uses a standard-deviation threshold, not an
+  absolute 5-unit allowance against raw byte/packet counts. The first live pass wrote 31k shadow
+  rows on ordinary jitter; the test still detects a synthetic step and ignores noise.
+- Each host/metric records at most five change points per pass; a shadow table is evidence, not a
+  log of every sample.
+
 ## 0.20.2 — 2026-10-23
 
 HDBSCAN CANDIDATE FIX.

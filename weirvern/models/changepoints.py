@@ -6,34 +6,42 @@ new device" question without adding another anomaly score to the ensemble. A cha
 """
 from __future__ import annotations
 
+import math
+
 from clickhouse_connect.driver.client import Client
 
 from weirvern import __version__
 from weirvern.clock import utcnow
 
 
-def page_hinkley(values: list[float], *, delta: float = 0.05, threshold: float = 5.0,
+def page_hinkley(values: list[float], *, delta: float = 0.05, threshold: float = 6.0,
                  warmup: int = 8) -> list[dict]:
     """Return detected changes as dicts with index, direction and magnitude.
 
-    The statistic is the running mean up to the candidate point minus a small allowance; a
-    sustained positive excursion is an upward change, a negative one a downward change. Both
-    directions are tested, and a detection resets the running reference so one step is not
-    reported on every following sample.
+    Series are z-normalised before the test. The first live run compared raw byte/packet counts
+    against an absolute threshold of 5, so large series reported a change on ordinary jitter
+    (31k shadow rows); a 5-unit allowance means something different at 10 KB and 10 MB. After
+    normalisation the threshold is in standard deviations and one step is not re-reported.
     """
     if len(values) <= warmup:
         return []
     xs = [float(v) for v in values]
+    mean_all = sum(xs) / len(xs)
+    var = sum((v - mean_all) ** 2 for v in xs) / len(xs)
+    sd = math.sqrt(var)
+    if sd < 1e-9:
+        return []  # a constant series has no regime to change
+    zs = [(v - mean_all) / sd for v in xs]
     changes: list[dict] = []
-    mean = sum(xs[:warmup]) / warmup
+    mean = sum(zs[:warmup]) / warmup
     m_up = 0.0
     m_down = 0.0
-    for i in range(warmup, len(xs)):
-        m_up = max(0.0, m_up + xs[i] - mean - delta)
-        m_down = max(0.0, m_down + mean - xs[i] - delta)
+    for i in range(warmup, len(zs)):
+        m_up = max(0.0, m_up + zs[i] - mean - delta)
+        m_down = max(0.0, m_down + mean - zs[i] - delta)
         if m_up > threshold or m_down > threshold:
             direction = "up" if m_up > threshold else "down"
-            magnitude = abs(xs[i] - mean)
+            magnitude = abs(zs[i])
             # A bounded confidence: the exceedance over the configured threshold, not a
             # probability of an attack.
             prob = min(0.99, 0.5 + 0.49 * min(1.0, (max(m_up, m_down) - threshold) / threshold))
@@ -42,11 +50,11 @@ def page_hinkley(values: list[float], *, delta: float = 0.05, threshold: float =
                             "magnitude": round(magnitude, 3),
                             "run_length": i - (changes[-1]["index"] if changes else 0)})
             # Re-anchor to the new regime; otherwise every later sample re-fires the same step.
-            mean = sum(xs[max(0, i - warmup + 1):i + 1]) / min(warmup, i + 1)
+            mean = sum(zs[max(0, i - warmup + 1):i + 1]) / min(warmup, i + 1)
             m_up = m_down = 0.0
         else:
             # Slow adaptation to ordinary drift, so a gradual trend is not a permanent alarm.
-            mean = (mean * (i - 1) + xs[i]) / i
+            mean = (mean * (i - 1) + zs[i]) / i
     return changes
 
 
@@ -66,7 +74,7 @@ def run(client: Client, *, limit_hosts: int = 25, days: int = 7) -> dict:
                 parameters={"h": host, "d": int(days)},
             ).result_rows
             values = [float(r[1] or 0) for r in rows]
-            for change in page_hinkley(values):
+            for change in page_hinkley(values)[:5]:
                 when = rows[change["index"]][0]
                 client.insert(
                     "weirvern.ml_changepoints",
