@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.19.14 — 2026-10-23
+
+THE NETWORK MAP SHOWS WHICH HOSTS ARE BLOCKED, WHICH ARE ALERTED, AND WHY.
+
+- The graph payload now carries each host's `blocked` / `alerted` status, its reasons, and the
+  status of both ends of every edge. Blocked means a live Sluice block rule names the host as a
+  source/destination CIDR or through a domain rule's currently-resolved address. Alerted means
+  the host has an anomaly window in the graph's range. These are separate facts; a host can be
+  both, and the detail says so.
+- The map colours blocked hosts and their edges red, alerted hosts and their edges amber, and
+  adds a legend for both. Normal and tracked hosts keep their existing blue/green treatment.
+- `All` / `Blocked` / `Alerted` buttons filter the graph from the cached payload. A status
+  reading keeps the flagged hosts' direct peers as context, names the counts in the caption, and
+  gives an explicit empty state when no host matches.
+- Connection detail now names both endpoint statuses and the rule/anomaly evidence. A status
+  source that cannot be read is `status_available: false` with a reason; it never renders as a
+  normal-looking map.
+
 ## 0.19.13 — 2026-10-23
 
 THE GATE'S DROP COUNTERS SURVIVE ITS OWN RE-ARM.

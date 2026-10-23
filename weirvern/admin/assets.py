@@ -22,6 +22,7 @@ fact. `resolve_names` therefore returns a mapping and every payload includes bot
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 
 from weirvern import addressing
@@ -498,6 +499,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         node["degree_norm"] = node["degree"] / max_degree if max_degree else 0.0
         node["bytes_norm"] = node["bytes"] / max_bytes
 
+    status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=hours)
     return {
         "available": True,
         "reason": "",
@@ -506,8 +508,122 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "edges": out_edges,
         "total_edges": total,
         "truncated": total > len(out_edges),
+        "status_available": status_available,
+        "status_reason": status_reason,
     }
 
+
+
+# ── WHAT A HOST IS DOING, FOR THE NETWORK MAP ───────────────────────────────────────────────
+# The connection graph answers "who talks to whom"; it used to leave "is either end blocked or
+# alerted?" for the operator to infer from another tab. These annotations put that answer on
+# the same host object the map already draws, and in the same object the click detail reads.
+#
+# TWO SEPARATE FACTS, NEVER ONE COLOUR:
+#   * BLOCKED means a LIVE SLUICE BLOCK RULE names this host, either as a source/destination
+#     CIDR or through a domain rule's currently-resolved addresses. It is a policy fact.
+#   * ALERTED means the host has at least one anomaly window in the graph's range. It is an
+#     observation fact. An alert-mode Sluice rule is not a detection and does not make a host
+#     "alerted" -- that rule only records matching names.
+# A host can be both; the status is "blocked" (the stronger action) but `alerted` and both
+# reasons remain on the payload, so the detail can say so without hiding one.
+def _addr_in_cidr(addr: str, cidr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr) in ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+
+
+def attach_host_status(client, nodes: dict[str, dict], edges: list[dict], *, hours: int) -> tuple[bool, str]:
+    """Annotate graph nodes and edges with `blocked` / `alerted` and their evidence.
+
+    Returns (status_available, status_reason). If either source cannot be read, the map still
+    draws, but `status_available` is False and the reason is carried to the UI: an unknown
+    status must not look like a normal host.
+    """
+    reasons: list[str] = []
+    blocked_by: dict[str, list[str]] = {}
+    available = True
+
+    # Live block rules. Domain rules must be resolved through the same reverse map the gate
+    # uses; this is read-only and deliberately uses the one resolution helper.
+    try:
+        from weirvern import sluice_store  # noqa: PLC0415
+        rules = sluice_store.load_live_rules(client)
+        rules, problems = sluice_store.attach_resolved_ips(client, rules)
+        reasons.extend(problems)
+        for rule in rules:
+            if rule.mode == "alert" or not rule.enforcing:
+                continue
+            label = rule.describes()
+            if rule.domain:
+                for ip in rule.resolved_ips or []:
+                    if ip in nodes:
+                        blocked_by.setdefault(ip, []).append(label)
+                continue
+            for addr in nodes:
+                if ((rule.src_cidr and _addr_in_cidr(addr, rule.src_cidr))
+                        or (rule.dst_cidr and _addr_in_cidr(addr, rule.dst_cidr))):
+                    blocked_by.setdefault(addr, []).append(label)
+    except Exception as exc:  # noqa: BLE001
+        available = False
+        reasons.append(f"block rules could not be read: {type(exc).__name__}")
+
+    # Anomaly windows. One grouped query, bounded by the same window as the graph.
+    anomaly: dict[str, dict] = {}
+    try:
+        rows = _rows(
+            client,
+            "SELECT src_addr, count() AS n, max(detected_at) AS last_seen, "
+            "       max(anomaly_score) AS score "
+            "FROM weirvern.netflow_anomalies "
+            "WHERE detected_at >= %(since)s AND detected_at <= %(until)s "
+            "GROUP BY src_addr",
+            {**timewindow.w(hours)},
+            "connection graph (anomalies)",
+        )
+        if rows is None:
+            available = False
+            reasons.append("anomaly counts could not be read")
+        else:
+            for r in rows:
+                anomaly[str(r[0])] = {
+                    "count": int(r[1] or 0),
+                    "last_seen": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2] or ""),
+                    "score": float(r[3] or 0.0),
+                }
+    except Exception as exc:  # noqa: BLE001
+        available = False
+        reasons.append(f"anomaly counts could not be read: {type(exc).__name__}")
+
+    for addr, node in nodes.items():
+        blocked = blocked_by.get(addr, [])
+        anom = anomaly.get(addr)
+        anomaly_count = int(anom["count"]) if anom else 0
+        node["blocked"] = bool(blocked)
+        node["alerted"] = anomaly_count > 0
+        node["status"] = "blocked" if blocked else ("alerted" if node["alerted"] else "")
+        node["status_reasons"] = (
+            [f"block rule: {why}" for why in blocked]
+            + ([f"{anomaly_count} anomaly window{'s' if anomaly_count != 1 else ''} in this range"]
+               if anomaly_count else [])
+        )
+        if anom:
+            node["anomaly_count"] = anom["count"]
+            node["anomaly_last"] = anom["last_seen"]
+            node["anomaly_score"] = anom["score"]
+
+    for edge in edges:
+        src = nodes.get(str(edge.get("source")), {})
+        dst = nodes.get(str(edge.get("target")), {})
+        edge["source_status"] = src.get("status", "")
+        edge["target_status"] = dst.get("status", "")
+        edge["status"] = (
+            "blocked" if "blocked" in (edge["source_status"], edge["target_status"])
+            else "alerted" if "alerted" in (edge["source_status"], edge["target_status"])
+            else ""
+        )
+    return available, "; ".join(reasons)
 
 def resolve_names(client, addrs: list[str], limit: int = 400) -> dict[str, str]:
     """Reverse-DNS names, as a mapping. Never a substitute for the address.
@@ -648,6 +764,8 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
             src_node["hops"] = hops
             src_node["ttl"] = e["ttl_max"]
 
+    status_available, status_reason = attach_host_status(client, nodes, out, hours=hours)
     return {"available": True, "reason": "", "hours": hours, "tracked": list(addrs),
             "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
-            "edges": out}
+            "edges": out, "status_available": status_available,
+            "status_reason": status_reason}

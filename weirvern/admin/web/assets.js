@@ -41,6 +41,7 @@ const ASSETS_STATE = {
   search: "",
   svc: "",          // US-7: the service facet filter (click a chip; filters in place)
   trackedOnly: false,  // US-7: the graph filter -- only the hosts the operator tracks
+  status: "all",      // All / Blocked / Alerted -- a real filter over the graph payload
   minEdges: 1,
   showNames: false,
   // Pagination for the inventory. 15 per page by default (the user's number): a segment with
@@ -494,11 +495,59 @@ function renderNetwork() {
   // the ones the operator chose to follow (and the edges between them), so a busy map can be
   // read as a worklist.
   const trackedSet = new Set(ASSETS_STATE.tracked || []);
-  const nodes = ASSETS_STATE.trackedOnly
+  let nodes = ASSETS_STATE.trackedOnly
     ? nodes0.filter((n) => trackedSet.has(n.id)) : nodes0;
-  const edgesPool = ASSETS_STATE.trackedOnly
+  let edgesPool = ASSETS_STATE.trackedOnly
     ? allEdges.filter((e) => trackedSet.has(e.source) && trackedSet.has(e.target)) : allEdges;
+  const status = ["all", "blocked", "alerted"].includes(ASSETS_STATE.status)
+    ? ASSETS_STATE.status : "all";
+  for (const btn of document.querySelectorAll("#nw-status [data-nw-status]")) {
+    btn.setAttribute("aria-pressed", btn.dataset.nwStatus === status ? "true" : "false");
+  }
+  // STATUS IS A FILTER OVER THE SAME PAYLOAD, never a second query. A status host brings its
+  // direct peers along as context; the peers stay blue so the flagged host is the thing the eye
+  // lands on. If the status sources could not be read, do not draw a normal-looking map and do
+  // not turn the missing source into "no blocked hosts".
+  let statusMatches = [];
+  if (status !== "all") {
+    if (d.status_available === false) {
+      caption.textContent = `Host status is unavailable: ${d.status_reason || "the source could not be read"}.`;
+      host.appendChild(chartEmpty("The graph can still be read under All; blocked and alerted status could not be computed."));
+      emptyRow(table, 5, "Host status is unavailable; no edges are listed under this filter.");
+      return;
+    }
+    statusMatches = nodes.filter((n) => n.status === status);
+    if (!statusMatches.length) {
+      const label = status === "blocked" ? "blocked" : "alerted";
+      caption.textContent = `No ${label} hosts in this window.`;
+      host.appendChild(chartEmpty(`No host has a live block rule` +
+        (status === "alerted" ? " or an anomaly window" : "") + ` in this range. Use All to see the map.`));
+      emptyRow(table, 5, `No ${label} hosts to draw.`);
+      return;
+    }
+    const matchIds = new Set(statusMatches.map((n) => n.id));
+    const visible = new Set(matchIds);
+    for (const e of edgesPool) {
+      if (matchIds.has(e.source) || matchIds.has(e.target)) {
+        visible.add(e.source);
+        visible.add(e.target);
+      }
+    }
+    nodes = nodes.filter((n) => visible.has(n.id));
+    edgesPool = edgesPool.filter((e) => matchIds.has(e.source) || matchIds.has(e.target));
+  }
   const edges = edgesPool.filter((e) => e.flows >= ASSETS_STATE.minEdges);
+  // A status host with no drawn connection is still a finding: show the filter's own count
+  // rather than the generic "no traffic" sentence.
+  if (status !== "all" && nodes.length && !edges.length) {
+    const label = status === "blocked" ? "blocked" : "alerted";
+    caption.textContent = `${statusMatches.length} ${label} host${statusMatches.length === 1 ? "" : "s"} ` +
+      `in this window, no connections above ${ASSETS_STATE.minEdges} flow${ASSETS_STATE.minEdges === 1 ? "" : "s"}.`;
+    host.appendChild(chartEmpty(`The ${label} host${statusMatches.length === 1 ? " has" : "s have"} no drawn ` +
+      `connection above the flows filter. Lower the filter or use All.`));
+    emptyRow(table, 5, `No connections for the ${label} host${statusMatches.length === 1 ? "" : "s"}.`);
+    return;
+  }
   // A filter that hides everything must say so -- the tracked-only chip with nothing tracked is
   // the operator's own empty set, not a quiet network.
   const trackedEmpty = ASSETS_STATE.trackedOnly && nodes0.length > 0 && nodes.length === 0;
@@ -542,11 +591,23 @@ function renderNetwork() {
   // The caption reports what was actually drawn, and says so when the edge cap truncated the
   // set -- a graph silently missing hosts looks complete.
   // US-7: "showing X of Y" whenever the tracked-only filter is narrowing the map.
-  const bits = [ASSETS_STATE.trackedOnly
-    ? `showing ${nodes.length} of ${nodes0.length} hosts`
-    : `${nodes.length} hosts`, `${edges.length} connections`];
+  const bits = [];
+  if (status !== "all") {
+    const label = status === "blocked" ? "blocked" : "alerted";
+    const peers = Math.max(0, nodes.length - statusMatches.length);
+    bits.push(`showing ${statusMatches.length} ${label} host${statusMatches.length === 1 ? "" : "s"}` +
+      (peers ? ` and ${peers} peer${peers === 1 ? "" : "s"}` : ""));
+  } else {
+    bits.push(ASSETS_STATE.trackedOnly
+      ? `showing ${nodes.length} of ${nodes0.length} hosts`
+      : `${nodes.length} hosts`);
+  }
+  bits.push(`${edges.length} connections`);
   if (ASSETS_STATE.tracked.length) bits.push(`filtered to ${ASSETS_STATE.tracked.length} tracked`);
   if (d.truncated) bits.push(`of ${d.total_edges} total edges (capped)`);
+  if (status === "all" && d.status_available === false) {
+    bits.push(`host status unavailable: ${d.status_reason || "source could not be read"}`);
+  }
   caption.textContent = bits.join(" · ");
 
   drawGraph(host, nodes, edges, d.truncated);
@@ -823,6 +884,8 @@ function computeLayout(nodes, edges, box, warmStart, pinned) {
  * measurement, and a measurement without its evidence is a conclusion. */
 function nodeTitle(n) {
   const out = [`${n.name ? n.name + " · " : ""}${n.id}`, `${n.degree} peers`, fmtBytes(n.bytes)];
+  if (n.blocked) out.push("blocked by a live block rule");
+  if (n.alerted) out.push(`alerted: ${n.anomaly_count || 0} anomaly window${(n.anomaly_count || 0) === 1 ? "" : "s"}`);
   if (n.hops !== null && n.hops !== undefined) {
     out.push(`${n.hops} ${n.hops === 1 ? "hop" : "hops"} from the sensor (ttl ${n.ttl})`);
   }
@@ -832,6 +895,9 @@ function nodeTitle(n) {
 /** The hover card for one connection: the pair, the volume, and the TTL range when carried. */
 function edgeTitle(e) {
   const out = [`${e.source} → ${e.target}`, fmtBytes(e.bytes)];
+  if (e.source_status || e.target_status) {
+    out.push(`status: source ${e.source_status || "normal"}, destination ${e.target_status || "normal"}`);
+  }
   if ((e.ports || []).length) {
     out.push(`port${e.ports.length === 1 ? "" : "s"} ${e.ports.join(", ")}`);
   }
@@ -1028,10 +1094,18 @@ function drawGraph(host, nodes, edges, truncated) {
     });
     hit.appendChild(svgEl("title", {}, edgeTitle(e)));
     svg.appendChild(hit);
+    // AN EDGE TOUCHING A FLAGGED HOST WEARS THE SAME COLOUR AS THE HOST. The node is the
+    // primary mark; this line is the connection that makes it relevant, and a red host with
+    // only grey lines reads as a colouring mistake. Normal edges keep the neutral hairline.
+    const edgeColour = e.status === "blocked" ? "#e05c5c"
+      : e.status === "alerted" ? "#e0a23a" : "var(--border)";
     const line = svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "edge",
       "stroke-width": w.toFixed(2),
-      opacity: shown, "pointer-events": "none",
+      // Inline style, not a presentation attribute: the stylesheet's `.graph .edge` rule would
+      // otherwise win and every status edge would render as the neutral border again.
+      style: e.status ? `stroke:${edgeColour}` : "",
+      opacity: e.status ? "0.82" : shown, "pointer-events": "none",
     });
     svg.appendChild(line);
     edgeEls.push({ source: e.source, target: e.target, els: [hit, line] });
@@ -1044,13 +1118,19 @@ function drawGraph(host, nodes, edges, truncated) {
     const selected = ASSETS_STATE.tracked.includes(n.id);
     const r = 5 + 9 * Math.sqrt((n.bytes || 0) / maxBytes);
     const g = svgEl("g", {
-      class: "node" + (selected ? " selected" : ""),
+      class: "node" + (selected ? " selected" : "") + (n.status ? " " + n.status : ""),
       transform: `translate(${p.x.toFixed(1)},${p.y.toFixed(1)})`,
     });
+    // STATUS OUTRANKS THE NORMAL/SELECTED FILL. A blocked host must not turn blue just because
+    // it is a busy node, and a tracked blocked host keeps its tracked stroke without losing
+    // the reason it is red. Normal selected nodes keep the green tracking fill.
+    const fill = n.status === "blocked" ? "#e05c5c"
+      : n.status === "alerted" ? "#e0a23a"
+      : selected ? "#37be5f" : "#4797ff";
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
-      fill: selected ? "#37be5f" : "#4797ff",
-      opacity: selected ? "1" : "0.78",
+      fill: fill,
+      opacity: selected || n.status ? "1" : "0.78",
     }));
     // Labels only when asked for, or for a selected node: 250 labels in a circle is a smear.
     if (ASSETS_STATE.showNames || selected) {
@@ -1088,6 +1168,8 @@ function drawGraph(host, nodes, edges, truncated) {
     const items = [
       ["#4797ff", "host (size = bytes)"],
       ["#37be5f", "tracked"],
+      ["#e05c5c", "blocked by a live block rule"],
+      ["#e0a23a", "alerted: anomaly in this range"],
       ["edge width", "log of bytes"],
     ];
     if (layout.rings.length) {
@@ -1132,6 +1214,14 @@ function zeekWindow() {
 
 /* ── Network: what a click on the graph actually means ─────────────────────── */
 
+/** The status chip shared by the node and edge details. The word is always present; the colour
+ *  is a second encoding, never the only one. */
+function statusChip(status) {
+  if (status === "blocked") return el("span", { class: "chip bad", text: "blocked" });
+  if (status === "alerted") return el("span", { class: "chip warn", text: "alerted" });
+  return null;
+}
+
 /** One connection's source and destination, in words and numbers.
  *
  * WHY THIS EXISTS: the user clicked the graph and could not tell what had happened. A node click
@@ -1171,6 +1261,28 @@ function showEdgeDetail(edge) {
     `${label(edge.source_name, edge.source)} → ${label(edge.target_name, edge.target)}` +
     ` on port${(edge.ports || []).length === 1 ? "" : "s"} ${ports}.` +
     (dirText ? ` ${dirText}.` : "") + ttl;
+
+  // THE STATUS OF BOTH ENDS, ON THE CONNECTION. The map colours the host; this sentence says
+  // which end carried the policy/detection fact, so a red line is not a claim about a packet.
+  const srcNode = ((ASSETS_STATE.graph && ASSETS_STATE.graph.nodes) || [])
+    .find((n) => n.id === edge.source) || {};
+  const dstNode = ((ASSETS_STATE.graph && ASSETS_STATE.graph.nodes) || [])
+    .find((n) => n.id === edge.target) || {};
+  const srcStatus = edge.source_status || srcNode.status || "";
+  const dstStatus = edge.target_status || dstNode.status || "";
+  const statusBits = [];
+  if (srcStatus) statusBits.push(`source ${srcStatus}${srcNode.status_reasons && srcNode.status_reasons.length
+    ? ` (${srcNode.status_reasons.join("; ")})` : ""}`);
+  if (dstStatus) statusBits.push(`destination ${dstStatus}${dstNode.status_reasons && dstNode.status_reasons.length
+    ? ` (${dstNode.status_reasons.join("; ")})` : ""}`);
+  if (statusBits.length) {
+    const statusRow = el("div", { class: "chips" }, [
+      statusChip(srcStatus),
+      statusChip(dstStatus),
+    ].filter(Boolean));
+    statusRow.appendChild(el("span", { class: "muted", text: statusBits.join(" · ") }));
+    host.appendChild(statusRow);
+  }
 
   // The pair, as a single prominent row, because "source and destination" is the question.
   host.appendChild(el("div", { class: "pair" }, [
@@ -1247,6 +1359,14 @@ function showNodeDetail(node) {
   note.replaceChildren(el("span", { text:
     `${node.degree} peer${node.degree === 1 ? "" : "s"} · ${fmtBytes(node.bytes)} · ` +
     `${outbound.length} outbound, ${inbound.length} inbound${dist}` }));
+
+  if (node.status || (node.status_reasons || []).length) {
+    const statusRow = el("div", { class: "chips" }, [statusChip(node.status)].filter(Boolean));
+    if ((node.status_reasons || []).length) {
+      statusRow.appendChild(el("span", { class: "muted", text: node.status_reasons.join(" · ") }));
+    }
+    host.appendChild(statusRow);
+  }
 
   // Tracking stays available, but as an explicit ACTION inside the panel rather than the thing
   // a click silently did.

@@ -4345,6 +4345,19 @@ document.addEventListener("DOMContentLoaded", () => {
     renderNetwork();
     scheduleURLSync();   // US-7
   });
+  // All / Blocked / Alerted: a reading of the cached graph, not a refetch. The buttons carry
+  // aria-pressed and the filter rides the URL with the other Network controls. Look each one up
+  // by id: the orphan audit proves every control in the HTML has a consumer in the JS.
+  for (const [id, status] of [["nw-status-all", "all"], ["nw-status-blocked", "blocked"],
+                              ["nw-status-alerted", "alerted"]]) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.addEventListener("click", () => {
+      ASSETS_STATE.status = status;
+      renderNetwork();
+      scheduleURLSync();
+    });
+  }
   // US-7: the tracked-only chip. A real filter over the cached graph (no refetch), pressed when
   // it holds the filter, and carrying its state in the URL.
   const nwOnly = document.getElementById("nw-only-tracked");
@@ -5624,6 +5637,7 @@ function syncURL() {
   if (Number(ASSETS_STATE.minEdges) > 1) p.set("nw.min", String(ASSETS_STATE.minEdges));
   if (ASSETS_STATE.showNames) p.set("nw.labels", "1");
   if (ASSETS_STATE.trackedOnly) p.set("nw.tracked", "1");
+  if (ASSETS_STATE.status && ASSETS_STATE.status !== "all") p.set("nw.status", ASSETS_STATE.status);
   const dcFeedSel = document.getElementById("dc-feed");
   if (dcFeedSel && dcFeedSel.value && dcFeedSel.value !== "netflow") {
     p.set("dc.feed", dcFeedSel.value);
@@ -5733,6 +5747,11 @@ function applyURLState() {
   ASSETS_STATE.trackedOnly = p.get("nw.tracked") === "1";
   const nwOnlyEl = document.getElementById("nw-only-tracked");
   if (nwOnlyEl) nwOnlyEl.setAttribute("aria-pressed", ASSETS_STATE.trackedOnly ? "true" : "false");
+  const nwStatus = p.get("nw.status");
+  ASSETS_STATE.status = ["all", "blocked", "alerted"].includes(nwStatus) ? nwStatus : "all";
+  for (const btn of document.querySelectorAll("#nw-status [data-nw-status]")) {
+    btn.setAttribute("aria-pressed", btn.dataset.nwStatus === ASSETS_STATE.status ? "true" : "false");
+  }
   if (p.get("dc.feed")) {
     const feedEl = document.getElementById("dc-feed");
     if (feedEl) feedEl.value = p.get("dc.feed");

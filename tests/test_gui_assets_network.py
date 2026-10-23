@@ -664,3 +664,24 @@ def test_the_flow_drill_accepts_a_source_filter_and_binds_it():
     # And a request with NOTHING to drill by is still refused (src is a drill, silence is not).
     nothing = soc.flows_matching(_C(), hours=2)
     assert nothing["available"] is False and "source address" in nothing["reason"], nothing
+
+
+def test_connection_graph_carries_blocked_and_alerted_status():
+    """The Network map's colours and filters depend on these fields; a rename would leave the
+    graph looking normal while the API carried the truth under another key."""
+    import inspect
+
+    from weirvern.admin import assets
+
+    graph_src = inspect.getsource(assets.connection_graph)
+    status_src = inspect.getsource(assets.attach_host_status)
+    for key in ('status', 'blocked', 'alerted', 'status_reasons'):
+        assert f'"{key}"' in status_src, f"attach_host_status no longer produces {key}"
+        assert key in ASSETS_JS, f"assets.js never reads {key}"
+    for key in ('status_available', 'status_reason'):
+        assert f'"{key}"' in graph_src, f"connection_graph no longer produces {key}"
+        assert key in ASSETS_JS, f"assets.js never reads {key}"
+
+    assert "def attach_host_status" in inspect.getsource(assets)
+    assert "sluice_store.load_live_rules" in status_src
+    assert "netflow_anomalies" in status_src

@@ -1832,6 +1832,72 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         H.ASSETS_STATE.tracked.length === 0,
         JSON.stringify(H.ASSETS_STATE.tracked));
 
+  // ── blocked / alerted graph readings ─────────────────────────────────────────────────────
+  const STATUS_GRAPH = {
+    available: true, hours: 24, status_available: true, total_edges: 2,
+    nodes: [
+      { id: "192.0.2.10", name: "blocked-host", degree: 2, bytes: 100,
+        status: "blocked", blocked: true, alerted: false,
+        status_reasons: ["block rule: block sabnzbd.home"] },
+      { id: "192.0.2.20", name: "alerted-host", degree: 1, bytes: 50,
+        status: "alerted", blocked: false, alerted: true, anomaly_count: 2,
+        status_reasons: ["2 anomaly windows in this range"] },
+      { id: "192.0.2.30", name: "peer", degree: 1, bytes: 50, status: "" },
+    ],
+    edges: [
+      { source: "192.0.2.10", target: "192.0.2.20", bytes: 100, flows: 2,
+        source_status: "blocked", target_status: "alerted", status: "blocked" },
+      { source: "192.0.2.20", target: "192.0.2.30", bytes: 50, flows: 1,
+        source_status: "alerted", target_status: "", status: "alerted" },
+    ],
+  };
+  H.ASSETS_STATE.tracked = [];
+  H.ASSETS_STATE.status = "blocked";
+  H.ASSETS_STATE.graph = STATUS_GRAPH;
+  H.renderNetwork();
+  check("the Blocked reading keeps the blocked host and its peer as context",
+        doc.querySelectorAll("#nw-graph g.node").length === 2 &&
+        doc.getElementById("nw-caption").textContent.includes("showing 1 blocked host"),
+        doc.getElementById("nw-caption").textContent);
+  check("the status buttons report which reading is active",
+        doc.getElementById("nw-status-blocked").getAttribute("aria-pressed") === "true" &&
+        doc.getElementById("nw-status-all").getAttribute("aria-pressed") === "false");
+  check("the blocked host is drawn in the blocked colour",
+        [...doc.querySelectorAll("#nw-graph g.node circle")]
+          .some((c) => c.getAttribute("fill") === "#e05c5c"));
+
+  H.ASSETS_STATE.status = "alerted";
+  H.renderNetwork();
+  check("the Alerted reading keeps the alerted host and both of its peers",
+        doc.querySelectorAll("#nw-graph g.node").length === 3 &&
+        doc.getElementById("nw-caption").textContent.includes("showing 1 alerted host"),
+        doc.getElementById("nw-caption").textContent);
+  check("the alerted host is drawn in the alerted colour",
+        [...doc.querySelectorAll("#nw-graph g.node circle")]
+          .some((c) => c.getAttribute("fill") === "#e0a23a"));
+
+  H.showNodeDetail(STATUS_GRAPH.nodes[0]);
+  check("a blocked host's connection details say why it is blocked",
+        doc.getElementById("nw-detail").textContent.includes("blocked") &&
+        doc.getElementById("nw-detail").textContent.includes("block sabnzbd.home"),
+        doc.getElementById("nw-detail").textContent.slice(0, 120));
+  H.showEdgeDetail(STATUS_GRAPH.edges[0]);
+  check("a connection detail names both endpoint statuses",
+        doc.getElementById("nw-detail").textContent.includes("source blocked") &&
+        doc.getElementById("nw-detail").textContent.includes("destination alerted"),
+        doc.getElementById("nw-detail").textContent.slice(0, 160));
+
+  H.ASSETS_STATE.graph = { ...STATUS_GRAPH, status_available: false,
+                           status_reason: "block rules could not be read" };
+  H.ASSETS_STATE.status = "blocked";
+  H.renderNetwork();
+  check("an unreadable status source is named, not rendered as a normal graph",
+        doc.getElementById("nw-caption").textContent.includes("Host status is unavailable") &&
+        doc.getElementById("nw-graph").textContent.includes("could not be computed"),
+        doc.getElementById("nw-caption").textContent);
+  H.ASSETS_STATE.status = "all";
+  H.ASSETS_STATE.minEdges = 1;
+
   // ── honest failure states ──────────────────────────────────────────────────────────────
   H.ASSETS_STATE.graph = { available: false, nodes: [], edges: [],
                                reason: "the connection query failed" };

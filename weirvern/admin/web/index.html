@@ -260,6 +260,17 @@
         <button id="nw-only-tracked" class="chip act" type="button" aria-pressed="false"
                 title="show only the hosts you track">tracked only</button>
       </div>
+      <!-- THE MAP'S THREE READINGS: every host, the hosts a live block rule names, and the
+           hosts with an anomaly window in this range. Buttons, not a select, because the
+           operator switches between these readings while reading the map. -->
+      <div id="nw-status" class="chips" role="group" aria-label="filter graph by host status">
+        <button id="nw-status-all" class="chip act" type="button" data-nw-status="all"
+                aria-pressed="true">All</button>
+        <button id="nw-status-blocked" class="chip act" type="button" data-nw-status="blocked"
+                aria-pressed="false">Blocked</button>
+        <button id="nw-status-alerted" class="chip act" type="button" data-nw-status="alerted"
+                aria-pressed="false">Alerted</button>
+      </div>
       <div class="info-text hidden" id="nw-info">
   <p><strong>What it is.</strong> The connection graph: a dot is a host both weirlings saw traffic for, a line is a conversation between two, thickness by bytes. The dashed rings are hop distance from the reported IP TTL — no ring means the TTL was not measured, never that a host sits outside the network.</p>
   <p><strong>What writes it.</strong> Netflow edges from every weirling in the window; Zeek enriches them where it runs.</p>
