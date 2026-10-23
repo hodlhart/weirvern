@@ -454,10 +454,11 @@ function wlSparkline(r) {
   poly.setAttribute("stroke", "currentColor");
   poly.setAttribute("stroke-width", "1.5");
   svg.appendChild(poly);
+  const sparkTitle = measuredZero
+    ? `0 flows in the last hour \u2014 ${ev.why || "no flows observed in 24h"}`
+    : `${total} flows in the last hour`;
   const wrap = el("span", { class: "wl-spark-wrap",
-    attrs: { title: measuredZero
-      ? `0 flows in the last hour \u2014 ${ev.why || "no flows observed in 24h"}`
-      : `${total} flows in the last hour` } });
+    attrs: { title: sparkTitle, "aria-label": sparkTitle } });
   wrap.appendChild(svg);
   if (measuredZero) {
     wrap.appendChild(el("span", { class: "muted mono wl-spark-zero", text: "0" }));
@@ -583,12 +584,15 @@ function wlNicRows(r) {
       // the sensor's measured series (the hub does not split it per NIC), labelled as such;
       // suppressing it on a siphon line made a working feed look absent.
       (() => {
+        const flowLabel = "the sensor's measured flow trend (the hub does not split it per NIC)";
         const cell = el("td", { class: "wl-flow-cell", attrs: {
-          title: "the sensor's measured flow trend (the hub does not split it per NIC)",
+          title: flowLabel, "aria-label": flowLabel,
         } }, [wlSparkline(r)]);
         if (typeof discoverDrill === "function") {
+          const drillLabel = "open this sensor's flows in Discover";
           cell.classList.add("clickable");
-          cell.title = "open this sensor's flows in Discover";
+          cell.title = drillLabel;
+          cell.setAttribute("aria-label", drillLabel);
           cell.addEventListener("click", (ev) => {
             ev.stopPropagation();
             discoverDrill({ sensor: r.sensor_id });

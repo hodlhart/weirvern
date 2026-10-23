@@ -401,7 +401,9 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 #as-table th.sortable { cursor: pointer; user-select: none; }
 #anomalies-table { table-layout: fixed; }
 #anomalies-table td { vertical-align: top; }
-#anomalies-table td:nth-child(4) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The Host cell carries a name AND an address; an ellipsis here hid the address with no
+   visible way to read it. Let it wrap instead of clipping -- the table already scrolls. */
+#anomalies-table td:nth-child(4) { overflow-wrap: anywhere; }
 #anomalies-table td:nth-child(9), #anomalies-table td:nth-child(10) { overflow-wrap: anywhere; }
 
 #wl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
@@ -1487,4 +1489,29 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   .settings-search { width: 100%; }
   .settings-search input { width: 100%; }
   #st-stage-card { position: static; }
+}
+
+/* ── TOUCH CONTROLS THE AUDIT STILL FOUND SMALL (2026-10-23) ────────────────────────────────
+ * C-9 asks 44px for primary and 36px for secondary. These are the phone-width controls that
+ * measured below the line: the anomaly filter fields/checkboxes (31px and 13px), the header's
+ * auto-refresh box (13px), and the Weirlings selector/revoked box (21px/13px). The control is
+ * the input, not the label around it.
+ */
+@media (max-width: 720px) {
+  #view-anomalies .controls input[type="number"],
+  #view-weirlings select,
+  #view-weirlings .controls input[type="checkbox"],
+  .auto input#autorefresh,
+  #view-anomalies .controls input[type="checkbox"] {
+    min-height: 44px;
+  }
+  #view-anomalies .controls input[type="number"],
+  #view-weirlings select { height: 44px; }
+  #view-anomalies .controls input[type="checkbox"],
+  #view-weirlings .controls input[type="checkbox"],
+  .auto input#autorefresh {
+    width: 44px;
+    height: 44px;
+  }
+  #nw-status .chip.act { min-height: 44px; }
 }

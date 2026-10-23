@@ -7171,10 +7171,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("JOB investigate-anomaly: the row is on screen", !!jobRow);
     // ISSUE #52: the drill has a VISIBLE entry and exit. The row was the only click target
     // (nothing at rest said so) and the evidence page's only way back was a nav tab.
-    const evOpen = jobRow ? jobRow.querySelector(".ev-open") : null;
-    check("every alert row carries a visible evidence control", !!evOpen);
-    if (evOpen) {
+    const evOpen = jobRow ? jobRow.querySelector(".row-more .ev-open") : null;
+    const evSummary = jobRow ? jobRow.querySelector(".row-more summary") : null;
+    check("every alert row carries evidence behind its one disclosure", !!evOpen && !!evSummary);
+    check("no evidence button sits at rest as a second per-row verb",
+          !jobRow || [...jobRow.querySelectorAll(".ev-open")].every((b) => b.closest(".row-more")));
+    if (evOpen && evSummary) {
       const beforeSev = H.AN_FILTERS.severity;
+      evSummary.click();
+      await sleep(60);
       evOpen.click();
       await sleep(260);
       check("...which opens the evidence view",

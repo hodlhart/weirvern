@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.16 — 2026-10-23
+
+THE PRE-COMPLETION SWEEP: LESS PER-ROW FURNITURE, NO CLIPPED HOSTS, TOUCH-SIZED FILTERS.
+
+- Anomaly rows had **two** per-row controls at rest: the `evidence ›` button in the Why cell and
+  the disclosure that already contains Evidence, Block, Watch and Tune. The duplicate button is
+  gone; Evidence lives in the one disclosure, and the row itself still opens the evidence page.
+- The Host cell no longer clips a long name/address behind an ellipsis with no way to read it; it
+  wraps, while the table keeps its horizontal scroll.
+- Phone-width anomaly filters, the Weirlings view selector/revoked box and the header auto-refresh
+  checkbox now meet the 44px touch target (the audit measured 13–31px).
+- Weirlings' flow trend and sparkline carry an `aria-label` as well as a title, so the meaning is
+  not hover-only.
+- `#v=identity` and bare `#v=host` aliases now land on Assets instead of silently leaving Health
+  active under a stale URL.
+
 ## 0.19.15 — 2026-10-23
 
 THE NETWORK STATUS FILTER IS ITS OWN COLOUR KEY.

@@ -2167,15 +2167,6 @@ async function loadAnomalies() {
         a.reason_code ? el("div", { class: "reason-code mono",
           attrs: { title: "stable reason code: detector initials + the measurement that moved" },
           text: a.reason_code }) : null,
-        // THE VISIBLE ENTRY TO THE DRILL (issue #52). The row was the only click target, with
-        // nothing at rest saying so: an operator who never hovered never found the evidence.
-        // This control is the same act, visible, and stops propagation so the row drill and
-        // the per-cell filters do not fight.
-        el("button", { class: "quiet ev-open", text: "evidence \u203a",
-          attrs: { type: "button",
-                   "aria-label": "show the raw evidence for this alert",
-                   title: "Show the raw evidence for this alert" },
-          on: { click: (e) => { e.stopPropagation(); openEvidence(a); } } }),
       ]),
       el("td", {}, [reviewCell(a), rowMore(a, a.review_state || "")]),
     ]));
@@ -2664,7 +2655,7 @@ function gateBlockableReason() {
  */
 function anActions(a) {
   return el("div", { class: "an-actions" }, [
-    el("button", { class: "review-act", text: "Evidence", attrs: { type: "button" },
+    el("button", { class: "review-act ev-open", text: "Evidence", attrs: { type: "button" },
       title: "show the raw records behind this alert",
       on: { click: (e) => { e.stopPropagation(); openEvidence(a); } } }),
     gateAction(a),
@@ -5824,6 +5815,11 @@ function applyURLState() {
     showView("blocked");
     return true;
   }
+  // #v=identity is an old alias of the merged Assets surface (the name still appears in
+  // bookmarks and palette history). #v=host with no address is not an investigation; send it
+  // to the inventory instead of leaving the default Health page lit under a host URL.
+  if (v === "identity") v = "assets";
+  if (v === "host" && !p.get("h.addr") && !p.get("hp.addr")) v = "assets";
   if (v) {
     const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === v);
     if (tab) showView(v);
