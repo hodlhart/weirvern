@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.18 — 2026-10-23
+
+THE PRE-COMPLETION SWEEP, CONTINUED: TABLET TARGETS AND ONE BOOT FETCH.
+
+- A row's disclosure now meets the 36px secondary floor in both dimensions at tablet widths.
+  Filter chips get the 44px phone height, covering DNS and Discover facets as well as Network.
+- A deep-linked boot no longer fetches the selected view twice: `applyURLState()` has already
+  started the view loader, so the boot refresh now loads the shared health/status data and skips
+  the duplicate view request. This takes Weirlings from 16 API reads to the low teens on load.
+
 ## 0.19.17 — 2026-10-23
 
 THE REST OF THE FIRST SWEEP.

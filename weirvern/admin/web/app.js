@@ -4087,7 +4087,7 @@ function setAutoPaused(paused) {
   }
 }
 
-async function refreshAll() {
+async function refreshAll(opts = {}) {
   if (AUTO_PAUSED) return;
   setAutoNote("updating…");
   try {
@@ -4097,7 +4097,11 @@ async function refreshAll() {
     // auto-refresh without a word.
     const viewName = CURRENT_VIEW || (active && active.dataset.view);
     const loader = viewName && VIEW_LOADERS[viewName];
-    if (loader) await loader();
+    // BOOT WITH A DEEP LINK: applyURLState() already called showView(), whose loader is
+    // already fetching the selected view. Calling it again here doubled the view's API calls
+    // (and the duplicate settings/users/system reads behind it). The header health read still
+    // runs; only the view's second load is skipped.
+    if (loader && !opts.skipView) await loader();
     clearError();
     const now = new Date();
     const p = (n) => String(n).padStart(2, "0");
@@ -4533,9 +4537,12 @@ async function bootAuthed() {
     return;
   }
   showGate("");
-  applyURLState();
+  const fromURL = applyURLState();
   wireHistoryNavigation();
-  refreshAll();
+  // A URL-selected view has already started its own loader inside applyURLState. Let the
+  // boot refresh load the shared health/status data without issuing the same view request
+  // a second time.
+  refreshAll({ skipView: Boolean(fromURL) });
   refreshAutoBlockPill();   // quiet read; the pill appears only if the threshold is armed
   startAuto(15);
 }
