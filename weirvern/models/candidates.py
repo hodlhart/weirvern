@@ -66,7 +66,17 @@ def run(client: Client, *, limit: int = 5000, min_cluster_size: int = 40) -> dic
     labels = [row[0] for row in rows]
     hosts = [str(row[1]) for row in rows]
     X = np.asarray([r[2:] for r in rows], dtype=float)
-    model, Xs, centers = _fit(X, min_cluster_size=min_cluster_size)
+    used_min = int(min_cluster_size)
+    model, Xs, centers = _fit(X, min_cluster_size=used_min)
+    # A high min_cluster_size can produce zero centres on a heterogeneous live matrix. Try two
+    # smaller settings before declaring the candidate unusable; the chosen value is reported.
+    for fallback in (20, 5):
+        if centers.size:
+            break
+        if fallback >= used_min:
+            continue
+        used_min = fallback
+        model, Xs, centers = _fit(X, min_cluster_size=fallback)
     score, dist = _scores(Xs, centers)
     n_clusters = len(set(model.labels_)) - (1 if -1 in model.labels_ else 0)
     if not centers.size:
@@ -88,7 +98,7 @@ def run(client: Client, *, limit: int = 5000, min_cluster_size: int = 40) -> dic
     return {
         "available": True, "reason": "", "rows": len(rows), "clusters": n_clusters,
         "noise": int((model.labels_ == -1).sum()),
-        "min_cluster_size": int(min_cluster_size),
+        "min_cluster_size": int(used_min),
         "score_p50": float(np.percentile(score, 50)),
         "score_p99": float(np.percentile(score, 99)),
         "model_version": __version__,

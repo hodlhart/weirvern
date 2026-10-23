@@ -285,6 +285,10 @@ def severity_basis(score: float, strong_families: int, signature: bool = False,
                         and float(deviation_magnitude) >= MATERIAL_Z_CRITICAL))
     if not material:
         return "score only — " + ", ".join(parts) + " (capped below incident)"
+    if score < 0.60 or (score < 0.70 and strong_families < 1):
+        return "score below alert band; " + ", ".join(parts)
+    if score < 0.85:
+        return "medium band; " + ", ".join(parts)
     return ", ".join(parts)
 
 

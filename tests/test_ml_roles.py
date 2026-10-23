@@ -5,9 +5,9 @@ from weirvern.models.roles import classify
 
 
 def test_media_and_gateway_names_are_recognised_from_dhcp():
-    assert classify("10.0.0.10", "Sonarr", private=True)[0] == "media"
-    assert classify("10.0.0.1", "gateway", private=True)[0] == "gateway"
-    assert classify("10.0.0.20", "umbrel", private=True)[0] == "server"
+    assert classify("198.51.100.10", "Sonarr", private=True)[0] == "media"
+    assert classify("198.51.100.1", "gateway", private=True)[0] == "gateway"
+    assert classify("198.51.100.20", "umbrel", private=True)[0] == "server"
 
 
 def test_an_external_peer_is_not_a_local_role():
@@ -16,8 +16,8 @@ def test_an_external_peer_is_not_a_local_role():
 
 
 def test_a_name_without_a_pattern_is_workstation_but_no_name_is_unknown():
-    assert classify("10.0.0.30", "Samuels-iPad", private=True)[0] == "workstation"
-    role, confidence, why = classify("10.0.0.40", "", private=True)
+    assert classify("198.51.100.30", "Samuels-iPad", private=True)[0] == "workstation"
+    role, confidence, why = classify("198.51.100.40", "", private=True)
     assert role == "unknown" and confidence == 0.0 and "no name" in why
 
 

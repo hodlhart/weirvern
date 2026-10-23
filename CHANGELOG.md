@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.1 — 2026-10-23
+
+POST-RELEASE CORRECTIONS.
+
+- The severity basis now says when a high-deviation row sits below the score band (`score below
+  alert band`, `medium band`) instead of looking like an unexplained downgrade.
+- The HDBSCAN shadow challenger falls back to smaller cluster sizes when the live matrix produces
+  zero centres, and reports the size it used; zero centres remains an explicit unusable state.
+- The historical severity backfill was applied for the seven-day window: 49 critical, 61 high,
+  580 medium, 1,122 low; every row carries a basis string.
+
 ## 0.20.0 — 2026-10-23
 
 ML TRUTH AND SHADOW CHANNELS.
