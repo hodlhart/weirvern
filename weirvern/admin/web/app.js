@@ -2947,7 +2947,8 @@ async function lookupFingerprint(ja4) {
  * navigation systems. The button is now the only exit, and the crumb trail is left to surfaces
  * that do not already have a labeled button. */
 function evidenceBackLabel(view) {
-  const named = { anomalies: "Back to alerts", assets: "Back to assets", host: "Back to host" };
+  const named = { anomalies: "Back to alerts", assets: "Back to assets", host: "Back to host",
+                   evidence: "Back to evidence" };
   if (named[view]) return named[view];
   const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === view);
   return tab ? `Back to ${tab.textContent.trim().toLowerCase()}` : "Back";

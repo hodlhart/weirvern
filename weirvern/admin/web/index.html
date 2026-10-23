@@ -727,12 +727,12 @@
   <!-- ── Alert evidence (the pivot) ───────────────────────────────────── -->
   <section id="view-evidence" class="view">
     <div class="card">
-      <div class="view-head">
-        <h2 id="ev-title">Evidence</h2>
-        <!-- THE VISIBLE WAY BACK (issue #52): the crumb trail exists, but a page reached from a
-             row needs a plain control that says where it returns to. Hidden until a drill
-             opens the view, so it never advertises a destination that is not behind it. -->
+      <div class="view-head has-back">
+        <!-- THE VISIBLE WAY BACK (issue #52): one control at the leading edge, exactly where
+             the Host page puts its Back button. Hidden until a drill opens the view, so it
+             never advertises a destination that is not behind it. -->
         <button id="ev-back" class="quiet" type="button" hidden>Back to alerts</button>
+        <h2 id="ev-title">Evidence</h2>
       </div>
       <p class="muted" id="ev-sub"></p>
       <!-- THE SIGNATURE, ON THE PAGE WHERE AN ALERT IS READ (US-D1, vision §2): what was seen,
@@ -780,7 +780,7 @@
        address, with its own network picture and its own NetFlow / DNS / Zeek panels --
        not on the fleet-wide Assets inventory. -->
   <section id="view-host" class="view">
-    <div class="view-head">
+    <div class="view-head has-back">
       <button id="hp-back" class="quiet" type="button" title="back where this was opened">Back</button>
       <h2 id="hp-title">Host</h2>
       <span id="hp-sub" class="muted"></span>

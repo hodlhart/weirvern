@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.12 — 2026-10-22
+
+ONE BACK CONTROL, IN ONE PLACE.
+
+- Evidence and Host now both lead with the same quiet back button at the LEFT edge of the
+  header, before the title. Evidence used to put it at the right; the two drill pages looked like
+  two different products even after the blue crumb was removed.
+- The Host button names its origin too (`Back to alerts`, `Back to evidence`, `Back to assets`),
+  so a Host page opened from an evidence page no longer says just `Back`.
+
 ## 0.19.11 — 2026-10-22
 
 ONE BACK CONTROL ON A DRILL PAGE.

@@ -471,6 +471,10 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
 /* The title row: heading left, the tile strip right. */
 .view-head { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; }
+/* A DRILL'S BACK CONTROL LEADS THE HEADER. Evidence keeps its title and Host keeps its
+   hostname; both put the same quiet button at the same edge, so "back" is one shape in one
+   place rather than a right-aligned button on one page and a left-aligned button on another. */
+.view-head.has-back { justify-content: flex-start; align-items: center; }
 .view-head h2 { margin: 0; }
 /* The paged table's footer (US-A4): the held-back rows are named, and the way to see them is
    one button in the same row. */
