@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.11 — 2026-10-22
+
+ONE BACK CONTROL ON A DRILL PAGE.
+
+- Evidence had two exits in two visual languages: a blue underlined `Anomalies` crumb at the
+  top and a quiet `Back to alerts` button at the right. The crumb is gone; the labeled button
+  is the only exit and it also appears on a fresh evidence deep link.
+- The Host page had the same duplicate crumb and button; it now uses its existing `Back` button,
+  labelled with the destination (`Back to alerts` / `Back to assets`) and still restoring the
+  origin's filters and scroll.
+- Crumbs that remain on Blocked and the Weirlings detail are quiet outline buttons, not blue
+  hyperlinks; the current segment stays plain text. No navigation control changes colour or
+  shape just because it is a breadcrumb.
+
 ## 0.19.10 — 2026-10-22
 
 THE LOGS TAB READS AS ONE AUDIT SURFACE, NOT THREE UNRELATED TABLES.

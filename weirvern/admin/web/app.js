@@ -2376,21 +2376,19 @@ async function loadHost(addr, hours) {
   }
 
   // US-6: the labeled exit, only for JOURNEYS (openHost) -- a fresh lookup in the box is not
-  // somewhere you came from. The label names the DESTINATION, not "back".
-  if (HOST_RETURN.pending && (CURRENT_VIEW === "assets" || CURRENT_VIEW === "host")) {
+  // somewhere you came from. The label names the DESTINATION, not "back". The visible button
+  // is the one exit; no blue crumb duplicates it.
+  if (CURRENT_VIEW === "assets" || CURRENT_VIEW === "host") {
     HOST_RETURN.pending = false;
-    const fromTab = [...document.querySelectorAll(".tab")]
-      .find((t) => t.dataset.view === HOST_RETURN.view);
-    setCrumbs([{ label: fromTab ? fromTab.textContent : "Back",
-                 run: () => returnWithScroll(HOST_RETURN.view, HOST_RETURN.scroll),
-                 title: "back where this was opened, with its filters and scroll" }]);
+    const back = document.getElementById("hp-back");
+    if (back) back.textContent = evidenceBackLabel(HOST_RETURN.view || "assets");
   }
 }
 
 const HP_BACK = document.getElementById("hp-back");
 if (HP_BACK) {
   HP_BACK.addEventListener("click", () => {
-    if (HOST_RETURN && HOST_RETURN.pending && HOST_RETURN.view) {
+    if (HOST_RETURN && HOST_RETURN.view) {
       returnWithScroll(HOST_RETURN.view, HOST_RETURN.scroll);
     } else {
       showView("assets");
@@ -2404,8 +2402,9 @@ function openHost(addr) {
     // Remember where the jump started -- the labeled way back needs it, and so does the scroll.
     HOST_RETURN = { pending: true, view: CURRENT_VIEW, scroll: Number(window.scrollY || 0) };
   } else {
-    // A fresh lookup is not a journey; the way back is the Assets tab itself.
-    HOST_RETURN.pending = false;
+    // A fresh lookup is not a journey; the way back is the Assets tab itself. Keep the
+    // destination explicit so the visible Back button never falls through to a dead end.
+    HOST_RETURN = { pending: false, view: "assets", scroll: 0 };
   }
   showView("host");
   // The legacy drill-down still renders (its DOM lives in Assets) so every existing pivot and
@@ -2943,20 +2942,28 @@ async function lookupFingerprint(ja4) {
  * "why did the model flag this" that the aggregate host view cannot give: the host
  * view says what the host has done over 24h; this says what it did in the five
  * minutes the detector scored, which is the only thing that verdict is about. */
+/* ONE BACK CONTROL PER DRILL. The evidence page used to carry both a blue underlined
+ * "Anomalies" crumb AND this quiet button; two controls for one job looked like two different
+ * navigation systems. The button is now the only exit, and the crumb trail is left to surfaces
+ * that do not already have a labeled button. */
+function evidenceBackLabel(view) {
+  const named = { anomalies: "Back to alerts", assets: "Back to assets", host: "Back to host" };
+  if (named[view]) return named[view];
+  const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === view);
+  return tab ? `Back to ${tab.textContent.trim().toLowerCase()}` : "Back";
+}
+
+function showEvidenceBack() {
+  const back = document.getElementById("ev-back");
+  if (!back) return;
+  back.textContent = evidenceBackLabel(EVIDENCE_FROM || "anomalies");
+  back.hidden = false;
+}
+
 function openEvidence(a) {
   if (!a || !a.src_addr) return;
   EVIDENCE_FROM = CURRENT_VIEW || "anomalies";
   EVIDENCE_SCROLL = Number(window.scrollY || 0);
-  // THE VISIBLE EXIT (issue #52): the page names the queue it came from. The crumb trail is
-  // the secondary path; this control is the one an operator sees without hunting.
-  const back = document.getElementById("ev-back");
-  if (back) {
-    const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === EVIDENCE_FROM);
-    back.textContent = EVIDENCE_FROM === "anomalies"
-      ? "Back to alerts"
-      : `Back to ${tab ? tab.textContent.trim().toLowerCase() : "where I was"}`;
-    back.hidden = false;
-  }
   showView("evidence");
   const start = a.window_start || a.detected_at;
   loadEvidence(a.src_addr, start, a.window_end).catch(showError);
@@ -2966,8 +2973,10 @@ function openEvidence(a) {
 function wireEvidenceBack() {
   const back = document.getElementById("ev-back");
   if (back) {
-    back.addEventListener("click", () =>
-      returnWithScroll(EVIDENCE_FROM || "anomalies", EVIDENCE_SCROLL));
+    back.addEventListener("click", () => {
+      const fromView = EVIDENCE_FROM || "anomalies";
+      returnWithScroll(fromView, EVIDENCE_SCROLL);
+    });
   }
 }
 
@@ -2982,13 +2991,11 @@ async function loadEvidence(addr, start, end) {
   document.getElementById("ev-sub").textContent =
     `Detection window ${fmtTime(d.window_start)} → ${fmtTime(d.window_end)}. ` +
     `These are the individual records the detector scored — not aggregates.`;
-  // US-3: the way back. Evidence is a drill, not a destination: one labeled crumb returns to
-  // wherever it was opened from (Anomalies, the Host view), filters and all.
-  const fromView = EVIDENCE_FROM || "anomalies";
-  const fromTab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === fromView);
-  setCrumbs([{ label: fromTab ? fromTab.textContent : "Back",
-               run: () => returnWithScroll(fromView, EVIDENCE_SCROLL),
-               title: "back where this drill was opened, with its filters and scroll" }]);
+  // US-3: the way back. Evidence is a drill, not a destination. The quiet button names
+  // the destination; there is deliberately no second breadcrumb for the same exit.
+  clearCrumbs();
+  EVIDENCE_FROM = EVIDENCE_FROM || "anomalies";
+  showEvidenceBack();
 
   // ── THE EVIDENCE CHAIN (US-D1) ─────────────────────────────────────────────────────────────
   // Five stages, each with its own state. The rule from the vision: an unknown is drawn as an

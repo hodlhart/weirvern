@@ -6754,18 +6754,21 @@ check("...a contradicted segment names BOTH segments on the issues list",
       anRowE.click();
       await sleep(250);
       const crumbs = doc.getElementById("crumbs") || { textContent: "" };
-      check("...and Evidence shows a labeled crumb back",
+      const evBackFirst = doc.getElementById("ev-back");
+      check("...and Evidence has ONE labeled back control, not a crumb plus a button",
             doc.getElementById("view-evidence").classList.contains("active")
-            && /Anomalies/.test(crumbs.textContent), crumbs.textContent.slice(0, 60));
+            && !!evBackFirst && !evBackFirst.hidden
+            && /back to alerts/i.test(evBackFirst.textContent)
+            && crumbs.classList.contains("hidden"),
+            evBackFirst ? `back=${evBackFirst.textContent} crumbs=${crumbs.textContent}` : "no #ev-back");
       H.syncURL();
       check("a Copy-link carries the drill (v=evidence + ev.host)",
             /v=evidence/.test(window.location.hash) && /ev\.host=/.test(window.location.hash),
             window.location.hash.slice(0, 130));
-      const crumbBtn = doc.querySelector("#crumbs button.crumb");
-      if (crumbBtn) {
-        crumbBtn.click();
+      if (evBackFirst) {
+        evBackFirst.click();
         await sleep(250);
-        check("the crumb returns to Anomalies with its filters intact",
+        check("the back button returns to Anomalies with its filters intact",
               doc.getElementById("view-anomalies").classList.contains("active")
               && ((doc.getElementById("an-chips") || {}).textContent || "") === chipsBefore,
               "chips now: " + ((doc.getElementById("an-chips") || {}).textContent || "").slice(0, 60));
@@ -7345,12 +7348,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("RETURN: an alert row is on screen to drill into", !!rowA);
     if (rowA) { rowA.click(); }
     await sleep(320);
-    const evCrumb = [...doc.querySelectorAll("#crumbs .crumb")].slice(-1)[0];
-    check("RETURN: Evidence's exit is LABELED with its destination",
-          !!evCrumb && /Anomalies/.test(evCrumb.textContent),
-          evCrumb ? evCrumb.textContent : "no crumb");
+    const evBack = doc.getElementById("ev-back");
+    check("RETURN: Evidence's exit is the labeled back button",
+          !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
+          evBack ? evBack.textContent : "no #ev-back");
     scrollTo = [];
-    if (evCrumb) { evCrumb.click(); }
+    if (evBack) { evBack.click(); }
     await sleep(1250);
     check("RETURN: the origin's filters survive the round trip",
           H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN",
@@ -7366,15 +7369,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
     HOST_REQS.length = 0;
     if (jobHostCell) { jobHostCell.click(); }
     await sleep(380);
-    const hCrumb = [...doc.querySelectorAll("#crumbs .crumb")].slice(-1)[0];
-    check("HOST RETURN: the jump lands with the labeled way back",
+    const hBack = doc.getElementById("hp-back");
+    check("HOST RETURN: the jump lands with the labeled back button",
           doc.getElementById("view-host").classList.contains("active")
-          && !!hCrumb && /Anomalies/.test(hCrumb.textContent),
-          hCrumb ? hCrumb.textContent : "no crumb");
+          && !!hBack && /back to alerts/i.test(hBack.textContent),
+          hBack ? hBack.textContent : "no #hp-back");
     check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
           HOST_REQS.some((u) => /hours=6/.test(u)), HOST_REQS.join(" ").slice(0, 120));
     scrollTo = [];
-    if (hCrumb) { hCrumb.click(); }
+    if (hBack) { hBack.click(); }
     await sleep(1250);
     check("HOST RETURN: filters and range survive, scroll restored",
           H.AN_FILTERS.host === "198.51.100.5" && Number(H.trHours()) === 6

@@ -697,9 +697,15 @@ svg.spark rect.cur { fill: var(--accent); }
 .tab-group + .tab-group { margin-left: 16px; }
 #crumbs { padding: 5px 18px 7px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 #crumbs.hidden { display: none; }
-.crumb { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
-         padding: 0; text-decoration: underline; text-underline-offset: 2px; }
-.crumb.current { color: inherit; }
+/* A DRILL CRUMB IS A BUTTON, NOT A BLUE HYPERLINK. The evidence page's crumb and its
+   "Back to alerts" button were two exits in two visual languages. Crumbs that remain on
+   Blocked and the Weirlings detail now use the same quiet outline as every other back
+   control; the current segment is plain text, never a fake link. */
+.crumb { display: inline-flex; align-items: center; min-height: var(--btn-h);
+         background: none; border: 1px solid var(--border); color: var(--muted);
+         cursor: pointer; font: inherit; padding: 0 10px; border-radius: var(--btn-r); }
+.crumb:hover { color: var(--fg); border-color: var(--accent); }
+.crumb.current { color: var(--muted); border-color: transparent; padding: 0; min-height: 0; }
 .crumb-sep { color: var(--muted); }
 /* THE COMMAND PALETTE (BF-11): a quiet overlay; the active row is unmistakable. */
 #palette { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90;
