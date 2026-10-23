@@ -44,7 +44,14 @@ def _fit(X: np.ndarray, min_cluster_size: int = 40) -> tuple[HDBSCAN, np.ndarray
     Xs = prep.fit_transform(SimpleImputer(strategy="median").fit_transform(np.nan_to_num(X)))
     model = HDBSCAN(min_cluster_size=int(min_cluster_size), min_samples=5,
                     store_centers="medoid", copy=True).fit(Xs)
-    centers = np.asarray(getattr(model, "centers_", np.empty((0, Xs.shape[1]))), dtype=float)
+    # sklearn stores medoid centres on `.medoids_`, NOT `.centers_` (which is only populated for
+    # store_centers="centroid"). The first live run clustered 56 groups and still reported zero
+    # centres because of this; the candidate was silently unusable. Read the attribute the
+    # requested mode actually populates.
+    if getattr(model, "medoids_", None) is not None:
+        centers = np.asarray(model.medoids_, dtype=float)
+    else:
+        centers = np.asarray(getattr(model, "centers_", np.empty((0, Xs.shape[1]))), dtype=float)
     return model, Xs, centers
 
 

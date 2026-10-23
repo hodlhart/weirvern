@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.2 — 2026-10-23
+
+HDBSCAN CANDIDATE FIX.
+
+- The candidate read `centers_`, but sklearn stores medoid centres in `medoids_` when
+  `store_centers="medoid"`. The first live run found 56 clusters and still reported zero centres,
+  leaving the candidate table empty. Read the attribute the requested mode populates and assert
+  the regression with a three-blob test.
+
 ## 0.20.1 — 2026-10-23
 
 POST-RELEASE CORRECTIONS.

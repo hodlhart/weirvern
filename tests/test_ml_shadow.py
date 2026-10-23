@@ -46,3 +46,16 @@ def test_the_shadow_tables_are_shipped():
                         ("034_ml_changepoints.sql", "ml_changepoints")):
         sql = (root / name).read_text()
         assert table in sql and "TTL" in sql
+
+
+def test_hdbscan_centres_come_from_the_medoid_attribute():
+    # sklearn 1.9 populates `.medoids_` for store_centers="medoid"; `.centers_` stays empty.
+    # This is the regression that made the first live candidate report 0 clusters.
+    from weirvern.models.candidates import _fit
+    rng = np.random.default_rng(7)
+    X = np.vstack([rng.normal(0, 0.2, (60, 3)),
+                   rng.normal(5, 0.2, (60, 3)),
+                   rng.normal(-5, 0.2, (60, 3))])
+    _, _, centers = _fit(X, min_cluster_size=20)
+    assert centers.shape[0] >= 2
+    assert centers.shape[1] == 3
