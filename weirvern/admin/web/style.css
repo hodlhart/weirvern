@@ -1524,3 +1524,14 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
      in BOTH dimensions even though desktop keeps the 28px density. */
   .row-more summary { min-height: 36px; min-width: 36px; }
 }
+@media (max-width: 720px) {
+  /* The remaining phone fields the audit found under the 44px line: the Assets lookup and
+     scope/sort controls, the DNS filter fields, and Discover's feed/sensor selectors. */
+  #view-assets input[type="search"],
+  #view-assets input[type="text"],
+  #view-assets select,
+  #view-dns input[type="text"],
+  #view-dns select,
+  #view-discover input[type="text"],
+  #view-discover select { min-height: 44px; }
+}

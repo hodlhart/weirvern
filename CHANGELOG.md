@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.19 — 2026-10-23
+
+THE PRE-COMPLETION SWEEP: THE LAST PHONE FIELDS.
+
+- Assets' lookup/sort/scope fields, the DNS filter fields and Discover's selectors now take the
+  44px phone height. The connection graph's minimum-edges field and show-names box already did.
+- This is the final mechanical touch pass; the remaining sub-44px items are the icon-sized pager
+  arrows (42px wide, 44px tall), which stay at the button system's base width rather than
+  inventing a second button size.
+
 ## 0.19.18 — 2026-10-23
 
 THE PRE-COMPLETION SWEEP, CONTINUED: TABLET TARGETS AND ONE BOOT FETCH.
