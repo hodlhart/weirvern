@@ -1097,8 +1097,8 @@ function drawGraph(host, nodes, edges, truncated) {
     // AN EDGE TOUCHING A FLAGGED HOST WEARS THE SAME COLOUR AS THE HOST. The node is the
     // primary mark; this line is the connection that makes it relevant, and a red host with
     // only grey lines reads as a colouring mistake. Normal edges keep the neutral hairline.
-    const edgeColour = e.status === "blocked" ? "#e05c5c"
-      : e.status === "alerted" ? "#e0a23a" : "var(--border)";
+    const edgeColour = e.status === "blocked" ? "var(--bad)"
+      : e.status === "alerted" ? "var(--warn)" : "var(--border)";
     const line = svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "edge",
       "stroke-width": w.toFixed(2),
@@ -1124,12 +1124,12 @@ function drawGraph(host, nodes, edges, truncated) {
     // STATUS OUTRANKS THE NORMAL/SELECTED FILL. A blocked host must not turn blue just because
     // it is a busy node, and a tracked blocked host keeps its tracked stroke without losing
     // the reason it is red. Normal selected nodes keep the green tracking fill.
-    const fill = n.status === "blocked" ? "#e05c5c"
-      : n.status === "alerted" ? "#e0a23a"
-      : selected ? "#37be5f" : "#4797ff";
+    const fill = n.status === "blocked" ? "var(--bad)"
+      : n.status === "alerted" ? "var(--warn)"
+      : selected ? "var(--ok)" : "var(--accent)";
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
-      fill: fill,
+      style: `fill:${fill}`,
       opacity: selected || n.status ? "1" : "0.78",
     }));
     // Labels only when asked for, or for a selected node: 250 labels in a circle is a smear.
@@ -1168,8 +1168,8 @@ function drawGraph(host, nodes, edges, truncated) {
     const items = [
       ["#4797ff", "host (size = bytes)"],
       ["#37be5f", "tracked"],
-      ["#e05c5c", "blocked by a live block rule"],
-      ["#e0a23a", "alerted: anomaly in this range"],
+      ["var(--bad)", "blocked by a live block rule"],
+      ["var(--warn)", "alerted: anomaly in this range"],
       ["edge width", "log of bytes"],
     ];
     if (layout.rings.length) {
@@ -1180,7 +1180,7 @@ function drawGraph(host, nodes, edges, truncated) {
         ? el("span", { class: "legend-swatch ring" })
         : el("span", {
             class: "legend-swatch",
-            attrs: { style: `background:${colour.startsWith("#") ? colour : "var(--border)"}` },
+            attrs: { style: `background:${(colour.startsWith("#") || colour.startsWith("var(")) ? colour : "var(--border)"}` },
           });
       legend.appendChild(el("span", { class: "legend-item" }, [
         swatch,

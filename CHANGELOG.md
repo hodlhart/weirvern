@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.15 — 2026-10-23
+
+THE NETWORK STATUS FILTER IS ITS OWN COLOUR KEY.
+
+- Blocked and Alerted buttons carry the same red/amber swatch as the nodes and edges they
+  filter. The legend moved above the canvas: at a 900px viewport the graph pushed the legend
+  below the fold, and a key nobody scrolls to is not a key.
+
 ## 0.19.14 — 2026-10-23
 
 THE NETWORK MAP SHOWS WHICH HOSTS ARE BLOCKED, WHICH ARE ALERTED, AND WHY.

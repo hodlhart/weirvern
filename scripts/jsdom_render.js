@@ -1864,7 +1864,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("nw-status-all").getAttribute("aria-pressed") === "false");
   check("the blocked host is drawn in the blocked colour",
         [...doc.querySelectorAll("#nw-graph g.node circle")]
-          .some((c) => c.getAttribute("fill") === "#e05c5c"));
+          .some((c) => /fill:var\(--bad\)/.test(c.getAttribute("style") || "")));
 
   H.ASSETS_STATE.status = "alerted";
   H.renderNetwork();
@@ -1874,7 +1874,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.getElementById("nw-caption").textContent);
   check("the alerted host is drawn in the alerted colour",
         [...doc.querySelectorAll("#nw-graph g.node circle")]
-          .some((c) => c.getAttribute("fill") === "#e0a23a"));
+          .some((c) => /fill:var\(--warn\)/.test(c.getAttribute("style") || "")));
 
   H.showNodeDetail(STATUS_GRAPH.nodes[0]);
   check("a blocked host's connection details say why it is blocked",

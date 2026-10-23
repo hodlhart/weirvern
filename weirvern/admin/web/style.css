@@ -897,6 +897,12 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * at rest means clickable. Interactive chips opt in with .act. */
 .chip.act { cursor: pointer; }
 .chip.act:hover { border-color: var(--accent); }
+/* A status filter doubles as the colour key for the graph: the swatch is the same hex the
+   node and edge use, and the word remains, so colour is never the only carrier. */
+.nw-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 6px; vertical-align: 1px; }
+.nw-swatch.blocked { background: var(--bad); }
+.nw-swatch.alerted { background: var(--warn); }
 /* US-2: the sensor sheet's onward links -- buttons to the surfaces filterable to that sensor. */
 .wl-go { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
 /* US-3: an element that was just jumped TO says so once (fix receipts, audit landings). */
