@@ -75,6 +75,25 @@ for request/reply.
 - **A biflow exporter** that emits `flowDirection` plus both byte counters would let the
   collector pair halves at export time. The current exporter emits unidirectional records.
 
+## The Network map's orientation
+
+The Network map uses the SAME service-port predicate as Flows and Discover
+(`soc._is_service_port`: system ports plus a curated service list). It does not use a second
+boundary. The old graph code treated every port below 32768 as a service; IANA's ranges are
+**system 0–1023, user 1024–49151, dynamic/private 49152–65535**, and 32768 is merely the usual
+Linux ephemeral start. A user port such as 35623 therefore could not prove a request.
+
+A **one-sided reply** is observed as `server:service -> client:ephemeral`. The graph now orients
+that edge `client -> server`, puts the service port on the destination card and the client's
+source port on the source card. The detail says the request was not captured; it is still not a
+request/reply pair, and the map does not pretend otherwise. A one-sided request keeps the
+observed `client -> server`; an edge whose two ports prove neither shape keeps a neutral
+`direction not claimed`.
+
+The host-pair aggregate still limits how finely multiple services between the same two hosts can
+be separated; the 5-tuple is present in the raw records and is the next step when the graph query
+is grouped by it.
+
 ## Where the code lives
 
 - `weirvern/admin/soc.py`: `_flow_direction`, `_tcp_role`, `_port_role`,

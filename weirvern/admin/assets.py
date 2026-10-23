@@ -74,97 +74,150 @@ def _rows(client, sql: str, params: dict, what: str) -> list | None:
         return None
 
 
-_EPHEMERAL_PORT = 32768  # the IANA user-port boundary: services below, clients above
+def _has_service_port(ports: list[int]) -> bool:
+    """Whether any port in this side names a service, using the SOC's one shared table.
+
+    The Network graph used to treat every port below 32768 as a service, which is not what
+    IANA says and not what the Flows tab uses: 32768-49151 are USER ports, and a peer-to-peer
+    source port in that range was therefore misread as a service. The Flows/Discover ladder
+    already owns the narrow definition (`soc._is_service_port`: system ports plus a curated
+    list), so the graph now calls that definition instead of keeping a second one.
+    """
+    from weirvern.admin import soc  # noqa: PLC0415 -- avoids an import cycle at module load
+
+    return any(soc._is_service_port(int(p)) for p in ports if p)
 
 
 def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
-    """ONE CONNECTION FROM ITS TWO HALVES (the operator, 2026-10-16: "I think you have this
-    directionally backwards, and that the source port of overseerr going outbound").
+    """One connection from its two halves, with the initiator first.
 
-    Every conversation appears TWICE in the flows -- once per direction -- and each half shown
-    alone tells a misleading story: the reply half of an outbound HTTPS call renders as "the
-    internet connected TO us on port 51334". Measured on this deployment: 198.51.100.194:51334 ->
-    203.0.113.46:443 (the request) plus 203.0.113.46:443 -> 198.51.100.194:51334 (the reply), and the
-    panel presented the REPLY, ports and all, as the connection.
+    A flow record is unidirectional. The graph used to group only by host pair and then call
+    EVERY port below 32768 a service, so a reply half could become the source of an edge and
+    several services between the same two hosts collapsed into one misleading port list.
+    This pass keeps the raw 5-tuple (the query aggregates it) and applies the same evidence
+    ladder the Flows tab uses where the aggregate can support it:
 
-    THE INITIATOR IS DECIDED BY THE PORTS, never by which row came back first and never by size:
-    the direction whose destination ports are ALL below 32768 dialled a service; that side is the
-    edge's source, its destination ports are the edge's `ports`, and the other half's destination
-    ports are the initiator's ephemeral source ports (`source_ports`). When neither direction
-    qualifies alone, the pair is NOT merged: two honest per-direction edges beat one edge claiming
-    a direction it cannot prove. A single captured half keeps its own direction and says which
-    kind of half it reads as, because "we saw the request" and "we saw a reply to something we
-    did not capture" are different facts.
+      * a service port on the destination side and none on the source side -> request
+      * a service port on the source side and none on the destination side -> reply
+      * neither shape -> no claimed direction; the observed source stays the source
+
+    A one-sided reply is re-ORIENTED client -> server. That is the fact the ports prove and
+    the reason an external server no longer appears to have dialled the local host.
     """
-    by_pair: dict[tuple, list[dict]] = {}
+    by_key: dict[tuple, dict] = {}
     order: list[tuple] = []
     for e in raw_edges:
-        key = (min(e["source"], e["target"]), max(e["source"], e["target"]))
-        if key not in by_pair:
-            by_pair[key] = []
-            order.append(key)
-        by_pair[key].append(e)
+        key = (str(e.get("source")), int(e.get("src_port") or 0),
+               str(e.get("target")), int(e.get("dst_port") or 0),
+               int(e.get("proto") or 0))
+        by_key[key] = e
+        order.append(key)
+
+    def _single(e: dict, role: str, evidence: str) -> dict:
+        out = dict(e)
+        ports = list(e.get("ports") or [])
+        src_ports = list(e.get("src_ports") or [])
+        b, f = int(e["bytes"]), int(e["flows"])
+        if role == "request":
+            out.update({
+                "ports": ports, "source_ports": src_ports,
+                "bytes_source": b, "bytes_target": 0,
+                "flows_source": f, "flows_target": 0,
+                "source_ttl_min": e.get("ttl_min", 0),
+                "source_ttl_max": e.get("ttl_max", 0),
+                "target_ttl_min": 0, "target_ttl_max": 0,
+                "reply_seen": False,
+                "direction": "seen in one direction only; this side dialled a service port, "
+                             "so the reply was not captured",
+                "direction_evidence": evidence,
+                "direction_confidence": "inferred" if evidence == "service-port" else "unknown",
+            })
+        elif role == "reply":
+            # The observed source ANSWERED. The client is the observed destination, so the
+            # edge's source is the destination and the service port is the observed source's
+            # port. Bytes were sent by the server (target), not the client (source).
+            out.update({
+                "source": e["target"], "target": e["source"],
+                "ports": src_ports, "source_ports": ports,
+                "bytes_source": 0, "bytes_target": b,
+                "flows_source": 0, "flows_target": f,
+                "source_ttl_min": 0, "source_ttl_max": 0,
+                "target_ttl_min": e.get("ttl_min", 0),
+                "target_ttl_max": e.get("ttl_max", 0),
+                "reply_seen": False,
+                "direction": "seen in one direction only; the request was not captured — this "
+                             "is the reply half, oriented client → server",
+                "direction_evidence": evidence,
+                "direction_confidence": "inferred" if evidence == "service-port" else "unknown",
+            })
+        else:
+            out.update({
+                "ports": ports, "source_ports": src_ports,
+                "bytes_source": b, "bytes_target": 0,
+                "flows_source": f, "flows_target": 0,
+                "source_ttl_min": e.get("ttl_min", 0),
+                "source_ttl_max": e.get("ttl_max", 0),
+                "target_ttl_min": 0, "target_ttl_max": 0,
+                "reply_seen": False,
+                "direction": "seen in one direction only; direction not claimed",
+                "direction_evidence": "",
+                "direction_confidence": "unknown",
+            })
+        return out
 
     merged: list[dict] = []
+    consumed: set[tuple] = set()
     for key in order:
-        halves = by_pair[key]
-        if len(halves) == 1:
-            e = dict(halves[0])
-            ports = e.get("ports") or []
-            if ports and all(p >= _EPHEMERAL_PORT for p in ports):
-                e["direction"] = ("seen in one direction only; its destination ports are "
-                                  "ephemeral, so this reads as the reply half of a connection "
-                                  "opened from the other side, whose request was not captured")
-            elif ports:
-                e["direction"] = ("seen in one direction only; this side dialled a service port, "
-                                  "so the reply was not captured")
-            else:
-                e["direction"] = "seen in one direction only"
-            e["reply_seen"] = False
-            e["source_ports"] = []
-            e["bytes_source"], e["bytes_target"] = e["bytes"], 0
-            e["flows_source"], e["flows_target"] = e["flows"], 0
-            e["source_ttl_min"], e["source_ttl_max"] = e.get("ttl_min", 0), e.get("ttl_max", 0)
-            e["target_ttl_min"], e["target_ttl_max"] = 0, 0
-            merged.append(e)
+        if key in consumed:
             continue
-        a, b = halves[0], halves[1]
-        a_req = bool(a.get("ports")) and all(p < _EPHEMERAL_PORT for p in a["ports"])
-        b_req = bool(b.get("ports")) and all(p < _EPHEMERAL_PORT for p in b["ports"])
-        if a_req == b_req:
-            # BOTH OR NEITHER: no safe call. Keep both halves, each labeled, rather than
-            # guessing which arrow to draw across an operator's screen.
-            for half in (a, b):
-                h = dict(half)
-                h["direction"] = ("both directions sit in the same port range; the direction "
-                                  "is not claimed")
-                h["reply_seen"] = False
-                h["source_ports"] = []
-                h["bytes_source"], h["bytes_target"] = h["bytes"], 0
-                h["flows_source"], h["flows_target"] = h["flows"], 0
-                h["source_ttl_min"], h["source_ttl_max"] = h.get("ttl_min", 0), h.get("ttl_max", 0)
-                h["target_ttl_min"], h["target_ttl_max"] = 0, 0
-                merged.append(h)
-            continue
-        req, rep = (a, b) if a_req else (b, a)
-        merged.append({
-            "source": req["source"], "target": req["target"],
-            "ports": list(req.get("ports") or []),
-            "source_ports": list(rep.get("ports") or []),
-            "bytes": int(req["bytes"]) + int(rep["bytes"]),
-            "flows": int(req["flows"]) + int(rep["flows"]),
-            "bytes_source": int(req["bytes"]), "bytes_target": int(rep["bytes"]),
-            "flows_source": int(req["flows"]), "flows_target": int(rep["flows"]),
-            "first_seen": min(req["first_seen"], rep["first_seen"]),
-            "last_seen": max(req["last_seen"], rep["last_seen"]),
-            "source_ttl_min": req.get("ttl_min", 0), "source_ttl_max": req.get("ttl_max", 0),
-            "target_ttl_min": rep.get("ttl_min", 0), "target_ttl_max": rep.get("ttl_max", 0),
-            "ttl_min": req.get("ttl_min", 0), "ttl_max": req.get("ttl_max", 0),
-            "direction": "request/reply",
-            "reply_seen": True,
-        })
+        e = by_key[key]
+        rev_key = (key[2], key[3], key[0], key[1], key[4])
+        rev = by_key.get(rev_key)
+        e_ports = list(e.get("ports") or [])
+        e_src_ports = list(e.get("src_ports") or [])
+        e_role = ("request" if _has_service_port(e_ports) and not _has_service_port(e_src_ports)
+                  else "reply" if _has_service_port(e_src_ports) and not _has_service_port(e_ports)
+                  else "")
+        req: dict | None = None
+        rep: dict | None = None
+        if rev is not None and rev_key not in consumed:
+            r_ports = list(rev.get("ports") or [])
+            r_src_ports = list(rev.get("src_ports") or [])
+            r_role = ("request" if _has_service_port(r_ports) and not _has_service_port(r_src_ports)
+                      else "reply" if _has_service_port(r_src_ports) and not _has_service_port(r_ports)
+                      else "")
+            if e_role == "request" and r_role == "reply":
+                req, rep = e, rev
+                consumed.add(rev_key)
+            elif e_role == "reply" and r_role == "request":
+                req, rep = rev, e
+                consumed.add(rev_key)
+            if req is not None and rep is not None:
+                consumed.add(key)
+                merged.append({
+                    "source": req["source"], "target": req["target"],
+                    "ports": list(req.get("ports") or []),
+                    "source_ports": list(rep.get("ports") or []),
+                    "bytes": int(req["bytes"]) + int(rep["bytes"]),
+                    "flows": int(req["flows"]) + int(rep["flows"]),
+                    "bytes_source": int(req["bytes"]), "bytes_target": int(rep["bytes"]),
+                    "flows_source": int(req["flows"]), "flows_target": int(rep["flows"]),
+                    "first_seen": min(req["first_seen"], rep["first_seen"]),
+                    "last_seen": max(req["last_seen"], rep["last_seen"]),
+                    "source_ttl_min": req.get("ttl_min", 0),
+                    "source_ttl_max": req.get("ttl_max", 0),
+                    "target_ttl_min": rep.get("ttl_min", 0),
+                    "target_ttl_max": rep.get("ttl_max", 0),
+                    "ttl_min": req.get("ttl_min", 0), "ttl_max": req.get("ttl_max", 0),
+                    "direction": "request/reply",
+                    "direction_evidence": "service-port request + reply",
+                    "direction_confidence": "inferred",
+                    "reply_seen": True,
+                })
+                continue
+        consumed.add(key)
+        merged.append(_single(e, e_role, "service-port" if e_role else ""))
     return merged
-
 
 def _as_ports(value) -> list[int]:
     """A ClickHouse array of ports as a list of ints, tolerant of how the driver returns it.
@@ -381,7 +434,8 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     edges = _rows(
         client,
         "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
-        "       topK(5)(dst_port) AS ports, min(timestamp) AS first_seen, "
+        "       topK(5)(dst_port) AS ports, topK(5)(src_port) AS src_ports, "
+        "       min(timestamp) AS first_seen, "
         "       max(timestamp) AS last_seen, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
@@ -430,15 +484,20 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         # user's feedback on this view was precisely that clicking showed no source/destination
         # detail, so the detail is now carried rather than the click being a filter only.
         ports = _as_ports(r[4])
+        src_ports = _as_ports(r[5])
         out_edges.append({
             "source": src, "target": dst, "bytes": b, "flows": f,
-            "ports": ports,
-            "first_seen": r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5] or ""),
-            "last_seen": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6] or ""),
+            "src_port": src_ports[0] if src_ports else 0,
+            "dst_port": ports[0] if ports else 0,
+            # The host-pair aggregate deliberately carries no single protocol; direction is
+            # decided from the port shape here, not from a mixed-protocol value.
+            "proto": 0, "ports": ports, "src_ports": src_ports,
+            "first_seen": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6] or ""),
+            "last_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7] or ""),
             # The TTL pair rides the edge so the view can show the evidence behind a ring
             # position. 0/0 means these records do not carry the field.
-            "ttl_min": int(r[7] or 0),
-            "ttl_max": int(r[8] or 0),
+            "ttl_min": int(r[8] or 0),
+            "ttl_max": int(r[9] or 0),
         })
         # Degree counts INCIDENT edges, so it is bumped on both ends -- a leaf has degree 1
         # even though it appears as a target only, which is what a layout wants.
@@ -717,6 +776,7 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     edges = _rows(
         client,
         "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
+        "       topK(5)(dst_port) AS ports, topK(5)(src_port) AS src_ports, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
@@ -739,12 +799,21 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     out: list[dict] = []
     for r in edges:
         src, dst, b, f = str(r[0]), str(r[1]), int(r[2] or 0), int(r[3] or 0)
+        ports = _as_ports(r[4])
+        src_ports = _as_ports(r[5])
         out.append({"source": src, "target": dst, "bytes": b, "flows": f,
-                    "ttl_min": int(r[4] or 0), "ttl_max": int(r[5] or 0)})
+                    "src_port": src_ports[0] if src_ports else 0,
+                    "dst_port": ports[0] if ports else 0,
+                    "proto": 0, "ports": ports, "src_ports": src_ports,
+                    "ttl_min": int(r[6] or 0), "ttl_max": int(r[7] or 0)})
         _n(src)["degree"] += 1
         _n(dst)["degree"] += 1
         _n(src)["bytes"] += b
         _n(dst)["bytes"] += b
+
+    # The tracked graph uses the same direction model as the full graph; otherwise a filter
+    # would change the arrows, which is the worst possible way to lose trust in a map.
+    out = _merge_direction_pairs(out)
 
     names = resolve_names(client, list(nodes))
     for a, node in nodes.items():

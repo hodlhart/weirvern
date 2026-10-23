@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.21 — 2026-10-23
+
+THE NETWORK MAP USES THE SAME DIRECTION EVIDENCE AS FLOWS.
+
+- The graph's direction test now calls `soc._is_service_port` — system ports plus the curated
+  service list — instead of treating every port below 32768 as a service. IANA's user range
+  (1024–49151) is not ephemeral; 32768 is only the usual Linux ephemeral start.
+- A one-sided reply (`server:service -> client:ephemeral`) is re-oriented `client -> server`.
+  The service port belongs on the destination; the client's source port stays on the source.
+  The detail states that the request half was not captured, rather than drawing it backwards.
+- Tracked-host graphs use the same merge and orientation, so filtering does not change an
+  arrow. The direction evidence and confidence ride the edge payload.
+
 ## 0.19.20 — 2026-10-23
 
 THE WEIRLINGS ROW NAMES THE NETFLOW FEED.

@@ -522,11 +522,11 @@ def test_connection_graph_derives_hops_from_outbound_ttls_only():
             return _Result(self._edges if "GROUP BY src_addr, dst_addr" in sql else self._total)
 
     ts = _dt.datetime(2026, 1, 1)
-    # (src, dst, bytes, flows, ports, first, last, ttl_min, ttl_max)
+    # (src, dst, bytes, flows, dst_ports, src_ports, first, last, ttl_min, ttl_max)
     edges = [
-        ("198.51.100.10", "198.51.100.20", 1000, 5, [443], ts, ts, 63, 63),
-        ("198.51.100.10", "198.51.100.21", 500, 2, [80], ts, ts, 61, 61),
-        ("198.51.100.30", "198.51.100.10", 700, 3, [22], ts, ts, 0, 0),
+        ("198.51.100.10", "198.51.100.20", 1000, 5, [443], [51515], ts, ts, 63, 63),
+        ("198.51.100.10", "198.51.100.21", 500, 2, [80], [51516], ts, ts, 61, 61),
+        ("198.51.100.30", "198.51.100.10", 700, 3, [22], [51517], ts, ts, 0, 0),
     ]
     d = assets.connection_graph(_Client(edges, [(3,)]), hours=24, limit=100)
     assert d["available"] is True
@@ -685,3 +685,45 @@ def test_connection_graph_carries_blocked_and_alerted_status():
     assert "def attach_host_status" in inspect.getsource(assets)
     assert "sluice_store.load_live_rules" in status_src
     assert "netflow_anomalies" in status_src
+
+
+def test_a_one_sided_reply_is_oriented_client_to_server():
+    """The Network map showed an external server as the source of an inbound-looking edge.
+
+    A reply half is observed server:443 -> client:50780. The port shape proves the client is
+    the destination; the graph must orient it client -> server and put the service port on the
+    destination card, not leave the external server as the apparent initiator.
+    """
+    from weirvern.admin.assets import _merge_direction_pairs
+
+    raw = [{
+        "source": "203.0.113.9", "target": "198.51.100.20",
+        "src_port": 443, "dst_port": 50780, "proto": 6,
+        "ports": [50780], "src_ports": [443],
+        "bytes": 1200, "flows": 3, "ttl_min": 52, "ttl_max": 52,
+        "first_seen": "2026-10-23T00:00:00", "last_seen": "2026-10-23T00:01:00",
+    }]
+    out = _merge_direction_pairs(raw)
+    assert len(out) == 1
+    e = out[0]
+    assert (e["source"], e["target"]) == ("198.51.100.20", "203.0.113.9"), (
+        f"the reply half stayed backwards: {e['source']} -> {e['target']}"
+    )
+    assert e["ports"] == [443], f"the service port belongs on the destination: {e['ports']}"
+    assert e["source_ports"] == [50780], f"the client source port is lost: {e['source_ports']}"
+    assert "reply half" in e["direction"]
+
+
+def test_the_network_graph_uses_the_flows_service_port_table():
+    """32768-49151 are USER ports, not ephemeral; the old boundary misread 35623 as a service.
+
+    Network and Flows must not keep two definitions of 'service port'. The graph now asks the
+    SOC's shared predicate, so a registered port above the old boundary does not by itself
+    prove a request.
+    """
+    from weirvern.admin import assets
+
+    assert assets._has_service_port([445, 22, 443]) is True
+    assert assets._has_service_port([35623, 49151]) is False, (
+        "35623/49151 are user ports, not services; the old 32768 boundary still leaked in"
+    )
