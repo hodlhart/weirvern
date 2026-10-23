@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.13 — 2026-10-23
+
+THE GATE'S DROP COUNTERS SURVIVE ITS OWN RE-ARM.
+
+- `arm()` deletes and recreates the nft tables every pass, so the kernel counters start at zero
+  immediately after each arm. The supervisor read them only after arming and therefore reported
+  `0 packets blocked` forever — while live nft counters showed traffic being dropped. Measured
+  on the `sabnzbd.home` rule: 34 packets / 2,040 bytes dropped on eth2, dashboard 0.
+- The supervisor now reads the counters before the re-arm, carries the monotonic total, and
+  reads again after arming. A failed arm leaves the table in place and is not counted twice.
+- `disarm()` also reads the final counters before deleting the tables, so turning the gate off
+  does not erase the evidence of what it blocked. The Blocked and Sluice summaries now show the
+  real packet/byte counts.
+
 ## 0.19.12 — 2026-10-22
 
 ONE BACK CONTROL, IN ONE PLACE.

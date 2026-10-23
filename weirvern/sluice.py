@@ -957,6 +957,31 @@ class SluiceSupervisor:
     state: GateState = field(default_factory=GateState)
     last_ok: float = 0.0
     last_error: str = ""
+    # THE COUNTERS MUST OUTLIVE THE RE-ARM. `arm()` deletes and recreates the nft tables
+    # every pass, so the kernel's counters start at zero immediately after each arm. Reading
+    # them only after the arm therefore reported 0 forever while traffic was being dropped --
+    # measured live 2026-10-22 with 34 dropped packets on eth2 and a dashboard reading 0.
+    # Keep a monotonic process-local total, fed by the raw counters seen before and after each
+    # arm; the raw counter is remembered so a failed arm (which leaves the table in place) is
+    # not counted twice.
+    _total_packets: int = 0
+    _total_bytes: int = 0
+    _raw_packets: int = 0
+    _raw_bytes: int = 0
+
+    def _absorb_counters(self, packets: int, bytes_: int) -> None:
+        """Add only the NEW raw counter value, never the same total twice.
+
+        nft counters are reset by `arm()`; a failed arm leaves the previous table and its
+        counters intact. Remembering the last raw value makes both cases monotonic without
+        double-counting.
+        """
+        packets = max(0, int(packets))
+        bytes_ = max(0, int(bytes_))
+        self._total_packets += max(0, packets - self._raw_packets)
+        self._total_bytes += max(0, bytes_ - self._raw_bytes)
+        self._raw_packets = packets
+        self._raw_bytes = bytes_
 
     def arm(self, rules: list[Rule]) -> GateState:
         live = [r for r in rules if r.is_live()]
@@ -976,8 +1001,14 @@ class SluiceSupervisor:
                        "blocked.",
             )
 
+        # Read the OLD counters before arming deletes the tables. This is the drop count
+        # accrued since the previous pass; it must be carried into the new state.
+        before_packets, before_bytes = self.backend.counters()
+        self._absorb_counters(before_packets, before_bytes)
         ok, detail = self.backend.arm(live, iface=self.iface)
-        packets, bytes_ = self.backend.counters()
+        after_packets, after_bytes = self.backend.counters()
+        self._absorb_counters(after_packets, after_bytes)
+        packets, bytes_ = self._total_packets, self._total_bytes
         if not ok:
             return self._degrade(
                 rules_total=len(rules), rules_active=len(live),
@@ -1012,10 +1043,14 @@ class SluiceSupervisor:
         return self.state
 
     def disarm(self) -> GateState:
+        # The last interval's drops are still evidence of what the gate did; read them before
+        # deleting the tables so disarming does not turn a working block into a zero reading.
+        self._absorb_counters(*self.backend.counters())
         ok, detail = self.backend.disarm()
         self.state = GateState(
             state=GATE_STATE_DISARMED if ok else GATE_STATE_DEGRADED,
             iface=self.iface, mgmt_iface=self.mgmt_iface,
+            packets_blocked=self._total_packets, bytes_blocked=self._total_bytes,
             detail="the gate is open and no rules are installed" if ok else detail,
             backend=self.backend.name, backend_expected="nft",
         )
