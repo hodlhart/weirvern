@@ -452,85 +452,81 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     the exporter's records carry the field at all. 0 means NOT MEASURED and `hops` is ABSENT
     rather than zero, because "no reading" and "right here" are different facts.
     """
+    # THE UNIT IS A CONVERSATION, NOT A HOST PAIR. Grouping only by src/dst mixed every
+    # service between two hosts into one port list -- SMB 445 beside a reply on 59837 -- and
+    # then asked a port heuristic to decide direction across unrelated conversations. The
+    # 5-tuple is the flow's own identity; keep it through the aggregate and merge only the
+    # exact reverse tuple.
+    scan = max(int(limit) * 4, 1200)
     edges = _rows(
         client,
-        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
-        "       topK(5)(dst_port) AS ports, topK(5)(src_port) AS src_ports, "
-        "       min(timestamp) AS first_seen, "
-        "       max(timestamp) AS last_seen, "
+        "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
+        "       sum(bytes) AS bytes, count() AS flows, "
+        "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
         "  AND src_addr != '' AND dst_addr != '' "
         "  AND src_addr != dst_addr "
-        # BOTH ENDPOINTS MUST BE HOSTS. The self-edge rule below already admitted that a LAN
-        # emits multicast constantly; it just did not follow the thought through to the NODES.
-        # Measured: the graph drew ff02::2 (the all-routers group) as a host with three peers.
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
-        "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
-        {**timewindow.w(hours), "n": limit},
+        "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
+        "ORDER BY bytes DESC LIMIT %(n)s",
+        {**timewindow.w(hours), "n": scan},
         "connection graph",
     )
     if edges is None:
         return _unavailable("the connection query failed (see the worker log for the reason)")
 
-    # Does more exist than we are returning? Asking for one more than the cap would be the
-    # usual trick, but a count of DISTINCT pairs is cheap here and exact.
+    # A conversation is the unordered port pair; the raw rows are its two directions.
     total_rows = _rows(
         client,
-        # UNORDERED pairs: the edge list is merged, so the total it is compared against must
-        # count conversations, not directions -- otherwise "showing 20 of 40 pairs" would
-        # describe a list the operator can no longer see.
-        "SELECT uniqExact(tuple(least(src_addr, dst_addr), greatest(src_addr, dst_addr))) "
+        "SELECT uniqExact(tuple(least(src_addr, dst_addr), greatest(src_addr, dst_addr), "
+        "                  least(src_port, dst_port), greatest(src_port, dst_port), proto)) "
         "FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
-        "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr",
+        "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr "
+        "  AND " + addressing.sql_host("src_addr") + " "
+        "  AND " + addressing.sql_host("dst_addr") + " ",
         {**timewindow.w(hours)},
         "connection graph (total)",
     )
     total = int(total_rows[0][0] or 0) if total_rows else len(edges)
 
-    nodes: dict[str, dict] = {}
     out_edges: list[dict] = []
+    for r in edges:
+        src, dst = str(r[0]), str(r[1])
+        sport, dport, proto = int(r[2] or 0), int(r[3] or 0), int(r[4] or 0)
+        b, f = int(r[5] or 0), int(r[6] or 0)
+        out_edges.append({
+            "source": src, "target": dst, "bytes": b, "flows": f,
+            "src_port": sport, "dst_port": dport, "proto": proto,
+            "ports": [dport] if dport else [],
+            "src_ports": [sport] if sport else [],
+            "first_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7] or ""),
+            "last_seen": r[8].isoformat() if hasattr(r[8], "isoformat") else str(r[8] or ""),
+            # 0/0 means these records do not carry the field.
+            "ttl_min": int(r[9] or 0),
+            "ttl_max": int(r[10] or 0),
+        })
+
+    # Merge exact reverse tuples, then keep the heaviest `limit` conversations. The scan is
+    # deliberately wider than the returned graph, because a pair of halves is two rows before
+    # the merge; sorting after the merge keeps the cap meaningful.
+    out_edges = _merge_direction_pairs(out_edges)
+    out_edges.sort(key=lambda e: int(e.get("bytes") or 0), reverse=True)
+    out_edges = out_edges[:int(limit)]
+
+    nodes: dict[str, dict] = {}
 
     def _n(addr: str) -> dict:
         return nodes.setdefault(addr, {"id": addr, "degree": 0, "bytes": 0})
 
-    for r in edges:
-        src, dst = str(r[0]), str(r[1])
-        b, f = int(r[2] or 0), int(r[3] or 0)
-        # The PORTS and the TIME RANGE belong on the edge, because "A talked to B" is not
-        # actionable on its own -- an analyst needs ":443" and "since when" to judge it. The
-        # user's feedback on this view was precisely that clicking showed no source/destination
-        # detail, so the detail is now carried rather than the click being a filter only.
-        ports = _as_ports(r[4])
-        src_ports = _as_ports(r[5])
-        out_edges.append({
-            "source": src, "target": dst, "bytes": b, "flows": f,
-            "src_port": src_ports[0] if src_ports else 0,
-            "dst_port": ports[0] if ports else 0,
-            # The host-pair aggregate deliberately carries no single protocol; direction is
-            # decided from the port shape here, not from a mixed-protocol value.
-            "proto": 0, "ports": ports, "src_ports": src_ports,
-            "first_seen": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6] or ""),
-            "last_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7] or ""),
-            # The TTL pair rides the edge so the view can show the evidence behind a ring
-            # position. 0/0 means these records do not carry the field.
-            "ttl_min": int(r[8] or 0),
-            "ttl_max": int(r[9] or 0),
-        })
-        # Degree counts INCIDENT edges, so it is bumped on both ends -- a leaf has degree 1
-        # even though it appears as a target only, which is what a layout wants.
-        _n(src)["degree"] += 1
-        _n(dst)["degree"] += 1
-        _n(src)["bytes"] += b
-        _n(dst)["bytes"] += b
-
-    # The two halves of every conversation become ONE edge, initiator first (the helper's
-    # docstring carries the rule and the incident that demanded it). Degrees and byte totals
-    # above are unchanged by the merge -- both ends were bumped on both halves either way.
-    out_edges = _merge_direction_pairs(out_edges)
+    for e in out_edges:
+        _n(e["source"])["degree"] += 1
+        _n(e["target"])["degree"] += 1
+        _n(e["source"])["bytes"] += int(e.get("bytes") or 0)
+        _n(e["target"])["bytes"] += int(e.get("bytes") or 0)
 
     if not nodes:
         return _unavailable("no host-to-host traffic in this window",
@@ -796,8 +792,9 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
                             nodes=[], edges=[])
     edges = _rows(
         client,
-        "SELECT src_addr, dst_addr, sum(bytes) AS bytes, count() AS flows, "
-        "       topK(5)(dst_port) AS ports, topK(5)(src_port) AS src_ports, "
+        "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
+        "       sum(bytes) AS bytes, count() AS flows, "
+        "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
         "       minIf(ip_ttl, ip_ttl > 0) AS ttl_min, maxIf(ip_ttl, ip_ttl > 0) AS ttl_max "
         "FROM weirvern.flows "
         "WHERE timestamp >= %(since)s AND timestamp <= %(until)s "
@@ -805,7 +802,8 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
         "  AND (src_addr IN %(a)s OR dst_addr IN %(a)s) "
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
-        "GROUP BY src_addr, dst_addr ORDER BY bytes DESC LIMIT %(n)s",
+        "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
+        "ORDER BY bytes DESC LIMIT %(n)s",
         {**timewindow.w(hours), "n": limit, "a": tuple(addrs)},
         "tracked-host edges",
     )
@@ -819,14 +817,15 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
 
     out: list[dict] = []
     for r in edges:
-        src, dst, b, f = str(r[0]), str(r[1]), int(r[2] or 0), int(r[3] or 0)
-        ports = _as_ports(r[4])
-        src_ports = _as_ports(r[5])
+        src, dst = str(r[0]), str(r[1])
+        sport, dport, proto = int(r[2] or 0), int(r[3] or 0), int(r[4] or 0)
+        b, f = int(r[5] or 0), int(r[6] or 0)
         out.append({"source": src, "target": dst, "bytes": b, "flows": f,
-                    "src_port": src_ports[0] if src_ports else 0,
-                    "dst_port": ports[0] if ports else 0,
-                    "proto": 0, "ports": ports, "src_ports": src_ports,
-                    "ttl_min": int(r[6] or 0), "ttl_max": int(r[7] or 0)})
+                    "src_port": sport, "dst_port": dport, "proto": proto,
+                    "ports": [dport] if dport else [], "src_ports": [sport] if sport else [],
+                    "first_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7] or ""),
+                    "last_seen": r[8].isoformat() if hasattr(r[8], "isoformat") else str(r[8] or ""),
+                    "ttl_min": int(r[9] or 0), "ttl_max": int(r[10] or 0)})
         _n(src)["degree"] += 1
         _n(dst)["degree"] += 1
         _n(src)["bytes"] += b

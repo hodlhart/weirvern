@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.23 — 2026-10-23
+
+THE NETWORK GRAPH SEPARATES SERVICES BEFORE IT DECIDES DIRECTION.
+
+- The graph was grouping every conversation between two hosts into one edge, so SMB on 445,
+  DNS on 53 and a reply on 59837 could land in one port list and make the direction
+  undecidable. The query now groups by the 5-tuple; only exact reverse tuples merge.
+- This also fixes tracked-host graphs, which use the same query shape and merge.
+- The total is conversations, not host pairs, and the cap is applied after the merge.
+
 ## 0.19.22 — 2026-10-23
 
 THE NETWORK DIRECTION FALLBACK: REGISTERED SERVICES ABOVE THE OLD LINE.

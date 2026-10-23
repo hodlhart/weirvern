@@ -97,9 +97,10 @@ evidence, never `service-port`, because 32768 is the usual Linux client start ra
 IANA service boundary. It is what keeps NNTP on 5563 or Bitcoin on 8333 from becoming unknown
 merely because those ports are not in the curated table.
 
-The host-pair aggregate still limits how finely multiple services between the same two hosts can
-be separated; the 5-tuple is present in the raw records and is the next step when the graph query
-is grouped by it.
+The graph query is grouped by the **5-tuple**, so multiple services between the same two hosts
+are separate edges instead of one mixed port list. The two directions of one 5-tuple are merged;
+the result is sorted and capped after the merge. The total count is conversations, not host
+pairs.
 
 ## Where the code lives
 

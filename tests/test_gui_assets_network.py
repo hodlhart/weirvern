@@ -522,11 +522,11 @@ def test_connection_graph_derives_hops_from_outbound_ttls_only():
             return _Result(self._edges if "GROUP BY src_addr, dst_addr" in sql else self._total)
 
     ts = _dt.datetime(2026, 1, 1)
-    # (src, dst, bytes, flows, dst_ports, src_ports, first, last, ttl_min, ttl_max)
+    # (src, dst, src_port, dst_port, proto, bytes, flows, first, last, ttl_min, ttl_max)
     edges = [
-        ("198.51.100.10", "198.51.100.20", 1000, 5, [443], [51515], ts, ts, 63, 63),
-        ("198.51.100.10", "198.51.100.21", 500, 2, [80], [51516], ts, ts, 61, 61),
-        ("198.51.100.30", "198.51.100.10", 700, 3, [22], [51517], ts, ts, 0, 0),
+        ("198.51.100.10", "198.51.100.20", 51515, 443, 6, 1000, 5, ts, ts, 63, 63),
+        ("198.51.100.10", "198.51.100.21", 51516, 80, 6, 500, 2, ts, ts, 61, 61),
+        ("198.51.100.30", "198.51.100.10", 51517, 22, 6, 700, 3, ts, ts, 0, 0),
     ]
     d = assets.connection_graph(_Client(edges, [(3,)]), hours=24, limit=100)
     assert d["available"] is True
