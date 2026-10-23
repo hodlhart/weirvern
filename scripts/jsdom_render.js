@@ -5068,6 +5068,29 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     if (card && !card.classList.contains("hidden")) doc.getElementById("wl-sensor-close").click();
   }
 
+  // ── THE POLICY CARD IS INDEPENDENT OF THE RULE LIST (measured live 2026-10-22) ───────────────
+  {
+    const origFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).split("?")[0].endsWith("/api/sluice"))
+        return Promise.resolve({ ok: true, json: async () => Object.assign({}, SLUICE_PAYLOAD, {
+          rules: [], hits: [],
+        }) });
+      return origFetch(u, o);
+    };
+    H.showView("sluice");
+    await H.loadSluice();
+    await new Promise((r) => setTimeout(r, 120));
+    window.fetch = origFetch;
+    const policyRows = [...doc.querySelectorAll("#sl-policies .policy-row")];
+    check("the detection policy card renders when the rule list is empty",
+          policyRows.length === 4, `${policyRows.length} policy row(s)`);
+    check("...and names the current policy even with no rules",
+          /Current policy: high/.test(doc.getElementById("sl-criticality-note").textContent || ""),
+          doc.getElementById("sl-criticality-note").textContent || "empty");
+    await H.loadSluice();   // tidy back to the full fixture
+  }
+
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
   {
     H.showView("sluice");

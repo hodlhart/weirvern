@@ -296,9 +296,14 @@ function dcDirection(r) {
     "tcp-syn-ack": "TCP SYN-ACK in this record: the source answered the conversation",
     "reverse-tcp-syn": "the reverse half carried the TCP SYN: this half is the reply",
     "reverse-tcp-syn-ack": "the reverse half carried the TCP SYN-ACK: this half is the request",
+    "zeek-conn": "Zeek conn.log observed this 5-tuple: its source is the originator",
     "service-port": "inferred from the service ports; no handshake was captured",
   }[r.direction_evidence] || "no handshake or service port: direction not claimed";
-  const td = el("td", { class: "dc-dir " + role, text: role });
+  // THE ARROW IS BACK, BUT ONLY WHERE EVIDENCE SUPPORTS IT. `→` is a request (source
+  // opened); `←` is the reply half (source answered). Unknown stays a dot -- an arrow
+  // invented from a guess is exactly the defect the old table had.
+  const arrow = role === "request" ? "\u2192 " : role === "reply" ? "\u2190 " : "\u00b7 ";
+  const td = el("td", { class: "dc-dir " + role, text: arrow + role });
   td.dataset.direction = role;
   td.title = evidence + (r.direction_confidence ? " (" + r.direction_confidence + ")" : "");
   td.setAttribute("aria-label", "direction: " + role + " — " + evidence);

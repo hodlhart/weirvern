@@ -36,6 +36,8 @@ class _Client:
         # _DirectionClient below.
         if "flow-direction reverse halves" in sql:
             return _Result([])
+        if "flow-direction zeek conn" in sql:
+            return _Result([])
         # Order matters: the HISTOGRAM query also selects count(), so it must be matched first
         # or the histogram gets the scalar count's shape and the row builder indexes past it.
         if "toStartOfInterval" in sql:
@@ -211,6 +213,32 @@ def test_flow_direction_never_turns_a_guess_into_a_fact(flags, src_port, dst_por
     row = {"proto": 6, "tcp_flags": flags, "src_port": src_port, "dst_port": dst_port,
            "src_addr": "198.51.100.20", "dst_addr": "203.0.113.10"}
     assert soc._flow_direction(row) == expect
+
+
+def test_zeek_conn_originator_outranks_a_service_port_guess():
+    row = {"proto": 6, "tcp_flags": 0, "src_addr": "198.51.100.20", "src_port": 51515,
+           "dst_addr": "203.0.113.10", "dst_port": 443}
+    assert soc._flow_direction(row, (), "reply") == ("reply", "zeek-conn")
+
+
+def test_zeek_conn_lookup_matches_the_flow_tuple_and_its_reverse():
+    from datetime import UTC, datetime
+
+    class _ZeekClient:
+        def query(self, sql, parameters=None, **_kw):
+            class R:
+                # A Zeek conn row is orig -> resp; this flow is the reverse half, so reply.
+                result_rows = [
+                    (datetime(2026, 10, 22, 12, 0, tzinfo=UTC).timestamp(),
+                     "203.0.113.10", 443, "198.51.100.20", 51515, "tcp"),
+                ]
+            return R()
+
+    row = {"timestamp": "2026-10-22T12:00:00+00:00",
+           "src_addr": "198.51.100.20", "src_port": 51515,
+           "dst_addr": "203.0.113.10", "dst_port": 443, "proto": 6}
+    roles = soc._zeek_direction_roles(_ZeekClient(), [row], {"since": None, "until": None})
+    assert roles[("198.51.100.20", 51515, "203.0.113.10", 443, 6)] == "reply"
 
 
 def test_udp_dns_uses_the_service_port_without_pretending_it_is_a_handshake():

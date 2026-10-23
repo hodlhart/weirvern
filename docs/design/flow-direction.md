@@ -25,15 +25,31 @@ stronger one.
 3. **`reverse-tcp-syn` / `reverse-tcp-syn-ack` — proven by the other half.** This row has no
    handshake itself, but its reverse 5-tuple in the same window does. A reverse bare SYN makes
    this row the reply; a reverse bare SYN-ACK makes it the request.
-4. **`service-port` — inferred, not proven.** One endpoint is a service port and the other is
+4. **`zeek-conn` — observed, not guessed.** A matching `zeek_conn` row names the originating
+   endpoint; a 5-tuple match in either orientation upgrades this flow to request or reply.
+5. **`service-port` — inferred, not proven.** One endpoint is a service port and the other is
    not. The service side is the responder. This is what correctly labels the normal HTTPS and
    DNS halves, including the common case where the exporter lost the handshake.
-5. **`unknown` — no claim.** Neither handshake nor a service-port shape. Two ephemeral peers,
+6. **`unknown` — no claim.** Neither handshake nor a service-port shape. Two ephemeral peers,
    a cumulative flags byte, or an ICMP flow land here. The table says `unknown`; it does not
    reverse a row to make the picture look tidy.
 
 The **opened by** field names the initiator only when the role lets us name it (the source of
 a request, or the destination of a reply). For `unknown`, it says `not proven`.
+
+The table also carries a small **arrow** for the roles that are evidenced: `→ request` means
+this record's source opened, and `← reply` means it answered. `· unknown` deliberately has no
+arrow, because a direction invented from a guess is the defect this column exists to prevent.
+
+## Zeek conn.log enrichment
+
+The flow exporter does not put an originator in a unidirectional record. Zeek does: every
+`conn.log` row names the originating endpoint (`id.orig_h` / `id.orig_p`) and the responder.
+The Flows page joins its page of flow rows to `zeek_conn` on the exact 5-tuple in either
+orientation, within a bounded time distance, and uses the nearest match. A matching row upgrades
+the flow to `zeek-conn` evidence, which outranks the service-port inference. A missing or
+ambiguous match leaves the existing evidence unchanged; the join is an enhancement, never a
+page failure.
 
 ## Why cumulative TCP flags are not proof
 
@@ -54,16 +70,14 @@ for request/reply.
 
 ## What would make it stronger
 
-- **Zeek `conn.log`** carries `orig_h`/`orig_p` and `resp_h`/`resp_p`; Zeek establishes the
-  originator from the TCP handshake (or first packet for UDP). Joining a flow to its Zeek
-  connection would upgrade many `service-port` rows to provenance from Zeek. Remote Zeek
-  shipping is not implemented yet, so this is a future enrichment, not a current claim.
+- **Remote Zeek shipping** would extend the `zeek-conn` join to sensors whose capture is not on
+  the hub's own host. The local capture is covered today; remote shipping is not implemented.
 - **A biflow exporter** that emits `flowDirection` plus both byte counters would let the
   collector pair halves at export time. The current exporter emits unidirectional records.
 
 ## Where the code lives
 
 - `weirvern/admin/soc.py`: `_flow_direction`, `_tcp_role`, `_port_role`,
-  `_reverse_direction_flags`.
-- `weirvern/admin/web/discover.js`: direction cell, row detail, evidence tooltip.
-- `tests/test_discover.py`: proof, inference, reverse-half and unknown cases.
+  `_reverse_direction_flags`, `_zeek_direction_roles`.
+- `weirvern/admin/web/discover.js`: direction cell with its arrow, row detail, evidence tooltip.
+- `tests/test_discover.py`: proof, inference, reverse-half, Zeek-conn and unknown cases.

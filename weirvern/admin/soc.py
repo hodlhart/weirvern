@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+from datetime import datetime
 from typing import Any
 
 from weirvern import addressing
@@ -131,12 +132,14 @@ def _port_role(src_port: int, dst_port: int) -> str:
     return ""
 
 
-def _flow_direction(row: dict, reverse_flags: list[int] | tuple[int, ...] = ()) -> tuple[str, str]:
+def _flow_direction(row: dict, reverse_flags: list[int] | tuple[int, ...] = (),
+                    zeek_role: str = "") -> tuple[str, str]:
     """(role, evidence) for one unidirectional flow row.
 
     `reverse_flags` are the TCP flags of the reverse 5-tuple seen in the same window. They
     are used only for a handshake that the row itself does not carry; a port inference stays
-    a port inference even when a reverse row exists.
+    a port inference even when a reverse row exists. `zeek_role` is the originator role proved
+    by a matching Zeek connection record; it outranks the port shape.
     """
     proto = int(row.get("proto") or 0)
     direct = _tcp_role(row.get("tcp_flags")) if proto == 6 else ""
@@ -152,6 +155,14 @@ def _flow_direction(row: dict, reverse_flags: list[int] | tuple[int, ...] = ()) 
         # The other half opened; this one is its opposite.
         return ("reply", "reverse-tcp-syn") if "request" in reverse else (
             "request", "reverse-tcp-syn-ack")
+
+    # ZEEK CONN.LOG KNOWS THE ORIGINATOR. It records the originating endpoint for TCP (from
+    # the handshake) and for UDP (from the first packet), so a matching connection upgrades
+    # this record from a port guess to observed provenance. It is placed after the flow's own
+    # handshake and its reverse half because those are about THIS record; a Zeek join can be
+    # ambiguous if a 5-tuple was reused, and the nearest timestamp is required below.
+    if zeek_role in ("request", "reply"):
+        return zeek_role, "zeek-conn"
 
     role = _port_role(int(row.get("src_port") or 0), int(row.get("dst_port") or 0))
     if role:
@@ -222,6 +233,104 @@ def _reverse_direction_flags(client, rows: list[dict], params: dict) -> dict[tup
             # dropped; the direct flags/ports still classify the row it belonged to.
             continue
         out.setdefault(key, []).append(flags)
+    return out
+
+
+# ZEEK CONN.LOG IS THE MISSING ORIGINATOR SOURCE. A NetFlow record does not say which
+# endpoint opened a conversation; Zeek's conn.log does. It records the originating endpoint
+# for TCP from the handshake and for UDP from the first packet. Joining a page of flows to
+# the matching 5-tuple in the same window can therefore upgrade an `unknown` row -- or a
+# service-port guess -- to observed provenance. The match needs a time bound because a
+# 5-tuple is reused after a connection closes; the nearest Zeek start within the slop wins.
+_ZEEK_PROTO_NUM = {"tcp": 6, "udp": 17, "icmp": 1, "icmp6": 58}
+_ZEEK_PROTO_NAME = {value: name for name, value in _ZEEK_PROTO_NUM.items()}
+_ZEEK_MATCH_SLOP_S = 300.0
+
+
+def _flow_epoch(row: dict) -> float | None:
+    """The flow start as epoch seconds, or None when the timestamp is unreadable."""
+    raw = row.get("timestamp")
+    if isinstance(raw, datetime):
+        return raw.timestamp()
+    try:
+        return datetime.fromisoformat(str(raw)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _zeek_direction_roles(client, rows: list[dict], params: dict) -> dict[tuple, str]:
+    """Map each flow 5-tuple to the role Zeek conn.log observed, when it has a close match.
+
+    WHY ONE QUERY AND NOT A JOIN IN EVERY ROW: `discover` reads one page (up to 500 rows), so
+    this is one bounded lookup for the page, like `_reverse_direction_flags`. A failed lookup
+    leaves the existing evidence untouched; it must not turn a readable flow page into an
+    error page.
+    """
+    keys: set[tuple] = set()
+    for row in rows:
+        proto = int(row.get("proto") or 0)
+        if proto not in _ZEEK_PROTO_NAME:
+            continue
+        key = (str(row.get("src_addr") or ""), int(row.get("src_port") or 0),
+               str(row.get("dst_addr") or ""), int(row.get("dst_port") or 0), proto)
+        if key[0] and key[2]:
+            keys.add(key)
+    if not keys:
+        return {}
+
+    parts: list[str] = []
+    query_params = {"since": params.get("since"), "until": params.get("until")}
+    for i, (src, sport, dst, dport, proto) in enumerate(sorted(keys)):
+        parts.append(f"(%(z{i}a)s, %(z{i}sp)s, %(z{i}b)s, %(z{i}dp)s, %(z{i}p)s)")
+        query_params[f"z{i}a"] = src
+        query_params[f"z{i}sp"] = sport
+        query_params[f"z{i}b"] = dst
+        query_params[f"z{i}dp"] = dport
+        query_params[f"z{i}p"] = _ZEEK_PROTO_NAME[proto]
+    sql = (
+        "/* flow-direction zeek conn */ SELECT toUnixTimestamp(ts) AS ts_s, "
+        "src_addr, src_port, dst_addr, dst_port, proto FROM weirvern.zeek_conn "
+        "WHERE ts >= %(since)s AND ts <= %(until)s "
+        "AND (src_addr, src_port, dst_addr, dst_port, proto) IN ("
+        + ", ".join(parts) + ")")
+    try:
+        result = client.query(sql, parameters=query_params).result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("flow Zeek-direction query failed: %s", exc)
+        return {}
+
+    # candidate key -> [(zeek start epoch, role this flow has when its tuple matches)]
+    candidates: dict[tuple, list[tuple[float, str]]] = {}
+    for r in result:
+        try:
+            ts_s = float(r[0])
+            proto = _ZEEK_PROTO_NUM.get(str(r[5]).lower(), 0)
+            if not proto:
+                continue
+            key = (str(r[1]), int(r[2] or 0), str(r[3]), int(r[4] or 0), proto)
+            if not key[0] or not key[2]:
+                continue
+        except (IndexError, TypeError, ValueError):
+            continue
+        candidates.setdefault(key, []).append((ts_s, "request"))
+        candidates.setdefault((key[2], key[3], key[0], key[1], key[4]), []).append(
+            (ts_s, "reply"))
+
+    out: dict[tuple, str] = {}
+    for row in rows:
+        proto = int(row.get("proto") or 0)
+        if proto not in _ZEEK_PROTO_NAME:
+            continue
+        key = (str(row.get("src_addr") or ""), int(row.get("src_port") or 0),
+               str(row.get("dst_addr") or ""), int(row.get("dst_port") or 0), proto)
+        options = candidates.get(key) or []
+        flow_ts = _flow_epoch(row)
+        if not options or flow_ts is None:
+            continue
+        flow_ts = float(flow_ts)
+        zeek_ts, role = min(options, key=lambda item: abs(item[0] - flow_ts))
+        if abs(zeek_ts - flow_ts) <= _ZEEK_MATCH_SLOP_S:
+            out[key] = role
     return out
 
 
@@ -1235,13 +1344,16 @@ def discover(client, *, hours: int = 24, proto: int | None = None, addr: str | N
     # and a request finds its response. A failed lookup is not a page failure: the direct
     # flags/ports below still classify what they can, and the rest stays "unknown".
     reverse = _reverse_direction_flags(client, payload_rows, params)
+    zeek_roles = _zeek_direction_roles(client, payload_rows, params)
     for row in payload_rows:
         key = (row["dst_addr"], row["dst_port"], row["src_addr"], row["src_port"], row["proto"])
-        role, evidence = _flow_direction(row, reverse.get(key, ()))
+        flow_key = (row["src_addr"], row["src_port"], row["dst_addr"], row["dst_port"], row["proto"])
+        role, evidence = _flow_direction(row, reverse.get(key, ()), zeek_roles.get(flow_key, ""))
         row["direction"] = role
         row["direction_evidence"] = evidence
         row["direction_confidence"] = (
-            "proven" if evidence in ("tcp-syn", "tcp-syn-ack", "reverse-tcp-syn", "reverse-tcp-syn-ack")
+            "proven" if evidence in ("tcp-syn", "tcp-syn-ack", "reverse-tcp-syn",
+                                     "reverse-tcp-syn-ack", "zeek-conn")
             else "inferred" if evidence == "service-port" else "unknown")
         row["opened_by"] = _opened_by(row, role)
 

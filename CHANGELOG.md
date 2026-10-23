@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.9 — 2026-10-22
+
+THE DETECTION POLICY CARD IS NOT EMPTY WHEN THERE ARE NO RULES.
+
+- `renderSluicePolicies()` ran after the rules loop. The empty-rules branch returns before that
+  loop, so a fresh store or a fully revoked one left "Blocking on detections" blank and the
+  current-policy note empty. The policy is a trust setting, not a property of the rows; it now
+  renders before either branch.
+- jsdom pins four policy rows and the `Current policy: high` note with `rules: []`.
+- Flows now join a page of NetFlow records to Zeek's `conn.log` on the exact 5-tuple in either
+  orientation, using the nearest timestamp within 300s. A match is `zeek-conn` evidence and
+  outranks the service-port inference; a missing match leaves the old evidence untouched.
+- The direction cell shows `→ request`, `← reply`, or `· unknown`; the arrow appears only where
+  the evidence supports it. The Flows row detail names the Zeek evidence.
+
 ## 0.19.8 — 2026-10-22
 
 THE PALETTE OBEYS THE SHEET CONTRACT, AND IDENTITY STOPS PRETENDING TO BE WINDOWED.

@@ -241,6 +241,12 @@ async function loadSluice() {
   tbody.replaceChildren();
   const empty = document.getElementById("sl-empty");
 
+  // THE POLICY CARD IS INDEPENDENT OF THE RULE LIST (issue measured live 2026-10-22). This call
+  // used to sit after the rules loop, so the `!rules.length` early return left "Blocking on
+  // detections" completely empty -- exactly on a fresh or fully revoked store. The policy is a
+  // trust setting, not a property of the current rows; render it before either branch.
+  renderSluicePolicies(d);
+
   if (!rules.length) {
     // The distinction the whole project cares about: an empty list from a WORKING server is a
     // legitimate answer; an empty list from a FAILED one is not. The sentence must not deny a
@@ -317,8 +323,6 @@ async function loadSluice() {
   slBulkRefresh();
   // US-3: a receipt/audit that named a rule fires its flash on THIS fresh render.
   sluiceApplyFlash();
-
-  renderSluicePolicies(d);
 }
 
 // ── RULE MANAGEMENT (the operator, 2026-10-16): a trashcan and a disable icon next to each
