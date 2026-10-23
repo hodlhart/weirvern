@@ -470,16 +470,21 @@ function wlSparkline(r) {
  *  is always present -- colour is never the only signal. */
 function wlTap(kind, info) {
   const i = info || {};
-  const label = kind === "netflow"
-    ? (i.scope === "sensor" || i.scope_label === "sensor feed" ? "sensor feed" : "netflow")
-    : "zeek";
-  const scope = kind === "netflow" && label === "sensor feed"
+  // NAME THE FEED, THEN ITS SCOPE. The chip used to read "sensor feed" for NetFlow, which
+  // hid the feed's name entirely: an operator looking for the netflow indicator saw only a
+  // generic phrase. The scope is still carried in the same chip and in the title, because a
+  // sensor-wide feed must not be mistaken for a per-NIC measurement.
+  const sensorScoped = kind === "netflow"
+    && (i.scope === "sensor" || i.scope_label === "sensor feed");
+  const label = kind === "netflow" ? "netflow" : "zeek";
+  const shown = sensorScoped ? label + " · sensor feed" : label;
+  const scope = sensorScoped
     ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}` : "";
   if (i.observed) {
-    return el("span", { class: "tap on", text: label,
+    return el("span", { class: "tap on", text: shown,
       attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") + scope } });
   }
-  return el("span", { class: "tap off", text: label,
+  return el("span", { class: "tap off", text: shown,
     attrs: { title: `${label} not observed — ${i.why || "no evidence"}${scope}` } });
 }
 

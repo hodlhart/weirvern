@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.20 — 2026-10-23
+
+THE WEIRLINGS ROW NAMES THE NETFLOW FEED.
+
+- The feed chip read `sensor feed` for NetFlow, hiding the feed's name. It now reads
+  `netflow · sensor feed`: the indicator is visible, and the scope still says the hub sees one
+  sensor-wide feed rather than a per-NIC measurement. Observed/not-observed, last-at and the
+  reason remain in the title and the `on`/`off` state.
+
 ## 0.19.19 — 2026-10-23
 
 THE PRE-COMPLETION SWEEP: THE LAST PHONE FIELDS.

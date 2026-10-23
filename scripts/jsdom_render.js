@@ -4103,7 +4103,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                 siphonRow ? [...siphonRow.children].map((td) => td.textContent.trim()).join("|")
                           : "no siphon row");
           check("the netflow chip states a sensor-wide feed, not a per-NIC probe",
-                !!siphonRow && /sensor feed/.test(siphonRow.children[6].textContent),
+                !!siphonRow && /netflow/.test(siphonRow.children[6].textContent)
+                && /sensor feed/.test(siphonRow.children[6].textContent),
                 siphonRow ? siphonRow.children[6].textContent.trim() : "no siphon row");
         }
         check("a NIC's line uses its own plan segment, not the sensor-level one",

@@ -99,4 +99,5 @@ def test_netflow_is_labelled_sensor_scoped_not_per_nic():
     js = (WEB / "weirlings.js").read_text()
     tap = js.split("function wlTap(", 1)[1].split("function wlCfg(", 1)[0]
     assert '"sensor feed"' in tap
+    assert '"netflow"' in tap
     assert "not attributed to this NIC" in tap
