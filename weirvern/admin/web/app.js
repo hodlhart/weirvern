@@ -3819,12 +3819,17 @@ async function loadWriteTrail(mountId, defaultScope) {
       el("td", { class: "mono muted", text: r.actor || "" }),
     ]));
   }
-  box.appendChild(el("table", {}, [
-    el("thead", {}, [el("tr", {}, [
-      el("th", { text: "when" }), el("th", { text: "scope" }), el("th", { text: "action" }),
-      el("th", { text: "target" }), el("th", { text: "why" }), el("th", { text: "who" }),
-    ])]),
-    tbody,
+  // A 50-entry write trail is a scrollable log, not a page-length table. Keep the newest
+  // rows readable without making the Logs tab a 2,000px document; the header stays visible
+  // while the reader scans.
+  box.appendChild(el("div", { class: "tablewrap lg-trail-wrap" }, [
+    el("table", {}, [
+      el("thead", {}, [el("tr", {}, [
+        el("th", { text: "when" }), el("th", { text: "scope" }), el("th", { text: "action" }),
+        el("th", { text: "target" }), el("th", { text: "why" }), el("th", { text: "who" }),
+      ])]),
+      tbody,
+    ]),
   ]));
 }
 

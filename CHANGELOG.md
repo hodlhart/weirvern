@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.10 — 2026-10-22
+
+THE LOGS TAB READS AS ONE AUDIT SURFACE, NOT THREE UNRELATED TABLES.
+
+- Alert audit: the one-row outcome summary and the event list now stack instead of sitting in
+  two columns, which left a large dead area beside the 15-row list. Single-page pagers are
+  hidden; the audit's severity now uses the shared glyph + word + colour ramp instead of an
+  unstyled `sev low` span, and an empty detail cell says `—` rather than rendering blank.
+- Setting changes: the 50-entry trail is a bounded scroll with a sticky header, so it no longer
+  makes the Logs tab two thousand pixels tall. Phone filter selects get the 44px touch target.
+- The audit's own pager hides when there is only one page; the remaining pager keeps its range.
+
 ## 0.19.9 — 2026-10-22
 
 THE DETECTION POLICY CARD IS NOT EMPTY WHEN THERE ARE NO RULES.

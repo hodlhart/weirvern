@@ -384,6 +384,11 @@ function renderPager(hostId, total, page, pages, onGo, size = ASSETS_STATE.pageS
   // below is computed from `size`, so the two tables would disagree about what "showing 1-15"
   // meant). Both tables page at 15 today, which is exactly why the bug would have gone unnoticed
   // until one of them changed.
+  // A pager that says "1–1 of 1" is furniture, not information. The alert audit's outcome
+  // table often has one row; hiding a single-page pager keeps the Logs card calm and leaves
+  // the range on the one table that actually has multiple pages.
+  if (pages <= 1) return;
+
   const first = (page - 1) * size + 1;
   const last = Math.min(page * size, total);
 

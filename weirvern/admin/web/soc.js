@@ -964,8 +964,10 @@ function renderAlertAudit(a) {
     tbody.appendChild(el("tr", {}, [
       el("td", { class: "mono", text: fmtTime(ev.sent_at) }),
       el("td", {}, [hostCell(ev.src_addr, names[ev.src_addr])]),
-      el("td", {}, [el("span", { class: "sev " + (ev.severity || "low"),
-                                 text: ev.severity || "" })]),
+      // THE SEVERITY RAMP IS A CLASS, NOT A WORD (the audit was rendering `sev low`, which
+      // matches no CSS token, so every rank looked the same). `sevCell` is the one renderer
+      // that carries the glyph + word + colour contract.
+      el("td", {}, [sevCell(ev.severity || "low")]),
       el("td", { class: "num", text: Number(ev.score || 0).toFixed(2) }),
       el("td", { text: ev.sent ? "sent" : ev.reason }),
       // The message the worker WOULD have sent, or did. It was already in the payload and
@@ -973,7 +975,7 @@ function renderAlertAudit(a) {
       // what it was about, which is the half of the audit that makes a suppression
       // reviewable. Shortened: this is a table cell, and the full text belongs in the title.
       el("td", { class: "muted", title: ev.message || "",
-                 text: (ev.message || "").split("\n")[0].slice(0, 80) }),
+                 text: (ev.message || "").split("\n")[0].slice(0, 80) || "—" }),
     ]));
   }
   if (!recent.length) {
