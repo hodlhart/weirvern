@@ -219,6 +219,7 @@ def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
                     "source": req["source"], "target": req["target"],
                     "ports": list(req.get("ports") or []),
                     "source_ports": list(rep.get("ports") or []),
+                    "_source_port_total": max(1, len(rep.get("ports") or [])),
                     "bytes": int(req["bytes"]) + int(rep["bytes"]),
                     "flows": int(req["flows"]) + int(rep["flows"]),
                     "bytes_source": int(req["bytes"]), "bytes_target": int(rep["bytes"]),
@@ -239,6 +240,61 @@ def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
         consumed.add(key)
         merged.append(_single(e, e_role, e_evidence if e_role else ""))
     return merged
+
+def _coalesce_service_edges(edges: list[dict]) -> list[dict]:
+    """Fold the individual client connections of one service into one graph edge.
+
+    The 5-tuple is what makes direction provable, but drawing one line per source port turns a
+    normal browser or Usenet client into hundreds of identical edges. Direction is decided on
+    the 5-tuple first (above); only edges that already point the same way are folded here.
+    Unknown edges are not folded across a reverse direction: their source is an observation,
+    not a role.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for e in edges:
+        known = bool(e.get("direction_evidence"))
+        key = (e["source"], e["target"], tuple(e.get("ports") or []),
+               int(e.get("proto") or 0), "known" if known else "unknown")
+        if key not in groups:
+            groups[key] = dict(e)
+            order.append(key)
+            continue
+        g = groups[key]
+        g["bytes"] = int(g.get("bytes") or 0) + int(e.get("bytes") or 0)
+        g["flows"] = int(g.get("flows") or 0) + int(e.get("flows") or 0)
+        g["bytes_source"] = int(g.get("bytes_source") or 0) + int(e.get("bytes_source") or 0)
+        g["bytes_target"] = int(g.get("bytes_target") or 0) + int(e.get("bytes_target") or 0)
+        g["flows_source"] = int(g.get("flows_source") or 0) + int(e.get("flows_source") or 0)
+        g["flows_target"] = int(g.get("flows_target") or 0) + int(e.get("flows_target") or 0)
+        g["reply_seen"] = bool(g.get("reply_seen")) or bool(e.get("reply_seen"))
+        if e.get("first_seen") and (not g.get("first_seen") or e["first_seen"] < g["first_seen"]):
+            g["first_seen"] = e["first_seen"]
+        if e.get("last_seen") and (not g.get("last_seen") or e["last_seen"] > g["last_seen"]):
+            g["last_seen"] = e["last_seen"]
+        ports = set(g.get("source_ports") or []) | set(e.get("source_ports") or [])
+        g["source_ports"] = sorted(ports)[:20]
+        g["_source_port_total"] = int(g.get("_source_port_total") or 0) + max(
+            1, len(e.get("source_ports") or []))
+        # The direction wording is the strongest common claim: a reply in the group makes it
+        # request/reply; otherwise keep the one-sided label it already carried.
+        if g["reply_seen"]:
+            g["direction"] = "request/reply"
+            g["direction_evidence"] = "port shape; multiple client connections folded"
+        g["source_ttl_max"] = max(int(g.get("source_ttl_max") or 0),
+                                  int(e.get("source_ttl_max") or 0))
+        g["target_ttl_max"] = max(int(g.get("target_ttl_max") or 0),
+                                  int(e.get("target_ttl_max") or 0))
+        g["source_ttl_min"] = min(x for x in (int(g.get("source_ttl_min") or 0),
+                                              int(e.get("source_ttl_min") or 0)) if x > 0) \
+            if any(x > 0 for x in (int(g.get("source_ttl_min") or 0),
+                                   int(e.get("source_ttl_min") or 0))) else 0
+        g["target_ttl_min"] = min(x for x in (int(g.get("target_ttl_min") or 0),
+                                              int(e.get("target_ttl_min") or 0)) if x > 0) \
+            if any(x > 0 for x in (int(g.get("target_ttl_min") or 0),
+                                   int(e.get("target_ttl_min") or 0))) else 0
+    return [groups[k] for k in order]
+
 
 def _as_ports(value) -> list[int]:
     """A ClickHouse array of ports as a list of ints, tolerant of how the driver returns it.
@@ -514,6 +570,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     # deliberately wider than the returned graph, because a pair of halves is two rows before
     # the merge; sorting after the merge keeps the cap meaningful.
     out_edges = _merge_direction_pairs(out_edges)
+    out_edges = _coalesce_service_edges(out_edges)
     out_edges.sort(key=lambda e: int(e.get("bytes") or 0), reverse=True)
     out_edges = out_edges[:int(limit)]
 
@@ -833,7 +890,7 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
 
     # The tracked graph uses the same direction model as the full graph; otherwise a filter
     # would change the arrows, which is the worst possible way to lose trust in a map.
-    out = _merge_direction_pairs(out)
+    out = _coalesce_service_edges(_merge_direction_pairs(out))
 
     names = resolve_names(client, list(nodes))
     for a, node in nodes.items():

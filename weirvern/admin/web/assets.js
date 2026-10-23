@@ -486,7 +486,7 @@ function renderNetwork() {
   const win = document.getElementById("nw-window");
   if (win) {
     const h = d.hours || ASSETS_STATE.hours;
-    win.textContent = `${h}h window` + (d.truncated ? `, ${d.total_edges} total edges` : "");
+    win.textContent = `${h}h window` + (d.truncated ? `, ${d.total_edges} total connections` : "");
   }
 
   const nodes0 = d.nodes || [];
@@ -604,7 +604,7 @@ function renderNetwork() {
   }
   bits.push(`${edges.length} connections`);
   if (ASSETS_STATE.tracked.length) bits.push(`filtered to ${ASSETS_STATE.tracked.length} tracked`);
-  if (d.truncated) bits.push(`of ${d.total_edges} total edges (capped)`);
+  if (d.truncated) bits.push(`of ${d.total_edges} total connections (capped)`);
   if (status === "all" && d.status_available === false) {
     bits.push(`host status unavailable: ${d.status_reason || "source could not be read"}`);
   }

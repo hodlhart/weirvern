@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.24 — 2026-10-23
+
+THE NETWORK GRAPH FOLDS CONNECTIONS, NOT DIRECTIONS.
+
+- Grouping by the 5-tuple made direction correct but drew one line per client port. After the
+  exact reverse tuples are merged and the direction is decided, connections to the same service
+  between the same hosts are folded into one edge. Unknown edges are never folded across a
+  reverse observation.
+- The graph caption now says "connections", matching what the total counts.
+
 ## 0.19.23 — 2026-10-23
 
 THE NETWORK GRAPH SEPARATES SERVICES BEFORE IT DECIDES DIRECTION.

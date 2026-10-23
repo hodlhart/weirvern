@@ -99,8 +99,10 @@ merely because those ports are not in the curated table.
 
 The graph query is grouped by the **5-tuple**, so multiple services between the same two hosts
 are separate edges instead of one mixed port list. The two directions of one 5-tuple are merged;
-the result is sorted and capped after the merge. The total count is conversations, not host
-pairs.
+then the individual client connections of one service are folded into one drawn edge, so a
+browser or Usenet client does not become hundreds of identical lines. Direction is decided
+before that fold; only edges already pointing the same way are combined. The result is sorted
+and capped after the merge. The total count is connections, not host pairs.
 
 ## Where the code lives
 
