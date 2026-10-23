@@ -74,6 +74,31 @@ def _rows(client, sql: str, params: dict, what: str) -> list | None:
         return None
 
 
+def _port_shape(ports: list[int], src_ports: list[int]) -> tuple[str, str]:
+    """The role a port pair suggests, and the evidence name for it.
+
+    FIRST the shared service table. When neither side is a known service, fall back to the
+    client-port convention: the side whose destination ports are all above 32768 is the side
+    receiving an ephemeral reply, and the side whose source ports are all above it is the
+    client. 32768 is the usual Linux client start, not the IANA dynamic boundary (49152); the
+    fallback is named `ephemeral-shape` and is never presented as proven. This is what keeps a
+    registered service such as NNTP on 5563 or Bitcoin on 8333 from becoming 'unknown' merely
+    because it is not in the curated list.
+    """
+    dst_service = _has_service_port(ports)
+    src_service = _has_service_port(src_ports)
+    if dst_service and not src_service:
+        return "request", "service-port"
+    if src_service and not dst_service:
+        return "reply", "service-port"
+    if ports and src_ports:
+        if all(p >= 32768 for p in ports) and all(p < 32768 for p in src_ports):
+            return "reply", "ephemeral-shape"
+        if all(p < 32768 for p in ports) and all(p >= 32768 for p in src_ports):
+            return "request", "ephemeral-shape"
+    return "", ""
+
+
 def _has_service_port(ports: list[int]) -> bool:
     """Whether any port in this side names a service, using the SOC's one shared table.
 
@@ -175,17 +200,13 @@ def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
         rev = by_key.get(rev_key)
         e_ports = list(e.get("ports") or [])
         e_src_ports = list(e.get("src_ports") or [])
-        e_role = ("request" if _has_service_port(e_ports) and not _has_service_port(e_src_ports)
-                  else "reply" if _has_service_port(e_src_ports) and not _has_service_port(e_ports)
-                  else "")
+        e_role, e_evidence = _port_shape(e_ports, e_src_ports)
         req: dict | None = None
         rep: dict | None = None
         if rev is not None and rev_key not in consumed:
             r_ports = list(rev.get("ports") or [])
             r_src_ports = list(rev.get("src_ports") or [])
-            r_role = ("request" if _has_service_port(r_ports) and not _has_service_port(r_src_ports)
-                      else "reply" if _has_service_port(r_src_ports) and not _has_service_port(r_ports)
-                      else "")
+            r_role, r_evidence = _port_shape(r_ports, r_src_ports)
             if e_role == "request" and r_role == "reply":
                 req, rep = e, rev
                 consumed.add(rev_key)
@@ -210,13 +231,13 @@ def _merge_direction_pairs(raw_edges: list[dict]) -> list[dict]:
                     "target_ttl_max": rep.get("ttl_max", 0),
                     "ttl_min": req.get("ttl_min", 0), "ttl_max": req.get("ttl_max", 0),
                     "direction": "request/reply",
-                    "direction_evidence": "service-port request + reply",
+                    "direction_evidence": f"{e_evidence or r_evidence} request + reply",
                     "direction_confidence": "inferred",
                     "reply_seen": True,
                 })
                 continue
         consumed.add(key)
-        merged.append(_single(e, e_role, "service-port" if e_role else ""))
+        merged.append(_single(e, e_role, e_evidence if e_role else ""))
     return merged
 
 def _as_ports(value) -> list[int]:

@@ -90,6 +90,13 @@ request/reply pair, and the map does not pretend otherwise. A one-sided request 
 observed `client -> server`; an edge whose two ports prove neither shape keeps a neutral
 `direction not claimed`.
 
+When neither port is in the curated service table, the graph may use the **client-port shape**
+as a weaker inference: all destination ports ≥32768 and all source ports <32768 is a reply
+shape (and the reverse is a request shape). This is named `ephemeral-shape` in the edge
+evidence, never `service-port`, because 32768 is the usual Linux client start rather than an
+IANA service boundary. It is what keeps NNTP on 5563 or Bitcoin on 8333 from becoming unknown
+merely because those ports are not in the curated table.
+
 The host-pair aggregate still limits how finely multiple services between the same two hosts can
 be separated; the 5-tuple is present in the raw records and is the next step when the graph query
 is grouped by it.

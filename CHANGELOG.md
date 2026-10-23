@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.22 — 2026-10-23
+
+THE NETWORK DIRECTION FALLBACK: REGISTERED SERVICES ABOVE THE OLD LINE.
+
+- The previous change used the curated service table alone, which left real services such as
+  NNTP on 5563 and Bitcoin on 8333 as `unknown`. The graph now falls back to the client-port
+  shape — destination ports all ≥32768 with source ports all <32768 is a reply shape — and
+  records that evidence as `ephemeral-shape`, not as a proven service port.
+- A one-sided reply remains oriented client → server, with the service port on the destination
+  and the client's source port on the source card.
+
 ## 0.19.21 — 2026-10-23
 
 THE NETWORK MAP USES THE SAME DIRECTION EVIDENCE AS FLOWS.

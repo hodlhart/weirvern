@@ -727,3 +727,23 @@ def test_the_network_graph_uses_the_flows_service_port_table():
     assert assets._has_service_port([35623, 49151]) is False, (
         "35623/49151 are user ports, not services; the old 32768 boundary still leaked in"
     )
+
+
+def test_a_registered_service_above_the_old_boundary_still_orientates_a_reply():
+    """Port 5563 (NNTP) is a service but is not in the curated list; the client-port shape
+    still proves which side answered. Without this fallback, a real reply became unknown."""
+    from weirvern.admin.assets import _merge_direction_pairs
+
+    raw = [{
+        "source": "203.0.113.9", "target": "198.51.100.20",
+        "src_port": 5563, "dst_port": 41352, "proto": 6,
+        "ports": [41352], "src_ports": [5563],
+        "bytes": 1200, "flows": 3, "ttl_min": 52, "ttl_max": 52,
+        "first_seen": "2026-10-23T00:00:00", "last_seen": "2026-10-23T00:01:00",
+    }]
+    out = _merge_direction_pairs(raw)
+    assert len(out) == 1
+    e = out[0]
+    assert (e["source"], e["target"]) == ("198.51.100.20", "203.0.113.9")
+    assert e["ports"] == [5563] and e["source_ports"] == [41352]
+    assert "reply half" in e["direction"]

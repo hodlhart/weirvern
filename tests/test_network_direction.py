@@ -69,10 +69,10 @@ def test_a_user_port_above_1024_is_not_a_service():
     from weirvern.admin.assets import _merge_direction_pairs
 
     out = _merge_direction_pairs([
-        _edge("a", "b", [32767], 1, 1, src_ports=[50000]),
-        _edge("b", "a", [60000], 1, 1, src_ports=[32767]),
+        _edge("a", "b", [10021], 1, 1, src_ports=[32767]),
+        _edge("b", "a", [28715], 1, 1, src_ports=[10022]),
     ])
-    assert len(out) == 2, "a user-port pair must not be merged into a request/reply"
+    assert len(out) == 2, "two user-port sides must not be merged into a request/reply"
     assert all("not claimed" in e["direction"] for e in out)
 
 
