@@ -5699,7 +5699,8 @@ function applyURLState() {
   const raw = (location.hash || "").replace(/^#/, "");
   if (!raw) return false;
   const p = new URLSearchParams(raw);
-  const v = p.get("v") || "";
+  // LET, not const: the identity/host aliases below retarget an old link to Assets.
+  let v = p.get("v") || "";
   const tr = p.get("tr") || "";
   if (/^\d+$/.test(tr)) {
     TIME_RANGE.mode = "relative"; TIME_RANGE.hours = Number(tr);

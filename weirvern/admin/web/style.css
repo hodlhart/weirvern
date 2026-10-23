@@ -1514,4 +1514,12 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
     height: 44px;
   }
   #nw-status .chip.act { min-height: 44px; }
+  #view-network .controls input[type="number"],
+  #view-network .controls input[type="checkbox"] { min-height: 44px; }
+  #view-network .controls input[type="checkbox"] { width: 44px; height: 44px; }
+}
+@media (max-width: 1100px) {
+  /* A row's one disclosure is a secondary control; on a tablet it must clear the 36px floor
+     even though desktop keeps the 28px density. */
+  .row-more summary { min-height: 36px; }
 }

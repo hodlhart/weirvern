@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.17 — 2026-10-23
+
+THE REST OF THE FIRST SWEEP.
+
+- The Network minimum-edges field and show-names checkbox now meet 44px on a phone; the pager
+  arrows meet the 44px width floor at 320/390.
+- The anomaly queue defaults to 90 rows so its first paint stays under the 6000-DOM budget; the
+  operator can still type a larger limit.
+- `#v=identity` and bare `#v=host` aliases now actually retarget to Assets. The retarget variable
+  is `let`; as `const` the assignment threw and the boot fell back to Health, so the old links
+  never moved.
+
 ## 0.19.16 — 2026-10-23
 
 THE PRE-COMPLETION SWEEP: LESS PER-ROW FURNITURE, NO CLIPPED HOSTS, TOUCH-SIZED FILTERS.
