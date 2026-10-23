@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.0 — 2026-10-23
+
+ML TRUTH AND SHADOW CHANNELS.
+
+- Severity now requires independent model families and material evidence. Isolation Forest and
+  its Gradient Boosting student are one family; DBSCAN and Adaptive Baseline are separate. A
+  critical/high label carries its basis (`severity_basis`) beside the score.
+- Calibration: conformal threshold and split-validation false-alarm rate, stored in
+  `ml_calibration`/history; Models has a shadow budget readout. No alert path changes.
+- Host roles/scope proposals (`host_roles`) and Assets role column, with operator override.
+- Shadow channels: HDBSCAN candidate scores, Matrix Profile temporal discords, Page-Hinkley
+  change points, all in append-only tables and hourly behind `ML_SHADOW`; ECOD offline benchmark.
+- Schema 029–034. Historical severity backfill is explicit and dry-run-first.
+
 ## 0.19.27 — 2026-10-23
 
 THE PHONE HOME-SCREEN ICON IS THE MARK, NOT A LETTER TILE.

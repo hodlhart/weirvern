@@ -45,6 +45,38 @@ MAX_FUSED_SCORE = 0.99
 # `detected_by_models` string. One constant because those three uses had drifted copies.
 DETECTED_BY_SCORE = 0.20
 
+# ── WHAT COUNTS AS AN INDEPENDENT CORROBORATING MODEL ────────────────────────────────────────
+#
+# Gradient Boosting is trained on the Isolation Forest's own labels (see
+# GradientBoostingDetector.train: `teacher.predict(Xs)`). It is a STUDENT of the forest, so a high
+# score from both is one observation stated twice -- not two independent observations. Counting
+# both as corroboration is how ordinary gateway traffic with a 1.3x byte change reached
+# `critical` on the live cluster. DBSCAN and Adaptive Baseline learn different things and remain
+# separate families; an unknown future detector is its own family unless it is explicitly related
+# to one here.
+MODEL_FAMILIES: dict[str, str] = {
+    "Isolation Forest": "forest",
+    "Gradient Boosting": "forest",   # semi-supervised student of Isolation Forest
+    "DBSCAN": "density",
+    "Adaptive Baseline": "baseline",
+}
+
+
+def strong_model_families(scores: dict[str, float], bar: float) -> int:
+    """How many INDEPENDENT families have a detector at or above the strong-signal bar."""
+    return len({
+        MODEL_FAMILIES.get(name, name)
+        for name, score in scores.items()
+        if float(score) >= float(bar)
+    })
+
+
+# A material univariate deviation, in robust-ish sigma units from the host's own baseline.
+# Not every real attack moves a volume measurement (a zero-byte SYN scan does not), which is why
+# the signature and novelty channels below can establish materiality on their own.
+MATERIAL_Z_CRITICAL = 3.0
+MATERIAL_Z_HIGH = 2.0
+
 
 def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = None,
                 mode: str = "max") -> float:
@@ -182,36 +214,78 @@ def signature_corroboration(flow: dict, scores: dict[str, float], diversity: dic
     return ports >= cfg.port_scan_min_ports and entropy >= cfg.port_scan_min_entropy
 
 
-def severity_of(score: float, strong_models: int = 0, signature: bool = False) -> str:
-    """Severity tiers, gated on STRONG corroboration.
+def severity_of(score: float, strong_models: int = 0, signature: bool = False, *,
+                strong_families: int | None = None,
+                deviation_magnitude: float | None = None,
+                novelty: bool = False) -> str:
+    """Severity tiers, gated on INDEPENDENT corroboration AND measured materiality.
 
-    `strong_models` = how many detectors scored >= STRONG_SIGNAL (0.85).
+    `strong_models` is the raw count of detectors at or above STRONG_SIGNAL, retained for the
+    console and the near-miss record. `strong_families` is the count of independent model
+    families; severity uses it when supplied, because Isolation Forest and its Gradient Boosting
+    student are one observation, not two.
 
-    Why this gate exists (measured on live ClickHouse data): the legacy
-    agreement ratio counted any model above 0.20, so a window with ONE strong
-    detector (GB 0.96) plus two weak ones (IF 0.70, DBSCAN 0.31) passed
-    "agreement" and was reported as critical. Those windows were ordinary
-    low-activity traffic — three benign hosts reached 'critical' that way.
-    Genuine attacks showed two-or-more strongly-agreeing detectors (port scan:
-    IF 0.87 + DBSCAN 0.99; exfil: all four >= 0.99).
+    `deviation_magnitude` is the largest absolute z-score the window has against the host's own
+    baseline. When it is supplied, high/critical also require a MATERIAL deviation (3 sigma for
+    critical, 2 sigma for high), unless a direct structural signature (a port scan) or a novelty
+    observation (a TLS fingerprint the host has never used) is present. A model score without a
+    material measurement is a lead, not an incident -- and on the live cluster 163 of 276
+    `critical` rows carried less than 1 sigma of measured deviation. `None` means "not measured
+    yet" and preserves the legacy behaviour for callers that have no explanation; the worker
+    always supplies the measured value.
 
-    So 'high' and 'critical' require at least two strongly-agreeing detectors,
-    OR one strong detector corroborated by a direct structural signature
-    (see signature_corroboration) — the latter covers attack families that only
-    one model can see, such as a zero-byte port scan.
-
-    The signature carries NO agreement argument (issue #33): the legacy ratio this
-    gate replaced is described above, and a dead parameter would advertise a gate
-    the body does not read.
+    The signature carries NO agreement argument: it is direct evidence, and a lone specialist
+    backed by one is allowed to escalate.
     """
-    corroborated = strong_models >= 2 or (strong_models >= 1 and signature)
-    if score >= 0.95 and corroborated:
+    families = strong_models if strong_families is None else int(strong_families)
+    corroborated = families >= 2 or (families >= 1 and signature)
+    material_critical = (
+        signature or novelty or deviation_magnitude is None
+        or float(deviation_magnitude) >= MATERIAL_Z_CRITICAL
+    )
+    material_high = (
+        signature or novelty or deviation_magnitude is None
+        or float(deviation_magnitude) >= MATERIAL_Z_HIGH
+    )
+    if score >= 0.95 and corroborated and material_critical:
         return "critical"
-    if score >= 0.85 and corroborated:
+    if score >= 0.85 and corroborated and material_high:
         return "high"
-    if score >= 0.70 or (score >= 0.60 and strong_models >= 1):
+    if score >= 0.70 or (score >= 0.60 and families >= 1):
         return "medium"
     return "low"
+
+
+def severity_basis(score: float, strong_families: int, signature: bool = False,
+                    deviation_magnitude: float | None = None,
+                    novelty: bool = False) -> str:
+    """A visible, plain-language reason for the severity label.
+
+    The operator must be able to read WHY a row says critical/high without hovering. This is
+    the sentence that distinguishes a measured incident from a lead that was capped, and it is
+    stored beside the severity so the row cannot drift from its explanation.
+
+    Keep it short enough for a table's why line; the full explanation stays in
+    `baseline_comparison`/`feature_contributions`.
+    """
+    parts: list[str] = []
+    if strong_families:
+        parts.append(f"{int(strong_families)} independent famil"
+                     f"{'y' if int(strong_families) == 1 else 'ies'}")
+    if signature:
+        parts.append("structural signature")
+    if novelty:
+        parts.append("new TLS fingerprint")
+    if deviation_magnitude is None:
+        parts.append("deviation not measured")
+    else:
+        parts.append(f"{float(deviation_magnitude):.1f}σ")
+    material = bool(signature or novelty
+                    or (deviation_magnitude is not None
+                        and float(deviation_magnitude) >= MATERIAL_Z_CRITICAL))
+    if not material:
+        return "score only — " + ", ".join(parts) + " (capped below incident)"
+    return ", ".join(parts)
 
 
 def adaptive_threshold_for(flow: dict[str, Any], base: float) -> float:
@@ -402,6 +476,7 @@ def detect_flows(
         # nothing.
         bar = strong_signal_threshold(settings)
         strong_models = sum(1 for s in scores.values() if s >= bar)
+        strong_families = strong_model_families(scores, bar)
         # Or a lone specialist backed by a direct structural signature.
         signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
                                             strong_signal=bar)
@@ -440,8 +515,10 @@ def detect_flows(
             "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
             "model_agreement": round(agreement, 4),
             "detected_by_models": ",".join(detected_by),
-            "severity": severity_of(final_score, strong_models, signature),
+            "severity": severity_of(final_score, strong_models, signature,
+                                     strong_families=strong_families),
             "strong_models": strong_models,
+            "strong_families": strong_families,
             "signature": signature,
             "threshold_used": round(threshold, 4),
         })

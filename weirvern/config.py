@@ -131,6 +131,12 @@ class Settings:
     # the signature gate.
     strong_signal: float = field(default_factory=lambda: _env_float("STRONG_SIGNAL", 0.85))
 
+    # ── ML SHADOW/calibration ────────────────────────────────────────────────────────────────
+    # Shadow passes write candidate/calibration tables only; they never alter alerts or severity.
+    # The calibration target is a false-alarm fraction for the alert tail, not an accuracy claim.
+    ml_shadow: bool = field(default_factory=lambda: _env_bool("ML_SHADOW", True))
+    ml_target_far: float = field(default_factory=lambda: _env_float("ML_TARGET_FAR", 0.01))
+
     # Data input (goflow2 JSONL sink)
     tail_file: str = field(default_factory=lambda: os.environ.get("TAIL_FILE", "/data/flows.jsonl"))
 

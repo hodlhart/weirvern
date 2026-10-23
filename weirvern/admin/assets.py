@@ -26,7 +26,7 @@ import ipaddress
 import logging
 
 from weirvern import addressing
-from weirvern.admin import timewindow
+from weirvern.admin import revdns, timewindow
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +383,7 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         return hosts.setdefault(addr, {
             "addr": addr, "name": "", "bytes": 0, "flows": 0, "dst_count": 0,
             "first_seen": "", "last_seen": "", "services": [], "anomalies": 0,
+            "role": "unknown", "scope": "external" if not revdns.is_private(addr) else "monitored",
         })
 
     # ---- 1. Volume and windowed activity from the aggregate.
@@ -485,6 +486,24 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         names = {}
     for addr, entry in hosts.items():
         entry["name"] = names.get(addr, "")
+
+    # ---- 5. Role/scope proposals (031). The table is a proposal store; an absent row is
+    #         `unknown`, never a default workstation. A failed read is named in sources_failed.
+    roles = _rows(
+        client,
+        "SELECT host, role, scope, source, confidence FROM weirvern.host_roles FINAL",
+        {},
+        "asset inventory (roles)",
+    )
+    read_ok["roles"] = roles is not None
+    for r in roles or []:
+        host = str(r[0])
+        if host not in hosts:
+            continue
+        hosts[host]["role"] = str(r[1] or "unknown")
+        hosts[host]["scope"] = str(r[2] or "unknown")
+        hosts[host]["role_source"] = str(r[3] or "auto")
+        hosts[host]["role_confidence"] = float(r[4] or 0)
 
     ordered = sorted(
         hosts.values(),

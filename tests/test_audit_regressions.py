@@ -79,14 +79,15 @@ def test_the_insert_site_guards_its_own_arity():
     )
 
 
-def test_the_attack_columns_are_last_in_the_column_list():
-    """Order matters as much as length: the ATT&CK pair must stay last, matching the row.
+def test_the_new_evidence_columns_are_last_in_the_column_list():
+    """Order matters as much as length: appended evidence columns must stay last.
 
-    If either drifts, values land in the wrong columns. That does not raise -- ClickHouse will
+    If a column drifts, values land in the wrong columns. That does not raise -- ClickHouse will
     happily store a label in a score column -- so nothing but this assertion would notice.
     """
     _n, names = _anomaly_row_and_columns()
-    assert names[-2:] == ["attack_techniques", "attack_label"], names[-3:]
+    assert names[-2:] == ["strong_families", "severity_basis"], names[-4:]
+    assert names[-4:-2] == ["attack_techniques", "attack_label"], names[-4:]
 
 
 def test_a_row_with_the_wrong_length_is_refused_by_a_realistic_client():

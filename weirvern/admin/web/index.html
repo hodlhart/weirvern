@@ -613,7 +613,7 @@
       <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span> <span id="m-filters"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
-  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and the ensemble asks how many of them agree before a score is believed.</p>
+  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and the ensemble asks how many independent families agree before a score is believed. Isolation Forest and its Gradient Boosting student are one family; DBSCAN and the baseline are separate.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
   <p><strong>Where to see it.</strong> Training history, score distribution, agreement, features and near misses all live below.</p>
@@ -631,6 +631,17 @@
       RECENCY. A model overdue by 10 hours looks identical to one retrained a minute ago if all
       you draw is how many times it ran.
     -->
+    <div class="card">
+      <h2>Calibration <span class="muted">shadow — not controlling alerts</span></h2>
+      <p class="muted" id="m-cal-note">loading…</p>
+      <div class="tablewrap">
+        <table id="m-cal">
+          <thead><tr><th>Detector</th><th>Scope</th><th>Target false alarms</th><th>Threshold</th><th>Observed</th><th>Samples</th><th>Computed</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Detection freshness <span class="muted" id="m-stale-window"></span></h2>
       <div id="m-stale-note"></div>
@@ -882,6 +893,7 @@
           <th data-sort="addr" class="sortable" title="sort by address">Address</th>
           <th data-sort="name" class="sortable">Name</th>
           <th>Identity</th>
+          <th>Role</th>
           <th data-sort="bytes" class="sortable">Bytes</th>
           <th>Out / In</th>
           <th data-sort="flows" class="sortable">Flows</th>

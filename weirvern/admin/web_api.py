@@ -71,6 +71,17 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def calibration_payload(data: dict) -> dict:
+    """Serialise the shadow calibration table for the Models view.
+
+    Every row carries `target_far` and `observed_far` side by side; the frontend must not have to
+    infer a budget from a threshold. `computed_at` is already ISO from status.calibration_overview.
+    """
+    return {"available": bool(data.get("available")),
+            "reason": str(data.get("reason") or ""),
+            "rows": list(data.get("rows") or [])}
+
+
 def health_payload(report) -> dict:
     """Serialise a HealthReport."""
     return {

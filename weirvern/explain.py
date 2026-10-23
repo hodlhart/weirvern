@@ -161,6 +161,20 @@ def _ja4_note(flow: dict[str, Any], baseline: dict[str, Any]) -> str:
     return f"{novel} of {len(seen)} TLS fingerprints in this window {verb} new for this host"
 
 
+def has_novelty(features_or_flow: dict[str, Any],
+                baseline: dict[str, float] | None) -> bool:
+    """True when this window contains a TLS fingerprint the host has never used.
+
+    A novelty observation is direct evidence about a NEW thing, not a magnitude. It is the one
+    case where a real finding can have `deviation_magnitude` near zero (a new TLS stack moves no
+    unusual bytes), so severity may escalate on it. False when there is no baseline or no
+    fingerprints: absent evidence is not novelty.
+    """
+    if not baseline:
+        return False
+    return bool(_ja4_note(features_or_flow, baseline))
+
+
 def explain(features_or_flow: dict[str, Any],
             baseline: dict[str, float] | None) -> dict[str, Any]:
     """Build the five explainability fields for one anomaly row.
@@ -303,4 +317,4 @@ def summarise(explanation: dict[str, Any]) -> str:
     return f"{feature} at z={z}"
 
 
-__all__ = ["EXPLAINED_MEASUREMENTS", "explain", "summarise"]
+__all__ = ["EXPLAINED_MEASUREMENTS", "has_novelty", "explain", "summarise"]

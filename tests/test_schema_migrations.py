@@ -153,6 +153,8 @@ def test_every_column_read_by_the_worker_is_created_somewhere():
             created.add(m.group(1))
     assert "attack_techniques" in created
     assert "attack_label" in created
+    assert "strong_families" in created
+    assert "severity_basis" in created
 
     worker = (Path(__file__).resolve().parents[1] / "weirvern" / "worker.py").read_text()
     assert "netflow_anomalies" in worker, "the worker no longer writes the anomaly table"
@@ -172,6 +174,8 @@ def test_every_column_read_by_the_worker_is_created_somewhere():
         "always hold its default and the migration would be pointless"
     )
     assert "attack_label" in worker[cols_start:cols_end]
+    assert "strong_families" in worker[cols_start:cols_end]
+    assert "severity_basis" in worker[cols_start:cols_end]
 
     # AND THE OTHER HALF, which nothing checked before and which is how the two drifted: the ROW
     # must supply a value for every column name. Asserting only that the name appears let the row
@@ -205,7 +209,7 @@ def test_the_original_table_definition_stays_in_step_with_the_migration():
     )
     assert create, "netflow_anomalies CREATE TABLE not found"
     table_body = create.group(1)
-    for column in ("attack_techniques", "attack_label"):
+    for column in ("attack_techniques", "attack_label", "strong_families", "severity_basis"):
         assert re.search(rf"^\s*{column}\s", table_body, re.M), (
             f"{column} is missing from the CREATE TABLE, so a FRESH install would not have "
             f"it even though the migration would add it to an existing one"

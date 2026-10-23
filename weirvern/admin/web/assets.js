@@ -270,7 +270,7 @@ function renderAssets() {
   if (!rows.length) {
     tbody.replaceChildren(el("tr", {}, [
       el("td", {
-        class: "empty", attrs: { colspan: "10" },
+        class: "empty", attrs: { colspan: "11" },
         text: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
       }),
@@ -301,6 +301,8 @@ function renderAssets() {
         }
         return cell;
       })(),
+      el("td", { class: "muted", text: (h.role || "unknown") + (h.scope ? " · " + h.scope : ""),
+                 attrs: { title: h.role_source ? `role source: ${h.role_source}` : "no role proposal recorded" } }),
       el("td", { class: "mono", text: fmtBytes(h.bytes) }),
       el("td", {
         class: "mono",

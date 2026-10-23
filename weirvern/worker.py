@@ -26,7 +26,7 @@ from clickhouse_connect.driver.client import Client
 from weirvern import addressing, attack, db, ensemble
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
-from weirvern.explain import explain
+from weirvern.explain import explain, has_novelty
 from weirvern.ingester import tail_forever
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
@@ -1166,7 +1166,7 @@ _ANOMALY_COLUMNS: tuple[str, ...] = (
     "dbscan_score", "baseline_score", "model_agreement",
     "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
     "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
-    "attack_techniques", "attack_label",
+    "attack_techniques", "attack_label", "strong_families", "severity_basis",
 )
 
 
@@ -1825,6 +1825,24 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # (0.0, 0.0, "{}", "") — see weirvern/explain.py for why the deviation is
         # measured against the host's own baseline.
         exp = explain(f, baselines.get(v["src_addr"]))
+        # ── SEVERITY IS DECIDED WHERE THE EVIDENCE IS ───────────────────────────────────────
+        #
+        # `detect_flows` can see the scores and the structural signature, but not the host's
+        # measured deviation -- that needs the baseline and is computed here. Its provisional
+        # severity is therefore re-evaluated against the explanation: a 0.99 model score on a
+        # gateway whose bytes moved 1.3x must not stay `critical`. Direct signatures (a port
+        # scan) and new TLS fingerprints remain material without a volume z-score.
+        novelty = has_novelty(f, baselines.get(v["src_addr"]))
+        v["severity"] = ensemble.severity_of(
+            v["anomaly_score"], v.get("strong_models", 0), bool(v.get("signature")),
+            strong_families=v.get("strong_families"),
+            deviation_magnitude=float(exp["deviation_magnitude"]),
+            novelty=novelty,
+        )
+        v["severity_basis"] = ensemble.severity_basis(
+            v["anomaly_score"], v.get("strong_families", 0), bool(v.get("signature")),
+            float(exp["deviation_magnitude"]), novelty,
+        )
         # Attach the explanation to the verdict as well as the row. The alert
         # formatter reads baseline_comparison to say WHY, and the DB row must
         # carry the same values: an alert that explains an anomaly differently
@@ -1871,6 +1889,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # holding a list of objects: a raw list would be stringified by the driver into Python
             # repr, which is not JSON and cannot be parsed back.
             json.dumps(v["attack_techniques"]), v["attack_label"],
+            int(v.get("strong_families") or 0), str(v.get("severity_basis") or ""),
         ])
     # THE GUARD THAT SHOULD HAVE CAUGHT THIS. A positional INSERT is correct only while the row
     # and the column list agree in length AND order, and they used to live 20 lines apart.
@@ -2249,6 +2268,7 @@ def main() -> None:
     alert_state = AlertState()
     last_full_train: datetime | None = None
     trained_once = False
+    shadow_tick = 0
 
     while not _stop.is_set():
         cycle_start = time.time()
@@ -2308,6 +2328,44 @@ def main() -> None:
             verdicts = detection_sweep(client, detectors, settings, cfg)
             for v in verdicts:
                 push_alert(v, settings, alert_state, client)
+
+            # ── SHADOW CALIBRATION ──────────────────────────────────────────────────────────
+            # The table is a measurement of the alert tail's false-alarm budget, not a change to
+            # the alert path. A failure here must never stop detection, so it is bounded and
+            # logged; `ML_SHADOW` is the explicit switch.
+            if getattr(settings, "ml_shadow", False):
+                try:
+                    from weirvern.models import calibration as _cal  # noqa: PLC0415
+
+                    calibrated = _cal.run(client, settings)
+                    if calibrated:
+                        logger.info("ML calibration shadow: %d model row(s)", len(calibrated))
+                    # The slower channels are hourly, not per sweep: they query whole series and
+                    # fit candidate models, and a five-minute cadence would spend CPU for no new
+                    # answer. The calibration threshold itself stays per-cycle.
+                    if shadow_tick % 12 == 0:
+                        from weirvern.models import roles as _roles  # noqa: PLC0415
+
+                        proposed = _roles.run(client, settings)
+                        if proposed:
+                            logger.info("ML role proposals: %d host(s)", len(proposed))
+                        from weirvern.models import candidates as _cand  # noqa: PLC0415
+                        from weirvern.models import changepoints as _cp  # noqa: PLC0415
+                        from weirvern.models import temporal as _temp  # noqa: PLC0415
+
+                        cand = _cand.run(client)
+                        if cand.get("rows"):
+                            logger.info("ML HDBSCAN shadow: %s rows, %s clusters",
+                                        cand["rows"], cand.get("clusters"))
+                        temp = _temp.run(client)
+                        if temp.get("rows"):
+                            logger.info("ML temporal shadow: %s row(s)", temp["rows"])
+                        chg = _cp.run(client)
+                        if chg.get("rows"):
+                            logger.info("ML change-point shadow: %s row(s)", chg["rows"])
+                    shadow_tick += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ML shadow pass failed (detection continues): %s", exc)
 
             # HOST IDENTITY runs on the same cycle as detection, AFTER it.
             #

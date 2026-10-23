@@ -1950,7 +1950,8 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
         "severity, detected_by_models, model_agreement, "
         "isolation_forest_score, gradient_boosting_score, dbscan_score, baseline_score, "
         "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
-        "feature_contributions, baseline_comparison "
+        "feature_contributions, baseline_comparison, "
+        "strong_families, severity_basis "
         "FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s "
         # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16): a clicked host or severity is
         # answered BY THIS QUERY -- never by hiding rows the browser already received, which
@@ -2053,6 +2054,7 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         "primary_deviation_feature, max(primary_deviation_zscore) AS primary_deviation_zscore, "
         "max(deviation_magnitude) AS deviation_magnitude, "
         "any(feature_contributions) AS feature_contributions, baseline_comparison, "
+        "max(strong_families) AS strong_families, any(severity_basis) AS severity_basis, "
         "uniqExact(window_start) AS n, arraySlice(arraySort(groupUniqArray(window_start)), 1, 50) AS windows "
         "FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where) + " "
         # THE IDENTITY IS WHAT THE OPERATOR READS, NOT EVERY SCORE'S LAST DECIMAL. The old
@@ -2331,6 +2333,7 @@ def alert_evidence(client, src_addr: str, window_start: str,
                 "primary_deviation_zscore": row[7],
                 "feature_contributions": row[8],
                 "attack_techniques": row[9], "attack_label": row[10],
+                "strong_families": row[11], "severity_basis": row[12],
             }
     except Exception as exc:  # noqa: BLE001
         logger.warning("alert_evidence window lookup failed: %s", exc)
@@ -3147,6 +3150,36 @@ def pipeline_audit(client, *, now=None) -> dict:
         counts[fnd["class"]] = counts.get(fnd["class"], 0) + 1
     return {"available": True, "reason": "", "now": now.isoformat(),
             "findings": findings, "counts": counts, "errors": errors}
+
+
+def calibration_overview(client) -> dict:
+    """The latest shadow calibration per model, with its budget and age.
+
+    A failed read is a state: `available:false` and the reason, like every other panel. A model
+    with no row is listed as `missing`, never silently omitted -- "not calibrated yet" is a fact
+    the operator needs before trusting a threshold.
+    """
+    try:
+        res = client.query(
+            "SELECT model_name, scope, subject, statistic, target_far, threshold, "
+            "p50, p95, p99, sample_count, validation_count, observed_far, "
+            "reference_source, model_version, computed_at "
+            "FROM weirvern.ml_calibration FINAL "
+            "ORDER BY model_name, scope, subject"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibration_overview failed: %s", exc)
+        return {"available": False, "reason": f"calibration query failed: {type(exc).__name__}",
+                "rows": []}
+    cols = list(res.column_names)
+    rows = []
+    for r in res.result_rows:
+        row = dict(zip(cols, r, strict=False))
+        computed = row["computed_at"]
+        row["computed_at"] = (computed.isoformat() if hasattr(computed, "isoformat")
+                              else str(computed or ""))
+        rows.append(row)
+    return {"available": True, "reason": "", "rows": rows}
 
 
 def detectors_overview(client) -> dict:

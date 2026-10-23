@@ -193,7 +193,12 @@ CREATE TABLE IF NOT EXISTS netflow_anomalies
     -- The compact label for list views: "T1046 (high), T1018 (medium)". Denormalised on
     -- purpose: the list renders 100 rows, and parsing 100 JSON blobs to build a table cell
     -- would be work the database can do once at write time.
-    attack_label              String DEFAULT ''
+    attack_label              String DEFAULT '',
+    -- How many INDEPENDENT detector families agreed (IsoForest and its GB student are one
+    -- family), and a short visible reason for the severity label. Appended for the same reason
+    -- the ATT&CK pair was: a positional reader must never be reinterpreted by an insert.
+    strong_families            UInt8 DEFAULT 0,
+    severity_basis             LowCardinality(String) DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(detected_at)
 PARTITION BY toYYYYMM(detected_at)

@@ -2162,6 +2162,7 @@ async function loadAnomalies() {
                  attrs: { title: "what matched, from the detector registry" } }),
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
+        a.severity_basis ? el("div", { class: "muted", text: "severity: " + a.severity_basis }) : null,
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
         // US-9: the STABLE reason code. The why-sentence reads; this one is greppable.
         a.reason_code ? el("div", { class: "reason-code mono",
@@ -3012,7 +3013,8 @@ async function loadEvidence(addr, start, end) {
           : "no flow records in this window", s ? "known" : "unknown"],
         ["detected", "detected", a
           ? `${sevText(a.severity) || "\u2014"} \u00b7 score ` +
-            `${Number(a.anomaly_score ?? 0).toFixed(3)} \u00b7 ${a.detected_by_models || "\u2014"}`
+            `${Number(a.anomaly_score ?? 0).toFixed(3)} \u00b7 ${a.detected_by_models || "\u2014"}` +
+            (a.severity_basis ? ` \u00b7 ${a.severity_basis}` : "")
           : "no verdict stored for this window", a ? "known" : "unknown"],
         ["explained", "explained",
           (a && (a.baseline_comparison || a.primary_deviation_feature))
@@ -5059,13 +5061,53 @@ function mKeepPoint(pt) {
   return true;
 }
 
+function renderCalibration(data) {
+  const note = document.getElementById("m-cal-note");
+  const body = document.querySelector("#m-cal tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  if (!data || !data.available) {
+    note.textContent = "Calibration unavailable: " + ((data && data.reason) || "the read failed");
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+      text: "No calibration rows were read." })]));
+    return;
+  }
+  const rows = data.rows || [];
+  if (!rows.length) {
+    note.textContent = "No calibration rows yet. The worker's shadow pass has not written a " +
+      "reference with enough samples; this is not a zero false-alarm rate.";
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+      text: "Nothing calibrated yet — the detector scores are still uncalibrated." })]));
+    return;
+  }
+  note.textContent = "Shadow calibration: the target is a requested false-alarm fraction of " +
+    "the stored detection tail; it is not controlling alerts yet.";
+  for (const r of rows) {
+    const pct = (v) => Number.isFinite(Number(v)) ? (Number(v) * 100).toFixed(2) + "%" : "—";
+    body.appendChild(el("tr", {}, [
+      el("td", { text: r.model_name || "—" }),
+      el("td", { class: "muted", text: (r.scope || "—") + " · " + (r.subject || "") }),
+      el("td", { class: "num", text: pct(r.target_far) }),
+      el("td", { class: "num mono", text: Number(r.threshold || 0).toFixed(3) }),
+      el("td", { class: "num", text: pct(r.observed_far) }),
+      el("td", { class: "num", text: Number(r.sample_count || 0).toLocaleString() }),
+      el("td", { class: "mono", text: fmtTime(r.computed_at) }),
+    ]));
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
   // AB-1: the baseline card is its own read -- a models payload that failed must not take
   // it down, and vice versa.
   loadBaselinesCard().catch(showError);
+  // Calibration is a separate read for the same reason: a broken models query must not hide a
+  // working budget, and a broken calibration must not hide the training history.
+  const calPromise = getJSON("/api/models/calibration")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
+  renderCalibration(await calPromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");
 

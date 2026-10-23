@@ -440,6 +440,8 @@ def _build_handler(ctx: GuiContext):
                 return self._fingerprints(query)
             if path == "/api/models":
                 return self._models(query)
+            if path == "/api/models/calibration":
+                return self._models_calibration()
             # AB-1: the per-host adaptive baselines -- what each host normally does, and
             # what the baseline has flagged. A read, like the rest of the monitoring data.
             if path == "/api/baselines":
@@ -783,6 +785,16 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(out)
+
+        def _models_calibration(self) -> None:
+            """Shadow calibration readout; a failed read is a 200 with available:false."""
+            try:
+                with self._with_client() as client:
+                    data = status_mod.calibration_overview(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
+            self._json(web_api.calibration_payload(data))
 
         def _models(self, query: dict) -> None:
             """Model overview: training history, score spread, agreement, deviations.

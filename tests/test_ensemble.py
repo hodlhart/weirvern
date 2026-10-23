@@ -71,6 +71,54 @@ def test_two_strong_detectors_escalate():
     assert severity_of(0.90, strong_models=2) == "high"
 
 
+def test_if_and_its_gb_student_are_one_model_family():
+    """A student trained on the teacher's labels is not independent corroboration.
+
+    Measured: 373 high/critical rows in seven days had GB above the strong bar; the old
+    severity gate counted IF+GB as two strong models even though GB learned IF's labels.
+    """
+    assert ensemble.strong_model_families(
+        {"Isolation Forest": 0.99, "Gradient Boosting": 0.99}, 0.85) == 1
+    assert ensemble.strong_model_families(
+        {"Isolation Forest": 0.99, "Gradient Boosting": 0.0, "DBSCAN": 0.99}, 0.85) == 2
+    assert ensemble.strong_model_families(
+        {"Isolation Forest": 0.99, "Gradient Boosting": 0.99,
+         "DBSCAN": 0.99, "Adaptive Baseline": 0.90}, 0.85) == 3
+
+
+def test_a_score_without_material_evidence_is_not_critical():
+    """The live gateway case: score 0.99, three models, and a 1.3x byte change.
+
+    A model score is a ranking, not a measured magnitude. Without a 3-sigma deviation (or a
+    direct signature/novelty), the row stays a lead at medium -- otherwise a home router's
+    ordinary traffic is presented as an incident.
+    """
+    assert severity_of(0.99, strong_models=3, strong_families=2,
+                       deviation_magnitude=1.3) == "medium"
+    assert severity_of(0.99, strong_models=3, strong_families=2,
+                       deviation_magnitude=3.1) == "critical"
+    assert severity_of(0.99, strong_models=3, strong_families=2,
+                       deviation_magnitude=0.0, signature=True) == "critical"
+    assert severity_of(0.99, strong_models=3, strong_families=2,
+                       deviation_magnitude=0.0, novelty=True) == "critical"
+
+
+def test_one_family_does_not_corroborate_even_with_a_high_score():
+    assert severity_of(0.99, strong_models=2, strong_families=1,
+                       deviation_magnitude=10.0) == "medium"
+
+
+def test_severity_basis_names_the_evidence_or_the_cap():
+    """The visible sentence must not claim an incident when the evidence is thin."""
+    strong = ensemble.severity_basis(0.99, 2, deviation_magnitude=3.1)
+    assert "2 independent families" in strong and "3.1σ" in strong
+    assert "capped" not in strong
+    thin = ensemble.severity_basis(0.99, 2, deviation_magnitude=1.3)
+    assert "score only" in thin and "capped" in thin and "1.3σ" in thin
+    sig = ensemble.severity_basis(0.99, 1, signature=True, deviation_magnitude=0.0)
+    assert "structural signature" in sig and "capped" not in sig
+
+
 # --- structural signature corroboration --------------------------------------
 SCAN_DIV = {"unique_dst_ports": 300, "port_entropy": 8.21}
 NORMAL_DIV = {"unique_dst_ports": 2, "port_entropy": 0.92}
@@ -949,9 +997,10 @@ def test_severity_of_does_not_advertise_a_gate_it_does_not_read():
     import inspect
 
     params = list(inspect.signature(ensemble.severity_of).parameters)
-    assert params == ["score", "strong_models", "signature"], (
-        f"severity_of's parameters no longer match what it reads: {params}"
-    )
+    assert params == [
+        "score", "strong_models", "signature", "strong_families",
+        "deviation_magnitude", "novelty",
+    ], f"severity_of's parameters no longer match what it reads: {params}"
 
 
 def test_no_dead_detector_catalog_next_to_the_real_mapping():
