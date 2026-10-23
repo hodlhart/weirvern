@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.26 — 2026-10-23
+
+THE INSTALLED WEB APP WEARS THE LOGO.
+
+- Added `manifest.webmanifest` with the Weirvern name, standalone display and 192/512
+  launcher icons derived from the mark; Chrome/Edge installs no longer fall back to a
+  generic page thumbnail.
+- Added the iOS web-app meta tags and kept the existing 180px apple-touch-icon.
+- Added a network-only service worker (`sw.js`). It provides the fetch handler the installed
+  shell needs and deliberately caches nothing, so an installed console cannot show stale
+  health after a pod dies.
+
 ## 0.19.25 — 2026-10-23
 
 THE NETWORK DEDUP AND THE NFS CLIENT PORT.

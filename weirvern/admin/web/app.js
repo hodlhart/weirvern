@@ -6043,3 +6043,12 @@ if (document.readyState === "loading") {
 } else {
   trBoot();
 }
+
+/* INSTALLED WEB APP. The manifest supplies the logo and standalone shell; the service worker
+ * is network-only so installing never freezes a dashboard at yesterday's state. Registration
+ * is best-effort: an HTTP origin or a browser without support must still boot the console. */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
