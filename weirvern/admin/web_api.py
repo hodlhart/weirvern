@@ -77,9 +77,23 @@ def calibration_payload(data: dict) -> dict:
     Every row carries `target_far` and `observed_far` side by side; the frontend must not have to
     infer a budget from a threshold. `computed_at` is already ISO from status.calibration_overview.
     """
+    rows = []
+    for raw in (data.get("rows") or []):
+        row = dict(raw)
+        target = float(row.get("target_far") or 0.0)
+        observed = row.get("observed_far")
+        samples = int(row.get("sample_count") or 0)
+        if samples < 100:
+            verdict = "insufficient samples"
+        elif observed is not None and target > 0 and float(observed) <= target * 1.5:
+            verdict = "within budget"
+        else:
+            verdict = "over budget"
+        row["verdict"] = verdict
+        rows.append(row)
     return {"available": bool(data.get("available")),
             "reason": str(data.get("reason") or ""),
-            "rows": list(data.get("rows") or [])}
+            "rows": rows}
 
 
 def health_payload(report) -> dict:

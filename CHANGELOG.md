@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.8 — 2026-10-24
+
+CANDIDATE DEDUPE AND CALIBRATION VERDICT.
+
+- The HDBSCAN candidate now collapses fragmented aggregate rows before clustering. The first live
+  sample had 5,000 rows but only 327 unique host-windows, so its clusters were measuring duplicate
+  insert blocks. Each side table is grouped before the join; additive fields sum.
+- Calibration rows carry a factual `verdict` (`within budget`, `over budget`, `insufficient
+  samples`) and the Models card names the models within the requested budget. Nothing is promoted
+  automatically; the production alert path is unchanged.
+
 ## 0.20.7 — 2026-10-24
 
 DETECTION CURSOR TIMEZONE FIX.

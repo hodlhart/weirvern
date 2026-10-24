@@ -5068,7 +5068,7 @@ function renderCalibration(data) {
   body.replaceChildren();
   if (!data || !data.available) {
     note.textContent = "Calibration unavailable: " + ((data && data.reason) || "the read failed");
-    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 8 },
       text: "No calibration rows were read." })]));
     return;
   }
@@ -5076,12 +5076,14 @@ function renderCalibration(data) {
   if (!rows.length) {
     note.textContent = "No calibration rows yet. The worker's shadow pass has not written a " +
       "reference with enough samples; this is not a zero false-alarm rate.";
-    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 8 },
       text: "Nothing calibrated yet — the detector scores are still uncalibrated." })]));
     return;
   }
+  const within = rows.filter((r) => r.verdict === "within budget").map((r) => r.model_name);
   note.textContent = "Shadow calibration: the target is a requested false-alarm fraction of " +
-    "the stored detection tail; it is not controlling alerts yet.";
+    "the stored detection tail; it is not controlling alerts yet." +
+    (within.length ? " Within budget: " + within.join(", ") + "." : "");
   for (const r of rows) {
     const pct = (v) => Number.isFinite(Number(v)) ? (Number(v) * 100).toFixed(2) + "%" : "—";
     body.appendChild(el("tr", {}, [
@@ -5090,6 +5092,7 @@ function renderCalibration(data) {
       el("td", { class: "num", text: pct(r.target_far) }),
       el("td", { class: "num mono", text: Number(r.threshold || 0).toFixed(3) }),
       el("td", { class: "num", text: pct(r.observed_far) }),
+      el("td", { class: "muted", text: r.verdict || "—" }),
       el("td", { class: "num", text: Number(r.sample_count || 0).toLocaleString() }),
       el("td", { class: "mono", text: fmtTime(r.computed_at) }),
     ]));

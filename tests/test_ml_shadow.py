@@ -95,3 +95,11 @@ def test_shadow_overview_names_each_channel_and_a_broken_one_is_not_empty_succes
     broken = next(r for r in out2["rows"] if r["key"] == "changepoints")
     assert broken["available"] is False and broken["state"] == "unavailable"
     assert "table unavailable" in broken["reason"]
+
+
+def test_candidate_matrix_collapses_aggregate_fragments_before_clustering():
+    from weirvern.models.candidates import matrix_sql
+    sql = matrix_sql(5000)
+    assert "GROUP BY window_start, src_addr" in sql
+    assert "sum(total_bytes)" in sql
+    assert "ORDER BY sipHash64" in sql and "LIMIT 5000" in sql

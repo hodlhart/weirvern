@@ -27,14 +27,35 @@ FEATURES_SQL = (
 
 
 def matrix_sql(limit: int) -> str:
+    # THE AGGREGATE TABLES ARE FRAGMENTED BY INSERT BLOCK, NOT ONE ROW PER HOST-WINDOW. The first
+    # candidate query joined them directly and returned 5,000 rows but only 327 unique
+    # (window_start, src_addr) keys: HDBSCAN was clustering duplicate copies of the same window,
+    # so its "clusters" and its A/B against DBSCAN measured duplication rather than behaviour.
+    # Collapse each side table before joining; additive columns sum, estimates take the largest
+    # available block. This mirrors the production sweep's `_collapse_partial_aggregates`, but
+    # stays in SQL because this is a bounded shadow sample.
     return (
         "SELECT a.window_start, a.src_addr, " + FEATURES_SQL + " "
-        "FROM weirvern.flows_aggregated a "
-        "LEFT JOIN weirvern.flows_aggregated_diversity d "
-        "  ON a.window_start = d.window_start AND a.src_addr = d.src_addr "
-        "LEFT JOIN weirvern.flows_aggregated_temporal t "
-        "  ON a.window_start = t.window_start AND a.src_addr = t.src_addr "
-        "WHERE a.window_start >= now() - INTERVAL 72 HOUR AND a.total_bytes > 0 "
+        "FROM ("
+        "  SELECT window_start, src_addr, sum(total_bytes) AS total_bytes, "
+        "         sum(total_packets) AS total_packets, sum(unique_dst_ips) AS unique_dst_ips, "
+        "         sum(flow_count) AS flow_count "
+        "  FROM weirvern.flows_aggregated "
+        "  WHERE window_start >= now() - INTERVAL 72 HOUR AND total_bytes > 0 "
+        "  GROUP BY window_start, src_addr"
+        ") a "
+        "LEFT JOIN ("
+        "  SELECT window_start, src_addr, sum(unique_dst_ports) AS unique_dst_ports, "
+        "         max(port_entropy) AS port_entropy "
+        "  FROM weirvern.flows_aggregated_diversity "
+        "  GROUP BY window_start, src_addr"
+        ") d ON a.window_start = d.window_start AND a.src_addr = d.src_addr "
+        "LEFT JOIN ("
+        "  SELECT window_start, src_addr, max(activity_regularity) AS activity_regularity, "
+        "         max(burstiness) AS burstiness "
+        "  FROM weirvern.flows_aggregated_temporal "
+        "  GROUP BY window_start, src_addr"
+        ") t ON a.window_start = t.window_start AND a.src_addr = t.src_addr "
         "ORDER BY sipHash64(a.src_addr, a.window_start) LIMIT " + str(int(limit))
     )
 

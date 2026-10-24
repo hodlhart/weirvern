@@ -45,3 +45,19 @@ def test_the_calibration_tables_are_shipped_and_append_only():
     assert "ReplacingMergeTree" in sql
     assert "MergeTree" in sql
     assert "reference_source" in sql
+
+
+def test_calibration_payload_labels_a_budget_verdict_without_promoting_it():
+    from weirvern.admin.web_api import calibration_payload
+    out = calibration_payload({"available": True, "rows": [
+        {"model_name": "Isolation Forest", "target_far": 0.01, "observed_far": 0.0105,
+         "sample_count": 2099},
+        {"model_name": "DBSCAN", "target_far": 0.01, "observed_far": 0.5151,
+         "sample_count": 1993},
+        {"model_name": "Tiny", "target_far": 0.01, "observed_far": 0.005,
+         "sample_count": 12},
+    ]})
+    by = {r["model_name"]: r["verdict"] for r in out["rows"]}
+    assert by["Isolation Forest"] == "within budget"
+    assert by["DBSCAN"] == "over budget"
+    assert by["Tiny"] == "insufficient samples"
