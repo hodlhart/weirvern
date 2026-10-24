@@ -1562,7 +1562,13 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
     # cursor is on disk.
     _last_covered = _load_detect_cursor(settings)
     _since_dt, _new_cursor = _covered_through(settings, _last_covered)
-    since = _since_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # THE DATABASE COLUMN IS NAIVE LOCAL TIME, THE CURSOR IS AWARE UTC. Formatting the aware
+    # cursor directly wrote a UTC wall-clock into a comparison against `window_start` (a naive
+    # DateTime in the server's America/Chicago zone). The cursor then sat five hours in the
+    # future, every sweep matched zero rows, and detection stopped while the pod stayed green --
+    # measured live: cursor 23:45Z while aggregates reached 21:30 local. Convert to the worker's
+    # local zone, which is the same host zone ClickHouse uses, before formatting.
+    since = _since_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     agg_cols, agg_rows = db.fetch_rows_named(
         client,

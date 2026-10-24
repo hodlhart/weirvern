@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.7 — 2026-10-24
+
+DETECTION CURSOR TIMEZONE FIX.
+
+- The sweep formatted its aware UTC cursor directly into a comparison against ClickHouse's naive
+  local `window_start`. On the live box the cursor sat five hours in the future (23:45Z vs 21:30
+  CDT), every sweep matched zero aggregates, and detection stopped while the pod stayed green.
+  Format the cursor in the worker's local zone — the same host zone the database uses.
+
 ## 0.20.6 — 2026-10-23
 
 MODELS TAB ALIGNED WITH THE ML LAYER.
