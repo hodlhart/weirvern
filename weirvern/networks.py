@@ -20,7 +20,10 @@ validation are testable without ClickHouse.
 """
 from __future__ import annotations
 
+import contextlib
 import ipaddress
+import json
+import os
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -347,3 +350,61 @@ def training_filter_sql(scopes: Iterable[Scope], alias: str = "a") -> str:
 def training_filter(client, alias: str = "a") -> str:
     """Load the declarations and return the predicate for a detector's training query."""
     return training_filter_sql(load_scopes(client), alias=alias)
+
+
+def _env_json(name: str) -> dict:
+    try:
+        value = json.loads(os.environ.get(name) or "{}")
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def suggested_monitored_scopes(plans: dict | None = None,
+                               interface_names: dict | None = None) -> list[Scope]:
+    """Scopes inferred ONLY from already-configured monitored networks.
+
+    `INTERCEPT_PLANS` is operator configuration: each plan names a segment the sensor was
+    explicitly told to monitor. Those segments are therefore safe to PROPOSE as internal,
+    monitored scopes. Nothing here reads observed traffic or private address space, and the
+    caller must still persist/approve the proposal -- this function does not write.
+
+    `INTERFACE_NETWORKS` supplies human labels (`eth1=Servers`); a label is descriptive, never
+    a private-address test. A segment with no valid CIDR is skipped rather than guessed.
+    """
+    from_env = plans is None
+    plans = _env_json("INTERCEPT_PLANS") if plans is None else plans
+    if interface_names is None:
+        names: dict[str, str] = {}
+        for item in (os.environ.get("INTERFACE_NETWORKS") or "").split(","):
+            if "=" in item:
+                iface, name = item.split("=", 1)
+                names[iface.strip()] = name.strip()
+    else:
+        names = {str(k): str(v) for k, v in interface_names.items()}
+    single = (os.environ.get("INTERCEPT_SEGMENT") or "").strip() if from_env else ""
+    out: list[Scope] = []
+    seen: set[str] = set()
+    for iface, plan in plans.items():
+        if not isinstance(plan, dict):
+            continue
+        segment = str(plan.get("segment") or "").strip()
+        if not segment:
+            continue
+        try:
+            scope = normalize_scope(segment, label="internal", monitored=True, policy="full",
+                                    description=f"monitored network on {iface}"
+                                                + (f" ({names[iface]})" if names.get(iface) else ""),
+                                    source="monitored-net")
+        except ValueError:
+            continue
+        if scope.cidr in seen:
+            continue
+        seen.add(scope.cidr)
+        out.append(scope)
+    if not out and single:
+        with contextlib.suppress(ValueError):
+            out.append(normalize_scope(single, label="internal", monitored=True, policy="full",
+                                       description="monitored network from INTERCEPT_SEGMENT",
+                                       source="monitored-net"))
+    return out

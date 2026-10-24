@@ -6147,6 +6147,7 @@ if ("serviceWorker" in navigator) {
 let NETWORK_SCOPES = [];
 let NETWORK_EDIT_ID = "";
 let NETWORKS_WIRED = false;
+let NETWORK_SUGGESTED = [];
 
 function networkScopeRow(scope, writable) {
   const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
@@ -6181,11 +6182,19 @@ function renderNetworks(data) {
     body.replaceChildren();
     return;
   }
+  NETWORK_SUGGESTED = data.suggested_scopes || [];
+  const autofill = document.getElementById("st-net-autofill");
+  if (autofill) {
+    autofill.classList.toggle("hidden", !NETWORK_SUGGESTED.length || !writable);
+  }
   if (data.unconfigured) {
-    note.textContent = "No networks are declared yet. Detection is still running unscoped, so " +
-      "every source address is treated as a host. Add the internal, VPN or DMZ ranges this " +
-      "deployment should monitor — and leave external traffic observed unless you deliberately " +
-      "want per-host external alerts.";
+    note.textContent = NETWORK_SUGGESTED.length
+      ? `${NETWORK_SUGGESTED.length} monitored network(s) are configured on the sensor but not ` +
+        "declared here. Auto-fill proposes those exact segments; external traffic stays observed."
+      : "No networks are declared yet. Detection is still running unscoped, so " +
+        "every source address is treated as a host. Add the internal, VPN or DMZ ranges this " +
+        "deployment should monitor — and leave external traffic observed unless you deliberately " +
+        "want per-host external alerts.";
   } else {
     const bits = ["Longest prefix wins on overlap."];
     if (data.summary.unclassified_hosts !== null && data.summary.unclassified_hosts !== undefined) {
@@ -6256,6 +6265,11 @@ async function loadNetworks() {
     }
     if (card) {
       card.addEventListener("click", async (ev) => {
+        if (ev.target && ev.target.id === "st-net-autofill") {
+          ev.preventDefault();
+          await networkAutoFill();
+          return;
+        }
         const edit = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-edit");
         const del = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-delete");
         if (edit) {
@@ -6291,6 +6305,22 @@ function networkEdit(scope) {
   const cancel = document.getElementById("st-net-cancel");
   if (cancel) cancel.classList.remove("hidden");
   showNetworkResult("Editing " + scope.cidr + ".", false);
+}
+
+async function networkAutoFill() {
+  if (!window.SETTINGS_WRITES) return;
+  const result = document.getElementById("st-net-result");
+  if (result) { result.className = "muted"; result.textContent = "Creating scopes from monitored networks…"; }
+  try {
+    const data = await postJSON("/api/networks/autofill", {});
+    if (result) {
+      result.className = "ok";
+      result.textContent = `Created ${data.created || 0} scope(s). The worker applies them on its next sweep.`;
+    }
+    await loadNetworks();
+  } catch (err) {
+    if (result) { result.className = "bad"; result.textContent = "Auto-fill failed: " + (err && err.message ? err.message : err); }
+  }
 }
 
 function networkResetForm() {

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.1 — 2026-10-24
+
+AUTO-FILL SCOPES FROM MONITORED NETWORKS.
+
+- Settings now offers **Auto-fill from monitored networks** when the scope table is empty. It
+  reads only `INTERCEPT_PLANS` segments already configured by the operator, labels their
+  interface description when available, and creates internal/full monitored scopes after one
+  explicit click. It never reads observed traffic or an RFC1918 list.
+- The read endpoint returns those segments as `suggested_scopes`; the write endpoint is
+  `/api/networks/autofill` and refuses to run once any scope exists.
+- Invalid segments are skipped, not guessed; external traffic remains observed unless separately
+  declared.
+
 ## 0.23.0 — 2026-10-24
 
 SCOPE ENFORCEMENT ACROSS TRAINING AND THE GRAPH.

@@ -2844,6 +2844,9 @@ def _build_handler(ctx: GuiContext):
             # ── NETWORK SCOPES ─────────────────────────────────────────────────────────────
             # These decide which hosts are eligible for per-host baselines and alerts, so
             # they are configuration writes and go through the same admin gate as Settings.
+            if path == "/api/networks/autofill":
+                self._networks_autofill()
+                return
             if path == "/api/networks/save":
                 return self._networks_save()
             if path == "/api/networks/delete":
@@ -3835,6 +3838,10 @@ def _build_handler(ctx: GuiContext):
             try:
                 with self._with_client() as client:
                     payload = networks.overview(client, hours=hours)
+                    if not payload.get("scopes"):
+                        payload["suggested_scopes"] = [
+                            scope.public() for scope in networks.suggested_monitored_scopes()
+                        ]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("network scope read failed: %s", exc)
                 return self._json({
@@ -3842,6 +3849,36 @@ def _build_handler(ctx: GuiContext):
                     "reason": f"could not read network scopes: {type(exc).__name__}",
                     "scopes": [], "summary": {}, "counts_available": False,
                 })
+            self._json(payload)
+
+        def _networks_autofill(self) -> None:
+            """Create the scopes already implied by monitored networks, after one approval.
+
+            This is deliberately a POST, not a GET side effect: reading coverage must never
+            change what is monitored. The proposals come only from INTERCEPT_PLANS -- segments
+            the operator already configured the sensor to watch -- never from observed traffic
+            or an RFC1918 guess.
+            """
+            if not self._authorize():
+                return
+            try:
+                with self._with_client() as client:
+                    existing = networks.load_scopes(client)
+                    if existing:
+                        return self._error(409, "network scopes are already declared")
+                    proposed = networks.suggested_monitored_scopes()
+                    if not proposed:
+                        return self._error(400, "no monitored networks are configured to fill from")
+                    saved = [networks.save_scope(client, scope.public()) for scope in proposed]
+                    payload = networks.overview(client, hours=24)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("network scope auto-fill failed: %s", exc)
+                return self._error(500, f"could not auto-fill network scopes: {str(exc)[:200]}")
+            payload["ok"] = True
+            payload["created"] = len(saved)
+            payload["scopes_added"] = [scope.public() for scope in saved]
             self._json(payload)
 
         def _networks_save(self) -> None:

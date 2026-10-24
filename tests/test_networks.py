@@ -90,3 +90,18 @@ def test_catch_all_monitored_scope_is_flagged_not_rejected():
     assert broad.warning, "a monitored catch-all must be flagged as dangerous"
     observed = normalize_scope("0.0.0.0/0", label="external", monitored=False, policy="observe")
     assert observed.warning == "", "an observed catch-all is not an alerting risk"
+
+
+def test_monitored_networks_are_proposed_as_internal_scopes_without_observed_traffic():
+    from weirvern.networks import suggested_monitored_scopes
+    plans = {
+        "eth1": {"segment": "198.51.100.0/24"},
+        "eth2": {"segment": "2001:db8::/32"},
+        "eth3": {"segment": "not-a-cidr"},
+    }
+    proposed = suggested_monitored_scopes(plans, {"eth1": "Servers", "eth2": "Data"})
+    assert [s.cidr for s in proposed] == ["198.51.100.0/24", "2001:db8::/32"]
+    assert all(s.label == "internal" and s.monitored and s.policy == "full" for s in proposed)
+    assert all(s.source == "monitored-net" for s in proposed)
+    assert "Servers" in proposed[0].description
+    assert suggested_monitored_scopes({}, {}) == []
