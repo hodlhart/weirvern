@@ -18,15 +18,15 @@ def _scope(cidr, label="internal", monitored=True, policy="full", id="a"):
 
 def test_longest_prefix_beats_a_broader_declaration():
     scopes = [
-        _scope("10.0.0.0/8", "internal", True, "full", "a"),
-        _scope("10.20.30.0/24", "dmz", True, "full", "b"),
+        _scope("198.51.100.0/24", "internal", True, "full", "a"),
+        _scope("198.51.100.128/26", "dmz", True, "full", "b"),
     ]
-    assert resolve("10.20.30.44", scopes).label == "dmz"
-    assert resolve("10.99.0.1", scopes).label == "internal"
+    assert resolve("198.51.100.150", scopes).label == "dmz"
+    assert resolve("198.51.100.10", scopes).label == "internal"
 
 
 def test_unmatched_is_unclassified_not_guessed_external():
-    scopes = [_scope("10.0.0.0/8")]
+    scopes = [_scope("198.51.100.0/24")]
     assert resolve("203.0.113.9", scopes) is None
     assert filter_monitored([{"src_addr": "203.0.113.9"}], scopes)[1]["unclassified"] == 1
 
@@ -51,16 +51,16 @@ def test_invalid_cidr_and_label_are_rejected():
     with pytest.raises(ValueError):
         normalize_scope("not-a-network")
     with pytest.raises(ValueError):
-        normalize_scope("10.0.0.0/8", label="production")
+        normalize_scope("198.51.100.0/24", label="production")
 
 
 def test_filter_monitored_keeps_only_monitored_rows_and_reports_counts():
-    scopes = [_scope("10.0.0.0/8", "internal", True, "full", "a"),
-              _scope("10.1.0.0/16", "external", True, "observe", "b")]
-    rows = [{"src_addr": "10.2.3.4"}, {"src_addr": "10.1.2.3"},
-            {"src_addr": "198.51.100.7"}]
+    scopes = [_scope("198.51.100.0/24", "internal", True, "full", "a"),
+              _scope("203.0.113.0/24", "external", True, "observe", "b")]
+    rows = [{"src_addr": "198.51.100.7"}, {"src_addr": "203.0.113.4"},
+            {"src_addr": "192.0.2.9"}]
     kept, summary = filter_monitored(rows, scopes)
-    assert [r["src_addr"] for r in kept] == ["10.2.3.4"]
+    assert [r["src_addr"] for r in kept] == ["198.51.100.7"]
     assert summary["unclassified"] == 1
     assert summary["kept"] == 1
 
@@ -68,4 +68,4 @@ def test_filter_monitored_keeps_only_monitored_rows_and_reports_counts():
 def test_ipv6_resolves_without_a_version_collision():
     scopes = [_scope("2001:db8::/32", "internal", True, "full", "a")]
     assert resolve("2001:db8::1", scopes).label == "internal"
-    assert resolve("10.0.0.1", scopes) is None
+    assert resolve("203.0.113.1", scopes) is None
