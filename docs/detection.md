@@ -20,12 +20,31 @@ Four detectors, each contributing a normalised 0–1 score:
 
 Scores are fused (default `max`) and gated by `BASE_THRESHOLD`.
 
-**Severity escalation requires corroboration**: two-or-more detectors scoring
-≥0.85, or one such detector backed by a direct structural signature (e.g. a
-zero-byte port scan, which volume-based models cannot see). A single strong
-signal without corroboration alerts at `medium` — it is not escalated and not
-silenced. This gate exists because measurement showed a 90-false-positive storm
-without it.
+**Severity escalation requires independent corroboration and material evidence**:
+at least two *families* must agree (Isolation Forest and its Gradient Boosting
+student are one family; DBSCAN and the Adaptive Baseline are separate), and the
+window must carry a material deviation, a structural signature (e.g. a zero-byte
+port scan), or true novelty. A strong score alone is not enough — a high score is
+a ranking, not an incident. Rows that do not clear the gate stay visible at a
+lower severity with their reason; they are not deleted. This gate exists because
+measurement showed a 90-false-positive storm without it.
+
+### Shadow calibration and challengers
+
+The production ensemble is still the four detectors above. The newer layer is
+read-only and cannot create or change an alert:
+
+- **Calibration** measures a requested false-alarm budget against the stored
+  detection tail and reports the observed rate; it is not wired to the alert path.
+- **HDBSCAN** is a density challenger scored on the same host-window matrix; a
+  candidate must beat the production model at the same alerts/day before it can
+  replace DBSCAN.
+- **Matrix Profile** records shape discords that the per-window tabular detectors
+  cannot see, and **Page-Hinkley** records regime changes. Both are evidence
+  channels, not alert sources.
+
+The Models tab reports each shadow channel's row count, coverage and freshness
+independently; an unreadable channel is named, never shown as an empty success.
 
 ### Detection quality, measured
 

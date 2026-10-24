@@ -52,8 +52,10 @@ answers behind the window. Click an alert and the evidence is on the same screen
 
 **Four detectors, one verdict.** Isolation Forest, Gradient Boosting, DBSCAN and a per-host
 adaptive baseline are trained independently and fused into one score. A corroboration gate
-decides when the ensemble is confident enough to raise severity. ATT&CK techniques appear as
-hypotheses with their measurements, never as bare conclusions.
+decides when independent families and material evidence justify raising severity. A shadow
+calibration layer and challenger channels measure false-alarm budgets and temporal evidence
+without changing the alert path. ATT&CK techniques appear as hypotheses with their measurements,
+never as bare conclusions.
 
 **Sensors where the network is.** A hub runs the database, models and the console; a weirling is
 the sensor you place on a host or node anywhere in the infrastructure. It can carry several NICs,

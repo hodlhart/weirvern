@@ -207,6 +207,9 @@ dropping the manifest is the one way not to run it.
 
 - Four independently trained detectors — Isolation Forest, Gradient Boosting, DBSCAN and a
   per-host Adaptive Baseline — fused into one score with a corroboration gate for severity.
+- A read-only ML layer: shadow calibration (false-alarm budget), HDBSCAN candidate scoring,
+  Matrix Profile shape discords and Page-Hinkley regime changes. None of these changes an alert;
+  the Models tab reports their counts and freshness separately.
 - Alert hygiene built in: per-source cooldown, global hourly cap, and dedupe on
   `(host, window)`.
 - Detection quality is *measured*, not assumed: a seeded-attack harness runs the real
