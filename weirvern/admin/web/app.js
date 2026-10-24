@@ -1302,6 +1302,12 @@ async function loadSettings() {
   // decoration; the rows themselves are the answer. The element still carries the unavailable
   // reason above, which is information.
   if (sum) sum.textContent = "";
+  window.SETTINGS_WRITES = Boolean(data.writes && data.writes.enabled);
+
+  // Network scopes live beside the other settings; the card owns its own read/write because
+  // a CIDR declaration is not a ConfigMap key and must not be staged as one. Loaded AFTER
+  // SETTINGS_WRITES so its controls render in the caller's actual write state.
+  if (typeof loadNetworks === "function") loadNetworks().catch(() => {});
 
   for (const key of ["detect", "sensor", "dns", "runtime"]) {
     const host = document.getElementById(`st-${key}`);
@@ -6131,4 +6137,174 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });
+}
+
+/* ── NETWORK SCOPES (Settings) ─────────────────────────────────────────────────────────────
+ * The operator declares what a network IS and whether its hosts are alertable. The server
+ * validates CIDRs, resolves overlaps by longest prefix and reports unclassified traffic; this
+ * card only renders and edits those declarations. It never invents an internal/external
+ * distinction from an address. */
+let NETWORK_SCOPES = [];
+let NETWORK_EDIT_ID = "";
+let NETWORKS_WIRED = false;
+
+function networkScopeRow(scope, writable) {
+  const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
+  return el("tr", {}, [
+    el("td", { class: "mono", text: scope.cidr }),
+    el("td", { text: scope.label }),
+    el("td", { text: scope.policy }),
+    el("td", { text: monitored ? "yes" : "observed" }),
+    el("td", { class: "num", text: scope.hosts === null || scope.hosts === undefined ? "—" : String(scope.hosts) }),
+    el("td", { class: "num", text: scope.alerts === null || scope.alerts === undefined ? "—" : String(scope.alerts) }),
+    el("td", {}, [
+      el("button", { class: "quiet", type: "button", attrs: { "data-net-edit": scope.id, disabled: writable ? null : "disabled" }, text: "Edit" }),
+      el("button", { class: "quiet danger", type: "button", attrs: { "data-net-delete": scope.id, disabled: writable ? null : "disabled" }, text: "Delete" }),
+    ]),
+  ]);
+}
+
+function renderNetworks(data) {
+  const note = document.getElementById("st-networks-note");
+  const state = document.getElementById("st-networks-state");
+  const body = document.querySelector("#st-networks-table tbody");
+  const writable = Boolean(window.SETTINGS_WRITES);
+  if (!note || !body) return;
+  const summary = data.summary || {};
+  if (state) {
+    state.textContent = data.unconfigured ? "not configured" :
+      `${summary.monitored || 0} monitored · ${summary.observed || 0} observed`;
+  }
+  if (!data.available) {
+    note.textContent = "Network scopes unavailable: " + (data.reason || "the read did not run");
+    body.replaceChildren();
+    return;
+  }
+  if (data.unconfigured) {
+    note.textContent = "No networks are declared yet. Detection is still running unscoped, so " +
+      "every source address is treated as a host. Add the internal, VPN or DMZ ranges this " +
+      "deployment should monitor — and leave external traffic observed unless you deliberately " +
+      "want per-host external alerts.";
+  } else {
+    const bits = ["Longest prefix wins on overlap."];
+    if (data.summary.unclassified_hosts !== null && data.summary.unclassified_hosts !== undefined) {
+      bits.push(`${data.summary.unclassified_hosts} source address(es) in the last 24h fall ` +
+        "outside every declaration.");
+    }
+    if (!data.counts_available) bits.push("Some counts could not be read; — means unknown, not zero.");
+    note.textContent = bits.join(" ");
+  }
+  body.replaceChildren();
+  if (!(data.scopes || []).length) {
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 }, text: "No networks declared." })]));
+    return;
+  }
+  for (const scope of data.scopes || []) body.appendChild(networkScopeRow(scope, writable));
+}
+
+async function loadNetworks() {
+  const note = document.getElementById("st-networks-note");
+  let data;
+  try {
+    data = await getJSON("/api/networks");
+  } catch (err) {
+    if (note) note.textContent = "Network scopes could not be read: " + (err && err.message ? err.message : err);
+    return;
+  }
+  NETWORK_SCOPES = data.scopes || [];
+  renderNetworks(data);
+  if (!NETWORKS_WIRED) {
+    NETWORKS_WIRED = true;
+    const save = document.getElementById("st-net-save");
+    const cancel = document.getElementById("st-net-cancel");
+    const label = document.getElementById("st-net-label");
+    const form = document.getElementById("st-networks-form");
+    if (label) {
+      label.addEventListener("change", () => {
+        const policy = document.getElementById("st-net-policy");
+        if (policy && label.value === "external" && policy.value === "full") policy.value = "observe";
+      });
+    }
+    if (cancel) cancel.addEventListener("click", () => networkResetForm());
+    if (save) {
+      save.addEventListener("click", async () => {
+        const cidr = String((document.getElementById("st-net-cidr") || {}).value || "").trim();
+        if (!cidr) { showNetworkResult("A CIDR is required.", true); return; }
+        const body = {
+          cidr,
+          label: (document.getElementById("st-net-label") || {}).value || "internal",
+          policy: (document.getElementById("st-net-policy") || {}).value || "observe",
+          monitored: Boolean((document.getElementById("st-net-monitored") || {}).checked),
+          description: (document.getElementById("st-net-desc") || {}).value || "",
+        };
+        if (NETWORK_EDIT_ID) body.id = NETWORK_EDIT_ID;
+        save.disabled = true;
+        try {
+          const res = await postJSON("/api/networks/save", body);
+          if (res && res.ok === false) throw new Error(res.error || "the server rejected the scope");
+          networkResetForm();
+          showNetworkResult("Saved. The worker applies scopes on its next sweep.", false);
+          await loadNetworks();
+        } catch (err) {
+          showNetworkResult("Could not save: " + (err && err.message ? err.message : err), true);
+        } finally { save.disabled = false; }
+      });
+    }
+    if (form) {
+      form.addEventListener("click", async (ev) => {
+        const edit = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-edit");
+        const del = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-delete");
+        if (edit) {
+          const scope = NETWORK_SCOPES.find((s) => s.id === edit);
+          if (scope) networkEdit(scope);
+        } else if (del) {
+          if (!window.confirm("Delete this network declaration? Traffic remains collected; it becomes unclassified.")) return;
+          try {
+            const res = await postJSON("/api/networks/delete", { id: del });
+            if (res && res.ok === false) throw new Error(res.error || "the server rejected the delete");
+            showNetworkResult("Deleted. The worker applies scopes on its next sweep.", false);
+            await loadNetworks();
+          } catch (err) {
+            showNetworkResult("Could not delete: " + (err && err.message ? err.message : err), true);
+          }
+        }
+      });
+    }
+  }
+}
+
+function networkEdit(scope) {
+  NETWORK_EDIT_ID = scope.id;
+  const set = (id, value) => { const n = document.getElementById(id); if (n) n.value = value; };
+  set("st-net-cidr", scope.cidr);
+  set("st-net-label", scope.label);
+  set("st-net-policy", scope.policy);
+  set("st-net-desc", scope.description || "");
+  const mon = document.getElementById("st-net-monitored");
+  if (mon) mon.checked = Boolean(scope.monitored);
+  const save = document.getElementById("st-net-save");
+  if (save) save.textContent = "Save network";
+  const cancel = document.getElementById("st-net-cancel");
+  if (cancel) cancel.classList.remove("hidden");
+  showNetworkResult("Editing " + scope.cidr + ".", false);
+}
+
+function networkResetForm() {
+  NETWORK_EDIT_ID = "";
+  for (const id of ["st-net-cidr", "st-net-desc"]) {
+    const n = document.getElementById(id); if (n) n.value = "";
+  }
+  const save = document.getElementById("st-net-save");
+  if (save) save.textContent = "Add network";
+  const cancel = document.getElementById("st-net-cancel");
+  if (cancel) cancel.classList.add("hidden");
+  const mon = document.getElementById("st-net-monitored");
+  if (mon) mon.checked = true;
+}
+
+function showNetworkResult(text, bad) {
+  const n = document.getElementById("st-net-result");
+  if (!n) return;
+  n.textContent = text;
+  n.className = "muted" + (bad ? " bad" : "");
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.22.0 — 2026-10-24
+
+OPERATOR-DECLARED NETWORK SCOPES.
+
+- New `network_scopes` table and Settings → Monitored networks card. Each declaration is a
+  CIDR, a label (`internal`, `vpn`, `dmz`, `external`), a policy (`full`, `aggregate`,
+  `observe`, `off`) and an independent `monitored` flag. Overlaps resolve by longest prefix;
+  unmatched addresses are `unclassified`, never silently assumed private or external.
+- The worker scores only hosts in monitored scopes. When no scopes are declared it preserves
+  the previous behaviour so an upgrade cannot silently stop alerting; once declarations exist,
+  unmonitored and unclassified traffic is collected and visible but does not create per-host
+  alerts. Scope application is logged with kept/unclassified counts every sweep.
+- Weirlings gains a Network coverage card showing each declared scope, whether it is monitored,
+  its 24h host/alert counts, and an explicit Unclassified card for traffic outside every scope.
+  Settings and Weirlings read the same declarations; neither derives scope from an address.
+- The read API is `/api/networks`; writes are `/api/networks/save` and
+  `/api/networks/delete`, admin-gated like every other configuration write.
+
 ## 0.21.0 — 2026-10-24
 
 DNS SHAPE AND GRAPH RELATIONSHIP FEATURES.

@@ -23,7 +23,7 @@ from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import addressing, attack, db, ensemble
+from weirvern import addressing, attack, db, ensemble, networks
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
@@ -1766,6 +1766,33 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
                 # invisible and would change what every rule reads.
                 if k not in f:
                     f[k] = v
+
+    # ── OPERATOR-DECLARED NETWORK SCOPE ─────────────────────────────────────────────────
+    # A per-host baseline is only meaningful for a declared host population. Without this
+    # filter every internet peer and scanner becomes a "host"; measured live, 9,620 of 10,973
+    # alerts in twelve hours were external source addresses. The table is authoritative and
+    # deliberately has no RFC1918 fallback: an address outside every declared scope is
+    # unclassified, and the coverage summary says so rather than hiding it.
+    #
+    # NO ROWS MEANS "NOT CONFIGURED YET", and detection keeps its legacy behaviour so an
+    # upgrade cannot silently stop alerting before the operator has declared a network. Once
+    # any scope exists, only monitored scopes are scored. A declaration that exists but has no
+    # monitored scope is an intentional no-alert state and is logged as such.
+    declared = networks.load_scopes(client)
+    if declared:
+        flows, scope_coverage = networks.filter_monitored(flows, declared)
+        logger.info(
+            "Network scope: %d/%d host-windows alertable; %d unclassified; labels=%s",
+            scope_coverage["kept"], scope_coverage["seen"],
+            scope_coverage["unclassified"], scope_coverage["by_label"],
+        )
+        if not flows:
+            logger.warning(
+                "Network scopes are declared but none are monitored; no per-host alerts "
+                "will be produced this sweep. Set a scope to monitored in Settings → Networks."
+            )
+            _save_detect_cursor(settings, _new_cursor)
+            return []
 
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses)
     if near_misses:

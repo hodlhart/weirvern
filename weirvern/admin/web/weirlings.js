@@ -152,6 +152,10 @@ async function loadWeirlings() {
     summaryBox.appendChild(tile);
   }
   wlRenderViews();
+  // A reading surface like the fleet table: its failure is reported by its own note rather
+  // than blanking the fleet. It is loaded here so the coverage question is answered beside
+  // the sensors that collect it.
+  loadNetworkCoverage().catch(() => {});
 
   // The server's own sentences, verbatim: it knows whether the heartbeat read degraded, and
   // paraphrasing would lose the reason an operator acts on.
@@ -2279,4 +2283,80 @@ async function revokeWeirling() {
   }
   closeWeirling();
   await loadWeirlings();
+}
+
+/* ── NETWORK COVERAGE ─────────────────────────────────────────────────────────────────────
+ * A scope card is the fleet's answer to "which networks are actually monitored?" It reads
+ * the same declarations as Settings; it never derives a scope from an address. An unclassified
+ * card is deliberate: traffic outside every declared network is a configuration gap, not a
+ * background fact that should be hidden. */
+async function loadNetworkCoverage() {
+  const note = document.getElementById("wl-network-note");
+  const list = document.getElementById("wl-network-list");
+  const state = document.getElementById("wl-network-state");
+  if (!note || !list) return;
+  let d;
+  try {
+    d = await getJSON("/api/networks");
+  } catch (err) {
+    note.textContent = "Network coverage could not be read: " + (err && err.message ? err.message : err);
+    return;
+  }
+  if (!d.available) {
+    note.textContent = "Network coverage unavailable: " + (d.reason || "the read did not run");
+    list.replaceChildren();
+    return;
+  }
+  const s = d.summary || {};
+  if (state) state.textContent = d.unconfigured ? "not configured" :
+    `${s.monitored || 0} monitored · ${s.observed || 0} observed`;
+  list.replaceChildren();
+  if (d.unconfigured) {
+    note.textContent = "No networks are declared, so detection is running unscoped: every " +
+      "source address is a host. Declare internal, VPN and DMZ ranges in Settings → " +
+      "Monitored networks; external traffic stays observed unless you deliberately mark it.";
+    const card = el("button", { class: "net-card clickable unclassified", type: "button" }, [
+      el("div", { class: "net-k", text: "unclassified" }),
+      el("div", { class: "net-v", text: "all traffic" }),
+      el("div", { class: "net-m", text: "configure networks to scope detection" }),
+    ]);
+    card.addEventListener("click", () => { if (typeof showView === "function") showView("settings"); });
+    list.appendChild(card);
+    return;
+  }
+  const bits = [];
+  if (s.unclassified_hosts !== null && s.unclassified_hosts !== undefined) {
+    bits.push(`${s.unclassified_hosts} host(s) and ${s.unclassified_alerts || 0} alert(s) in the ` +
+      "last 24h fall outside every declared network.");
+  }
+  if (!d.counts_available) bits.push("Some counts could not be read; — means unknown, not zero.");
+  note.textContent = bits.join(" ") || "Counts cover the last 24 hours.";
+  for (const scope of d.scopes || []) {
+    const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
+    const card = el("button", {
+      class: "net-card clickable " + (monitored ? "monitored" : "observed"),
+      type: "button",
+      title: `${scope.cidr} · ${scope.label} · ${scope.policy}`,
+    }, [
+      el("div", { class: "net-k", text: scope.label }),
+      el("div", { class: "net-v mono", text: scope.cidr }),
+      el("div", { class: "net-m", text: (monitored ? "monitored" : "observed") + " · " +
+        (scope.policy || "") }),
+      el("div", { class: "net-m", text: `hosts ${scope.hosts === null || scope.hosts === undefined ? "—" : scope.hosts} · alerts ${scope.alerts === null || scope.alerts === undefined ? "—" : scope.alerts}` }),
+    ]);
+    card.addEventListener("click", () => {
+      if (typeof AN_FILTERS !== "undefined") { AN_FILTERS.host = ""; }
+      if (typeof showView === "function") showView("settings");
+    });
+    list.appendChild(card);
+  }
+  if (s.unclassified_hosts) {
+    const card = el("button", { class: "net-card clickable unclassified", type: "button" }, [
+      el("div", { class: "net-k", text: "unclassified" }),
+      el("div", { class: "net-v", text: `${s.unclassified_hosts} host(s)` }),
+      el("div", { class: "net-m", text: `${s.unclassified_alerts || 0} alert(s) · configure a scope` }),
+    ]);
+    card.addEventListener("click", () => { if (typeof showView === "function") showView("settings"); });
+    list.appendChild(card);
+  }
 }

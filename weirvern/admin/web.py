@@ -54,7 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from weirvern import fleet_store
+from weirvern import fleet_store, networks
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import gui_auth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -526,6 +526,10 @@ def _build_handler(ctx: GuiContext):
             # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
             if path == "/api/settings":
                 return self._settings(query)
+            # OPERATOR-DECLARED NETWORK SCOPES. A read like settings: viewers may see what is
+            # monitored; only an admin may change it (the POST routes below enforce write authorization).
+            if path == "/api/networks":
+                return self._networks(query)
             if path == "/panic":
                 return self._panic()
             if path == "/api/healthz":
@@ -2837,6 +2841,13 @@ def _build_handler(ctx: GuiContext):
             # finally (see admin/siphon_probe.py for the full contract).
             if path == "/api/settings/test":
                 return self._settings_test()
+            # ── NETWORK SCOPES ─────────────────────────────────────────────────────────────
+            # These decide which hosts are eligible for per-host baselines and alerts, so
+            # they are configuration writes and go through the same admin gate as Settings.
+            if path == "/api/networks/save":
+                return self._networks_save()
+            if path == "/api/networks/delete":
+                return self._networks_delete()
             # SOC-1: the alert review write. A write like the settings routes, so it goes
             # through the same operator-token gate -- an unauthenticated port must not let
             # anyone on the LAN mark alerts as handled.
@@ -3814,6 +3825,59 @@ def _build_handler(ctx: GuiContext):
             except Exception:  # noqa: BLE001
                 pass
             return False, False
+
+        def _networks(self, query: dict) -> None:
+            """Read-only network coverage for Settings and the Weirlings tab."""
+            try:
+                hours = max(1, min(168, int(query.get("hours", ["24"])[0])))
+            except (TypeError, ValueError, IndexError):
+                hours = 24
+            try:
+                with self._with_client() as client:
+                    payload = networks.overview(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("network scope read failed: %s", exc)
+                return self._json({
+                    "available": False,
+                    "reason": f"could not read network scopes: {type(exc).__name__}",
+                    "scopes": [], "summary": {}, "counts_available": False,
+                })
+            self._json(payload)
+
+        def _networks_save(self) -> None:
+            """Create or update one operator-declared network scope."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+                with self._with_client() as client:
+                    scope = networks.save_scope(client, body)
+                    payload = networks.overview(client, hours=24)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("network scope save failed: %s", exc)
+                return self._error(500, f"could not save the network scope: {str(exc)[:200]}")
+            payload["ok"] = True
+            payload["scope"] = scope.public()
+            self._json(payload)
+
+        def _networks_delete(self) -> None:
+            """Retire one scope with a tombstone; the history remains until the merge window."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+                with self._with_client() as client:
+                    removed = networks.delete_scope(client, str(body.get("id") or ""))
+                    payload = networks.overview(client, hours=24)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("network scope delete failed: %s", exc)
+                return self._error(500, f"could not delete the network scope: {str(exc)[:200]}")
+            payload["ok"] = bool(removed)
+            self._json(payload)
 
         def _settings(self, query: dict) -> None:
             """The effective configuration, plus whether this client may CHANGE it.

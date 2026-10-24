@@ -1402,6 +1402,20 @@
     </div>
 
     <div class="card">
+      <h2>Network coverage <span class="muted" id="wl-network-state"></span>
+        <button class="info-btn" data-info="wl-network-info" aria-label="how network coverage works" aria-expanded="false" title="how network coverage works">i</button>
+      </h2>
+      <div class="info-text hidden" id="wl-network-info">
+        <p><strong>What it is.</strong> The operator-declared network scopes this fleet is monitoring, and the traffic that falls outside every declaration.</p>
+        <p><strong>What writes it.</strong> Settings → Monitored networks. This card is a reading surface: it does not decide what is monitored.</p>
+        <p><strong>Last changed.</strong> Counts cover the last 24 hours. A scope marked observed is still collected and counted, but its hosts are not per-host alert sources.</p>
+        <p><strong>Where to see it.</strong> Here, and in Settings → Monitored networks. Unclassified traffic is a configuration gap, not a normal state.</p>
+      </div>
+      <p class="muted" id="wl-network-note">loading…</p>
+      <div id="wl-network-list" class="net-grid"></div>
+    </div>
+
+    <div class="card">
       <h2>Fleet <span id="wl-count" class="muted"></span></h2>
       <div class="controls">
         <!-- SAVED VIEWS (BF-7): the worklist's filter sets; the built-ins never disappear, the
@@ -1730,6 +1744,45 @@
   <p><strong>Where to see it.</strong> Threshold changes land on the anomalies queue; cadence changes land in Training history.</p>
 </div>
       <div id="st-detect" class="grid-inline"></div>
+    </div>
+
+    <div class="card" id="st-networks-card">
+      <h2>Monitored networks <span class="muted" id="st-networks-state"></span>
+        <button class="info-btn" data-info="st-networks-info" aria-label="how network scopes work" aria-expanded="false" title="how network scopes work">i</button>
+      </h2>
+      <div class="info-text hidden" id="st-networks-info">
+        <p><strong>What it is.</strong> The networks this deployment has declared, and whether their hosts are eligible for per-host baselines and alerts. A scope is a CIDR plus a label: internal, vpn, dmz or external.</p>
+        <p><strong>What writes it.</strong> Operators. Add a network here, mark it monitored, then apply. The worker reads the table on the next sweep; no address is silently treated as private.</p>
+        <p><strong>Last changed.</strong> Each row shows the last declaration and the 24-hour host/alert counts. Longest-prefix match decides overlaps.</p>
+        <p><strong>Where to see it.</strong> The Weirlings tab shows the same scopes as coverage cards, including traffic outside every declared network.</p>
+      </div>
+      <p class="muted" id="st-networks-note">loading…</p>
+      <table id="st-networks-table">
+        <thead><tr><th>network</th><th>label</th><th>policy</th><th>monitored</th><th>hosts 24h</th><th>alerts 24h</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="controls" id="st-networks-form">
+        <input id="st-net-cidr" type="text" placeholder="198.51.100.0/8 or 2001:db8::/32"
+               aria-label="network CIDR" autocomplete="off" spellcheck="false">
+        <select id="st-net-label" aria-label="network label">
+          <option value="internal">internal</option>
+          <option value="vpn">vpn</option>
+          <option value="dmz">dmz</option>
+          <option value="external">external</option>
+        </select>
+        <select id="st-net-policy" aria-label="network policy">
+          <option value="full">full</option>
+          <option value="aggregate">aggregate</option>
+          <option value="observe">observe</option>
+          <option value="off">off</option>
+        </select>
+        <label class="muted"><input id="st-net-monitored" type="checkbox" checked> monitored</label>
+        <input id="st-net-desc" type="text" placeholder="description (optional)"
+               aria-label="network description" autocomplete="off" spellcheck="false">
+        <button id="st-net-save" type="button">Add network</button>
+        <button id="st-net-cancel" class="quiet hidden" type="button">Cancel</button>
+      </div>
+      <p class="muted" id="st-net-result"></p>
     </div>
 
     <div class="card">
