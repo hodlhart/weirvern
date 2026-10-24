@@ -6218,7 +6218,7 @@ async function loadNetworks() {
     const save = document.getElementById("st-net-save");
     const cancel = document.getElementById("st-net-cancel");
     const label = document.getElementById("st-net-label");
-    const form = document.getElementById("st-networks-form");
+    const card = document.getElementById("st-networks-card");
     if (label) {
       label.addEventListener("change", () => {
         const policy = document.getElementById("st-net-policy");
@@ -6250,8 +6250,8 @@ async function loadNetworks() {
         } finally { save.disabled = false; }
       });
     }
-    if (form) {
-      form.addEventListener("click", async (ev) => {
+    if (card) {
+      card.addEventListener("click", async (ev) => {
         const edit = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-edit");
         const del = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-net-delete");
         if (edit) {

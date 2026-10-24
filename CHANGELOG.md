@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.1 — 2026-10-24
+
+NETWORK COVERAGE UI FOLLOW-UP.
+
+- The Settings network card now listens for Edit/Delete on the card, not only on the add form;
+  the row actions previously sat outside that listener and did nothing.
+- Tests use documentation ranges only, so the sanitation guard keeps its meaning without
+  weakening the scope assertions.
+
 ## 0.22.0 — 2026-10-24
 
 OPERATOR-DECLARED NETWORK SCOPES.
