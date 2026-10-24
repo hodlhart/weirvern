@@ -613,7 +613,8 @@
       <h2>Models <button class="info-btn" data-info="m-info" aria-label="what the detectors are and how to read these charts" aria-expanded="false" title="what the detectors are and how to read these charts">i</button> <span class="muted" id="m-window"></span> <span id="m-filters"></span></h2>
       <p class="muted" id="m-summary">loading…</p>
       <div class="info-text hidden" id="m-info">
-  <p><strong>What it is.</strong> Four detectors watch the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and the ensemble asks how many independent families agree before a score is believed. Isolation Forest and its Gradient Boosting student are one family; DBSCAN and the baseline are separate.</p>
+  <p><strong>What it is.</strong> The production ensemble has four detectors watching the same traffic with different methods — Isolation Forest, Gradient Boosting, DBSCAN, and an adaptive per-host baseline — and asks how many independent families agree before a score is believed. Isolation Forest and its Gradient Boosting student are one family; DBSCAN and the baseline are separate.</p>
+  <p><strong>What is new.</strong> Calibration and the shadow channels below are read-only experiments: they measure budgets, candidates and regime changes, but no shadow row can create or change an alert.</p>
   <p><strong>What writes it.</strong> Each retrain folds in the newest samples from this deployment's own traffic.</p>
   <p><strong>Last changed.</strong> Check freshness above — a model scored against a stale baseline is still confident.</p>
   <p><strong>Where to see it.</strong> Training history, score distribution, agreement, features and near misses all live below.</p>
@@ -637,6 +638,17 @@
       <div class="tablewrap">
         <table id="m-cal">
           <thead><tr><th>Detector</th><th>Scope</th><th>Target false alarms</th><th>Threshold</th><th>Observed</th><th>Samples</th><th>Computed</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Shadow ML <span class="muted">not in the alert path</span></h2>
+      <p class="muted" id="m-shadow-note">loading…</p>
+      <div class="tablewrap">
+        <table id="m-shadow">
+          <thead><tr><th>Channel</th><th>State</th><th>Rows</th><th>Coverage</th><th>Latest</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

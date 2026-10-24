@@ -5096,6 +5096,38 @@ function renderCalibration(data) {
   }
 }
 
+function renderShadow(data) {
+  const note = document.getElementById("m-shadow-note");
+  const body = document.querySelector("#m-shadow tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  if (!data || !data.available) {
+    note.textContent = "Shadow channels unavailable: " + ((data && data.reason) || "the read failed");
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+      text: "No shadow rows were read." })]));
+    return;
+  }
+  const rows = data.rows || [];
+  note.textContent = "These channels record evidence only. None of them can create, raise or "
+    + "change an alert; an empty channel is not a healthy one until its first row arrives.";
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 5 },
+      text: "No shadow channels reported." })]));
+    return;
+  }
+  for (const r of rows) {
+    const state = r.available ? (r.state || "collecting") : "unavailable";
+    const detail = Number(r.detail || 0).toLocaleString() + " " + (r.detail_label || "");
+    body.appendChild(el("tr", {}, [
+      el("td", { text: r.label || r.key || "—" }),
+      el("td", { class: "muted", text: state + (r.reason ? " — " + r.reason : "") }),
+      el("td", { class: "num mono", text: Number(r.rows || 0).toLocaleString() }),
+      el("td", { class: "muted", text: detail.trim() }),
+      el("td", { class: "mono muted", text: r.latest ? fmtTime(r.latest) : "—" }),
+    ]));
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -5106,8 +5138,11 @@ async function loadModels() {
   // working budget, and a broken calibration must not hide the training history.
   const calPromise = getJSON("/api/models/calibration")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
+  const shadowPromise = getJSON("/api/models/shadow")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
   renderCalibration(await calPromise);
+  renderShadow(await shadowPromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");
 

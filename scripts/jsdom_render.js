@@ -1329,6 +1329,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/sluice", SLUICE_PAYLOAD],
     ["/api/fingerprints", FP_PAYLOAD],
     ["/api/models/retrain", RETRAIN_PAYLOAD],
+    ["/api/models/shadow", () => ({ available: true, rows: [
+      { key: "hdbscan", label: "HDBSCAN challenger", available: true, state: "collecting",
+        rows: 5000, detail: 56, detail_label: "clusters", latest: "2026-01-01T00:00:00", reason: "" },
+      { key: "temporal", label: "Matrix Profile", available: true, state: "collecting",
+        rows: 48, detail: 2, detail_label: "metrics", latest: "2026-01-01T00:00:00", reason: "" },
+      { key: "changepoints", label: "Change points", available: true, state: "collecting",
+        rows: 50, detail: 5, detail_label: "hosts", latest: "2026-01-01T00:00:00", reason: "" },
+      { key: "calibration", label: "Calibration", available: true, state: "collecting",
+        rows: 4, detail: 4, detail_label: "models", latest: "2026-01-01T00:00:00", reason: "" },
+    ] })],
     ["/api/baselines", () => BASELINES_PAYLOAD],
 
     // WEIRLINGS. The DETAIL route is handled ABOVE this table because it must be

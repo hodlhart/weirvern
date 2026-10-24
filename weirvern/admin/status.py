@@ -3182,6 +3182,73 @@ def calibration_overview(client) -> dict:
     return {"available": True, "reason": "", "rows": rows}
 
 
+def shadow_overview(client) -> dict:
+    """Counts and freshness for the shadow ML channels, each read independently.
+
+    These are not production detectors: none of them writes an alert. The card exists so the
+    Models tab can show that the new layer is actually collecting, and can name an unreadable
+    channel instead of rendering it as an empty success.
+    """
+    channels = (
+        ("hdbscan", "HDBSCAN challenger", "weirvern.ml_candidate_scores",
+         "uniqExact(extract(evidence, 'cluster=([0-9]+)'))", "clusters"),
+        ("temporal", "Matrix Profile", "weirvern.ml_temporal_scores",
+         "uniqExact(metric)", "metrics"),
+        ("changepoints", "Change points", "weirvern.ml_changepoints",
+         "uniqExact(src_addr)", "hosts"),
+    )
+    rows = []
+    for key, label, table, detail_expr, detail_label in channels:
+        try:
+            res = client.query(
+                "SELECT count() AS n, max(computed_at) AS latest, "
+                + detail_expr + " AS detail FROM " + table
+            )
+            n, latest, detail = res.result_rows[0] if res.result_rows else (0, None, 0)
+            latest_text = ""
+            if latest is not None:
+                latest_text = (latest.isoformat() if hasattr(latest, "isoformat")
+                               else str(latest))
+            rows.append({
+                "key": key, "label": label, "available": True, "reason": "",
+                "rows": int(n or 0), "detail": int(detail or 0),
+                "detail_label": detail_label,
+                "latest": latest_text,
+                "state": "collecting" if int(n or 0) else "empty",
+            })
+        except Exception as exc:  # noqa: BLE001
+            rows.append({
+                "key": key, "label": label, "available": False,
+                "reason": f"{type(exc).__name__}: {str(exc)[:120]}",
+                "rows": 0, "detail": 0, "detail_label": detail_label,
+                "latest": "", "state": "unavailable",
+            })
+    # Calibration is a first-class shadow channel even though its rows live in its own table.
+    try:
+        res = client.query(
+            "SELECT count() AS n, max(computed_at) AS latest FROM weirvern.ml_calibration FINAL"
+        )
+        n, latest = res.result_rows[0] if res.result_rows else (0, None)
+        latest_text = ""
+        if latest is not None:
+            latest_text = (latest.isoformat() if hasattr(latest, "isoformat")
+                           else str(latest))
+        rows.append({
+            "key": "calibration", "label": "Calibration", "available": True, "reason": "",
+            "rows": int(n or 0), "detail": int(n or 0), "detail_label": "models",
+            "latest": latest_text,
+            "state": "collecting" if int(n or 0) else "empty",
+        })
+    except Exception as exc:  # noqa: BLE001
+        rows.append({
+            "key": "calibration", "label": "Calibration", "available": False,
+            "reason": f"{type(exc).__name__}: {str(exc)[:120]}",
+            "rows": 0, "detail": 0, "detail_label": "models",
+            "latest": "", "state": "unavailable",
+        })
+    return {"available": True, "reason": "", "rows": rows}
+
+
 def detectors_overview(client) -> dict:
     """The registry joined to what it actually caught: fired and acted-on per detector.
 

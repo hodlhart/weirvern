@@ -59,3 +59,39 @@ def test_hdbscan_centres_come_from_the_medoid_attribute():
     _, _, centers = _fit(X, min_cluster_size=20)
     assert centers.shape[0] >= 2
     assert centers.shape[1] == 3
+
+
+def test_shadow_overview_names_each_channel_and_a_broken_one_is_not_empty_success():
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from weirvern.admin.status import shadow_overview
+
+    class Stub:
+        def query(self, sql):
+            if "ml_candidate_scores" in sql:
+                return SimpleNamespace(result_rows=[(5000, datetime(2026, 1, 1), 56)])
+            if "ml_temporal_scores" in sql:
+                return SimpleNamespace(result_rows=[(48, datetime(2026, 1, 1), 2)])
+            if "ml_changepoints" in sql:
+                return SimpleNamespace(result_rows=[(50, datetime(2026, 1, 1), 5)])
+            if "ml_calibration" in sql:
+                return SimpleNamespace(result_rows=[(4, datetime(2026, 1, 1))])
+            raise AssertionError(sql)
+
+    out = shadow_overview(Stub())
+    assert out["available"] is True and len(out["rows"]) == 4
+    by_key = {r["key"]: r for r in out["rows"]}
+    assert by_key["hdbscan"]["detail"] == 56
+    assert by_key["calibration"]["rows"] == 4
+
+    class Broken(Stub):
+        def query(self, sql):
+            if "ml_changepoints" in sql:
+                raise RuntimeError("table unavailable")
+            return super().query(sql)
+
+    out2 = shadow_overview(Broken())
+    broken = next(r for r in out2["rows"] if r["key"] == "changepoints")
+    assert broken["available"] is False and broken["state"] == "unavailable"
+    assert "table unavailable" in broken["reason"]

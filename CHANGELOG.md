@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.6 — 2026-10-23
+
+MODELS TAB ALIGNED WITH THE ML LAYER.
+
+- The intro now calls the four trained detectors the production ensemble and states that the
+  calibration/shadow layer cannot create or change an alert.
+- New Shadow ML card reports each channel independently: HDBSCAN candidate rows/clusters,
+  Matrix Profile rows/metrics, change-point rows/hosts and calibration rows. A broken channel
+  is named as unavailable, never rendered as an empty success.
+
 ## 0.20.5 — 2026-10-23
 
 NETFLOW TAP TOOLTIP TRUTH.
