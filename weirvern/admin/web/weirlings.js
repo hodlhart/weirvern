@@ -2311,6 +2311,8 @@ async function loadNetworkCoverage() {
   if (state) state.textContent = d.unconfigured ? "not configured" :
     `${s.monitored || 0} monitored · ${s.observed || 0} observed`;
   list.replaceChildren();
+  const peerBox = document.getElementById("wl-peer-list");
+  if (peerBox) peerBox.replaceChildren();
   if (d.unconfigured) {
     note.textContent = "No networks are declared, so detection is running unscoped: every " +
       "source address is a host. Declare internal, VPN and DMZ ranges in Settings → " +
@@ -2358,5 +2360,24 @@ async function loadNetworkCoverage() {
     ]);
     card.addEventListener("click", () => { if (typeof showView === "function") showView("settings"); });
     list.appendChild(card);
+  }
+  // EXTERNAL PEERS ARE AN AGGREGATE, NOT A PER-ADDRESS ALERT SOURCE. The plan says external
+  // traffic should remain visible against its volume and last-seen time without becoming
+  // thousands of monitored hosts; this is that reading.
+  const peers = document.getElementById("wl-peer-list");
+  if (peers) {
+    peers.replaceChildren();
+    const rows = d.external_peers || [];
+    if (rows.length) {
+      peers.appendChild(el("div", { class: "net-peer-head muted",
+        text: "External peers outside every declared scope (observed only) — top by bytes" }));
+      for (const p of rows.slice(0, 8)) {
+        peers.appendChild(el("div", { class: "net-peer-row" }, [
+          el("span", { class: "mono", text: p.src_addr }),
+          el("span", { class: "muted", text: `${p.bytes} bytes · ${p.windows} window(s)` }),
+          el("span", { class: "muted", text: p.last_seen || "" }),
+        ]));
+      }
+    }
   }
 }

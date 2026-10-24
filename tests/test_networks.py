@@ -69,3 +69,24 @@ def test_ipv6_resolves_without_a_version_collision():
     scopes = [_scope("2001:db8::/32", "internal", True, "full", "a")]
     assert resolve("2001:db8::1", scopes).label == "internal"
     assert resolve("203.0.113.1", scopes) is None
+
+
+def test_training_filter_is_empty_without_declarations_and_follows_monitored():
+    from weirvern.networks import training_filter_sql
+    # No declarations: legacy training, exactly as before the feature existed.
+    assert training_filter_sql([]) == ""
+    scopes = [_scope("198.51.100.0/24", "internal", True, "full", "a"),
+              _scope("203.0.113.0/24", "external", True, "observe", "b")]
+    predicate = training_filter_sql(scopes)
+    assert "198.51.100.0/24" in predicate
+    assert "203.0.113.0/24" not in predicate
+    assert predicate.startswith("AND (")
+    # A declaration set with nothing monitored must not fall back to training on everything.
+    assert training_filter_sql([_scope("198.51.100.0/24", monitored=False)]) == "AND 0"
+
+
+def test_catch_all_monitored_scope_is_flagged_not_rejected():
+    broad = normalize_scope("0.0.0.0/0", label="external", monitored=True, policy="aggregate")
+    assert broad.warning, "a monitored catch-all must be flagged as dangerous"
+    observed = normalize_scope("0.0.0.0/0", label="external", monitored=False, policy="observe")
+    assert observed.warning == "", "an observed catch-all is not an alerting risk"

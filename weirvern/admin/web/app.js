@@ -6151,7 +6151,8 @@ let NETWORKS_WIRED = false;
 function networkScopeRow(scope, writable) {
   const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
   return el("tr", {}, [
-    el("td", { class: "mono", text: scope.cidr }),
+    el("td", { class: "mono", text: scope.cidr + (scope.warning ? " (catch-all)" : ""),
+              attrs: { title: scope.warning || "" } }),
     el("td", { text: scope.label }),
     el("td", { text: scope.policy }),
     el("td", { text: monitored ? "yes" : "observed" }),
@@ -6192,6 +6193,9 @@ function renderNetworks(data) {
         "outside every declaration.");
     }
     if (!data.counts_available) bits.push("Some counts could not be read; — means unknown, not zero.");
+    const warned = (data.scopes || []).filter((s) => s.warning);
+    if (warned.length) bits.push("Catch-all scope flagged: " + warned.map((s) => s.cidr).join(", ") +
+      ". Monitoring a /0 recreates the flood this feature exists to prevent.");
     note.textContent = bits.join(" ");
   }
   body.replaceChildren();

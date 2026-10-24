@@ -86,8 +86,8 @@ def test_the_new_evidence_columns_are_last_in_the_column_list():
     happily store a label in a score column -- so nothing but this assertion would notice.
     """
     _n, names = _anomaly_row_and_columns()
-    assert names[-2:] == ["strong_families", "severity_basis"], names[-4:]
-    assert names[-4:-2] == ["attack_techniques", "attack_label"], names[-4:]
+    assert names[-3:] == ["strong_families", "severity_basis", "network_scope"], names[-5:]
+    assert names[-5:-3] == ["attack_techniques", "attack_label"], names[-5:]
 
 
 def test_a_row_with_the_wrong_length_is_refused_by_a_realistic_client():

@@ -49,6 +49,7 @@ class Scope:
     description: str = ""
     source: str = "operator"
     network: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None
+    warning: str = ""
 
     @property
     def prefixlen(self) -> int:
@@ -63,6 +64,7 @@ class Scope:
             "policy": self.policy,
             "description": self.description,
             "source": self.source,
+            "warning": self.warning,
         }
 
 
@@ -87,15 +89,21 @@ def normalize_scope(cidr: str, *, label: str = "internal", monitored: bool = Tru
     policy = str(policy or DEFAULT_POLICY.get(label, "observe")).strip().lower()
     if policy not in POLICIES:
         raise ValueError(f"policy must be one of {', '.join(POLICIES)}")
+    is_on = bool(monitored) and policy != "off"
+    warning = ""
+    if net.prefixlen == 0 and is_on:
+        warning = ("catch-all network: monitoring it would alert on every unclassified "
+                   "address, which recreates the flood this scope feature exists to prevent")
     return Scope(
         id=scope_id or uuid.uuid4().hex,
         cidr=str(net),
         label=label,
-        monitored=bool(monitored) and policy != "off",
+        monitored=is_on,
         policy=policy,
         description=str(description or "").strip()[:300],
         source=str(source or "operator").strip()[:32],
         network=net,
+        warning=warning,
     )
 
 
@@ -240,7 +248,8 @@ def overview(client, hours: int = 24) -> dict[str, Any]:
             # `cidr` is normalized by ipaddress at declaration time; it is an identifier,
             # not untrusted text. ClickHouse's isIPAddressInRange takes the literal CIDR.
             host = client.query(
-                f"SELECT uniqExact(src_addr) FROM weirvern.flows_aggregated "
+                f"SELECT uniqExact(src_addr), max(window_start) "
+                f"FROM weirvern.flows_aggregated "
                 f"WHERE window_start >= now() - INTERVAL {int(hours)} HOUR "
                 f"AND isIPAddressInRange(src_addr, '{scope.cidr}')"
             ).result_rows
@@ -250,11 +259,13 @@ def overview(client, hours: int = 24) -> dict[str, Any]:
                 f"AND isIPAddressInRange(src_addr, '{scope.cidr}')"
             ).result_rows
             item["hosts"] = int(host[0][0]) if host else 0
+            item["last_seen"] = (str(host[0][1]) if host and host[0][1] else "")
             item["alerts"] = int(alerts[0][0]) if alerts else 0
             item["alert_hosts"] = int(alerts[0][1]) if alerts else 0
         except Exception:  # noqa: BLE001
             counts_ok = False
             item["hosts"] = None
+            item["last_seen"] = ""
             item["alerts"] = None
             item["alert_hosts"] = None
         rows.append(item)
@@ -279,6 +290,23 @@ def overview(client, hours: int = 24) -> dict[str, Any]:
             unclassified["alerts"] = int(a[0][0]) if a else 0
         except Exception:  # noqa: BLE001
             counts_ok = False
+        try:
+            peers = client.query(
+                f"SELECT src_addr, sum(total_bytes) AS bytes, count() AS windows, "
+                f"max(window_start) AS last_seen FROM weirvern.flows_aggregated "
+                f"WHERE window_start >= now() - INTERVAL {int(hours)} HOUR AND {not_in} "
+                f"GROUP BY src_addr ORDER BY bytes DESC LIMIT 8",
+                parameters=params,
+            ).result_rows
+            external_peers = [
+                {"src_addr": str(r[0]), "bytes": int(r[1] or 0), "windows": int(r[2] or 0),
+                 "last_seen": str(r[3]) if r[3] else ""} for r in peers
+            ]
+        except Exception:  # noqa: BLE001
+            counts_ok = False
+            external_peers = []
+    else:
+        external_peers = []
 
     return {
         "available": True,
@@ -291,6 +319,31 @@ def overview(client, hours: int = 24) -> dict[str, Any]:
             "unclassified_alerts": unclassified["alerts"],
         },
         "counts_available": counts_ok,
+        "external_peers": external_peers,
         "unconfigured": not rows,
         "hours": int(hours),
     }
+
+
+def training_filter_sql(scopes: Iterable[Scope], alias: str = "a") -> str:
+    """The SQL predicate that keeps model training on the monitored host population.
+
+    NO SCOPES MEANS LEGACY: an upgrade with no declarations must train exactly as it did,
+    so this returns an empty string. Once declarations exist, training follows the same
+    monitored decision as scoring. A declaration set with no monitored scope returns
+    `AND 0` rather than silently training on everything -- that state is an explicit
+    no-detection configuration, and the resulting "not enough data" is the honest answer.
+    """
+    scopes = list(scopes)
+    if not scopes:
+        return ""
+    monitored = [s for s in scopes if is_monitored(s)]
+    if not monitored:
+        return "AND 0"
+    terms = " OR ".join(f"isIPAddressInRange({alias}.src_addr, '{s.cidr}')" for s in monitored)
+    return f"AND ({terms})"
+
+
+def training_filter(client, alias: str = "a") -> str:
+    """Load the declarations and return the predicate for a detector's training query."""
+    return training_filter_sql(load_scopes(client), alias=alias)

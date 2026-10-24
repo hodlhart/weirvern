@@ -1167,6 +1167,7 @@ _ANOMALY_COLUMNS: tuple[str, ...] = (
     "primary_deviation_feature", "primary_deviation_zscore", "deviation_magnitude",
     "feature_contributions", "baseline_comparison", "detected_by_models", "severity",
     "attack_techniques", "attack_label", "strong_families", "severity_basis",
+    "network_scope",
 )
 
 
@@ -1923,6 +1924,7 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # repr, which is not JSON and cannot be parsed back.
             json.dumps(v["attack_techniques"]), v["attack_label"],
             int(v.get("strong_families") or 0), str(v.get("severity_basis") or ""),
+            str(f.get("_network_scope") or ""),
         ])
     # THE GUARD THAT SHOULD HAVE CAUGHT THIS. A positional INSERT is correct only while the row
     # and the column list agree in length AND order, and they used to live 20 lines apart.

@@ -1126,13 +1126,21 @@ function drawGraph(host, nodes, edges, truncated) {
     // STATUS OUTRANKS THE NORMAL/SELECTED FILL. A blocked host must not turn blue just because
     // it is a busy node, and a tracked blocked host keeps its tracked stroke without losing
     // the reason it is red. Normal selected nodes keep the green tracking fill.
+    //
+    // SCOPE IS A READING, NOT A STATUS: an observed (unmonitored) host is muted, and an
+    // unclassified host gets a warning outline. Neither can override a live block or alert.
+    const observed = n.scope_monitored === false;
+    const unclassified = n.network_scope === "unclassified";
     const fill = n.status === "blocked" ? "var(--bad)"
       : n.status === "alerted" ? "var(--warn)"
-      : selected ? "var(--ok)" : "var(--accent)";
+      : selected ? "var(--ok)"
+      : observed ? "var(--dim)" : "var(--accent)";
+    const circleStyle = `fill:${fill}` +
+      (unclassified ? ";stroke:var(--warn);stroke-width:1.5;stroke-dasharray:2 2" : "");
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
-      style: `fill:${fill}`,
-      opacity: selected || n.status ? "1" : "0.78",
+      style: circleStyle,
+      opacity: selected || n.status ? "1" : (observed ? "0.45" : "0.78"),
     }));
     // Labels only when asked for, or for a selected node: 250 labels in a circle is a smear.
     if (ASSETS_STATE.showNames || selected) {
@@ -1173,6 +1181,8 @@ function drawGraph(host, nodes, edges, truncated) {
       ["var(--bad)", "blocked by a live block rule"],
       ["var(--warn)", "alerted: anomaly in this range"],
       ["edge width", "log of bytes"],
+      ["var(--dim)", "observed network (not alertable)"],
+      ["outline", "unclassified network (configure a scope)"],
     ];
     if (layout.rings.length) {
       items.push(["ring", "ring = hop distance from the sensor (IP TTL)"]);
@@ -1180,6 +1190,8 @@ function drawGraph(host, nodes, edges, truncated) {
     for (const [colour, label] of items) {
       const swatch = colour === "ring"
         ? el("span", { class: "legend-swatch ring" })
+        : colour === "outline"
+        ? el("span", { class: "legend-swatch outline" })
         : el("span", {
             class: "legend-swatch",
             attrs: { style: `background:${(colour.startsWith("#") || colour.startsWith("var(")) ? colour : "var(--border)"}` },

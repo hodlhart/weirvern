@@ -1559,3 +1559,9 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .net-card .net-k { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .06em; opacity: .75; }
 .net-card .net-v { font-size: var(--fs-3); margin: 3px 0; }
 .net-card .net-m { font-size: var(--fs-1); opacity: .8; }
+
+.net-peers { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+.net-peer-head { font-size: var(--fs-1); margin-bottom: 2px; }
+.net-peer-row { display: flex; gap: 10px; align-items: baseline; font-size: var(--fs-1); flex-wrap: wrap; }
+
+.legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }

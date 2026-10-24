@@ -25,7 +25,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 
-from weirvern import addressing
+from weirvern import addressing, networks
 from weirvern.admin import revdns, timewindow
 
 logger = logging.getLogger(__name__)
@@ -633,6 +633,17 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     for e in out_edges:
         e["source_name"] = names.get(e["source"], "")
         e["target_name"] = names.get(e["target"], "")
+
+    # ── OPERATOR-DECLARED SCOPE ON THE GRAPH ───────────────────────────────────────────────
+    # The graph is a reading surface, not a second declaration source. If no scopes are
+    # declared, legacy graph (no scope colouring) is preserved. Once declarations exist, each
+    # node carries the winning label and whether it is monitored; the browser only renders it.
+    scopes = networks.load_scopes(client)
+    if scopes:
+        for node in nodes.values():
+            scope = networks.resolve(node["id"], scopes)
+            node["network_scope"] = scope.label if scope else "unclassified"
+            node["scope_monitored"] = bool(networks.is_monitored(scope))
 
     # ── WHERE each host SITS, from the TTLs its OWN packets carried ──────────────────────────
     # A host's outbound packets arrive at the collector with their TTL decremented once per

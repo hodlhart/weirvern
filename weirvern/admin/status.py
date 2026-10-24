@@ -1951,7 +1951,7 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
         "isolation_forest_score, gradient_boosting_score, dbscan_score, baseline_score, "
         "primary_deviation_feature, primary_deviation_zscore, deviation_magnitude, "
         "feature_contributions, baseline_comparison, "
-        "strong_families, severity_basis "
+        "strong_families, severity_basis, network_scope "
         "FROM weirvern.netflow_anomalies WHERE anomaly_score >= %(s)s "
         # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16): a clicked host or severity is
         # answered BY THIS QUERY -- never by hiding rows the browser already received, which
@@ -2055,6 +2055,7 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         "max(deviation_magnitude) AS deviation_magnitude, "
         "any(feature_contributions) AS feature_contributions, baseline_comparison, "
         "max(strong_families) AS strong_families, any(severity_basis) AS severity_basis, "
+        "any(network_scope) AS network_scope, "
         "uniqExact(window_start) AS n, arraySlice(arraySort(groupUniqArray(window_start)), 1, 50) AS windows "
         "FROM weirvern.netflow_anomalies WHERE " + " AND ".join(where) + " "
         # THE IDENTITY IS WHAT THE OPERATOR READS, NOT EVERY SCORE'S LAST DECIMAL. The old

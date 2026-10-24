@@ -198,7 +198,8 @@ CREATE TABLE IF NOT EXISTS netflow_anomalies
     -- family), and a short visible reason for the severity label. Appended for the same reason
     -- the ATT&CK pair was: a positional reader must never be reinterpreted by an insert.
     strong_families            UInt8 DEFAULT 0,
-    severity_basis             LowCardinality(String) DEFAULT ''
+    severity_basis             LowCardinality(String) DEFAULT '',
+    network_scope              LowCardinality(String) DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(detected_at)
 PARTITION BY toYYYYMM(detected_at)

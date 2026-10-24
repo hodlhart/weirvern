@@ -29,6 +29,7 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+from weirvern import networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
 from weirvern.models.base import BaseDetector, ModelMetadata
@@ -159,6 +160,9 @@ class IsolationForestDetector(BaseDetector):
         # Training hygiene: do not learn from windows the system already flagged (see
         # _flagged_exclusion_clause). Empty string when disabled.
         excl = _flagged_exclusion_clause(s, e, self.cfg)
+        # A model trained on hosts the operator did not declare is a model fitted to a
+        # different population than the one it will alert on. Empty when no scopes exist.
+        scope_filter = networks.training_filter(client)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
             WITH {zeek_cte}
             SELECT
@@ -193,7 +197,7 @@ class IsolationForestDetector(BaseDetector):
                       SELECT unique_dst_ports FROM weirvern.flows_aggregated_diversity
                       WHERE window_start BETWEEN '{s}' AND '{e}'
                       ORDER BY unique_dst_ports DESC LIMIT {int(self.cfg.if_extremes)})
-              ){excl}
+              ){excl}{scope_filter}
             -- A LIMIT WITHOUT AN ORDER IS A DIFFERENT SAMPLE ON EVERY RUN (GitHub #61).
             -- The hash that already selects the sample also orders the cut, so the same
             -- window trains from the same rows regardless of part layout.
@@ -370,6 +374,7 @@ class DBSCANDetector(BaseDetector):
         # Training hygiene: do not learn from windows the system already flagged (see
         # _flagged_exclusion_clause). Empty string when disabled.
         excl = _flagged_exclusion_clause(s, e, self.cfg)
+        scope_filter = networks.training_filter(client)
         q = f"""  # nosec B608 - interpolates formatted datetimes + int config only, never flow data
             WITH {zeek_cte}
             SELECT
@@ -390,7 +395,7 @@ class DBSCANDetector(BaseDetector):
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'
               AND a.total_bytes > 0
-              AND sipHash64(a.src_addr) % 5 == 1{excl}
+              AND sipHash64(a.src_addr) % 5 == 1{excl}{scope_filter}
             -- Same deterministic cut as the Isolation Forest query (GitHub #61). Hash order
             -- keeps the surviving sample uniform instead of biasing it to one end of the window.
             ORDER BY sipHash64(a.src_addr, a.window_start)
@@ -579,6 +584,7 @@ class AdaptiveBaselineDetector(BaseDetector):
         # Training hygiene: do not learn from windows the system already flagged (see
         # _flagged_exclusion_clause). Empty string when disabled.
         excl = _flagged_exclusion_clause(s, e, self.cfg)
+        scope_filter = networks.training_filter(client)
         # The shared helper returns `z.<feature>` per column, correct for a per-row SELECT. This
         # query GROUPS BY src_addr, so each column has to sit under an aggregate. Built here
         # from the same ZEEK_FEATURES list the helper uses, so the names still cannot drift --
@@ -641,7 +647,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                 sqrt(varPop(coalesce(z.zeek_notice_count, 0)))          AS zeek_notice_sd
             FROM weirvern.flows_aggregated a
             {zeek_join}
-            WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}
+            WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}{scope_filter}
             GROUP BY a.src_addr
             HAVING count() >= {int(self.cfg.baseline_min_obs)}
             LIMIT 100000

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.23.0 — 2026-10-24
+
+SCOPE ENFORCEMENT ACROSS TRAINING AND THE GRAPH.
+
+- Model training now follows the same monitored-network declarations as scoring: with no
+  declarations it is legacy, with declarations it filters every detector's training rows to
+  monitored scopes, and a declaration set with nothing monitored yields no training data rather
+  than silently training on everything.
+- Anomaly rows carry `network_scope` (migration 036), so an alert can be filtered and explained
+  by the scope that admitted it.
+- Weirlings' Network coverage card includes last-seen, a top external-peer aggregate (bytes,
+  windows, last seen) outside every declared scope, and a flagged catch-all warning.
+- The connection graph carries scope labels: monitored nodes keep their normal fill, observed
+  nodes are muted, and unclassified nodes get a warning outline with a legend entry.
+- Catch-all (`/0`) scopes are allowed but visibly flagged when monitored.
+
 ## 0.22.1 — 2026-10-24
 
 NETWORK COVERAGE UI FOLLOW-UP.
