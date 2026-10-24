@@ -175,6 +175,34 @@ ZEEK_FEATURES = [
     # This is the fraction of the window's fingerprints that the host has NOT used in the
     # longer baseline window. 0.0 means "all familiar", 1.0 means "entirely new clients".
     "zeek_ja4_novelty",
+
+    # ── DNS + GRAPH BLOCK, APPENDED 2026-10-24 ───────────────────────────────────────────
+    #
+    # These are properties of relationships and resolver behaviour, not more NetFlow volume.
+    # Every one is computed from logs already in ClickHouse and joined on the same
+    # (5-minute window, host) key as the rest of this block; no new sensor is involved.
+    #
+    # DNS: the existing five features carry count, mean entropy/length and error ratios. They
+    # cannot see a single high-entropy tunnel among ordinary lookups (the mean hides it), a
+    # DGA's one-off names (the count does not say how many were unique), the record types that
+    # carry payloads, or whether a name is new to this host.
+    "zeek_dns_unique_ratio",
+    "zeek_dns_entropy_max",
+    "zeek_dns_query_len_std",
+    "zeek_dns_nxdomain_ratio",
+    "zeek_dns_txt_ratio",
+    "zeek_dns_null_ratio",
+    "zeek_dns_answer_count_mean",
+    "zeek_dns_new_domain_ratio",
+    # GRAPH: a host is not just a row of totals; its behaviour is the shape of its edges.
+    # `fan_in` is the number of distinct hosts that initiated traffic TO this host in the
+    # window -- the reverse direction that `zeek_unique_dst_ips` (fan-out) cannot express.
+    # A workstation that suddenly receives connections from many hosts has changed role.
+    "zeek_graph_fan_in",
+    "zeek_graph_dst_concentration",
+    "zeek_graph_peer_rarity",
+    "zeek_graph_reciprocity",
+    "zeek_graph_new_peer_ratio",
 ]
 
 # The features that are DERIVED from the Zeek data being present at all. If Zeek saw nothing
@@ -318,10 +346,68 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
                 uniqExact(dst_addr)                                 AS uniq_dst,
                 sum(orig_bytes)                                     AS ob,
                 sum(resp_bytes)                                     AS rb,
-                uniqExactIf(service, service != '')                 AS svc_count
+                uniqExactIf(service, service != '')                 AS svc_count,
+                -- THE WINDOW'S DISTINCT DESTINATIONS, for the new-peer comparison against
+                -- the host's 72h history. Capped like every other per-host array here.
+                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(dst_addr))),
+                           1, 256)                                  AS dst_set
             FROM weirvern.zeek_conn
             WHERE ts BETWEEN '{start}' AND '{end}'
             GROUP BY w, src_addr
+        ),
+        -- One row per (window, source, destination). Keeping the edge direction is what
+        -- makes concentration, reciprocity and peer rarity possible; conn_agg has already
+        -- thrown it away by grouping to the host.
+        conn_edges_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                src_addr,
+                dst_addr,
+                count()                 AS conns
+            FROM weirvern.zeek_conn
+            WHERE ts BETWEEN '{start}' AND '{end}'
+              AND src_addr != '' AND dst_addr != ''
+            GROUP BY w, src_addr, dst_addr
+        ),
+        -- How many distinct sources contacted each destination in this window. A destination
+        -- contacted by one host is rare; one contacted by every host is infrastructure.
+        dst_pop_agg AS (
+            SELECT w, dst_addr, uniqExact(src_addr) AS src_count
+            FROM conn_edges_agg
+            GROUP BY w, dst_addr
+        ),
+        -- The reverse direction: who received traffic, not who sent it. This is the fan-in
+        -- that `zeek_unique_dst_ips` cannot express.
+        inbound_agg AS (
+            SELECT
+                toStartOfFiveMinute(ts) AS w,
+                dst_addr                AS host,
+                uniqExact(src_addr)     AS fan_in
+            FROM weirvern.zeek_conn
+            WHERE ts BETWEEN '{start}' AND '{end}'
+              AND src_addr != '' AND dst_addr != ''
+            GROUP BY w, dst_addr
+        ),
+        graph_peer_agg AS (
+            SELECT
+                e.w,
+                e.src_addr,
+                max(e.conns) / greatest(sum(e.conns), 1) AS dst_concentration,
+                avg(1.0 / greatest(p.src_count, 1))      AS peer_rarity
+            FROM conn_edges_agg e
+            LEFT JOIN dst_pop_agg p
+              ON e.w = p.w AND e.dst_addr = p.dst_addr
+            GROUP BY e.w, e.src_addr
+        ),
+        graph_recip_agg AS (
+            SELECT
+                e.w,
+                e.src_addr,
+                countIf(r.dst_addr != '') / count() AS reciprocity
+            FROM conn_edges_agg e
+            LEFT JOIN conn_edges_agg r
+              ON r.w = e.w AND r.src_addr = e.dst_addr AND r.dst_addr = e.src_addr
+            GROUP BY e.w, e.src_addr
         ),
         dns_agg AS (
             SELECT
@@ -329,9 +415,19 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
                 src_addr,
                 count()                                     AS dns_count,
                 avg(query_entropy)                          AS mean_entropy,
+                max(query_entropy)                          AS max_entropy,
                 avg(query_len)                              AS mean_len,
+                stddevPop(query_len)                        AS len_std,
                 countIf(rcode != 0)                         AS rcode_err,
-                countIf(answers = '' OR answers = '-')      AS no_answer
+                countIf(rcode = 3)                          AS nxdomain,
+                countIf(qtype = 16)                         AS txt_queries,
+                countIf(qtype = 10)                         AS null_queries,
+                countIf(answers = '' OR answers = '-')      AS no_answer,
+                avgIf(length(splitByChar(',', answers)),
+                      answers != '' AND answers != '-')     AS answer_count_mean,
+                uniqExactIf(query, query != '')             AS unique_domains,
+                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(query))),
+                           1, 256)                          AS domain_set
             FROM weirvern.zeek_dns
             WHERE ts BETWEEN '{start}' AND '{end}'
             GROUP BY w, src_addr
@@ -594,6 +690,24 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
             GROUP BY src_addr
         ),
+        hist_dns_agg AS (
+            SELECT
+                src_addr,
+                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(query))),
+                           1, 256) AS hist_domain_set
+            FROM weirvern.zeek_dns
+            WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+            GROUP BY src_addr
+        ),
+        hist_dst_agg AS (
+            SELECT
+                src_addr,
+                arraySlice(arrayDistinct(arrayFilter(x -> x != '', groupArray(dst_addr))),
+                           1, 256) AS hist_dst_set
+            FROM weirvern.zeek_conn
+            WHERE ts >= '{hist_start}' AND ts < '{start}' AND src_addr != ''
+            GROUP BY src_addr
+        ),
         keys AS (
             SELECT w, src_addr FROM conn_agg
             UNION DISTINCT SELECT w, src_addr FROM dns_agg
@@ -607,6 +721,7 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             UNION DISTINCT SELECT w, src_addr FROM files_agg
             UNION DISTINCT SELECT w, src_addr FROM notice_agg
             UNION DISTINCT SELECT w, src_addr FROM weird_agg
+            UNION DISTINCT SELECT w, host AS src_addr FROM inbound_agg
         )
         SELECT
             k.w        AS window_start,
@@ -705,10 +820,45 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
             if(coalesce(c.ob, 0) + coalesce(c.rb, 0) > 0,
                coalesce(c.ob, 0) / (coalesce(c.ob, 0) + coalesce(c.rb, 0)), 0)
                                                                    AS zeek_outbound_ratio,
+            -- ── THE GRAPH FEATURES (appended 2026-10-24) ─────────────────────────────────
+            -- Fan-in is the reverse direction: distinct hosts that INITIATED a connection
+            -- to this host. `zeek_unique_dst_ips` is fan-out and cannot see a host that has
+            -- become a destination, which is the lateral-movement / server-role change.
+            log1p(coalesce(fi.fan_in, 0))                          AS zeek_graph_fan_in,
+            coalesce(gp.dst_concentration, 0)                     AS zeek_graph_dst_concentration,
+            coalesce(gp.peer_rarity, 0)                           AS zeek_graph_peer_rarity,
+            coalesce(gr.reciprocity, 0)                           AS zeek_graph_reciprocity,
+            if(empty(ifNull(c.dst_set, [])), 0,
+               (length(ifNull(c.dst_set, []))
+                - arrayCount(x -> has(ifNull(hdst.hist_dst_set, []), x),
+                             ifNull(c.dst_set, [])))
+               / length(ifNull(c.dst_set, [])))                    AS zeek_graph_new_peer_ratio,
             if(coalesce(d.dns_count, 0) > 0,
                coalesce(d.rcode_err, 0) / d.dns_count, 0)          AS zeek_dns_rcode_error_ratio,
             if(coalesce(d.dns_count, 0) > 0,
                coalesce(d.no_answer, 0) / d.dns_count, 0)          AS zeek_dns_failed_ratio,
+            -- ── THE DNS SHAPE FEATURES (appended 2026-10-24) ─────────────────────────────
+            -- A mean is the wrong statistic for a tunnel: one very long, high-entropy name
+            -- among a hundred ordinary lookups disappears into it. Max and the spread keep
+            -- the tail visible; unique_ratio and nxdomain_ratio describe DGA behaviour; the
+            -- qtype ratios describe payload carriage; answer_count_mean describes the
+            -- response envelope. New-domain ratio is the DNS analogue of JA4 novelty.
+            if(coalesce(d.dns_count, 0) > 0,
+               coalesce(d.unique_domains, 0) / d.dns_count, 0)      AS zeek_dns_unique_ratio,
+            coalesce(d.max_entropy, 0)                              AS zeek_dns_entropy_max,
+            coalesce(d.len_std, 0)                                  AS zeek_dns_query_len_std,
+            if(coalesce(d.dns_count, 0) > 0,
+               coalesce(d.nxdomain, 0) / d.dns_count, 0)            AS zeek_dns_nxdomain_ratio,
+            if(coalesce(d.dns_count, 0) > 0,
+               coalesce(d.txt_queries, 0) / d.dns_count, 0)         AS zeek_dns_txt_ratio,
+            if(coalesce(d.dns_count, 0) > 0,
+               coalesce(d.null_queries, 0) / d.dns_count, 0)        AS zeek_dns_null_ratio,
+            coalesce(d.answer_count_mean, 0)                        AS zeek_dns_answer_count_mean,
+            if(empty(ifNull(d.domain_set, [])), 0,
+               (length(ifNull(d.domain_set, []))
+                - arrayCount(x -> has(ifNull(hdom.hist_domain_set, []), x),
+                             ifNull(d.domain_set, [])))
+               / length(ifNull(d.domain_set, [])))                   AS zeek_dns_new_domain_ratio,
             if(coalesce(s.ssl_count, 0) > 0,
                coalesce(s.modern_count, 0) / s.ssl_count, 0)       AS zeek_ssl_modern_ratio,
             -- ── THE HISTORY COMPARISONS, COMPUTED HERE SO TRAINING AND SCORING AGREE ──────────
@@ -746,7 +896,8 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
                                                                    AS zeek_ja4_novelty,
             -- PRESENCE as a real column, so ZEEK_FEATURES works verbatim as a SELECT list.
             if(coalesce(c.conn_count, 0) + coalesce(d.dns_count, 0) + coalesce(s.ssl_count, 0)
-               + coalesce(n.notice_count, 0) + coalesce(ww.weird_count, 0) > 0, 1, 0)
+               + coalesce(n.notice_count, 0) + coalesce(ww.weird_count, 0)
+               + coalesce(fi.fan_in, 0) > 0, 1, 0)
                                                                    AS zeek_present
         FROM keys k
         LEFT JOIN conn_agg   c  ON c.w  = k.w AND c.src_addr  = k.src_addr
@@ -761,8 +912,13 @@ def zeek_window_summary_sql(start: str, end: str) -> str:
         LEFT JOIN ssh_agg    ss ON ss.w = k.w AND ss.src_addr = k.src_addr
         LEFT JOIN http_agg   hh ON hh.w = k.w AND hh.src_addr = k.src_addr
         LEFT JOIN files_agg  ff ON ff.w = k.w AND ff.src_addr = k.src_addr
+        LEFT JOIN graph_peer_agg gp ON gp.w = k.w AND gp.src_addr = k.src_addr
+        LEFT JOIN graph_recip_agg gr ON gr.w = k.w AND gr.src_addr = k.src_addr
+        LEFT JOIN inbound_agg fi ON fi.w = k.w AND fi.host = k.src_addr
         LEFT JOIN hist_ja4   hj ON hj.src_addr = k.src_addr
         LEFT JOIN hist_svc  hsvc ON hsvc.src_addr = k.src_addr
+        LEFT JOIN hist_dns_agg hdom ON hdom.src_addr = k.src_addr
+        LEFT JOIN hist_dst_agg hdst ON hdst.src_addr = k.src_addr
         WHERE k.src_addr != ''
         ORDER BY window_start, src_addr
     """
@@ -891,6 +1047,10 @@ def extract_zeek_features(row: dict[str, Any],
     ssl_n = _f(row.get("ssl_count"))
     notice_n = _f(row.get("zeek_notice_count"))
     weird_n = _f(row.get("zeek_weird_count"))
+    # A host that ONLY received traffic has no conn_agg row (that table is keyed on the
+    # source), so fan-in is part of the presence decision. Without it, a host that became a
+    # destination would look absent while the graph features held real values.
+    fan_in_n = _f(row.get("zeek_graph_fan_in"))
 
     # An explicit flag from the query wins when present: the SQL computes presence from the
     # raw counts across all five logs, including ones this function does not inspect.
@@ -900,7 +1060,8 @@ def extract_zeek_features(row: dict[str, Any],
         _fill(out, row, baseline)
         return out
 
-    if conn_n == 0 and dns_n == 0 and ssl_n == 0 and notice_n == 0 and weird_n == 0:
+    if (conn_n == 0 and dns_n == 0 and ssl_n == 0 and notice_n == 0 and weird_n == 0
+            and fan_in_n == 0):
         # Zeek knows nothing about this host-window. Reported as absence rather than as a
         # row of zeroes, because "we did not look" and "we looked and saw nothing" are
         # different facts and only one of them is evidence of normality.

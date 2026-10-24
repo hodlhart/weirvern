@@ -79,6 +79,18 @@ DERIVED_FEATURES: set[str] = set()
 # a tenth-feature-less aggregate would be a log ingested and fed to no model.
 AGG_LOGS = {
     "conn_agg": "conn",
+    # ── graph helpers (2026-10-24) ─────────────────────────────────────────────
+    # These are CTE-to-CTE aggregates, not independent log summaries. They are joined through
+    # helper aliases rather than through the keys UNION, so the "every aggregate is a key
+    # source" invariant in the sibling test skips them explicitly. Their provenance is still
+    # conn or dns, and that is what this map records.
+    "conn_edges_agg": "conn",
+    "dst_pop_agg": "conn",
+    "graph_peer_agg": "conn",
+    "graph_recip_agg": "conn",
+    "inbound_agg": "conn",
+    "hist_dns_agg": "dns",
+    "hist_dst_agg": "conn",
     "dns_agg": "dns",
     "ssl_agg": "ssl",
     "notice_agg": "notice",

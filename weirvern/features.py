@@ -78,7 +78,12 @@ DBSCAN_FEATURES = [
 # shape from 16 to 19 columns; v2 artifacts are refused at load and the detector retrains into
 # `_v3.pkl` on its normal cadence (or immediately from Models -> force a retrain). The v2
 # files stay on disk.
-FEATURE_SCHEMA_VERSION = 3
+# BUMPED TO 4 (2026-10-24): the production feature block gained the DNS shape and graph
+# relationship features -- eight DNS and five graph columns appended after the JA4 novelty
+# feature. The vector changes from 50 to 63 Zeek columns (the full IF vector grows by the same
+# thirteen); v3 artifacts are refused at load, so every detector retrains into `_v4.pkl` rather
+# than scoring a vector whose tail it was never fitted on. The previous artifacts remain on disk.
+FEATURE_SCHEMA_VERSION = 4
 
 
 def _safe_log1p(v: float) -> float:

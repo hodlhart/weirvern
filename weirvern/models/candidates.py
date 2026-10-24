@@ -42,8 +42,7 @@ def matrix_sql(limit: int) -> str:
         "         sum(flow_count) AS flow_count "
         "  FROM weirvern.flows_aggregated "
         "  WHERE window_start >= now() - INTERVAL 72 HOUR "
-        "  GROUP BY window_start, src_addr "
-        "  HAVING sum(total_bytes) > 0"
+        "  GROUP BY window_start, src_addr"
         ") a "
         "LEFT JOIN ("
         "  SELECT window_start, src_addr, sum(unique_dst_ports) AS unique_dst_ports, "
@@ -57,6 +56,7 @@ def matrix_sql(limit: int) -> str:
         "  FROM weirvern.flows_aggregated_temporal "
         "  GROUP BY window_start, src_addr"
         ") t ON a.window_start = t.window_start AND a.src_addr = t.src_addr "
+        "WHERE a.total_bytes > 0 "
         "ORDER BY sipHash64(a.src_addr, a.window_start) LIMIT " + str(int(limit))
     )
 

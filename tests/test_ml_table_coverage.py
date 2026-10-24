@@ -107,6 +107,12 @@ def test_every_aggregation_is_joined_not_just_selected():
     host, which looks like a quiet network rather than a bug."""
     sql = _summary_sql()
     aggs = set(re.findall(r"\n\s+(\w+_agg) AS \(", sql))
+    # HELPERS, NOT KEY SOURCES. These aggregate other CTEs into graph/history shapes; they do
+    # not represent an independent log that the outer row should be keyed on. Requiring each
+    # one in the UNION of keys would manufacture host keys for intermediate edge tables.
+    helper_aggs = {"conn_edges_agg", "dst_pop_agg", "graph_peer_agg", "graph_recip_agg",
+                   "inbound_agg", "hist_dns_agg", "hist_dst_agg"}
+    aggs = aggs - helper_aggs
     # `str.index` finds the FIRST occurrence, and "keys AS (" appears in an explanatory COMMENT
     # earlier in the query -- so the slice was four characters wide and every assertion against
     # it failed. Anchor on the block's actual opening, which is followed by a newline and the

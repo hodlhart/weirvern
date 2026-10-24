@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.21.0 — 2026-10-24
+
+DNS SHAPE AND GRAPH RELATIONSHIP FEATURES.
+
+- The production Zeek block grows from 50 to 63 columns. The full Isolation Forest / Gradient
+  Boosting vector grows from 64 to 77; DBSCAN keeps its deliberately small 19-column subset.
+- DNS: unique-query ratio, maximum query entropy, query-length spread, NXDOMAIN ratio, TXT and
+  NULL query ratios, mean answer count, and the share of domains never queried by the host in
+  the previous 72 hours.
+- Graph: fan-in (distinct sources that initiated traffic to this host), destination
+  concentration, peer rarity, reciprocity, and new-peer ratio against the host's 72h history.
+  Fan-out was already represented by `zeek_unique_dst_ips`; it is not duplicated.
+- All values are computed from Zeek tables already in ClickHouse; no new sensor and no packet
+  payload. FEATURE_SCHEMA_VERSION is 4, so v3 artifacts are refused at load and every detector
+  retrains into v4 rather than being scored on a longer vector it was never fitted on.
+- The candidate HDBSCAN matrix now filters its collapsed aggregate with an outer `WHERE`, not a
+  `HAVING` whose alias collided with the source column.
+
 ## 0.20.9 — 2026-10-24
 
 CANDIDATE SQL ALIAS FIX.

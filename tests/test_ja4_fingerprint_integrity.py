@@ -109,8 +109,11 @@ def test_the_array_predicate_is_the_one_the_SQL_actually_uses(summary: str):
     Both the window summary and the baseline collect fingerprints as arrays, so both are checked.
     """
     for name, sql in (("the summary", summary), ("the ja4 baseline", zeek_baseline_ja4_sql(S, E))):
-        # Every array filter over ja4 must carry all three exclusions.
-        filters = re.findall(r"arrayFilter\(x -> ([^,]+),", sql)
+        # Every array filter over **ja4** must carry all three exclusions. Scope the regex
+        # to `groupArray(ja4)`: the v4 DNS/graph block also filters empty strings out of
+        # other arrays, and a bare arrayFilter match would wrongly apply the JA4 sentinel
+        # rule to a DNS query or a destination set.
+        filters = re.findall(r"arrayFilter\(x -> ([^,]+),\s*groupArray\(ja4\)\)", sql)
         assert filters, f"{name} has no arrayFilter over ja4 -- update this test"
         for f in filters:
             for sentinel in ("''", "'-'", "'(empty)'"):
@@ -185,10 +188,14 @@ def test_the_novelty_feature_is_declared_and_computed():
     )
     # It must be APPENDED, per this module's own documented ordering rule: a model rebuilds its
     # vector by name, so inserting would silently reinterpret every later column.
-    assert ZEEK_FEATURES.index("zeek_ja4_novelty") == len(ZEEK_FEATURES) - 1, (
-        "zeek_ja4_novelty is not last. Appending keeps every pre-existing model's vector valid; "
-        "inserting in the middle silently reinterprets the columns after it."
+    # The DNS/graph block was appended AFTER the novelty feature in the v4 bump, so novelty is
+    # no longer the final element. What must remain true is that nothing was INSERTED before it:
+    # its index is still 49, exactly where it was when it was appended.
+    assert ZEEK_FEATURES.index("zeek_ja4_novelty") == 49, (
+        "zeek_ja4_novelty moved. New features must be appended after it, never inserted before "
+        "it; an insertion silently reinterprets every later column."
     )
+    assert ZEEK_FEATURES.index("zeek_dns_unique_ratio") > ZEEK_FEATURES.index("zeek_ja4_novelty")
     from weirvern.zeek_features import extract_zeek_features
 
     # With no baseline there is nothing to be novel against, so it must be 0.0 rather than guessed.
@@ -246,8 +253,11 @@ def test_the_summary_computes_novelty_and_rarity_from_history(summary: str):
     assert m, "the fingerprint-history CTE lost its bounds"
     assert m.group(2) == S, "the history must END at the feature range's start"
     assert m.group(1) < S, "the history window must look BACK from the range, not forward"
-    assert "arrayCount(x -> has(" in summary, (
-        "novelty is no longer an exact membership test against the history set"
+    # EXACT EXPRESSION, not merely "some arrayCount exists". The v4 DNS/graph block added
+    # other arrayCount calls, so the earlier substring check could no longer distinguish the
+    # JA4 novelty calculation from its neighbours; mutation 3 (`- 0`) then passed.
+    assert "arrayCount(x -> has(ifNull(hj.hist_set, []), x), ifNull(s.ja4_set, []))" in summary, (
+        "novelty is no longer an exact membership test against the JA4 history set"
     )
     assert "hist_service_count" in summary, "rarity lost its history half"
 

@@ -258,3 +258,49 @@ def test_rarity_uses_the_real_baseline_when_it_is_present():
         "zeek_service_rarity"] == pytest.approx(0.0)
     assert extract_zeek_features(row, {"baseline_service_count": 1})[
         "zeek_service_rarity"] == pytest.approx(4.0)
+
+
+def test_the_v4_dns_and_graph_features_are_carried_through_the_extractor():
+    """The v4 block is appended after JA4 novelty; the extractor must not drop it on the
+    scoring path while training selects it from the same feature list."""
+    row = {
+        "zeek_conn_count": math.log1p(4),
+        "zeek_dns_count": math.log1p(4),
+        "zeek_dns_unique_ratio": 0.75,
+        "zeek_dns_entropy_max": 3.5,
+        "zeek_dns_query_len_std": 8.25,
+        "zeek_dns_nxdomain_ratio": 0.5,
+        "zeek_dns_txt_ratio": 0.25,
+        "zeek_dns_null_ratio": 0.0,
+        "zeek_dns_answer_count_mean": 2.0,
+        "zeek_dns_new_domain_ratio": 1.0,
+        "zeek_graph_fan_in": math.log1p(3),
+        "zeek_graph_dst_concentration": 0.8,
+        "zeek_graph_peer_rarity": 0.6,
+        "zeek_graph_reciprocity": 0.25,
+        "zeek_graph_new_peer_ratio": 0.5,
+        "zeek_present": 1,
+    }
+    feats = extract_zeek_features(row)
+    assert feats["zeek_dns_unique_ratio"] == 0.75
+    assert feats["zeek_dns_entropy_max"] == 3.5
+    assert feats["zeek_dns_new_domain_ratio"] == 1.0
+    assert feats["zeek_graph_fan_in"] == pytest.approx(math.log1p(3))
+    assert feats["zeek_graph_new_peer_ratio"] == 0.5
+    assert feats["zeek_graph_reciprocity"] == 0.25
+
+
+def test_fan_in_alone_is_presence_not_absence():
+    """A host that only RECEIVED traffic has no conn_agg row; fan-in must still mark it seen."""
+    feats = extract_zeek_features({"zeek_graph_fan_in": math.log1p(2)})
+    assert feats[ZEEK_PRESENCE_FEATURE] == 1.0
+    assert feats["zeek_graph_fan_in"] > 0
+
+
+def test_the_new_features_are_appended_after_the_v3_block():
+    """Never insert before an existing column: v3 models must remain interpretable, and the
+    v4 bump is what moves artifacts to a new file."""
+    from weirvern.zeek_features import ZEEK_FEATURES as feats
+    novelty = feats.index("zeek_ja4_novelty")
+    for name in ("zeek_dns_unique_ratio", "zeek_graph_fan_in", "zeek_graph_new_peer_ratio"):
+        assert feats.index(name) > novelty
