@@ -97,6 +97,29 @@ direction. Each of these is a test:
 | Large transfer → exfiltration | A **ratio** is required. A 50 MB two-way transfer is a backup, not exfil. |
 | Many DNS queries → tunnelling | Entropy **and** a failure ratio. Normal browsing is high-volume, low-entropy, answered. |
 
+### What is monitored: operator-declared network scopes
+
+A per-host baseline is only meaningful for a stable host population. `src_addr` on a NetFlow
+aggregate can be an internet peer or a scanner, not a monitored asset. Scope is therefore an
+operator declaration, not an RFC1918 guess:
+
+| Field | Meaning |
+|---|---|
+| CIDR | IPv4 or IPv6 network, normalized before storage |
+| Label | `internal`, `vpn`, `dmz` or `external` |
+| Monitored | whether hosts in this scope are eligible for per-host baselines and alerts |
+| Policy | `full`, `aggregate`, `observe` or `off` |
+
+Overlaps resolve by longest-prefix match; ties are broken deterministically. An address outside
+every declaration is **unclassified** — a visible configuration gap, not an implicit answer.
+
+When no scopes are declared the worker preserves the legacy unscoped behaviour, so an upgrade
+cannot silently stop alerting. Once declarations exist, only monitored scopes are scored;
+unmonitored and unclassified traffic is still collected and shown in Weirlings, but it does not
+create per-host alerts. Settings → **Monitored networks** edits the declarations; Weirlings →
+**Network coverage** shows the same scopes, their 24-hour host/alert counts and the unclassified
+remainder.
+
 ### What the models see: NetFlow *and* Zeek
 
 Every model trains and scores on features from **both** sensors. The NetFlow half describes
