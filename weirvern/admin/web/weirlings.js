@@ -478,7 +478,7 @@ function wlTap(kind, info) {
   const label = kind === "netflow" ? "netflow" : "zeek";
   const scope = i.scope === "sensor"
     ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}`
-    : (i.scope === "nic" ? ` — ${i.scope_note || "this NIC carries the feed"}` : "");
+    : (i.scope === "nic" && i.scope_note ? ` — ${i.scope_note}` : "");
   if (i.observed) {
     return el("span", { class: "tap on", text: label,
       attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") + scope } });

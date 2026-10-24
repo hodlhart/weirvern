@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.5 — 2026-10-23
+
+NETFLOW TAP TOOLTIP TRUTH.
+
+- A non-owner NIC's netflow chip no longer carries the owner's scope sentence in its title; the
+  title names the active source and stops there. The visible chip remains `netflow`.
+
 ## 0.20.4 — 2026-10-23
 
 WEIRLINGS NETFLOW CHIP.
