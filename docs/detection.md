@@ -107,6 +107,7 @@ half describes **what the traffic is**, which volume alone cannot express:
 |---|---|---|
 | Connection-state mix | `s0_ratio`, `rej_ratio`, `completed_ratio` | A measured host-window: 89 connections, **88 unanswered SYNs**, zero response bytes. NetFlow reports modest traffic; the state mix is unmistakably a scan. |
 | DNS behaviour | query entropy and length, NXDOMAIN and no-answer ratios | Tunnelling and DGA show as high-entropy, long, frequently-failing lookups |
+| DNS shape (v4) | unique-query ratio, maximum entropy, query-length spread, TXT/NULL ratios, answer count, new-domain ratio | A single high-entropy tunnel does not disappear into a mean; DGA shows as many one-off names and NXDOMAIN bursts; domains never queried by this host before are the DNS analogue of a new TLS client |
 | Service variety | distinct protocols, and novelty against the host's own baseline | A host that begins speaking something it never has |
 | TLS | distinct JA4 fingerprints, modern-version ratio | A client changing TLS stack, or downgrading |
 | Zeek's own signals | notice and weird counts | A second opinion on the same traffic |
@@ -118,6 +119,7 @@ half describes **what the traffic is**, which volume alone cannot express:
 | SSH authentication | attempt counts and failure **ratio** | The clearest brute-force signal on a tap — a failed password is a few bytes each way, indistinguishable from a keepalive in NetFlow |
 | HTTP shape | URI entropy, error ratio, POST ratio | Encoded or high-entropy paths are how simple C2 hides and how data is smuggled through a query string; a host whose requests are overwhelmingly 404 is enumerating paths |
 | File transfer profile | count, mean/max size, MIME variety | NetFlow byte totals cannot distinguish one 500 MB transfer from 500 transfers of 1 MB |
+| Graph relationships (v4) | fan-in, destination concentration, peer rarity, reciprocity, new-peer ratio | Fan-in is the reverse direction — a workstation that starts receiving connections from many hosts has changed role. NetFlow's `unique_dst_ips` is only fan-out. |
 
 Three design points matter when reading the numbers:
 
@@ -130,8 +132,8 @@ Three design points matter when reading the numbers:
 - **Every ingested table feeds the models.** An audit found `zeek_http`, `zeek_files` and
   `zeek_ssh` were mapped, ingested, stored — and read by no query, no feature and no view.
   Three tables' worth of traffic collected and discarded while the deployment looked complete.
-  The feature set went from 18 to 33, and `tests/test_ml_table_coverage.py` keeps every table
-  read by *something*.
+  The feature set has grown from 18 columns to 77 in the full IF/GB vector (63 of them Zeek),
+  and `tests/test_ml_table_coverage.py` keeps every table read by *something*.
 - **The join is LEFT, on `(5-minute window, host)`.** An inner join would silently drop every
   host Zeek did not see; joining on host alone would compare a five-minute window against all
   of that host's history. `weirvern status` reports the actual coverage, and the Adaptive
