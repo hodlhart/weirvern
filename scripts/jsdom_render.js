@@ -4063,13 +4063,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         });
         H.SETTINGS_ROWS.channel_upstream = { value: "eth1" };
         H.SETTINGS_ROWS.channel_downstream = { value: "eth2" };
+        const nfModeHeld = H.SETTINGS_ROWS.netflow_mode;
+        const nfIfaceHeld = H.SETTINGS_ROWS.netflow_iface;
+        H.SETTINGS_ROWS.netflow_mode = { value: "active" };
+        H.SETTINGS_ROWS.netflow_iface = { value: "eth2" };
         const fake = { sensor_id: "weirvern", local: true, iface: "eth1",
           interfaces: ["eth1", "eth2"], network_names: {},
           channel: { state: "enabled" }, reported_mode: "siphon",
           expected_mode: "siphon", plan: {},
           flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
           netflow: { known: true, observed: true, flows: 78, last_at: "", why: "",
-                     scope: "sensor", scope_label: "sensor feed" },
+                     scope: "sensor", scope_label: "netflow" },
           zeek: { known: true, observed: true, last_at: "", why: "" } };
         const facts = typeof window.wlNicFacts === "function"
           ? window.wlNicFacts(fake)
@@ -4102,9 +4106,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                 && siphonRow.children[6].querySelectorAll(".tap").length === 2,
                 siphonRow ? [...siphonRow.children].map((td) => td.textContent.trim()).join("|")
                           : "no siphon row");
-          check("the netflow chip states a sensor-wide feed, not a per-NIC probe",
+          check("the active NetFlow NIC owns the chip and the other NIC says why",
+                eth1.netflow.observed === false && /eth2/.test(eth1.netflow.why || "")
+                && eth2.netflow.observed === true,
+                `eth1=${JSON.stringify(eth1.netflow)} eth2=${JSON.stringify(eth2.netflow)}`);
+          check("the netflow chip is named netflow, not a generic sensor feed",
                 !!siphonRow && /netflow/.test(siphonRow.children[6].textContent)
-                && /sensor feed/.test(siphonRow.children[6].textContent),
+                && !/sensor feed/.test(siphonRow.children[6].textContent),
                 siphonRow ? siphonRow.children[6].textContent.trim() : "no siphon row");
         }
         check("a NIC's line uses its own plan segment, not the sensor-level one",
@@ -4120,6 +4128,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         else H.STAGE.changes.intercept_plans = plansHeld;
         H.SETTINGS_ROWS.channel_upstream = upHeld;
         H.SETTINGS_ROWS.channel_downstream = downHeld;
+        H.SETTINGS_ROWS.netflow_mode = nfModeHeld;
+        H.SETTINGS_ROWS.netflow_iface = nfIfaceHeld;
       }
     }
     // PER-NIC PLAN ISOLATION (operator, 2026-10-20: "It's still cross polluting the two nics").
@@ -4166,7 +4176,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         reported_mode: "siphon", expected_mode: "siphon", plan: {},
         flow_series: [1, 3, 2, 5, 4, 8, 6, 9, 7, 11, 10, 12],
         netflow: { known: true, observed: true, flows: 78, last_at: "", why: "",
-                   scope: "sensor", scope_label: "sensor feed" },
+                   scope: "sensor", scope_label: "netflow" },
         zeek: { known: true, observed: true, last_at: "", why: "" } };
       const renderedNic = typeof window.wlNicRows === "function"
         ? window.wlNicRows(renderedFake).find((tr) => /siphon/.test(tr.textContent)) : null;

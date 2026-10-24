@@ -1594,7 +1594,7 @@ def _build_handler(ctx: GuiContext):
                     # setting and the exporter address belongs to the box, so a NIC line must
                     # not imply it owns a local probe. The label is part of the evidence.
                     "scope": "sensor",
-                    "scope_label": "sensor feed",
+                    "scope_label": "netflow",
                     "scope_note": ("the hub sees one sensor-wide NetFlow feed; it cannot "
                                    "attribute it to this NIC"),
                     "why": ("" if flows else

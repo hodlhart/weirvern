@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.4 — 2026-10-23
+
+WEIRLINGS NETFLOW CHIP.
+
+- The NetFlow chip is named `netflow`, not `netflow · sensor feed`; the scope stays in the title.
+- An active feed belongs to its own NIC (`NETFLOW_IFACE`): the source NIC carries the measured
+  state and every other NIC says which interface owns the probe. Passive/auto remains explicitly
+  sensor-scoped, because there is no per-NIC probe to claim.
+
 ## 0.20.3 — 2026-10-23
 
 CHANGE-POINT NOISE FIX.

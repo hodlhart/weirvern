@@ -470,21 +470,20 @@ function wlSparkline(r) {
  *  is always present -- colour is never the only signal. */
 function wlTap(kind, info) {
   const i = info || {};
-  // NAME THE FEED, THEN ITS SCOPE. The chip used to read "sensor feed" for NetFlow, which
-  // hid the feed's name entirely: an operator looking for the netflow indicator saw only a
-  // generic phrase. The scope is still carried in the same chip and in the title, because a
-  // sensor-wide feed must not be mistaken for a per-NIC measurement.
-  const sensorScoped = kind === "netflow"
-    && (i.scope === "sensor" || i.scope_label === "sensor feed");
+  // THE FEED IS NAMED "netflow" (operator, 2026-10-23). The old chip appended a generic scope
+  // word on every NIC, which made one sensor-wide feed look like a per-NIC probe and hid the
+  // fact that only one port is the active source. The chip now says netflow; the title carries
+  // the scope, and the NIC row passes its own object (see wlNicFacts), so an active eth2
+  // indicator is distinct from the inactive eth1 line.
   const label = kind === "netflow" ? "netflow" : "zeek";
-  const shown = sensorScoped ? label + " · sensor feed" : label;
-  const scope = sensorScoped
-    ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}` : "";
+  const scope = i.scope === "sensor"
+    ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}`
+    : (i.scope === "nic" ? ` — ${i.scope_note || "this NIC carries the feed"}` : "");
   if (i.observed) {
-    return el("span", { class: "tap on", text: shown,
+    return el("span", { class: "tap on", text: label,
       attrs: { title: `${label} observed` + (i.last_at ? ` — last at ${i.last_at}` : "") + scope } });
   }
-  return el("span", { class: "tap off", text: shown,
+  return el("span", { class: "tap off", text: label,
     attrs: { title: `${label} not observed — ${i.why || "no evidence"}${scope}` } });
 }
 
@@ -540,8 +539,31 @@ function wlNicFacts(r) {
       : (siphon ? "siphon"
         : (planMode || (hasNicPlan ? (captureRole ? "loch" : "")
           : (captureRole ? mode : ""))));
+    // NETFLOW IS THE NIC'S OWN INDICATOR. The live hub runs NETFLOW_MODE=active with
+    // NETFLOW_IFACE=eth2; copying the sensor-wide object onto eth1 as well said eth1 carried
+    // the same feed. Only the active source gets the measured state; every other NIC gets an
+    // explicit off with the source's name. Passive/auto remains sensor-scoped and says so in
+    // the title, because there is no per-NIC probe to attribute.
+    const nf = r.netflow || {};
+    const nfMode = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
+    const nfIface = String(wlCfgValue("netflow_iface") || "").trim();
+    const activeOwner = nfMode === "active" ? (nfIface || capture) : "";
+    const nicNetflow = (() => {
+      if (!local) {
+        return Object.assign({}, nf, { scope: nf.scope || "sensor", scope_label: "netflow" });
+      }
+      if (nfMode === "active" && activeOwner && name !== activeOwner) {
+        return { known: true, observed: false, flows: 0, last_at: "", scope: "nic",
+                 scope_label: "netflow", why: `active NetFlow samples ${activeOwner}` };
+      }
+      if (nfMode === "active" && name === activeOwner) {
+        return Object.assign({}, nf, { scope: "nic", scope_label: "netflow",
+          scope_note: "the active NetFlow probe samples this NIC" });
+      }
+      return Object.assign({}, nf, { scope: nf.scope || "sensor", scope_label: "netflow" });
+    })();
     return {
-      name, role, mode: lineMode, reported,
+      name, role, mode: lineMode, reported, netflow: nicNetflow,
       network_name: (r.network_names && r.network_names[name]) || localNames[name] || "",
       networks: (role === "capture" || role === "siphon")
         ? (plan.segment || (role === "capture" ? segment : "")) : "",
@@ -606,7 +628,7 @@ function wlNicRows(r) {
         return cell;
       })(),
       el("td", {}, [el("span", { class: "wl-feeds" },
-        [wlTap("netflow", r.netflow), wlTap("zeek", r.zeek)])]),
+        [wlTap("netflow", n.netflow), wlTap("zeek", r.zeek)])]),
     ]);
     row.addEventListener("click", () => openWeirling(r.sensor_id, { nic: n.name }));
     return row;
