@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.9 — 2026-10-24
+
+CANDIDATE SQL ALIAS FIX.
+
+- The deduped candidate subquery filtered on `total_bytes` after aliasing `sum(total_bytes)` to the
+  same name; ClickHouse rejected it as an aggregate in WHERE. The filter is now `HAVING
+  sum(total_bytes) > 0`, so HDBSCAN sees one row per host-window.
+
 ## 0.20.8 — 2026-10-24
 
 CANDIDATE DEDUPE AND CALIBRATION VERDICT.
