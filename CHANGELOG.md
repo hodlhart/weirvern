@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.3 — 2026-10-24
+
+DNS IS NOT PACKET OPEN.
+
+- Sluice's packet state is now named as such everywhere: **`open · no packet rules`**, not
+  **open**, and the Traffic Gate line reads **packet gate open · no packet rules · DNS gate on ·
+  N domains**. The fleet table is titled **Packet state / Packet rules** with a note that DNS
+  blocking is enforced separately.
+- A working Domain Gate (blocklists or domain rules) no longer looks switched off just because
+  the packet gate has no live nft rules. The server's packet-gate detail now says "no live packet
+  rules" rather than "no live rules".
+- The Domain Gate remains a separate enforcement path and keeps its own state, counts and
+  control.
+
 ## 0.23.2 — 2026-10-24
 
 OPEN IS NOT DEGRADED.

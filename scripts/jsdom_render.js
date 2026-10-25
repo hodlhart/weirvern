@@ -3826,8 +3826,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 80));
     const gateState = doc.getElementById("sl-gate-state");
-    check("the status line states the gate's state in words",
-          !!gateState && /^(armed|off)/i.test(gateState.textContent.trim()),
+    check("the status line states the packet gate's state in words",
+          !!gateState && /^(packet (armed|gate open|gate off)|armed|off)/i.test(gateState.textContent.trim()),
           gateState ? gateState.textContent : "no state");
     check("...and offers exactly one control to change it",
           !!doc.getElementById("sl-bc-gate")

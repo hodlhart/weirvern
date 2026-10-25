@@ -38,10 +38,10 @@ function sluiceDuration(seconds) {
 }
 
 function sluiceStateLabel(state) {
-  // OPEN, NOT DEGRADED. A gate with no live rules is open by choice; calling that degraded makes
-  // the sensor look broken when nothing is wrong with it. DEGRADED stays reserved for a failure
-  // to enforce (backend missing, ruleset did not install, no verified path).
-  return state === "disarmed" ? "open" : (state || "unknown");
+  // THE PACKET GATE, NOT THE WHOLE SLUICE GATE. A gate with no live packet rules is open by
+  // choice; DNS blocking is a separate enforcement path and may still be blocking names. Calling
+  // this simply "open" made a working Domain Gate look like it had been switched off.
+  return state === "disarmed" ? "open \u00b7 no packet rules" : (state || "unknown");
 }
 
 function sluiceStateChip(state, stale) {
@@ -111,8 +111,10 @@ async function loadSluice() {
     } else {
       gateNote.textContent = gates.some((g) => g.stale)
         ? "A gate marked stale has stopped reporting: its segment is NOT being filtered, "
-          + "whatever the rule list says."
-        : "Every gate listed reported within its own interval.";
+          + "whatever the rule list says. This table reports packet enforcement only; DNS "
+          + "blocking is enforced separately by the Domain Gate."
+        : "Every gate listed reported within its own interval. This table reports packet "
+          + "enforcement only; DNS blocking is enforced separately by the Domain Gate.";
       for (const g of gates) {
         gateBody.appendChild(el("tr", {}, [
           el("td", {}, [
@@ -608,9 +610,9 @@ function renderGateSplit(d) {
     const g = d.gate || {};
     const state = String(g.state || "unknown");
     tg.replaceChildren(
-      tile("state", sluiceStateLabel(state), g.detail || ""),
+      tile("packet state", sluiceStateLabel(state), g.detail || ""),
       tile("interface", g.iface || "—"),
-      tile("rules active", `${Number(g.rules_active) || 0} / ${Number(g.rules_total) || 0}`),
+      tile("packet rules", `${Number(g.rules_active) || 0} / ${Number(g.rules_total) || 0}`),
       tile("packets blocked", Number(g.packets_blocked) || 0),
     );
   }
@@ -841,14 +843,23 @@ async function loadBlockingControls() {
   const warningText = stale
     ? String((gateLive && (gateLive.warning || gdetail)) || "")
     : (openByChoice ? gdetail : (!healthy ? String((gateLive && (gateLive.warning || gdetail)) || "") : ""));
-  const stateBits = [gateOn
-    ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced`
-                : "open \u00b7 no live rules")
-    : "off"];
+  // THE TRAFFIC GATE IS NOT THE WHOLE GATE. DNS blocking is a separate enforcement path and may
+  // still be blocking 221,972 domains while the packet gate has no live rules. The line names
+  // both facts; "open" alone made a working Domain Gate look off.
+  const packetState = gateOn
+    ? (live > 0 ? `packet armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced`
+                : "packet gate open \u00b7 no packet rules")
+    : "packet gate off";
+  const onLists = ((gate && gate.blocklists) || []).filter((s) => s.enabled);
+  const dnsDomains = onLists.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
+  const dnsState = domOn
+    ? (dnsDomains ? `DNS gate on \u00b7 ${dnsDomains.toLocaleString()} domains` : "DNS gate on")
+    : "DNS gate off";
+  const stateBits = [packetState, dnsState];
   if (!healthy && !openByChoice) stateBits.push(gstate);
   if (stale) stateBits.push("stale");
   gateState.textContent = stateBits.join(" \u00b7 ");
-  gateState.className = gateOn && live > 0 ? "sl-on" : "sl-off";
+  gateState.className = (gateOn && live > 0) || domOn ? "sl-on" : "sl-off";
 
   // THE REASON MUST BE VISIBLE, NOT A HOVER FACT (SL1). A stale gate is not a live-but-imperfect
   // one: the server says its state is HISTORICAL, and the operator needs that sentence on the

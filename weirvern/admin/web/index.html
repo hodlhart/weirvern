@@ -1158,7 +1158,7 @@
       <p class="muted">Drops packets on the capture interface. Needs a rule and an armed nft backend.</p>
       <div class="stat-row" id="tg-stats"></div>
       <div class="sl-status-line">
-        <span class="sl-status-item">Gate
+        <span class="sl-status-item">Packet gate
           <strong id="sl-gate-state">loading&hellip;</strong>
           <button id="sl-bc-gate" type="button">&hellip;</button></span>
         <span class="muted" id="sl-bc-auto-state"></span>
@@ -1170,10 +1170,10 @@
     </div>
 
     <div class="card">
-      <h2>Fleet gates <span class="muted">where the same rules are enforced</span></h2>
+      <h2>Fleet gates <span class="muted">where the packet rules are enforced</span></h2>
       <p class="muted" id="sl-gates-note"></p>
       <table id="sl-gates">
-        <thead><tr><th>Weirling</th><th>State</th><th>Interface</th><th>Rules active / total</th>
+        <thead><tr><th>Weirling</th><th>Packet state</th><th>Interface</th><th>Packet rules active / total</th>
           <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
         <tbody></tbody>
       </table>

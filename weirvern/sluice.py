@@ -1026,7 +1026,8 @@ class SluiceSupervisor:
             iface=self.iface, mgmt_iface=self.mgmt_iface,
             rules_total=len(rules), rules_active=len(live),
             packets_blocked=packets, bytes_blocked=bytes_,
-            detail=note if live else "no live rules: the gate is open by choice",
+            detail=note if live else
+                   "no live packet rules: the packet gate is open by choice",
             backend=self.backend.name, backend_expected="nft",
         )
         return self.state
