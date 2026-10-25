@@ -847,9 +847,9 @@ async function loadBlockingControls() {
   // still be blocking 221,972 domains while the packet gate has no live rules. The line names
   // both facts; "open" alone made a working Domain Gate look off.
   const packetState = gateOn
-    ? (live > 0 ? `packet armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced`
-                : "packet gate open \u00b7 no packet rules")
-    : "packet gate off";
+    ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced`
+                : "open \u00b7 no packet rules")
+    : "off";
   const onLists = ((gate && gate.blocklists) || []).filter((s) => s.enabled);
   const dnsDomains = onLists.reduce((n, s) => n + (Number(s.domain_count) || 0), 0);
   const dnsState = domOn

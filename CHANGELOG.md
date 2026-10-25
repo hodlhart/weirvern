@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.4 — 2026-10-24
+
+PACKET GATE LABEL, TAKE TWO.
+
+- The Traffic Gate line now reads **Packet gate open · no packet rules · DNS gate on · N domains**
+  without repeating "packet gate" inside the state value. The packet/DNS distinction introduced
+  in 0.23.3 is unchanged; this only removes the duplicate label.
+- The Fleet gates table and Traffic Gate tile keep the **Packet state / Packet rules** wording.
+
 ## 0.23.3 — 2026-10-24
 
 DNS IS NOT PACKET OPEN.
