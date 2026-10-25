@@ -572,6 +572,9 @@ const SLUICE_PAYLOAD = {
     { sensor: "weirvern-eth2", state: "armed", iface: "eth2", rules_active: 2, rules_total: 3,
       packets_blocked: 88, bytes_blocked: 4096, age_s: 30, local: false, stale: false,
       enforcement: "siphon", detail: "" },
+    { sensor: "weirvern-open", state: "disarmed", iface: "eth1", rules_active: 0, rules_total: 0,
+      packets_blocked: 0, bytes_blocked: 0, age_s: 20, local: false, stale: false,
+      enforcement: "siphon", detail: "no live rules: the gate is open by choice" },
     { sensor: "lab-west", state: "degraded", iface: "eth1", rules_active: 0, rules_total: 3,
       packets_blocked: 0, bytes_blocked: 0, age_s: 5400, local: false, stale: true,
       enforcement: "", detail: "no verified path" },
@@ -5706,6 +5709,10 @@ const zeroRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
 check("a stopped gate's real zero still renders as 0",
       !!zeroRow && [...zeroRow.querySelectorAll("td")][4].textContent === "0",
       zeroRow ? [...zeroRow.querySelectorAll("td")][4].textContent : "no lab-west row");
+const openRow = slGateRows.find((r) => r.textContent.includes("weirvern-open"));
+check("a gate with no live rules reads open, not degraded",
+      !!openRow && /open/i.test(openRow.textContent) && !/degraded/i.test(openRow.textContent),
+      openRow ? openRow.textContent : "no weirvern-open row");
 
 check("a LIVE rule is distinguishable from a LAPSED one",
       slText().includes("live") && slText().includes("lapsed"),

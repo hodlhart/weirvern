@@ -1425,19 +1425,31 @@ class SluiceGateGroup:
         """One row for the sensor: ARMED only when EVERY blocking NIC is armed.
 
         The gate table is one row per sensor, not per NIC, so the aggregate must not round a
-        partial failure up. If eth1 is armed and eth2 is degraded, the sensor is DEGRADED and
-        the detail names both -- that is the fact an operator needs.
+        partial failure up. A failure on any NIC is DEGRADED. A NIC with no live rules is
+        DISARMED -- open by choice, not broken -- and must not make the whole sensor read as
+        degraded. The detail names every NIC so a partial coverage state is still visible.
         """
         states = self.states()
         if not states:
             return GateState(iface="", mgmt_iface=self.mgmt_iface,
                              detail="no blocking NIC is configured")
-        bad = {i: s for i, s in states.items() if s.state != GATE_STATE_ARMED}
         first = next(iter(states.values()))
-        if bad:
-            detail = "; ".join(f"{i}: {s.detail}" for i, s in bad.items())
+        failed = {i: s for i, s in states.items() if s.state == GATE_STATE_DEGRADED}
+        if failed:
+            detail = "; ".join(f"{i}: {s.detail}" for i, s in states.items())
             return GateState(
                 state=GATE_STATE_DEGRADED, iface=self.iface, mgmt_iface=self.mgmt_iface,
+                rules_total=sum(s.rules_total for s in states.values()),
+                rules_active=sum(s.rules_active for s in states.values()),
+                packets_blocked=sum(s.packets_blocked for s in states.values()),
+                bytes_blocked=sum(s.bytes_blocked for s in states.values()),
+                detail=detail, backend=first.backend, backend_expected="nft",
+            )
+        open_states = {i: s for i, s in states.items() if s.state != GATE_STATE_ARMED}
+        if open_states:
+            detail = "; ".join(f"{i}: {s.detail}" for i, s in states.items())
+            return GateState(
+                state=GATE_STATE_DISARMED, iface=self.iface, mgmt_iface=self.mgmt_iface,
                 rules_total=sum(s.rules_total for s in states.values()),
                 rules_active=sum(s.rules_active for s in states.values()),
                 packets_blocked=sum(s.packets_blocked for s in states.values()),

@@ -37,8 +37,15 @@ function sluiceDuration(seconds) {
   return past ? `${text} ago` : `in ${text}`;
 }
 
+function sluiceStateLabel(state) {
+  // OPEN, NOT DEGRADED. A gate with no live rules is open by choice; calling that degraded makes
+  // the sensor look broken when nothing is wrong with it. DEGRADED stays reserved for a failure
+  // to enforce (backend missing, ruleset did not install, no verified path).
+  return state === "disarmed" ? "open" : (state || "unknown");
+}
+
 function sluiceStateChip(state, stale) {
-  const label = state || "unknown";
+  const label = sluiceStateLabel(state);
   const cls = state === "armed" ? "ok" : (state === "degraded" ? "bad" : "muted");
   const text = stale ? `${label} \u00b7 stale` : label;
   return el("span", { class: `chip ${cls}`, text });
@@ -601,7 +608,7 @@ function renderGateSplit(d) {
     const g = d.gate || {};
     const state = String(g.state || "unknown");
     tg.replaceChildren(
-      tile("state", state, g.detail || ""),
+      tile("state", sluiceStateLabel(state), g.detail || ""),
       tile("interface", g.iface || "—"),
       tile("rules active", `${Number(g.rules_active) || 0} / ${Number(g.rules_total) || 0}`),
       tile("packets blocked", Number(g.packets_blocked) || 0),
@@ -825,16 +832,23 @@ async function loadBlockingControls() {
   const gstate = String((gateLive && gateLive.state) || "");
   const gdetail = String((gateLive && gateLive.detail) || "");
   const stale = Boolean(gateLive && gateLive.stale);
-  const healthy = !gstate || ["ok", "armed", "disabled", "running"].includes(gstate.toLowerCase());
-  const warningText = (!healthy || stale)
-    ? String((gateLive && (gateLive.warning || gdetail)) || "") : "";
+  // OPEN BY CHOICE IS NOT DEGRADED. The aggregate state is `disarmed` when the gate has no live
+  // rules; that says nothing about the sensor's health. Only a real enforcement failure keeps the
+  // `degraded` label and its warning.
+  const openByChoice = gstate.toLowerCase() === "disarmed";
+  const healthy = !gstate || ["ok", "armed", "disabled", "running", "disarmed"]
+    .includes(gstate.toLowerCase());
+  const warningText = stale
+    ? String((gateLive && (gateLive.warning || gdetail)) || "")
+    : (openByChoice ? gdetail : (!healthy ? String((gateLive && (gateLive.warning || gdetail)) || "") : ""));
   const stateBits = [gateOn
-    ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced` : "armed \u00b7 nothing enforced")
+    ? (live > 0 ? `armed \u00b7 ${live} rule${live === 1 ? "" : "s"} enforced`
+                : "open \u00b7 no live rules")
     : "off"];
-  if (!healthy) stateBits.push(gstate);
+  if (!healthy && !openByChoice) stateBits.push(gstate);
   if (stale) stateBits.push("stale");
   gateState.textContent = stateBits.join(" \u00b7 ");
-  gateState.className = gateOn ? "sl-on" : "sl-off";
+  gateState.className = gateOn && live > 0 ? "sl-on" : "sl-off";
 
   // THE REASON MUST BE VISIBLE, NOT A HOVER FACT (SL1). A stale gate is not a live-but-imperfect
   // one: the server says its state is HISTORICAL, and the operator needs that sentence on the

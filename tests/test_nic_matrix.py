@@ -11,7 +11,14 @@ from itertools import product
 
 from weirvern.admin.siphon_supervisor import configs_from_env
 from weirvern.nic_plans import NicPlanSet
-from weirvern.sluice import GATE_STATE_ARMED, NftBackend, Rule, SluiceGateGroup
+from weirvern.sluice import (
+    GATE_STATE_ARMED,
+    GATE_STATE_DEGRADED,
+    GATE_STATE_DISARMED,
+    NftBackend,
+    Rule,
+    SluiceGateGroup,
+)
 
 SEGMENT = {"segment": "198.51.100.0/24", "addr": "198.51.100.10",
            "gateway": "198.51.100.1", "targets": "*"}
@@ -28,7 +35,7 @@ class FakeNft:
         self.table = f"weirvern_sluice_{iface}"
         self.text = ""
 
-    def available(self):
+    def available(self) -> bool:
         return True
 
     def arm(self, rules, *, iface):
@@ -101,6 +108,42 @@ def test_two_blocking_nics_get_two_tables_and_two_independent_arms():
     # Arming one does not empty the other's compiled ruleset.
     assert "counter drop" in group.supervisors["eth1"].backend.text
     assert "counter drop" in group.supervisors["eth2"].backend.text
+
+
+def test_a_gate_with_no_live_rules_is_open_not_degraded():
+    """No live rules is a POLICY state, not a sensor failure.
+
+    Before this, `SluiceGateGroup.state` treated every non-ARMED NIC as degraded, so an operator
+    who had simply filed no rule saw "degraded" beside a healthy sensor and went looking for an
+    enforcement fault that did not exist. The aggregate must preserve DISARMED, while still
+    naming each NIC's own detail.
+    """
+    plans = NicPlanSet.from_json('''
+      {"eth1": {"sluice": true}, "eth2": {"sluice": true}}
+    ''')
+    group = SluiceGateGroup(plans, backend_factory=FakeNft)
+    state = group.arm([])
+    assert state.state == GATE_STATE_DISARMED, state.detail
+    assert state.rules_active == 0
+    assert "open by choice" in state.detail
+
+
+def test_an_enforcement_failure_still_degrades_the_sensor():
+    """A real failure must not be softened into "open by choice" by the aggregate."""
+    class FailingNft(FakeNft):
+        def available(self) -> bool:
+            return False
+
+    plans = NicPlanSet.from_json('''
+      {"eth1": {"sluice": true}, "eth2": {"sluice": true}}
+    ''')
+    group = SluiceGateGroup(
+        plans,
+        backend_factory=lambda iface: FailingNft(iface) if iface == "eth2" else FakeNft(iface),
+    )
+    state = group.arm([rule()])
+    assert state.state == GATE_STATE_DEGRADED, state.detail
+    assert "eth2" in state.detail and "not being blocked" in state.detail
 
 
 def test_a_blocking_rule_matches_the_named_host_and_no_other_host():

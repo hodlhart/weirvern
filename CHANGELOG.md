@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.2 — 2026-10-24
+
+OPEN IS NOT DEGRADED.
+
+- A gate with **no live rules** now reports `disarmed` (shown as **open**) at the sensor
+  aggregate, not `degraded`. The aggregate used to treat every non-armed NIC as a failure, so an
+  operator who had simply filed no rule saw "degraded" beside a healthy sensor and went looking
+  for an enforcement fault that did not exist.
+- `degraded` is now reserved for a real enforcement failure: a missing/unavailable backend, a
+  ruleset that did not install, or no verified enforcement path.
+- Sluice shows **open** for a disarmed gate in the fleet table and Traffic Gate tile, and the
+  status line reads **open · no live rules** with the server's reason visible.
+- Tests pin the all-disarmed aggregate and prove one failed NIC still degrades the sensor.
+
 ## 0.23.1 — 2026-10-24
 
 AUTO-FILL SCOPES FROM MONITORED NETWORKS.
