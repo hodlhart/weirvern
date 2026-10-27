@@ -86,9 +86,9 @@ def test_a_siphon_tap_starts_only_on_a_VERIFIED_LIVE_intercept():
 
 
 def test_one_tap_per_box_the_channel_wins_when_both_are_configured():
-    """Two taps on one box would count every conversation twice, and the volume features and
-    per-host baselines read that table. The channel is where the traffic actually crosses, so it
-    keeps the tap; the intercept's selection waits."""
+    """An INLINE channel is one bridged upstream/downstream pair, not a per-NIC probe. Tapping
+    both the channel and an intercept of the same traffic would count it twice, so the channel
+    keeps the tap. This does not limit ordinary NICs: each selected interface gets its own tap."""
     from weirvern import worker
 
     spawned = []

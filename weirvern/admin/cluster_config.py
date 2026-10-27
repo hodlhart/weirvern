@@ -645,6 +645,37 @@ def receipt_items(changes: dict[str, str], landed: dict[str, str] | None,
     return items
 
 
+def _iface_list(raw: str) -> list[str]:
+    """The interface names in a comma/semicolon-separated setting."""
+    out: list[str] = []
+    for part in str(raw or "").replace(";", ",").split(","):
+        name = part.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _channel_capture_guard(proposed: dict[str, str]) -> None:
+    """A channel is one inline pair; capture one side, not both.
+
+    The two channel ports are a bridge: every frame crosses both, so capturing Zeek or active
+    NetFlow on both would write the same conversation twice. Outside channel mode a sensor may
+    have several independent capture NICs, and each gets its own feed.
+    """
+    up = str(proposed.get("CHANNEL_UPSTREAM", "") or "").strip()
+    down = str(proposed.get("CHANNEL_DOWNSTREAM", "") or "").strip()
+    if not (up and down and up != down):
+        return
+    for key, label in (("ZEEK_IFACES", "Zeek"), ("NETFLOW_IFACE", "NetFlow")):
+        ifaces = _iface_list(proposed.get(key, ""))
+        if len(ifaces) > 1:
+            raise ConfigError(
+                f"channel mode captures one side of the inline pair; {label} is set to "
+                f"{', '.join(ifaces)}. Choose one channel port for both Zeek and NetFlow, "
+                f"or remove the channel before capturing several independent NICs."
+            )
+
+
 def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
     """Compute what a set of changes would do. Touches nothing.
 
@@ -652,6 +683,7 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
     -- a partial apply would leave the deployment in a state nobody chose.
     """
     out = Plan()
+    proposed = dict(current)
     for key, value in changes.items():
         # A ROW key arrives here from the GUI (exclude_cidrs); the ConfigMap and validate() speak
         # CONFIGMAP keys (WEIRVERN_EXCLUDE_CIDRS). Translate at the boundary, because four keys
@@ -659,6 +691,7 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
         key = to_configmap_key(key)
         warning = validate(key, value)
         was = current.get(key, "")
+        proposed[key] = (value or "").strip()
         targets: tuple[str, ...]
         targets, blast = _RESTART_FOR.get(key, ((), ""))
         out.proposals.append(Proposal(
@@ -669,6 +702,7 @@ def plan(changes: dict[str, str], current: dict[str, str]) -> Plan:
             blast=blast,
             warning=warning,
         ))
+    _channel_capture_guard(proposed)
     return out
 
 

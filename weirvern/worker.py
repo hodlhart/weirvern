@@ -447,6 +447,11 @@ CHANNEL_NETFLOW_KEEP_SEGMENTS = 240
 # paths; the old single holder made the two per-NIC switches mutually exclusive. `tap`/`iface`
 # remain as the first/primary tap for compatibility with the existing health and test surfaces;
 # every live tap is also carried in `taps` keyed by interface.
+#
+# CHANNEL IS NOT A SYNONYM FOR A NIC. `CHANNEL_NETFLOW` belongs to the INLINE channel only:
+# CHANNEL_UPSTREAM and CHANNEL_DOWNSTREAM are a bridged pair, and sampling either side is
+# sufficient because every frame crosses both. An ordinary capture/active-NetFlow NIC is just an
+# interface selected through NETFLOW_IFACE; it has no channel and gets its own tap.
 _CHANNEL_NETFLOW: dict = {
     "tap": None, "iface": "", "source": "", "retry_after": 0.0, "taps": {},
 }

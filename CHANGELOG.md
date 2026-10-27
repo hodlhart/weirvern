@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.10 — 2026-10-27
+
+CHANNEL MODE CAPTURES ONE SIDE.
+
+- A channel is an **inline pair**: `CHANNEL_UPSTREAM` and `CHANNEL_DOWNSTREAM` are bridged,
+  so every frame crosses both. While that pair is configured, the settings writer now refuses
+  more than one capture interface for **Zeek** or **active NetFlow**; one side is enough and
+  capturing both would record the same conversation twice.
+- Applying a channel stages the upstream side into `ZEEK_IFACES` and `NETFLOW_IFACE` in the
+  same plan, so the one-side rule is the default rather than a validation surprise.
+- Outside channel mode the multi-NIC behavior from 0.23.9 stands: independent capture NICs can
+  each run Zeek and an active NetFlow probe.
+
 ## 0.23.9 — 2026-10-27
 
 ACTIVE NETFLOW CAN METER MORE THAN ONE NIC.

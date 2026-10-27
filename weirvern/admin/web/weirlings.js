@@ -1343,7 +1343,7 @@ function wlPopulateSensorChannel(r) {
   }
   const note = document.getElementById("wl-sensor-channel-note");
   if (note) note.textContent = wlChannelEnabled()
-    ? "This sensor is bridged. Siphon and passive NetFlow are locked out while the channel is active."
+    ? "This sensor is bridged. Siphon and passive NetFlow are locked out while the channel is active; one side is used for Zeek and NetFlow so the bridge is not counted twice."
     : "";
 }
 
@@ -1379,6 +1379,11 @@ async function wlSensorChannelApply() {
     // enabled channel and a stale siphon/passive choice that would fight it.
     stageChange("sensor_mode", "loch", wlCfgValue("sensor_mode"));
     stageChange("netflow_mode", "active", wlCfgValue("netflow_mode"));
+    // ONE SIDE ONLY: both channel ports see every frame, so capturing Zeek or NetFlow on both
+    // would record the same conversation twice. Use the upstream port for both feeds; the
+    // server refuses a multi-interface capture while a channel pair is configured.
+    stageChange("zeek_ifaces", up.value, wlCfgValue("zeek_ifaces"));
+    stageChange("netflow_iface", up.value, wlCfgValue("netflow_iface"));
   }
   note.textContent = "applying channel…";
   const btn = document.getElementById("wl-sensor-channel-apply");
@@ -1458,6 +1463,13 @@ function wlShowNicSettings(nic, interfaces) {
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
   const flowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
   const netflowOn = !flowActive || (flowIfaces.length ? flowIfaces.includes(nic) : siphonOn);
+  // A CHANNEL IS ONE INLINE PAIR. Both ports see every frame, so only the upstream side may
+  // carry Zeek/NetFlow while the pair is configured; the other NIC's feed controls are disabled.
+  const channelOn = wlChannelEnabled();
+  const channelSide = String(wlStagedValue("channel_upstream") || "").trim();
+  const zeekFeed = channelOn ? nic === channelSide : zeekOn;
+  const netflowFeed = channelOn ? nic === channelSide : netflowOn;
+  const feedHere = !channelOn || nic === channelSide;
   const name = document.getElementById("wl-nic-name");
   const role = document.getElementById("wl-nic-role");
   const facts = document.getElementById("wl-nic-facts");
@@ -1487,11 +1499,11 @@ function wlShowNicSettings(nic, interfaces) {
     interceptInput.title = `the address ${nic} claims while intercepting`;
   }
   if (name) name.textContent = nic;
-  if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
+  if (role) role.textContent = siphonOn ? "siphon capture" : (zeekFeed ? "capture" : "unassigned");
   if (facts) {
     const flowWhere = flowActive ? (flowIfaces.length ? `active · ${flowIfaces.join(", ")}` : "active") : "passive";
     facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
-      + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowWhere}.`;
+      + `Feeds: Zeek ${zeekFeed ? "on" : "off"}, NetFlow ${flowWhere}.`;
   }
   // THE CHANNEL PAIR IS NOT A NIC FIELD (operator, 2026-10-19). It is configured on the
   // sensor's own sheet; this panel only carries its consequences.
@@ -1500,8 +1512,7 @@ function wlShowNicSettings(nic, interfaces) {
   const loch = document.getElementById("wl-nic-loch");
   const net = document.getElementById("wl-nic-netflow");
   const sluice = document.getElementById("wl-nic-sluice");
-  const channelOn = wlChannelEnabled();
-  if (z) z.checked = zeekOn;
+  if (z) { z.checked = zeekFeed; z.disabled = !feedHere; }
   if (sip) { sip.checked = siphonOn && !channelOn; sip.disabled = channelOn; }
   // SONAR IS AN IN-PATH SURVEY (operator, 2026-10-19): it is only meaningful while siphon is
   // selected. In loch mode there is no ARP/spoof plan to stage, so the button is disabled
@@ -1514,7 +1525,7 @@ function wlShowNicSettings(nic, interfaces) {
   }
   if (loch) loch.checked = channelOn || !siphonOn;
   if (sluice) sluice.checked = !!plan.sluice;
-  if (net) { net.checked = channelOn ? true : netflowOn; net.disabled = !flowActive && !channelOn; }
+  if (net) { net.checked = netflowFeed; net.disabled = channelOn ? !feedHere : (!flowActive && !channelOn); }
   const passive = document.getElementById("wl-nic-netflow-passive");
   const active = document.getElementById("wl-nic-netflow-active");
   if (passive) { passive.checked = channelOn ? false : !flowActive; passive.disabled = channelOn; }
@@ -1620,8 +1631,15 @@ function wlStageNicSettings() {
   const base = wlCfgValue("zeek_iface");
   const list = wlIfaceList(wlCfgValue("zeek_ifaces"));
   if (!list.length && base) list.push(base);
-  const next = list.filter((n) => n !== nic);
-  if (zeekOn) next.push(nic);
+  const channelSide = String(wlStagedValue("channel_upstream") || "").trim();
+  let next = list.filter((n) => n !== nic);
+  if (channelOn) {
+    // One inline side only; the other port is disabled in the sheet and must not creep back
+    // into ZEEK_IFACES through a stale list.
+    next = zeekOn && nic === channelSide ? [nic] : [];
+  } else if (zeekOn) {
+    next.push(nic);
+  }
   stageChange("zeek_ifaces", next.join(","), wlCfgValue("zeek_ifaces"));
 
   // THE HUMAN NAME IS PART OF THIS INTERFACE'S SETTINGS (operator, 2026-10-19). It is staged with
@@ -1675,8 +1693,14 @@ function wlStageNicSettings() {
   const wantedSource = activeSource && activeSource.checked ? "active" : "passive";
   if (wantedSource !== currentSource) stageChange("netflow_mode", wantedSource, currentSource);
   const currentFlowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
-  const nextFlowIfaces = currentFlowIfaces.filter((name) => name !== nic);
-  if (wantedSource === "active" && netBox && netBox.checked) nextFlowIfaces.push(nic);
+  let nextFlowIfaces = currentFlowIfaces.filter((name) => name !== nic);
+  if (channelOn) {
+    // The inline pair is sampled once. The non-upstream port cannot add a second probe.
+    nextFlowIfaces = (wantedSource === "active" && netBox && netBox.checked
+                      && nic === channelSide) ? [nic] : [];
+  } else if (wantedSource === "active" && netBox && netBox.checked) {
+    nextFlowIfaces.push(nic);
+  }
   const nextFlowValue = nextFlowIfaces.join(",");
   const currentFlowValue = currentFlowIfaces.join(",");
   if (nextFlowValue !== currentFlowValue) {

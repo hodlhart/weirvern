@@ -333,6 +333,24 @@ def test_every_editable_key_says_how_it_applies():
         assert sentence.startswith("applies with Apply"), key
 
 
+def test_channel_mode_captures_one_side_but_other_modes_can_use_several():
+    """An INLINE channel is one bridged upstream/downstream pair: capturing both sides would
+    duplicate every conversation. Outside channel mode, independent NICs may each be captured."""
+    from weirvern.admin import cluster_config as cc
+
+    channel = {"CHANNEL_UPSTREAM": "eth1", "CHANNEL_DOWNSTREAM": "eth2"}
+    with pytest.raises(cc.ConfigError, match="channel mode captures one side"):
+        cc.plan({"ZEEK_IFACES": "eth1,eth2"}, channel)
+    with pytest.raises(cc.ConfigError, match="channel mode captures one side"):
+        cc.plan({"NETFLOW_IFACE": "eth1,eth2"}, channel)
+    # One side for each feed is the valid channel shape.
+    planned = cc.plan({"ZEEK_IFACES": "eth1", "NETFLOW_IFACE": "eth1"}, channel)
+    assert {p.key for p in planned.proposals} == {"ZEEK_IFACES", "NETFLOW_IFACE"}
+    # The same multi-interface feeds are valid when no channel pair is configured.
+    planned = cc.plan({"ZEEK_IFACES": "eth1,eth2", "NETFLOW_IFACE": "eth1,eth2"}, {})
+    assert planned.proposals
+
+
 def test_the_payload_rows_carry_how_they_apply():
     """The badge is PAYLOAD-driven (BF-5 acceptance): the real settings_overview output must
     carry `applies` on every editable row, worded from the writer's restart table."""
