@@ -6149,13 +6149,18 @@ let NETWORK_EDIT_ID = "";
 let NETWORKS_WIRED = false;
 let NETWORK_SUGGESTED = [];
 
+function networkPolicyLabel(policy) {
+  // The stored/API value stays `full`; the operator-facing vocabulary says what it does.
+  return policy === "full" ? "per-host" : (policy || "");
+}
+
 function networkScopeRow(scope, writable) {
   const monitored = Boolean(scope.monitored) && ["full", "aggregate"].includes(scope.policy);
   return el("tr", {}, [
     el("td", { class: "mono", text: scope.cidr + (scope.warning ? " (catch-all)" : ""),
               attrs: { title: scope.warning || "" } }),
     el("td", { text: scope.label }),
-    el("td", { text: scope.policy }),
+    el("td", { text: networkPolicyLabel(scope.policy) }),
     el("td", { text: monitored ? "yes" : "observed" }),
     el("td", { class: "num", text: scope.hosts === null || scope.hosts === undefined ? "—" : String(scope.hosts) }),
     el("td", { class: "num", text: scope.alerts === null || scope.alerts === undefined ? "—" : String(scope.alerts) }),

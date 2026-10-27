@@ -108,7 +108,7 @@ operator declaration, not an RFC1918 guess:
 | CIDR | IPv4 or IPv6 network, normalized before storage |
 | Label | `internal`, `vpn`, `dmz` or `external` |
 | Monitored | whether hosts in this scope are eligible for per-host baselines and alerts |
-| Policy | `full`, `aggregate`, `observe` or `off` |
+| Policy | **per-host** (`full` in the API), `aggregate`, `observe` or `off` |
 
 Overlaps resolve by longest-prefix match; ties are broken deterministically. An address outside
 every declaration is **unclassified** — a visible configuration gap, not an implicit answer.

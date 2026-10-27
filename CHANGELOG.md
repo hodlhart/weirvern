@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.6 — 2026-10-27
+
+SAY PER-HOST, NOT FULL.
+
+- Network coverage cards and Settings → Monitored networks now label the `full`
+  policy **per-host** — it means per-host baselines and alerts. The stored/API value
+  remains `full` so existing scopes and clients are unchanged.
+- The policy picker says per-host; the Settings table and card tooltip use the same
+  vocabulary.
+
 ## 0.23.5 — 2026-10-27
 
 NETWORK COVERAGE CARDS STACK.

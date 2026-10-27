@@ -2295,6 +2295,9 @@ async function loadNetworkCoverage() {
   const list = document.getElementById("wl-network-list");
   const state = document.getElementById("wl-network-state");
   if (!note || !list) return;
+  // `full` is the storage/API value, but it reads as a generic intensifier on the console.
+  // Say what it actually buys the operator: per-host baselines and alerts.
+  const policyLabel = (policy) => policy === "full" ? "per-host" : (policy || "");
   let d;
   try {
     d = await getJSON("/api/networks");
@@ -2338,12 +2341,12 @@ async function loadNetworkCoverage() {
     const card = el("button", {
       class: "net-card clickable " + (monitored ? "monitored" : "observed"),
       type: "button",
-      title: `${scope.cidr} · ${scope.label} · ${scope.policy}`,
+      title: `${scope.cidr} · ${scope.label} · ${policyLabel(scope.policy)}`,
     }, [
       el("div", { class: "net-k", text: scope.label }),
       el("div", { class: "net-v mono", text: scope.cidr }),
       el("div", { class: "net-m", text: (monitored ? "monitored" : "observed") + " · " +
-        (scope.policy || "") }),
+        policyLabel(scope.policy) }),
       el("div", { class: "net-m", text: `hosts ${scope.hosts === null || scope.hosts === undefined ? "—" : scope.hosts} · alerts ${scope.alerts === null || scope.alerts === undefined ? "—" : scope.alerts}` }),
     ]);
     card.addEventListener("click", () => {
