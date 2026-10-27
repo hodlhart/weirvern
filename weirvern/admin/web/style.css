@@ -1543,6 +1543,18 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .net-card {
   flex: 1 1 210px;
   min-width: 190px;
+  /* A scope card is a BUTTON, and the global button system is a single-line control
+     (inline-flex, centered, nowrap, fixed height). A card is a block of four readings,
+     so it must explicitly undo that control layout or the readings run across one line
+     and overlap the next card. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  height: auto;
+  white-space: normal;
+  line-height: 1.25;
   text-align: left;
   border: 1px solid var(--line);
   border-left: 4px solid var(--line);
@@ -1557,8 +1569,8 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 .net-card.observed { border-left-color: var(--muted); }
 .net-card.unclassified { border-left-color: var(--warn); }
 .net-card .net-k { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .06em; opacity: .75; }
-.net-card .net-v { font-size: var(--fs-3); margin: 3px 0; }
-.net-card .net-m { font-size: var(--fs-1); opacity: .8; }
+.net-card .net-v { font-size: var(--fs-3); margin: 3px 0; overflow-wrap: anywhere; }
+.net-card .net-m { font-size: var(--fs-1); opacity: .8; overflow-wrap: anywhere; }
 
 .net-peers { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
 .net-peer-head { font-size: var(--fs-1); margin-bottom: 2px; }

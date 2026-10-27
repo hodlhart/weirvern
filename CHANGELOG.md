@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.5 — 2026-10-27
+
+NETWORK COVERAGE CARDS STACK.
+
+- The Weirlings **Network coverage** scope cards now render as vertical readings:
+  label, CIDR, policy, then host/alert counts. The cards were buttons, and the global
+  button rule (`inline-flex`, centered, `nowrap`, fixed height) made their four child
+  rows run across one line, overlap the adjacent card, and spill outside the card edge.
+- `.net-card` now explicitly opts out of the single-line button layout: column flex,
+  natural height, wrapping text, and `overflow-wrap` for long labels/subnets.
+
 ## 0.23.4 — 2026-10-24
 
 PACKET GATE LABEL, TAKE TWO.
