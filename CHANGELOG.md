@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.8 — 2026-10-27
+
+NETWORK COVERAGE: A LEDGER, NOT A RUN-ON LIST.
+
+- The external-peers section is now a ranked ledger: position, peer address, a volume bar
+  scaled to the top peer, human-readable bytes, window count and last-seen time. The heading
+  says the population and the 24-hour scope instead of leaving the reader to infer it.
+- A legend under the scope cards makes the colour vocabulary explicit: **green = monitored**
+  (per-host scoring and alerts), **grey = observed** (collected, not alertable), **orange =
+  unclassified** (outside every declaration). DMZ, INTERNAL and VPN are labels, not colours.
+- The NIC sheet now says that active NetFlow has **one source at a time**, and the facts line
+  names the current source (`NetFlow active · eth1`). Turning it on for another NIC moves the
+  probe; it is not two independent feeds. Passive mode remains the router-feed option.
+
 ## 0.23.7 — 2026-10-27
 
 A READ-ONLY UPDATE CHECK, NOT A SELF-UPDATER.

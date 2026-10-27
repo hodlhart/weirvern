@@ -1407,12 +1407,18 @@
       </h2>
       <div class="info-text hidden" id="wl-network-info">
         <p><strong>What it is.</strong> The operator-declared network scopes this fleet is monitoring, and the traffic that falls outside every declaration.</p>
+        <p><strong>Reading the cards.</strong> DMZ, INTERNAL and VPN are the operator's labels, not colours. The left border and legend show the monitoring state: <strong>green</strong> means monitored (per-host scoring and alerts), <strong>grey</strong> means observed (collected but not alertable), and <strong>orange</strong> means unclassified (outside every declared scope).</p>
         <p><strong>What writes it.</strong> Settings → Monitored networks. This card is a reading surface: it does not decide what is monitored.</p>
         <p><strong>Last changed.</strong> Counts cover the last 24 hours. A scope marked observed is still collected and counted, but its hosts are not per-host alert sources.</p>
         <p><strong>Where to see it.</strong> Here, and in Settings → Monitored networks. Unclassified traffic is a configuration gap, not a normal state.</p>
       </div>
       <p class="muted" id="wl-network-note">loading…</p>
       <div id="wl-network-list" class="net-grid"></div>
+      <div class="net-legend" aria-label="what the scope-card colours mean">
+        <span class="net-legend-item"><span class="net-swatch monitored"></span><strong>monitored</strong> — hosts are scored; per-host alerts</span>
+        <span class="net-legend-item"><span class="net-swatch observed"></span><strong>observed</strong> — collected, not alertable</span>
+        <span class="net-legend-item"><span class="net-swatch unclassified"></span><strong>unclassified</strong> — outside every declared scope</span>
+      </div>
       <div id="wl-peer-list" class="net-peers"></div>
     </div>
 
@@ -1496,6 +1502,9 @@
               <label class="check"><input type="checkbox" id="wl-nic-zeek"> Zeek</label>
               <label class="check"><input type="checkbox" id="wl-nic-netflow"> NetFlow</label>
             </div>
+            <p class="muted">Active NetFlow uses one source at a time. Turning it on for this NIC
+              moves the probe from the other NIC; the feed label in the fleet row names the
+              current source.</p>
           </div>
           <div class="nic-section">
             <h4>NetFlow source</h4>

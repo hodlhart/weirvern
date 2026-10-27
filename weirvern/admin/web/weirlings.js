@@ -1487,8 +1487,9 @@ function wlShowNicSettings(nic, interfaces) {
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
-    facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
-      + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowActive ? "active" : "passive"}.`;
+    const flowWhere = flowActive ? (flowIface ? `active · ${flowIface}` : "active") : "passive";
+    facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · ` 
+      + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowWhere}.`;
   }
   // THE CHANNEL PAIR IS NOT A NIC FIELD (operator, 2026-10-19). It is configured on the
   // sensor's own sheet; this panel only carries its consequences.
@@ -2372,15 +2373,36 @@ async function loadNetworkCoverage() {
     peers.replaceChildren();
     const rows = d.external_peers || [];
     if (rows.length) {
-      peers.appendChild(el("div", { class: "net-peer-head muted",
-        text: "External peers outside every declared scope (observed only) — top by bytes" }));
-      for (const p of rows.slice(0, 8)) {
-        peers.appendChild(el("div", { class: "net-peer-row" }, [
-          el("span", { class: "mono", text: p.src_addr }),
-          el("span", { class: "muted", text: `${p.bytes} bytes · ${p.windows} window(s)` }),
-          el("span", { class: "muted", text: p.last_seen || "" }),
+      const maxBytes = Math.max(...rows.map((p) => Number(p.bytes) || 0), 1);
+      peers.appendChild(el("div", { class: "net-peers-head" }, [
+        el("div", { class: "net-peers-title", text: "External peers" }),
+        el("div", { class: "muted", text: `Top ${rows.length} by bytes · last ${d.hours || 24}h · outside every declared scope` }),
+      ]));
+      const list = el("div", { class: "net-peer-list", attrs: { role: "list" } });
+      rows.slice(0, 8).forEach((p, i) => {
+        const bytes = Number(p.bytes) || 0;
+        const share = Math.max(2, Math.round((bytes / maxBytes) * 100));
+        const when = String(p.last_seen || "").replace("T", " ").slice(5, 16);
+        const windows = Number(p.windows) || 0;
+        list.appendChild(el("div", {
+          class: "net-peer-row",
+          attrs: { role: "listitem" },
+        }, [
+          el("span", { class: "net-peer-rank", text: String(i + 1) }),
+          el("span", { class: "net-peer-addr mono", text: p.src_addr }),
+          el("span", { class: "net-peer-volume" }, [
+            el("span", { class: "net-peer-track" }, [
+              el("span", { class: "net-peer-bar", attrs: { style: `width:${share}%` } }),
+            ]),
+            el("span", { class: "net-peer-bytes", text: typeof fmtBytes === "function" ? fmtBytes(bytes) : `${bytes} B` }),
+          ]),
+          el("span", { class: "net-peer-meta muted", text: `${windows} window${windows === 1 ? "" : "s"}${when ? ` · ${when}` : ""}` }),
         ]));
-      }
+      });
+      peers.appendChild(list);
+    } else {
+      peers.appendChild(el("div", { class: "net-peers-empty muted",
+        text: "No external peers in this window." }));
     }
   }
 }
