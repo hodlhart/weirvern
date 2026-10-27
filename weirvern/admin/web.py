@@ -523,6 +523,10 @@ def _build_handler(ctx: GuiContext):
             # it reads the host's procfs mounted read-only at /host-proc.
             if path == "/api/system":
                 return self._system(query)
+            # RELEASE METADATA, read-only. The Settings card may check whether a newer
+            # release exists; it never applies one. See weirvern/admin/update.py.
+            if path == "/api/update":
+                return self._update(query)
             # The EFFECTIVE configuration, read-only. See _settings for why it cannot write.
             if path == "/api/settings":
                 return self._settings(query)
@@ -1271,6 +1275,27 @@ def _build_handler(ctx: GuiContext):
             if sensor:
                 payload["sensor"] = sensor
             self._json(payload)
+
+        def _update(self, query: dict) -> None:
+            """Release metadata for Settings → Software update.
+
+            Read-only: this answers "is there a newer release" and never changes the running
+            deployment. Applying an update remains a pipeline operation, not an HTTP verb.
+            """
+            from weirvern.admin import update as update_mod
+
+            try:
+                current = status_mod._running_version(ctx.backend)
+            except Exception:  # noqa: BLE001
+                from weirvern import __version__  # noqa: PLC0415
+
+                current = __version__
+            raw = query.get("refresh")
+            refresh = str(raw[0] if isinstance(raw, list) and raw else (raw or "")).lower() in {
+                "1", "true", "yes", "on",
+            }
+            self._json(update_mod.check(current, refresh=refresh))
+
 
         def _health(self, query: dict) -> None:
             """DEEP health: the checks, ingestion trend, table sizes, and the sensor.

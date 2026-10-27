@@ -1246,6 +1246,48 @@ async function refreshAuthNote() {
     + "paste the operator token below as the break-glass credential.";
 }
 
+async function loadUpdateStatus(force = false) {
+  const state = document.getElementById("st-update-state");
+  const note = document.getElementById("st-update-note");
+  const link = document.getElementById("st-update-link");
+  const button = document.getElementById("st-update-check");
+  if (!state || !note) return;
+  if (button) button.disabled = true;
+  state.textContent = "checking…";
+  note.textContent = "Reading the release channel…";
+  try {
+    const data = await getJSON("/api/update" + (force ? "?refresh=1" : ""));
+    if (!data || data.available === false) {
+      state.textContent = data && data.private ? "private feed" : "not checked";
+      note.textContent = (data && data.reason) ||
+        "The release feed could not be read. This does not change the running deployment.";
+      if (link) link.classList.add("hidden");
+      return;
+    }
+    const current = data.current || "unknown";
+    const latest = data.latest || current;
+    if (data.update_available) {
+      state.textContent = `v${latest} available`;
+      note.textContent = `Running v${current}. The newer release is ${data.release_url ? "linked below" : "available on GitHub"}.`;
+    } else {
+      state.textContent = `v${current} · current`;
+      note.textContent = `This deployment is current${data.published_at ? ` (latest release ${data.published_at.slice(0, 10)})` : ""}.`;
+    }
+    if (link && data.release_url) {
+      link.href = data.release_url;
+      link.classList.remove("hidden");
+    } else if (link) {
+      link.classList.add("hidden");
+    }
+    if (data.notes) note.title = data.notes;
+  } catch (err) {
+    state.textContent = "not checked";
+    note.textContent = "Release check failed: " + (err && err.message ? err.message : err);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function loadSettings() {
   scheduleURLSync();
   // Resolve the auth note and account card on LOAD, not only when a token button is clicked.
@@ -1308,6 +1350,9 @@ async function loadSettings() {
   // a CIDR declaration is not a ConfigMap key and must not be staged as one. Loaded AFTER
   // SETTINGS_WRITES so its controls render in the caller's actual write state.
   if (typeof loadNetworks === "function") loadNetworks().catch(() => {});
+  // Software update is a read-only release check. It deliberately runs beside Settings rather
+  // than inside the ConfigMap payload: a slow GitHub request must not delay the settings rows.
+  if (typeof loadUpdateStatus === "function") loadUpdateStatus().catch(() => {});
 
   for (const key of ["detect", "sensor", "dns", "runtime"]) {
     const host = document.getElementById(`st-${key}`);
@@ -4178,6 +4223,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   document.getElementById("refresh").addEventListener("click", refreshAll);
+  const updateCheck = document.getElementById("st-update-check");
+  if (updateCheck && !window.__updateWired) {
+    window.__updateWired = true;
+    updateCheck.addEventListener("click", () => loadUpdateStatus(true).catch(showError));
+  }
   document.getElementById("autorefresh").addEventListener("change", (e) => {
     if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
   });

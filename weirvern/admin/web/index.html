@@ -1800,6 +1800,24 @@
 
     <h3 class="settings-section" id="st-section-operations">Operations</h3>
 
+    <div class="card" id="st-update-card">
+      <h2>Software update <span class="muted" id="st-update-state">checking…</span>
+        <button class="info-btn" data-info="st-update-info" aria-label="how updates are checked" aria-expanded="false" title="how updates are checked">i</button>
+      </h2>
+      <p class="muted" id="st-update-note">Reading the release channel…</p>
+      <div class="controls">
+        <button id="st-update-check" type="button">Check for updates</button>
+        <a id="st-update-link" class="quiet hidden" target="_blank" rel="noopener noreferrer">Release notes</a>
+      </div>
+      <div class="info-text hidden" id="st-update-info">
+        <p><strong>What it is.</strong> The running version and the latest release this deployment can see.</p>
+        <p><strong>What writes it.</strong> Nothing in the browser. This card reads GitHub Releases; it cannot pull an image or restart a pod.</p>
+        <p><strong>Last changed.</strong> Check for updates asks the server to re-read the release channel now.</p>
+        <p><strong>Where to see it.</strong> The version chip in the Settings header, and the release link when one is available.</p>
+        <p><strong>Why isn't there an Update now button?</strong> Applying a release needs image credentials, a signed artifact and rollback handling on the sensor node. Those belong in the deployment pipeline, not an HTTP route on a LAN console. When the repository and images are public, the pipeline can expose a guarded update action without giving the web process cluster-admin.</p>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Storage and runtime</h2>
       <div id="st-runtime" class="grid-inline"></div>

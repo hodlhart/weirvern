@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.7 — 2026-10-27
+
+A READ-ONLY UPDATE CHECK, NOT A SELF-UPDATER.
+
+- Settings → Operations gains a **Software update** card: the running version, a **Check
+  for updates** button, the latest GitHub release when the feed is public, and a release-notes
+  link.
+- The server route `/api/update` reads GitHub Releases through `weirvern/admin/update.py`.
+  It is deliberately read-only: the LAN console never pulls an image, edits a Deployment or
+  restarts a pod. Applying a release remains a deployment-pipeline action with credentials,
+  signatures and rollback.
+- A private repository returns GitHub's 404; the card says **private feed** instead of
+  reporting the deployment as current. Set `WEIRVERN_UPDATE_REPO` and an optional read-only
+  `WEIRVERN_UPDATE_TOKEN` in the deployment environment when the repo/feed changes.
+- No update button is rendered for the apply step yet. The pipeline can add a guarded update
+  action later, with the same `full`→`per-host`-style rule: the web process gets no
+  cluster-admin privilege.
+
 ## 0.23.6 — 2026-10-27
 
 SAY PER-HOST, NOT FULL.
