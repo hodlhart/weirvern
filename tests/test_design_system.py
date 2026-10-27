@@ -153,6 +153,25 @@ def test_touch_controls_are_forty_four():
     )
 
 
+def test_network_scope_cards_are_not_rendered_as_single_line_buttons():
+    """Network coverage readings are a block, not a row.
+
+    The cards are <button> elements, so the global button system (inline-flex, centered,
+    nowrap, fixed height) applies to them too. Without an explicit column layout the four
+    readings run across one line and overlap the next card. Pin the opt-out.
+    """
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    block = _rule_block(css, ".net-card")
+    assert block, "the .net-card rule disappeared"
+    for declaration in (
+        "display: flex",
+        "flex-direction: column",
+        "height: auto",
+        "white-space: normal",
+    ):
+        assert declaration in block, f".net-card lost `{declaration}`"
+
+
 def test_every_tab_id_agrees_with_its_view_and_its_ledger_entry():
     """QA-1-D4: one name per surface, in the URL, the DOM and the label.
 
