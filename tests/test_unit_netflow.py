@@ -46,7 +46,8 @@ def _settings(**over):
 def _reset_holder():
     from weirvern import worker
 
-    worker._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "source": "", "retry_after": 0.0})
+    worker._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "source": "", "retry_after": 0.0,
+                                    "taps": {}})
 
 
 # ── the intercept as a flow source ───────────────────────────────────────────────────────────────
@@ -177,6 +178,49 @@ def test_a_unit_with_no_exporter_is_not_an_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ingester_mod, "tail_and_insert", explode)
     assert sensor_agent.ship_flows_once(object(), path=str(tmp_path / "missing.jsonl")) == 0
+
+
+def test_two_selected_interfaces_get_two_taps():
+    """Both NICs can meter at once; the old single holder made them mutually exclusive."""
+    from weirvern import worker
+
+    spawned = []
+
+    def fake_spawn(argv, **_kw):
+        proc = _Proc(argv)
+        spawned.append(proc)
+        return proc
+
+    _reset_holder()
+    worker._channel_netflow_maybe(
+        _settings(capture_iface="eth1", netflow_iface="eth1,eth2"),
+        channel_state=_Channel(), siphon_live=True, spawn=fake_spawn,
+        which=lambda name: f"/usr/bin/{name}", now=lambda: 1000.0)
+    assert len(spawned) == 2, "the second selected NIC did not get its own tap"
+    ifaces = {argv[argv.index("-i") + 1] for argv in (p.argv for p in spawned)}
+    assert ifaces == {"eth1", "eth2"}
+    assert set(worker._CHANNEL_NETFLOW["taps"]) == {"eth1", "eth2"}
+    _reset_holder()
+
+
+def test_the_single_tap_legacy_still_stops(monkeypatch, tmp_path):
+    """The old single-tap fields remain usable by callers and tests."""
+    from weirvern import worker
+
+    class _Dead:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    _reset_holder()
+    worker._CHANNEL_NETFLOW.update({"tap": _Dead(), "iface": "eth1"})
+    worker._channel_netflow_maybe(
+        _settings(netflow_mode="passive"), channel_state=_Channel(),
+        siphon_live=True, spawn=lambda *a, **k: None, which=lambda name: "/usr/bin/x",
+        now=lambda: 1000.0)
+    assert worker._CHANNEL_NETFLOW["tap"] is None
+    _reset_holder()
 
 
 def test_the_shipper_cannot_take_the_heartbeat_down(monkeypatch):

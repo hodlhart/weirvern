@@ -442,7 +442,25 @@ CHANNEL_NETFLOW_DIR = "/tmp/channel-netflow"
 CHANNEL_NETFLOW_SEGMENT_S = 30
 CHANNEL_NETFLOW_SEGMENT_MB = 16
 CHANNEL_NETFLOW_KEEP_SEGMENTS = 240
-_CHANNEL_NETFLOW: dict = {"tap": None, "iface": "", "source": "", "retry_after": 0.0}
+# A BOX CAN HAVE MORE THAN ONE ACTIVE CAPTURE NIC (operator, 2026-10-27: "i had both running
+# netflow in the past"). One tap per interface is safe when the interfaces are separate capture
+# paths; the old single holder made the two per-NIC switches mutually exclusive. `tap`/`iface`
+# remain as the first/primary tap for compatibility with the existing health and test surfaces;
+# every live tap is also carried in `taps` keyed by interface.
+_CHANNEL_NETFLOW: dict = {
+    "tap": None, "iface": "", "source": "", "retry_after": 0.0, "taps": {},
+}
+
+
+def _netflow_iface_list(value) -> list[str]:
+    """Normalize a comma/semicolon-separated interface setting, preserving order."""
+    out: list[str] = []
+    for part in str(value or "").replace(";", ",").split(","):
+        name = part.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
 
 
 # HOW OFTEN the Health tab's table-size history gets a sample. Five minutes is enough to see a
@@ -483,36 +501,64 @@ def _table_size_maybe(client: Client, *, now: float | None = None) -> None:
 
 
 def _stop_channel_netflow(reason: str = "") -> None:
-    """Stop the capture tap, drop any pending segments, and say why. Best-effort: never raises.
+    """Stop every capture tap, drop pending segments, and say why. Best-effort: never raises.
 
-    The pending segments go with the tap ON PURPOSE: they contain captured traffic that has not
+    The pending segments go with the taps ON PURPOSE: they contain captured traffic that has not
     been summarised yet, and "off" has to mean nothing is being collected -- leaving them on
     disk would keep the traffic this feature captured after the operator switched it off.
     """
     import os as _os  # noqa: PLC0415
 
     holder = _CHANNEL_NETFLOW
-    tap = holder["tap"]
-    holder["tap"] = None
-    holder["iface"] = ""
-    if tap is not None:
+    taps = holder.get("taps") or {}
+    if holder.get("tap") is not None and not taps:
+        # Older callers/tests seed the single-tap fields directly; treat that as one tap.
+        taps = {str(holder.get("iface") or ""): {"tap": holder["tap"],
+                                                  "source": holder.get("source") or "",
+                                                  "dir": CHANNEL_NETFLOW_DIR}}
+    stopped = 0
+    for entry in list(taps.values()):
+        tap = entry.get("tap") if isinstance(entry, dict) else entry
+        if tap is None:
+            continue
         try:
             tap.terminate()
             try:
                 tap.wait(timeout=5)
             except Exception:  # noqa: BLE001 -- TimeoutExpired without importing it
                 tap.kill()
+            stopped += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("channel netflow: could not stop the capture tap: %s", exc)
-        dropped = 0
-        try:
-            for name in _os.listdir(CHANNEL_NETFLOW_DIR):
+    holder["taps"] = {}
+    holder["tap"] = None
+    holder["iface"] = ""
+    holder["source"] = ""
+    dropped = 0
+    try:
+        roots = [CHANNEL_NETFLOW_DIR]
+        roots.extend(
+            _os.path.join(CHANNEL_NETFLOW_DIR, name)
+            for name in _os.listdir(CHANNEL_NETFLOW_DIR)
+            if _os.path.isdir(_os.path.join(CHANNEL_NETFLOW_DIR, name))
+        )
+        for root in roots:
+            try:
+                names = _os.listdir(root)
+            except OSError:
+                continue
+            for name in names:
                 if name.endswith(".pcap"):
-                    _os.unlink(_os.path.join(CHANNEL_NETFLOW_DIR, name))
-                    dropped += 1
-        except OSError:
-            pass
-        logger.info("channel netflow: probe stopped%s%s", f" ({reason})" if reason else "",
+                    try:
+                        _os.unlink(_os.path.join(root, name))
+                        dropped += 1
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    if stopped or dropped:
+        logger.info("channel netflow: %d probe(s) stopped%s%s", stopped,
+                    f" ({reason})" if reason else "",
                     f"; {dropped} pending segment(s) removed" if dropped else "")
 
 
@@ -597,26 +643,30 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
                            now=None, run=None, client=None, siphon_live="auto") -> None:
     """One supervision tick for the in-line flow probe. Cheap when nothing changed.
 
-    TWO SOURCES, ONE TAP. The probe answers for whichever in-line path this box is holding:
+    TWO SOURCES, ONE TAP PER INTERFACE. The probe answers for whichever in-line path this box is
+    holding:
 
       * `CHANNEL_NETFLOW=upstream|downstream` -- a port of the channel's bridge, while the channel
         is verified active;
-      * `SIPHON_NETFLOW=1` -- the interface a LIVE siphon intercept relays through (the sensor's
-        own capture interface), while the intercept is verified live.
+      * `SIPHON_NETFLOW=1` -- the interfaces a LIVE siphon intercept relays through (the sensor's
+        own capture interfaces), while the intercept is verified live.
 
-    ONE, not both: if the channel selection is collecting, it wins. Tapping both paths on a box
-    that is somehow doing both would count the same conversation twice, and the volume features and
-    per-host baselines read that table.
+    A box with more than one capture NIC runs one tap per selected interface. The per-NIC
+    switches stage a comma-separated `NETFLOW_IFACE`; this used to be a single value, so turning
+    NetFlow on for eth2 turned it off for eth1. A channel still wins over siphon: tapping both a
+    channel port and an intercept of the same traffic would count it twice.
 
     The injectable pieces (channel_state / spawn / which / now / siphon_live) exist so every
     DECISION -- start, stop, back off, leave alone -- is unit-testable without a kernel, a network
     or a child process.
     """
+    import os as _os  # noqa: PLC0415
     import shutil as _shutil  # noqa: PLC0415
     import subprocess as _subprocess  # noqa: PLC0415
     import time as _time  # noqa: PLC0415
 
     holder = _CHANNEL_NETFLOW
+    holder.setdefault("taps", {})
     clock = now or _time.monotonic
 
     mode = (getattr(settings, "channel_netflow", "off") or "off").strip().lower()
@@ -625,8 +675,7 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
 
         channel_state = _channel.detect(settings.channel_upstream, settings.channel_downstream)
 
-    iface = ""
-    source = ""
+    targets: list[tuple[str, str]] = []
     flow_mode = str(getattr(settings, "netflow_mode", "auto") or "auto").strip().lower()
     if flow_mode not in ("auto", "passive", "active"):
         flow_mode = "auto"
@@ -638,27 +687,34 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
         pass
     elif flow_mode == "active":
         # ACTIVE MEANS THIS SENSOR MEASURES ITS OWN CAPTURE. In siphon the tap follows the
-        # verified relay; in loch it samples the selected mirrored port continuously.
+        # verified relay; in loch it samples the selected mirrored interfaces continuously.
         if mode in ("upstream", "downstream") and channel_state.active:
             iface = (settings.channel_upstream if mode == "upstream"
                      else settings.channel_downstream).strip()
-            source = "channel"
+            if iface:
+                targets = [(iface, "channel")]
         elif sensor_mode == "siphon":
             if siphon_live == "auto":
                 siphon_live = _siphon_liveness(settings, client)
             if siphon_live is True:
-                iface = str(getattr(settings, "capture_iface", "")
-                            or getattr(settings, "zeek_iface", "") or "").strip()
-                source = "siphon"
+                ifaces = _netflow_iface_list(getattr(settings, "netflow_iface", ""))
+                if not ifaces:
+                    one = str(getattr(settings, "capture_iface", "")
+                              or getattr(settings, "zeek_iface", "") or "").strip()
+                    ifaces = [one] if one else []
+                targets = [(iface, "siphon") for iface in ifaces]
         else:
-            iface = str(getattr(settings, "netflow_iface", "")
-                        or getattr(settings, "zeek_iface", "")
-                        or getattr(settings, "capture_iface", "") or "").strip()
-            source = "loch"
+            ifaces = _netflow_iface_list(getattr(settings, "netflow_iface", ""))
+            if not ifaces:
+                one = str(getattr(settings, "zeek_iface", "")
+                          or getattr(settings, "capture_iface", "") or "").strip()
+                ifaces = [one] if one else []
+            targets = [(iface, "loch") for iface in ifaces]
     elif mode in ("upstream", "downstream") and channel_state.active:
         iface = (settings.channel_upstream if mode == "upstream"
                  else settings.channel_downstream).strip()
-        source = "channel"
+        if iface:
+            targets = [(iface, "channel")]
     elif bool(getattr(settings, "siphon_netflow", False)) or sensor_mode == "siphon":
         # AUTO, the historical behaviour. A SIPHON SENSOR WANTS FLOW RECORDS (operator,
         # 2026-10-19: "the back end will want the zeek and netflow capture config
@@ -669,69 +725,124 @@ def _channel_netflow_maybe(settings, *, channel_state=None, spawn=None, which=No
         if siphon_live == "auto":
             siphon_live = _siphon_liveness(settings, client)
         if siphon_live is True:
-            iface = str(getattr(settings, "capture_iface", "")
-                        or getattr(settings, "zeek_iface", "") or "").strip()
-            source = "siphon"
+            ifaces = _netflow_iface_list(getattr(settings, "netflow_iface", ""))
+            if not ifaces:
+                one = str(getattr(settings, "capture_iface", "")
+                          or getattr(settings, "zeek_iface", "") or "").strip()
+                ifaces = [one] if one else []
+            targets = [(iface, "siphon") for iface in ifaces]
 
-    running = holder["tap"] is not None and holder["tap"].poll() is None
-    if running and holder["iface"] != iface:
-        _stop_channel_netflow(
-            f"the source moved to {iface}" if iface
-            else ("the siphon intercept is not live" if holder.get("source") == "siphon"
-                  else "the selection is off or the channel is not active"))
+    taps = holder.get("taps") or {}
+    # A test or an older caller may still seed the single-tap fields directly. Adopt them into
+    # the per-interface map without killing the process.
+    if holder.get("tap") is not None and not taps:
+        taps = {str(holder.get("iface") or ""): {
+            "tap": holder["tap"], "source": holder.get("source") or "",
+            "dir": CHANNEL_NETFLOW_DIR,
+        }}
+        holder["taps"] = taps
+
+    target_ifaces = [iface for iface, _source in targets]
+    running = any(isinstance(entry, dict) and entry.get("tap") is not None
+                  and entry["tap"].poll() is None for entry in taps.values())
+    dead = [iface for iface, entry in taps.items()
+            if not isinstance(entry, dict) or entry.get("tap") is None
+            or entry["tap"].poll() is not None]
+
+    if dead and taps:
+        rc = None
+        for iface in dead:
+            entry = taps.get(iface) or {}
+            proc = entry.get("tap")
+            if proc is not None:
+                rc = getattr(proc, "returncode", None)
+                break
+        _stop_channel_netflow(f"the tap on {', '.join(dead)} exited")
+        holder["retry_after"] = max(float(holder["retry_after"]), clock() + 300.0)
+        logger.warning("netflow probe: a capture tap exited (code %s); next attempt in "
+                       "5 minutes", rc)
+        taps = {}
         running = False
-    if holder["tap"] is not None and not running:
-        rc = holder["tap"].returncode
+    elif running and set(taps) != set(target_ifaces):
+        _stop_channel_netflow(
+            f"the source moved to {', '.join(target_ifaces)}" if target_ifaces
+            else "the selection is off, or the channel/intercept is not active")
+        taps = {}
+        running = False
+    if taps and not running:
+        rc = None
+        for entry in taps.values():
+            proc = entry.get("tap") if isinstance(entry, dict) else entry
+            if proc is not None:
+                rc = getattr(proc, "returncode", None)
+                break
         _stop_channel_netflow()
         holder["retry_after"] = max(float(holder["retry_after"]), clock() + 300.0)
-        logger.warning("netflow probe: the capture tap exited (code %s); next attempt in "
+        logger.warning("netflow probe: a capture tap exited (code %s); next attempt in "
                        "5 minutes", rc)
-    if not iface:
+        taps = {}
+    if not target_ifaces:
+        if running:
+            _stop_channel_netflow("no active target")
         return
     if running:
         # Every tick, fold the completed segments into records -- the batch path is the one
-        # this kernel supports (see the block comment above). NOTE: the sweep gets NO `now`
-        # from here. Its age check compares against file MTIME, which is WALL clock; this
-        # function's clock is monotonic, and `monotonic - epoch` is a huge negative number --
-        # every segment then reads as "too young" and is silently skipped. Measured on the box:
-        # two completed segments sat unconsumed while the sweep ran on schedule.
-        _channel_netflow_sweep(run=run, probe=(which or _shutil.which)("softflowd"))
+        # this kernel supports (see the block comment above). Each interface has its own
+        # directory so one tap's still-being-written segment cannot hold up another's.
+        probe = (which or _shutil.which)("softflowd")
+        for entry in taps.values():
+            if isinstance(entry, dict):
+                _channel_netflow_sweep(run=run, probe=probe,
+                                       directory=entry.get("dir") or CHANNEL_NETFLOW_DIR)
         return
     if clock() < float(holder["retry_after"]):
         return
 
-    import os as _os  # noqa: PLC0415
-
     look = which or _shutil.which
-    probe, tap = look("softflowd"), look("tcpdump")
-    if not probe or not tap:
+    probe, tap_binary = look("softflowd"), look("tcpdump")
+    if not probe or not tap_binary:
         holder["retry_after"] = clock() + 300.0
         logger.warning("netflow probe: %s is not in this image, so the selection cannot "
                        "collect flows (the image contract test pins both)",
                        "softflowd" if not probe else "tcpdump")
         return
     spawn_child = spawn or _subprocess.Popen
+    started: dict[str, dict] = {}
     try:
-        _os.makedirs(CHANNEL_NETFLOW_DIR, exist_ok=True)
-        tap_proc = spawn_child(
-            # -Z root: Debian's tcpdump DROPS PRIVILEGES to a `tcpdump` user that cannot be
-            # switched to inside this container ("Couldn't change to 'tcpdump' ...: Operation not
-            # permitted") and exits at once -- measured, with the stderr that was being swallowed
-            # until it was left INHERITED. It is already root inside its own container with only
-            # the capabilities the overlay grants; staying root is what makes the tap run at all.
-            # -C / -G / -W: bounded rotating segments; the %.pcap name is strftime because -G is set.
-            [tap, "-Z", "root", "-i", iface, "-U", "-s", "160",
-             "-C", str(CHANNEL_NETFLOW_SEGMENT_MB), "-G", str(CHANNEL_NETFLOW_SEGMENT_S),
-             "-W", str(CHANNEL_NETFLOW_KEEP_SEGMENTS),
-             "-w", _os.path.join(CHANNEL_NETFLOW_DIR, "ch-%Y%m%d-%H%M%S.pcap"),
-             CHANNEL_NETFLOW_FILTER])
-        holder["tap"] = tap_proc
-        holder["iface"] = iface
-        holder["source"] = source
-        logger.info("%s netflow: tapping %s into %s (segment %ss / %sMB) and summarising "
-                    "each completed segment to %s IPFIX", source, iface,
-                    CHANNEL_NETFLOW_DIR, CHANNEL_NETFLOW_SEGMENT_S,
-                    CHANNEL_NETFLOW_SEGMENT_MB, CHANNEL_NETFLOW_COLLECTOR)
+        for iface, source in targets:
+            # One NIC keeps the historical flat directory; two or more get a directory each so
+            # one tap's still-being-written segment cannot hold up another's sweep.
+            if len(targets) == 1:
+                directory = CHANNEL_NETFLOW_DIR
+            else:
+                safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in iface)
+                directory = _os.path.join(CHANNEL_NETFLOW_DIR, safe or "iface")
+            _os.makedirs(directory, exist_ok=True)
+            tap_proc = spawn_child(
+                # -Z root: Debian's tcpdump DROPS PRIVILEGES to a `tcpdump` user that cannot be
+                # switched to inside this container ("Couldn't change to 'tcpdump' ...: Operation
+                # not permitted") and exits at once -- measured, with the stderr that was being
+                # swallowed until it was left INHERITED. It is already root inside its own
+                # container with only the capabilities the overlay grants; staying root is what
+                # makes the tap run at all.
+                # -C / -G / -W: bounded rotating segments; the %.pcap name is strftime because -G
+                # is set. One tap per NIC writes into its own directory.
+                [tap_binary, "-Z", "root", "-i", iface, "-U", "-s", "160",
+                 "-C", str(CHANNEL_NETFLOW_SEGMENT_MB), "-G", str(CHANNEL_NETFLOW_SEGMENT_S),
+                 "-W", str(CHANNEL_NETFLOW_KEEP_SEGMENTS),
+                 "-w", _os.path.join(directory, "ch-%Y%m%d-%H%M%S.pcap"),
+                 CHANNEL_NETFLOW_FILTER])
+            started[iface] = {"tap": tap_proc, "source": source, "dir": directory}
+        holder["taps"] = started
+        first_iface, first = next(iter(started.items()))
+        holder["tap"] = first["tap"]
+        holder["iface"] = first_iface
+        holder["source"] = first["source"]
+        for iface, entry in started.items():
+            logger.info("%s netflow: tapping %s into %s (segment %ss / %sMB) and summarising "
+                        "each completed segment to %s IPFIX", entry["source"], iface,
+                        entry["dir"], CHANNEL_NETFLOW_SEGMENT_S,
+                        CHANNEL_NETFLOW_SEGMENT_MB, CHANNEL_NETFLOW_COLLECTOR)
     except Exception as exc:  # noqa: BLE001
         _stop_channel_netflow()
         holder["retry_after"] = clock() + 300.0

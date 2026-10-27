@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.9 — 2026-10-27
+
+ACTIVE NETFLOW CAN METER MORE THAN ONE NIC.
+
+- `NETFLOW_IFACE` accepts a comma-separated list. The worker starts one supervised tap per
+  interface, each with its own rotating segment ring, and sweeps each ring independently.
+- The NIC sheet stages that list: checking NetFlow on eth1 and eth2 now leaves both probes
+  running instead of moving one probe between them. An interface that dies is stopped and
+  retried as a set, rather than silently half-running.
+- The per-NIC facts line and fleet feed name the whole active set (`NetFlow active · eth1,
+  eth2`), and the "one source at a time" note is gone. Passive mode still leaves the router's
+  export alone.
+- A flat directory is kept for a single tap; multiple taps use one directory per interface so
+  a segment still being written for one NIC cannot hold up another's sweep.
+
 ## 0.23.8 — 2026-10-27
 
 NETWORK COVERAGE: A LEDGER, NOT A RUN-ON LIST.

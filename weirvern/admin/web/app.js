@@ -689,7 +689,10 @@ function renderStageMirror(keys) {
         ? "on" : "off";
     }
     if (key === "capture_iface") return String(value) === nic ? "on" : "off";
-    if (key === "netflow_iface") return String(value) === nic ? "on" : "off";
+    if (key === "netflow_iface") {
+      const list = String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+      return list.includes(nic) ? "on" : "off";
+    }
     if (key === "sensor_mode") return String(value || "");
     if (key === "netflow_mode") return String(value || "");
     if (key === "interface_networks") {

@@ -1011,9 +1011,10 @@ _SETTINGS_HELP: dict[str, str] = {
         "summarise its own capture: the live siphon relay while intercepting, or the mirrored "
         "port in loch mode. 'auto' preserves the old behaviour."),
     "netflow_iface": (
-        "The port an ACTIVE flow probe samples in loch mode. Empty resolves to the Zeek "
-        "interface. In siphon mode the probe follows the siphon capture interface, because "
-        "that is the port the relay crosses."),
+        "The port(s) an ACTIVE flow probe samples in loch mode, comma-separated. Empty "
+        "resolves to the Zeek interface. In siphon mode the probe follows the selected "
+        "siphon capture interfaces, because those are the ports the relay crosses; a "
+        "comma-separated list starts one probe per NIC."),
     "channel_netflow": (
         "Whether the traffic crossing the IN-LINE channel is summarised into NetFlow records. "
         "'off' (the default) collects nothing from the channel; 'upstream' or 'downstream' names "

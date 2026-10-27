@@ -475,10 +475,10 @@ function wlSparkline(r) {
 function wlTap(kind, info) {
   const i = info || {};
   // THE FEED IS NAMED "netflow" (operator, 2026-10-23). The old chip appended a generic scope
-  // word on every NIC, which made one sensor-wide feed look like a per-NIC probe and hid the
-  // fact that only one port is the active source. The chip now says netflow; the title carries
-  // the scope, and the NIC row passes its own object (see wlNicFacts), so an active eth2
-  // indicator is distinct from the inactive eth1 line.
+  // word on every NIC, which made one sensor-wide feed look like a per-NIC probe. The chip now
+  // says netflow; the title carries the scope, and the NIC row passes its own object (see
+  // wlNicFacts), so each selected NIC can show its own active indicator. The source setting is
+  // a list, so eth1 and eth2 can both be active.
   const label = kind === "netflow" ? "netflow" : "zeek";
   const scope = i.scope === "sensor"
     ? ` — ${i.scope_note || "one sensor-wide feed; not attributed to this NIC"}`
@@ -550,19 +550,21 @@ function wlNicFacts(r) {
     // the title, because there is no per-NIC probe to attribute.
     const nf = r.netflow || {};
     const nfMode = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
-    const nfIface = String(wlCfgValue("netflow_iface") || "").trim();
-    const activeOwner = nfMode === "active" ? (nfIface || capture) : "";
+    const nfIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
+    const activeOwners = nfMode === "active"
+      ? (nfIfaces.length ? nfIfaces : (capture ? [capture] : [])) : [];
     const nicNetflow = (() => {
       if (!local) {
         return Object.assign({}, nf, { scope: nf.scope || "sensor", scope_label: "netflow" });
       }
-      if (nfMode === "active" && activeOwner && name !== activeOwner) {
+      if (nfMode === "active" && activeOwners.length && !activeOwners.includes(name)) {
         return { known: true, observed: false, flows: 0, last_at: "", scope: "nic",
-                 scope_label: "netflow", why: `active NetFlow samples ${activeOwner}` };
+                 scope_label: "netflow",
+                 why: `active NetFlow samples ${activeOwners.join(", ")}` };
       }
-      if (nfMode === "active" && name === activeOwner) {
+      if (nfMode === "active" && activeOwners.includes(name)) {
         return Object.assign({}, nf, { scope: "nic", scope_label: "netflow",
-          scope_note: "the active NetFlow probe samples this NIC" });
+          scope_note: "an active NetFlow probe samples this NIC" });
       }
       return Object.assign({}, nf, { scope: nf.scope || "sensor", scope_label: "netflow" });
     })();
@@ -1454,8 +1456,8 @@ function wlShowNicSettings(nic, interfaces) {
     : (listed.length ? listed.includes(nic) : base === nic));
   const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
-  const flowIface = String(wlCfgValue("netflow_iface") || "").trim();
-  const netflowOn = !flowActive || (flowIface ? flowIface === nic : siphonOn);
+  const flowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
+  const netflowOn = !flowActive || (flowIfaces.length ? flowIfaces.includes(nic) : siphonOn);
   const name = document.getElementById("wl-nic-name");
   const role = document.getElementById("wl-nic-role");
   const facts = document.getElementById("wl-nic-facts");
@@ -1487,8 +1489,8 @@ function wlShowNicSettings(nic, interfaces) {
   if (name) name.textContent = nic;
   if (role) role.textContent = siphonOn ? "siphon capture" : (zeekOn ? "capture" : "unassigned");
   if (facts) {
-    const flowWhere = flowActive ? (flowIface ? `active · ${flowIface}` : "active") : "passive";
-    facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · ` 
+    const flowWhere = flowActive ? (flowIfaces.length ? `active · ${flowIfaces.join(", ")}` : "active") : "passive";
+    facts.textContent = `Mode: ${siphonOn ? "siphon" : "loch"} · `
       + `Feeds: Zeek ${zeekOn ? "on" : "off"}, NetFlow ${flowWhere}.`;
   }
   // THE CHANNEL PAIR IS NOT A NIC FIELD (operator, 2026-10-19). It is configured on the
@@ -1667,15 +1669,18 @@ function wlStageNicSettings() {
   const cap = wlCfgValue("capture_iface");
   if (!cap) stageChange("capture_iface", nic, cap);
 
-  // NETFLOW SOURCE: passive leaves the router's export alone; active makes this NIC the probe.
+  // NETFLOW SOURCE: passive leaves the router's export alone; active makes this NIC one of the
+  // probe sources. The setting is a comma-separated list so eth1 and eth2 can both meter.
   const currentSource = String(wlCfgValue("netflow_mode") || "auto").toLowerCase();
   const wantedSource = activeSource && activeSource.checked ? "active" : "passive";
   if (wantedSource !== currentSource) stageChange("netflow_mode", wantedSource, currentSource);
-  const currentFlowIface = String(wlCfgValue("netflow_iface") || "");
-  if (wantedSource === "active" && netBox && netBox.checked) {
-    stageChange("netflow_iface", nic, currentFlowIface);
-  } else if (currentFlowIface === nic) {
-    stageChange("netflow_iface", "", currentFlowIface);
+  const currentFlowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
+  const nextFlowIfaces = currentFlowIfaces.filter((name) => name !== nic);
+  if (wantedSource === "active" && netBox && netBox.checked) nextFlowIfaces.push(nic);
+  const nextFlowValue = nextFlowIfaces.join(",");
+  const currentFlowValue = currentFlowIfaces.join(",");
+  if (nextFlowValue !== currentFlowValue) {
+    stageChange("netflow_iface", nextFlowValue, currentFlowValue);
   }
 
   if (note) {

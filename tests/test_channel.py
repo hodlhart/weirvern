@@ -386,7 +386,8 @@ def _nf_settings(mode: str, *, netflow_mode: str = "auto", netflow_iface: str = 
 def _reset_probe():
     from weirvern import worker as worker_mod
 
-    worker_mod._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "retry_after": 0.0})
+    worker_mod._CHANNEL_NETFLOW.update({"tap": None, "iface": "", "retry_after": 0.0,
+                                         "taps": {}})
     return worker_mod
 
 
