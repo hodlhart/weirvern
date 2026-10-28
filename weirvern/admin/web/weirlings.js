@@ -2416,9 +2416,13 @@ async function loadNetworkCoverage() {
         const share = Math.max(2, Math.round((bytes / maxBytes) * 100));
         const when = String(p.last_seen || "").replace("T", " ").slice(5, 16);
         const windows = Number(p.windows) || 0;
-        list.appendChild(el("div", {
-          class: "net-peer-row",
-          attrs: { role: "listitem" },
+        // THE PEER IS AN ADDRESS, SO IT OPENS THE SAME HOST PAGE AS ANY OTHER ADDRESS.
+        // A row that looks interactive but does nothing is worse than a plain reading; this is
+        // a real keyboard-operable control, but a panel-shaped one (the button base is 28px).
+        const row = el("div", {
+          class: "net-peer-row clickable",
+          attrs: { role: "button", tabindex: "0",
+                   "aria-label": `Open host details for ${p.src_addr}` },
         }, [
           el("span", { class: "net-peer-rank", text: String(i + 1) }),
           el("span", { class: "net-peer-addr mono", text: p.src_addr }),
@@ -2429,7 +2433,18 @@ async function loadNetworkCoverage() {
             el("span", { class: "net-peer-bytes", text: typeof fmtBytes === "function" ? fmtBytes(bytes) : `${bytes} B` }),
           ]),
           el("span", { class: "net-peer-meta muted", text: `${windows} window${windows === 1 ? "" : "s"}${when ? ` · ${when}` : ""}` }),
-        ]));
+        ]);
+        const openPeer = () => {
+          if (typeof openHost === "function") openHost(p.src_addr);
+        };
+        row.addEventListener("click", openPeer);
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openPeer();
+          }
+        });
+        list.appendChild(row);
       });
       peers.appendChild(list);
     } else {

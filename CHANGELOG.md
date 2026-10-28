@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.12 — 2026-10-27
+
+EXTERNAL PEERS OPEN THEIR HOST PAGE.
+
+- Each row in Network coverage → External peers is now a real button. It opens the same
+  host page as any other address, so an unexplained internet peer can be inspected through
+  its flows, ports and last-seen evidence instead of being a dead-end reading.
+- The rows keep the ranked byte bar and window count; the change is navigation, not a new
+  external alert source.
+
 ## 0.23.11 — 2026-10-27
 
 NIC STAGING KEEPS THE PENDING INTERFACE LIST.
