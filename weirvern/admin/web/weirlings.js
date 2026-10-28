@@ -1443,10 +1443,10 @@ function wlShowNicSettings(nic, interfaces) {
   const box = document.getElementById("wl-nic-settings");
   const local = document.getElementById("wl-local-settings");
   if (!box || !local) return;
-  const base = wlCfgValue("zeek_iface");
-  const listed = wlIfaceList(wlCfgValue("zeek_ifaces"));
-  const cap = wlCfgValue("capture_iface");
-  const mode = String(wlCfgValue("sensor_mode") || "loch").trim().toLowerCase();
+  const base = wlStagedValue("zeek_iface");
+  const listed = wlIfaceList(wlStagedValue("zeek_ifaces"));
+  const cap = wlStagedValue("capture_iface");
+  const mode = String(wlStagedValue("sensor_mode") || "loch").trim().toLowerCase();
   const plan = wlPlanFor(nic);
   const siphonOn = String(plan.mode || "").toLowerCase() === "siphon"
     || plan.siphon === true;
@@ -1459,9 +1459,9 @@ function wlShowNicSettings(nic, interfaces) {
   const planCapture = plan.capture === true;
   const zeekOn = siphonOn || (hasPlans ? planCapture
     : (listed.length ? listed.includes(nic) : base === nic));
-  const flowRaw = String(wlCfgValue("netflow_mode") || "auto").trim().toLowerCase();
+  const flowRaw = String(wlStagedValue("netflow_mode") || "auto").trim().toLowerCase();
   const flowActive = flowRaw === "active" || (flowRaw === "auto" && mode === "siphon");
-  const flowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
+  const flowIfaces = wlIfaceList(wlStagedValue("netflow_iface"));
   const netflowOn = !flowActive || (flowIfaces.length ? flowIfaces.includes(nic) : siphonOn);
   // A CHANNEL IS ONE INLINE PAIR. Both ports see every frame, so only the upstream side may
   // carry Zeek/NetFlow while the pair is configured; the other NIC's feed controls are disabled.
@@ -1627,9 +1627,11 @@ function wlStageNicSettings() {
     if (zeekBox) zeekBox.checked = true;
   }
 
-  // FEEDS: Zeek is the interface list; NetFlow is the source statement below.
-  const base = wlCfgValue("zeek_iface");
-  const list = wlIfaceList(wlCfgValue("zeek_ifaces"));
+  // FEEDS: Zeek is the interface list; NetFlow is the source statement below. Use the STAGED
+  // value, not the stored one: opening eth2 after staging eth1 must ADD to the pending list,
+  // not replace it with whatever the cluster last applied.
+  const base = wlStagedValue("zeek_iface");
+  const list = wlIfaceList(wlStagedValue("zeek_ifaces"));
   if (!list.length && base) list.push(base);
   const channelSide = String(wlStagedValue("channel_upstream") || "").trim();
   let next = list.filter((n) => n !== nic);
@@ -1689,10 +1691,11 @@ function wlStageNicSettings() {
 
   // NETFLOW SOURCE: passive leaves the router's export alone; active makes this NIC one of the
   // probe sources. The setting is a comma-separated list so eth1 and eth2 can both meter.
-  const currentSource = String(wlCfgValue("netflow_mode") || "auto").toLowerCase();
+  const currentSource = String(wlStagedValue("netflow_mode") || "auto").toLowerCase();
+  const storedSource = String(wlCfgValue("netflow_mode") || "auto").toLowerCase();
   const wantedSource = activeSource && activeSource.checked ? "active" : "passive";
-  if (wantedSource !== currentSource) stageChange("netflow_mode", wantedSource, currentSource);
-  const currentFlowIfaces = wlIfaceList(wlCfgValue("netflow_iface"));
+  if (wantedSource !== currentSource) stageChange("netflow_mode", wantedSource, storedSource);
+  const currentFlowIfaces = wlIfaceList(wlStagedValue("netflow_iface"));
   let nextFlowIfaces = currentFlowIfaces.filter((name) => name !== nic);
   if (channelOn) {
     // The inline pair is sampled once. The non-upstream port cannot add a second probe.
@@ -1704,7 +1707,7 @@ function wlStageNicSettings() {
   const nextFlowValue = nextFlowIfaces.join(",");
   const currentFlowValue = currentFlowIfaces.join(",");
   if (nextFlowValue !== currentFlowValue) {
-    stageChange("netflow_iface", nextFlowValue, currentFlowValue);
+    stageChange("netflow_iface", nextFlowValue, wlCfgValue("netflow_iface"));
   }
 
   if (note) {

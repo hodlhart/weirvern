@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.11 — 2026-10-27
+
+NIC STAGING KEEPS THE PENDING INTERFACE LIST.
+
+- The NIC sheet now reads its feed checkboxes and its staging baseline from the **pending**
+  settings, not the last applied cluster values. Opening eth2 after staging eth1 used to
+  replace the pending NetFlow/Zeek list with the stored one, so Apply wrote only the last NIC.
+- Both feeds now accumulate in `NETFLOW_IFACE` / `ZEEK_IFACES` while the operator moves between
+  NICs. The cluster-side apply had already succeeded with `eth1,eth2`; this fixes the UI path
+  that was dropping one of them before it reached the server.
+
 ## 0.23.10 — 2026-10-27
 
 CHANNEL MODE CAPTURES ONE SIDE.
