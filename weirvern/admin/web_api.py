@@ -346,6 +346,8 @@ def host_payload(detail: dict) -> dict:
             {"service": r[0], "conns": _jsonable(r[1]), "bytes": _jsonable(r[2])}
             for r in (detail.get("zeek_services") or []) if len(r) >= 3
         ],
+        "external": detail.get("external") or {"available": False,
+                                              "reason": "external exposure was not read"},
     }
 
 

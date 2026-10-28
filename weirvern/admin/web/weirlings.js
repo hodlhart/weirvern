@@ -2323,6 +2323,50 @@ async function revokeWeirling() {
  * the same declarations as Settings; it never derives a scope from an address. An unclassified
  * card is deliberate: traffic outside every declared network is a configuration gap, not a
  * background fact that should be hidden. */
+function wlRenderExternalExposure(ext) {
+  const box = document.getElementById("wl-external");
+  if (!box) return;
+  box.replaceChildren();
+  if (!ext || !ext.available) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const n = (v) => (v === null || v === undefined ? "\u2014" : Number(v).toLocaleString());
+  const pct = (v) => (v === null || v === undefined ? "\u2014" : `${Math.round(Number(v) * 100)}%`);
+  const bytes = (v) => (v === null || v === undefined ? "\u2014"
+    : (typeof fmtBytes === "function" ? fmtBytes(Number(v) || 0) : `${Number(v) || 0} B`));
+  const direction = (label, d) => {
+    const data = d || {};
+    const prefixes = Array.isArray(data.top_prefixes) ? data.top_prefixes.slice(0, 3) : [];
+    const prefixList = el("div", { class: "ext-prefix-list" },
+      prefixes.map((p) => el("div", { class: "ext-prefix-row" }, [
+        el("span", { class: "mono", text: p.prefix || "\u2014" }),
+        el("span", { class: "muted", text: `${n(p.peers)} peer(s) · ${bytes(p.bytes)}` }),
+      ])));
+    return el("div", { class: "ext-card" }, [
+      el("div", { class: "ext-k", text: label }),
+      el("div", { class: "ext-v", text: `${n(data.peers)} peer address${data.peers === 1 ? "" : "es"}` }),
+      el("div", { class: "ext-m muted",
+        text: `${bytes(data.bytes)} · ${n(data.flows)} flow(s) · top peer ${pct(data.top_peer_share)}` }),
+      prefixes.length ? el("div", { class: "ext-prefix-head muted", text: "top prefixes" }) : null,
+      prefixes.length ? prefixList : null,
+    ].filter(Boolean));
+  };
+  box.appendChild(el("div", { class: "ext-head" }, [
+    el("div", { class: "ext-title", text: "External exposure" }),
+    el("div", { class: "muted", text: `observed · last ${ext.hours || 24}h · not alert entities` }),
+  ]));
+  const grid = el("div", { class: "ext-grid" });
+  grid.appendChild(direction("Inbound to monitored", ext.inbound));
+  grid.appendChild(direction("Outbound from monitored", ext.outbound));
+  box.appendChild(grid);
+  if (ext.errors && ext.errors.length) {
+    box.appendChild(el("div", { class: "ext-error muted",
+      text: `Some readings are unavailable: ${ext.errors.join("; ")}` }));
+  }
+}
+
 async function loadNetworkCoverage() {
   const note = document.getElementById("wl-network-note");
   const list = document.getElementById("wl-network-list");
@@ -2397,6 +2441,11 @@ async function loadNetworkCoverage() {
     card.addEventListener("click", () => { if (typeof showView === "function") showView("settings"); });
     list.appendChild(card);
   }
+  // EXTERNAL EXPOSURE IS A PEER DIMENSION. It is a reading, not a scope and not an alert
+  // entity: inbound peers are external sources hitting monitored destinations; outbound peers
+  // are external destinations reached by monitored sources. The list below keeps the individual
+  // addresses for evidence and click-through; this panel shows the population shape.
+  wlRenderExternalExposure(d.external);
   // EXTERNAL PEERS ARE AN AGGREGATE, NOT A PER-ADDRESS ALERT SOURCE. The plan says external
   // traffic should remain visible against its volume and last-seen time without becoming
   // thousands of monitored hosts; this is that reading.

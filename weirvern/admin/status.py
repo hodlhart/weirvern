@@ -2273,6 +2273,17 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
         "GROUP BY service ORDER BY conns DESC LIMIT 12",
         base, "zeek_services",
     )
+    # EXTERNAL EXPOSURE: peers are dimensions of THIS monitored endpoint, not hosts of their
+    # own. The host page needs the same reading the Network coverage card shows; a click on an
+    # external peer is useful only if the local endpoint's inbound/outbound shape is visible.
+    try:
+        from weirvern import external  # noqa: PLC0415
+
+        out["external"] = external.host_overview(client, src_addr, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("host external exposure failed: %s", exc)
+        out["external"] = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:120]}",
+                           "observed_only": True}
     return out
 
 
@@ -3193,19 +3204,23 @@ def shadow_overview(client) -> dict:
     """
     channels = (
         ("hdbscan", "HDBSCAN challenger", "weirvern.ml_candidate_scores",
-         "uniqExact(extract(evidence, 'cluster=([0-9]+)'))", "clusters"),
+         "uniqExact(extract(evidence, 'cluster=([0-9]+)'))", "clusters",
+         "model_name = 'HDBSCAN'"),
+        ("external", "External exposure", "weirvern.ml_candidate_scores",
+         "uniqExact(src_addr)", "hosts", "model_name = 'External exposure'"),
         ("temporal", "Matrix Profile", "weirvern.ml_temporal_scores",
-         "uniqExact(metric)", "metrics"),
+         "uniqExact(metric)", "metrics", ""),
         ("changepoints", "Change points", "weirvern.ml_changepoints",
-         "uniqExact(src_addr)", "hosts"),
+         "uniqExact(src_addr)", "hosts", ""),
     )
     rows = []
-    for key, label, table, detail_expr, detail_label in channels:
+    for key, label, table, detail_expr, detail_label, where in channels:
         try:
-            res = client.query(
-                "SELECT count() AS n, max(computed_at) AS latest, "
-                + detail_expr + " AS detail FROM " + table
-            )
+            sql = ("SELECT count() AS n, max(computed_at) AS latest, "
+                   + detail_expr + " AS detail FROM " + table)
+            if where:
+                sql += " WHERE " + where
+            res = client.query(sql)
             n, latest, detail = res.result_rows[0] if res.result_rows else (0, None, 0)
             latest_text = ""
             if latest is not None:

@@ -323,9 +323,28 @@ def overview(client, hours: int = 24) -> dict[str, Any]:
         },
         "counts_available": counts_ok,
         "external_peers": external_peers,
+        "external": _external_overview(client, scopes, hours),
         "unconfigured": not rows,
         "hours": int(hours),
     }
+
+
+def _external_overview(client, scopes: list[Scope], hours: int) -> dict[str, Any]:
+    """External exposure is a peer dimension, not a host population.
+
+    Imported lazily so `external` can depend on this module's scope helpers without a module
+    cycle. A failure here is a named missing reading, never a reason to fail network coverage.
+    """
+    if not scopes:
+        return {"available": False, "reason": "no declared scopes",
+                "observed_only": True, "inbound": {}, "outbound": {}}
+    try:
+        from weirvern import external  # noqa: PLC0415
+
+        return external.overview(client, scopes=scopes, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200],
+                "observed_only": True, "inbound": {}, "outbound": {}}
 
 
 def training_filter_sql(scopes: Iterable[Scope], alias: str = "a") -> str:

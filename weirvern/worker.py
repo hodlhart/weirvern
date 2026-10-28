@@ -2502,6 +2502,7 @@ def main() -> None:
                             logger.info("ML role proposals: %d host(s)", len(proposed))
                         from weirvern.models import candidates as _cand  # noqa: PLC0415
                         from weirvern.models import changepoints as _cp  # noqa: PLC0415
+                        from weirvern.models import external as _ext  # noqa: PLC0415
                         from weirvern.models import temporal as _temp  # noqa: PLC0415
 
                         cand = _cand.run(client)
@@ -2514,6 +2515,11 @@ def main() -> None:
                         chg = _cp.run(client)
                         if chg.get("rows"):
                             logger.info("ML change-point shadow: %s row(s)", chg["rows"])
+                        ext = _ext.run(client)
+                        if ext.get("rows"):
+                            logger.info("ML external exposure shadow: %s row(s), %s host(s), "
+                                        "p50=%.2f",
+                                        ext["rows"], ext.get("hosts"), ext.get("score_p50", 0.0))
                     shadow_tick += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("ML shadow pass failed (detection continues): %s", exc)

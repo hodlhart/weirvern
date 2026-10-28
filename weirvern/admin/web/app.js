@@ -2503,12 +2503,51 @@ async function loadHostPage(addr) {
       ]));
     }
   }
+  hpRenderExternal(d.external);
   hpRenderGraph(d.top_destinations || []);
   hpRenderFlow(d.timeline || []);
   hpRenderDns(d.dns_queries || []);
   hpRenderZeek(d.zeek_services || []);
   hpRenderDests(d.top_destinations || []);
   hpRenderAnoms(d.anomalies || []);
+}
+
+function hpRenderExternal(ext) {
+  const card = document.getElementById("hp-external-card");
+  const box = document.getElementById("hp-external");
+  if (!card || !box) return;
+  box.replaceChildren();
+  if (!ext || !ext.available) {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  const n = (v) => (v === null || v === undefined ? "\u2014" : Number(v).toLocaleString());
+  const pct = (v) => (v === null || v === undefined ? "\u2014" : `${Math.round(Number(v) * 100)}%`);
+  const bytes = (v) => (v === null || v === undefined ? "\u2014" : fmtBytes(Number(v) || 0));
+  const direction = (label, d) => {
+    const data = d || {};
+    const prefixes = Array.isArray(data.top_prefixes) ? data.top_prefixes.slice(0, 3) : [];
+    return el("div", { class: "ext-card" }, [
+      el("div", { class: "ext-k", text: label }),
+      el("div", { class: "ext-v", text: `${n(data.peers)} peer address${data.peers === 1 ? "" : "es"}` }),
+      el("div", { class: "ext-m muted",
+        text: `${bytes(data.bytes)} · ${n(data.flows)} flow(s) · top peer ${pct(data.top_peer_share)}` }),
+      prefixes.length ? el("div", { class: "ext-prefix-list" },
+        prefixes.map((p) => el("div", { class: "ext-prefix-row" }, [
+          el("span", { class: "mono", text: p.prefix || "\u2014" }),
+          el("span", { class: "muted", text: `${n(p.peers)} peer(s) · ${bytes(p.bytes)}` }),
+        ]))) : null,
+    ].filter(Boolean));
+  };
+  const grid = el("div", { class: "ext-grid" });
+  grid.appendChild(direction("Inbound from external", ext.inbound));
+  grid.appendChild(direction("Outbound to external", ext.outbound));
+  box.appendChild(grid);
+  if (ext.errors && ext.errors.length) {
+    box.appendChild(el("div", { class: "ext-error muted",
+      text: `Some readings are unavailable: ${ext.errors.join("; ")}` }));
+  }
 }
 
 function hpRenderGraph(dests) {

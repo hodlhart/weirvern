@@ -827,6 +827,10 @@
       <span id="hp-sub" class="muted"></span>
     </div>
     <div class="card"><div id="hp-stats" class="stats"></div></div>
+    <div class="card hidden" id="hp-external-card">
+      <h2>External exposure <span class="muted">observed · not alert entities</span></h2>
+      <div id="hp-external"></div>
+    </div>
     <div class="grid">
       <div class="card">
         <h2>Connections <span class="muted">this host and its top peers</span></h2>
@@ -1419,6 +1423,7 @@
         <span class="net-legend-item"><span class="net-swatch observed"></span><strong>observed</strong> — collected, not alertable</span>
         <span class="net-legend-item"><span class="net-swatch unclassified"></span><strong>unclassified</strong> — outside every declared scope</span>
       </div>
+      <div id="wl-external" class="net-external"></div>
       <div id="wl-peer-list" class="net-peers"></div>
     </div>
 

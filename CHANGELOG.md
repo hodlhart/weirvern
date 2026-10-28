@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.13 — 2026-10-27
+
+EXTERNAL EXPOSURE, SHADOW ONLY.
+
+- Network coverage now carries an **External exposure** reading: inbound external peers to
+  monitored destinations, outbound external destinations from monitored sources, bytes, flows,
+  top-peer concentration and the top presentation prefixes. It is marked observed and creates
+  no alert entity.
+- The host page shows the same reading for one monitored endpoint after an external peer is
+  clicked; an address outside a monitored scope says why it has no exposure reading.
+- The hourly shadow pass writes `External exposure` rankings to the existing
+  `ml_candidate_scores` table. The score ranks the measured peer-population features; it does
+  not write `netflow_anomalies`, `alert_events`, or Sluice state, and it is not a probability.
+- The external layer deliberately keeps individual addresses for evidence and click-through,
+  while the model-facing view is the aggregate peer dimension. This is the first phase of the
+  design in `docs/design/external-peer-layer.md`; promotion needs a 30-day backtest at the
+  current internal-host alert budget.
+
 ## 0.23.12 — 2026-10-27
 
 EXTERNAL PEERS OPEN THEIR HOST PAGE.

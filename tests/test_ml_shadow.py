@@ -80,9 +80,10 @@ def test_shadow_overview_names_each_channel_and_a_broken_one_is_not_empty_succes
             raise AssertionError(sql)
 
     out = shadow_overview(Stub())
-    assert out["available"] is True and len(out["rows"]) == 4
+    assert out["available"] is True and len(out["rows"]) == 5
     by_key = {r["key"]: r for r in out["rows"]}
     assert by_key["hdbscan"]["detail"] == 56
+    assert by_key["external"]["detail"] == 56
     assert by_key["calibration"]["rows"] == 4
 
     class Broken(Stub):
