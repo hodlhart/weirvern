@@ -627,6 +627,25 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
 .stat-row .stat .v { font-size: var(--fs-4); line-height: 28px; }
 .gate-grid { align-items: stretch; }
 .gate-grid > .card { height: 100%; }
+/* TWO GATES, TWO SUMMARIES. The overview is split into a DNS group and a packet group: a
+ * domain rule answered in DNS must not share a count with an address rule dropped by nft. */
+#sl-glance { align-items: stretch; }
+.gate-summary { display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  flex: 1 1 260px; padding: 7px 10px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--r-md); }
+.gate-summary-label { font-size: var(--fs-1); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); }
+.gate-summary .chips { margin: 2px 0 0; }
+.sl-top-names { margin: 8px 0 10px; }
+.sl-top-names .chips { margin: 4px 0 0; }
+.gate-subhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  margin: 16px 0 6px; font-size: var(--fs-2); }
+.gate-iface { display: inline-block; margin: 0 4px 2px 0; padding: 1px 5px;
+  border: 1px solid var(--border); border-radius: var(--btn-r); }
+#sl-rule-gates { margin: 4px 0 8px; }
+.rule-gate { font-size: var(--fs-1); }
+.rule-gate.gate-domain { color: var(--accent); }
+.rule-gate.gate-traffic { color: var(--sev-medium); }
 @media (max-width: 900px) {
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

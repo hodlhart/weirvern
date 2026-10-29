@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.15 — 2026-10-29
+
+SLUICE GATE: TWO ENFORCEMENT PATHS, ONE FLEET.
+
+- The overview is split into a DNS summary and a packet summary. Domain rules, DNS hits and
+  blocklists no longer share an unlabelled strip with packet rules and gate state.
+- Domain Gate now carries only DNS facts: lists/domains, DNS hits and names, last sync. The
+  Traffic Gate carries only packet facts: fleet state, per-weirling rows, interfaces, packet
+  rules, packets blocked, last check and enforcement path.
+- The Traffic Gate is fleet-shaped. Every reporting weirling gets a row; its capture interfaces
+  are listed as a set, so five weirlings produce five rows instead of one global interface tile.
+- Rules stay in the one store and one sheet, but every row names its gate (`Domain` or
+  `Traffic`) and a Domain/Traffic filter can isolate either family, with hidden counts stated.
+- No rule, alert, review or gate semantics changed.
+
 ## 0.23.14 — 2026-10-28
 
 ALERT EVIDENCE KEEPS ITS VERDICT.

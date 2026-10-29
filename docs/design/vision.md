@@ -234,6 +234,25 @@ this view:
 This supersedes the current Sluice layout as the target. US-SL1 on the `weirvern-usability` board
 carries it; US-A3's accessibility findings are absorbed into that build.
 
+## 13. Two enforcement gates, one fleet (operator directive, 2026-10-28)
+
+The operator likes the Weirlings grammar and asked for Sluice to use it. The directive adds
+four rules to §12:
+
+1. **Domain and Traffic are separate readings.** The Domain Gate owns DNS facts — lists,
+   domains, domain rules, DNS hits, last sync. The Traffic Gate owns packet facts — gate state,
+   packet rules, packets blocked, last check, enforcement path. A count from one gate never
+   appears in the other's card or summary.
+2. **The Traffic Gate is fleet-shaped.** It reports weirlings, not a single interface. Every
+   weirling that reports a packet gate gets a row; its capture interfaces are listed as a set,
+   and rule/packet totals are labelled as sensor totals. Adding a fifth weirling adds a row,
+   never a second global tile.
+3. **One store, two labelled rule families.** Domain and Traffic rules stay in one table, one
+   store and one sheet, but every row names the gate that will act and the table can be filtered
+   to either family. Hidden counts are stated; the filter is not a second editor.
+4. **The overview is two summaries, not one mixed strip.** A DNS hit, a domain rule and a
+   packet rule are different units and never share an unlabelled chip.
+
 ## Changelog
 
 - **2026-10-18** — created from the operator's design conversation. Locked: signature, standard,

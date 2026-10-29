@@ -51,6 +51,38 @@ function sluiceStateChip(state, stale) {
   return el("span", { class: `chip ${cls}`, text });
 }
 
+/* ONE RULE STORE, TWO ENFORCEMENT GATES. The rule table used to mix a domain rule answered in
+ * DNS with an address rule dropped by nft without saying which gate would act. The filter is a
+ * reading aid, not a second store: every rule still lives in the same table, opens the same sheet
+ * and is counted by the same store. */
+let SL_RULE_GATE = "all";
+
+function slRuleGateMatches(rule, gate) {
+  if (gate === "domain") return Boolean(rule && rule.domain);
+  if (gate === "traffic") return Boolean(rule && !rule.domain);
+  return true;
+}
+
+function slRuleGateLabel(rule) {
+  return rule && rule.domain ? "Domain" : "Traffic";
+}
+
+function slSetRuleGate(gate) {
+  SL_RULE_GATE = ["domain", "traffic"].includes(gate) ? gate : "all";
+  for (const button of document.querySelectorAll("#sl-rule-gates [data-rule-gate]")) {
+    const active = button.getAttribute("data-rule-gate") === SL_RULE_GATE;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  loadSluice().catch(showError);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (const button of document.querySelectorAll("#sl-rule-gates [data-rule-gate]")) {
+    button.addEventListener("click", () => slSetRuleGate(button.getAttribute("data-rule-gate")));
+  }
+});
+
 async function loadSluice() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   // A REJECTED REQUEST MUST STILL SAY SOMETHING. `showView` fires this without awaiting it, so a
@@ -116,6 +148,7 @@ async function loadSluice() {
         : "Every gate listed reported within its own interval. This table reports packet "
           + "enforcement only; DNS blocking is enforced separately by the Domain Gate.";
       for (const g of gates) {
+        const ifaces = String(g.iface || "").split(/[,\s]+/).filter(Boolean);
         gateBody.appendChild(el("tr", {}, [
           el("td", {}, [
             g.sensor
@@ -132,8 +165,15 @@ async function loadSluice() {
             g.local ? el("span", { class: "muted", text: "  (this hub)" }) : null,
           ]),
           el("td", {}, [sluiceStateChip(g.state, g.stale)]),
-          el("td", { class: "mono", text: g.iface || "—" }),
-          el("td", { class: "mono", text: `${g.rules_active ?? 0} / ${g.rules_total ?? 0}` }),
+          // INTERFACES ARE A LIST, NOT A SINGLE GLOBAL PORT. One weirling can carry several
+          // capture ports, and a fleet can carry several weirlings; the old single `iface` tile
+          // made the second sensor disappear. The rule and packet totals beside this cell are
+          // the SENSOR's totals, not per-interface measurements -- the title says so.
+          el("td", {}, ifaces.length
+            ? ifaces.map((iface) => el("span", { class: "mono gate-iface", text: iface }))
+            : [el("span", { class: "muted", text: "—" })]),
+          el("td", { class: "mono",
+                     text: `${g.rules_active ?? 0} / ${g.rules_total ?? 0}` }),
           el("td", { class: "mono",
                      text: Number(g.packets_blocked ?? 0).toLocaleString() }),
           el("td", { class: "muted", text: g.age_s == null ? "—" : fmtAge(g.age_s) }),
@@ -146,13 +186,17 @@ async function loadSluice() {
   // ── the rules ───────────────────────────────────────────────────────────────────────────────
   const liveOnly = document.getElementById("sl-live-only").checked;
   const showRevoked = Boolean((document.getElementById("sl-show-revoked") || {}).checked);
-  let rules = d.rules || [];
+  const allRules = d.rules || [];
+  let rules = allRules.filter((r) => slRuleGateMatches(r, SL_RULE_GATE));
   if (liveOnly) rules = rules.filter((r) => r.live);
   // DELETED MEANS GONE FROM THE LIST (operator, 2026-10-19: "deleting rules doesn't work").
   // Revoked rules were kept in the table with a disabled Delete button, so a successful delete
   // looked like nothing happened. They stay in the record and behind "show revoked".
   if (!showRevoked) rules = rules.filter((r) => !r.revoked);
-  document.getElementById("sl-count").textContent = rules.length ? `(${rules.length})` : "";
+  const gateHidden = allRules.filter((r) => !slRuleGateMatches(r, SL_RULE_GATE)).length;
+  document.getElementById("sl-count").textContent = rules.length
+    ? `(${rules.length}${rules.length !== allRules.length ? ` of ${allRules.length}` : ""})`
+    : "";
 
   // US-9: THE REACH. A rule only bites where a sensor has a verified in-path channel (the same
   // test the gate form uses before it offers Block). Say the number beside the rules, and make
@@ -185,41 +229,54 @@ async function loadSluice() {
     }
   }
 
-  // ── AT A GLANCE (US-SL1, the operator's rule 2: "tabs should provide at-a-glance information
-  // or visualizations"). Every number comes from the payload loaded above -- nothing invented,
-  // and a failed read leaves the strip empty rather than showing a confident zero.
+  // ── AT A GLANCE (US-SL1). TWO READINGS, NOT ONE MIXED STRIP.
+  //
+  // The old strip counted every rule, every live rule and the DNS hits in one row, so a domain
+  // rule answered in DNS sat beside a packet rule enforced by nft with no way to tell which gate
+  // owned which number. These groups are separate on purpose; each one names its own facts.
   {
     const box = document.getElementById("sl-glance");
+    const domainBox = document.getElementById("sl-glance-domain");
+    const trafficBox = document.getElementById("sl-glance-traffic");
     const names = document.getElementById("sl-top-names");
     const note = document.getElementById("sl-glance-note");
     if (box) {
-      box.replaceChildren();
-      if (!d.available) {
-        if (note) note.textContent = "\u2014 unavailable, the gate query failed";
-      } else {
-        if (note) note.textContent = "";
-        const all = d.rules || [];
-        const live = all.filter((r) => r.live).length;
-        const lapsed = all.filter((r) => !r.live && !r.revoked && !r.disabled).length;
-        const parked = all.filter((r) => r.disabled).length;
-        const revoked = all.filter((r) => r.revoked).length;
-        const alertMode = all.filter((r) => r.mode === "alert").length;
-        const dropMode = all.length - alertMode;
-        const hits = d.hits || [];
-        const hitHours = Number(d.hits_hours || 24);
+      const chipsFor = (rules, extra) => {
+        const live = rules.filter((r) => r.live).length;
+        const alertMode = rules.filter((r) => r.mode === "alert").length;
+        const dropMode = rules.length - alertMode;
         const chips = [
-          [`${all.length}`, all.length === 1 ? "rule" : "rules"],
+          [`${rules.length}`, rules.length === 1 ? "rule" : "rules"],
           [`${live}`, "live"],
           [`${dropMode}`, "drop"],
           [`${alertMode}`, "alert-only"],
         ];
-        if (lapsed) chips.push([`${lapsed}`, "lapsed"]);
-        if (parked) chips.push([`${parked}`, "disabled"]);
-        if (revoked) chips.push([`${revoked}`, "revoked"]);
-        if (hits.length) chips.push([`${hits.length}`, `hits in ${hitHours}h`]);
-        for (const [v, k] of chips) {
-          box.appendChild(el("span", { class: "stat-chip" }, [
-            el("strong", { text: v }), el("span", { class: "muted", text: " " + k }),
+        return chips.concat(extra || []).map(([v, k]) =>
+          el("span", { class: "stat-chip" }, [
+            el("strong", { text: String(v) }), el("span", { class: "muted", text: " " + k }),
+          ]));
+      };
+      if (!d.available) {
+        if (note) note.textContent = "\u2014 unavailable, the gate query failed";
+        if (domainBox) domainBox.replaceChildren();
+        if (trafficBox) trafficBox.replaceChildren();
+      } else {
+        if (note) note.textContent = "";
+        const all = d.rules || [];
+        const domainRules = all.filter((r) => Boolean(r.domain));
+        const trafficRules = all.filter((r) => !r.domain);
+        const hits = d.hits || [];
+        const hitHours = Number(d.hits_hours || 24);
+        if (domainBox) {
+          domainBox.replaceChildren(...chipsFor(domainRules,
+            hits.length ? [[hits.length, `DNS hits in ${hitHours}h`]] : []));
+        }
+        if (trafficBox) {
+          const gates = Array.isArray(d.gates) ? d.gates : [];
+          const stale = gates.filter((g) => g.stale).length;
+          trafficBox.replaceChildren(...chipsFor(trafficRules, [
+            [gates.length, gates.length === 1 ? "weirling" : "weirlings"],
+            ...(stale ? [[stale, "stale"]] : []),
           ]));
         }
       }
@@ -261,13 +318,17 @@ async function loadSluice() {
     // legitimate answer; an empty list from a FAILED one is not. The sentence must not deny a
     // rule that the glance strip above is counting: an all-revoked store is not "no rules",
     // and Domain Gate is a separate enforcement path that may still be on.
-    const allRules = d.rules || [];
     const hiddenRevoked = allRules.filter((r) => r.revoked && !showRevoked).length;
     const hiddenByLive = liveOnly ? allRules.filter((r) => !r.live).length : 0;
     if (d.available) {
+      const gateName = SL_RULE_GATE === "domain" ? "Domain Gate"
+        : (SL_RULE_GATE === "traffic" ? "Traffic Gate" : "");
       const parts = [liveOnly
         ? "No live traffic-gate rules match."
         : "No traffic-gate rules match the current filters."];
+      if (gateHidden) {
+        parts.push(`${gateHidden} rule${gateHidden === 1 ? "" : "s"} hidden by the ${gateName} filter.`);
+      }
       if (hiddenByLive) {
         parts.push(`${hiddenByLive} non-live rule${hiddenByLive === 1 ? "" : "s"} `
           + "are hidden by 'live rules only'.");
@@ -287,6 +348,7 @@ async function loadSluice() {
   empty.textContent = "";
 
   for (const r of rules) {
+    const gateLabel = slRuleGateLabel(r);
     const stateCell = r.revoked
       ? el("span", { class: "chip muted", text: "revoked" })
       : (r.live
@@ -303,11 +365,13 @@ async function loadSluice() {
     pick.addEventListener("click", (e) => e.stopPropagation());
     pick.addEventListener("change", slBulkRefresh);
 
-    const tr = el("tr", { class: "sl-rule-row",
+    const tr = el("tr", { class: `sl-rule-row gate-${gateLabel.toLowerCase()}`,
                           attrs: { title: "click to open and edit this rule",
                                    "data-rule-id": r.rule_id } }, [
       el("td", { class: "pick" }, [pick]),
       el("td", { class: "mono", text: r.describes || r.src_cidr || "—" }),
+      el("td", {}, [el("span", { class: `chip rule-gate gate-${gateLabel.toLowerCase()}`,
+                                  text: gateLabel })]),
       el("td", {}, [stateCell]),
       // Origin matters for trust: a rule an analyst wrote and one a model derived are different
       // evidence, and the operator should be able to tell them apart at a glance.
@@ -607,13 +671,27 @@ function renderGateSplit(d) {
 
   const tg = document.getElementById("tg-stats");
   if (tg) {
-    const g = d.gate || {};
-    const state = String(g.state || "unknown");
+    const gates = Array.isArray(d.gates) ? d.gates : [];
+    const available = d.gates_available !== false;
+    const interfaces = new Set();
+    for (const gate of gates) {
+      for (const iface of String(gate.iface || "").split(/[,\s]+/).filter(Boolean)) {
+        interfaces.add(`${gate.sensor || ""}|${iface}`);
+      }
+    }
+    const stale = gates.filter((gate) => gate.stale).length;
+    const trafficRules = (d.rules || []).filter((rule) => !rule.domain);
+    const liveTraffic = trafficRules.filter((rule) => rule.live).length;
+    const packets = gates.reduce((total, gate) => total + (Number(gate.packets_blocked) || 0), 0);
+    // THE FLEET, NOT ONE INTERFACE. A single `interface` tile made a five-weirling deployment
+    // look like one capture port. These tiles answer the scale question; the per-weirling table
+    // below carries the interfaces and each sensor's own packet state.
     tg.replaceChildren(
-      tile("packet state", sluiceStateLabel(state), g.detail || ""),
-      tile("interface", g.iface || "—"),
-      tile("packet rules", `${Number(g.rules_active) || 0} / ${Number(g.rules_total) || 0}`),
-      tile("packets blocked", Number(g.packets_blocked) || 0),
+      tile("weirlings reporting",
+        available ? `${gates.length}${stale ? ` \u00b7 ${stale} stale` : ""}` : "\u2014"),
+      tile("capture interfaces", available ? String(interfaces.size) : "\u2014"),
+      tile("traffic rules", `${liveTraffic} / ${trafficRules.length}`),
+      tile("packets blocked", available ? packets.toLocaleString() : "\u2014"),
     );
   }
 

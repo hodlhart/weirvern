@@ -1111,9 +1111,17 @@
     <div class="card">
       <div class="view-head">
         <h2>Gate overview <span class="muted" id="sl-glance-note"></span></h2>
-        <div class="chips" id="sl-glance"></div>
+        <div class="chips" id="sl-glance">
+          <div class="gate-summary" role="group" aria-label="Domain Gate overview">
+            <span class="gate-summary-label">Domain Gate <span class="muted">DNS</span></span>
+            <div class="chips" id="sl-glance-domain"></div>
+          </div>
+          <div class="gate-summary" role="group" aria-label="Traffic Gate overview">
+            <span class="gate-summary-label">Traffic Gate <span class="muted">packets</span></span>
+            <div class="chips" id="sl-glance-traffic"></div>
+          </div>
+        </div>
       </div>
-      <div class="chips" id="sl-top-names"></div>
       <div class="controls sl-overview-actions">
         <button id="sl-view-blocks" class="quiet" type="button">View blocks &rarr;</button>
         <span class="muted">What was caught, and the rule behind each block.</span>
@@ -1143,6 +1151,10 @@
       <p class="muted">Answers DNS queries. Independent of the Traffic Gate.</p>
       <div class="stat-row" id="dg-stats"></div>
       <p class="muted" id="sl-dom-line">loading&hellip;</p>
+      <div class="sl-top-names">
+        <span class="muted">Names caught in the window</span>
+        <div class="chips" id="sl-top-names"></div>
+      </div>
       <div class="controls">
         <span class="sl-status-item">Domain blocking <strong id="sl-dom-state">loading&hellip;</strong></span>
         <button id="sl-dom-toggle" type="button">&hellip;</button>
@@ -1154,12 +1166,12 @@
     <div class="card">
       <h2>Traffic Gate <button class="info-btn" data-info="sl-info" aria-label="what the traffic gate does and how it fails" aria-expanded="false" title="what the traffic gate does and how it fails">i</button></h2>
       <div class="info-text hidden" id="sl-info">
-        <p><strong>What it is.</strong> The packet half of enforcement: nft rules on the capture interface that drop traffic. It fails open on purpose — if its supervisor dies the gate OPENS rather than taking your network down.</p>
+        <p><strong>What it is.</strong> The packet half of enforcement: nft rules on each weirling's capture interfaces that drop traffic. It fails open on purpose — if its supervisor dies the gate OPENS rather than taking your network down.</p>
         <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
         <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
         <p><strong>Where to see it.</strong> The state line below says whether the kernel is enforcing; the fleet table says which segment each gate covers.</p>
       </div>
-      <p class="muted">Drops packets on the capture interface. Needs a rule and an armed nft backend.</p>
+      <p class="muted">Drops packets on each weirling's capture interfaces. Needs a rule and an armed nft backend.</p>
       <div class="stat-row" id="tg-stats"></div>
       <div class="sl-status-line">
         <span class="sl-status-item">Packet gate
@@ -1170,17 +1182,15 @@
         <span class="muted" id="sl-bc-note"></span>
       </div>
       <p id="sl-gate-warning" class="muted hidden"></p>
+      <h3 class="gate-subhead">Fleet packet gates <span class="muted" id="sl-gates-note"></span></h3>
+      <div class="tablewrap">
+        <table id="sl-gates">
+          <thead><tr><th>Weirling</th><th>Packet state</th><th>Interfaces</th><th>Packet rules active / total</th>
+            <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
-    </div>
-
-    <div class="card">
-      <h2>Fleet gates <span class="muted">where the packet rules are enforced</span></h2>
-      <p class="muted" id="sl-gates-note"></p>
-      <table id="sl-gates">
-        <thead><tr><th>Weirling</th><th>Packet state</th><th>Interface</th><th>Packet rules active / total</th>
-          <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
-        <tbody></tbody>
-      </table>
     </div>
 
     <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
@@ -1204,11 +1214,17 @@
         <label class="muted"><input id="sl-live-only" type="checkbox"> live rules only</label>
         <label class="muted"><input id="sl-show-revoked" type="checkbox"> show revoked</label>
       </div>
+      <div class="controls" id="sl-rule-gates" role="group" aria-label="filter rules by enforcement gate">
+        <span class="muted">show</span>
+        <button class="dc-chip active" type="button" data-rule-gate="all" aria-pressed="true">All rules</button>
+        <button class="dc-chip" type="button" data-rule-gate="domain" aria-pressed="false">Domain Gate</button>
+        <button class="dc-chip" type="button" data-rule-gate="traffic" aria-pressed="false">Traffic Gate</button>
+      </div>
       <table id="sl-table">
         <thead>
           <tr>
             <th class="pick"><input type="checkbox" id="sl-pick-all" aria-label="select every rule shown" title="select every rule shown"></th>
-            <th>rule</th><th>state</th><th>origin</th><th>expires</th>
+            <th>rule</th><th>gate</th><th>state</th><th>origin</th><th>expires</th>
             <th>severity</th><th>reason</th><th></th>
           </tr>
         </thead>

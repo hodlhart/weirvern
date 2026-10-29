@@ -578,6 +578,11 @@ const SLUICE_PAYLOAD = {
     { sensor: "lab-west", state: "degraded", iface: "eth1", rules_active: 0, rules_total: 3,
       packets_blocked: 0, bytes_blocked: 0, age_s: 5400, local: false, stale: true,
       enforcement: "", detail: "no verified path" },
+    // A FIVE-WEIRLING FLEET IS THE SHAPE THE OPERATOR ASKED ABOUT. One row per sensor, each
+    // carrying its own interface list, so a single global `iface` cannot hide the rest.
+    { sensor: "weirvern-west", state: "armed", iface: "eth3", rules_active: 2, rules_total: 3,
+      packets_blocked: 7, bytes_blocked: 2048, age_s: 25, local: false, stale: false,
+      enforcement: "siphon", detail: "" },
   ],
   rules: [
     // THE SAME STORE FEEDS BOTH TABS (issue #15): the Blocked payload's live sets are built from
@@ -4003,6 +4008,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("A3: every row checkbox carries an accessible name",
           picks.length > 0 && picks.every((b) => (b.getAttribute("aria-label") || "").length > 8),
           `${picks.filter((b) => !(b.getAttribute("aria-label") || "").length).length} unnamed`);
+
+    const rowGates = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row .rule-gate")];
+    check("every rule names the gate that enforces it",
+          rowGates.length > 0 && rowGates.every((c) => /^(Domain|Traffic)$/.test(c.textContent.trim()))
+          && rowGates.some((c) => c.textContent.trim() === "Domain")
+          && rowGates.some((c) => c.textContent.trim() === "Traffic"),
+          rowGates.map((c) => c.textContent.trim()).join("|"));
+    const gateFilter = doc.getElementById("sl-rule-gates");
+    check("the rule table offers a Domain / Traffic filter",
+          !!gateFilter && gateFilter.querySelectorAll("[data-rule-gate]").length === 3,
+          gateFilter ? gateFilter.textContent : "no rule gate filter");
   }
 
   // ── THE FLEET IS A WORKLIST (BF-7) ──────────────────────────────────────────────────────────
@@ -5690,17 +5706,26 @@ check("the two gate cards share one horizontal grid, not two stacked full-width 
           && /Domain Gate/.test(g.children[0].textContent)
           && /Traffic Gate/.test(g.children[1].textContent);
       })(), doc.querySelector("#view-sluice .gate-grid") ? "grid missing cards" : "no gate-grid");
-check("the fleet table is a full-width card outside the two-gate grid",
+check("the Traffic Gate owns the fleet packet table",
       (() => {
-        const card = [...doc.querySelectorAll("#view-sluice > .card")]
-          .find((c) => /Fleet gates/.test((c.querySelector("h2") || {}).textContent || ""));
-        return !!card && !card.classList.contains("gate-grid")
-          && !!card.querySelector("#sl-gates") && !card.closest(".gate-grid");
-      })(), "fleet gates still nested in a gate card");
-check("the removed state tiles and cleanup sentence are not in the DOM",
-      !doc.getElementById("sl-state") && !doc.getElementById("sl-state-note")
-      && !doc.getElementById("sl-gate-detail"));
+        const cards = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")];
+        const traffic = cards.find((c) => /Traffic Gate/.test((c.querySelector("h2") || {}).textContent || ""));
+        const domain = cards.find((c) => /Domain Gate/.test((c.querySelector("h2") || {}).textContent || ""));
+        return !!traffic && !!traffic.querySelector("#sl-gates")
+          && !!domain && !domain.querySelector("#sl-gates");
+      })(), "fleet table is not owned by the Traffic Gate");
+check("the Domain Gate carries no packet/interface facts",
+      (() => {
+        const domain = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")]
+          .find((c) => /Domain Gate/.test((c.querySelector("h2") || {}).textContent || ""));
+        return !!domain && !/packet state|packet rules|interfaces?/i.test(domain.textContent);
+      })(), "DNS card still carries packet facts");
+const gateHeads = [...doc.querySelectorAll("#sl-gates thead th")].map((th) => th.textContent.trim());
+check("the packet fleet table names interfaces, not one global interface",
+      gateHeads[2] === "Interfaces", gateHeads.join("|"));
 const slGateRows = [...doc.querySelectorAll("#sl-gates tbody tr")];
+check("five weirlings produce five packet-gate rows",
+      slGateRows.length === 5, `${slGateRows.length} rows`);
 const dualRow = slGateRows.find((r) => r.textContent.includes("weirvern-dual"));
 check("the gates table groups its packet counts too",
       !!dualRow && [...dualRow.querySelectorAll("td")][4].textContent === (1234).toLocaleString(),
