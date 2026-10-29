@@ -7,7 +7,7 @@ It writes only to `ml_candidate_scores` (the existing append-only shadow store).
 
 The score is a RANKING, not a probability. It is the maximum percentile of the measured features
 inside the sampled population; a high rank is a lead to inspect, not an incident. Promotion is a
-separate decision after the backtest described in docs/research/external-peer-layer.md.
+separate decision after the backtest described in docs/design/external-peer-layer.md.
 """
 from __future__ import annotations
 

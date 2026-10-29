@@ -2330,7 +2330,11 @@ def alert_evidence(client, src_addr: str, window_start: str,
             # the evidence query never selected them -- so the ONE page an analyst opens to read
             # the measurement behind an alert could never show a technique. The front end asks
             # for parseTechniques(d.anomaly.attack_techniques) and got undefined every time.
-            "attack_techniques, attack_label "
+            # THE TUPLE IS POSITIONAL. `strong_families` and `severity_basis` were indexed
+            # below but never selected, so the window lookup raised IndexError, was caught as
+            # a failed read, and the evidence page lost DETECTED/EXPLAINED and every
+            # acknowledge/ignore action. Keep this SELECT and the row[n] mapping in lockstep.
+            "attack_techniques, attack_label, strong_families, severity_basis "
             "FROM weirvern.netflow_anomalies WHERE src_addr = %(a)s "
             "AND window_start = parseDateTime64BestEffort(%(w)s) LIMIT 1",
             parameters={"a": src_addr, "w": window_start},

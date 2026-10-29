@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.14 — 2026-10-28
+
+ALERT EVIDENCE KEEPS ITS VERDICT.
+
+- The alert-evidence window lookup selected 11 columns but indexed `row[11]` and `row[12]`
+  for `strong_families` and `severity_basis`. The resulting IndexError was caught as a
+  failed lookup, so the page said "no verdict stored for this window", left EXPLAINED
+  unknown, and rendered no Acknowledge / Resolve / Ignore controls even though the alert
+  existed. The two columns are now selected, and a regression test uses a query-width-aware
+  fake client so a positional mismatch cannot hide behind padded test rows.
+- No alert semantics, review-state writes, or external-peer behavior changed.
+
 ## 0.23.13 — 2026-10-27
 
 EXTERNAL EXPOSURE, SHADOW ONLY.

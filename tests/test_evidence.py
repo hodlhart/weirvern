@@ -183,6 +183,32 @@ def test_a_failing_query_is_recorded_not_hidden():
     assert out["zeek_dns"] == [], "the failed section should be empty, not absent"
 
 
+def test_anomaly_row_width_matches_the_columns_the_code_indexes():
+    """The anomaly lookup is positional. A query that selects fewer columns than the
+    mapping indexes raises IndexError inside the guarded lookup, and the page then says
+    'no verdict stored' and hides every disposition action -- the exact 2026-10-28 alert
+    regression. This fake returns EXACTLY the width the SELECT promises, so a missing
+    column cannot be masked by generously padded test data.
+    """
+    from weirvern.admin import status
+
+    class WidthAwareClient(RecordingClient):
+        def query(self, sql, parameters=None):
+            self.queries.append((sql, parameters or {}))
+            if "FROM weirvern.netflow_anomalies" in sql:
+                select = sql.split("SELECT", 1)[1].split("FROM", 1)[0]
+                width = len([part for part in select.split(",") if part.strip()])
+                return self._Res([tuple(range(width))])
+            return self._Res([])
+
+    out = status.alert_evidence(WidthAwareClient(), "198.51.100.5", "2026-09-17T16:37:00")
+    assert out.get("anomaly"), "the anomaly lookup failed; the evidence page would lose its verdict"
+    assert out["anomaly"]["strong_families"] == 11
+    assert out["anomaly"]["severity_basis"] == 12
+    assert not (out.get("_errors") or {}).get("anomaly")
+
+
+
 def test_evidence_payload_surfaces_errors():
     from weirvern.admin import web_api
 
