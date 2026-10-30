@@ -229,10 +229,24 @@ What the research does **not** support: adding an autoencoder/LSTM, a second sup
 ### P2 — Candidate methods, in order
 
 1. **Matrix Profile / change channels:** already shadow; keep them as **notices** and evidence, not incident scores until they win at a fixed budget.
-2. **HDBSCAN vs DBSCAN:** replace only after A/B; do not add a second density vote.
+2. **HDBSCAN vs DBSCAN:** replace only after A/B; do not add a second density vote. See the 2026-10-30 assessment below.
 3. **ECOD/COPOD:** offline challenger only.
 4. **Benign-anchored feature selection (BARS-style):** use it to test whether the current feature set is dominated by class-symmetric volume features; do not add a dependency until the fixed-budget harness exists.[3]
 5. **No** LOF, one-class SVM, autoencoders/LSTMs, or a second supervised classifier trained on five labels.
+
+#### HDBSCAN swap assessment (2026-10-30)
+
+HDBSCAN is the right *direction* for variable density, but it is **not a drop-in replacement** and the existing shadow challenger does not yet prove it reduces false positives.
+
+- The live 5,000-row matrix gives **310 clusters / 2.6% noise** at `min_cluster_size=5`, versus **25 clusters / 17.8% noise** at `min_cluster_size=80` (the documented runs). That is a different definition of normal, not a better DBSCAN.
+- The challenger's score is a **percentile rank of distance to the nearest medoid**, not a calibrated outlier probability. In the latest 5,000-row run its top 1% is exactly **50 rows**, with a score cutoff of 0.99 by construction; a 1% budget is therefore guaranteed without measuring a false-alarm rate.
+- Of those top-50 HDBSCAN rows, **39 were already production alerts**, **35 had a production DBSCAN score of 0.99**, and **29 had one or fewer independent families**. One busy host accounted for 22 of the 50. This is mostly a **re-ranking of the existing queue**, not a clean new signal.
+- The 11 top-50 rows that were not production alerts are the interesting part: they may be misses or new leads, but without labels they cannot be called improvements.
+
+**Decision:** do not swap the live detector. First make DBSCAN ineligible to set the fused score (ML-12), then run the fixed-budget A/B (ML-15): HDBSCAN vs DBSCAN on all scored windows, seeded attacks, precision@1%, recall and cluster stability. If HDBSCAN wins, replace DBSCAN in one release and remove DBSCAN from the ensemble; never run both as independent votes. If it loses, keep DBSCAN shadow-only or recalibrate it.
+
+Sources for this assessment: [scikit-learn HDBSCAN](https://scikit-learn.org/stable/modules/generated/sklearn.cluster.HDBSCAN.html), [HDBSCAN GLOSH outlier detection](https://hdbscan.readthedocs.io/en/latest/outlier_detection.html), and the live `ml_candidate_scores` / `netflow_anomalies` reads above.
+
 
 ---
 
