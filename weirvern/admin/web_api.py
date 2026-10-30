@@ -85,6 +85,10 @@ def calibration_payload(data: dict) -> dict:
         samples = int(row.get("sample_count") or 0)
         if samples < 100:
             verdict = "insufficient samples"
+        elif row.get("eligibility") == "quarantined":
+            verdict = "quarantined"
+        elif row.get("eligibility") == "eligible":
+            verdict = "eligible"
         elif observed is not None and target > 0 and float(observed) <= target * 1.5:
             verdict = "within budget"
         else:

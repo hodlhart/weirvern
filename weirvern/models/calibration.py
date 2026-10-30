@@ -6,15 +6,16 @@ global BASE_THRESHOLD and adaptive multipliers, while the live score distributio
 against a reference distribution, so an operator can ask for a target alerts/day and then MEASURE
 whether the system met it.
 
-HONEST LIMIT: the reference here is the stored detector scores in `netflow_anomalies` (and the
-near-miss rows), NOT every host-window the models scored. It is a calibration of the alert tail,
-not a calibration of all traffic. `reference_source` carries that sentence into the table; a
-later candidate-score store can widen it.
+HONEST LIMIT: `run` prefers `ml_window_scores` — every host-window the ensemble scored **before**
+the alert threshold. If that population is not yet available (a fresh deployment), it names the
+fallback explicitly and calibrates on the stored alert tail. `reference_source` carries which
+denominator was used into the table; it is never silently presented as all traffic.
 
 No new detector. No alert path change. The worker's calibration pass is shadow-only.
 """
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from clickhouse_connect.driver.client import Client
 from weirvern import __version__
 from weirvern.clock import utcnow
 from weirvern.config import Settings
+
+logger = logging.getLogger(__name__)
 
 # The models whose scores the console already stores. IF and GB are listed separately here
 # because their distributions differ; corroboration independence is an ENSEMBLE question, not a
@@ -121,14 +124,97 @@ def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str,
 
 
 def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
-    """Read the latest calibration rows and return model name -> eligible."""
+    """Read the latest calibration rows and return model name -> eligible.
+
+    A calibration older than the model's newest artifact is NOT evidence about the current
+    model. Such a model is returned ineligible until calibration is rerun against scores from
+    the retrained artifact; this is the holdout lock that keeps a retrain from silently
+    re-enabling a model on its old calibration.
+    """
     res = client.query(
-        "SELECT model_name, observed_far, target_far FROM weirvern.ml_calibration FINAL "
+        "SELECT model_name, observed_far, target_far, computed_at FROM weirvern.ml_calibration FINAL "
         "WHERE computed_at = (SELECT max(computed_at) FROM weirvern.ml_calibration)"
     )
-    return eligibility_from_rows(res.result_rows,
-                                 float(getattr(settings, "ml_target_far", 0.01) or 0.01),
-                                 float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0))
+    rows = res.result_rows
+    out = eligibility_from_rows(
+        [(row[0], row[1], row[2]) for row in rows],
+        float(getattr(settings, "ml_target_far", 0.01) or 0.01),
+        float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0),
+    )
+    try:
+        trained = client.query(
+            "SELECT model_type, max(trained_at) FROM weirvern.ml_models GROUP BY model_type"
+        )
+        latest_train = {str(name): when for name, when in trained.result_rows}
+        for row in rows:
+            name, when = str(row[0]), row[3]
+            model_when = latest_train.get(name)
+            if model_when is not None and when is not None and model_when > when:
+                out[name] = False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("eligibility: could not read model artifact dates (stale gate skipped): %s",
+                       exc)
+    return out
+
+
+def record_population(client: Client, population: Iterable[dict], *,
+                      model_version: str) -> int:
+    """Persist RAW per-model scores for every scored host-window.
+
+    `population` is the caller-owned sink filled by `ensemble.detect_flows`. A row is stored
+    before thresholds, agreement, severity, or episodes; this is the denominator calibration
+    needs. The write is best-effort by contract: the caller catches and logs, because a
+    measurement failure must not stop detection.
+    """
+    rows: list[list] = []
+    now = utcnow()
+    for sample in population:
+        start = sample.get("window_start")
+        src = str(sample.get("src_addr") or "")
+        if start is None or not src:
+            continue
+        for model_name, score in (sample.get("scores") or {}).items():
+            try:
+                value = float(score)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            rows.append([start, src, str(model_name), value, str(model_version), now])
+    if not rows:
+        return 0
+    client.insert(
+        "weirvern.ml_window_scores", rows,
+        column_names=["window_start", "src_addr", "model_name", "score",
+                      "model_version", "computed_at"],
+    )
+    return len(rows)
+
+
+def _population_scores(client: Client, days: int) -> dict[str, list[float]]:
+    """All scored host-window scores per model, deduped by the Replacing table.
+
+    A deployment that has not applied 038 yet has no population; return an empty mapping so
+    `run` takes its named fallback instead of failing the whole shadow pass.
+    """
+    try:
+        res = client.query(
+            "SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
+            "WHERE computed_at >= now() - INTERVAL %(d)s DAY",
+            parameters={"d": int(days)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibration population unavailable (%s); using named fallback", exc)
+        return {}
+    out: dict[str, list[float]] = {}
+    for model_name, score in res.result_rows:
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            out.setdefault(str(model_name), []).append(value)
+    return out
 
 
 def _score_rows(client: Client, column: str, days: int = 30) -> list[float]:
@@ -143,19 +229,33 @@ def _score_rows(client: Client, column: str, days: int = 30) -> list[float]:
     return [float(r[0]) for r in res.result_rows if r and r[0] is not None]
 
 
-def run(client: Client, settings: Settings, *, days: int = 30) -> list[dict]:
-    """Write one shadow calibration row per model. Never raises past the caller's guard."""
+def run(client: Client, settings: Settings, *, days: int | None = None) -> list[dict]:
+    """Write one shadow calibration row per model. Never raises past the caller's guard.
+
+    The primary reference is `ml_window_scores`: every host-window the ensemble scored, before
+    the alert threshold. The anomaly tail is a labelled fallback for a deployment that has not
+    produced population rows yet; `reference_source` states which one was used.
+    """
     target = float(getattr(settings, "ml_target_far", 0.01) or 0.01)
+    window_days = int(days if days is not None else
+                      getattr(settings, "ml_calibration_days", 7) or 7)
+    population = _population_scores(client, window_days)
     rows: list[dict] = []
     for model_name, column in MODEL_COLUMNS:
-        scores = _score_rows(client, column, days=days)
+        scores = population.get(model_name) or []
+        source = f"all scored host-windows (ml_window_scores), last {window_days} days"
+        subject = "all scored host-windows"
+        if len(scores) < 20:
+            scores = _score_rows(client, column, days=30)
+            source = "fallback: stored anomaly scores (tail only); population rows unavailable"
+            subject = "fallback stored detections"
         cal = fit(scores, target)
         if cal is None:
             continue
         rows.append({
             "model_name": model_name,
             "scope": "global",
-            "subject": "all stored detections",
+            "subject": subject,
             "statistic": cal.statistic,
             "target_far": cal.target_far,
             "threshold": cal.threshold,
@@ -165,7 +265,7 @@ def run(client: Client, settings: Settings, *, days: int = 30) -> list[dict]:
             "sample_count": cal.sample_count,
             "validation_count": cal.validation_count,
             "observed_far": cal.observed_far,
-            "reference_source": "stored anomaly scores (tail only), not all scored windows",
+            "reference_source": source,
             "model_version": __version__,
         })
     if not rows:
@@ -188,4 +288,4 @@ def run(client: Client, settings: Settings, *, days: int = 30) -> list[dict]:
 
 
 __all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold",
-           "eligibility", "eligibility_from_rows", "fit", "run"]
+           "eligibility", "eligibility_from_rows", "fit", "record_population", "run"]

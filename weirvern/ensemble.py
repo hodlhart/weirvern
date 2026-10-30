@@ -339,12 +339,18 @@ def detect_flows(
     cfg: ModelConfig,
     near_misses: list[dict[str, Any]] | None = None,
     eligible: dict[str, bool] | None = None,
+    score_population: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
     Each verdict carries per-model scores, agreement, adaptive threshold used,
     explainability fields, and a severity — everything the alerting layer and
     ClickHouse row need.
+
+    SCORE POPULATION (PRD-2). When `score_population` is provided, EVERY scored host-window's
+    raw per-model scores are appended before the threshold/agreement gate. This is the
+    denominator for calibration; without it, calibration can only see the alert tail. The list is
+    a caller-owned sink, so the ensemble stays a pure function of its inputs.
 
     NEAR MISSES (soc-2). The two `continue` paths below used to throw their scores away, so
     "what almost alerted" was unanswerable -- the audit's note that the data "exists, it just
@@ -394,6 +400,15 @@ def detect_flows(
         scores: dict[str, float] = {}
         for det in detectors:
             scores[det.name] = det.predict(flow, features)
+
+        # PRD-2: keep the RAW score for every scored window, before the threshold or the
+        # agreement gate. Calibration needs the population, not the alert tail.
+        if score_population is not None and flow.get("window_start") is not None:
+            score_population.append({
+                "window_start": flow["window_start"],
+                "src_addr": src,
+                "scores": dict(scores),
+            })
 
         has_baseline = bool(baseline_det and src in baseline_det.baselines)
         # Weights are applied only in "mean" fusion mode (see fuse_scores).

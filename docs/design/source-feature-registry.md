@@ -32,6 +32,7 @@ host_identity | join-only
 host_roles | feature-planned
 host_watches | excluded
 ml_calibration | output
+ml_window_scores | output
 ml_calibration_history | output
 ml_candidate_scores | output
 ml_changepoints | output

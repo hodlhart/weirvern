@@ -220,13 +220,13 @@ def test_detection_sweep_returns_exact_verdicts(monkeypatch):
     """v20 regression: alerts must come from THIS sweep's verdicts (once),
     not a re-query that re-alerted old rows every cycle."""
     _install_db_stubs(monkeypatch, existing_anomalies=[])
-    fake_ch, inserted_rows = _capturing_client()
+    fake_ch, _inserted_rows = _capturing_client()
     detectors = [StubDetector(0.9), StubDetector(0.88)]  # both fire → verdict
 
     verdicts = detection_sweep(fake_ch, detectors, Settings(), ModelConfig())
 
     assert len(verdicts) == 1
-    assert len(inserted_rows) == 1
+    assert len(fake_ch.by_table.get("weirvern.netflow_anomalies", [])) == 1
     assert verdicts[0]["src_addr"] == "198.51.100.10"
     assert verdicts[0]["anomaly_score"] > 0.8
 
@@ -238,12 +238,12 @@ def test_sweep_skips_already_recorded_windows(monkeypatch):
         monkeypatch,
         existing_anomalies=[(datetime(2026, 9, 14, 10, 30), "198.51.100.10")],
     )
-    fake_ch, inserted_rows = _capturing_client()
+    fake_ch, _inserted_rows = _capturing_client()
     detectors = [StubDetector(0.9), StubDetector(0.88)]
 
     verdicts = detection_sweep(fake_ch, detectors, Settings(), ModelConfig())
 
-    assert inserted_rows == [], "duplicate anomaly row was re-inserted"
+    assert not fake_ch.by_table.get("weirvern.netflow_anomalies"), "duplicate anomaly row was re-inserted"
     assert verdicts == [], "already-recorded window must not be re-returned for alerting"
 
 
@@ -277,7 +277,9 @@ def test_an_ALL_SKIPPED_sweep_records_coverage_too(monkeypatch, tmp_path):
     assert detection_sweep(fake_ch2, detectors, settings, ModelConfig()) == [], (
         "an all-skipped sweep must still return [] so the alert pass does not re-push"
     )
-    assert inserted2 == [], "nothing new was inserted, so nothing should have been"
+    assert not fake_ch2.by_table.get("weirvern.netflow_anomalies"), (
+        "nothing new was inserted, so nothing should have been"
+    )
     moved = _load_detect_cursor(settings)
     assert moved is not None and moved >= utcnow() - timedelta(seconds=10), (
         f"an all-skipped sweep did not record coverage (cursor={moved}); it stays pinned at "

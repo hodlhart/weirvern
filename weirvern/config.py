@@ -151,6 +151,7 @@ class Settings:
     episode_page_min_severity: str = field(
         default_factory=lambda: os.environ.get("EPISODE_PAGE_MIN_SEVERITY", "high")
     )
+    ml_calibration_days: int = field(default_factory=lambda: _env_int("ML_CALIBRATION_DAYS", 7))
 
 
     # Data input (goflow2 JSONL sink)
@@ -398,6 +399,10 @@ class Settings:
             raise ValueError(
                 "EPISODE_PAGE_MIN_SEVERITY must be low, medium, high or critical, got "
                 f"{self.episode_page_min_severity!r}"
+            )
+        if self.ml_calibration_days < 1:
+            raise ValueError(
+                f"ML_CALIBRATION_DAYS must be >= 1, got {self.ml_calibration_days}"
             )
         if self.detect_interval_s < 10:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")

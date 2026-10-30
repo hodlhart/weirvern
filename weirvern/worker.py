@@ -23,7 +23,7 @@ from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import addressing, attack, db, ensemble, episodes, networks
+from weirvern import __version__, addressing, attack, db, ensemble, episodes, networks
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
@@ -1924,8 +1924,9 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # A failed eligibility read must not stop detection. It DOES mean the gate did not
             # run this sweep; say so rather than silently behaving as if it passed.
             logger.warning("ML eligibility read failed (detection continues, gate skipped): %s", exc)
+    score_population: list[dict] = []
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses,
-                                      eligible=eligible)
+                                      eligible=eligible, score_population=score_population)
     if near_misses:
         # BEST-EFFORT, and deliberately so: a failure to record near misses must not cost a
         # real alert. They are a tuning aid, not the product.
@@ -1946,6 +1947,17 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             logger.info("Recorded %d near miss(es)", len(near_misses))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not record near misses (continuing): %s", exc)
+    if score_population:
+        # PRD-2: the population is every scored host-window BEFORE the threshold. A write
+        # failure must not stop detection; the calibration pass will name its fallback.
+        try:
+            from weirvern.models import calibration as _cal_pop  # noqa: PLC0415
+
+            recorded = _cal_pop.record_population(
+                client, score_population, model_version=__version__)
+            logger.info("ML score population: %d raw score(s) recorded", recorded)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not record score population (calibration falls back): %s", exc)
     if not verdicts:
         # The aggregates WERE read and scored here; there was simply nothing above threshold, so
         # coverage is real and must be recorded -- otherwise a quiet network would look like the

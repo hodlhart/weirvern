@@ -815,7 +815,7 @@ def _build_handler(ctx: GuiContext):
             """Shadow calibration readout; a failed read is a 200 with available:false."""
             try:
                 with self._with_client() as client:
-                    data = status_mod.calibration_overview(client)
+                    data = status_mod.calibration_overview(client, ctx.settings)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}", "rows": []})

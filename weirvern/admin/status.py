@@ -3202,12 +3202,13 @@ def pipeline_audit(client, *, now=None) -> dict:
             "findings": findings, "counts": counts, "errors": errors}
 
 
-def calibration_overview(client) -> dict:
+def calibration_overview(client, settings=None) -> dict:
     """The latest shadow calibration per model, with its budget and age.
 
     A failed read is a state: `available:false` and the reason, like every other panel. A model
     with no row is listed as `missing`, never silently omitted -- "not calibrated yet" is a fact
-    the operator needs before trusting a threshold.
+    the operator needs before trusting a threshold. `eligibility` spells out the same decision
+    the ensemble gate reads, rather than making the operator infer it from two percentages.
     """
     try:
         res = client.query(
@@ -3229,6 +3230,24 @@ def calibration_overview(client) -> dict:
         row["computed_at"] = (computed.isoformat() if hasattr(computed, "isoformat")
                               else str(computed or ""))
         rows.append(row)
+    try:
+        from weirvern.models.calibration import eligibility_from_rows  # noqa: PLC0415
+
+        multiple = float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0)
+        eligible = eligibility_from_rows(
+            [(row["model_name"], row["observed_far"], row["target_far"]) for row in rows],
+            float(getattr(settings, "ml_target_far", 0.01) or 0.01), multiple,
+        )
+        for row in rows:
+            decision = eligible.get(row["model_name"])
+            row["eligible"] = decision
+            row["eligibility"] = ("eligible" if decision else
+                                  "quarantined" if decision is False else "unknown")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibration eligibility words unavailable: %s", exc)
+        for row in rows:
+            row["eligible"] = None
+            row["eligibility"] = "unknown"
     return {"available": True, "reason": "", "rows": rows}
 
 

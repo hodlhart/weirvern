@@ -5178,9 +5178,11 @@ function renderCalibration(data) {
       text: "Nothing calibrated yet — the detector scores are still uncalibrated." })]));
     return;
   }
-  const within = rows.filter((r) => r.verdict === "within budget").map((r) => r.model_name);
-  note.textContent = "Shadow calibration: the target is a requested false-alarm fraction of " +
-    "the stored detection tail; it is not controlling alerts yet." +
+  const within = rows.filter((r) => r.verdict === "within budget" || r.verdict === "eligible")
+    .map((r) => r.model_name);
+  note.textContent = "Shadow calibration: the target is a requested false-alarm fraction " +
+    "of every scored host-window when the population is available, or the named fallback " +
+    "tail; it is not controlling alerts yet." +
     (within.length ? " Within budget: " + within.join(", ") + "." : "");
   for (const r of rows) {
     const pct = (v) => Number.isFinite(Number(v)) ? (Number(v) * 100).toFixed(2) + "%" : "—";
