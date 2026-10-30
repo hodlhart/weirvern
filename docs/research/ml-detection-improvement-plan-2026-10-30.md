@@ -184,7 +184,7 @@ subdomains, record type and response behavior — are the discriminative signal;
 thresholds are weak. [S10]
 
 JA4 is a TLS ClientHello fingerprint designed to identify client software even when the payload is
-encrypted; the JA4+ suite extends fingerprinting across protocols. [S11] A new JA4 on an internal
+encrypted; the broader JA4 fingerprinting work extends the idea across protocols. [S11] A new JA4 on an internal
 host, or a JA4 that is rare across the fleet, is a high-precision novelty event. The limitation is
 coverage: 17 fingerprints/day cannot support a fleet-wide model.
 
@@ -331,8 +331,8 @@ constant zero.
 - JA4 ↔ SNI/server-name consistency and **JA4-to-service** baseline;
 - JA4 with missing/invalid SNI, certificate failure, or a downgrade in TLS version/cipher;
 - JA4 change on a host that normally uses a stable client;
-- **JA4+ extensions** only after the base JA4 coverage is real; do not infer JA4H/JA4X from data
-  that is not collected.
+- **extended fingerprint variants** only after the base JA4 coverage is real; do not infer
+  fingerprint types from data that is not collected.
 
 JA4 is an identity signal, not a verdict: a new browser build is normal; a new JA4 on a server
 that should never initiate TLS is not.
@@ -437,8 +437,8 @@ the first production bet. [S4][S7][S9]
 
 **Deliverables**
 
-- `docs/design/source-feature-registry.md` (or YAML) mapping every harvested table/field to
-  used / planned / join-only / excluded, with owner and presence rule.
+- a source-feature registry (committed as part of this program) mapping every harvested
+  table/field to used / planned / join-only / excluded, with owner and presence rule.
 - Live coverage report per source and per monitored host; sensor/config fixes for DNS, JA4, SSH,
   SMB/Kerberos/NTLM/DCE-RPC, software/known-services.
 - Expanded seeded corpus (at least 10 scenarios) and a baseline report from `eval_detection.py`.
@@ -562,7 +562,7 @@ A model that raises recall by flooding the queue fails the program.
   Augmented Negative Pairs*, arXiv:2509.06550. https://arxiv.org/abs/2509.06550
 - **[S10]** Amirov et al., *DNS Tunneling: Threat Landscape and Improved Detection Solutions*,
   arXiv:2507.10267. https://arxiv.org/abs/2507.10267
-- **[S11]** FoxIO, *JA4+ network fingerprinting standards*.
+- **[S11]** FoxIO, *JA4 network fingerprinting standards*.
   https://github.com/FoxIO-LLC/ja4
 - **[S12]** *MAAC: Novel Alert Correlation Method*, arXiv:2011.07793.
   https://arxiv.org/abs/2011.07793
