@@ -63,11 +63,11 @@ The busiest hosts:
 
 | host | rows/24h | critical | medium | average score | ≤1 family |
 |---|---:|---:|---:|---:|---:|
-| 192.168.3.58 | 288 | 208 | 72 | 0.99 | 106 |
-| 192.168.2.1 | 287 | 222 | 65 | 0.99 | 65 |
-| 192.168.2.153 | 283 | 10 | 273 | 0.99 | 273 |
-| 192.168.3.1 | 281 | 53 | 186 | 0.90 | 229 |
-| 192.168.3.123 | 228 | 5 | 40 | 0.51 | 217 |
+| 198.51.100.58 | 288 | 208 | 72 | 0.99 | 106 |
+| 203.0.113.1 | 287 | 222 | 65 | 0.99 | 65 |
+| 203.0.113.153 | 283 | 10 | 273 | 0.99 | 273 |
+| 198.51.100.1 | 281 | 53 | 186 | 0.90 | 229 |
+| 198.51.100.123 | 228 | 5 | 40 | 0.51 | 217 |
 
 A host with 288 rows has a detection in **every 5-minute bucket of the day**. The operator experiences that as a continuous false alarm; the data model experiences it as 288 independent findings. It is one episode.
 
