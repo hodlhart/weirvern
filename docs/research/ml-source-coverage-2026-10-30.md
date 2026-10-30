@@ -3,7 +3,7 @@
 **Purpose:** the evidence for FND-2. What each harvested source actually delivered in the last
 24 hours, which model sees it, and which sources cannot support a model yet.
 
-**Method:** `scripts/audit_ml_coverage.py --live --host weirvern.home` plus live ClickHouse
+**Method:** `scripts/audit_ml_coverage.py --live --host sensor.example` plus live ClickHouse
 counts. Window: last 24 hours ending 2026-10-30 14:34 UTC. No production change.
 
 ---
@@ -88,7 +88,7 @@ the window. A model trained on these would learn a constant, not behaviour.
 
 ```bash
 cd /home/admin/repos/wv-wlfix
-env -u PYTHONPATH python3 scripts/audit_ml_coverage.py --live --host weirvern.home
+env -u PYTHONPATH python3 scripts/audit_ml_coverage.py --live --host sensor.example
 ```
 
 The per-source query counts are in the 2026-10-30 live read; the schema and source inventory are

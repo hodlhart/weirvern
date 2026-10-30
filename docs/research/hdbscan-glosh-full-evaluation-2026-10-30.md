@@ -121,7 +121,7 @@ worse. The shadow challenger now matches DBSCAN exactly.
 
 ### 4.2 What is collected but not in a feature vector
 
-`scripts/audit_ml_coverage.py --live --host weirvern.home` reports:
+`scripts/audit_ml_coverage.py --live --host sensor.example` reports:
 
 - **5,507,057 of 10,985,135 rows (50.1%)** are read by a feature module.
 - The shortfall is mostly correct by design: raw `flows` (1.6M rows) are fed forward by
