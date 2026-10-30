@@ -1911,7 +1911,21 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             _save_detect_cursor(settings, _new_cursor)
             return []
 
-    verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses)
+    eligible = None
+    if getattr(settings, "ml_eligibility", False):
+        try:
+            from weirvern.models import calibration as _cal  # noqa: PLC0415
+            eligible = _cal.eligibility(client, settings)
+            ineligible = sorted(name for name, ok in eligible.items() if not ok)
+            if ineligible:
+                logger.warning("ML eligibility: %s barred from fused score: %s",
+                               len(ineligible), ", ".join(ineligible))
+        except Exception as exc:  # noqa: BLE001
+            # A failed eligibility read must not stop detection. It DOES mean the gate did not
+            # run this sweep; say so rather than silently behaving as if it passed.
+            logger.warning("ML eligibility read failed (detection continues, gate skipped): %s", exc)
+    verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses,
+                                      eligible=eligible)
     if near_misses:
         # BEST-EFFORT, and deliberately so: a failure to record near misses must not cost a
         # real alert. They are a tuning aid, not the product.

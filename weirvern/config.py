@@ -136,6 +136,15 @@ class Settings:
     # The calibration target is a false-alarm fraction for the alert tail, not an accuracy claim.
     ml_shadow: bool = field(default_factory=lambda: _env_bool("ML_SHADOW", True))
     ml_target_far: float = field(default_factory=lambda: _env_float("ML_TARGET_FAR", 0.01))
+    # Eligibility gate: a detector whose measured FAR exceeds target * multiple cannot set the
+    # fused score. ON by default because the operator asked for the production decision layer;
+    # ML_ELIGIBILITY=false is the kill switch. A missing/empty calibration leaves every model
+    # eligible (the gate cannot invent a quarantine from no evidence).
+    ml_eligibility: bool = field(default_factory=lambda: _env_bool("ML_ELIGIBILITY", True))
+    ml_eligibility_multiple: float = field(
+        default_factory=lambda: _env_float("ML_ELIGIBILITY_MULTIPLE", 3.0)
+    )
+
 
     # Data input (goflow2 JSONL sink)
     tail_file: str = field(default_factory=lambda: os.environ.get("TAIL_FILE", "/data/flows.jsonl"))
@@ -366,6 +375,10 @@ class Settings:
             raise ValueError(f"MIN_AGREEMENT must be in (0, 1], got {self.min_agreement}")
         if not 0.0 < self.strong_signal <= 1.0:
             raise ValueError(f"STRONG_SIGNAL must be in (0, 1], got {self.strong_signal}")
+        if self.ml_eligibility_multiple <= 0:
+            raise ValueError(
+                f"ML_ELIGIBILITY_MULTIPLE must be > 0, got {self.ml_eligibility_multiple}"
+            )
         if self.detect_interval_s < 10:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")
         if self.retrain_every_h < 1:

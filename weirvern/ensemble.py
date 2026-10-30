@@ -111,6 +111,20 @@ def fuse_scores(scores: dict[str, float], weights: dict[str, float] | None = Non
     return float(min(MAX_FUSED_SCORE, max(scores.values())))
 
 
+def contributing_scores(scores: dict[str, float],
+                        eligible: dict[str, bool] | None = None) -> dict[str, float]:
+    """Scores that may set the fused result.
+
+    An ineligible model still contributes its raw score to the evidence record, but a zero here
+    keeps it from winning `max` fusion or counting toward the agreement gate. Missing eligibility
+    information means eligible: the gate is an explicit operator rail, not a second failure mode.
+    """
+    if not eligible:
+        return dict(scores)
+    return {name: (score if eligible.get(name, True) else 0.0)
+            for name, score in scores.items()}
+
+
 def detection_confidence_factor(flow: dict, cfg) -> float:
     """Damp scores computed from statistically thin windows.
 
@@ -324,6 +338,7 @@ def detect_flows(
     settings: Settings,
     cfg: ModelConfig,
     near_misses: list[dict[str, Any]] | None = None,
+    eligible: dict[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
@@ -387,7 +402,7 @@ def detect_flows(
             weights["adaptive_baseline"] = cfg.weight_baseline if has_baseline else cfg.weight_baseline_missing
 
         final_score = fuse_scores(
-            dict(scores),
+            contributing_scores(scores, eligible),
             {n: _weight_of(n, weights) for n in scores},
             mode=cfg.fusion_mode,
         )
@@ -396,30 +411,41 @@ def detect_flows(
         final_score = round(final_score * detection_confidence_factor(flow, cfg), 4)
 
         threshold = adaptive_threshold_for(flow, settings.base_threshold)
+        bar = strong_signal_threshold(settings)
+        # A direct structural signature can corroborate a lone specialist. It is evaluated from
+        # the RAW scores: an ineligible model may still be the one that saw the scan, and the
+        # signature is the reason the exception exists. If the contribution gate pushed the
+        # fused score below the bar, the signature restores the raw strongest signal.
+        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
+                                            strong_signal=bar)
         if final_score < threshold:
-            # NEAR MISS (band): scored close to the bar but under it. The band floor is
-            # threshold * near_miss_band -- measured against the threshold this host faced,
-            # not the global default, so a host with a raised adaptive bar does not flood
-            # the table with its ordinary traffic.
-            if near_misses is not None and final_score >= threshold * cfg.near_miss_band:
-                near_misses.append({
-                    "window_start": flow["window_start"],
-                    "window_end": flow.get("window_end"),
-                    "src_addr": src,
-                    "anomaly_score": round(final_score, 4),
-                    "threshold_used": round(threshold, 4),
-                    "reason": "below-threshold",
-                    "model_agreement": round(
-                        len([n for n, s in scores.items() if s > DETECTED_BY_SCORE])
-                        / max(1, len(detectors)), 4),
-                    "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
-                    "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
-                    "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
-                    "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
-                    "detected_by_models": ",".join(
-                        n for n, s in scores.items() if s > DETECTED_BY_SCORE),
-                })
-            continue
+            if signature:
+                final_score = round(max(final_score, max(scores.values())), 4)
+            else:
+                # NEAR MISS (band): scored close to the bar but under it. The band floor is
+                # threshold * near_miss_band -- measured against the threshold this host faced,
+                # not the global default, so a host with a raised adaptive bar does not flood
+                # the table with its ordinary traffic.
+                if near_misses is not None and final_score >= threshold * cfg.near_miss_band:
+                    near_misses.append({
+                        "window_start": flow["window_start"],
+                        "window_end": flow.get("window_end"),
+                        "src_addr": src,
+                        "anomaly_score": round(final_score, 4),
+                        "threshold_used": round(threshold, 4),
+                        "reason": "below-threshold",
+                        "model_agreement": round(
+                            len([n for n, s in contributing_scores(scores, eligible).items()
+                                 if s > DETECTED_BY_SCORE])
+                            / max(1, len(detectors)), 4),
+                        "isolation_forest_score": round(scores.get("Isolation Forest", 0.0), 4),
+                        "gradient_boosting_score": round(scores.get("Gradient Boosting", 0.0), 4),
+                        "dbscan_score": round(scores.get("DBSCAN", 0.0), 4),
+                        "baseline_score": round(scores.get("Adaptive Baseline", 0.0), 4),
+                        "detected_by_models": ", ".join(
+                            n for n, s in scores.items() if s > DETECTED_BY_SCORE),
+                    })
+                continue
 
         detected_by = [n for n, s in scores.items() if s > DETECTED_BY_SCORE]
         # ── A MISSING DETECTOR MUST NOT LOOSEN THE GATE (audit F043) ─────────────────────────────
@@ -444,7 +470,8 @@ def detect_flows(
         # expects, and a detector that did not train is a detector that did not agree. `max(1, ...)`
         # keeps the ratio defined when the list is empty for any reason.
         active = max(1, len(detectors))
-        agreement = len(detected_by) / active
+        agreement = len([n for n, s in contributing_scores(scores, eligible).items()
+                         if s > DETECTED_BY_SCORE]) / active
 
         # ── THE GATE MUST BIND AT EVERY TIER (review round 2026-10-15) ───────────────────────
         #
@@ -478,14 +505,12 @@ def detect_flows(
         # Settings.strong_signal), which the GUI and ConfigMap advertise as editable --
         # reading the constant here meant an operator's edit validated and then changed
         # nothing.
-        bar = strong_signal_threshold(settings)
-        strong_models = sum(1 for s in scores.values() if s >= bar)
-        strong_families = strong_model_families(scores, bar)
-        # Or a lone specialist backed by a direct structural signature.
-        signature = signature_corroboration(flow, scores, flow.get("_diversity"), cfg,
-                                            strong_signal=bar)
+        strong_scores = contributing_scores(scores, eligible)
+        strong_models = sum(1 for s in strong_scores.values() if s >= bar)
+        strong_families = strong_model_families(strong_scores, bar)
+        # `signature` was computed before the threshold above; it uses the RAW scores on purpose.
 
-        if agreement < min_agreement or (agreement <= solo and not signature):
+        if not signature and (agreement < min_agreement or agreement <= solo):
             # NEAR MISS (agreement gate): cleared the score bar and was dropped anyway
             # because too few detectors agreed. A lone-specialist window that never got
             # corroboration is precisely what a tuning loop needs to see -- it is the

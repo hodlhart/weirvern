@@ -100,6 +100,37 @@ def fit(reference: Iterable[float], target_far: float) -> Calibration | None:
     )
 
 
+def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str, bool]:
+    """Map the latest calibration rows to an eligibility decision per model.
+
+    A model is eligible when its measured false-alarm rate is within `target_far * multiple`.
+    Missing/non-finite calibration is NOT a reason to quarantine every detector: it leaves the
+    model eligible, because the gate is an operator-enabled safety rail, not a second failure mode.
+    """
+    out: dict[str, bool] = {}
+    for model, observed, target in rows:
+        try:
+            obs = float(observed)
+            tgt = float(target if target is not None else target_far)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(obs) or not math.isfinite(tgt) or tgt <= 0:
+            continue
+        out[str(model)] = bool(obs <= tgt * float(multiple))
+    return out
+
+
+def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
+    """Read the latest calibration rows and return model name -> eligible."""
+    res = client.query(
+        "SELECT model_name, observed_far, target_far FROM weirvern.ml_calibration FINAL "
+        "WHERE computed_at = (SELECT max(computed_at) FROM weirvern.ml_calibration)"
+    )
+    return eligibility_from_rows(res.result_rows,
+                                 float(getattr(settings, "ml_target_far", 0.01) or 0.01),
+                                 float(getattr(settings, "ml_eligibility_multiple", 3.0) or 3.0))
+
+
 def _score_rows(client: Client, column: str, days: int = 30) -> list[float]:
     # The score name is one of the literal MODEL_COLUMNS values, never user input.
     if column not in {c for _, c in MODEL_COLUMNS}:
@@ -156,4 +187,5 @@ def run(client: Client, settings: Settings, *, days: int = 30) -> list[dict]:
     return rows
 
 
-__all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold", "fit", "run"]
+__all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold",
+           "eligibility", "eligibility_from_rows", "fit", "run"]
