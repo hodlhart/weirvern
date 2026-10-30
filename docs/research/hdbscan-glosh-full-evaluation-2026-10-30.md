@@ -3,7 +3,7 @@
 **Date:** 2026-10-30
 **Status:** shadow analysis and shadow-candidate code only. No production alert path, model
 artifact, UI or schema was changed. The live build remains 0.23.14; the candidate code is on
-`feat/sluice-rule-sheet` at `e45216f` plus the commits below.
+`feat/sluice-rule-sheet` at `8858ffd`.
 **Question:** replace DBSCAN with HDBSCAN/GLOSH, and are the ML models using all collected DNS
 and traffic?
 
