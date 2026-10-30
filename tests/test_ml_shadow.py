@@ -104,3 +104,47 @@ def test_candidate_matrix_collapses_aggregate_fragments_before_clustering():
     assert "GROUP BY window_start, src_addr" in sql
     assert "sum(total_bytes)" in sql
     assert "ORDER BY sipHash64" in sql and "LIMIT 5000" in sql
+
+
+def test_candidate_matrix_carries_the_production_zeek_and_dns_tail():
+    # The challenger used to select only the eight NetFlow columns. The production DBSCAN
+    # vector also carries the Zeek tail, including the DNS triple; a challenger without it is
+    # a different model wearing the same name.
+    from weirvern.features import DBSCAN_FEATURES
+    from weirvern.models.candidates import matrix_sql
+    from weirvern.zeek_features import ZEEK_DBSCAN_FEATURES
+
+    assert len(DBSCAN_FEATURES) == 19
+    sql = matrix_sql(5000)
+    assert "zeek_w" in sql
+    for column in ZEEK_DBSCAN_FEATURES:
+        assert f"z.{column}" in sql, column
+    assert "z.zeek_dns_count" in sql
+    assert "z.zeek_dns_mean_query_entropy" in sql
+
+
+def test_candidate_matrix_applies_the_monitored_scope_predicate():
+    from weirvern.models.candidates import matrix_sql
+
+    predicate = "AND (isIPAddressInRange(a.src_addr, '203.0.113.0/24'))"
+    sql = matrix_sql(5000, scope_filter=predicate)
+    assert predicate in sql
+    assert "isIPAddressInRange" in sql
+
+
+def test_candidate_refuses_to_rank_when_no_scope_is_monitored():
+    from types import SimpleNamespace
+
+    from weirvern.models.candidates import run
+
+    class Stub:
+        def query(self, sql):
+            # The only query run() makes before refusing is load_scopes().
+            assert "network_scopes" in sql
+            return SimpleNamespace(result_rows=[
+                ("scope-1", "203.0.113.0/24", "internal", 0, "observe", "", "operator"),
+            ])
+
+    result = run(Stub())
+    assert result["available"] is False
+    assert "no monitored scope" in result["reason"]

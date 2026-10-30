@@ -1,10 +1,22 @@
 """Shadow candidate detectors: score, record, never alert.
 
-The first candidate is HDBSCAN on the same 8-feature matrix DBSCAN uses. It is NOT a production
+The first candidate is HDBSCAN on the same feature vector DBSCAN uses. It is NOT a production
 model: it writes `ml_candidate_scores` and returns a report. A candidate must beat the live model
 at the same alerts/day on the seeded-attack harness before replacing it (see the ML-05 card).
+
+THE FEATURE VECTOR IS THE PRODUCTION DBSCAN VECTOR, INCLUDING ZEEK AND DNS. The first version
+selected only the eight NetFlow columns; that made the challenger a different model wearing the
+same name. It is now `DBSCAN_FEATURES`: eight flow aggregates plus the eleven Zeek columns,
+including the DNS triple. The vector order comes from `features.py`, not from a second list here.
+
+THE MATRIX IS SCOPE-FILTERED. `flows_aggregated.src_addr` includes internet peers; only monitored
+scopes are alertable. The first live sample had 4,565/5,000 external rows and its top GLOSH results
+were external addresses -- a ranking of peers, not of hosts. `run()` therefore applies the same
+`networks.training_filter_sql()` used by the production detectors.
 """
 from __future__ import annotations
+
+from datetime import timedelta
 
 import numpy as np
 from clickhouse_connect.driver.client import Client
@@ -12,36 +24,59 @@ from sklearn.cluster import HDBSCAN
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
-from weirvern import __version__
+from weirvern import __version__, networks
 from weirvern.clock import utcnow
+from weirvern.features import DBSCAN_FEATURES
+from weirvern.zeek_features import (
+    ZEEK_DBSCAN_FEATURES,
+    ZEEK_JOIN_ON,
+    zeek_join_cte,
+)
 
-# The same 8-feature projection as DBSCANDetector (weirvern/features.py: DBSCAN_FEATURES), minus
-# the Zeek tail for this first challenger. Keeping the projection explicit means a feature-list
-# change is a deliberate edit here, not a silent reinterpretation.
-FEATURES_SQL = (
-    "log(a.total_bytes + 1), log(a.total_packets + 1), log(a.unique_dst_ips + 1), "
-    "log(a.flow_count + 1), log(coalesce(d.unique_dst_ports, 0) + 1), "
-    "coalesce(d.port_entropy, 0), coalesce(t.activity_regularity, 1.0), "
-    "coalesce(t.burstiness, 1.0)"
+# The eight NetFlow expressions, named by their DBSCAN_FEATURES column. Keeping the mapping
+# keyed by the feature name makes a missing column a startup assertion rather than a silent
+# positional shift.
+_BASE_SQL = {
+    "log_bytes": "log(a.total_bytes + 1)",
+    "log_packets": "log(a.total_packets + 1)",
+    "log_unique_dsts": "log(a.unique_dst_ips + 1)",
+    "log_flow_count": "log(a.flow_count + 1)",
+    "log_unique_dst_ports": "log(coalesce(d.unique_dst_ports, 0) + 1)",
+    "port_entropy": "coalesce(d.port_entropy, 0)",
+    "activity_regularity": "coalesce(t.activity_regularity, 1.0)",
+    "burstiness": "coalesce(t.burstiness, 1.0)",
+}
+assert set(DBSCAN_FEATURES[:8]) == set(_BASE_SQL), (
+    "DBSCAN_FEATURES base shape changed; update _BASE_SQL and the training query together"
 )
 
 
-def matrix_sql(limit: int) -> str:
-    # THE AGGREGATE TABLES ARE FRAGMENTED BY INSERT BLOCK, NOT ONE ROW PER HOST-WINDOW. The first
-    # candidate query joined them directly and returned 5,000 rows but only 327 unique
-    # (window_start, src_addr) keys: HDBSCAN was clustering duplicate copies of the same window,
-    # so its "clusters" and its A/B against DBSCAN measured duplication rather than behaviour.
+def matrix_sql(limit: int, *, scope_filter: str = "", start: str | None = None,
+                end: str | None = None) -> str:
+    """The 5,000-row candidate matrix, in the production DBSCAN feature order.
+
+    `scope_filter` must be a predicate beginning with AND, as returned by
+    `networks.training_filter_sql`; empty means legacy/no declarations. `start`/`end` bound the
+    Zeek summary CTE; the flow side uses the same window.
+    """
+    if end is None:
+        end = utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    if start is None:
+        start = (utcnow() - timedelta(hours=72)).strftime("%Y-%m-%d %H:%M:%S")
+    selects = [_BASE_SQL[name] for name in DBSCAN_FEATURES[:8]]
+    selects += [f"z.{name}" for name in ZEEK_DBSCAN_FEATURES]
+    # The aggregate side tables are fragmented by insert block, not one row per host-window.
     # Collapse each side table before joining; additive columns sum, estimates take the largest
-    # available block. This mirrors the production sweep's `_collapse_partial_aggregates`, but
-    # stays in SQL because this is a bounded shadow sample.
+    # available block. This mirrors the production sweep's `_collapse_partial_aggregates`.
     return (
-        "SELECT a.window_start, a.src_addr, " + FEATURES_SQL + " "
+        "WITH " + zeek_join_cte(start, end) + " "
+        "SELECT a.window_start, a.src_addr, " + ", ".join(selects) + " "
         "FROM ("
         "  SELECT window_start, src_addr, sum(total_bytes) AS total_bytes, "
         "         sum(total_packets) AS total_packets, sum(unique_dst_ips) AS unique_dst_ips, "
         "         sum(flow_count) AS flow_count "
         "  FROM weirvern.flows_aggregated "
-        "  WHERE window_start >= now() - INTERVAL 72 HOUR "
+        "  WHERE window_start >= '" + start + "' AND window_start <= '" + end + "' "
         "  GROUP BY window_start, src_addr"
         ") a "
         "LEFT JOIN ("
@@ -56,7 +91,8 @@ def matrix_sql(limit: int) -> str:
         "  FROM weirvern.flows_aggregated_temporal "
         "  GROUP BY window_start, src_addr"
         ") t ON a.window_start = t.window_start AND a.src_addr = t.src_addr "
-        "WHERE a.total_bytes > 0 "
+        + ZEEK_JOIN_ON + " "
+        "WHERE a.total_bytes > 0 " + scope_filter + " "
         "ORDER BY sipHash64(a.src_addr, a.window_start) LIMIT " + str(int(limit))
     )
 
@@ -88,7 +124,12 @@ def _scores(Xs: np.ndarray, centers: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 
 def run(client: Client, *, limit: int = 5000, min_cluster_size: int = 40) -> dict:
-    rows = client.query(matrix_sql(limit)).result_rows
+    scopes = networks.load_scopes(client)
+    if scopes and not any(networks.is_monitored(s) for s in scopes):
+        return {"available": False, "reason": "no monitored scope; candidate cannot rank peers",
+                "rows": 0, "clusters": 0}
+    scope_filter = networks.training_filter_sql(scopes)
+    rows = client.query(matrix_sql(limit, scope_filter=scope_filter)).result_rows
     if len(rows) < 100:
         return {"available": False, "reason": f"only {len(rows)} candidate rows; need 100",
                 "rows": 0, "clusters": 0}
@@ -131,7 +172,9 @@ def run(client: Client, *, limit: int = 5000, min_cluster_size: int = 40) -> dic
         "score_p50": float(np.percentile(score, 50)),
         "score_p99": float(np.percentile(score, 99)),
         "model_version": __version__,
+        "feature_columns": len(DBSCAN_FEATURES),
+        "scope_filtered": bool(scope_filter),
     }
 
 
-__all__ = ["FEATURES_SQL", "matrix_sql", "run"]
+__all__ = ["DBSCAN_FEATURES", "ZEEK_DBSCAN_FEATURES", "matrix_sql", "run"]

@@ -249,6 +249,9 @@ Sources for this assessment: [scikit-learn HDBSCAN](https://scikit-learn.org/sta
 
 A direct GLOSH run on 2026-10-30 is recorded in `docs/research/hdbscan-glosh-evaluation-2026-10-30.md`: GLOSH is undefined for 24.5% of the monitored sample, is parameter-sensitive (30/50 to 45/50 top-1% recovery across `min_cluster_size`), and on the current all-address challenger matrix its top 1% is 49/50 external or non-monitored addresses. Fix the scope filter before any HDBSCAN A/B.
 
+The follow-up full 19-feature and seeded A/B is in
+`docs/research/hdbscan-glosh-full-evaluation-2026-10-30.md`.
+
 
 
 ---
