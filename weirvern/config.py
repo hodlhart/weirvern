@@ -144,6 +144,13 @@ class Settings:
     ml_eligibility_multiple: float = field(
         default_factory=lambda: _env_float("ML_ELIGIBILITY_MULTIPLE", 3.0)
     )
+    # Episode/budget layer: consecutive windows for the same host are one incident. Only
+    # high/critical episodes may page, and only `episode_page_budget` per host per 24h.
+    episode_gap_minutes: int = field(default_factory=lambda: _env_int("EPISODE_GAP_MINUTES", 30))
+    episode_page_budget: int = field(default_factory=lambda: _env_int("EPISODE_PAGE_BUDGET", 2))
+    episode_page_min_severity: str = field(
+        default_factory=lambda: os.environ.get("EPISODE_PAGE_MIN_SEVERITY", "high")
+    )
 
 
     # Data input (goflow2 JSONL sink)
@@ -378,6 +385,19 @@ class Settings:
         if self.ml_eligibility_multiple <= 0:
             raise ValueError(
                 f"ML_ELIGIBILITY_MULTIPLE must be > 0, got {self.ml_eligibility_multiple}"
+            )
+        if self.episode_gap_minutes < 1:
+            raise ValueError(
+                f"EPISODE_GAP_MINUTES must be >= 1, got {self.episode_gap_minutes}"
+            )
+        if self.episode_page_budget < 0:
+            raise ValueError(
+                f"EPISODE_PAGE_BUDGET must be >= 0, got {self.episode_page_budget}"
+            )
+        if self.episode_page_min_severity not in ("low", "medium", "high", "critical"):
+            raise ValueError(
+                "EPISODE_PAGE_MIN_SEVERITY must be low, medium, high or critical, got "
+                f"{self.episode_page_min_severity!r}"
             )
         if self.detect_interval_s < 10:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")

@@ -424,6 +424,8 @@ def _build_handler(ctx: GuiContext):
                 return self._detectors()
             if path == "/api/anomalies":
                 return self._anomalies(query)
+            if path == "/api/episodes":
+                return self._episodes(query)
             # Who the caller is, and whether the sign-in gate is armed. Exempt above; returns
             # the CALLER'S OWN state and nothing about anyone else.
             if path == "/api/session":
@@ -691,6 +693,19 @@ def _build_handler(ctx: GuiContext):
             self._json(web_api.anomalies_payload(
                 rows, severity_counts=severity_counts, discipline=discipline,
                 watch_error=watch_err, total_unfiltered=total_unfiltered))
+
+        def _episodes(self, query: dict) -> None:
+            """One row per incident: the episode view, not the five-minute window list."""
+            limit = _int_arg(query, "limit", 100, 1, 1000)
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            try:
+                with self._with_client() as client:
+                    payload = status_mod.episodes_recent(client, hours=hours, limit=limit)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"cannot reach ClickHouse: {exc}")
+            self._json(payload)
 
         def _panic(self) -> None:
             """The no-JS fallback page (BF-14). Read-only; every section self-guards."""

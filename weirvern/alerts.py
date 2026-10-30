@@ -131,6 +131,14 @@ def push_alert(verdict: dict, settings: Settings, state: AlertState,
     src = verdict["src_addr"]
     now = time.time()
 
+    # EPISODE BUDGET: every window in a high/critical episode is recorded, but only the one
+    # pageable window of an unclaimed episode may interrupt the operator. The worker sets this
+    # private flag from episodes.claim(); a missing flag preserves the legacy path for callers
+    # that do not run the episode layer.
+    if verdict.get("_pageable") is False:
+        _audit(client, verdict, sent=False, reason="budget", message="")
+        return False, "budget"
+
     # THE QUIET-BY-DEFAULT GATE (BF-12), before every other decision: a detector that has no
     # owner and runbook does not page, and neither does one nobody registered. The finding
     # still landed in the console and this audit row still records the decision -- what is

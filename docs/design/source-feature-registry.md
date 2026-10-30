@@ -16,6 +16,7 @@ Status vocabulary:
 
 <!-- registry:begin -->
 alert_events | output
+alert_episodes | output
 alert_reviews | output
 baseline_history | feature-now
 blocklist_domains | excluded

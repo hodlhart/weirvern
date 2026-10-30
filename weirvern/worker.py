@@ -23,7 +23,7 @@ from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import addressing, attack, db, ensemble, networks
+from weirvern import addressing, attack, db, ensemble, episodes, networks
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
@@ -2491,7 +2491,26 @@ def main() -> None:
                 logger.debug("orphan sweep failed (harmless, retried next cycle): %s", exc)
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
+            episode_summary = None
+            if verdicts:
+                try:
+                    episode_summary = episodes.refresh(client, settings)
+                    logger.info("Episodes: %s built, %s pageable",
+                                episode_summary["episodes"], episode_summary["pageable"])
+                except Exception as exc:  # noqa: BLE001
+                    # The episode view is a review convenience, never a detection prerequisite.
+                    # A failed read leaves the verdict un-gated; say so rather than silently
+                    # pretending every window was pageable or that none was.
+                    logger.warning("Episode refresh failed (page budget skipped): %s", exc)
             for v in verdicts:
+                pageable = True
+                if episode_summary is not None:
+                    try:
+                        pageable = episodes.claim(client, v, settings)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Episode claim failed for %s/%s (paging): %s",
+                                       v.get("src_addr"), v.get("window_start"), exc)
+                v["_pageable"] = pageable
                 push_alert(v, settings, alert_state, client)
 
             # ── SHADOW CALIBRATION ──────────────────────────────────────────────────────────

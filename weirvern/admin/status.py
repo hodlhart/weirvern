@@ -1994,6 +1994,39 @@ def reason_code(detected_by_models: str, feature: str = "") -> str:
     return f"{det}:{feat}"
 
 
+def episodes_recent(client, *, hours: float = 24, limit: int = 100) -> dict:
+    """The operator-facing incident view: one row per episode, not one per window.
+
+    `occurrences` is how many anomaly windows the incident contains; `pageable` is the budget
+    decision, not a detection score. A failed read is an unavailable state, never an empty
+    queue.
+    """
+    try:
+        result = client.query(
+            "SELECT src_addr, episode_start, episode_end, first_detected, last_detected, "
+            "occurrences, window_count, max_score, severity, severity_rank, role, "
+            "page_window, pageable, page_reason, paged_at, updated_at "
+            "FROM weirvern.alert_episodes FINAL "
+            "WHERE episode_start >= %(since)s AND episode_start <= %(until)s "
+            "ORDER BY last_detected DESC LIMIT %(n)s",
+            parameters={**timewindow.w(hours), "n": int(limit)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("episodes_recent failed: %s", exc)
+        return {"available": False, "reason": f"the episode query failed: {type(exc).__name__}",
+                "episodes": []}
+    names = list(result.column_names)
+    rows = []
+    for row in result.result_rows:
+        item = dict(zip(names, row, strict=False))
+        for key in ("episode_start", "episode_end", "first_detected", "last_detected",
+                    "page_window", "paged_at", "updated_at"):
+            if item.get(key) is not None and hasattr(item[key], "isoformat"):
+                item[key] = item[key].isoformat()
+        rows.append(item)
+    return {"available": True, "reason": "", "episodes": rows}
+
+
 def anomalies_total_count(client, min_score: float = 0.0, *, hours: float = 24) -> int:
     """The UNFILTERED count under the same min-score -- the Y in "showing X of Y".
 
