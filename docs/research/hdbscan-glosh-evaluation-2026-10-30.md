@@ -105,6 +105,13 @@ challenger default of 40. That is a selection on a proxy label, so it cannot be 
 without the seeded-attack and benign-window evaluation. It does show that “HDBSCAN” is not a
 single model: the parameter chooses a different definition of normal.
 
+The base rate matters: **89% of the monitored sample is already in the production alert set**.
+A random 50-row cut would therefore contain about **44.5** production alerts. GLOSH at
+`min_cluster_size=20` finds **45/50**, which is indistinguishable from random; at the default
+40 it finds **32/50**, which is below random. The medoid score's **48/50** is only a mild
+enrichment over the same base rate. None of these numbers measures precision, because the
+current queue is the saturated object under review, not ground truth.
+
 ### 3.4 What GLOSH's top 1% contains
 
 On the monitored matrix, **18 of the 50** GLOSH top-1% rows are not in the current production
