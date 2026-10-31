@@ -2548,12 +2548,17 @@ def main() -> None:
                         from weirvern.models import candidates as _cand  # noqa: PLC0415
                         from weirvern.models import changepoints as _cp  # noqa: PLC0415
                         from weirvern.models import external as _ext  # noqa: PLC0415
+                        from weirvern.models import flow_specialist as _flow  # noqa: PLC0415
                         from weirvern.models import temporal as _temp  # noqa: PLC0415
 
                         cand = _cand.run(client)
                         if cand.get("rows"):
                             logger.info("ML HDBSCAN shadow: %s rows, %s clusters",
                                         cand["rows"], cand.get("clusters"))
+                        flow = _flow.run(client, minutes=60)
+                        if flow.get("rows"):
+                            logger.info("ML flow-shape shadow: %s row(s), max=%.2f",
+                                        flow["rows"], flow["score_max"])
                         temp = _temp.run(client)
                         if temp.get("rows"):
                             logger.info("ML temporal shadow: %s row(s)", temp["rows"])
