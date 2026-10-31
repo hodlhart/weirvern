@@ -2551,6 +2551,7 @@ def main() -> None:
                         from weirvern.models import external as _ext  # noqa: PLC0415
                         from weirvern.models import flow_specialist as _flow  # noqa: PLC0415
                         from weirvern.models import temporal as _temp  # noqa: PLC0415
+                        from weirvern.models import tls_specialist as _tls  # noqa: PLC0415
 
                         cand = _cand.run(client)
                         if cand.get("rows"):
@@ -2564,6 +2565,10 @@ def main() -> None:
                         if dns.get("rows"):
                             logger.info("ML DNS-shape shadow: %s row(s), max=%.2f",
                                         dns["rows"], dns["score_max"])
+                        tls = _tls.run(client, minutes=60)
+                        if tls.get("rows"):
+                            logger.info("ML TLS-shape shadow: %s row(s), max=%.2f",
+                                        tls["rows"], tls["score_max"])
                         temp = _temp.run(client)
                         if temp.get("rows"):
                             logger.info("ML temporal shadow: %s row(s)", temp["rows"])
