@@ -3640,6 +3640,60 @@ def review_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None
         return {}, "review state is unavailable (has the schema job run since this feature deployed?)", covered_since
 
 
+def adjustment_index(client, hours: int = 72) -> tuple[dict[tuple, dict], str | None]:
+    """Review adjustments keyed by (window_start, src_addr), for the review cell's provenance.
+
+    A missing adjustment table is an explicit error, not an empty provenance claim -- the same
+    rule the review index follows. The table is additive; an older deployment may not have it.
+    """
+    from weirvern.models.active_learning import is_effective  # noqa: PLC0415
+
+    try:
+        since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=max(1, int(hours)))
+        rows = client.query(
+            "SELECT adjustment_id, created_at, reviewer, scope, subject, metric, "
+            "before_value, after_value, reason, review_window_start, review_src_addr, "
+            "expiry, reverted_at, revert_reason, active "
+            "FROM weirvern.ml_review_adjustments FINAL "
+            "WHERE created_at >= %(since)s AND created_at <= %(until)s ORDER BY created_at",
+            parameters={"since": since, "until": datetime.datetime.now(datetime.UTC)},
+        ).result_rows
+        idx: dict[tuple, dict] = {}
+        for row in rows:
+            key = (_parse_stamp(row[9]), str(row[10]))
+            idx[key] = {
+                "adjustment_id": row[0], "reviewer": row[2], "scope": row[3],
+                "subject": row[4], "metric": row[5], "before_value": row[6],
+                "after_value": row[7], "reason": row[8], "expiry": row[11],
+                "reverted_at": row[12], "revert_reason": row[13], "active": row[14],
+                "effective": is_effective({"active": row[14], "expiry": row[11],
+                                           "reverted_at": row[12]}),
+            }
+        return idx, None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ml_review_adjustments unavailable: %s", exc)
+        return {}, "adjustment provenance unavailable (has the schema job run since this feature deployed?)"
+
+
+def attach_adjustments(rows: list[dict], idx: dict[tuple, dict],
+                       error: str | None) -> list[dict]:
+    """Attach the newest adjustment to each grouped anomaly row, if one exists."""
+    for row in rows:
+        row["review_adjustment"] = None
+        if error:
+            row["adjustment_error"] = error
+            continue
+        windows = row.get("windows") or []
+        stamps = [entry.get("window") for entry in windows if entry.get("window")]
+        if not stamps:
+            continue
+        when = _parse_stamp(stamps[-1])
+        entry = idx.get((when, row.get("src_addr"))) if when else None
+        if entry:
+            row["review_adjustment"] = entry
+    return rows
+
+
 def attach_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | None,
                    covered_since=None) -> list[dict]:
     """Merge review state onto anomaly dicts, in place. Returns the rows.

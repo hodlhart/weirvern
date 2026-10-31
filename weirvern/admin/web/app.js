@@ -1719,6 +1719,16 @@ function reviewCell(a) {
   const summary = anReviewSummary(a);
   const wrap = el("div", {});
   wrap.appendChild(reviewChip(state, a.reviewed_at));
+  if (a.review_adjustment) {
+    const adj = a.review_adjustment;
+    wrap.appendChild(el("span", {
+      class: "review-adjust",
+      text: `${adj.metric} ${Number(adj.before_value)} \u2192 ${Number(adj.after_value)}`,
+      attrs: {"aria-label": `${adj.scope} ${adj.subject}: ${adj.reason}`
+        + (adj.effective ? "" : " (expired or reverted)")
+        + (adj.reviewer ? ` \u00b7 ${adj.reviewer}` : "")},
+    }));
+  }
   if (summary.remaining) {
     wrap.appendChild(el("span", {
       class: "review-remain", text: summary.remaining,

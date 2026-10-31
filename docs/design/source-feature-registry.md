@@ -37,6 +37,7 @@ ml_calibration_history | output
 ml_candidate_scores | output
 ml_changepoints | output
 ml_drift | output
+ml_review_adjustments | output
 ml_models | output
 ml_temporal_scores | output
 model_actions | excluded
@@ -246,7 +247,7 @@ new-software/version novelty is planned. MACs, usernames and banners are not num
 ## 5. Outputs, state and control plane
 
 `netflow_anomalies`, `alert_events`, `alert_reviews`, `ml_models`, `ml_calibration*`,
-`ml_candidate_scores`, `ml_changepoints`, `ml_temporal_scores`, `ml_drift`, `near_misses` are **outputs**.
+`ml_candidate_scores`, `ml_changepoints`, `ml_temporal_scores`, `ml_drift`, `ml_review_adjustments`, `near_misses` are **outputs**.
 They are not input features and must never be read back into training as normal.
 
 `network_scopes` is join-only for the scope predicate. `sensor_status`/capture loss are join-only

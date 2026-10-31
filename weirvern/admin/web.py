@@ -654,6 +654,10 @@ def _build_handler(ctx: GuiContext):
                     # review window is marked unknowable rather than reading as "unreviewed".
                     # Without it, an analyst re-triages an alert that was already dispositioned.
                     status_mod.attach_group_reviews(rows, idx, rev_err, covered_since)
+                    # Provenance rides the same way: a separate small read, and a missing
+                    # adjustment table is an explicit error rather than a silent "none".
+                    adj_idx, adj_err = status_mod.adjustment_index(client)
+                    status_mod.attach_adjustments(rows, adj_idx, adj_err)
                     # THE WATCH LIST rides the same way the reviews do: a separate small
                     # read that degrades to an explicit "unavailable" marker instead of
                     # failing the view.
@@ -3260,6 +3264,7 @@ def _build_handler(ctx: GuiContext):
             src_addr = str(body.get("src_addr") or "").strip()
             state = str(body.get("state") or "").strip()
             note = str(body.get("note") or "")[:500]
+            adjustment_body = body.get("adjustment")
 
             if not window_start or not src_addr:
                 return self._error(400, "'window_start' and 'src_addr' are required")
@@ -3269,16 +3274,51 @@ def _build_handler(ctx: GuiContext):
                     "error": f"unknown review state {state!r}",
                     "valid_states": [s for s in status_mod.VALID_REVIEW_STATES if s],
                 }, 400)
+            response = {"ok": True, "state": state, "note": note}
             try:
                 with self._with_client() as client:
                     status_mod.write_review(
                         client, window_start=window_start, src_addr=src_addr,
                         state=state, note=note)
+                    if adjustment_body is not None:
+                        if not isinstance(adjustment_body, dict):
+                            return self._error(400, "'adjustment' must be an object")
+                        from weirvern.models.active_learning import (  # noqa: PLC0415
+                            build_adjustment,
+                            write_adjustment,
+                        )
+
+                        raw_before = adjustment_body.get("before_value")
+                        raw_after = adjustment_body.get("after_value")
+                        if raw_before is None or raw_after is None:
+                            raise ValueError(
+                                "adjustment before_value and after_value are required"
+                            )
+                        try:
+                            before_value = float(str(raw_before))
+                            after_value = float(str(raw_after))
+                        except ValueError as exc:
+                            raise ValueError(
+                                "adjustment before_value and after_value must be numbers"
+                            ) from exc
+                        adjustment = build_adjustment(
+                            scope=str(adjustment_body.get("scope") or "host"),
+                            subject=str(adjustment_body.get("subject") or src_addr),
+                            metric=str(adjustment_body.get("metric") or "page_budget"),
+                            before_value=before_value,
+                            after_value=after_value,
+                            reason=str(adjustment_body.get("reason") or note),
+                            review_window_start=status_mod._parse_stamp(window_start),
+                            review_src_addr=src_addr,
+                            expiry_days=int(adjustment_body.get("expiry_days") or 14),
+                        )
+                        write_adjustment(client, adjustment)
+                        response["adjustment"] = adjustment
             except ValueError as exc:
                 return self._error(400, str(exc))
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"could not record the review: {exc}")
-            self._json({"ok": True, "state": state, "note": note})
+            self._json(response)
 
         def _watch(self) -> None:
             """Toggle one host's place on the watch list (the alert action cell's Watch).
