@@ -2545,6 +2545,7 @@ def main() -> None:
                         proposed = _roles.run(client, settings)
                         if proposed:
                             logger.info("ML role proposals: %d host(s)", len(proposed))
+                        from weirvern.models import beacon_specialist as _beacon  # noqa: PLC0415
                         from weirvern.models import candidates as _cand  # noqa: PLC0415
                         from weirvern.models import changepoints as _cp  # noqa: PLC0415
                         from weirvern.models import dns_specialist as _dns  # noqa: PLC0415
@@ -2569,6 +2570,10 @@ def main() -> None:
                         if tls.get("rows"):
                             logger.info("ML TLS-shape shadow: %s row(s), max=%.2f",
                                         tls["rows"], tls["score_max"])
+                        beacon = _beacon.run(client, minutes=60)
+                        if beacon.get("rows"):
+                            logger.info("ML beacon shadow: %s pair(s), max=%.2f",
+                                        beacon["rows"], beacon["score_max"])
                         temp = _temp.run(client)
                         if temp.get("rows"):
                             logger.info("ML temporal shadow: %s row(s)", temp["rows"])
