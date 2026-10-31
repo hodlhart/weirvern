@@ -498,6 +498,11 @@ tr.show-more button { margin-left: 6px; }
 .chain-known .chain-state, .chain-closed .chain-state { color: var(--ok); }
 .chain-open .chain-state { color: var(--sev-medium); }
 .chain-unknown { border-style: dashed; }
+/* Incident context sits between the chain and the raw rows: it names the asset, the source
+   coverage, the model version and the review provenance behind the window being read. */
+.incident-context { display: grid; gap: 2px; margin: 10px 0 14px;
+  padding: 10px 12px; border-left: 2px solid var(--border-solid); background: var(--surface-2); }
+.incident-context p { margin: 0; font-size: var(--fs-2); }
 /* At-a-glance chips: a number and its noun, never a bare count (US-SL1). */
 .stat-chip {
   display: inline-flex; align-items: baseline; gap: 2px;

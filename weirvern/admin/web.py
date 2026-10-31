@@ -438,6 +438,8 @@ def _build_handler(ctx: GuiContext):
                 return self._host(query)
             if path == "/api/evidence":
                 return self._evidence(query)
+            if path == "/api/incident":
+                return self._incident(query)
             if path == "/api/fingerprints":
                 return self._fingerprints(query)
             if path == "/api/models":
@@ -4176,6 +4178,29 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
             self._json(web_api.evidence_payload(data))
+
+        def _incident(self, query: dict) -> None:
+            """One incident object: actor + asset + window + evidence + review provenance.
+
+            The episode API answers the queue; this is the page an analyst opens from it. A
+            missing incident is an explicit `available:false` answer, not an empty success.
+            """
+            addr = (query.get("addr") or [""])[0].strip()
+            start = (query.get("start") or [""])[0].strip()
+            if not addr or not start:
+                return self._error(
+                    400, "addr and start are required, e.g. "
+                         "/api/incident?addr=198.51.100.5&start=2026-10-30T00:00:00")
+            if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
+                return self._error(400, "addr does not look like an IP address or hostname")
+            if len(start) > 64:
+                return self._error(400, "start is not a valid timestamp")
+            try:
+                with self._with_client() as client:
+                    data = status_mod.incident_detail(client, addr, start)
+            except Exception as exc:  # noqa: BLE001
+                return self._error(503, f"cannot reach ClickHouse: {exc}")
+            self._json(web_api.incident_payload(data))
 
         def _fingerprints(self, query: dict) -> None:
             """Which hosts have presented a given JA4 fingerprint -- the hunting pivot.

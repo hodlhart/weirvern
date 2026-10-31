@@ -25,6 +25,8 @@ const API = {
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
     (end ? `&end=${encodeURIComponent(end)}` : ""),
+  incident: (addr, start) =>
+    `/api/incident?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}`,
   // The operator's pivot from an alert to a block on the gate, and the fingerprint lookup that
   // answers the OTHER direction from the identity card (which hosts present this one stack).
   sluice: "/api/sluice",
@@ -3066,11 +3068,71 @@ function wireEvidenceBack() {
   }
 }
 
+/** The incident object above the raw rows: actor, asset, window, families, source coverage,
+ * model version and review provenance. The evidence section already answers "what happened";
+ * this says which incident the window belongs to and whether a decision is owed. */
+function renderIncidentContext(inc) {
+  const box = document.getElementById("ev-incident");
+  if (!box) return;
+  box.replaceChildren();
+  if (!inc || inc.available !== true || !inc.incident) {
+    const why = (inc && inc.reason) || "no incident contains this window";
+    box.appendChild(el("p", { class: "muted", text: `Incident context unavailable: ${why}.` }));
+    return;
+  }
+  const i = inc.incident;
+  const asset = i.asset || {};
+  const role = `${asset.role || "unknown"}${asset.scope ? ` (${asset.scope})` : ""}`;
+  const families = (i.families || []).length ? i.families.join(", ") : "none recorded";
+  const coverage = Object.entries(i.source_coverage || {})
+    .filter(([, n]) => Number(n) > 0)
+    .map(([k, n]) => `${k} ${n}`).join(" · ") || "no raw records";
+  const versions = (i.model_versions || []).length ? i.model_versions.join(", ") : "not recorded";
+  const review = i.review || {};
+  const reviewed = review.state
+    ? `${review.state}${review.reviewed_by ? ` by ${review.reviewed_by}` : ""}` +
+      `${review.reviewed_at ? ` at ${fmtTime(review.reviewed_at)}` : ""}` +
+      `${review.expires_at ? ` · expires ${fmtTime(review.expires_at)}` : ""}`
+    : "not reviewed — a decision is owed";
+  const line = (label, value) => el("p", { class: "muted" }, [
+    el("strong", { text: `${label}: ` }), el("span", { text: value }),
+  ]);
+  box.appendChild(el("div", { class: "incident-context" }, [
+    line("Incident", `${i.actor || "—"} · ${role} · ${fmtTime(i.window && i.window.start)} → ` +
+      `${fmtTime(i.window && i.window.end)} · ${i.occurrences || 0} occurrences · ` +
+      `${sevText(i.severity) || "severity unknown"}`),
+    line("Families", families),
+    line("Source coverage", coverage),
+    line("Model version", versions),
+    line("Review", reviewed),
+    line("Page budget", i.pageable ? `pageable${i.page_reason ? ` · ${i.page_reason}` : ""}` :
+      `not pageable${i.page_reason ? ` · ${i.page_reason}` : ""}`),
+  ]));
+  if (asset.error) {
+    box.appendChild(el("p", { class: "muted", text: `Asset context unavailable: ${asset.error}.` }));
+  }
+  if (review.error) {
+    box.appendChild(el("p", { class: "muted", text: `Review provenance unavailable: ${review.error}.` }));
+  }
+  if (inc.evidence_error) {
+    const err = typeof inc.evidence_error === "string" ? inc.evidence_error :
+      Object.entries(inc.evidence_error).map(([k, v]) => `${k}: ${v}`).join(" | ");
+    box.appendChild(el("p", { class: "muted", text: `Evidence read incomplete: ${err}.` }));
+  }
+}
+
 async function loadEvidence(addr, start, end) {
   scheduleURLSync();
   CURRENT_EVIDENCE = { addr, start, end };
   const d = await getJSON(API.evidence(addr, start, end));
   showDataError(d.errors ? Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join(" | ") : null);
+  let incident = null;
+  try {
+    incident = await getJSON(API.incident(addr, start));
+  } catch (exc) {
+    incident = { available: false, reason: `incident request failed: ${exc.message || exc}` };
+  }
+  renderIncidentContext(incident);
 
   document.getElementById("ev-title").textContent =
     d.hostname ? `${d.hostname} (${d.src_addr})` : d.src_addr;

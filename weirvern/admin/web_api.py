@@ -377,6 +377,11 @@ def _summary(d: dict) -> dict | None:
     return {f: _jsonable(v) for f, v in zip(fields, row, strict=True)}
 
 
+def incident_payload(d: dict) -> dict:
+    """Serialise the incident object; every nested timestamp goes through `_jsonable`."""
+    return _jsonable(d)
+
+
 def evidence_payload(d: dict) -> dict:
     """JSON for the alert-evidence pivot.
 

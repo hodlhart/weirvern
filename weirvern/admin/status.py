@@ -2321,6 +2321,122 @@ def host_detail(client, src_addr: str, hours: int = 24) -> dict:
 
 
 
+def incident_detail(client, src_addr: str, episode_start: str, settings=None) -> dict:
+    """One incident object: actor, asset, window, evidence, families, provenance and review.
+
+    `episode_start` may be any timestamp inside the episode; the episode layer answers "which
+    windows", this answers "why this one" without asking the analyst to join five tables by hand.
+    Every optional read is named when it fails; a missing role or model version is `unknown`,
+    never an empty success.
+    """
+    try:
+        res = client.query(
+            "SELECT src_addr, episode_start, episode_end, first_detected, last_detected, "
+            "occurrences, window_count, max_score, severity, severity_rank, role, page_window, "
+            "pageable, page_reason, paged_at "
+            "FROM weirvern.alert_episodes FINAL "
+            "WHERE src_addr = %(a)s "
+            "AND episode_start <= parseDateTime64BestEffort(%(s)s) "
+            "AND episode_end >= parseDateTime64BestEffort(%(s)s) "
+            "ORDER BY episode_start DESC LIMIT 1",
+            parameters={"a": src_addr, "s": episode_start},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"episode read failed: {type(exc).__name__}",
+                "incident": None}
+    if not res.result_rows:
+        return {"available": False, "reason": "no incident at that host and start",
+                "incident": None}
+    names = list(res.column_names)
+    episode = dict(zip(names, res.result_rows[0], strict=False))
+    page_window = episode.get("page_window")
+
+    # Asset context. An unknown role is a fact, not a default.
+    asset: dict = {"host": src_addr, "role": "unknown", "scope": "unknown"}
+    try:
+        role_rows = client.query(
+            "SELECT role, scope FROM weirvern.host_roles FINAL WHERE host = %(a)s LIMIT 1",
+            parameters={"a": src_addr},
+        ).result_rows
+        if role_rows:
+            asset.update({"role": role_rows[0][0] or "unknown",
+                          "scope": role_rows[0][1] or "unknown"})
+    except Exception as exc:  # noqa: BLE001
+        asset["error"] = f"role read failed: {type(exc).__name__}"
+
+    # The raw evidence is the same pivot the existing evidence page reads.
+    evidence: dict = {}
+    evidence_error = None
+    try:
+        evidence = alert_evidence(client, src_addr, str(page_window))
+        evidence_error = (evidence.get("_errors") or None)
+    except Exception as exc:  # noqa: BLE001
+        evidence_error = {"evidence": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+    anomaly = evidence.get("anomaly") or {}
+    families = anomaly.get("strong_families", [])
+    if isinstance(families, str):
+        families = [part.strip() for part in families.split(",") if part.strip()]
+    coverage = {
+        "flows": len(evidence.get("flows") or []),
+        "zeek_conn": len(evidence.get("zeek_conn") or []),
+        "zeek_dns": len(evidence.get("zeek_dns") or []),
+        "zeek_ssl": len(evidence.get("zeek_ssl") or []),
+        "notice": len(evidence.get("notice") or []),
+    }
+
+    model_versions: list[str] = []
+    try:
+        versions = client.query(
+            "SELECT DISTINCT model_version FROM weirvern.ml_window_scores "
+            "WHERE src_addr = %(a)s AND window_start = parseDateTimeBestEffort(%(w)s)",
+            parameters={"a": src_addr, "w": str(page_window)},
+        ).result_rows
+        model_versions = sorted(str(row[0]) for row in versions if row and row[0])
+    except Exception as exc:  # noqa: BLE001
+        evidence_error = dict(evidence_error or {})
+        evidence_error["model_versions"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+    review = {"state": "", "note": "", "reviewed_at": None, "reviewed_by": "",
+              "expires_at": None}
+    try:
+        review_rows = client.query(
+            "SELECT state, note, reviewed_at, reviewed_by FROM weirvern.alert_reviews FINAL "
+            "WHERE src_addr = %(a)s AND window_start = parseDateTime64BestEffort(%(w)s) LIMIT 1",
+            parameters={"a": src_addr, "w": str(page_window)},
+        ).result_rows
+        if review_rows:
+            state, note, reviewed_at, reviewed_by = review_rows[0]
+            review.update({"state": state or "", "note": note or "",
+                           "reviewed_at": reviewed_at, "reviewed_by": reviewed_by or ""})
+        review["expires_at"] = (episode["episode_start"] + datetime.timedelta(days=30))
+    except Exception as exc:  # noqa: BLE001
+        review["error"] = f"review read failed: {type(exc).__name__}"
+
+    return {
+        "available": True,
+        "reason": "",
+        "incident": {
+            "actor": src_addr,
+            "asset": asset,
+            "window": {"start": episode.get("episode_start"), "end": episode.get("episode_end")},
+            "occurrences": int(episode.get("occurrences") or 0),
+            "severity": episode.get("severity") or "",
+            "max_score": float(episode.get("max_score") or 0.0),
+            "families": families,
+            "source_coverage": coverage,
+            "model_versions": model_versions,
+            "pageable": bool(episode.get("pageable")),
+            "page_reason": episode.get("page_reason") or "",
+            "paged_at": episode.get("paged_at"),
+            "page_window": page_window,
+            "evidence": evidence,
+            "review": review,
+        },
+        "evidence_error": evidence_error,
+    }
+
+
 def alert_evidence(client, src_addr: str, window_start: str,
                    window_end: str | None = None) -> dict:
     """The RAW records behind one alert -- the actual pivot.
