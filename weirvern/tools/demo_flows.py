@@ -21,6 +21,19 @@ import time
 _DEFAULT_PROTO = 6  # TCP
 
 
+# Scenario hosts are deliberately OUTSIDE the normal `devices` range, so the benign host
+# set and the three original attacker conventions stay stable. The values are documentation
+# addresses (RFC 5737); the fixture is invented.
+SCENARIO_HOSTS = {
+    "ssh_brute": "198.51.100.210",
+    "smb_lateral": "198.51.100.211",
+    "dce_rpc": "198.51.100.212",
+    "dns_tunnel": "198.51.100.213",
+    "quic_c2": "198.51.100.214",
+    "http_c2": "198.51.100.215",
+}
+
+
 def _flow(time_ns: int, src: str, dst: str, sport: int, dport: int, proto: int,
           bytes_: int, packets: int, flags: int = 16, *, rng: random.Random) -> dict:
     # The duration draw comes from the SEEDED rng, never the module-global `random` (issue
@@ -115,6 +128,20 @@ def generate(args) -> int:
                     )
                     fh.write(json.dumps(f) + "\n")
                     total += 1
+            # Scenario hosts get a benign pre-attack baseline too. Without it the adaptive
+            # baseline and the host-history features never see these hosts before their
+            # attack, which made the HTTP-staging fixture score LOW despite its volume.
+            if getattr(args, "new_scenarios", False) and minute < attack_from:
+                for host in SCENARIO_HOSTS.values():
+                    for _ in range(rng.randint(2, 8)):
+                        dport = rng.choice([80, 443, 53, 445, 22])
+                        b = realistic_bytes(rng)
+                        f = _flow((t0 + rng.randint(0, 59)) * 1_000_000_000,
+                                  host, rng.choice(servers), rng.randint(1024, 65535),
+                                  dport, 6, b, max(1, b // rng.randint(400, 1400)),
+                                  rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
             # Attack device 1: port scanner (many dst ports on one host)
             if args.scanner and minute == attack_from:
                 scanner = devices[0]
@@ -141,6 +168,66 @@ def generate(args) -> int:
                 )
                 fh.write(json.dumps(f) + "\n")
                 total += 1
+            # ── FND-3 scenario corpus ─────────────────────────────────────────────────
+            # Six additional deterministic behaviours, each on its own host so a failure
+            # names the scenario. All are flow-visible; Zeek-only classes (new JA4, DHCP)
+            # stay specialist work and are not pretended to be covered here.
+            if getattr(args, "new_scenarios", False) and minute >= attack_from:
+                elapsed = minute - attack_from
+                # SSH brute: repeated short connections to one SSH service.
+                if elapsed < 5:
+                    for i in range(25):
+                        f = _flow((t0 + i % 60) * 1_000_000_000,
+                                  SCENARIO_HOSTS["ssh_brute"], "198.51.100.99",
+                                  41000 + i, 22, 6, 0, 1, flags=2, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # SMB admin-share lateral: one short attempt per internal host.
+                if elapsed == 2:
+                    for i in range(40):
+                        f = _flow(t0 * 1_000_000_000,
+                                  SCENARIO_HOSTS["smb_lateral"],
+                                  f"198.51.100.{120 + i}", 42000 + i, 445, 6,
+                                  0, 1, flags=2, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # DCE/RPC service execution probe: many endpoint mapper touches.
+                if elapsed == 3:
+                    for i in range(40):
+                        f = _flow(t0 * 1_000_000_000,
+                                  SCENARIO_HOSTS["dce_rpc"],
+                                  f"198.51.100.{120 + i}", 43000 + i, 135, 6,
+                                  0, 1, flags=2, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # DNS tunnel proxy: many short queries to the resolver, high flow count.
+                if elapsed < 10:
+                    for i in range(30):
+                        f = _flow((t0 + i % 60) * 1_000_000_000,
+                                  SCENARIO_HOSTS["dns_tunnel"], "198.51.100.53",
+                                  44000 + i, 53, 17, rng.randint(80, 300),
+                                  1, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # QUIC C2: periodic small UDP/443 callbacks, repeated within each burst so
+                # the flow-count signal is visible without pretending a single packet is.
+                if elapsed % 5 == 0:
+                    for i in range(20):
+                        f = _flow((t0 + 11 + i % 5) * 1_000_000_000,
+                                  SCENARIO_HOSTS["quic_c2"], "203.0.113.77",
+                                  45000 + i, 443, 17, rng.randint(2_000, 8_000), 3, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # HTTP C2 / staging: repeated upload-sized POSTs to multiple external HTTP
+                # endpoints. A single destination/port sat inside the benign web mix; the
+                # fan-out is what makes this a separable staging fixture.
+                if 1 <= elapsed <= 3:
+                    for i in range(30):
+                        f = _flow((t0 + 17 + i % 5) * 1_000_000_000,
+                                  SCENARIO_HOSTS["http_c2"], f"203.0.113.{100 + i}",
+                                  46000 + i, 8080, 6, 8_000_000, 6_000, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
 
     print(f"Wrote {total} flows to {args.output} ({args.minutes} simulated minutes)")
     return total
@@ -156,6 +243,10 @@ def main() -> None:
     p.add_argument("--scan-ports", type=int, default=100)
     p.add_argument("--beacon", action="store_true", default=True)
     p.add_argument("--exfil", action="store_true", default=True)
+    p.add_argument("--new-scenarios", action="store_true", default=False,
+                   help="add the FND-3 scenario corpus (SSH brute, SMB/DCE lateral, DNS tunnel, "
+                        "QUIC C2, HTTP C2); off by default so the original three-attack seed is "
+                        "unchanged for callers that do not opt in")
     p.add_argument("--attack-start-minute", type=int, default=0,
                    help="minute the seeded attacks begin (default 0 = from the start); "
                         "used by scripts/eval_detection.py to hold the attack period out "

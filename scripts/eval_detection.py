@@ -67,11 +67,96 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from weirvern.tools.demo_flows import SCENARIO_HOSTS  # noqa: E402
+
 # Attack hosts, by seed convention in demo_flows: devices[0..2] are the attackers.
 SCANNER = "198.51.100.10"
 BEACON = "198.51.100.11"
 EXFIL = "198.51.100.12"
-ATTACK_HOSTS = {SCANNER, BEACON, EXFIL}
+ATTACK_HOSTS = {SCANNER, BEACON, EXFIL, *SCENARIO_HOSTS.values()}
+
+# FND-3: the new flow-visible behaviours. Each host is separate so a failure names the
+# scenario; `offset` is minutes after the original attack start, and `deadline_min` is the
+# detection budget measured from the scenario's start. Expected technique/evidence is
+# documentation for the specialist that will consume the fixture -- the harness checks
+# severity + latency, and prints the observed technique so a missing mapping is visible.
+SCENARIO_SPECS = (
+    {"key": "ssh_brute", "host": SCENARIO_HOSTS["ssh_brute"], "offset": 0,
+     "deadline_min": 10, "technique": "T1110",
+     "evidence": "repeated short connections to one SSH service"},
+    {"key": "smb_lateral", "host": SCENARIO_HOSTS["smb_lateral"], "offset": 2,
+     "deadline_min": 10, "technique": "T1021.002",
+     "evidence": "one SMB attempt per internal host"},
+    {"key": "dce_rpc", "host": SCENARIO_HOSTS["dce_rpc"], "offset": 3,
+     "deadline_min": 10, "technique": "T1021.003",
+     "evidence": "endpoint-mapper fan-out across internal hosts"},
+    {"key": "dns_tunnel", "host": SCENARIO_HOSTS["dns_tunnel"], "offset": 0,
+     "deadline_min": 15, "technique": "T1071.004",
+     "evidence": "many short queries to the resolver"},
+    {"key": "quic_c2", "host": SCENARIO_HOSTS["quic_c2"], "offset": 0,
+     "deadline_min": 20, "technique": "T1071",
+     "evidence": "periodic small UDP/443 callbacks"},
+    {"key": "http_c2", "host": SCENARIO_HOSTS["http_c2"], "offset": 1,
+     "deadline_min": 20, "technique": "T1071.001",
+     "evidence": "upload-sized HTTP posts fanned out to multiple endpoints"},
+)
+
+
+def _as_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def scenario_results(by_host: dict[str, list[dict]], attack_dt: datetime) -> list[dict]:
+    """One result per FND-3 scenario: severity, first detection, latency, technique.
+
+    Kept module-level so the guard test can call it with a deliberately empty detection set
+    and prove the checker goes red instead of passing an empty corpus.
+    """
+    rows: list[dict] = []
+    order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0}
+    for spec in SCENARIO_SPECS:
+        start = attack_dt + timedelta(minutes=spec["offset"])
+        verdicts = by_host.get(spec["host"], [])
+        worst = ""
+        windows: list[datetime] = []
+        techniques: list[str] = []
+        for verdict in verdicts:
+            when = _as_datetime(verdict.get("window_start"))
+            # A bucket that starts before the scenario but overlaps it is fair; anything
+            # earlier is pre-attack baseline and cannot count as detection of this scenario.
+            if when is not None and when < start - timedelta(minutes=5):
+                continue
+            sev = str(verdict.get("severity") or "")
+            if order.get(sev, 0) > order.get(worst, 0):
+                worst = sev
+            if when is not None:
+                windows.append(when)
+            raw = verdict.get("attack_techniques")
+            if raw:
+                techniques.extend(str(raw).replace("[", "").replace("]", "")
+                                  .replace('"', "").split(","))
+        first = min(windows) if windows else None
+        latency = (round(max(0.0, (first - start).total_seconds() / 60.0), 1)
+                   if first is not None else None)
+        passed = bool(first is not None and worst in ("medium", "high", "critical")
+                      and latency is not None and latency <= spec["deadline_min"])
+        seen = sorted({t.strip() for t in techniques if t.strip()})
+        rows.append({
+            **spec,
+            "start": start,
+            "severity": worst,
+            "first_detection": first,
+            "latency_min": latency,
+            "technique_seen": spec["technique"] in seen,
+            "techniques": seen,
+            "passed": passed,
+        })
+    return rows
 
 
 def benign_hosts(devices: int) -> set[str]:
@@ -109,6 +194,7 @@ def seed(client, minutes: int, devices: int, seed: int, batch: list[str],
         generate(type("A", (), {
             "minutes": minutes, "devices": devices, "output": out, "seed": seed,
             "scanner": True, "scan_ports": 400, "beacon": True, "exfil": True,
+            "new_scenarios": True,
             "attack_start_minute": attack_start_minute, "start": start,
         })())
 
@@ -398,6 +484,7 @@ def main() -> int:
     by_host: dict[str, list[dict]] = {}
     for v in verdicts or []:
         by_host.setdefault(v["src_addr"], []).append(v)
+    attack_dt = lo + timedelta(minutes=attack_start_minute)
 
     def worst_severity(host: str) -> str:
         order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0}
@@ -443,6 +530,35 @@ def main() -> int:
         _ok(f"exfiltration spike detected ({sev})")
     else:
         _fail(f"exfiltration spike NOT detected (worst severity: {sev or 'none'})")
+        failures += 1
+
+    # 3b. THE FND-3 SCENARIO CORPUS. Six new behaviours, each on its own host. The bar is
+    #     severity medium+ inside the scenario's deadline; the expected technique is printed
+    #     so a missing mapping is visible without pretending the flow-only fixture proves it.
+    scenario_rows = scenario_results(by_host, attack_dt)
+    for row in scenario_rows:
+        if row["passed"]:
+            _ok(f"{row['key']}: {row['severity']} in {row['latency_min']}m "
+                f"(deadline {row['deadline_min']}m) technique "
+                f"{row['technique']}{' seen' if row['technique_seen'] else ' not mapped'}")
+        else:
+            _fail(f"{row['key']}: NOT detected to medium+ inside {row['deadline_min']}m "
+                  f"(worst {row['severity'] or 'none'}, latency {row['latency_min']}); "
+                  f"expected {row['technique']} -- {row['evidence']}")
+            failures += 1
+
+    # 3c. GUARD PROOF. A detector that returns nothing must make this corpus go red. The
+    #     "broken" set is the real verdicts with one scenario host removed; if every check
+    #     still passed, the scenario check would be vacuous.
+    broken_by_host = {}
+    for v in verdicts:
+        if v.get("src_addr") != SCENARIO_HOSTS["ssh_brute"]:
+            broken_by_host.setdefault(v["src_addr"], []).append(v)
+    broken_rows = scenario_results(broken_by_host, attack_dt)
+    if any(not row["passed"] for row in broken_rows):
+        _ok("guard proof: a missing SSH-brute verdict is caught by the scenario check")
+    else:
+        _fail("guard proof failed: the scenario check passed with the SSH-brute verdict removed")
         failures += 1
 
     # 4. PRECISION SMOKE CHECK, in TWO directions. What it must catch: a threshold collapse
@@ -495,7 +611,8 @@ def main() -> int:
     #    2026-10-15): a regression flagging most windows of one host passed every other
     #    check here. No host may be flagged in more than half the seeded windows.
     total_windows = max(1, args.minutes // 5)  # the aggregates are 5-minute buckets
-    storm = {h: len(vs) for h, vs in by_host.items() if len(vs) > total_windows / 2}
+    storm = {h: len(vs) for h, vs in by_host.items()
+             if h not in ATTACK_HOSTS and len(vs) > total_windows / 2}
     if not storm:
         worst = max((len(vs) for vs in by_host.values()), default=0)
         _ok(f"no storm: busiest host appears in {worst} of {total_windows} windows")
@@ -507,8 +624,6 @@ def main() -> int:
     #    whole span, so "caught once" and "caught throughout" were the same result, and a
     #    verdict from the wrong end of the seed would pass. The scanner fires in one burst
     #    at `attack_start_minute`; its verdict must sit within a window of that minute.
-    attack_dt = lo + timedelta(minutes=attack_start_minute)
-
     def _as_dt(value) -> datetime | None:
         if isinstance(value, datetime):
             return value
