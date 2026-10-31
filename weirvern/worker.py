@@ -2547,6 +2547,7 @@ def main() -> None:
                             logger.info("ML role proposals: %d host(s)", len(proposed))
                         from weirvern.models import candidates as _cand  # noqa: PLC0415
                         from weirvern.models import changepoints as _cp  # noqa: PLC0415
+                        from weirvern.models import dns_specialist as _dns  # noqa: PLC0415
                         from weirvern.models import external as _ext  # noqa: PLC0415
                         from weirvern.models import flow_specialist as _flow  # noqa: PLC0415
                         from weirvern.models import temporal as _temp  # noqa: PLC0415
@@ -2559,6 +2560,10 @@ def main() -> None:
                         if flow.get("rows"):
                             logger.info("ML flow-shape shadow: %s row(s), max=%.2f",
                                         flow["rows"], flow["score_max"])
+                        dns = _dns.run(client, minutes=60)
+                        if dns.get("rows"):
+                            logger.info("ML DNS-shape shadow: %s row(s), max=%.2f",
+                                        dns["rows"], dns["score_max"])
                         temp = _temp.run(client)
                         if temp.get("rows"):
                             logger.info("ML temporal shadow: %s row(s)", temp["rows"])
