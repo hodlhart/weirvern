@@ -37,8 +37,8 @@ def features_from_sessions(
     if not sessions:
         return {"present": False, "session_count": 0.0}
     count = len(sessions)
-    ja4s = [str(s.get("ja4") or "") for s in sessions]
-    unique_ja4 = {j for j in ja4s if j}
+    ja4_list = [str(s.get("ja4") or "") for s in sessions]
+    unique_ja4 = {j for j in ja4_list if j}
     versions = [str(s.get("version") or "") for s in sessions]
     sni = [str(s.get("server_name") or "") for s in sessions]
     new_ja4 = 0.0 if seen_ja4 is None else _ratio(
@@ -111,7 +111,7 @@ def query_sql(minutes: int = 15, scope_filter: str = "") -> str:
         "countIf(s.version IN ('TLSv1', 'TLSv1.0', 'TLSv1.1', 'SSLv3', 'SSLv2', "
         "'TLS1.0', 'TLS1.1')) AS old_sessions, "
         "uniqExact(s.server_name) AS unique_sni, "
-        "groupUniqArray(s.ja4) AS ja4s "
+        "groupUniqArray(s.ja4) AS ja4_list "
         "FROM weirvern.zeek_ssl AS s "
         f"WHERE s.ts >= now() - INTERVAL {minutes} MINUTE "
         f"{scope_filter} "
@@ -126,10 +126,10 @@ def score_rows(rows: Iterable[tuple], *, use_ja4_shape: bool = True,
     out: list[dict] = []
     for source_row in rows:
         (window_start, src_addr, count, unique_ja4, tls13, old, unique_sni,
-         ja4s) = source_row
+         ja4_list) = source_row
         count_i = int(count)
         seen = None if seen_by_host is None else set(seen_by_host.get(str(src_addr), set()))
-        current = {str(j) for j in (ja4s or []) if j}
+        current = {str(j) for j in (ja4_list or []) if j}
         new_ratio = 0.0
         if seen is not None:
             new_ratio = _ratio(sum(1 for j in current if j not in seen), len(current) or 1)
@@ -178,7 +178,7 @@ def run(client: Client, *, minutes: int = 15, scope_filter: str | None = None) -
         return {"available": False, "reason": "no TLS sessions in the window",
                 "rows": 0, "elapsed_ms": round((perf_counter() - started) * 1000, 1)}
     history_sql = (
-        "SELECT s.src_addr, groupUniqArray(s.ja4) AS ja4s "
+        "SELECT s.src_addr, groupUniqArray(s.ja4) AS ja4_list "
         "FROM weirvern.zeek_ssl AS s "
         f"WHERE s.ts < now() - INTERVAL {minutes} MINUTE {scope_filter} "
         "GROUP BY s.src_addr"
@@ -192,8 +192,8 @@ def run(client: Client, *, minutes: int = 15, scope_filter: str | None = None) -
     seen_by_host: dict[str, set[str]] | None = None
     fleet_host_counts: dict[str, int] | None = None
     try:
-        seen_by_host = {str(host): {str(j) for j in (ja4s or []) if j}
-                        for host, ja4s in client.query(history_sql).result_rows}
+        seen_by_host = {str(host): {str(j) for j in (ja4_list or []) if j}
+                        for host, ja4_list in client.query(history_sql).result_rows}
         fleet_host_counts = {str(ja4): int(hosts) for ja4, hosts in
                              client.query(fleet_sql).result_rows if ja4}
     except Exception:
