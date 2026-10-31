@@ -2551,6 +2551,7 @@ def main() -> None:
                         from weirvern.models import dns_specialist as _dns  # noqa: PLC0415
                         from weirvern.models import external as _ext  # noqa: PLC0415
                         from weirvern.models import flow_specialist as _flow  # noqa: PLC0415
+                        from weirvern.models import graph_specialist as _graph  # noqa: PLC0415
                         from weirvern.models import temporal as _temp  # noqa: PLC0415
                         from weirvern.models import tls_specialist as _tls  # noqa: PLC0415
 
@@ -2562,6 +2563,10 @@ def main() -> None:
                         if flow.get("rows"):
                             logger.info("ML flow-shape shadow: %s row(s), max=%.2f",
                                         flow["rows"], flow["score_max"])
+                        graph = _graph.run(client, minutes=60)
+                        if graph.get("rows"):
+                            logger.info("ML graph shadow: %s host(s), max=%.2f",
+                                        graph["hosts"], graph["score_max"])
                         dns = _dns.run(client, minutes=60)
                         if dns.get("rows"):
                             logger.info("ML DNS-shape shadow: %s row(s), max=%.2f",
