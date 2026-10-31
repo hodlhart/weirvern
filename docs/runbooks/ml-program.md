@@ -76,18 +76,18 @@ a commit.
 
 | Blocked card | Reason | Owner | Reviewed |
 |---|---|---|---|
-| LRN-1 active learning | review feedback path not yet implemented | operator / Hermes | 2026-10-31 |
+| — | no blocked cards remain | — | 2026-10-31 |
 
-When LRN-1 is implemented, remove its row in the same change that closes it. A card may not be
-closed while it is listed here as blocked.
+When a card is blocked, add its row in the same change that blocks it; remove the row when the
+card closes. A card may not be closed while it is listed here as blocked.
 
-## 7. Current inventory (2026-10-31)
+## 7. Current inventory (2026-10-31, program complete)
 
 - `wv-ml-foundation`: 4 done / 0 blocked
 - `wv-ml-production`: 3 done / 0 blocked
 - `wv-ml-sources`: 4 done / 0 blocked
 - `wv-ml-temporal`: 3 done / 0 blocked
-- `wv-ml-learning`: 1 done (LRN-2 rejection) / 1 done (this runbook) / 1 blocked (LRN-1)
+- `wv-ml-learning`: 3 done / 0 blocked
 
 ## 8. Approval boundary
 
