@@ -2549,6 +2549,7 @@ def main() -> None:
                         from weirvern.models import candidates as _cand  # noqa: PLC0415
                         from weirvern.models import changepoints as _cp  # noqa: PLC0415
                         from weirvern.models import dns_specialist as _dns  # noqa: PLC0415
+                        from weirvern.models import drift as _drift  # noqa: PLC0415
                         from weirvern.models import external as _ext  # noqa: PLC0415
                         from weirvern.models import flow_specialist as _flow  # noqa: PLC0415
                         from weirvern.models import graph_specialist as _graph  # noqa: PLC0415
@@ -2590,6 +2591,11 @@ def main() -> None:
                             logger.info("ML external exposure shadow: %s row(s), %s host(s), "
                                         "p50=%.2f",
                                         ext["rows"], ext.get("hosts"), ext.get("score_p50", 0.0))
+                        drift = _drift.run(client, hours=24)
+                        if drift.get("rows"):
+                            logger.info("ML drift: %s pair(s), %s notice(s); retrain=%s",
+                                        drift["rows"], len(drift.get("notices", [])),
+                                        drift["retrain"]["trigger"])
                     shadow_tick += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("ML shadow pass failed (detection continues): %s", exc)

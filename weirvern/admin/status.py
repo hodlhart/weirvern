@@ -3384,6 +3384,8 @@ def shadow_overview(client) -> dict:
          "uniqExact(metric)", "metrics", ""),
         ("changepoints", "Change points", "weirvern.ml_changepoints",
          "uniqExact(src_addr)", "hosts", ""),
+        ("drift", "Drift", "weirvern.ml_drift",
+         "uniqExact(model_name)", "models", ""),
     )
     rows = []
     for key, label, table, detail_expr, detail_label, where in channels:
