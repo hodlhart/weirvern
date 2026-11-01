@@ -581,8 +581,39 @@ spec:
               # TRUNK DEFAULT: the init container below observed this port and wrote the real
               # capture set. No tags -> the file names the parent; tags -> it names eth1.<vid>
               # devices. Fall back to ZEEK_IFACES only when there is no state (older pod).
-              IFACES=$(cat /state/ifaces 2>/dev/null | tr '\n' ' ' || true)
-              [ -n "$IFACES" ] || IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
+              CONFIG_IFACES=$(printf '%s' "${ZEEK_IFACES:-$IFACE}" | tr ',' ' ')
+              STATE_IFACES=$(cat /state/ifaces 2>/dev/null | tr '\n' ' ' || true)
+              IFACES=""
+              if [ -n "$STATE_IFACES" ]; then
+                # THE TRUNK STATE DESCRIBES THE CAPTURE PORT, NOT THE WHOLE LIST.
+                # trunk-init probes CAPTURE_IFACE and names the parent or its VLAN
+                # children in /state/ifaces. Using that file as the whole capture
+                # set silently dropped every OTHER configured port: with
+                # ZEEK_IFACES=eth1,eth2 and CAPTURE_IFACE=eth1, a one-line state
+                # file made Zeek capture only eth1 and the Data segment vanished
+                # from DNS, TLS and lateral coverage. Keep the state's interfaces,
+                # and add the configured ports it does not name -- except the
+                # trunk parent when the state replaced it with VLAN children.
+                for one in $CONFIG_IFACES; do
+                  case " $STATE_IFACES " in
+                    *" $one "*) ;;
+                    *)
+                      case "$one" in
+                        "${CAPTURE_IFACE:-}")
+                          case " $STATE_IFACES " in
+                            *" $one."*) ;;
+                            *) IFACES="$IFACES $one" ;;
+                          esac
+                          ;;
+                        *) IFACES="$IFACES $one" ;;
+                      esac
+                      ;;
+                  esac
+                done
+                IFACES="$STATE_IFACES $IFACES"
+              else
+                IFACES="$CONFIG_IFACES"
+              fi
               COUNT=0
               for one in $IFACES; do [ -n "$one" ] && COUNT=$((COUNT + 1)); done
               if [ "$COUNT" -eq 0 ]; then

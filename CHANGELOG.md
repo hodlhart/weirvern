@@ -31,6 +31,10 @@ ML DETECTION PROGRAM — COVERAGE, SPECIALISTS, AND A USABLE BUDGET.
   A failed read is named rather than rendered as a measured zero.
 - The Zeek trunk probe init container now has a 512Mi limit (64Mi request) instead of 128Mi;
   the 0.23.16 Python import set was OOM-killed at the old limit during the live rollout.
+- The capture set now merges the trunk probe's result with `ZEEK_IFACES` instead of replacing
+  it. With `ZEEK_IFACES=eth1,eth2` and a one-line `eth1` state file, the second port was
+  silently dropped; Data-segment DNS, TLS/JA4 and lateral coverage return when both ports
+  are captured.
 
 Schema additions 037–040 are additive. This changelog and version bump do not deploy anything;
 the live cluster remains on the last approved release until the release ritual and operator

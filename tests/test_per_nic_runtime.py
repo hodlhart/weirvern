@@ -111,3 +111,35 @@ def test_a_revoked_sensor_idles_instead_of_capturing_the_management_port():
     assert 'IFACE="${ZEEK_IFACE:-eth0}"' not in script
     assert script.count("no capture interface configured") == 2
     assert "while :; do sleep 3600; done" in script
+
+
+def _capture_set(tmp_path, state: str, config: str, capture: str = "eth1") -> str:
+    """Run the capture-set merge from the shipping Zeek script against a fake state file."""
+    import subprocess
+
+    spec = yaml.safe_load(Path("k8s/32-zeek.yaml").read_text())
+    zeek = next(c for c in spec["spec"]["template"]["spec"]["containers"]
+                if c["name"] == "zeek")
+    script = "\n".join(zeek["args"])
+    block = "CONFIG_IFACES=" + script.split("CONFIG_IFACES=", 1)[1].split("COUNT=0", 1)[0]
+    state_file = tmp_path / "ifaces"
+    state_file.write_text(state + "\n")
+    block = block.replace("/state/ifaces", str(state_file))
+    out = subprocess.run(
+        ["sh", "-c", block + "\nprintf '%s\\n' \"$IFACES\""],
+        capture_output=True, text=True, timeout=20,
+        env={"ZEEK_IFACE": "eth1", "ZEEK_IFACES": config, "CAPTURE_IFACE": capture,
+             "PATH": "/usr/bin:/bin"},
+    )
+    assert out.returncode == 0, out.stderr
+    return " ".join(out.stdout.split())
+
+
+def test_trunk_state_does_not_hide_other_configured_capture_ports(tmp_path):
+    # The live regression: CAPTURE_IFACE=eth1 wrote a one-line state file, and the
+    # old script used ONLY that file, so ZEEK_IFACES=eth1,eth2 never captured eth2.
+    assert _capture_set(tmp_path, "eth1", "eth1,eth2") == "eth1 eth2"
+    # A trunk split still replaces the parent with its VLAN children, while a second
+    # configured NIC remains captured.
+    assert _capture_set(tmp_path, "eth1.100\neth1.200", "eth1,eth2") == "eth1.100 eth1.200 eth2"
+

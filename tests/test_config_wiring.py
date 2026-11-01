@@ -177,6 +177,8 @@ def test_the_startup_script_and_the_env_list_agree(docs):
         "BPF",
         # Locals of the per-NIC startup loop and the siphon init's plan-derived list.
         "IFACES", "COUNT", "LOGDIR", "PIDS", "PLAN_IFACES",
+        # The runtime merge of the trunk probe's state file with configured NICs.
+        "CONFIG_IFACES", "STATE_IFACES",
         # The trunk init's own local: it is assigned from CAPTURE_IFACE/ZEEK_IFACE.
         "PARENT",
     }
