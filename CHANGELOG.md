@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.23.16 — 2026-11-01
+
+ML DETECTION PROGRAM — COVERAGE, SPECIALISTS, AND A USABLE BUDGET.
+
+- The source-to-feature registry maps every harvested table and field to used, planned,
+  join-only or excluded, with its presence rule. A source with zero rows is named, never
+  silently trained as zero.
+- The fixed-budget evaluation harness scores all host-windows, not only alarm rows, holds out
+  whole days, and compares a candidate with the baseline on the same time window and the same
+  alerts/day budget. Its report carries precision@k, false alarms per host/day by role, seeded
+  detection rate and latency, episode count, explanation coverage and runtime. A candidate that
+  wins only by alerting more is rejected.
+- Incident episodes and a per-host/role page budget are the unit of work. Raw
+  `netflow_anomalies` windows remain the audit record; the Anomalies view and pageable path
+  consume episodes and state `N occurrences` without hiding the underlying rows.
+- DBSCAN is quarantined from the fused score while its observed false-alarm rate is outside the
+  configured multiple of target. A direct structural signature can still alert independently.
+- Shadow specialists for raw flow/scan, DNS, TLS/JA4, identity/lateral, beacon/periodicity and
+  graph/peer features write candidate evidence only; none pages directly. The fused score reads
+  detector eligibility rather than letting a saturated family set it.
+- Calibration runs on every scored host-window, with a named reference population and age.
+  Drift monitoring records PSI per model/host and a manual retrain recommendation; it never
+  retrains or changes a threshold automatically.
+- Review verdicts produce bounded, reversible calibration or budget adjustments with
+  provenance and expiry. A false-positive label is evidence, not a normal-training label, and
+  never rewrites the training set.
+- Models and status surfaces show calibration target, observed, sample count, age and
+  eligibility; specialist shadow state; incidents versus occurrences; and the active source.
+  A failed read is named rather than rendered as a measured zero.
+
+Schema additions 037–040 are additive. This changelog and version bump do not deploy anything;
+the live cluster remains on the last approved release until the release ritual and operator
+approval are completed.
+
 ## 0.23.15 — 2026-10-29
 
 SLUICE GATE: TWO ENFORCEMENT PATHS, ONE FLEET.
