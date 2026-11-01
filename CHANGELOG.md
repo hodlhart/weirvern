@@ -29,6 +29,8 @@ ML DETECTION PROGRAM — COVERAGE, SPECIALISTS, AND A USABLE BUDGET.
 - Models and status surfaces show calibration target, observed, sample count, age and
   eligibility; specialist shadow state; incidents versus occurrences; and the active source.
   A failed read is named rather than rendered as a measured zero.
+- The Zeek trunk probe init container now has a 512Mi limit (64Mi request) instead of 128Mi;
+  the 0.23.16 Python import set was OOM-killed at the old limit during the live rollout.
 
 Schema additions 037–040 are additive. This changelog and version bump do not deploy anything;
 the live cluster remains on the last approved release until the release ritual and operator

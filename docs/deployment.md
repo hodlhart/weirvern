@@ -17,8 +17,8 @@ refuse to proceed, and how to upgrade or remove it.
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated): the
-shipped workloads total **1.74 CPU / 3.44 GiB of requests** and **9.75 CPU /
-13.50 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
+shipped workloads total **1.74 CPU / 3.47 GiB of requests** and **9.75 CPU /
+13.88 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
 its header states the inclusion rule (every container -- init containers included
 -- of every rendered workload: worker, GUI, ClickHouse, goflow2, the Zeek
 DaemonSet, the schema Job and the prune CronJob). The earlier totals here were
@@ -27,8 +27,8 @@ change.
 
 Sizing rule: **a node must satisfy the limits**, not the requests, because the
 scheduler admits on requests but the kernel enforces limits. So the practical
-requirement for a single node is a machine that can actually give out ~8 cores
-and ~12 GiB, even though the shipped requests look like a Raspberry Pi job. That
+requirement for a single node is a machine that can actually give out ~10 cores
+and ~14 GiB, even though the shipped requests look like a Raspberry Pi job. That
 asymmetry is deliberately generous on CPU (bursty training) and is the first thing
 to tune downward if you are capacity-constrained: ClickHouse and the worker are
 the two that matter, and both have slack in their limits.
