@@ -94,3 +94,27 @@ env -u PYTHONPATH python3 scripts/audit_ml_coverage.py --live --host sensor.exam
 The per-source query counts are in the 2026-10-30 live read; the schema and source inventory are
 in `docs/research/zeek-log-research-ml.md`. This report does not alter a collector, model,
 schema or UI.
+
+## 7. Follow-up — multi-NIC capture repair (2026-11-01)
+
+The 2026-10-30 coverage gap had a concrete capture cause. `trunk-init` writes the port it
+probed to `/state/ifaces`; the Zeek startup treated that file as the WHOLE capture set. With
+`ZEEK_IFACES=eth1,eth2` and `CAPTURE_IFACE=eth1`, it captured only eth1 and silently ignored
+eth2. The fix merges the trunk state with the configured ports, replacing the parent only
+when VLAN children were detected (commit `8120984`, gate PASS, live DaemonSet verified).
+
+After the repair, both capture processes are running and writing their own log directories:
+
+| source | 24h rows | 24h source hosts | change |
+|---|---:|---:|---|
+| `zeek_conn` | 223,547 | 2,168 | stable |
+| `zeek_dns` | 48,809 | **21** (was 14) | +7; both `.2` and `.3` segments now present |
+| `zeek_ssl` | 1,548 | **17** (was 12) | +5; both segments present |
+| `zeek_ssh` | 45 | 1 | present |
+| `zeek_smb_mapping`, `zeek_kerberos`, `zeek_ntlm`, `zeek_dce_rpc` | **0** | **0** | still unavailable |
+
+The 30-minute post-fix window shows DNS from both segments and fresh `eth2` `conn`, `dns`,
+`ssl` and `ssh` logs. The `ml_window_scores` population also widened to 11,728 rows across 22
+hosts after the fix. SMB/Kerberos/NTLM/DCE still have no rows; that is now a traffic/segment
+question, not the multi-NIC startup bug. Verify the Zeek protocol load set and whether those
+protocols exist on either captured segment before adding features or claiming coverage.
