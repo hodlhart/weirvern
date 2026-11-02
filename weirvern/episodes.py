@@ -178,6 +178,36 @@ def merge_with_previous(
         prior_by_host.setdefault(str(row.get("src_addr") or ""), []).append(row)
 
     superseded: list[dict[str, Any]] = []
+
+    # COLLAPSE DUPLICATES THAT EXISTED BEFORE THIS REFRESH, even when they sit before the
+    # current episode and therefore never overlap it. The first live run exposed this: old
+    # rows whose last window ended just before the current incident's gap survived forever,
+    # because merge only compared them with the new episode. Overlap alone is the duplicate
+    # test -- two distinct incidents separated by the episode gap do not overlap.
+    for host_rows in prior_by_host.values():
+        kept: list[dict[str, Any]] = []
+        for prior in sorted(host_rows, key=lambda item: _naive_utc(item["episode_start"])):
+            if any(_overlaps(prior, earlier) for earlier in kept):
+                if str(prior.get("page_reason") or "") != SUPERSEDED_REASON:
+                    old = dict(prior)
+                    old["pageable"] = 0
+                    old["page_reason"] = SUPERSEDED_REASON
+                    superseded.append(old)
+            else:
+                kept.append(prior)
+
+    seen_superseded: set[tuple[str, datetime]] = {
+        (str(row.get("src_addr") or ""), _naive_utc(row["episode_start"]))
+        for row in superseded
+    }
+
+    def _mark_superseded(prior: dict[str, Any]) -> None:
+        key = (str(prior.get("src_addr") or ""), _naive_utc(prior["episode_start"]))
+        if key in seen_superseded:
+            return
+        seen_superseded.add(key)
+        superseded.append(prior)
+
     for episode in episodes:
         _normalise_dates(episode)
         src = str(episode.get("src_addr") or "")
@@ -234,7 +264,7 @@ def merge_with_previous(
             old = dict(prior)
             old["pageable"] = 0
             old["page_reason"] = SUPERSEDED_REASON
-            superseded.append(old)
+            _mark_superseded(old)
     return episodes, superseded
 
 

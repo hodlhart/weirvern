@@ -164,3 +164,29 @@ def test_merge_normalises_aware_prior_timestamps():
     assert merged[0]["episode_end"] == BASE + timedelta(minutes=10)
     assert merged[0]["severity"] == "critical"
     assert len(superseded) == 1  # the aware prior row is history, not a second active episode
+
+
+def test_prior_duplicates_are_collapsed_even_before_the_current_episode():
+    from weirvern.episodes import merge_with_previous
+    current_start = BASE + timedelta(hours=2)
+    current = {"src_addr": "198.51.100.10", "episode_start": current_start,
+               "episode_end": current_start + timedelta(minutes=5),
+               "first_detected": current_start, "last_detected": current_start + timedelta(minutes=5),
+               "occurrences": 1, "window_count": 1, "max_score": 0.9, "severity": "high",
+               "severity_rank": 3, "role": "workstation", "page_window": current_start,
+               "pageable": 0, "page_reason": "", "paged_at": None}
+    old_start = BASE - timedelta(hours=2)
+    prior_one = {"src_addr": "198.51.100.10", "episode_start": old_start,
+                 "episode_end": old_start + timedelta(minutes=30),
+                 "first_detected": old_start, "last_detected": old_start + timedelta(minutes=30),
+                 "occurrences": 3, "window_count": 3, "max_score": 0.9, "severity": "high",
+                 "severity_rank": 3, "role": "workstation", "page_window": old_start,
+                 "pageable": 1, "page_reason": "within-budget", "paged_at": None,
+                 "updated_at": old_start}
+    prior_two = {**prior_one, "episode_start": old_start + timedelta(minutes=5),
+                 "episode_end": old_start + timedelta(minutes=35),
+                 "first_detected": old_start + timedelta(minutes=5),
+                 "last_detected": old_start + timedelta(minutes=35)}
+    _, superseded = merge_with_previous([current], [prior_one, prior_two])
+    assert len(superseded) == 1
+    assert superseded[0]["episode_start"] == old_start + timedelta(minutes=5)

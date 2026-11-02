@@ -17,6 +17,9 @@ EPISODE IDENTITY FIX.
 - The worker now refreshes the episode view every cycle, not only on cycles that produced
   verdicts. A quiet cycle previously left `alert_episodes` stale while detection kept writing
   anomalies; the page budget and dashboard were reading the old view.
+- Pre-existing duplicate rows are collapsed even when they sit before the current incident and
+  do not overlap it: any two prior rows with overlapping intervals are one episode, and the
+  later copy is marked superseded.
 - Live audit before the fix: 2,487 episode rows for 19 hosts in 24 hours versus 68 rebuilt
   episodes. The review is `docs/research/ml-full-review-2026-11-02.md`.
 
