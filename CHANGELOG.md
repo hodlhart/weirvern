@@ -14,6 +14,9 @@ EPISODE IDENTITY FIX.
   that began before the display window but is still active remains visible.
 - Added a regression that slides the anomaly window between refreshes and verifies one active
   episode; a second verifies duplicate prior rows become superseded.
+- The worker now refreshes the episode view every cycle, not only on cycles that produced
+  verdicts. A quiet cycle previously left `alert_episodes` stale while detection kept writing
+  anomalies; the page budget and dashboard were reading the old view.
 - Live audit before the fix: 2,487 episode rows for 19 hosts in 24 hours versus 68 rebuilt
   episodes. The review is `docs/research/ml-full-review-2026-11-02.md`.
 

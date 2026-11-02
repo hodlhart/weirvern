@@ -2479,17 +2479,21 @@ def main() -> None:
                     )
 
             verdicts = detection_sweep(client, detectors, settings, cfg)
+            # THE EPISODE VIEW MUST TRACK THE CLOCK, NOT THE VERDICT LIST. It used to refresh
+            # only when `verdicts` was non-empty. A quiet cycle therefore left `alert_episodes`
+            # stale (measured: the table's last write was 6.5 hours before the worker's latest
+            # anomaly), so the page budget and the dashboard were reading an old view. Refresh
+            # on every cycle; the refresh itself is read-only unless the builder produces rows.
             episode_summary = None
-            if verdicts:
-                try:
-                    episode_summary = episodes.refresh(client, settings)
-                    logger.info("Episodes: %s built, %s pageable",
-                                episode_summary["episodes"], episode_summary["pageable"])
-                except Exception as exc:  # noqa: BLE001
-                    # The episode view is a review convenience, never a detection prerequisite.
-                    # A failed read leaves the verdict un-gated; say so rather than silently
-                    # pretending every window was pageable or that none was.
-                    logger.warning("Episode refresh failed (page budget skipped): %s", exc)
+            try:
+                episode_summary = episodes.refresh(client, settings)
+                logger.info("Episodes: %s built, %s pageable",
+                            episode_summary["episodes"], episode_summary["pageable"])
+            except Exception as exc:  # noqa: BLE001
+                # The episode view is a review convenience, never a detection prerequisite.
+                # A failed read leaves the verdict un-gated; say so rather than silently
+                # pretending every window was pageable or that none was.
+                logger.warning("Episode refresh failed (page budget skipped): %s", exc)
             for v in verdicts:
                 pageable = True
                 if episode_summary is not None:
