@@ -118,3 +118,10 @@ The 30-minute post-fix window shows DNS from both segments and fresh `eth2` `con
 hosts after the fix. SMB/Kerberos/NTLM/DCE still have no rows; that is now a traffic/segment
 question, not the multi-NIC startup bug. Verify the Zeek protocol load set and whether those
 protocols exist on either captured segment before adding features or claiming coverage.
+
+The SMB case is a concrete example of why a zero is not a clean negative. A 24-hour `conn` audit
+found 3,716 connections to TCP/445 from one internal host to another, 7.05 GB outbound, and
+**zero response bytes**, with no `smb_mapping` records. `base/protocols/smb` is in the default
+Zeek closure, so this is a one-way/asymmetric capture limitation, not a missing analyzer. The
+T1021.002 mapping stays unavailable until both directions of that conversation are visible;
+the 445 volume alone must not be read as lateral movement.
