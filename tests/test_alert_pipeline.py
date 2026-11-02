@@ -70,7 +70,6 @@ def _verdict(**kw) -> dict:
         "detected_by_models": "Isolation Forest, Gradient Boosting",
         "duration_minutes": 5,
         "baseline_comparison": "bytes 12.4x the 72h average",
-        "techniques": [],
     }
     v.update(kw)
     return v

@@ -203,8 +203,8 @@ def test_anomaly_row_width_matches_the_columns_the_code_indexes():
 
     out = status.alert_evidence(WidthAwareClient(), "198.51.100.5", "2026-09-17T16:37:00")
     assert out.get("anomaly"), "the anomaly lookup failed; the evidence page would lose its verdict"
-    assert out["anomaly"]["strong_families"] == 11
-    assert out["anomaly"]["severity_basis"] == 12
+    assert out["anomaly"]["strong_families"] == 9
+    assert out["anomaly"]["severity_basis"] == 10
     assert not (out.get("_errors") or {}).get("anomaly")
 
 

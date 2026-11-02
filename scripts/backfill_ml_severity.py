@@ -7,9 +7,9 @@ before/after counts and writes nothing.
 
 THE FORMULA IS DELIBERATELY THE SAME AS `ensemble.severity_of` where the stored columns allow it:
 independent families (IF and GB are one family) plus a material deviation (critical >=3σ,
-high >=2σ) or an ATT&CK structural label. A novelty observation was never stored for historical
-rows, so this backfill can only be MORE conservative than the live path; it cannot invent a
-novelty that was not recorded. State that in the card result.
+high >=2σ). A novelty observation was never stored for historical rows, so this backfill can
+only be MORE conservative than the live path; it cannot invent a novelty that was not recorded.
+State that in the card result.
 
 Usage:
     python scripts/backfill_ml_severity.py --hours 168
@@ -35,9 +35,9 @@ FAMILIES = (
 NEW_SEVERITY = (
     "multiIf("
     "anomaly_score >= 0.95 AND " + FAMILIES + " >= 2 "
-    "AND (deviation_magnitude >= 3 OR attack_label != ''), 'critical', "
+    "AND deviation_magnitude >= 3, 'critical', "
     "anomaly_score >= 0.85 AND " + FAMILIES + " >= 2 "
-    "AND (deviation_magnitude >= 2 OR attack_label != ''), 'high', "
+    "AND deviation_magnitude >= 2, 'high', "
     "anomaly_score >= 0.70 OR (anomaly_score >= 0.60 AND " + FAMILIES + " >= 1), 'medium', "
     "'low')"
 )
@@ -74,7 +74,7 @@ def main() -> int:
         "changed_rows": changed,
         "formula": (
             "independent families (IF+GB=forest, DBSCAN=density, baseline=baseline) + "
-            "material deviation (critical >=3σ, high >=2σ, or ATT&CK structural label); "
+            "material deviation (critical >=3σ, high >=2σ); "
             "novelty cannot be recovered from history"
         ),
     }, indent=2, sort_keys=True))

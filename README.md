@@ -22,12 +22,12 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.23.16</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.23.17</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
   <a href="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hodlhart/weirvern/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.23.16-2f81f7"></a>
+  <a href="https://github.com/hodlhart/weirvern/releases"><img alt="Release" src="https://img.shields.io/badge/release-0.23.17-2f81f7"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2f81f7"></a>
   <a href="https://kubernetes.io/"><img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-conformant-326ce5"></a>
   <a href="SECURITY.md"><img alt="Security" src="https://img.shields.io/badge/security-policy-2f81f7"></a>
@@ -54,8 +54,7 @@ answers behind the window. Click an alert and the evidence is on the same screen
 adaptive baseline are trained independently and fused into one score. A corroboration gate
 decides when independent families and material evidence justify raising severity. A shadow
 calibration layer and challenger channels measure false-alarm budgets and temporal evidence
-without changing the alert path. ATT&CK techniques appear as hypotheses with their measurements,
-never as bare conclusions.
+without changing the alert path.
 
 **Sensors where the network is.** A hub runs the database, models and the console; a weirling is
 the sensor you place on a host or node anywhere in the infrastructure. It can carry several NICs,
@@ -224,7 +223,7 @@ for networks you own or are explicitly authorized to monitor.
 - [Architecture](docs/architecture.md) — workloads, sensor modes, the channel, TLS
 - [Theme](docs/theme.md) — the console's visual system and component recipes
 - [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
-- [Detection and alerting](docs/detection.md) — the ensemble, ATT&CK mapping, alert hygiene
+- [Detection and alerting](docs/detection.md) — the ensemble, alert hygiene
 - [Flow direction](docs/design/flow-direction.md) — request/reply evidence in the Flows tab
 - [Trunk ports](docs/design/trunk-default.md) — adaptive VLAN devices, the default topology
 - [Remote weirling gaps](docs/weirling-remote-gaps.md) — what a remote sensor still cannot do

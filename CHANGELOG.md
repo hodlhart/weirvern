@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.17 — 2026-11-02
+
+MITRE ATT&CK REMOVED.
+
+- Removed the ATT&CK mapper, the alert line, the evidence-page block, the API fields and the
+  export path. Detection and alerting do not depend on a technique label.
+- The evaluator no longer expects or prints techniques for the flow-only scenarios; it asserts
+  severity and latency only.
+- The legacy `attack_techniques` / `attack_label` database columns remain for schema
+  compatibility and are written empty. No migration drops historical data.
+- `attack.py`, its tests and the MITRE-specific checks are gone. The tool now reports what it
+  measured and what changed, without claiming an ATT&CK technique it cannot observe.
+
 ## 0.23.16 — 2026-11-01
 
 ML DETECTION PROGRAM — COVERAGE, SPECIALISTS, AND A USABLE BUDGET.
@@ -3355,7 +3368,7 @@ Recorded because each produced a confident wrong answer about the code:
 - It reported removed `or` fallbacks as live, because the mapper's docstrings *quote* the wrong
   names they replaced while explaining why. The sixth place in this project an assertion had to
   distinguish code from prose about code.
-- `tests/test_attack_wiring.py` asserted that the *invented* names exist — written against the
+- The deleted `tests/test_attack_wiring.py` asserted that the *invented* names exist — written against the
   same wrong names the mapper used, so it could not fail for the reason it existed.
 - A `str.index("keys AS (")` matched that phrase inside an explanatory comment, producing a
   four-character slice that made every assertion against it fail.

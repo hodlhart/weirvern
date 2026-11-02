@@ -77,28 +77,21 @@ ATTACK_HOSTS = {SCANNER, BEACON, EXFIL, *SCENARIO_HOSTS.values()}
 
 # FND-3: the new flow-visible behaviours. Each host is separate so a failure names the
 # scenario; `offset` is minutes after the original attack start, and `deadline_min` is the
-# detection budget measured from the scenario's start. Expected technique/evidence is
-# documentation for the specialist that will consume the fixture -- the harness checks
-# severity + latency, and prints the observed technique so a missing mapping is visible.
+# detection budget measured from the scenario's start. The harness checks severity + latency;
+# it intentionally makes no ATT&CK claim for these flow-only fixtures.
 SCENARIO_SPECS = (
     {"key": "ssh_brute", "host": SCENARIO_HOSTS["ssh_brute"], "offset": 0,
-     "deadline_min": 10, "technique": "T1110",
-     "evidence": "repeated short connections to one SSH service"},
+     "deadline_min": 10},
     {"key": "smb_lateral", "host": SCENARIO_HOSTS["smb_lateral"], "offset": 2,
-     "deadline_min": 10, "technique": "T1021.002",
-     "evidence": "one SMB attempt per internal host"},
+     "deadline_min": 10},
     {"key": "dce_rpc", "host": SCENARIO_HOSTS["dce_rpc"], "offset": 3,
-     "deadline_min": 10, "technique": "T1021.003",
-     "evidence": "endpoint-mapper fan-out across internal hosts"},
+     "deadline_min": 10},
     {"key": "dns_tunnel", "host": SCENARIO_HOSTS["dns_tunnel"], "offset": 0,
-     "deadline_min": 15, "technique": "T1071.004",
-     "evidence": "many short queries to the resolver"},
+     "deadline_min": 15},
     {"key": "quic_c2", "host": SCENARIO_HOSTS["quic_c2"], "offset": 0,
-     "deadline_min": 20, "technique": "T1071",
-     "evidence": "periodic small UDP/443 callbacks"},
+     "deadline_min": 20},
     {"key": "http_c2", "host": SCENARIO_HOSTS["http_c2"], "offset": 1,
-     "deadline_min": 20, "technique": "T1071.001",
-     "evidence": "upload-sized HTTP posts fanned out to multiple endpoints"},
+     "deadline_min": 20},
 )
 
 
@@ -112,7 +105,7 @@ def _as_datetime(value) -> datetime | None:
 
 
 def scenario_results(by_host: dict[str, list[dict]], attack_dt: datetime) -> list[dict]:
-    """One result per FND-3 scenario: severity, first detection, latency, technique.
+    """One result per FND-3 scenario: severity, first detection and latency.
 
     Kept module-level so the guard test can call it with a deliberately empty detection set
     and prove the checker goes red instead of passing an empty corpus.
@@ -124,7 +117,6 @@ def scenario_results(by_host: dict[str, list[dict]], attack_dt: datetime) -> lis
         verdicts = by_host.get(spec["host"], [])
         worst = ""
         windows: list[datetime] = []
-        techniques: list[str] = []
         for verdict in verdicts:
             when = _as_datetime(verdict.get("window_start"))
             # A bucket that starts before the scenario but overlaps it is fair; anything
@@ -136,24 +128,17 @@ def scenario_results(by_host: dict[str, list[dict]], attack_dt: datetime) -> lis
                 worst = sev
             if when is not None:
                 windows.append(when)
-            raw = verdict.get("attack_techniques")
-            if raw:
-                techniques.extend(str(raw).replace("[", "").replace("]", "")
-                                  .replace('"', "").split(","))
         first = min(windows) if windows else None
         latency = (round(max(0.0, (first - start).total_seconds() / 60.0), 1)
                    if first is not None else None)
         passed = bool(first is not None and worst in ("medium", "high", "critical")
                       and latency is not None and latency <= spec["deadline_min"])
-        seen = sorted({t.strip() for t in techniques if t.strip()})
         rows.append({
             **spec,
             "start": start,
             "severity": worst,
             "first_detection": first,
             "latency_min": latency,
-            "technique_seen": spec["technique"] in seen,
-            "techniques": seen,
             "passed": passed,
         })
     return rows
@@ -533,18 +518,16 @@ def main() -> int:
         failures += 1
 
     # 3b. THE FND-3 SCENARIO CORPUS. Six new behaviours, each on its own host. The bar is
-    #     severity medium+ inside the scenario's deadline; the expected technique is printed
-    #     so a missing mapping is visible without pretending the flow-only fixture proves it.
+    #     severity medium+ inside the scenario's deadline. No ATT&CK claim is made from a
+    #     flow-only fixture.
     scenario_rows = scenario_results(by_host, attack_dt)
     for row in scenario_rows:
         if row["passed"]:
             _ok(f"{row['key']}: {row['severity']} in {row['latency_min']}m "
-                f"(deadline {row['deadline_min']}m) technique "
-                f"{row['technique']}{' seen' if row['technique_seen'] else ' not mapped'}")
+                f"(deadline {row['deadline_min']}m)")
         else:
             _fail(f"{row['key']}: NOT detected to medium+ inside {row['deadline_min']}m "
-                  f"(worst {row['severity'] or 'none'}, latency {row['latency_min']}); "
-                  f"expected {row['technique']} -- {row['evidence']}")
+                  f"(worst {row['severity'] or 'none'}, latency {row['latency_min']})")
             failures += 1
 
     # 3c. GUARD PROOF. A detector that returns nothing must make this corpus go red. The

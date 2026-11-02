@@ -54,7 +54,7 @@ def test_scenario_checker_fails_closed_when_a_verdict_is_missing():
     start = datetime(2026, 1, 1, tzinfo=UTC)
     by_host = {
         spec["host"]: [{"src_addr": spec["host"], "window_start": start,
-                        "severity": "medium", "attack_techniques": spec["technique"]}]
+                        "severity": "medium"}]
         for spec in eval_mod.SCENARIO_SPECS
     }
     rows = eval_mod.scenario_results(by_host, start)

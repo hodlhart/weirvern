@@ -102,18 +102,13 @@ def test_a_failed_query_and_an_empty_host_read_differently():
     )
 
 
-def test_the_evidence_payload_carries_attack_techniques():
-    """The worker writes attack_techniques on every anomaly and the alert prints it, but the
-    evidence query never SELECTed it -- so the one page an analyst opens to read the measurement
-    behind an alert could never show a technique, while the front end asked for it every time."""
+def test_the_evidence_payload_no_longer_carries_attack_fields():
+    """MITRE/ATT&CK was removed from the tool; the evidence API must not carry its columns."""
     src = (ROOT / "weirvern" / "admin" / "status.py").read_text()
     start = src.index("def alert_evidence(")
     body = src[start:src.index("\ndef ", start + 10)]
-    assert "attack_techniques" in body, (
-        "the evidence window query does not select attack_techniques, so the ATT&CK block in the "
-        "GUI can never render"
-    )
-    assert "attack_label" in body
+    assert "attack_techniques" not in body
+    assert "attack_label" not in body
 
 
 def test_the_auth_note_is_resolved_on_load():
@@ -231,11 +226,10 @@ def test_getJSON_is_defined_exactly_once():
 # ── the CSS tokens a few rules reference ────────────────────────────────────────
 
 def test_every_css_custom_property_that_is_used_is_defined():
-    """`.attack-meta` used var(--muted-foreground), `.setting-input` used var(--card), and
-    `.chip .x:hover` used var(--danger) -- none of them defined in :root. An undefined custom
-    property makes the whole declaration invalid, so the attack metadata inherited the body
-    colour and the setting input rendered with no background: both look like styling choices
-    rather than missing tokens.
+    """`.setting-input` used var(--card), and `.chip .x:hover` used var(--danger) -- neither was
+    defined in :root. An undefined custom property makes the whole declaration invalid, so the
+    setting input rendered with no background: it looked like a styling choice rather than a
+    missing token.
     """
     import re
     css = (ROOT / "weirvern" / "admin" / "web" / "style.css").read_text()

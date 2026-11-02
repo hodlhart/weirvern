@@ -19,7 +19,7 @@ row of zeros where the reason should be.
 This matters beyond tidiness. "Which feature drove this?" is the question you ask
 BEFORE you can hunt a threat: without it there is no way to move from "the
 ensemble scored this 0.91" to "this host sent 3.6 GB to one destination when its
-normal maximum is 65 MB", and no way to map behaviour onto an ATT&CK technique.
+normal maximum is 65 MB", and no way to move from a score to the measurement behind it.
 
 DESIGN CHOICES, and why they are these:
 

@@ -91,33 +91,6 @@ def _compact_ts(value: object) -> str:
         return str(value)[:16]
 
 
-def _parse_techniques(raw: object) -> list[str]:
-    """ATT&CK lines from the stored JSON column.
-
-    The column is the same one the GUI parses (a JSON array of {id, name, tactic,
-    confidence, ...}); a malformed value degrades to no technique, never to an error.
-    """
-    if not raw:
-        return []
-    try:
-        value = json.loads(raw) if isinstance(raw, str) else raw
-    except (TypeError, ValueError):
-        return []
-    out: list[str] = []
-    for item in value if isinstance(value, list) else []:
-        if not isinstance(item, dict):
-            continue
-        tid = str(item.get("id") or "").strip()
-        if not tid:
-            continue
-        label = " ".join(x for x in (tid, str(item.get("name") or "").strip()) if x)
-        conf = str(item.get("confidence") or "").strip()
-        if conf:
-            label += f" ({conf})"
-        out.append(label)
-    return out
-
-
 # ── Reads ───────────────────────────────────────────────────────────────────────────────────
 
 
@@ -132,8 +105,7 @@ def fetch_anomalies(client, hours: int, limit: int = 2000) -> dict[str, list[dic
     """
     try:
         rows = client.query(
-            "SELECT src_addr, detected_at, anomaly_score, severity, attack_techniques, "
-            "       attack_label, primary_deviation_feature "
+            "SELECT src_addr, detected_at, anomaly_score, severity, primary_deviation_feature "
             "FROM weirvern.netflow_anomalies "
             "WHERE detected_at >= now() - INTERVAL %(h)s HOUR "
             "ORDER BY detected_at DESC LIMIT %(n)s",
@@ -150,9 +122,7 @@ def fetch_anomalies(client, hours: int, limit: int = 2000) -> dict[str, list[dic
             "detected_at": _compact_ts(r[1]),
             "score": float(r[2] or 0.0),
             "severity": str(r[3] or ""),
-            "techniques": _parse_techniques(r[4]),
-            "label": str(r[5] or ""),
-            "feature": str(r[6] or ""),
+            "feature": str(r[4] or ""),
         })
     if capped:
         print(f"  ! anomaly list reached the read cap ({limit}); older anomalies are not listed")
@@ -289,10 +259,6 @@ def render_host_note(addr: str, name: str, inv: dict, peers: list[dict],
             bits = [a["detected_at"] or "time unknown",
                     f"**{a['severity'] or 'severity unknown'}**",
                     f"score {a['score']:.2f}"]
-            if a["techniques"]:
-                bits.append("; ".join(a["techniques"][:2]))
-            elif a["label"]:
-                bits.append(a["label"])
             if a["feature"]:
                 bits.append(f"feature: {a['feature']}")
             lines.append("- " + " · ".join(bits))

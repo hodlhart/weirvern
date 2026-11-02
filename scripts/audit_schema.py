@@ -163,7 +163,6 @@ def main() -> int:
         "zeek_features.py": (ROOT / "weirvern" / "zeek_features.py").read_text(),
         "worker.py": (ROOT / "weirvern" / "worker.py").read_text(),
         "status.py": (ROOT / "weirvern" / "admin" / "status.py").read_text(),
-        "attack.py": (ROOT / "weirvern" / "attack.py").read_text(),
         "app.js": (ROOT / "weirvern" / "admin" / "web" / "app.js").read_text(),
     }
     from weirvern.ingester import ZEEK_MAPPERS

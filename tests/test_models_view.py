@@ -378,42 +378,8 @@ def test_the_anomalies_table_has_a_header_for_every_cell():
 
 
 def test_the_technique_block_renders_evidence_not_just_the_id():
-    """A bare MITRE ID is not checkable. The block must show the measurements that produced
-    it, the confidence, and what a network sensor can see for that technique."""
+    """Removed: MITRE/ATT&CK was removed from the tool."""
     app = (WEB / "app.js").read_text()
-    for field in ("attack_techniques", "t.evidence", "t.confidence", "t.network_visibility"):
-        assert field in app, f"the GUI does not render {field}"
-
-
-def test_the_gui_shows_an_explicit_absence_instead_of_hiding_the_attack_section():
-    """The section is a product surface, not a conditional extra.
-
-    Operator, 2026-10-20: "I am not seeing mitre attack frame work when I select an anomaly."
-    Drawing nothing made the feature invisible. The stable section must say no network-observable
-    technique was supported AND that this is not a benign verdict -- an empty frame is still a
-    clearance, so the sentence carries the meaning.
-    """
-    app = (WEB / "app.js").read_text()
-    region = app[app.index("parseTechniques(d.anomaly.attack_techniques)"):]
-    region = region[:2200]
-    assert "if (techs.length)" in region, (
-        "the technique rows are not guarded by a non-empty list"
-    )
-    assert "No technique in the network-observable ATT&CK set" in region, (
-        "the evidence page hides ATT&CK when nothing matched; the operator cannot tell a "
-        "missing feature from a missing technique"
-    )
-    assert "not a benign verdict" in region, (
-        "the absence state must not read as an all-clear"
-    )
-
-
-def test_malformed_technique_json_does_not_blank_the_evidence_view():
-    """The techniques ride in a String column. A parse failure must degrade the technique
-    block, not throw and take out the evidence the analyst opened the page for."""
-    app = (WEB / "app.js").read_text()
-    assert "function parseTechniques" in app
-    region = app[app.index("function parseTechniques"):]
-    region = region[:500]
-    assert "catch" in region, "parseTechniques does not guard against malformed JSON"
-    assert "return []" in region, "a parse failure must yield an empty list, not throw"
+    assert "parseTechniques" not in app
+    assert "attack_techniques" not in app
+    assert "MITRE ATT&CK" not in app

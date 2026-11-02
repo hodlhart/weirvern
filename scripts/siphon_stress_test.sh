@@ -395,11 +395,11 @@ for q, label in [
         print(f'  {label:28} {c.query(q).result_rows[0][0]}')
     except Exception as e:
         print(f'  {label:28} query failed: {str(e)[:60]}')
-# The newest anomaly with its technique label, if any was produced.
+# The newest anomaly, with the score and severity that produced it.
 try:
-    r = c.query('SELECT src_addr, severity, attack_label FROM weirvern.netflow_anomalies ORDER BY detected_at DESC LIMIT 1').result_rows
+    r = c.query('SELECT src_addr, severity, anomaly_score FROM weirvern.netflow_anomalies ORDER BY detected_at DESC LIMIT 1').result_rows
     if r:
-        print(f'  most recent anomaly:         {r[0][0]} severity={r[0][1]} techniques={r[0][2] or \"(none matched)\"}')
+        print(f'  most recent anomaly:         {r[0][0]} severity={r[0][1]} score={r[0][2]}')
 except Exception as e:
     print('  anomaly lookup failed:', str(e)[:60])
 " 2>&1 | sed 's/^/  /' | tee -a "$OUT"

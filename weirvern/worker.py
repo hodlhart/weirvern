@@ -23,7 +23,7 @@ from pathlib import Path
 
 from clickhouse_connect.driver.client import Client
 
-from weirvern import __version__, addressing, attack, db, ensemble, episodes, networks
+from weirvern import __version__, addressing, db, ensemble, episodes, networks
 from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
@@ -34,11 +34,7 @@ from weirvern.models.detectors import (
     GradientBoostingDetector,
     IsolationForestDetector,
 )
-from weirvern.zeek_features import (
-    index_protocol_records,
-    zeek_protocol_records_sql,
-    zeek_window_sql,
-)
+from weirvern.zeek_features import zeek_window_sql
 
 from .clock import as_aware, utcnow
 
@@ -1275,7 +1271,7 @@ def _record_model_metadata(client: Client, detectors) -> None:
 
 # The anomaly row's column names, defined ONCE. The row literal in detection_sweep and this tuple
 # must agree in length AND order; separating the two definitions is what let them drift by two
-# columns (the ATT&CK pair was added here and not to the row).
+# columns (the legacy pair was added here and not to the row).
 _ANOMALY_COLUMNS: tuple[str, ...] = (
     "detected_at", "window_start", "window_end", "src_addr", "anomaly_score",
     "confidence", "isolation_forest_score", "gradient_boosting_score",
@@ -1744,23 +1740,9 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         return out
 
     zeek_idx: dict[tuple, dict] = {}
-    protocol_by_host: dict[str, list[dict]] = {}
     try:
         z_cols, z_rows = db.fetch_rows_named(client, zeek_window_sql(since))
         zeek_idx = index(z_cols, z_rows)
-        # The Tier-2 PROTOCOL records, for the ATT&CK mapping. Fetched separately from the
-        # aggregated features because the mapping needs individual facts (a share path, an RPC
-        # operation) rather than counts -- aggregating first would discard the evidence. A
-        # failure here must not stop detection: an alert without a technique is still an alert.
-        try:
-            p_cols, p_rows = db.fetch_rows_named(client, zeek_protocol_records_sql(since))
-            protocol_by_host = index_protocol_records(p_rows, p_cols)
-            logger.info("ATT&CK mapping: %d hosts with protocol records",
-                        len(protocol_by_host))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not load protocol records for ATT&CK mapping "
-                           "(mapping will use volumetric evidence only): %s", exc)
-            protocol_by_host = {}
         if not zeek_idx:
             logger.warning(
                 "Zeek summary is empty for this sweep, so every Zeek feature is imputed. "
@@ -1858,8 +1840,8 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         #     merged flat               -> 3 techniques [T1046, T1595, T1018]
         #
         # So a textbook port scan produced no discovery technique at all. This is the same class
-        # of defect as the four dead rules already fixed in attack.py: a name read in one place
-        # that the producing side never provides under that name. The earlier fix corrected the
+        # of defect as the four dead-column rules already fixed earlier in this project: a name
+        # read in one place that the producing side never provides under that name. The earlier fix
         # NAMES; the values were still unreachable.
         #
         # The nested forms are KEPT as well, because the detectors and explain.py read
@@ -2030,29 +2012,9 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             "feature_contributions": exp["feature_contributions"],
             "baseline_comparison": exp["baseline_comparison"],
         })
-        # ── ATT&CK techniques supported by this window's measurements ──────────
-        #
-        # Mapped from the SAME feature row the explanation used, so the technique and the
-        # numbers cannot disagree -- an alert claiming T1046 while the row shows 400 ports
-        # and 5 MB would mean two different rows had been read.
-        #
-        # Two sources, and they are genuinely different evidence:
-        #   * the volumetric row (`f`)          -> discovery, exfiltration, DNS tunnelling
-        #   * the Zeek records for this host    -> admin shares, DCE/RPC, Kerberos, NTLM, TLS
-        # The Zeek half is frequently empty because the join is sparse; that yields fewer
-        # techniques, which is correct. It must never be rendered as "no lateral movement".
-        techniques = attack.map_techniques(f)
-        zeek_rows = protocol_by_host.get(v["src_addr"]) or []
-        techniques += attack.map_zeek_techniques(zeek_rows)
-        # BOTH SHAPES, deliberately. The DB column needs JSON-serialisable dicts; the alert
-        # formatter needs the Match objects, because attack.summarise() reads `.confidence` and
-        # `.technique.id`. Storing only dicts made the ATT&CK line raise AttributeError inside
-        # push_alert -- which is swallowed by the worker loop, so every detection that DID carry a
-        # technique attribution was silently lost: the alert most worth having was the one that
-        # never arrived. Keep the objects under a private key the row writer does not read.
-        v["attack_techniques"] = [m.as_dict() for m in techniques]
-        v["_attack_matches"] = techniques
-        v["attack_label"] = attack.label(techniques)
+        # ATT&CK mapping was removed from this tool. The two legacy columns remain in the
+        # table for schema compatibility, but they are always empty from here on: no
+        # technique is computed, stored for display, or sent to an alert.
         rows.append([
             utcnow(), v["window_start"], f.get("window_end"), v["src_addr"],
             v["anomaly_score"], v["confidence"], v["isolation_forest_score"],
@@ -2061,10 +2023,8 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             exp["primary_deviation_zscore"], exp["deviation_magnitude"],
             exp["feature_contributions"], exp["baseline_comparison"],
             v["detected_by_models"], v["severity"],
-            # ATT&CK LAST, matching _ANOMALY_COLUMNS. json.dumps because the column is a String
-            # holding a list of objects: a raw list would be stringified by the driver into Python
-            # repr, which is not JSON and cannot be parsed back.
-            json.dumps(v["attack_techniques"]), v["attack_label"],
+            # Legacy ATT&CK columns, intentionally empty after the mapping removal.
+            "[]", "",
             int(v.get("strong_families") or 0), str(v.get("severity_basis") or ""),
             str(f.get("_network_scope") or ""),
         ])

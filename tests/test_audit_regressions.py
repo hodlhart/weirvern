@@ -19,8 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from weirvern import attack
-from weirvern.alerts import format_message
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.zeek_features import ZEEK_FEATURES
 
@@ -118,71 +116,6 @@ def test_a_row_with_the_wrong_length_is_refused_by_a_realistic_client():
     # And a row one short must be REFUSED, so this test would fail if the guard were removed.
     with pytest.raises(ProgrammingError):
         client.insert("weirvern.netflow_anomalies", [[None] * (n_values - 1)], column_names=names)
-
-
-# ── the alert that could never be sent ─────────────────────────────────────────
-
-def test_an_alert_carrying_a_technique_can_actually_be_formatted():
-    """Every detection that mapped to a technique produced NO alert at all.
-
-    worker.py stored dicts (m.as_dict()) where attack.summarise() expects Match objects, so
-    format_message raised AttributeError on `.confidence`. push_alert calls format_message with no
-    try/except, so the exception escaped to the worker loop's handler and the alert was lost --
-    along with its alert_events audit row, because _audit runs after the format call. The one
-    case where the alert carries its most valuable content was the one case that never arrived.
-    """
-    import json
-
-    techs = attack.map_techniques({
-        "unique_dst_ports": 300, "port_entropy": 7.9, "total_bytes": 0, "resp_bytes": 0,
-        "unique_dst_ips": 60,
-    })
-    assert techs, "the fixture no longer maps to any technique"
-
-    verdict = {
-        "src_addr": "192.0.2.10", "window_start": "2026-09-19 21:00:00", "anomaly_score": 0.91,
-        "severity": "medium", "detected_by_models": "DBSCAN", "model_agreement": 1.0,
-        "isolation_forest_score": 0.2, "gradient_boosting_score": 0.3, "dbscan_score": 0.99,
-        "baseline_score": 0.1, "primary_deviation_feature": "unique_dst_ports",
-        "primary_deviation_zscore": 3.4, "baseline_comparison": "{}", "duration_minutes": 5,
-        "attack_techniques": [m.as_dict() for m in techs],
-        "_attack_matches": techs,
-        "attack_label": attack.label(techs),
-    }
-    message = format_message(verdict)
-    assert "ATT&CK:" in message, "the technique line vanished from the alert"
-
-    # The DB form must round-trip too: the stored row is dicts only, and an alert rendered from a
-    # stored row must still work.
-    stored = {k: v for k, v in verdict.items() if k != "_attack_matches"}
-    stored["attack_techniques"] = json.loads(json.dumps(verdict["attack_techniques"]))
-    assert "ATT&CK:" in format_message(stored)
-
-
-def test_the_worker_keeps_the_match_objects_for_the_alert_path():
-    """The alert path needs Match objects; the DB needs dicts. Both must be carried.
-
-    Keeping only the dicts is what broke the alert, and keeping only the objects would break the
-    JSON column, so the intent has to be explicit in the code.
-    """
-    src = (ROOT / "weirvern" / "worker.py").read_text()
-    assert '_attack_matches' in src, (
-        "the worker no longer keeps the Match objects, so alerts carrying a technique would raise "
-        "inside the formatter and be lost"
-    )
-
-
-def test_match_round_trips_through_its_json_form():
-    """as_dict/from_dict must be inverses, so the two shapes cannot drift apart silently."""
-    techs = attack.map_techniques({
-        "unique_dst_ports": 300, "port_entropy": 7.9, "total_bytes": 0, "resp_bytes": 0,
-        "unique_dst_ips": 60,
-    })
-    for m in techs:
-        back = attack.Match.from_dict(m.as_dict())
-        assert back.technique.id == m.technique.id
-        assert back.confidence == m.confidence
-        assert list(back.evidence) == list(m.evidence)
 
 
 # ── the baseline that read the wrong columns ───────────────────────────────────

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import requests
 from clickhouse_connect.driver.client import Client
 
-from weirvern import attack, detector_registry
+from weirvern import detector_registry
 from weirvern.config import Settings
 
 from .clock import utcnow
@@ -97,31 +97,6 @@ def format_message(verdict: dict) -> str:
     if why:
         lines.append(f"why: {why}")
 
-    # ── ATT&CK technique, when one is supported ────────────────────────────────
-    #
-    # Placed AFTER the measurements, deliberately. Ordering the technique above them would
-    # invite an analyst to read the MITRE ID as the finding and stop -- "T1046" is a
-    # classification of the measurements below it, not evidence in its own right.
-    #
-    # Two cases, and only one of them gets a line:
-    #
-    #   * matches present   -> the id, name and confidence, preceded by "consistent with". An
-    #                          alert is read on a phone, and an unhedged technique name reads
-    #                          as a conclusion.
-    #   * no matches        -> NOTHING is appended. An explicit "no technique matched" line
-    #                          would be noise on every alert that lacks one, and worse, it
-    #                          would appear to clear the window. Absence of a mapping is
-    #                          absence of a mapping; the alert already says what was measured.
-    # PREFER THE MATCH OBJECTS. `attack_techniques` is the JSON form (a list of dicts) written to
-    # the database; summarise() needs Match objects. Reading the dicts here raised AttributeError
-    # on `.confidence` and took the whole alert with it -- a crash in the formatter lost the alert
-    # entirely rather than degrading one line of it. The dict form is converted rather than
-    # ignored so an alert stays renderable from a stored row too.
-    matches = verdict.get("_attack_matches")
-    if matches is None:
-        matches = [attack.Match.from_dict(t) for t in (verdict.get("attack_techniques") or [])]
-    if matches:
-        lines.append(f"ATT&CK: {attack.summarise(matches)}")
     return "\n".join(lines)
 
 

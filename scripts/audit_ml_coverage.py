@@ -4,10 +4,11 @@
 WHY THIS IS A DIFFERENT QUESTION FROM audit_schema.py.
 
 `audit_schema.py` answers "is every table read by SOMETHING" -- and it passes, because every Zeek
-table is read by `zeek_features.py` or `attack.py` or the GUI. But "read by something" is not "used
+table is read by `zeek_features.py`, `status.py` or the GUI. But "read by something" is not "used
 by the models":
 
-  * a table read only by `attack.py` contributes to a DETECTION RULE, not to a feature vector
+  * a table read only by `zeek_features.py` for a protocol record contributes to hunting or
+    display, not necessarily to a feature vector
   * a table read only by `status.py` or `app.js` contributes to a DISPLAY, not to a model
   * and a table whose rows are never sampled into a training window is collected and dropped
 
@@ -36,9 +37,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The modules that build FEATURE VECTORS. Deliberately excludes attack.py (detection rules),
-# status.py (dashboard), and the web layer (display): reading a table there does not put it in a
-# model, and conflating the two is exactly how "collected but unmodelled" hides.
+# The modules that build FEATURE VECTORS. Deliberately excludes status.py (dashboard) and the
+# web layer (display): reading a table there does not put it in a model, and conflating the two
+# is exactly how "collected but unmodelled" hides.
 ML_MODULES = [
     "weirvern/zeek_features.py",
     "weirvern/features.py",
@@ -63,7 +64,6 @@ ML_MODULES = [
 # Modules that READ the data but do NOT feed a model. Listed so the report can name the difference
 # rather than implying a table is modelled because something somewhere mentions it.
 NON_ML_READERS = {
-    "weirvern/attack.py": "detection rules",
     "weirvern/admin/status.py": "dashboard",
     "weirvern/admin/web/app.js": "GUI",
     "weirvern/admin/web.py": "GUI API",

@@ -828,48 +828,6 @@ td.num { font-family: var(--mono); text-align: right; }
    beneath it (2026-10-22) and kept the count as the cell's only reading. */
 td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: right; }
 
-/* ── MITRE ATT&CK technique block ─────────────────────────────────────────────
-   Rendered only when a technique matched. The ID is monospaced and the evidence is
-   muted: the analyst should read the measurement, then the ID as its classification,
-   rather than the other way round. */
-.attack {
-  margin-top: 0.75rem;
-  padding: 0.6rem 0.75rem;
-  border-left: 2px solid var(--border);
-}
-.attack-row {
-  display: flex;
-  gap: 0.6rem;
-  align-items: baseline;
-  flex-wrap: wrap;
-  margin-top: 0.35rem;
-}
-.attack-id { font-weight: 600; }
-.attack-meta { color: var(--muted-foreground); font-size: 0.85em; }
-.attack-evidence {
-  margin: 0.25rem 0 0 1.1rem;
-  padding: 0;
-  font-size: 0.9em;
-}
-.attack-vis {
-  margin-top: 0.25rem;
-  font-size: 0.85em;
-  font-style: italic;
-}
-.attack-none {
-  margin: 0.45rem 0 0;
-  max-width: 70ch;
-  font-size: 0.9em;
-}
-/* The list-view column is narrow: the label is built to fit, and truncating here rather
-   than wrapping keeps the row height uniform across a long table. */
-.attack-cell {
-  max-width: 14rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ── clickable affordances ─────────────────────────────────────────────────
  * A bar or row that drills down has to LOOK like it does, or the drill-down may as well not
  * exist. Cursor plus a hover tint is the whole idiom; no new colours are introduced.

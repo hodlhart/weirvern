@@ -2079,7 +2079,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           anomaly: { severity: "high", anomaly_score: 0.91,
                      detected_by_models: "Isolation Forest",
                      baseline_comparison: "bytes 4.1x the learned mean for this hour",
-                     primary_deviation_feature: "bytes", attack_techniques: "",
+                     primary_deviation_feature: "bytes",
                      review_state: "ack" },
           flow_summary: { bytes: 1000, packets: 9, flows: 3,
                           unique_destinations: 1, unique_ports: 1 },
@@ -6856,7 +6856,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           available: true, hostname: "host.example", src_addr: "198.51.100.5",
           window_start: "2026-01-01T00:15:00", window_end: "2026-01-01T00:20:00",
           anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "IF",
-                     baseline_comparison: "", attack_techniques: "" },
+                     baseline_comparison: "" },
           flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
           flows: [], errors: null }) })
       : null);
@@ -6899,7 +6899,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           available: true, hostname: "host.example", src_addr: "198.51.100.5",
           window_start: "2026-01-01T00:15:00", window_end: "2026-01-01T00:20:00",
           anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "IF",
-                     baseline_comparison: "", attack_techniques: "" },
+                     baseline_comparison: "" },
           flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
           flows: [], errors: null }) })
       : String(u).includes("/api/host")
@@ -7211,7 +7211,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           available: true, hostname: "host.example", src_addr: "198.51.100.5",
           window_start: "2026-10-17T10:55:00", window_end: "2026-10-17T11:00:00",
           anomaly: { severity: "high", anomaly_score: 0.91, detected_by_models: "Isolation Forest",
-                     baseline_comparison: "", attack_techniques: "" },
+                     baseline_comparison: "" },
           flow_summary: { bytes: 1000, packets: 9, flows: 3, unique_destinations: 1, unique_ports: 1 },
           flows: [], errors: null }) })
       : String(u).includes("/api/anomalies")
@@ -7257,14 +7257,6 @@ check("...a contradicted segment names BOTH segments on the issues list",
           clicks === 1 && doc.getElementById("view-evidence").classList.contains("active"),
           `clicks=${clicks}`);
     note("investigate-anomaly", "understand", clicks);
-    const attack = doc.querySelector("#ev-verdict .attack");
-    check("every evidence selection carries a MITRE ATT&CK section",
-          !!attack && /MITRE ATT&CK/.test(attack.textContent),
-          attack ? attack.textContent.slice(0, 120) : "no .attack block");
-    check("...and the no-technique state says it is not a benign verdict",
-          !!attack && /No technique in the network-observable ATT&CK set/.test(attack.textContent)
-          && /not a benign verdict/.test(attack.textContent),
-          attack ? attack.textContent.slice(0, 180) : "no .attack block");
     const evVerb = doc.querySelector("#ev-verdict .gate-open");
     clicks = 0;
     if (evVerb) {

@@ -85,20 +85,6 @@ function fmtBytes(n) {
  * A duration in seconds as a compact age. Mirrors status._human_age in the backend so
  * the same figure cannot render two different ways between server and browser.
  */
-// Techniques arrive as JSON in one column. Parsed defensively: a malformed value must
-// degrade the technique block, not blank the whole evidence view -- the evidence is what the
-// analyst came for.
-function parseTechniques(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? v : [];
-  } catch (e) {
-    return [];
-  }
-}
-
 function fmtAge(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
   if (s < 60) return s + "s";
@@ -3228,51 +3214,6 @@ async function loadEvidence(addr, start, end) {
     const dispositions = reviewActs(target, target.review_state || "");
     if (dispositions) acts.appendChild(dispositions);
     verdict.appendChild(acts);
-    // ── ATT&CK techniques ────────────────────────────────────────────────────
-    //
-    // Rendered with the evidence and the confidence, never as a bare ID. "T1046" alone
-    // reads as a finding; "consistent with T1046 (high) -- 300 distinct destination ports
-    // (threshold 100)" can be checked, argued with, and dismissed. Only the second is
-    // usable, and only the second is honest.
-    //
-    // THE SECTION IS STABLE. An earlier version drew nothing when no technique matched, which
-    // made a real feature look absent and left no way to tell "nothing was supported" from
-    // "this page does not show ATT&CK". The empty state below is explicit and says it is NOT
-    // a benign verdict.
-    const techs = parseTechniques(d.anomaly.attack_techniques);
-    const attackBox = el("div", { class: "attack" }, [
-      el("div", { class: "muted", text: "MITRE ATT&CK — hypotheses supported by these measurements" }),
-    ]);
-    if (techs.length) {
-      for (const t of techs) {
-        attackBox.appendChild(el("div", { class: "attack-row" }, [
-          el("span", { class: "mono attack-id", text: t.id }),
-          el("span", { text: t.name }),
-          el("span", { class: "attack-meta", text: `${t.tactic} · ${t.confidence} confidence` }),
-        ]));
-        if (t.evidence && t.evidence.length) {
-          attackBox.appendChild(el("ul", { class: "attack-evidence" },
-            t.evidence.map((e) => el("li", { class: "muted", text: e }))));
-        }
-        if (t.network_visibility) {
-          attackBox.appendChild(el("div", {
-            class: "muted attack-vis",
-            text: `network visibility: ${t.network_visibility}`,
-          }));
-        }
-      }
-    } else {
-      // A STABLE SECTION, NOT A CLEARANCE (operator, 2026-10-20: "I am not seeing mitre attack
-      // frame work when I select an anomaly"). The old code drew NOTHING when no technique
-      // matched, which made a real feature look absent and gave the reader no way to tell
-      // "nothing was supported" from "this page does not show ATT&CK". State the absence, and
-      // state that it is not evidence of benign traffic.
-      attackBox.appendChild(el("p", { class: "muted attack-none", text:
-        "No technique in the network-observable ATT&CK set is supported by this window's " +
-        "measurements. This is not a benign verdict: the mapping only covers what flow and " +
-        "protocol metadata can see." }));
-    }
-    verdict.appendChild(attackBox);
   }
 
   const s = d.flow_summary;

@@ -1153,12 +1153,6 @@ def test_a_scan_spread_across_blocks_is_no_longer_UNDERCOUNTED(monkeypatch):
     assert merged["unique_dst_ports"] == 500, (
         f"the rule sees {merged['unique_dst_ports']} ports; the window holds 500"
     )
-    # And the threshold that was blind now fires.
-    from weirvern.attack import DISCOVERY_MIN_PORTS
-    assert old_view < DISCOVERY_MIN_PORTS, "a single partial row already cleared the threshold"
-    assert merged["unique_dst_ports"] >= DISCOVERY_MIN_PORTS, (
-        "the collapsed row STILL does not clear T1046's port threshold"
-    )
 
 
 def test_the_fallback_to_SUMMING_is_reported(monkeypatch, caplog):
@@ -1319,49 +1313,12 @@ def test_ENTROPY_is_RECOMPUTED_because_the_partials_cannot_express_it(monkeypatc
     out = _collapse_partial_aggregates(partials, {}, _C())
     merged = out[0]
 
-    from weirvern.attack import DISCOVERY_MIN_ENTROPY
-    assert partials[0]["port_entropy"] < DISCOVERY_MIN_ENTROPY, "the fixture no longer models it"
+    assert partials[0]["port_entropy"] < 3.0, "the fixture no longer models it"
     assert merged["port_entropy"] == 7.9, (
         f"port_entropy came back {merged['port_entropy']}; the per-block value cannot exceed 1.0 "
-        f"with 2 ports, and T1046 needs {DISCOVERY_MIN_ENTROPY}"
+        f"with 2 ports"
     )
-    assert merged["port_entropy"] >= DISCOVERY_MIN_ENTROPY, "T1046's entropy gate is still blind"
-
-
-def test_T1046_FIRES_on_a_scan_spread_across_many_blocks(monkeypatch):
-    """THE DETECTION QUESTION, end to end through the product's own mapper.
-
-    Before: the rule read one partial row (2 ports, entropy 0.54) and matched nothing.
-    After: it sees the window (400 ports, entropy 7.9) and fires.
-    """
-    from weirvern.attack import DISCOVERY_MIN_PORTS, map_techniques
-
-    W = datetime(2026, 9, 23, 9, 0)
-    partials = [_agg_row(1, 2, 2, 100, window=W) for _ in range(10)]
-    for p in partials:
-        p["port_entropy"] = 0.54
-    _raw_card_stub(monkeypatch, {(W, "198.51.100.7"): (400, 400, 400, 7.9)})
-
-    class _C:
-        def insert(self, *a, **k):
-            pass
-
-    # What the OLD code handed the rule: the last partial row alone.
-    old_matches = map_techniques(dict(partials[-1]))
-    assert not old_matches, (
-        f"a single partial row already mapped {[m.technique.id for m in old_matches]}, so this "
-        f"fixture does not model the blindness"
-    )
-
-    merged = _collapse_partial_aggregates(partials, {}, _C())[0]
-    new_matches = map_techniques(dict(merged))
-    ids = [m.technique.id for m in new_matches]
-
-    assert "T1046" in ids, (
-        f"a 400-port scan over 10 insert blocks mapped {ids or 'NOTHING'}. The window's ports "
-        f"({merged['unique_dst_ports']} >= {DISCOVERY_MIN_PORTS}) and its entropy "
-        f"({merged['port_entropy']}) both clear T1046's gates."
-    )
+    assert merged["port_entropy"] >= 3.0, "the entropy gate is still blind"
 
 
 def test_the_raw_read_issues_the_VIEWS_OWN_expressions(monkeypatch):

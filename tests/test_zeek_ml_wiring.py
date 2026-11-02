@@ -145,19 +145,6 @@ def test_the_scoring_path_is_wrapped_so_zeek_failure_does_not_stop_detection():
     )
 
 
-def test_the_attack_mapping_is_also_guarded():
-    """The technique mapping adds a second query on the scoring path, so it needs the same
-    protection: a missing Tier-2 table (an older deployment that has not applied the schema)
-    must degrade the mapping, not stop the alert that the mapping annotates."""
-    anchor = WORKER.index("zeek_protocol_records_sql(")
-    region = WORKER[anchor - 400:anchor + 1200]
-    assert "except Exception" in region, (
-        "the protocol-record load is unguarded; a deployment without the Tier-2 tables would "
-        "lose all alerts rather than losing the technique labels"
-    )
-    assert "logger.warning" in region, "a failed protocol-record load is not logged"
-
-
 # ── every detector, on the training path ────────────────────────────────────────
 
 @pytest.mark.parametrize("detector", ["IsolationForestDetector", "GradientBoostingDetector",

@@ -40,8 +40,7 @@ def _code_only(text: str) -> str:
 
     Both new modules explain their design in prose that QUOTES what they deliberately do NOT do --
     "the write path does not shell out to kubectl", "a read route must not consult the auth gate".
-    A naive search reads that explanation as the defect it documents, which is the same trap the
-    ATT&CK mapper's docstrings set earlier in this project. Strip both, then assert.
+    A naive search reads that explanation as the defect it documents. Strip both, then assert.
     """
     import re as _re
 

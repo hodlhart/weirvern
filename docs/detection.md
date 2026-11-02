@@ -59,44 +59,6 @@ that cannot fail is decoration.
 On a live deployment the same idea is reproducible by hand — see
 [Verifying that detection actually works](#verifying-that-detection-actually-works).
 
-### MITRE ATT&CK mapping
-
-Every anomaly is mapped to the ATT&CK techniques its measurements actually support, and the
-mapping is presented as a **hypothesis, never a finding**:
-
-```
-ATT&CK: consistent with T1046 Network Service Discovery (high); also T1018
-  - 300 distinct destination ports (threshold 100)
-  - port entropy 7.90 (threshold 3.0)
-  - 0 bytes out, so no data was moved
-  - network visibility: STRONG. Many destination ports from one source with little or no
-    return traffic is the signature itself.
-  - 284.0 bytes out is not evidence of exfiltration
-```
-
-The evidence lines are the point. "T1046" alone reads as a conclusion and stops an analyst
-looking; the measurements can be checked, argued with, and dismissed. The `network visibility`
-line states what a tap can and cannot see for that technique, and the block is **not rendered
-at all** when nothing matched -- an empty frame or an explicit "no technique" line would read as
-a clearance, and absence of a mapping is not absence of an attack.
-
-**18 techniques** are mapped, across Discovery, Lateral Movement, Execution, Exfiltration,
-Command and Control, Credential Access, Defense Evasion and Initial Access. Techniques that
-require endpoint telemetry (process injection, credential dumping, registry changes) are
-deliberately excluded and listed with the reason, so "not mapped" is never confused with
-"not observable".
-
-The rules are weighted towards the ways a mapping **overstates**, because that is the damaging
-direction. Each of these is a test:
-
-| Would be wrong | Why it does not fire |
-|---|---|
-| Busy server → port scan | The zero/low-byte qualifier is required. 400 ports moving 5 MB is a server. |
-| 900-port scan of one host → Active Scanning | T1595 is reconnaissance of a **range**; measured in hosts, not ports. |
-| Any DCE/RPC call → service execution | Only a service-control **operation** (`CreateServiceW`) counts. A `NetShareEnum` is low-confidence lateral movement at most. |
-| Large transfer → exfiltration | A **ratio** is required. A 50 MB two-way transfer is a backup, not exfil. |
-| Many DNS queries → tunnelling | Entropy **and** a failure ratio. Normal browsing is high-volume, low-entropy, answered. |
-
 ### What is monitored: operator-declared network scopes
 
 A per-host baseline is only meaningful for a stable host population. `src_addr` on a NetFlow

@@ -2475,15 +2475,8 @@ def alert_evidence(client, src_addr: str, window_start: str,
             "SELECT window_start, window_end, anomaly_score, severity, "
             "detected_by_models, baseline_comparison, primary_deviation_feature, "
             "primary_deviation_zscore, feature_contributions, "
-            # The worker writes these on every anomaly and the Pushover alert prints them, but
-            # the evidence query never selected them -- so the ONE page an analyst opens to read
-            # the measurement behind an alert could never show a technique. The front end asks
-            # for parseTechniques(d.anomaly.attack_techniques) and got undefined every time.
-            # THE TUPLE IS POSITIONAL. `strong_families` and `severity_basis` were indexed
-            # below but never selected, so the window lookup raised IndexError, was caught as
-            # a failed read, and the evidence page lost DETECTED/EXPLAINED and every
-            # acknowledge/ignore action. Keep this SELECT and the row[n] mapping in lockstep.
-            "attack_techniques, attack_label, strong_families, severity_basis "
+            # THE TUPLE IS POSITIONAL. Keep this SELECT and the row[n] mapping in lockstep.
+            "strong_families, severity_basis "
             "FROM weirvern.netflow_anomalies WHERE src_addr = %(a)s "
             "AND window_start = parseDateTime64BestEffort(%(w)s) LIMIT 1",
             parameters={"a": src_addr, "w": window_start},
@@ -2498,8 +2491,7 @@ def alert_evidence(client, src_addr: str, window_start: str,
                 "primary_deviation_feature": row[6],
                 "primary_deviation_zscore": row[7],
                 "feature_contributions": row[8],
-                "attack_techniques": row[9], "attack_label": row[10],
-                "strong_families": row[11], "severity_basis": row[12],
+                "strong_families": row[9], "severity_basis": row[10],
             }
     except Exception as exc:  # noqa: BLE001
         logger.warning("alert_evidence window lookup failed: %s", exc)
