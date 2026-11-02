@@ -31,13 +31,13 @@ def test_feature_names_do_not_encode_network_identity():
 def test_feature_vector_is_unchanged_by_address_or_scope_renaming():
     """The same behaviour under a different address plan must produce the same vector."""
     flow = {
-        "src_addr": "10.0.0.5", "dst_addr": "10.0.0.9",
+        "src_addr": "198.51.100.5", "dst_addr": "198.51.100.9",
         "total_bytes": 12_000, "total_packets": 120,
         "unique_dst_ips": 4, "flow_count": 8,
         "window_start": "2026-01-01T12:00:00",
     }
     renamed = {
-        **flow, "src_addr": "192.168.99.5", "dst_addr": "192.168.99.9",
+        **flow, "src_addr": "203.0.113.5", "dst_addr": "203.0.113.9",
         "network_scope": "a-different-network",
     }
     assert extract_features(flow) == extract_features(renamed)
