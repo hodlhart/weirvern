@@ -1,7 +1,7 @@
 """The episode writer's SQL shape and insert arity, without a live ClickHouse."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from weirvern.config import Settings
 from weirvern.episodes import EPISODE_COLUMNS, refresh
@@ -140,3 +140,27 @@ def test_overlapping_prior_rows_are_marked_superseded_without_deleting_history()
     assert active[0]["episode_start"] == BASE
     assert len(superseded) == 1, "the older duplicate was not marked as history"
     assert superseded[0]["episode_start"] == BASE + timedelta(minutes=5)
+
+
+def test_merge_normalises_aware_prior_timestamps():
+    from weirvern.episodes import merge_with_previous
+    episodes = [{"src_addr": "198.51.100.10",
+                 "episode_start": BASE, "episode_end": BASE + timedelta(minutes=5),
+                 "first_detected": BASE, "last_detected": BASE + timedelta(minutes=5),
+                 "occurrences": 1, "window_count": 1, "max_score": 0.9, "severity": "high",
+                 "severity_rank": 3, "role": "workstation", "page_window": BASE,
+                 "pageable": 0, "page_reason": "", "paged_at": None}]
+    prior = {"src_addr": "198.51.100.10",
+             "episode_start": (BASE + timedelta(minutes=5)).replace(tzinfo=UTC),
+             "episode_end": (BASE + timedelta(minutes=10)).replace(tzinfo=UTC),
+             "first_detected": BASE.replace(tzinfo=UTC),
+             "last_detected": (BASE + timedelta(minutes=10)).replace(tzinfo=UTC),
+             "occurrences": 2, "window_count": 2, "max_score": 0.95, "severity": "critical",
+             "severity_rank": 4, "role": "workstation", "page_window": BASE.replace(tzinfo=UTC),
+             "pageable": 1, "page_reason": "within-budget", "paged_at": None,
+              "updated_at": BASE.replace(tzinfo=UTC)}
+    merged, superseded = merge_with_previous(episodes, [prior])
+    assert merged[0]["episode_start"] == BASE
+    assert merged[0]["episode_end"] == BASE + timedelta(minutes=10)
+    assert merged[0]["severity"] == "critical"
+    assert len(superseded) == 1  # the aware prior row is history, not a second active episode

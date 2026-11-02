@@ -37,6 +37,22 @@ EPISODE_COLUMNS = [
 # A superseded row is kept as history but is not an active episode. Using the existing
 # `page_reason` value avoids a destructive migration and lets every reader filter one predicate.
 SUPERSEDED_REASON = "superseded"
+_DATE_FIELDS = ("episode_start", "episode_end", "first_detected", "last_detected",
+                "page_window", "paged_at")
+
+
+def _normalise_dates(row: dict[str, Any]) -> dict[str, Any]:
+    """Make every timestamp in a row naive UTC before ordering it.
+
+    ClickHouse returns tz-aware datetimes; `build_episodes` and the test fixtures produce naive
+    ones. Mixing them raises `TypeError: can't compare offset-naive and offset-aware datetimes`
+    the first time a live duplicate overlaps a rebuilt episode -- caught on the box, not by unit
+    tests. Normalise the row, not just the comparison, so every later min/max is consistent.
+    """
+    for key in _DATE_FIELDS:
+        if row.get(key) is not None:
+            row[key] = _naive_utc(row[key])
+    return row
 
 
 def _naive_utc(value: Any) -> datetime:
@@ -158,10 +174,12 @@ def merge_with_previous(
     """
     prior_by_host: dict[str, list[dict[str, Any]]] = {}
     for row in previous:
+        row = _normalise_dates(dict(row))
         prior_by_host.setdefault(str(row.get("src_addr") or ""), []).append(row)
 
     superseded: list[dict[str, Any]] = []
     for episode in episodes:
+        _normalise_dates(episode)
         src = str(episode.get("src_addr") or "")
         overlaps = [p for p in prior_by_host.get(src, []) if _overlaps(episode, p)]
         if not overlaps:
