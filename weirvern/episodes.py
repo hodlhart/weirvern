@@ -413,6 +413,31 @@ def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str,
         if page_window is not None and _naive_utc(page_window) > now_naive:
             episode["page_window"] = episode["episode_end"]
 
+    # Any older row that still carries a future end/last-seen value cannot be a current
+    # incident. It is left over from the shifted-key generation; retire it as history instead of
+    # letting it inflate the active count while the upper-bounded incident view hides it.
+    seen_superseded = {
+        (str(row.get("src_addr") or ""), _naive_utc(row["episode_start"]))
+        for row in superseded
+    }
+    for prior in previous.values():
+        if str(prior.get("page_reason") or "") == SUPERSEDED_REASON:
+            continue
+        stale = (
+            _naive_utc(prior["episode_end"]) > now_naive
+            or _naive_utc(prior["last_detected"]) > now_naive
+        )
+        if not stale:
+            continue
+        key = (str(prior.get("src_addr") or ""), _naive_utc(prior["episode_start"]))
+        if key in seen_superseded:
+            continue
+        old = dict(prior)
+        old["pageable"] = 0
+        old["page_reason"] = SUPERSEDED_REASON
+        superseded.append(old)
+        seen_superseded.add(key)
+
     paged_by_host: dict[str, int] = {}
     for prior in previous.values():
         if (str(prior.get("page_reason") or "") != SUPERSEDED_REASON
