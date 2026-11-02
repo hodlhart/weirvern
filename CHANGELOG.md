@@ -12,6 +12,12 @@ MITRE ATT&CK REMOVED.
   compatibility and are written empty. No migration drops historical data.
 - `attack.py`, its tests and the MITRE-specific checks are gone. The tool now reports what it
   measured and what changed, without claiming an ATT&CK technique it cannot observe.
+- New deployments now have a named warm-up state (`weirvern/models/readiness.py`): detections
+  are recorded but do not page until the local baseline has 24h, 12 distinct windows and at
+  least one host by default. The knobs are `ML_WARMUP_HOURS`, `ML_WARMUP_MIN_WINDOWS` and
+  `ML_WARMUP_MIN_HOSTS`; an unreadable readiness query is `unknown` and also does not page.
+- Added a portability guard that rejects identity fields in the feature vectors and proves the
+  same behaviour under a renamed address plan produces the same vector.
 
 ## 0.23.16 — 2026-11-01
 

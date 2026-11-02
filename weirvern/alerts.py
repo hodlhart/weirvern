@@ -111,8 +111,9 @@ def push_alert(verdict: dict, settings: Settings, state: AlertState,
     # private flag from episodes.claim(); a missing flag preserves the legacy path for callers
     # that do not run the episode layer.
     if verdict.get("_pageable") is False:
-        _audit(client, verdict, sent=False, reason="budget", message="")
-        return False, "budget"
+        reason = str(verdict.get("_page_reason") or "budget")
+        _audit(client, verdict, sent=False, reason=reason, message="")
+        return False, reason
 
     # THE QUIET-BY-DEFAULT GATE (BF-12), before every other decision: a detector that has no
     # owner and runbook does not page, and neither does one nobody registered. The finding

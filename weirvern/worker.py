@@ -28,6 +28,7 @@ from weirvern.alerts import AlertState, push_alert
 from weirvern.config import ModelConfig, get_settings
 from weirvern.explain import explain, has_novelty
 from weirvern.ingester import tail_forever
+from weirvern.models import readiness as readiness_mod
 from weirvern.models.detectors import (
     AdaptiveBaselineDetector,
     DBSCANDetector,
@@ -2406,6 +2407,7 @@ def main() -> None:
     last_full_train: datetime | None = None
     trained_once = False
     shadow_tick = 0
+    last_readiness_state: str | None = None
 
     while not _stop.is_set():
         cycle_start = time.time()
@@ -2462,6 +2464,20 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("orphan sweep failed (harmless, retried next cycle): %s", exc)
 
+            readiness = readiness_mod.assess(client, settings)
+            if readiness.state != last_readiness_state:
+                last_readiness_state = readiness.state
+                if readiness.ready:
+                    logger.info(
+                        "ML warm-up complete: %s window(s), %s host(s), %.1fh observed",
+                        readiness.windows, readiness.hosts, readiness.observed_hours,
+                    )
+                else:
+                    logger.warning(
+                        "ML warm-up (%s): detections are recorded but not paged; %s",
+                        readiness.state, "; ".join(readiness.reasons) or "waiting for data",
+                    )
+
             verdicts = detection_sweep(client, detectors, settings, cfg)
             episode_summary = None
             if verdicts:
@@ -2482,6 +2498,9 @@ def main() -> None:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Episode claim failed for %s/%s (paging): %s",
                                        v.get("src_addr"), v.get("window_start"), exc)
+                if not readiness.ready:
+                    pageable = False
+                    v["_page_reason"] = "warmup"
                 v["_pageable"] = pageable
                 push_alert(v, settings, alert_state, client)
 

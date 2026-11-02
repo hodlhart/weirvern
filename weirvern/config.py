@@ -152,6 +152,15 @@ class Settings:
         default_factory=lambda: os.environ.get("EPISODE_PAGE_MIN_SEVERITY", "high")
     )
     ml_calibration_days: int = field(default_factory=lambda: _env_int("ML_CALIBRATION_DAYS", 7))
+    # Warm-up gate for a new deployment. The models can learn only after the local network
+    # has produced enough distinct windows/hosts; until then the detection rows still land in
+    # the console, but they do not page. This is the cold-start contract: no universal
+    # "normal" is assumed, and an empty network is not a quiet network.
+    ml_warmup_hours: int = field(default_factory=lambda: _env_int("ML_WARMUP_HOURS", 24))
+    ml_warmup_min_windows: int = field(
+        default_factory=lambda: _env_int("ML_WARMUP_MIN_WINDOWS", 12)
+    )
+    ml_warmup_min_hosts: int = field(default_factory=lambda: _env_int("ML_WARMUP_MIN_HOSTS", 1))
 
 
     # Data input (goflow2 JSONL sink)
@@ -403,6 +412,18 @@ class Settings:
         if self.ml_calibration_days < 1:
             raise ValueError(
                 f"ML_CALIBRATION_DAYS must be >= 1, got {self.ml_calibration_days}"
+            )
+        if self.ml_warmup_hours < 0:
+            raise ValueError(
+                f"ML_WARMUP_HOURS must be >= 0, got {self.ml_warmup_hours}"
+            )
+        if self.ml_warmup_min_windows < 1:
+            raise ValueError(
+                f"ML_WARMUP_MIN_WINDOWS must be >= 1, got {self.ml_warmup_min_windows}"
+            )
+        if self.ml_warmup_min_hosts < 1:
+            raise ValueError(
+                f"ML_WARMUP_MIN_HOSTS must be >= 1, got {self.ml_warmup_min_hosts}"
             )
         if self.detect_interval_s < 10:
             raise ValueError("DETECT_INTERVAL_S must be >= 10")

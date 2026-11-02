@@ -224,6 +224,7 @@ for networks you own or are explicitly authorized to monitor.
 - [Theme](docs/theme.md) — the console's visual system and component recipes
 - [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
 - [Detection and alerting](docs/detection.md) — the ensemble, alert hygiene
+- [Portable ML](docs/portable-ml.md) — local warm-up, invariant features and per-network calibration
 - [Flow direction](docs/design/flow-direction.md) — request/reply evidence in the Flows tab
 - [Trunk ports](docs/design/trunk-default.md) — adaptive VLAN devices, the default topology
 - [Remote weirling gaps](docs/weirling-remote-gaps.md) — what a remote sensor still cannot do

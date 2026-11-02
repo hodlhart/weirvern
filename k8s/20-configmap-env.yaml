@@ -208,6 +208,11 @@ data:
   RETRAIN_WINDOW_H: "72"
   BASE_THRESHOLD: "0.35"
   MIN_AGREEMENT: "0.33"
+  # Local-learning warm-up: a new deployment records detections but does not page until the
+  # local baseline has enough history. Set ML_WARMUP_HOURS=0 to disable the gate explicitly.
+  ML_WARMUP_HOURS: "24"
+  ML_WARMUP_MIN_WINDOWS: "12"
+  ML_WARMUP_MIN_HOSTS: "1"
   # The corroboration bar: a detector scoring at/above this counts as a STRONG
   # signal, and high/critical severity needs two-or-more (or one plus a
   # structural signature). Editable from the GUI. It was editable BEFORE the
