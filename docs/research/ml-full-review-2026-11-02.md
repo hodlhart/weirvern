@@ -1,7 +1,7 @@
 # Weirvern ML — full research and review
 
 **Date:** 2026-11-02
-**Build:** 0.23.17 (deployed and verified on `weirvern.home`)
+**Build:** 0.23.17 (deployed and verified on `sensor.example`)
 **Scope:** production detection path, live ClickHouse evidence, calibration, episodes, alert budget, feedback and candidate models.
 **Status:** research and live audit only. No code or model change is implied by this document.
 

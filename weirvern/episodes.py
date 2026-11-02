@@ -20,7 +20,7 @@ DESIGN RULES
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from clickhouse_connect.driver.client import Client
@@ -34,6 +34,9 @@ EPISODE_COLUMNS = [
     "occurrences", "window_count", "max_score", "severity", "severity_rank", "role",
     "page_window", "pageable", "page_reason", "paged_at", "updated_at",
 ]
+# A superseded row is kept as history but is not an active episode. Using the existing
+# `page_reason` value avoids a destructive migration and lets every reader filter one predicate.
+SUPERSEDED_REASON = "superseded"
 
 
 def _naive_utc(value: Any) -> datetime:
@@ -126,6 +129,97 @@ def _finish_episode(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _overlaps(one: dict[str, Any], other: dict[str, Any]) -> bool:
+    return (
+        _naive_utc(one["episode_start"]) <= _naive_utc(other["episode_end"])
+        and _naive_utc(other["episode_start"]) <= _naive_utc(one["episode_end"])
+    )
+
+
+def merge_with_previous(
+    episodes: list[dict[str, Any]], previous: Iterable[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Merge a rebuilt episode with older copies of the same incident.
+
+    THE DEFECT THIS REPLACES. `refresh` used to key an episode on
+    `(src_addr, episode_start)` after reading only a 24-hour window. For a host that stayed
+    anomalous, the oldest window fell out of that window every five minutes, so the computed
+    start moved forward and the next refresh inserted a NEW key. `ReplacingMergeTree` cannot
+    collapse different keys. The live table reached 2,487 rows for 19 hosts in 24 hours, while
+    the same anomaly rows collapsed to 68 episodes.
+
+    This function keeps the earliest start and the latest end of every overlapping group, and
+    returns the older rows separately so `refresh` can mark them `superseded` without deleting
+    any history. A row whose key IS the canonical key is not marked: the canonical insert
+    replaces that row directly.
+
+    `occurrences` and `window_count` use the maximum, not a sum: the old rows are duplicates of
+    the same anomaly windows, so summing them would count the incident twice.
+    """
+    prior_by_host: dict[str, list[dict[str, Any]]] = {}
+    for row in previous:
+        prior_by_host.setdefault(str(row.get("src_addr") or ""), []).append(row)
+
+    superseded: list[dict[str, Any]] = []
+    for episode in episodes:
+        src = str(episode.get("src_addr") or "")
+        overlaps = [p for p in prior_by_host.get(src, []) if _overlaps(episode, p)]
+        if not overlaps:
+            continue
+
+        start = min([episode["episode_start"]] + [p["episode_start"] for p in overlaps])
+        end = max([episode["episode_end"]] + [p["episode_end"] for p in overlaps])
+        episode["episode_start"] = start
+        episode["episode_end"] = end
+        episode["first_detected"] = min(
+            [episode["first_detected"]] + [p["first_detected"] for p in overlaps]
+        )
+        episode["last_detected"] = max(
+            [episode["last_detected"]] + [p["last_detected"] for p in overlaps]
+        )
+        episode["occurrences"] = max(
+            [int(episode.get("occurrences") or 0)]
+            + [int(p.get("occurrences") or 0) for p in overlaps]
+        )
+        episode["window_count"] = max(
+            [int(episode.get("window_count") or 0)]
+            + [int(p.get("window_count") or 0) for p in overlaps]
+        )
+        episode["max_score"] = max(
+            [float(episode.get("max_score") or 0.0)]
+            + [float(p.get("max_score") or 0.0) for p in overlaps]
+        )
+        best = max(
+            [episode] + overlaps,
+            key=lambda item: (int(item.get("severity_rank") or 0),
+                              float(item.get("max_score") or 0.0)),
+        )
+        episode["severity"] = best.get("severity") or episode.get("severity") or "low"
+        episode["severity_rank"] = int(best.get("severity_rank") or _rank(episode["severity"]))
+        episode["role"] = next(
+            (str(item.get("role")) for item in [episode] + overlaps if item.get("role")), ""
+        )
+
+        paged = next((p for p in overlaps if p.get("paged_at") is not None), None)
+        if paged:
+            episode["paged_at"] = paged["paged_at"]
+            window = paged.get("page_window")
+            if window is not None and _naive_utc(start) <= _naive_utc(window) <= _naive_utc(end):
+                episode["page_window"] = window
+
+        canonical_key = (src, _naive_utc(start))
+        for prior in overlaps:
+            if str(prior.get("page_reason") or "") == SUPERSEDED_REASON:
+                continue
+            if (str(prior.get("src_addr") or ""), _naive_utc(prior["episode_start"])) == canonical_key:
+                continue
+            old = dict(prior)
+            old["pageable"] = 0
+            old["page_reason"] = SUPERSEDED_REASON
+            superseded.append(old)
+    return episodes, superseded
+
+
 def apply_budget(episodes: list[dict[str, Any]], *, per_host_budget: int,
                  min_severity: str = "high",
                  paged_by_host: dict[str, int] | None = None) -> list[dict[str, Any]]:
@@ -167,7 +261,7 @@ def apply_budget(episodes: list[dict[str, Any]], *, per_host_budget: int,
 
 def _existing(client: Client, hours: int = 24) -> dict[tuple[str, datetime], dict[str, Any]]:
     result = client.query(
-        "SELECT src_addr, episode_start, page_window, pageable, page_reason, paged_at "
+        "SELECT " + ", ".join(EPISODE_COLUMNS) + " "
         "FROM weirvern.alert_episodes FINAL "
         "WHERE episode_start >= now() - INTERVAL %(h)s HOUR",
         parameters={"h": int(hours)},
@@ -191,15 +285,21 @@ def _roles(client: Client) -> dict[str, str]:
 def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str, int]:
     """Rebuild the recent episode view and write it to `alert_episodes`.
 
+    THE LOOKBACK IS NOT THE DISPLAY WINDOW. The builder reads a longer history
+    (`episode_lookback_h`, default 30 days) so a continuous incident keeps ONE start timestamp
+    even as the last-24-hours display window slides. It then writes only episodes that ended
+    inside the display window, plus `superseded` rows for older overlapping copies.
+
     ReplacingMergeTree rows are reinserted with `updated_at`; `paged_at` from the previous view
     is preserved so a refresh cannot reset a claimed page. A zero-row window is a valid empty
     result, not an error.
     """
+    lookback = max(int(hours), int(getattr(settings, "episode_lookback_h", hours)))
     result = client.query(
         "SELECT detected_at, window_start, window_end, src_addr, anomaly_score, severity "
         "FROM weirvern.netflow_anomalies "
         "WHERE window_start >= now() - INTERVAL %(h)s HOUR",
-        parameters={"h": int(hours)},
+        parameters={"h": lookback},
     )
     columns = list(result.column_names)
     rows = [dict(zip(columns, row, strict=False)) for row in result.result_rows]
@@ -207,22 +307,22 @@ def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str,
     for row in rows:
         row["role"] = roles.get(str(row.get("src_addr") or ""), "")
 
-    episodes = build_episodes(rows, int(settings.episode_gap_minutes))
-    previous = _existing(client, hours=hours)
+    now = utcnow()
+    cutoff = _naive_utc(now) - timedelta(hours=int(hours))
+    episodes = [
+        episode for episode in build_episodes(rows, int(settings.episode_gap_minutes))
+        if _naive_utc(episode["episode_end"]) >= cutoff
+    ]
+    previous = _existing(client, hours=lookback)
+    episodes, superseded = merge_with_previous(episodes, previous.values())
+
     paged_by_host: dict[str, int] = {}
-    for episode in episodes:
-        key = (episode["src_addr"], episode["episode_start"])
-        prior = previous.get(key)
-        if prior:
-            if prior.get("paged_at") is not None:
-                episode["paged_at"] = prior["paged_at"]
-                episode["page_window"] = prior["page_window"]
-            else:
-                # Keep a previously chosen window if the max moved by a few points; this avoids
-                # a moving target when a later window is only marginally stronger.
-                episode["page_window"] = prior.get("page_window") or episode["page_window"]
-        if episode.get("paged_at"):
-            paged_by_host[episode["src_addr"]] = paged_by_host.get(episode["src_addr"], 0) + 1
+    for prior in previous.values():
+        if (str(prior.get("page_reason") or "") != SUPERSEDED_REASON
+                and prior.get("paged_at") is not None
+                and _naive_utc(prior["episode_end"]) >= cutoff):
+            host = str(prior.get("src_addr") or "")
+            paged_by_host[host] = paged_by_host.get(host, 0) + 1
 
     apply_budget(
         episodes,
@@ -230,8 +330,18 @@ def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str,
         min_severity=str(settings.episode_page_min_severity),
         paged_by_host=paged_by_host,
     )
-    now = utcnow()
-    values = [[episode[col] for col in EPISODE_COLUMNS[:-1]] + [now] for episode in episodes]
+    # Superseded rows are history, never active episodes. Their updated_at is deliberately one
+    # millisecond before the canonical row so a same-key canonical write wins deterministically.
+    superseded_values = [
+        [row[col] for col in EPISODE_COLUMNS[:-1]] + [now] for row in superseded
+    ]
+    if superseded_values:
+        client.insert("weirvern.alert_episodes", superseded_values, column_names=EPISODE_COLUMNS)
+    canonical_updated = now + timedelta(milliseconds=1)
+    values = [
+        [episode[col] for col in EPISODE_COLUMNS[:-1]] + [canonical_updated]
+        for episode in episodes
+    ]
     if values:
         client.insert("weirvern.alert_episodes", values, column_names=EPISODE_COLUMNS)
     return {
@@ -257,6 +367,7 @@ def claim(client: Client, verdict: dict[str, Any], settings: Settings) -> bool:
         "pageable, page_reason, paged_at "
         "FROM weirvern.alert_episodes FINAL "
         "WHERE src_addr = %(src)s AND episode_start <= %(at)s AND episode_end >= %(at)s "
+        "AND page_reason != 'superseded' "
         "ORDER BY episode_start DESC LIMIT 1",
         parameters={"src": src, "at": at},
     )
@@ -279,4 +390,5 @@ def claim(client: Client, verdict: dict[str, Any], settings: Settings) -> bool:
     return True
 
 
-__all__ = ["SEVERITY_RANK", "apply_budget", "build_episodes", "claim", "refresh"]
+__all__ = ["SEVERITY_RANK", "SUPERSEDED_REASON", "apply_budget", "build_episodes", "claim",
+           "merge_with_previous", "refresh"]

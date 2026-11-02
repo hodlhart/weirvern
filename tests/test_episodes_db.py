@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from weirvern.config import Settings
 from weirvern.episodes import EPISODE_COLUMNS, refresh
 
-BASE = datetime(2026, 10, 30, 0, 0, 0)
+BASE = datetime.now().replace(microsecond=0) - timedelta(hours=1)
 
 
 class Result:
@@ -52,3 +52,91 @@ def test_refresh_writes_one_episode_with_all_columns():
     assert rows[0][columns.index("occurrences")] == 2
     assert rows[0][columns.index("pageable")] == 1
     assert rows[0][columns.index("role")] == "workstation"
+
+
+class WindowClient:
+    """A fake that can slide the anomaly window between two refreshes."""
+
+    def __init__(self, rounds, episodes=None):
+        self.rounds = rounds
+        self.round_index = 0
+        self.episodes = {(row[0], row[1]): dict(zip(EPISODE_COLUMNS, row, strict=False))
+                         for row in (episodes or [])}
+
+    def query(self, sql, parameters=None):
+        if "FROM weirvern.netflow_anomalies" in sql:
+            rows = self.rounds[min(self.round_index, len(self.rounds) - 1)]
+            self.round_index += 1
+            return Result(
+                ["detected_at", "window_start", "window_end", "src_addr", "anomaly_score",
+                 "severity"], rows)
+        if "FROM weirvern.host_roles" in sql:
+            return Result(["host", "role"], [["198.51.100.10", "workstation"]])
+        if "FROM weirvern.alert_episodes" in sql:
+            rows = [[row[col] for col in EPISODE_COLUMNS] for row in self.episodes.values()]
+            return Result(EPISODE_COLUMNS, rows)
+        raise AssertionError(sql)
+
+    def insert(self, table, rows, column_names=None):
+        for row in rows:
+            item = dict(zip(column_names, row, strict=False))
+            key = (item["src_addr"], item["episode_start"])
+            self.episodes[key] = item
+
+
+def _anomaly_rows(start):
+    return [
+        [start + timedelta(minutes=1), start, start + timedelta(minutes=5),
+         "198.51.100.10", 0.95, "high"],
+        [start + timedelta(minutes=6), start + timedelta(minutes=5), start + timedelta(minutes=10),
+         "198.51.100.10", 0.96, "high"],
+        [start + timedelta(minutes=11), start + timedelta(minutes=10), start + timedelta(minutes=15),
+         "198.51.100.10", 0.97, "high"],
+    ]
+
+
+def _prior_episode(start):
+    values = {
+        "src_addr": "198.51.100.10", "episode_start": start,
+        "episode_end": start + timedelta(minutes=15),
+        "first_detected": start, "last_detected": start + timedelta(minutes=15),
+        "occurrences": 3, "window_count": 3, "max_score": 0.97, "severity": "high",
+        "severity_rank": 3, "role": "workstation", "page_window": start,
+        "pageable": 1, "page_reason": "within-budget", "paged_at": None,
+        "updated_at": start,
+    }
+    return [values[col] for col in EPISODE_COLUMNS]
+
+
+def test_a_sliding_window_does_not_create_a_second_active_episode():
+    first = _anomaly_rows(BASE)
+    second = _anomaly_rows(BASE + timedelta(minutes=5))
+    client = WindowClient([first, second])
+
+    first_summary = refresh(client, Settings())
+    second_summary = refresh(client, Settings())
+
+    active = [row for row in client.episodes.values()
+              if row["page_reason"] != "superseded"]
+    assert first_summary["episodes"] == 1
+    assert second_summary["episodes"] == 1
+    assert len(active) == 1, "the sliding window inserted another active episode"
+    assert active[0]["episode_start"] == BASE, "the canonical start moved with the window"
+
+
+def test_overlapping_prior_rows_are_marked_superseded_without_deleting_history():
+    client = WindowClient([_anomaly_rows(BASE)], episodes=[
+        _prior_episode(BASE),
+        _prior_episode(BASE + timedelta(minutes=5)),
+    ])
+    summary = refresh(client, Settings())
+
+    active = [row for row in client.episodes.values()
+              if row["page_reason"] != "superseded"]
+    superseded = [row for row in client.episodes.values()
+                  if row["page_reason"] == "superseded"]
+    assert summary["episodes"] == 1
+    assert len(active) == 1
+    assert active[0]["episode_start"] == BASE
+    assert len(superseded) == 1, "the older duplicate was not marked as history"
+    assert superseded[0]["episode_start"] == BASE + timedelta(minutes=5)

@@ -213,6 +213,9 @@ data:
   ML_WARMUP_HOURS: "24"
   ML_WARMUP_MIN_WINDOWS: "12"
   ML_WARMUP_MIN_HOSTS: "1"
+  # Episode identity is built from a lookback longer than the display window, so a continuous
+  # incident keeps one start timestamp instead of creating a new row every five minutes.
+  EPISODE_LOOKBACK_H: "720"
   # The corroboration bar: a detector scoring at/above this counts as a STRONG
   # signal, and high/critical severity needs two-or-more (or one plus a
   # structural signature). Editable from the GUI. It was editable BEFORE the

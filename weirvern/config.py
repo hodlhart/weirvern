@@ -147,6 +147,10 @@ class Settings:
     # Episode/budget layer: consecutive windows for the same host are one incident. Only
     # high/critical episodes may page, and only `episode_page_budget` per host per 24h.
     episode_gap_minutes: int = field(default_factory=lambda: _env_int("EPISODE_GAP_MINUTES", 30))
+    # How far back the episode builder reads anomalies. It must cover the whole life of an open
+    # incident, not just the display window: keying on a sliding 24-hour start is what created a
+    # new episode row every five minutes.
+    episode_lookback_h: int = field(default_factory=lambda: _env_int("EPISODE_LOOKBACK_H", 720))
     episode_page_budget: int = field(default_factory=lambda: _env_int("EPISODE_PAGE_BUDGET", 2))
     episode_page_min_severity: str = field(
         default_factory=lambda: os.environ.get("EPISODE_PAGE_MIN_SEVERITY", "high")
@@ -399,6 +403,10 @@ class Settings:
         if self.episode_gap_minutes < 1:
             raise ValueError(
                 f"EPISODE_GAP_MINUTES must be >= 1, got {self.episode_gap_minutes}"
+            )
+        if self.episode_lookback_h < 1:
+            raise ValueError(
+                f"EPISODE_LOOKBACK_H must be >= 1, got {self.episode_lookback_h}"
             )
         if self.episode_page_budget < 0:
             raise ValueError(

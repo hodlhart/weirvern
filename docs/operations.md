@@ -208,6 +208,7 @@ ConfigMap, `kubectl apply -k k8s/` and restart the affected workload.
 | `ML_WARMUP_HOURS` | 24 | Local history required before a new deployment may page (0 disables) |
 | `ML_WARMUP_MIN_WINDOWS` | 12 | Distinct local 5-minute windows required before paging |
 | `ML_WARMUP_MIN_HOSTS` | 1 | Distinct local hosts required before paging |
+| `EPISODE_LOOKBACK_H` | 720 | Incident identity lookback (30 days); keeps a continuous episode on one start timestamp |
 | `PUSHOVER_ENABLED` | `0` | `1` sends real pushes; `0` logs only |
 | `PUSHOVER_USER_KEY` / `PUSHOVER_API_TOKEN` | unset | **Secret** — see step 4 |
 | `PUSHOVER_COOLDOWN_S` | 1800 | Per-source alert cooldown |

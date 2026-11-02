@@ -2007,7 +2007,8 @@ def episodes_recent(client, *, hours: float = 24, limit: int = 100) -> dict:
             "occurrences, window_count, max_score, severity, severity_rank, role, "
             "page_window, pageable, page_reason, paged_at, updated_at "
             "FROM weirvern.alert_episodes FINAL "
-            "WHERE episode_start >= %(since)s AND episode_start <= %(until)s "
+            "WHERE last_detected >= %(since)s AND last_detected <= %(until)s "
+            "AND page_reason != 'superseded' "
             "ORDER BY last_detected DESC LIMIT %(n)s",
             parameters={**timewindow.w(hours), "n": int(limit)},
         )
@@ -2338,6 +2339,7 @@ def incident_detail(client, src_addr: str, episode_start: str, settings=None) ->
             "WHERE src_addr = %(a)s "
             "AND episode_start <= parseDateTime64BestEffort(%(s)s) "
             "AND episode_end >= parseDateTime64BestEffort(%(s)s) "
+            "AND page_reason != 'superseded' "
             "ORDER BY episode_start DESC LIMIT 1",
             parameters={"a": src_addr, "s": episode_start},
         )

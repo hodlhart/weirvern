@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.18 — 2026-11-02
+
+EPISODE IDENTITY FIX.
+
+- `episodes.refresh()` now reads a 30-day episode lookback instead of the 24-hour display window.
+  A continuous incident keeps one start timestamp, so the next refresh updates its row instead of
+  inserting a new keyed copy.
+- Overlapping older episode rows are merged into the canonical episode and marked `superseded`
+  in the existing `page_reason` column. They remain as history, are hidden from the incident view
+  and cannot claim a page.
+- The default incident view filters by `last_detected` rather than `episode_start`, so an incident
+  that began before the display window but is still active remains visible.
+- Added a regression that slides the anomaly window between refreshes and verifies one active
+  episode; a second verifies duplicate prior rows become superseded.
+- Live audit before the fix: 2,487 episode rows for 19 hosts in 24 hours versus 68 rebuilt
+  episodes. The review is `docs/research/ml-full-review-2026-11-02.md`.
+
 ## 0.23.17 — 2026-11-02
 
 MITRE ATT&CK REMOVED.
