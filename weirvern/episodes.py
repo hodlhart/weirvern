@@ -37,22 +37,6 @@ EPISODE_COLUMNS = [
 # A superseded row is kept as history but is not an active episode. Using the existing
 # `page_reason` value avoids a destructive migration and lets every reader filter one predicate.
 SUPERSEDED_REASON = "superseded"
-_DATE_FIELDS = ("episode_start", "episode_end", "first_detected", "last_detected",
-                "page_window", "paged_at")
-
-
-def _normalise_dates(row: dict[str, Any]) -> dict[str, Any]:
-    """Make every timestamp in a row naive UTC before ordering it.
-
-    ClickHouse returns tz-aware datetimes; `build_episodes` and the test fixtures produce naive
-    ones. Mixing them raises `TypeError: can't compare offset-naive and offset-aware datetimes`
-    the first time a live duplicate overlaps a rebuilt episode -- caught on the box, not by unit
-    tests. Normalise the row, not just the comparison, so every later min/max is consistent.
-    """
-    for key in _DATE_FIELDS:
-        if row.get(key) is not None:
-            row[key] = _naive_utc(row[key])
-    return row
 
 
 def _naive_utc(value: Any) -> datetime:
@@ -152,6 +136,55 @@ def _overlaps(one: dict[str, Any], other: dict[str, Any]) -> bool:
     )
 
 
+def _merge_overlapping(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse overlapping rebuilt episodes for the same host before comparing with history.
+
+    `build_episodes` should already return disjoint intervals, but live anomaly rows can carry
+    mixed naive/aware timestamps from different ingesters; that produced two rebuilt episodes for
+    one host whose intervals overlapped. Never write two active episodes for overlapping
+    intervals: merge them here first.
+    """
+    by_host: dict[str, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        by_host.setdefault(str(episode.get("src_addr") or ""), []).append(episode)
+    out: list[dict[str, Any]] = []
+    for rows in by_host.values():
+        current: dict[str, Any] | None = None
+        for episode in sorted(rows, key=lambda item: _naive_utc(item["episode_start"])):
+            if current is None:
+                current = episode
+                continue
+            if not _overlaps(current, episode):
+                out.append(current)
+                current = episode
+                continue
+            current["episode_start"] = min([current["episode_start"], episode["episode_start"]],
+                                           key=_naive_utc)
+            current["episode_end"] = max([current["episode_end"], episode["episode_end"]],
+                                         key=_naive_utc)
+            current["first_detected"] = min(
+                [current["first_detected"], episode["first_detected"]], key=_naive_utc)
+            current["last_detected"] = max(
+                [current["last_detected"], episode["last_detected"]], key=_naive_utc)
+            current["occurrences"] = max(int(current.get("occurrences") or 0),
+                                         int(episode.get("occurrences") or 0))
+            current["window_count"] = max(int(current.get("window_count") or 0),
+                                          int(episode.get("window_count") or 0))
+            if float(episode.get("max_score") or 0.0) > float(current.get("max_score") or 0.0):
+                current["max_score"] = episode["max_score"]
+                current["page_window"] = episode["page_window"]
+            if int(episode.get("severity_rank") or 0) > int(current.get("severity_rank") or 0):
+                current["severity"] = episode["severity"]
+                current["severity_rank"] = episode["severity_rank"]
+            if not current.get("role") and episode.get("role"):
+                current["role"] = episode["role"]
+            if episode.get("paged_at") is not None and current.get("paged_at") is None:
+                current["paged_at"] = episode["paged_at"]
+        if current is not None:
+            out.append(current)
+    return out
+
+
 def merge_with_previous(
     episodes: list[dict[str, Any]], previous: Iterable[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -172,10 +205,10 @@ def merge_with_previous(
     `occurrences` and `window_count` use the maximum, not a sum: the old rows are duplicates of
     the same anomaly windows, so summing them would count the incident twice.
     """
+    episodes = _merge_overlapping(episodes)
     prior_by_host: dict[str, list[dict[str, Any]]] = {}
     for row in previous:
-        row = _normalise_dates(dict(row))
-        prior_by_host.setdefault(str(row.get("src_addr") or ""), []).append(row)
+        prior_by_host.setdefault(str(row.get("src_addr") or ""), []).append(dict(row))
 
     superseded: list[dict[str, Any]] = []
 
@@ -209,21 +242,24 @@ def merge_with_previous(
         superseded.append(prior)
 
     for episode in episodes:
-        _normalise_dates(episode)
         src = str(episode.get("src_addr") or "")
         overlaps = [p for p in prior_by_host.get(src, []) if _overlaps(episode, p)]
         if not overlaps:
             continue
 
-        start = min([episode["episode_start"]] + [p["episode_start"] for p in overlaps])
-        end = max([episode["episode_end"]] + [p["episode_end"] for p in overlaps])
+        start = min([episode["episode_start"]] + [p["episode_start"] for p in overlaps],
+                    key=_naive_utc)
+        end = max([episode["episode_end"]] + [p["episode_end"] for p in overlaps],
+                  key=_naive_utc)
         episode["episode_start"] = start
         episode["episode_end"] = end
         episode["first_detected"] = min(
-            [episode["first_detected"]] + [p["first_detected"] for p in overlaps]
+            [episode["first_detected"]] + [p["first_detected"] for p in overlaps],
+            key=_naive_utc
         )
         episode["last_detected"] = max(
-            [episode["last_detected"]] + [p["last_detected"] for p in overlaps]
+            [episode["last_detected"]] + [p["last_detected"] for p in overlaps],
+            key=_naive_utc
         )
         episode["occurrences"] = max(
             [int(episode.get("occurrences") or 0)]
@@ -265,7 +301,7 @@ def merge_with_previous(
             old["pageable"] = 0
             old["page_reason"] = SUPERSEDED_REASON
             _mark_superseded(old)
-    return episodes, superseded
+    return _merge_overlapping(episodes), superseded
 
 
 def apply_budget(episodes: list[dict[str, Any]], *, per_host_budget: int,
@@ -363,6 +399,19 @@ def refresh(client: Client, settings: Settings, *, hours: int = 24) -> dict[str,
     ]
     previous = _existing(client, hours=lookback)
     episodes, superseded = merge_with_previous(episodes, previous.values())
+
+    # A previous view written by the timezone-shifted build can carry an end or last-seen window
+    # in the future. That both inflates the incident duration and makes the incident view's upper
+    # bound hide it. Clamp to the current clock before applying the budget.
+    now_naive = _naive_utc(now)
+    for episode in episodes:
+        for field in ("episode_end", "last_detected"):
+            value = episode.get(field)
+            if value is not None and _naive_utc(value) > now_naive:
+                episode[field] = now if getattr(value, "tzinfo", None) else now_naive
+        page_window = episode.get("page_window")
+        if page_window is not None and _naive_utc(page_window) > now_naive:
+            episode["page_window"] = episode["episode_end"]
 
     paged_by_host: dict[str, int] = {}
     for prior in previous.values():

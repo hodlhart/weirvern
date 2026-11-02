@@ -20,6 +20,9 @@ EPISODE IDENTITY FIX.
 - Pre-existing duplicate rows are collapsed even when they sit before the current incident and
   do not overlap it: any two prior rows with overlapping intervals are one episode, and the
   later copy is marked superseded.
+- Overlapping rebuilt episodes and future-dated ends left by the earlier timezone-shifted view
+  are collapsed/clamped before the page budget runs, so a stale row cannot extend an incident
+  past the current clock or hide it from the upper-bounded view.
 - Live audit before the fix: 2,487 episode rows for 19 hosts in 24 hours versus 68 rebuilt
   episodes. The review is `docs/research/ml-full-review-2026-11-02.md`.
 
