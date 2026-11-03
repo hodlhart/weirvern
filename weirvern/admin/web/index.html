@@ -542,6 +542,13 @@
         <div id="an-sev" class="sev-tiles"></div>
       </div>
       <div class="controls">
+        <!-- THE DEFAULT QUEUE IS AN INCIDENT QUEUE. Low/medium and model-only episodes are
+             still reachable under Leads; raw scored windows remain under All anomalies. -->
+        <label>queue <select id="f-queue-mode">
+          <option value="incidents" selected>Incidents</option>
+          <option value="leads">Leads</option>
+          <option value="raw">All anomalies</option>
+        </select></label>
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="90" min="1" max="1000"></label>
         <label class="check"><input type="checkbox" id="f-unreviewed"> unreviewed only</label>
@@ -549,6 +556,7 @@
         <span id="an-filters"></span>
         <span id="an-count-line" class="muted"></span>
       </div>
+      <p class="muted" id="an-queue-note"></p>
       <div class="info-text hidden" id="an-info">
   <p><strong>What it is.</strong> Host-windows the ensemble flagged: the score that crossed the line, and which detectors agreed on it — one model alone is usually noise, so agreement is the signal worth reading first.</p>
   <p><strong>What writes it.</strong> The detector ensemble, every scan window.</p>
@@ -568,6 +576,20 @@
           <col style="width: 340px"><col style="width: 78px">
         </colgroup>
         <thead><tr><th>Detected</th><th>Window</th><th>count</th><th>Host</th><th>Score</th><th>Severity</th><th>Models</th><th>Location</th><th>Matched rule</th><th>Why</th><th>Actions</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <!-- THE INCIDENT/LEAD TABLE. One row per episode, never one row per five-minute window.
+           A row is only an incident when it is high/critical, pageable, and names a measured
+           feature or an independent family; the rest stay one click away under Leads. -->
+      <table id="episodes-table" class="hidden">
+        <colgroup>
+          <col style="width: 120px"><col style="width: 120px"><col style="width: 70px">
+          <col style="width: 132px"><col style="width: 82px"><col style="width: 66px">
+          <col style="width: 190px"><col style="width: 180px"><col style="width: 120px">
+          <col style="width: 78px">
+        </colgroup>
+        <thead><tr><th>Last seen</th><th>Start</th><th>windows</th><th>Host</th><th>Severity</th><th>Score</th><th>Measured signal</th><th>Queue reason</th><th>Role</th><th>Evidence</th></tr></thead>
         <tbody></tbody>
       </table>
     

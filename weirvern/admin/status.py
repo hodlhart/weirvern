@@ -1994,6 +1994,60 @@ def reason_code(detected_by_models: str, feature: str = "") -> str:
     return f"{det}:{feat}"
 
 
+def _episode_key(src: Any, window: Any) -> tuple[str, str]:
+    """A stable lookup key across the JSON-serialised episode row and the raw evidence row."""
+    if hasattr(window, "isoformat"):
+        window = window.isoformat()
+    return str(src or ""), str(window or "")
+
+
+def _episode_evidence(client, rows: list[dict]) -> tuple[dict[tuple[str, str], dict], str | None]:
+    """The measured evidence behind each episode's pageable window.
+
+    The episode table deliberately does not duplicate the anomaly columns. The queue still has
+    to answer "what moved", so this small batch read joins the episodes back to the anomaly
+    window that earned the page. A failed read is returned as an explicit error: the queue must
+    not call every episode evidence-free because one auxiliary query broke.
+    """
+    pairs = []
+    for row in rows:
+        window = row.get("page_window")
+        if row.get("src_addr") and window is not None:
+            pairs.append((str(row["src_addr"]), str(window)))
+    if not pairs:
+        return {}, None
+    terms = []
+    parameters = {}
+    for i, (src, window) in enumerate(pairs):
+        terms.append(f"(%(a{i})s, parseDateTime64BestEffort(%(w{i})s))")
+        parameters[f"a{i}"] = src
+        parameters[f"w{i}"] = window
+    try:
+        res = client.query(
+            "SELECT src_addr, window_start, primary_deviation_feature, strong_families "
+            "FROM weirvern.netflow_anomalies FINAL "
+            "WHERE (src_addr, window_start) IN (" + ", ".join(terms) + ")",
+            parameters=parameters,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("episode evidence read failed: %s", exc)
+        return {}, f"episode evidence read failed: {type(exc).__name__}"
+    names = list(res.column_names)
+    out = {}
+    for row in res.result_rows:
+        item = dict(zip(names, row, strict=False))
+        feature = str(item.get("primary_deviation_feature") or "").strip()
+        try:
+            strong = int(item.get("strong_families") or 0)
+        except (TypeError, ValueError):
+            strong = 0
+        out[_episode_key(item.get("src_addr"), item.get("window_start"))] = {
+            "primary_feature": feature,
+            "strong_families": strong,
+        }
+    return out, None
+
+
 def episodes_recent(client, *, hours: float = 24, limit: int = 100) -> dict:
     """The operator-facing incident view: one row per episode, not one per window.
 
@@ -2025,7 +2079,48 @@ def episodes_recent(client, *, hours: float = 24, limit: int = 100) -> dict:
             if item.get(key) is not None and hasattr(item[key], "isoformat"):
                 item[key] = item[key].isoformat()
         rows.append(item)
-    return {"available": True, "reason": "", "episodes": rows}
+
+    evidence, evidence_error = _episode_evidence(client, rows)
+    incidents = []
+    leads = []
+    for item in rows:
+        episode_key = _episode_key(item.get("src_addr"), item.get("page_window"))
+        signal = evidence.get(episode_key, {})
+        feature = str(signal.get("primary_feature") or "").strip()
+        strong = int(signal.get("strong_families") or 0)
+        item["primary_feature"] = feature
+        item["strong_families"] = strong
+        item["evidence_available"] = bool(signal) and evidence_error is None
+        severe = str(item.get("severity") or "").lower() in {"high", "critical"}
+        pageable = bool(item.get("pageable"))
+        has_signal = bool(feature) or strong > 0
+        if severe and pageable and has_signal:
+            item["queue"] = "incident"
+            item["queue_reason"] = "pageable high/critical with measured evidence"
+            incidents.append(item)
+        else:
+            item["queue"] = "lead"
+            if severe and not pageable:
+                item["queue_reason"] = "high/critical but outside the page budget"
+            elif severe and not has_signal:
+                item["queue_reason"] = "model-only: no named feature or strong family"
+            else:
+                item["queue_reason"] = "low/medium observation"
+            leads.append(item)
+    return {
+        "available": True,
+        "reason": "",
+        "episodes": rows,
+        "incidents": incidents,
+        "leads": leads,
+        "counts": {
+            "episodes": len(rows),
+            "incidents": len(incidents),
+            "leads": len(leads),
+            "pageable": sum(1 for row in rows if row.get("pageable")),
+        },
+        **({"evidence_error": evidence_error} if evidence_error else {}),
+    }
 
 
 def anomalies_total_count(client, min_score: float = 0.0, *, hours: float = 24) -> int:

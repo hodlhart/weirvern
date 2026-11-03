@@ -1467,6 +1467,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // Let DOMContentLoaded handlers run.
   await new Promise((r) => setTimeout(r, 100));
 
+  // The production Anomalies tab defaults to the incident queue. This harness predates that
+  // contract and its checks drive the raw anomaly table; select the raw mode explicitly so the
+  // existing renderer checks still exercise the table they were written for. The incident queue
+  // gets its own checks below.
+  const queueMode = doc.getElementById("f-queue-mode");
+  if (queueMode) queueMode.value = "raw";
+
   // ── the new views exist ────────────────────────────────────────────────────────────────
   for (const id of ["view-assets", "view-network"]) {
     check(`#${id} exists`, !!doc.getElementById(id));

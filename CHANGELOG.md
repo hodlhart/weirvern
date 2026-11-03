@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.19 — 2026-11-02
+
+INCIDENT QUEUE CONTRACT.
+
+- The Anomalies tab now opens on **Incidents**: one row per high/critical, pageable episode, with
+  the measured signal (primary deviation feature or independent family count) in the row.
+- Low/medium episodes and high/critical episodes with no named feature or independent family are
+  **Leads**. They remain one selection away, carry their reason, and never read as paging work.
+- **All anomalies** keeps every raw scored window and every existing filter; no evidence becomes
+  unreachable. A model-only episode is a lead, not an incident.
+- The episode evidence join is a batch read; if it fails, the queue says the evidence read failed
+  and does not silently promote or hide an episode.
+- Regressions cover the incident/lead contract and the broken-evidence path.
+
 ## 0.23.18 — 2026-11-02
 
 EPISODE IDENTITY FIX.

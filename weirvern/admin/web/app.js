@@ -19,6 +19,7 @@ const API = {
   anomalies: (min, limit, unreviewed) =>
     `/api/anomalies?min_score=${min}&limit=${limit}&hours=${trHours()}` +
     (unreviewed ? "&unreviewed=1" : ""),
+  episodes: "/api/episodes",
   review: "/api/review",
   watch: "/api/watch",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
@@ -2102,6 +2103,23 @@ function anClearAllFilters() {
 
 async function loadAnomalies() {
     scheduleURLSync();
+  // THE QUEUE CONTRACT. Incidents are the default: one row per high/critical, pageable episode
+  // with measured evidence. Leads hold low/medium and model-only episodes; All anomalies keeps
+  // every raw scored window reachable. The raw table has its own filters, so this branch must
+  // not pretend those filters apply to episodes.
+  const queueMode = (document.getElementById("f-queue-mode") || {}).value || "incidents";
+  if (queueMode !== "raw") {
+    await loadEpisodeQueue(queueMode);
+    return;
+  }
+  const episodesTable = document.getElementById("episodes-table");
+  if (episodesTable) episodesTable.classList.add("hidden");
+  const anomaliesTable = document.getElementById("anomalies-table");
+  if (anomaliesTable) anomaliesTable.classList.remove("hidden");
+  const sevBox = document.getElementById("an-sev");
+  if (sevBox) sevBox.classList.remove("hidden");
+  const note = document.getElementById("an-queue-note");
+  if (note) note.textContent = "";
   // The gate's state rides along with the list, so every row's block control can say whether it
   // would do anything. Fetched BEFORE the rows render: a control that appears and then changes
   // shape is worse than one that appears a beat late.
@@ -2170,7 +2188,7 @@ async function loadAnomalies() {
                  } } }, [
         el("span", { class: "an-count", text: String(a.n || 1) }),
       ]),
-      el("td", { class: "dcell", attrs: { title: "open this host's view" },
+      el("td", { class: "dcell", attrs: { "aria-label": "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); openHost(a.src_addr); } } },
          [hostCell(a.src_addr, a.hostname),
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
@@ -2236,6 +2254,84 @@ async function loadAnomalies() {
     countLine.textContent = (filtered && Number.isFinite(y))
       ? `showing ${x} of ${y} alerts \u2014 filters are on`
       : `${x} alert${x === 1 ? "" : "s"} on screen`;
+  }
+}
+
+/* THE INCIDENT QUEUE. One row per episode; the raw window list stays under All anomalies.
+ *
+ * The server decides what is an incident: high/critical, pageable, and backed by either a named
+ * primary deviation or at least one independent strong family. A model-only episode is a lead,
+ * not work that can page a human. The table deliberately carries the measured signal so the
+ * operator does not have to open every row to learn whether there is anything to read.
+ */
+async function loadEpisodeQueue(mode) {
+  const payload = await getJSON(`${API.episodes}?hours=${encodeURIComponent(trHours())}&limit=200`);
+  const table = document.getElementById("episodes-table");
+  const anomalies = document.getElementById("anomalies-table");
+  const sevBox = document.getElementById("an-sev");
+  const note = document.getElementById("an-queue-note");
+  if (table) table.classList.remove("hidden");
+  if (anomalies) anomalies.classList.add("hidden");
+  if (sevBox) sevBox.classList.add("hidden");
+  const tbody = document.querySelector("#episodes-table tbody");
+  if (!tbody) return;
+  tbody.replaceChildren();
+  const counts = payload.counts || {};
+  const countLine = document.getElementById("an-count-line");
+  if (payload.available !== true) {
+    const why = payload.reason || "the episode view is unavailable";
+    emptyRow(tbody, 10, `The queue cannot be read: ${why}. Raw anomalies remain available.`);
+    if (note) note.textContent = "";
+    if (countLine) countLine.textContent = "";
+    return;
+  }
+  const rows = Array.isArray(payload[mode]) ? payload[mode] : [];
+  if (note) {
+    note.textContent = mode === "incidents"
+      ? "Incidents: high/critical, pageable episodes with measured evidence. Leads stay one selection away; All anomalies keeps every scored window."
+      : "Leads: low/medium observations and high/critical episodes without a named feature or independent family. They are evidence to hunt, not a page.";
+  }
+  if (countLine) {
+    countLine.textContent = `${counts.incidents ?? 0} incident${counts.incidents === 1 ? "" : "s"} · `
+      + `${counts.leads ?? 0} lead${counts.leads === 1 ? "" : "s"} · ${counts.episodes ?? 0} episode`
+      + `${counts.episodes === 1 ? "" : "s"} in the window`
+      + (payload.evidence_error ? " · evidence read failed" : "");
+  }
+  if (!rows.length) {
+    emptyRow(tbody, 10, mode === "incidents"
+      ? "No incident episodes in this window. Leads and raw anomalies are still available."
+      : "No leads in this window.");
+    return;
+  }
+  for (const e of rows) {
+    const feature = e.primary_feature
+      ? `${e.primary_feature}${e.strong_families ? ` · ${e.strong_families} families` : ""}`
+      : (e.strong_families ? `${e.strong_families} independent families` : "no measured signal");
+    const page = e.pageable ? "pageable" : "not pageable";
+    const reason = `${page}${e.page_reason ? ` · ${e.page_reason}` : ""}`
+      + (e.queue_reason ? ` · ${e.queue_reason}` : "");
+    tbody.appendChild(el("tr", {
+      class: "clickable",
+      attrs: { "aria-label": "Open the raw evidence for this episode's page window" },
+      on: { click: () => openEvidence({
+        src_addr: e.src_addr,
+        window_start: e.page_window || e.episode_start,
+        window_end: e.episode_end,
+      }) },
+    }, [
+      el("td", { class: "mono", text: fmtTime(e.last_detected) }),
+      el("td", { class: "mono", text: fmtTime(e.episode_start) }),
+      el("td", { class: "num", text: String(e.window_count ?? e.occurrences ?? "—") }),
+      el("td", { class: "dcell", attrs: { "aria-label": "open this host's view" },
+                 on: { click: (ev) => { ev.stopPropagation(); openHost(e.src_addr); } } },
+         [hostCell(e.src_addr, e.hostname || "")]),
+      el("td", {}, [sevCell(e.severity)]),
+      el("td", { class: "mono", text: Number(e.max_score ?? 0).toFixed(3) }),
+      el("td", { class: e.primary_feature ? "" : "muted", text: feature }),
+      el("td", { class: "muted", text: reason }),
+      el("td", { class: "mono", text: e.role || "unknown" }),
+      el("td", { class: "mono", text: "open" }),
+    ]));
   }
 }
 
@@ -4319,7 +4415,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (CURRENT_ID_HOST) openHost(CURRENT_ID_HOST);
     });
   }
-  for (const id of ["f-min-score", "f-limit", "f-unreviewed", "f-watched"]) {
+  for (const id of ["f-queue-mode", "f-min-score", "f-limit", "f-unreviewed", "f-watched"]) {
     document.getElementById(id).addEventListener("change", () => {
       loadAnomalies().then(clearError).catch(showError);
     });
@@ -4812,7 +4908,7 @@ function renderBaselines(bl) {
   const show = hosts.slice(0, 12);
   for (const h of show) {
     body.appendChild(el("tr", {}, [
-      el("td", { class: "dcell", attrs: { title: "open this host's view" },
+      el("td", { class: "dcell", attrs: { "aria-label": "open this host's view" },
                  on: { click: () => { openHost(h.src_addr); } } },
          [hostCell(h.src_addr, h.hostname)]),
       el("td", { class: "num", text: mbBytes(h.avg_bytes) }),
