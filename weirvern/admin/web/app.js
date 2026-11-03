@@ -2159,7 +2159,7 @@ async function loadAnomalies() {
       : (Number(min) > 0
           ? `No anomalies at or above score ${min}.`
           : "No anomalies recorded yet — rows land as scan windows complete.");
-    emptyRow(tbody, 11, note, filtered
+    emptyRow(tbody, 12, note, filtered
       ? { label: "Clear filters", fn: () => anClearAllFilters() }
       : null);
     return;
@@ -2190,9 +2190,10 @@ async function loadAnomalies() {
       ]),
       el("td", { class: "dcell", attrs: { "aria-label": "open this host's view" },
                  on: { click: (e) => { e.stopPropagation(); openHost(a.src_addr); } } },
-         [hostCell(a.src_addr, a.hostname),
+         [hostCell(a.src_addr, ""),
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
                                    title: "on the watch list" }) : null]),
+      el("td", { class: "mono", text: a.hostname || "—" }),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
       el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
@@ -2280,7 +2281,7 @@ async function loadEpisodeQueue(mode) {
   const countLine = document.getElementById("an-count-line");
   if (payload.available !== true) {
     const why = payload.reason || "the episode view is unavailable";
-    emptyRow(tbody, 10, `The queue cannot be read: ${why}. Raw anomalies remain available.`);
+    emptyRow(tbody, 11, `The queue cannot be read: ${why}. Raw anomalies remain available.`);
     if (note) note.textContent = "";
     if (countLine) countLine.textContent = "";
     return;
@@ -2298,7 +2299,7 @@ async function loadEpisodeQueue(mode) {
       + (payload.evidence_error ? " · evidence read failed" : "");
   }
   if (!rows.length) {
-    emptyRow(tbody, 10, mode === "incidents"
+    emptyRow(tbody, 11, mode === "incidents"
       ? "No incident episodes in this window. Leads and raw anomalies are still available."
       : "No leads in this window.");
     return;
@@ -2324,7 +2325,8 @@ async function loadEpisodeQueue(mode) {
       el("td", { class: "num", text: String(e.window_count ?? e.occurrences ?? "—") }),
       el("td", { class: "dcell", attrs: { "aria-label": "open this host's view" },
                  on: { click: (ev) => { ev.stopPropagation(); openHost(e.src_addr); } } },
-         [hostCell(e.src_addr, e.hostname || "")]),
+         [hostCell(e.src_addr, "")]),
+      el("td", { class: "mono", text: e.hostname || "—" }),
       el("td", {}, [sevCell(e.severity)]),
       el("td", { class: "mono", text: Number(e.max_score ?? 0).toFixed(3) }),
       el("td", { class: e.primary_feature ? "" : "muted", text: feature }),

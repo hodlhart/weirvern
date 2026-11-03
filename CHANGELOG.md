@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.20 — 2026-11-03
+
+QUEUE TABLE LABELS.
+
+- The Anomalies table and the incident queue now carry an explicit **Hostname** column beside
+  the address. The Host column stays the fact (the IP); the name is the convenience and is never
+  substituted for it.
+- The queue's `windows` heading is now **Windows**.
+- No detection, budgeting, or episode-identity behavior changed; this is display-only.
+
 ## 0.23.19 — 2026-11-02
 
 INCIDENT QUEUE CONTRACT.

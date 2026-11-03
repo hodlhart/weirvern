@@ -711,6 +711,11 @@ def _build_handler(ctx: GuiContext):
                     payload = status_mod.episodes_recent(client, hours=hours, limit=limit)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
+            # The queue's Host column is the fact (the address); Hostname is the convenience.
+            # Resolve it here, next to the anomaly route, so both tables use the same cached
+            # reverse-DNS path. A missing name is an empty cell, never an invented label.
+            for row in payload.get("episodes", []):
+                row["hostname"] = web_api._hostname(row.get("src_addr"))
             self._json(payload)
 
         def _panic(self) -> None:
