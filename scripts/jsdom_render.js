@@ -1474,6 +1474,55 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const queueMode = doc.getElementById("f-queue-mode");
   if (queueMode) queueMode.value = "raw";
 
+  // ── the incident queue contract ──────────────────────────────────────────────────────────
+  // The raw-table checks below predate this surface. Drive the queue once with a stubbed
+  // payload: one high/critical pageable episode with a named feature is an incident; a
+  // low/medium episode and a model-only high episode are leads. Then restore raw mode.
+  {
+    const originalFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes("/api/episodes")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          available: true, counts: { episodes: 3, incidents: 1, leads: 2, pageable: 1 },
+          incidents: [{ src_addr: "198.51.100.5", episode_start: "2026-11-02T12:00:00-06:00",
+            last_detected: "2026-11-02T12:10:00-06:00", window_count: 3, max_score: 0.99,
+            severity: "critical", pageable: 1, page_reason: "within-budget",
+            primary_feature: "bytes_z", strong_families: 2, role: "server",
+            queue_reason: "pageable high/critical with measured evidence" }],
+          leads: [
+            { src_addr: "198.51.100.6", episode_start: "2026-11-02T12:01:00-06:00",
+              last_detected: "2026-11-02T12:09:00-06:00", window_count: 2, max_score: 0.70,
+              severity: "medium", pageable: 0, page_reason: "",
+              primary_feature: "unique_dst_ips", strong_families: 1, role: "workstation",
+              queue_reason: "low/medium observation" },
+            { src_addr: "198.51.100.7", episode_start: "2026-11-02T12:02:00-06:00",
+              last_detected: "2026-11-02T12:08:00-06:00", window_count: 1, max_score: 0.95,
+              severity: "high", pageable: 1, page_reason: "within-budget",
+              primary_feature: "", strong_families: 0, role: "server",
+              queue_reason: "model-only: no named feature or strong family" },
+          ],
+        }) });
+      }
+      return originalFetch(u, o);
+    };
+    queueMode.value = "incidents";
+    await H.loadAnomalies();
+    const incRows = doc.querySelectorAll("#episodes-table tbody tr");
+    check("the default queue renders one row per incident", incRows.length === 1,
+          `${incRows.length} rows`);
+    check("an incident names its measured signal", incRows[0]
+          && incRows[0].textContent.includes("bytes_z"), incRows[0] && incRows[0].textContent);
+    check("the raw anomaly table is not the default queue",
+          doc.getElementById("anomalies-table").classList.contains("hidden"));
+    queueMode.value = "leads";
+    await H.loadAnomalies();
+    check("Leads hold the low/medium and model-only episodes",
+          doc.querySelectorAll("#episodes-table tbody tr").length === 2,
+          `${doc.querySelectorAll("#episodes-table tbody tr").length} rows`);
+    queueMode.value = "raw";
+    window.fetch = originalFetch;
+  }
+
   // ── the new views exist ────────────────────────────────────────────────────────────────
   for (const id of ["view-assets", "view-network"]) {
     check(`#${id} exists`, !!doc.getElementById(id));
