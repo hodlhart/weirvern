@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.22 — 2026-11-03
+
+SLUICE GATE ALIGNMENT.
+
+- Gate overview is the leading status surface; the standalone explanatory paragraphs and the
+  read-only Blocking-on-detections card are gone. Detection policy is a compact policy strip
+  inside the Traffic Gate card.
+- Domain Gate and Traffic Gate keep their separate DNS/packet facts and fleet table.
+- Rules gains one primary `New rule`; bulk selection is entered by a `Select` control, so the
+  table carries no checkbox column at rest. The rule sheet remains the only editor.
+- Policy rows now state their cost in one compact line; the current policy stays visible.
+
 ## 0.23.21 — 2026-11-03
 
 HUNTING PIVOTS.

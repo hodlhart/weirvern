@@ -1130,6 +1130,11 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
    find "which one is in force" without relying on a hue they may not distinguish. */
 .policy-row.active { border-color: var(--accent); border-left-width: 4px; }
 .policy-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+/* Detection policy is a compact row of alternatives, not four stacked paragraphs. */
+.policy-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.policy-strip .policy-row { flex: 1 1 210px; margin: 0; padding: 8px 10px; }
+.policy-strip .policy-head { margin-bottom: 2px; }
+#sl-table:not(.selecting) .pick { display: none; }
 .policy-head strong { font-size: 1.02em; }
 
 /* The gate-state strip reads as a row of stats rather than a list, because it answers one question

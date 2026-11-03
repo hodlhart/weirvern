@@ -1149,7 +1149,6 @@
       </div>
       <div class="controls sl-overview-actions">
         <button id="sl-view-blocks" class="quiet" type="button">View blocks &rarr;</button>
-        <span class="muted">What was caught, and the rule behind each block.</span>
       </div>
     </div>
 
@@ -1173,7 +1172,6 @@
         <p><strong>Last changed.</strong> Each change is an audit row; each hit is recorded in Blocks.</p>
         <p><strong>Where to see it.</strong> Hits appear in Blocks with the name that matched. Blocklists and their switches live on the Settings tab.</p>
       </div>
-      <p class="muted">Answers DNS queries. Independent of the Traffic Gate.</p>
       <div class="stat-row" id="dg-stats"></div>
       <p class="muted" id="sl-dom-line">loading&hellip;</p>
       <div class="sl-top-names">
@@ -1196,7 +1194,6 @@
         <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
         <p><strong>Where to see it.</strong> The state line below says whether the kernel is enforcing; the fleet table says which segment each gate covers.</p>
       </div>
-      <p class="muted">Drops packets on each weirling's capture interfaces. Needs a rule and an armed nft backend.</p>
       <div class="stat-row" id="tg-stats"></div>
       <div class="sl-status-line">
         <span class="sl-status-item">Packet gate
@@ -1207,6 +1204,9 @@
         <span class="muted" id="sl-bc-note"></span>
       </div>
       <p id="sl-gate-warning" class="muted hidden"></p>
+      <h3 class="gate-subhead">Detection blocking <span class="muted">automatic rules from the ensemble</span></h3>
+      <div id="sl-policies" class="policy-strip"></div>
+      <p id="sl-criticality-note" class="muted"></p>
       <h3 class="gate-subhead">Fleet packet gates <span class="muted" id="sl-gates-note"></span></h3>
       <div class="tablewrap">
         <table id="sl-gates">
@@ -1218,11 +1218,10 @@
     </div>
     </div>
 
-    <p class="muted">The domain blocklists — with their on/off switches — now live on the <strong>Settings</strong> tab.</p>
-
     <div class="card">
       <h2>Rules <span id="sl-count" class="muted"></span>
-        <button id="sl-new-rule" class="quiet" type="button">New rule</button></h2>
+        <button id="sl-new-rule" class="primary" type="button">New rule</button>
+        <button id="sl-select" class="quiet" type="button">Select</button></h2>
       <!-- US-9: what these rules can actually act on -- and each sensor is a door to its sheet. -->
       <div id="sl-reach" class="chips"></div>
       <div id="sl-bulk" class="hidden">
@@ -1258,17 +1257,6 @@
       <p id="sl-empty" class="empty"></p>
     </div>
 
-    <div class="card">
-      <h2>Blocking on detections <button class="info-btn" data-info="sl-policy-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
-<div class="info-text hidden" id="sl-policy-info">
-  <p><strong>What it is.</strong> Whether the ensemble's own verdicts may block. Off by default: a tool that starts blocking on model output the moment it is installed would surprise anyone who installed it to watch first.</p>
-  <p><strong>What writes it.</strong> The operator — this policy is the trust boundary.</p>
-  <p><strong>Last changed.</strong> Each change is an audit row, and each level states what it costs.</p>
-  <p><strong>Where to see it.</strong> Blocks made this way appear in Blocks and the audit with the threshold as their reason.</p>
-</div>
-      <div id="sl-policies"></div>
-      <p id="sl-criticality-note" class="muted"></p>
-    </div>
 
     <!-- RULE SHEET (SL-1, 2026-10-18): adding and deleting a rule is a focused act, so it happens
          in the same right-side sheet the weirlings use -- never in a form sitting on the tab. One

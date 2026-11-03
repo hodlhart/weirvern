@@ -498,11 +498,27 @@ function sluiceApplyFlash() {
   }
 }
 
+function slSetSelecting(on) {
+  const table = document.getElementById("sl-table");
+  const button = document.getElementById("sl-select");
+  if (!table) return;
+  table.classList.toggle("selecting", Boolean(on));
+  if (!on) {
+    document.querySelectorAll("#sl-table .sl-pick:checked").forEach((c) => { c.checked = false; });
+    const all = document.getElementById("sl-pick-all");
+    if (all) all.checked = false;
+  }
+  if (button) button.textContent = on ? "Done" : "Select";
+  slBulkRefresh();
+}
+
 function slBulkRefresh() {
   const bar = document.getElementById("sl-bulk");
   const n = document.getElementById("sl-bulk-n");
+  const table = document.getElementById("sl-table");
+  const selecting = Boolean(table && table.classList.contains("selecting"));
   const count = slSelected().length;
-  if (bar) bar.classList.toggle("hidden", count === 0);
+  if (bar) bar.classList.toggle("hidden", count === 0 || !selecting);
   if (n) n.textContent = count ? count + " selected" : "";
 }
 
@@ -594,24 +610,20 @@ function renderSluicePolicies(d) {
   const current = d.criticality || "off";
   for (const [key, p] of Object.entries(policies)) {
     const active = key === current;
-    const row = el("div", { class: `policy-row${active ? " active" : ""}` }, [
+    const detail = key === "off"
+      ? "no automatic blocks"
+      : `${p.min_severity || "—"}+ · confidence ${p.min_confidence} · ${p.ttl_minutes} minutes`;
+    box.appendChild(el("div", { class: `policy-row${active ? " active" : ""}` }, [
       el("div", { class: "policy-head" }, [
         el("strong", { text: p.label || key }),
         el("span", { class: "chip muted", text: key }),
-        active ? el("span", { class: "chip ok", text: "in use" }) : el("span", {}, []),
+        active ? el("span", { class: "chip ok", text: "in use" }) : null,
       ]),
-      el("div", { class: "muted", text: p.description || "" }),
-    ]);
-    if (key !== "off") {
-      row.appendChild(el("div", { class: "muted", text:
-        `blocks at ${p.min_severity || "—"} severity and above, ` +
-        `confidence ${p.min_confidence}, for ${p.ttl_minutes} minutes` }));
-    }
-    box.appendChild(row);
+      el("div", { class: "muted", text: detail }),
+    ]));
   }
   document.getElementById("sl-criticality-note").textContent =
-    `Current policy: ${current}. Change it in Settings, or set SLUICE_CRITICALITY in the cluster ` +
-    `ConfigMap. A derived block is always capped by SLUICE_MAX_BLOCK_S.`;
+    `Current policy: ${current} · change in Settings.`;
 }
 
 function wireSluice() {
@@ -628,6 +640,11 @@ function wireSluice() {
   const newRule = document.getElementById("sl-new-rule");
   if (newRule) newRule.addEventListener("click", () => {
     if (typeof openRuleComposer === "function") openRuleComposer("");
+  });
+  const select = document.getElementById("sl-select");
+  if (select) select.addEventListener("click", () => {
+    const table = document.getElementById("sl-table");
+    slSetSelecting(!(table && table.classList.contains("selecting")));
   });
 }
 
