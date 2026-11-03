@@ -20,11 +20,12 @@ const ASSET_API = {
   graph: (hours, hosts) =>
     `/api/graph?hours=${hours}` +
     (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : ""),
-  zeeklog: (log, hours) => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}`,
+  zeeklog: (log, hours, filters = "") => `/api/zeeklog?log=${encodeURIComponent(log)}&hours=${hours}${filters}`,
   flows: (params, hours) => `/api/flows?hours=${hours}` +
     (params.port !== undefined ? `&port=${params.port}` : "") +
     (params.proto !== undefined ? `&proto=${params.proto}` : "") +
-    (params.src ? `&src=${encodeURIComponent(params.src)}` : ""),
+    (params.src ? `&src=${encodeURIComponent(params.src)}` : "") +
+    (params.dst ? `&dst=${encodeURIComponent(params.dst)}` : ""),
 };
 
 /* State kept in one place: the hosts the operator has chosen to track, and the raw payload so
@@ -1302,7 +1303,8 @@ function showEdgeDetail(edge) {
   host.appendChild(el("div", { class: "pair" }, [
     el("div", { class: "pair-side" }, [
       el("div", { class: "pair-label", text: "source" }),
-      el("div", { class: "pair-addr", text: edge.source }),
+      el("div", { class: "pair-addr link", text: edge.source,
+                  on: { click: () => openHost(edge.source) } }),
       // THE INITIATOR'S EPHEMERAL PORTS BELONG ON THE INITIATOR'S CARD: "overseerr :51334" is
       // the fact the operator was reading for when this panel showed it backwards.
       srcPorts ? el("div", { class: "muted", text: `source ports ${srcPorts}` }) : null,
@@ -1314,9 +1316,11 @@ function showEdgeDetail(edge) {
       // The port belongs on the destination card: "host :443" is one fact, and splitting it
       // across a card and a note makes the reader assemble it. Several ports are listed in
       // descending-count order (topK), so a host on many ports reads as a short list.
-      el("div", { class: "pair-addr", text: (edge.ports || []).length === 1
-        ? `${edge.target}:${edge.ports[0]}`
-        : edge.target }),
+      el("div", { class: "pair-addr link",
+                  text: (edge.ports || []).length === 1
+                    ? `${edge.target}:${edge.ports[0]}`
+                    : edge.target,
+                  on: { click: () => openHost(edge.target) } }),
       (edge.ports || []).length > 1
         ? el("div", { class: "muted", text: `ports ${edge.ports.join(", ")}` })
         : null,
@@ -1392,12 +1396,14 @@ function showNodeDetail(node) {
     text: tracking ? "stop tracking this host" : "track only this host's connections",
   });
   btn.addEventListener("click", () => { toggleTracked(node.id); showNodeDetail(node); });
+  const open = el("button", { class: "review-act", text: "open host page" });
+  open.addEventListener("click", (event) => { event.stopPropagation(); openHost(node.id); });
   host.appendChild(el("div", { class: "pair-side" }, [
     el("div", { class: "pair-label", text: "host" }),
     el("div", { class: "pair-addr", text: node.id }),
     node.name ? el("div", { class: "muted", text: node.name }) : null,
   ]));
-  host.appendChild(el("div", { class: "chips" }, [btn]));
+  host.appendChild(el("div", { class: "chips" }, [btn, open]));
 
   if (!touching.length) {
     table.appendChild(el("tr", {}, [
@@ -1480,7 +1486,9 @@ function loadFlowDetail(params) {
     ? ASSET_API.flows(params, trHours())
     : `/api/flows?hours=${trHours()}` +
       (params.port !== undefined ? `&port=${params.port}` : "") +
-      (params.proto !== undefined ? `&proto=${params.proto}` : "");
+      (params.proto !== undefined ? `&proto=${params.proto}` : "") +
+      (params.src ? `&src=${encodeURIComponent(params.src)}` : "") +
+      (params.dst ? `&dst=${encodeURIComponent(params.dst)}` : "");
 
   return getJSON(url)
     .then((d) => {
@@ -1553,7 +1561,8 @@ function loadZeekLog(log) {
   // window as the bars that were clicked. Reading ASSETS_STATE.hours here would silently
   // drill into a different period than the chart above it, which is the sort of mismatch that
   // reads as "the numbers are wrong".
-  return getJSON(ASSET_API.zeeklog(log, zeekWindow()))
+  const filters = typeof zkQuery === "function" ? zkQuery() : "";
+  return getJSON(ASSET_API.zeeklog(log, zeekWindow(), filters))
     .then((d) => {
       if (d.available === false) {
         host.appendChild(chartEmpty(`Cannot read ${log}.log: ${d.reason}.`));

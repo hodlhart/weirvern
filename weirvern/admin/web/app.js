@@ -2646,6 +2646,38 @@ function hpRenderExternal(ext) {
   }
 }
 
+/** A host-page measurement becomes a filtered destination view, keeping the global range. */
+function hpPivot(view, apply) {
+  showView(view);
+  if (typeof apply === "function") apply();
+}
+
+function hpPivotNetflow(field, value, label) {
+  hpPivot("netflow", () => {
+    if (typeof nfSetFilter === "function") nfSetFilter(field, value, label || value);
+  });
+}
+
+function hpPivotDns(query) {
+  hpPivot("dns", () => {
+    if (typeof dnApply === "function") {
+      dnApply([["dn-client", HP_ADDR], ["dn-domain", query]]);
+    }
+  });
+}
+
+function hpPivotZeek(service) {
+  hpPivot("zeek", () => {
+    if (typeof zkSetFilter === "function") zkSetFilter("service", service, service);
+  });
+}
+
+function hpPivotEvidence(anomaly) {
+  if (typeof openEvidence === "function") {
+    openEvidence(Object.assign({}, anomaly, { src_addr: HP_ADDR }));
+  }
+}
+
 function hpRenderGraph(dests) {
   const box = document.getElementById("hp-graph");
   if (!box) return;
@@ -2677,15 +2709,40 @@ function hpRenderGraph(dests) {
     node.setAttribute("r", String(4 + 8 * (Number(dst.bytes) || 0) / maxB));
     node.setAttribute("class", "hp-node");
     const ttl = document.createElementNS(NS, "title");
-    ttl.textContent = `${dst.dst_addr}${dst.hostname ? " (" + dst.hostname + ")" : ""} — ${fmtBytes(dst.bytes || 0)}, ${dst.flows || 0} flows`;
+    ttl.textContent = `${dst.dst_addr}${dst.hostname ? " (" + dst.hostname + ")" : ""} — ${fmtBytes(dst.bytes || 0)}, ${dst.flows || 0} flows — click to open this host`;
     node.appendChild(ttl);
+    node.setAttribute("class", "hp-node clickable");
+    node.setAttribute("role", "button");
+    node.setAttribute("tabindex", "0");
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openHost(dst.dst_addr);
+    });
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openHost(dst.dst_addr);
+      }
+    });
     svg.appendChild(node);
     const label = document.createElementNS(NS, "text");
     label.setAttribute("x", String(x + (x >= cx ? 10 : -10)));
     label.setAttribute("y", String(y + 4));
     label.setAttribute("text-anchor", x >= cx ? "start" : "end");
-    label.setAttribute("class", "hp-label");
+    label.setAttribute("class", "hp-label clickable");
+    label.setAttribute("role", "button");
+    label.setAttribute("tabindex", "0");
     label.textContent = dst.hostname || dst.dst_addr;
+    label.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openHost(dst.dst_addr);
+    });
+    label.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openHost(dst.dst_addr);
+      }
+    });
     svg.appendChild(label);
   });
   const center = document.createElementNS(NS, "circle");
@@ -2715,9 +2772,24 @@ function hpRenderFlow(timeline) {
   for (const r of rows) {
     const v = Number(r.bytes) || 0;
     bars.appendChild(el("div", {
-      class: "hp-bar" + (v ? "" : " zero"),
-      attrs: { title: `${r.hour} — ${fmtBytes(v)}, ${r.flows || 0} flows`,
-               style: `height:${Math.max(2, Math.round((v / max) * 100))}%` },
+      class: "hp-bar" + (v ? " clickable" : " zero"),
+      attrs: {
+        "aria-label": v
+          ? `${r.hour} — ${fmtBytes(v)}, ${r.flows || 0} flows — open NetFlow filtered to this host`
+          : `${r.hour} — no traffic in this bucket`,
+        role: v ? "button" : "presentation",
+        tabindex: v ? "0" : null,
+        style: `height:${Math.max(2, Math.round((v / max) * 100))}%`,
+      },
+      on: v ? {
+        click: () => hpPivotNetflow("src", HP_ADDR, HP_ADDR),
+        keydown: (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            hpPivotNetflow("src", HP_ADDR, HP_ADDR);
+          }
+        },
+      } : {},
     }));
   }
   box.appendChild(bars);
@@ -2732,8 +2804,12 @@ function hpRenderDns(queries) {
     return;
   }
   for (const q of queries) {
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: q.query || "—" }),
+    body.appendChild(el("tr", {
+      class: "clickable",
+      attrs: { "aria-label": `filter DNS to ${q.query || "this name"} for ${HP_ADDR}` },
+      on: { click: () => hpPivotDns(q.query) },
+    }, [
+      el("td", { class: "mono link", text: q.query || "—" }),
       el("td", { class: "mono", text: q.qtype || "—" }),
       el("td", { class: "num", text: String(q.asks || 0) }),
       el("td", { class: "num", text: String(q.resolvers || 0) }),
@@ -2750,8 +2826,12 @@ function hpRenderZeek(services) {
     return;
   }
   for (const s of services) {
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: s.service || "—" }),
+    body.appendChild(el("tr", {
+      class: "clickable",
+      attrs: { "aria-label": `filter Zeek to ${s.service || "this service"}` },
+      on: { click: () => hpPivotZeek(s.service) },
+    }, [
+      el("td", { class: "mono link", text: s.service || "—" }),
       el("td", { class: "num", text: String(s.conns || 0) }),
       el("td", { class: "num", text: fmtBytes(s.bytes || 0) }),
     ]));
@@ -2767,8 +2847,12 @@ function hpRenderDests(dests) {
     return;
   }
   for (const x of dests) {
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: x.dst_addr || "—" }),
+    body.appendChild(el("tr", {
+      class: "clickable",
+      attrs: { "aria-label": `show every host talking to ${x.dst_addr} in NetFlow` },
+      on: { click: () => hpPivotNetflow("dst", x.dst_addr, x.hostname || x.dst_addr) },
+    }, [
+      el("td", { class: "mono link", text: x.dst_addr || "—" }),
       el("td", { class: "num", text: fmtBytes(x.bytes || 0) }),
       el("td", { class: "num", text: String(x.flows || 0) }),
       el("td", { class: "num", text: String(x.ports || 0) }),
@@ -2785,8 +2869,12 @@ function hpRenderAnoms(anoms) {
     return;
   }
   for (const a of anoms) {
-    body.appendChild(el("tr", {}, [
-      el("td", { class: "mono", text: fmtTime(a.detected_at) }),
+    body.appendChild(el("tr", {
+      class: "clickable",
+      attrs: { "aria-label": "open the evidence chain for this anomaly" },
+      on: { click: () => hpPivotEvidence(a) },
+    }, [
+      el("td", { class: "mono link", text: fmtTime(a.detected_at) }),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
       el("td", {}, [sevCell(a.severity)]),
       el("td", { text: a.baseline_comparison || "—" }),
@@ -5138,13 +5226,13 @@ function renderAgreement(counts) {
     "A detector missing here fired on nothing, which is itself worth knowing." }));
 }
 
-/** Feature deviations: mean |z| per feature, as horizontal bars against a z=1/2/3 guide. */
-function renderFeatureDeviations(rows) {
+/** Baseline deviations: mean |z| per baseline-backed measurement, against a z=1/2/3 guide. */
+function renderFeatureDeviations(rows, coverage) {
   const host = document.getElementById("m-features");
   host.innerHTML = "";
   if (!rows || !rows.length) {
     host.appendChild(chartEmpty(
-      "No per-feature deviations recorded. These are written from feature_contributions, " +
+      "No baseline deviations recorded. These are written from feature_contributions, " +
       "so they appear once an anomaly carries one."));
     return;
   }
@@ -5164,9 +5252,11 @@ function renderFeatureDeviations(rows) {
       el("span", { class: "bar-val", text: r.mean_abs_z.toFixed(2) }),
     ]));
   }
+  const inputs = coverage && Number(coverage.model_inputs);
   host.appendChild(el("p", { class: "muted", text:
-    "Filled bar is the mean deviation; the pale extension is the peak seen. " +
-    "z around 1 is normal noise, 3+ is genuinely unusual for that host." }));
+    `${rows.length}${inputs ? " of " + inputs : ""} model inputs have a per-host baseline. ` +
+    "The rest feed the models but do not have a z-score; filled bar is the mean deviation, " +
+    "the pale extension is the peak. z around 1 is normal noise, 3+ is unusual for that host." }));
 }
 
 /* SOC-2: near misses -- what almost alerted.
@@ -5380,7 +5470,7 @@ async function loadModels() {
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});
   renderAgreement(data.model_counts || {});
-  renderFeatureDeviations(data.feature_deviations || []);
+  renderFeatureDeviations(data.feature_deviations || [], data.feature_coverage || {});
   renderNearMisses(data);
 
   const body = document.querySelector("#m-points tbody");

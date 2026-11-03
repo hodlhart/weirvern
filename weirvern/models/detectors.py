@@ -684,6 +684,66 @@ class AdaptiveBaselineDetector(BaseDetector):
             }
             if self.baselines[r[0]]["zeek_seen"]:
                 zeek_seen_hosts += 1
+        # ── THE SHAPE / BEHAVIOUR BASELINES (ML-17) ────────────────────────────────────────────
+        #
+        # The volume baseline answers HOW MUCH; the Phase-2 diversity and temporal rows answer
+        # HOW: fan-out, port spread, entropy, regularity and burstiness. They are already model
+        # inputs, so a host can be flagged by one of them while the three volume bars stay flat.
+        # The explainer should be able to say that instead of calling the window normal.
+        #
+        # A SEPARATE QUERY, deliberately: the main training query's column offsets are consumed
+        # by `_zeek_baseline_fields` and its 50-column list. Adding fields there would move every
+        # positional read and is the exact class of bug that once made `zeek_seen` the DNS count.
+        # A missing diversity/temporal row omits that family's keys rather than inventing a zero
+        # baseline; `div_n`/`temp_n` make the presence test explicit.
+        try:
+            stats_rows = client.query(
+                f"""  # nosec B608 - formatted datetimes + config only, never flow data
+                SELECT
+                    a.src_addr,
+                    avg(a.flow_count), sqrt(varPop(a.flow_count)),
+                    avg(coalesce(d.unique_dst_ports, 0)), sqrt(varPop(coalesce(d.unique_dst_ports, 0))),
+                    avg(coalesce(d.port_entropy, 0)), sqrt(varPop(coalesce(d.port_entropy, 0))),
+                    avg(coalesce(t.activity_regularity, 1)), sqrt(varPop(coalesce(t.activity_regularity, 1))),
+                    avg(coalesce(t.burstiness, 1)), sqrt(varPop(coalesce(t.burstiness, 1))),
+                    count(d.window_start) AS div_n, count(t.window_start) AS temp_n
+                FROM weirvern.flows_aggregated a
+                LEFT JOIN weirvern.flows_aggregated_diversity d
+                    ON d.window_start = a.window_start AND d.src_addr = a.src_addr
+                LEFT JOIN weirvern.flows_aggregated_temporal t
+                    ON t.window_start = a.window_start AND t.src_addr = a.src_addr
+                WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}{scope_filter}
+                GROUP BY a.src_addr
+                HAVING count() >= {int(self.cfg.baseline_min_obs)}
+                LIMIT 100000
+                """,
+                settings=QUERY_SETTINGS,
+            ).result_rows
+            for row in stats_rows:
+                b = self.baselines.get(str(row[0]))
+                if b is None:
+                    continue
+                b.update({
+                    "avg_flow_count": float(row[1] or 0),
+                    "stddev_flow_count": float(row[2] or 0),
+                })
+                if int(row[11] or 0) > 0:
+                    b.update({
+                        "avg_unique_ports": float(row[3] or 0),
+                        "stddev_unique_ports": float(row[4] or 0),
+                        "avg_port_entropy": float(row[5] or 0),
+                        "stddev_port_entropy": float(row[6] or 0),
+                    })
+                if int(row[12] or 0) > 0:
+                    b.update({
+                        "avg_activity_regularity": float(row[7] or 0),
+                        "stddev_activity_regularity": float(row[8] or 0),
+                        "avg_burstiness": float(row[9] or 0),
+                        "stddev_burstiness": float(row[10] or 0),
+                    })
+        except Exception as exc:  # noqa: BLE001
+            # The volume/Zeek baseline still works; the new bars will be absent, not fabricated.
+            logger.warning("Could not load the shape/behaviour baselines (ML-17): %s", exc)
         # ── THE HISTORIES THE TWO DERIVED FEATURES READ ─────────────────────────────────────────
         #
         # `zeek_ja4_novelty` and `zeek_service_rarity` are computed AT SCORING TIME from the

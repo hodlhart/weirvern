@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.21 — 2026-11-03
+
+HUNTING PIVOTS.
+
+- Zeek log volume, services and DNS names are clickable cross-filters; the selected hosts
+  follow through to the drill-down and the empty state names the filter.
+- Host-page destinations, NetFlow bars, graph peers, DNS queries, Zeek services and anomalies
+  are pivots: destination/source filters land in NetFlow, DNS lands filtered to host+name,
+  graph peers open their host page, and anomalies open their evidence chain.
+- NetFlow and the Flows drill accept a `dst` filter, so a top destination can answer "who
+  else is talking to this box" instead of only "what did this host do".
+- Models now labels its baseline card truthfully and reports N of 77 model inputs; the
+  Adaptive Baseline gains per-host flow-count, port-diversity, port-entropy, regularity and
+  burstiness statistics for the first baseline tranche.
+
 ## 0.23.20 — 2026-11-03
 
 QUEUE TABLE LABELS.

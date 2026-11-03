@@ -402,6 +402,12 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .hp-bar-row { display: flex; align-items: flex-end; gap: 3px; width: 100%; height: 100%; }
 .hp-bar { flex: 1; background: var(--accent); border-radius: var(--r-sm); min-height: 2px; }
 .hp-bar.zero { background: var(--border); }
+/* A bar is a door: the host page's hourly NetFlow bar opens the filtered NetFlow view. */
+.hp-bar.clickable { cursor: pointer; }
+.hp-bar.clickable:hover { filter: brightness(1.25); }
+.hp-node.clickable, .hp-label.clickable { cursor: pointer; }
+.hp-node.clickable:hover { filter: brightness(1.25); }
+.hp-label.clickable:hover { fill: var(--fg); }
 
 #as-table th.sortable { cursor: pointer; user-select: none; }
 #anomalies-table { table-layout: fixed; }
@@ -834,6 +840,8 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  */
 .bar-row.clickable, tr.clickable { cursor: pointer; }
 .bar-row.clickable:hover, tr.clickable:hover { background: var(--panel2); }
+/* A selected filter is a reading aid, not a severity: use the accent border, never a rank colour. */
+.bar-row.filter-active { background: var(--panel2); outline: 1px solid var(--accent); border-radius: var(--r-sm); }
 /* US-4: a row whose click opens a detail (DNS Q/A rows, Discover's feeds) says so at rest --
  * these carried no rule at all, so the only cue was a title attribute nobody sees. */
 .dc-row { cursor: pointer; }

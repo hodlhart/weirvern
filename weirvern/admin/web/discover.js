@@ -450,6 +450,7 @@ function dcToggleDetail(tr, r) {
     if (r.src_port) addFilter("+ sport " + r.src_port, () => dcAddChip("sport", r.src_port));
     if (r.dst_port) addFilter("+ dport " + r.dst_port, () => dcAddChip("dport", r.dst_port));
     if (r.src_addr) openHostBtn(r.src_addr);
+    if (r.dst_addr && r.dst_addr !== r.src_addr) openHostBtn(r.dst_addr);
   }
   dl.appendChild(acts);
   td.appendChild(dl);

@@ -357,6 +357,10 @@ def flow_filter(filters: dict | None) -> tuple[str, dict]:
     if src:
         parts.append(" AND src_addr = %(fsrc)s ")
         params["fsrc"] = src
+    dst = str(filters.get("dst") or "").strip()
+    if dst:
+        parts.append(" AND dst_addr = %(fdst)s ")
+        params["fdst"] = dst
     proto = str(filters.get("proto") or "").strip()
     if proto != "":
         parts.append(" AND proto = %(fproto)s ")
@@ -371,7 +375,9 @@ def flow_filter(filters: dict | None) -> tuple[str, dict]:
 def flow_filter_is_raw(filters: dict | None) -> bool:
     """True when the filter needs the raw flows table (proto or port present)."""
     filters = filters or {}
-    return bool(str(filters.get("proto") or "").strip() or str(filters.get("dport") or "").strip())
+    return bool(str(filters.get("proto") or "").strip()
+                or str(filters.get("dport") or "").strip()
+                or str(filters.get("dst") or "").strip())
 
 
 def flow_volume_series(client, hours: int = 24, *, filters: dict | None = None) -> dict:
@@ -569,7 +575,69 @@ _ADDR_COLUMN: dict[str, str] = {
 }
 
 
-def zeek_counts(client, hours: int = 24) -> dict:
+# ── Zeek cross-filters ────────────────────────────────────────────────────────────────────────
+# The chart is a dashboard, not a report: a value the operator clicks must reduce the SAME view.
+# A log, a service and a DNS name are different tables, so the common denominator is the HOSTS
+# that match the selected value. Each filter contributes one `IN (SELECT ...)` clause over a
+# host column; all panels then read the same host cohort. This is deliberately a host scope,
+# not a string filter on one table: silently ignoring a filter in the services or DNS panel is
+# the exact "dashboard agrees with itself only by accident" defect the console rules forbid.
+ZEEK_FILTER_FIELDS = ("log", "service", "query")
+
+
+def _zeek_filters(filters: dict[str, str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in ZEEK_FILTER_FIELDS:
+        value = str((filters or {}).get(key) or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
+def _zeek_host_scope(filters: dict[str, str] | None, hours: int,
+                     addr_expr: str = "src_addr") -> tuple[list[str], dict[str, Any]]:
+    """SQL clauses that restrict a Zeek panel to the hosts matching the active filters.
+
+    Each clause is an independent AND. The caller must pass the returned parameters to the
+    query; `since`/`until` are always present, so a filtered query uses the same window as the
+    chart that was clicked.
+    """
+    active = _zeek_filters(filters)
+    clauses: list[str] = []
+    params: dict[str, Any] = {**timewindow.w(hours)}
+    if "log" in active:
+        label = active["log"]
+        table = dict(ZEEK_LOGS).get(label)
+        if not table:
+            raise ValueError(f"unknown Zeek log: {label!r}")
+        col = _ADDR_COLUMN.get(table, "src_addr")
+        clauses.append(
+            f"{addr_expr} IN (SELECT DISTINCT toString({col}) FROM weirvern.{table} "
+            "WHERE ts >= %(since)s AND ts <= %(until)s)"
+        )
+    if "service" in active:
+        params["service"] = active["service"]
+        clauses.append(
+            "src_addr IN (SELECT DISTINCT src_addr FROM weirvern.zeek_conn "
+            "WHERE ts >= %(since)s AND ts <= %(until)s "
+            "AND has(splitByChar(',', service), %(service)s))"
+        )
+    if "query" in active:
+        params["query"] = active["query"]
+        clauses.append(
+            "src_addr IN (SELECT DISTINCT src_addr FROM weirvern.zeek_dns "
+            "WHERE ts >= %(since)s AND ts <= %(until)s AND query = %(query)s)"
+        )
+    return clauses, params
+
+
+def _where(*clauses: str) -> str:
+    """Prepend WHERE only when there is at least one clause (keeps the unfiltered SQL stable)."""
+    parts = [c for c in clauses if c]
+    return (" WHERE " + " AND ".join(parts)) if parts else ""
+
+
+def zeek_counts(client, hours: int = 24, filters: dict[str, str] | None = None) -> dict:
     """Row count per Zeek table, so a chart can show which logs are actually arriving.
 
     ONE QUERY PER TABLE INSIDE A SINGLE UNION would fail entirely if one table is missing,
@@ -577,10 +645,21 @@ def zeek_counts(client, hours: int = 24) -> dict:
     failing table is REPORTED as unreadable rather than dropped -- a table that cannot be
     counted and a table with no rows are different facts, and the panel says which.
     """
+    active = _zeek_filters(filters)
+    if active.get("log") and active["log"] not in dict(ZEEK_LOGS):
+        raise ValueError(f"unknown Zeek log: {active['log']!r}")
     out: list[dict] = []
     unreadable: list[str] = []
-    for label, table in ZEEK_LOGS:
+    # A log filter is a selection of ONE log, so the chart shows that bar rather than every
+    # log for the matching hosts. Service and query filters are host cohorts and leave the
+    # log list intact (the selected hosts may use several logs).
+    selected = [(label, table) for label, table in ZEEK_LOGS
+                if not active.get("log") or label == active["log"]]
+    for label, table in selected:
         try:
+            col = _ADDR_COLUMN.get(table, "src_addr")
+            scope, scope_params = _zeek_host_scope(active, hours, f"toString({col})")
+            where = _where(*scope)
             # ONE QUERY, THREE NUMBERS, because a bare zero is unreadable on its own.
             #
             # "http 0" in the window has two completely different meanings and the panel could not
@@ -596,8 +675,8 @@ def zeek_counts(client, hours: int = 24) -> dict:
             # absent and why.
             rows = client.query(
                 f"SELECT countIf(ts >= %(since)s AND ts <= %(until)s) AS in_window, "  # noqa: S608
-                f"count() AS total, max(ts) AS last_ts FROM weirvern.{table}",
-                parameters={**timewindow.w(hours)},
+                f"count() AS total, max(ts) AS last_ts FROM weirvern.{table}{where}",
+                parameters=scope_params,
             ).result_rows
             in_window = int(rows[0][0] or 0)
             total = int(rows[0][1] or 0)
@@ -624,7 +703,7 @@ def zeek_counts(client, hours: int = 24) -> dict:
     return {"available": True, "reason": "", "points": out, "unreadable": unreadable}
 
 
-def zeek_timeline(client, hours: int = 24) -> dict:
+def zeek_timeline(client, hours: int = 24, filters: dict[str, str] | None = None) -> dict:
     """Rows per bucket across the Zeek logs that are worth trending.
 
     A SUBSET ON PURPOSE. `conn` alone dwarfs every protocol log, and putting them on one
@@ -633,16 +712,24 @@ def zeek_timeline(client, hours: int = 24) -> dict:
     visible against its own history.
     """
     width = _bucket_seconds(hours)
+    active = _zeek_filters(filters)
     trended = ["conn", "dns", "ssl", "http", "ssh", "notice"]
+    if active.get("log"):
+        trended = [active["log"]]
     series: dict[str, list[dict]] = {}
     for label in trended:
-        table = dict(ZEEK_LOGS)[label]
+        table = dict(ZEEK_LOGS).get(label)
+        if not table:
+            continue
         try:
+            col = _ADDR_COLUMN.get(table, "src_addr")
+            scope, scope_params = _zeek_host_scope(active, hours, f"toString({col})")
             rows = client.query(
                 f"SELECT toStartOfInterval(ts, INTERVAL %(w)s SECOND) AS bucket, count() "  # noqa: S608
-                f"FROM weirvern.{table} "
-                "WHERE ts >= %(since)s AND ts <= %(until)s GROUP BY bucket ORDER BY bucket",
-                parameters={"w": width, **timewindow.w(hours)},
+                f"FROM weirvern.{table}"
+                + _where("ts >= %(since)s AND ts <= %(until)s", *scope)
+                + " GROUP BY bucket ORDER BY bucket",
+                parameters={"w": width, **scope_params},
             ).result_rows
             series[label] = [
                 {"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
@@ -657,7 +744,8 @@ def zeek_timeline(client, hours: int = 24) -> dict:
             "series": series}
 
 
-def zeek_services(client, hours: int = 24, limit: int = 15) -> dict:
+def zeek_services(client, hours: int = 24, limit: int = 15,
+                  filters: dict[str, str] | None = None) -> dict:
     """Observed services, from conn.log's service field.
 
     `service` is a comma-joined set in Zeek (e.g. "http,ssl"), so the split happens here
@@ -665,12 +753,18 @@ def zeek_services(client, hours: int = 24, limit: int = 15) -> dict:
     different services and the chart understates the real ones.
     """
     try:
+        active = _zeek_filters(filters)
+        scope, scope_params = _zeek_host_scope(active, hours, "src_addr")
+        clauses = ["ts >= %(since)s AND ts <= %(until)s", "service != ''"]
+        if active.get("service"):
+            clauses.append("has(splitByChar(',', service), %(service)s)")
+        clauses.extend(scope)
         rows = client.query(
             "SELECT arrayJoin(splitByChar(',', service)) AS svc, count() AS n "
             "FROM weirvern.zeek_conn "
-            "WHERE ts >= %(since)s AND ts <= %(until)s AND service != '' "
-            "GROUP BY svc ORDER BY n DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            + _where(*clauses)
+            + " GROUP BY svc ORDER BY n DESC LIMIT %(n)s",
+            parameters={**scope_params, "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("zeek_services failed: %s", exc)
@@ -679,7 +773,8 @@ def zeek_services(client, hours: int = 24, limit: int = 15) -> dict:
             "points": [{"service": str(r[0]), "n": int(r[1] or 0)} for r in rows]}
 
 
-def zeek_dns_names(client, hours: int = 24, limit: int = 20) -> dict:
+def zeek_dns_names(client, hours: int = 24, limit: int = 20,
+                   filters: dict[str, str] | None = None) -> dict:
     """Most-queried names.
 
     Excludes single-label lookups (no dot) by default: NetBIOS and mDNS chatter fills the
@@ -687,12 +782,18 @@ def zeek_dns_names(client, hours: int = 24, limit: int = 20) -> dict:
     in the payload so the panel can say so out loud rather than silently filtering.
     """
     try:
+        active = _zeek_filters(filters)
+        scope, scope_params = _zeek_host_scope(active, hours, "src_addr")
+        clauses = ["ts >= %(since)s AND ts <= %(until)s", "position(query, '.') > 0"]
+        if active.get("query"):
+            clauses.append("query = %(query)s")
+        clauses.extend(scope)
         rows = client.query(
             "SELECT query, count() AS n, uniqExact(src_addr) AS askers "
             "FROM weirvern.zeek_dns "
-            "WHERE ts >= %(since)s AND ts <= %(until)s AND position(query, '.') > 0 "
-            "GROUP BY query ORDER BY n DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            + _where(*clauses)
+            + " GROUP BY query ORDER BY n DESC LIMIT %(n)s",
+            parameters={**scope_params, "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         logger.warning("zeek_dns_names failed: %s", exc)
@@ -744,7 +845,7 @@ def ingestion_series(client, hours: int = 24) -> dict:
 
 
 def flows_matching(client, port: int | None = None, proto: int | None = None,
-                   src: str = "", hours: int = 24, limit: int = 25) -> dict:
+                   src: str = "", dst: str = "", hours: int = 24, limit: int = 25) -> dict:
     """The hosts behind one destination port and/or one IP protocol, for click-through.
 
     WHY THIS IS THE DRILL-DOWN. `top_ports` answers "which ports carry the most bytes" and
@@ -766,8 +867,8 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
     `src` (issue #31) binds to src_addr so the Netflow view's source-address chip can reach
     the drill; any ONE of port / proto / src is enough to make the request a drill.
     """
-    if port is None and proto is None and not src:
-        return _unavailable("give a port, a protocol, or a source address to drill into")
+    if port is None and proto is None and not src and not dst:
+        return _unavailable("give a port, a protocol, a source address or a destination address to drill into")
 
     where = ["timestamp >= %(since)s AND timestamp <= %(until)s"]
     params: dict = {**timewindow.w(hours), "n": limit}
@@ -781,6 +882,9 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
         # BOUND, like every other filter; the route validates the length.
         where.append("src_addr = %(src)s")
         params["src"] = str(src)
+    if dst:
+        where.append("dst_addr = %(dst)s")
+        params["dst"] = str(dst)
     clause = " AND ".join(where)
 
     try:
@@ -825,7 +929,8 @@ def flows_matching(client, port: int | None = None, proto: int | None = None,
         "truncated": total_pairs > len(out),
     }
 
-def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int = 25) -> dict:
+def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int = 25,
+                   filters: dict[str, str] | None = None) -> dict:
     """Which hosts appear in ONE Zeek log, and how often, for click-through from the Zeek view.
 
     WHY THIS IS THE DRILL-DOWN. A bar chart of row counts per log answers "is ssl.log busy"
@@ -848,13 +953,15 @@ def zeek_log_hosts(client, table: str, label: str, hours: int = 24, limit: int =
 
     addrcol = _ADDR_COLUMN.get(table, "src_addr")
     try:
+        active = _zeek_filters(filters)
+        scope, scope_params = _zeek_host_scope(active, hours, f"toString({addrcol})")
         rows = client.query(
             f"SELECT toString({addrcol}) AS addr, count() AS n "  # noqa: S608 - table from ZEEK_LOGS, not input
-            f"FROM weirvern.{table} "
-            "WHERE ts >= %(since)s AND ts <= %(until)s "
-            f"AND toString({addrcol}) != '' AND toString({addrcol}) != '-' "
-            "GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
-            parameters={**timewindow.w(hours), "n": limit},
+            f"FROM weirvern.{table}"
+            + _where("ts >= %(since)s AND ts <= %(until)s",
+                     f"toString({addrcol}) != ''", f"toString({addrcol}) != '-'", *scope)
+            + " GROUP BY addr ORDER BY n DESC LIMIT %(n)s",
+            parameters={**scope_params, "n": limit},
         ).result_rows
     except Exception as exc:  # noqa: BLE001
         _logging.getLogger(__name__).warning("zeek_log_hosts failed for %s: %s", table, exc)

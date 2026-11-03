@@ -95,7 +95,9 @@ function renderBars(hostId, res, opts = {}) {
     const v = value(r);
     const pct = Math.max(2, Math.round((v / max) * 100));
     const colour = opts.colour ? opts.colour(r, idx) : SOC_PALETTE[idx % SOC_PALETTE.length];
-    const row = el("div", { class: "bar-row" + (opts.onClick ? " clickable" : "") }, [
+    const active = typeof opts.active === "function" && opts.active(r);
+    const row = el("div", { class: "bar-row" + (opts.onClick ? " clickable" : "")
+                            + (active ? " filter-active" : "") }, [
       el("span", { class: "bar-name", text: label(r) }),
       el("span", { class: "bar-track" }, [
         el("span", { class: "bar-fill", attrs: { style: `width:${pct}%;background:${colour}` } }),
@@ -214,7 +216,7 @@ function renderTimeline(hostId, res, opts = {}) {
  * builder -- OR-ing multiple values is Discover's job, and saying so here keeps the two honest.
  */
 const NF_FILTERS = [];
-const NF_FIELD_LABELS = { src: "source", proto: "protocol", dport: "port" };
+const NF_FIELD_LABELS = { src: "source", dst: "destination", proto: "protocol", dport: "port" };
 
 function nfQuery() {
   return NF_FILTERS.map((f) => `&${f.field}=${encodeURIComponent(f.value)}`).join("");
@@ -259,8 +261,8 @@ function nfDetailWithChips(base) {
   const params = Object.assign({}, base || {});
   const unapplied = [];
   for (const f of NF_FILTERS) {
-    if (f.field === "src") {
-      params.src = f.value;
+    if (f.field === "src" || f.field === "dst") {
+      params[f.field] = f.value;
     } else if (f.field === "dport" || f.field === "proto") {
       const n = Number(f.value);
       if (Number.isFinite(n)) params[f.field === "dport" ? "port" : "proto"] = n;
@@ -366,11 +368,55 @@ async function loadNetflow() {
 
 /* ── Zeek ───────────────────────────────────────────────────────────────────────────── */
 
+/* The Zeek view's cross-filter. Clicking a log, service or DNS name selects the HOSTS that
+ * match it, so every panel in the view reads the same cohort: a log filter that only changed
+ * the log chart would leave the services and DNS panels silently answering a different
+ * question. One value per field; a second click replaces it. */
+const ZEEK_FILTERS = [];
+const ZEEK_FIELD_LABELS = { log: "log", service: "service", query: "DNS name" };
+
+function zkQuery() {
+  return ZEEK_FILTERS.map((f) => `&${f.field}=${encodeURIComponent(f.value)}`).join("");
+}
+
+function zkRenderChips() {
+  const box = document.getElementById("zk-chips");
+  if (!box) return;
+  box.replaceChildren();
+  for (const [i, f] of ZEEK_FILTERS.entries()) {
+    const chip = el("button", { class: "dc-chip", text: `${ZEEK_FIELD_LABELS[f.field] || f.field} = ${f.label} \u00d7`,
+      attrs: { title: "remove this filter" } });
+    chip.addEventListener("click", () => zkRemoveFilter(i));
+    box.appendChild(chip);
+  }
+}
+
+function zkSetFilter(field, value, label) {
+  const at = ZEEK_FILTERS.findIndex((f) => f.field === field);
+  if (at >= 0) ZEEK_FILTERS.splice(at, 1);
+  ZEEK_FILTERS.push({ field, value: String(value), label: label || String(value) });
+  zkRenderChips();
+  loadZeek().then(clearError).catch(showError);
+}
+
+function zkRemoveFilter(index) {
+  ZEEK_FILTERS.splice(index, 1);
+  zkRenderChips();
+  loadZeek().then(clearError).catch(showError);
+}
+
 async function loadZeek() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = String(trHours());
-  const d = await getJSON(`${API.zeek}?hours=${hours}`);
+  const d = await getJSON(`${API.zeek}?hours=${hours}${zkQuery()}`);
   if (d.data_error) showError(new Error(d.data_error)); else clearError();
+  zkRenderChips();
+  const filterNote = document.getElementById("zk-filter-note");
+  if (filterNote) {
+    filterNote.textContent = ZEEK_FILTERS.length
+      ? `${ZEEK_FILTERS.length} filter${ZEEK_FILTERS.length === 1 ? "" : "s"} active`
+      : "click a bar to filter this view";
+  }
 
   const counts = d.counts || {};
   document.getElementById("zk-window").textContent = `${hours}h window`;
@@ -404,38 +450,51 @@ async function loadZeek() {
              { label: (r) => r.log, value: (r) => r.rows, format: (v) => v.toLocaleString(),
                colour: (r) => SOC_PALETTE[r.idx % SOC_PALETTE.length],
                limit: 18,
-               title: (r) => `${r.log} -> weirvern.${r.table}: ${r.rows} row(s) — click to see the hosts`,
-               emptyText: "No Zeek log has written a row in this window.",
-               // A log with zero rows has nothing to drill into; offering the click would be a
-               // dead end that looks like a broken feature.
+               title: (r) => `${r.log} -> weirvern.${r.table}: ${r.rows} row(s) — click to filter this view to these hosts`,
+               emptyText: ZEEK_FILTERS.length
+                 ? "No Zeek log matches the active filter in this window."
+                 : "No Zeek log has written a row in this window.",
+               // A log with zero rows has nothing to filter/follow; offering the click would
+               // be a dead end that looks like a broken feature.
                onClick: (r) => {
-                 if (r.rows > 0 && typeof loadZeekLog === "function") {
-                   // `r.log`, not `r.label`: the row carries `log` (the Zeek log's name) and
-                   // loadZeekLog expects that label, which it validates against ZEEK_LOGS.
-                   loadZeekLog(r.log).catch(showError);
+                 if (r.rows > 0) {
+                   zkSetFilter("log", r.log, r.log);
+                   // A log selection also opens that log's host detail; the chart is the way
+                   // in, not a dead end. The detail request reads the same filters, so it
+                   // cannot disagree with the bars.
+                   if (typeof loadZeekLog === "function") loadZeekLog(r.log).catch(showError);
                  }
-               } });
+               },
+               active: (r) => ZEEK_FILTERS.some((f) => f.field === "log" && f.value === r.log) });
   // A ZERO NEEDS ITS REASON. The bar chart shows what is in the window; this line explains the
   // bars that are zero, which is the question an operator is actually asking. Before this, a
   // wall of zeros read as a broken dashboard when the truth was that http/ssh/files had rows
   // from ~40h earlier and simply none inside the default 24h window.
   const zeroed = (counts.points || []).filter((p) => p.rows === 0 && (p.total || 0) > 0);
   const never = (counts.points || []).filter((p) => (p.total || 0) === 0 && p.rows === 0);
-  if (zeroed.length) {
-    const oldest = zeroed
-      .map((p) => p.last_ts)
-      .filter(Boolean)
-      .sort()[0];
+  if (ZEEK_FILTERS.length && !(counts.points || []).some((p) => p.rows > 0)) {
+    // With a filter active, "zero" means "zero for this cohort" -- it is not evidence that the
+    // log never existed or that the segment is quiet. Say which question was answered.
     document.getElementById("zk-counts").appendChild(chartEmpty(
-      `${zeroed.length} log${zeroed.length === 1 ? "" : "s"} recorded nothing in this window but `
-      + `have rows from earlier: ${zeroed.map((p) => p.log).join(", ")}. The newest of those rows `
-      + `is ${oldest ? fmtTime(oldest) : "unknown"} — widen the window to see them.`));
-  }
-  if (never.length) {
-    document.getElementById("zk-counts").appendChild(chartEmpty(
-      `${never.length} log${never.length === 1 ? "" : "s"} have NEVER produced a row `
-      + `(${never.map((p) => p.log).join(", ")}). That is a different fact from a quiet window: `
-      + `either the traffic does not exist on this segment or the analyzer is not enabled.`));
+      "No Zeek rows match the active filter. Remove a chip to widen the cohort; the window "
+      + "itself has not changed."));
+  } else {
+    if (zeroed.length) {
+      const oldest = zeroed
+        .map((p) => p.last_ts)
+        .filter(Boolean)
+        .sort()[0];
+      document.getElementById("zk-counts").appendChild(chartEmpty(
+        `${zeroed.length} log${zeroed.length === 1 ? "" : "s"} recorded nothing in this window but `
+        + `have rows from earlier: ${zeroed.map((p) => p.log).join(", ")}. The newest of those rows `
+        + `is ${oldest ? fmtTime(oldest) : "unknown"} — widen the window to see them.`));
+    }
+    if (never.length) {
+      document.getElementById("zk-counts").appendChild(chartEmpty(
+        `${never.length} log${never.length === 1 ? "" : "s"} have NEVER produced a row `
+        + `(${never.map((p) => p.log).join(", ")}). That is a different fact from a quiet window: `
+        + `either the traffic does not exist on this segment or the analyzer is not enabled.`));
+    }
   }
   if ((counts.unreadable || []).length) {
     document.getElementById("zk-counts").appendChild(chartEmpty(
@@ -444,13 +503,23 @@ async function loadZeek() {
 
   renderBars("zk-services", d.services,
              { label: (r) => r.service, value: (r) => r.n, format: (v) => v.toLocaleString(),
-               emptyText: "No services observed — conn.log has no service values in this window." });
+               limit: 15,
+               title: (r) => `${r.service} — ${r.n} connection(s) — click to filter this view to these hosts`,
+               emptyText: ZEEK_FILTERS.length
+                 ? "No services match the active filter in this window."
+                 : "No services observed — conn.log has no service values in this window.",
+               onClick: (r) => zkSetFilter("service", r.service, r.service),
+               active: (r) => ZEEK_FILTERS.some((f) => f.field === "service" && f.value === r.service) });
 
   renderBars("zk-dns", d.dns,
              { label: (r) => r.query, value: (r) => r.n, format: (v) => v.toLocaleString(),
                limit: 20,
-               title: (r) => `${r.query} — ${r.n} queries from ${r.askers} host(s)`,
-               emptyText: "No multi-label DNS queries in this window." });
+               title: (r) => `${r.query} — ${r.n} queries from ${r.askers} host(s) — click to filter this view to these hosts`,
+               emptyText: ZEEK_FILTERS.length
+                 ? "No DNS names match the active filter in this window."
+                 : "No multi-label DNS queries in this window.",
+               onClick: (r) => zkSetFilter("query", r.query, r.query),
+               active: (r) => ZEEK_FILTERS.some((f) => f.field === "query" && f.value === r.query) });
   if (d.dns && d.dns.filtered) {
     document.getElementById("zk-dns").appendChild(chartEmpty(d.dns.filtered));
   }

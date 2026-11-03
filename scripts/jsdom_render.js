@@ -112,7 +112,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                      wlNicFacts, wlNicRows, wlPlans, wlShowNicSettings, wlCfgValue, wlIfaceNames, SETTINGS_ROWS,
                      runSiphonTest, renderTestNote,
                      loadZeek, loadNetflow, loadAnomalies, postReview, reviewCell,
-                     loadHost, loadEvidence, loadAudit, loadDetectors,
+                     loadHost, loadHostPage, loadEvidence, loadAudit, loadDetectors,
                      registryHighlight, sluiceHighlightRule,
                    NF_FILTERS, nfSetFilter, nfRemoveChip,
                    trApply, trHours, TIME_RANGE,
@@ -130,6 +130,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
                    setCrumbs, clearCrumbs, closeWeirling, sparkSvg, statCells,
                    HOST_RETURN, get CURRENT_VIEW() { return CURRENT_VIEW; },
+                   get HP_ADDR() { return HP_ADDR; },
                    confirmDestructive, withReadBack,
                    wlStateChip, wlLoss, saveWeirling, clearWeirlingForm, wlApplyMode,
                    setWeirlingEnabled, revokeWeirling,
@@ -725,6 +726,8 @@ const IDENTITY_PAYLOAD = {
   let FLOW_REQS = [];
   // Recorded (issue #30): the checks assert the time control re-fetches Discover.
   let DISCOVER_REQS = [];
+  // Recorded (ZK-FILTER-1): the Zeek cross-filter must reach the server, not just the DOM.
+  let ZEEK_REQS = [];
   window.fetch = function (url, opts) {
     if (fetchOverride) {
       const r = fetchOverride(String(url), opts || {});
@@ -1330,7 +1333,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ["/api/dns", DNS_PAYLOAD],
     ["/api/settings", SETTINGS_PAYLOAD],
     ["/api/zeeklog", () => ({ available: true, points: [{ addr: "198.51.100.20", n: 5 }] })],
-    ["/api/zeek", ZEEK_PAYLOAD],
+    ["/api/zeek", (u) => {
+      ZEEK_REQS.push(String(u));
+      const parsed = new URL(String(u), BASE);
+      const log = parsed.searchParams.get("log");
+      const service = parsed.searchParams.get("service");
+      const query = parsed.searchParams.get("query");
+      // A filtered response must visibly differ from the unfiltered one; returning the same
+      // payload would let a browser-side no-op pass this harness.
+      const out = { ...ZEEK_PAYLOAD };
+      if (log) out.counts = { ...ZEEK_PAYLOAD.counts,
+        points: ZEEK_PAYLOAD.counts.points.filter((p) => p.log === log) };
+      if (service) out.services = { ...ZEEK_PAYLOAD.services,
+        points: ZEEK_PAYLOAD.services.points.filter((p) => p.service === service) };
+      if (query) out.dns = { ...ZEEK_PAYLOAD.dns,
+        points: ZEEK_PAYLOAD.dns.points.filter((p) => p.query === query) };
+      return out;
+    }],
     ["/api/session", SESSION_STUB],
     ["/api/users", USERS_PAYLOAD],
     ["/api/identity", IDENTITY_PAYLOAD],
@@ -2567,6 +2586,60 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#zk-services .bar-row").length === 2);
   check("the dns panel rendered its names",
         doc.querySelectorAll("#zk-dns .bar-row").length === 1);
+
+  // ── ZK-FILTER-1: the three Zeek dimensions add server-side filters ───────────────────────
+  // A click that only repaints the clicked bar is the dead-affordance defect; check the chip,
+  // the request query, AND the panel count that the filtered response changes.
+  async function zkClick(label) {
+    const rows = [...doc.querySelectorAll("#zk-counts .bar-row, #zk-services .bar-row, #zk-dns .bar-row")];
+    const row = rows.find((r) => r.textContent.includes(label));
+    check(`a ${label} bar exists to click`, !!row);
+    if (row) row.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  await zkClick("ssl");
+  check("a log click adds a visible filter chip",
+        /log = ssl/.test(doc.getElementById("zk-chips").textContent),
+        doc.getElementById("zk-chips").textContent);
+  check("a log click sends the filter to the server",
+        ZEEK_REQS.some((u) => u.includes("log=ssl")), ZEEK_REQS.slice(-1)[0]);
+  check("a log filter changes the log count panel",
+        doc.querySelectorAll("#zk-counts .bar-row").length === 1,
+        `${doc.querySelectorAll("#zk-counts .bar-row").length} bars`);
+
+  await zkClick("dns");
+  check("a service click adds a visible filter chip",
+        /service = dns/.test(doc.getElementById("zk-chips").textContent),
+        doc.getElementById("zk-chips").textContent);
+  check("a service click sends the filter to the server",
+        ZEEK_REQS.some((u) => u.includes("service=dns")), ZEEK_REQS.slice(-1)[0]);
+  check("a service filter changes the service panel",
+        doc.querySelectorAll("#zk-services .bar-row").length === 1,
+        `${doc.querySelectorAll("#zk-services .bar-row").length} services`);
+
+  await zkClick("host.example");
+  check("a DNS click adds a visible filter chip",
+        /DNS name = host.example/.test(doc.getElementById("zk-chips").textContent),
+        doc.getElementById("zk-chips").textContent);
+  check("a DNS click sends the filter to the server",
+        ZEEK_REQS.some((u) => u.includes("query=host.example")), ZEEK_REQS.slice(-1)[0]);
+  check("a DNS filter changes the DNS panel",
+        doc.querySelectorAll("#zk-dns .bar-row").length === 1,
+        `${doc.querySelectorAll("#zk-dns .bar-row").length} names`);
+
+  // Remove the chips and prove the next request is unfiltered again.
+  while (doc.querySelector("#zk-chips .dc-chip")) {
+    doc.querySelector("#zk-chips .dc-chip")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  check("removing the Zeek filters clears the chip row",
+        doc.getElementById("zk-chips").textContent.trim() === "",
+        doc.getElementById("zk-chips").textContent);
+  check("removing the Zeek filters returns to the unfiltered request",
+        ZEEK_REQS.some((u) => !u.includes("log=") && !u.includes("service=") && !u.includes("query=")),
+        ZEEK_REQS.slice(-1)[0]);
 
   // ── operator access and staged writes ──────────────────────────────────────────────────────
   // Everything below drives the SHIPPING functions against the SHIPPING markup and asserts the
@@ -6967,6 +7040,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           top_destinations: [
             { dst_addr: "198.51.100.9", hostname: "peer.example", bytes: 9000, flows: 9, ports: 3 }],
           top_ports: [{ dst_port: 443, proto: "tcp", bytes: 8000, flows: 8 }],
+          dns_queries: [{ query: "ads.example.com", qtype: "A", asks: 3, resolvers: 1 }],
           zeek_services: [{ service: "ssl", conns: 5, bytes: 7000 }],
           anomalies: [{ detected_at: "2026-01-01T00:20:00", anomaly_score: 0.91,
                         severity: "high", detected_by_models: "IsolationForest",
@@ -7010,6 +7084,84 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(120);
     check("the host drill DISMISSES with its Close",
           doc.getElementById("h-results").classList.contains("hidden"));
+
+    // ── HUNT-1: the host page is a chain of filtered pivots ─────────────────────────────────
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(120);
+    const hpDest = doc.querySelector("#hp-dests tbody tr.clickable");
+    check("the host page lists a clickable destination", !!hpDest);
+    if (hpDest) {
+      hpDest.click();
+      await sleep(220);
+      check("a host destination opens NetFlow filtered to that destination",
+            doc.getElementById("view-netflow").classList.contains("active")
+            && H.NF_FILTERS.some((f) => f.field === "dst" && f.value === "198.51.100.9"),
+            JSON.stringify(H.NF_FILTERS));
+    }
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(100);
+    const hpBar = doc.querySelector("#hp-flow .hp-bar.clickable");
+    check("the host page draws a clickable NetFlow bar", !!hpBar);
+    if (hpBar) {
+      hpBar.click();
+      await sleep(220);
+      check("a host NetFlow bar opens NetFlow filtered to the host",
+            doc.getElementById("view-netflow").classList.contains("active")
+            && H.NF_FILTERS.some((f) => f.field === "src" && f.value === "198.51.100.5"),
+            JSON.stringify(H.NF_FILTERS));
+    }
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(100);
+    const hpNode = doc.querySelector("#hp-graph circle.hp-node");
+    check("the connections graph renders a clickable host node", !!hpNode);
+    if (hpNode) {
+      hpNode.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      await sleep(180);
+      check("a graph node opens that host's page", H.HP_ADDR === "198.51.100.9", H.HP_ADDR);
+    }
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(100);
+    const hpAnom = doc.querySelector("#hp-anoms tbody tr.clickable");
+    check("the host page lists a clickable anomaly", !!hpAnom);
+    if (hpAnom) {
+      hpAnom.click();
+      await sleep(220);
+      check("a host anomaly opens its evidence chain",
+            doc.getElementById("view-evidence").classList.contains("active"));
+    }
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(100);
+    const hpDns = doc.querySelector("#hp-dns tbody tr.clickable");
+    if (hpDns) {
+      hpDns.click();
+      await sleep(180);
+      check("a host DNS row filters DNS to the host and name",
+            doc.getElementById("view-dns").classList.contains("active")
+            && doc.getElementById("dn-domain").value === "ads.example.com"
+            && doc.getElementById("dn-client").value === "198.51.100.5",
+            `${doc.getElementById("dn-domain").value}/${doc.getElementById("dn-client").value}`);
+    }
+    H.showView("host");
+    await H.loadHostPage("198.51.100.5");
+    await sleep(100);
+    const hpZeek = doc.querySelector("#hp-zeek tbody tr.clickable");
+    if (hpZeek) {
+      hpZeek.click();
+      await sleep(180);
+      check("a host Zeek service filters the Zeek view",
+            doc.getElementById("view-zeek").classList.contains("active")
+            && /service = ssl/.test((doc.getElementById("zk-chips") || {}).textContent || ""),
+            (doc.getElementById("zk-chips") || {}).textContent || "no chips");
+    }
+    // These pivots are real view filters; clear them so the later URL/cold-boot assertions
+    // start from the same state they did before this section existed.
+    try { H.NF_FILTERS.splice(0, H.NF_FILTERS.length); } catch (_e) { /* shape changed */ }
+    try { H.dnClear(); } catch (_e) { /* shape changed */ }
     fetchOverride = null;
     // 3. the identity detail's exits.
     H.showView("identity");

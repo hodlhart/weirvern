@@ -64,9 +64,18 @@ EXPLAINED_MEASUREMENTS = [
     "total_packets",
     "unique_dst_ips",
     "flow_count",
+    "unique_dst_ports",
+    "port_entropy",
+    "activity_regularity",
+    "burstiness",
     "avg_bytes",
     "avg_packets",
 ]
+
+# The measurements that may set the PRIMARY deviation and therefore the severity. The extra
+# shape/behaviour measurements are shown as contributions but do not change the production
+# severity rule until the operator has seen them; a silent severity shift is not a UI change.
+PRIMARY_MEASUREMENTS = ("total_bytes", "total_packets", "unique_dst_ips")
 
 # Mapping from a raw measurement to the baseline statistic naming it. The baseline
 # stores avg/stddev for bytes, packets and destination count; avg_bytes and
@@ -76,7 +85,27 @@ _BASELINE_KEYS = {
     "total_bytes": ("avg_bytes", "stddev_bytes"),
     "total_packets": ("avg_packets", "stddev_packets"),
     "unique_dst_ips": ("avg_unique_dsts", "stddev_unique_dsts"),
+    "flow_count": ("avg_flow_count", "stddev_flow_count"),
+    "unique_dst_ports": ("avg_unique_ports", "stddev_unique_ports"),
+    "port_entropy": ("avg_port_entropy", "stddev_port_entropy"),
+    "activity_regularity": ("avg_activity_regularity", "stddev_activity_regularity"),
+    "burstiness": ("avg_burstiness", "stddev_burstiness"),
 }
+
+
+def _measurement_value(source: dict[str, Any], name: str) -> float | None:
+    """Read a raw measurement from the flow row or its attached diversity/temporal row.
+
+    The worker stores the Phase-2 measurements under `_diversity` and `_temporal`; a baseline
+    contribution must read the SAME value the model did, not a missing top-level key.
+    """
+    if name in source:
+        return _as_float(source.get(name))
+    for nested in ("_diversity", "_temporal"):
+        value = (source.get(nested) or {}).get(name)
+        if value is not None:
+            return _as_float(value)
+    return None
 
 # Percentile keys per measurement, used for the human-readable comparison.
 _PERCENTILE_KEYS = {
@@ -212,7 +241,7 @@ def explain(features_or_flow: dict[str, Any],
         keys = _BASELINE_KEYS.get(name)
         if not keys:
             continue
-        actual = _as_float(features_or_flow.get(name))
+        actual = _measurement_value(features_or_flow, name)
         mean = _as_float(baseline.get(keys[0]))
         stddev = _as_float(baseline.get(keys[1]))
         if actual is None or mean is None or stddev is None:
@@ -257,8 +286,10 @@ def explain(features_or_flow: dict[str, Any],
     # The primary deviation is the largest |z|. Ties break on the order of
     # EXPLAINED_MEASUREMENTS so the same window always names the same feature
     # (a flapping explanation is worse than a fixed arbitrary one).
+    primary_candidates = {k: v for k, v in contributions.items()
+                          if k in PRIMARY_MEASUREMENTS} or contributions
     primary = max(
-        contributions.items(),
+        primary_candidates.items(),
         key=lambda kv: (abs(kv[1]["z"]), -EXPLAINED_MEASUREMENTS.index(kv[0])),
     )
     p_name, p = primary

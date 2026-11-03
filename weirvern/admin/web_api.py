@@ -618,6 +618,7 @@ def models_payload(data: dict) -> dict:
         "scores": data.get("scores", {}),
         "model_counts": data.get("model_counts", {}),
         "feature_deviations": data.get("feature_deviations", []),
+        "feature_coverage": data.get("feature_coverage", {}),
         # SOC-2: what almost alerted, and WHY it did not. `available` is separate from the
         # list so the panel can say "the near-miss table does not exist yet" instead of
         # rendering an empty list, which would read as "nothing nearly alerted".

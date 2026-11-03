@@ -992,10 +992,12 @@ def _build_handler(ctx: GuiContext):
             # destination port -- every panel below receives them, and the aggregate-backed
             # panels switch to the raw table when proto/port demand it (soc.flow_filter).
             filters = {"src": (query.get("src") or [""])[0].strip(),
+                       "dst": (query.get("dst") or [""])[0].strip(),
                        "proto": (query.get("proto") or [""])[0].strip(),
                        "dport": (query.get("dport") or [""])[0].strip()}
-            if len(filters["src"]) > 64:
-                return self._error(400, "source filter is implausibly long")
+            for key in ("src", "dst"):
+                if len(filters[key]) > 64:
+                    return self._error(400, f"{key} filter is implausibly long")
             for key, hi in (("proto", 255), ("dport", 65535)):
                 if filters[key] and (not filters[key].isdigit() or int(filters[key]) > hi):
                     return self._error(400, f"{key} must be a number <= {hi}")
@@ -1033,18 +1035,30 @@ def _build_handler(ctx: GuiContext):
             if hours is None:
                 return
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            filters: dict[str, str] = {}
+            for key in ("log", "service", "query"):
+                raw = (query.get(key) or [""])[0].strip()
+                if not raw:
+                    continue
+                if len(raw) > 253:
+                    return self._error(400, f"{key} is too long to filter on")
+                filters[key] = raw
+            if filters.get("log") and filters["log"] not in dict(soc_mod.ZEEK_LOGS):
+                return self._error(400, f"unknown log {filters['log']!r}")
             try:
                 with self._with_client() as client:
-                    counts = soc_mod.zeek_counts(client, hours=hours)
-                    timeline = soc_mod.zeek_timeline(client, hours=hours)
-                    services = soc_mod.zeek_services(client, hours=hours)
-                    dns = soc_mod.zeek_dns_names(client, hours=hours)
+                    counts = soc_mod.zeek_counts(client, hours=hours, filters=filters)
+                    timeline = soc_mod.zeek_timeline(client, hours=hours, filters=filters)
+                    services = soc_mod.zeek_services(client, hours=hours, filters=filters)
+                    dns = soc_mod.zeek_dns_names(client, hours=hours, filters=filters)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("zeek view unavailable: %s", exc)
                 return self._json({"counts": empty, "timeline": empty, "services": empty,
-                                   "dns": empty,
+                                   "dns": empty, "filters": filters,
                                    "data_error": f"cannot reach ClickHouse: {exc}"})
-            self._json(web_api.zeek_payload(counts, timeline, services, dns))
+            payload = web_api.zeek_payload(counts, timeline, services, dns)
+            payload["filters"] = filters
+            self._json(payload)
 
         def _flows(self, query: dict) -> None:
             """The hosts behind one destination port, one IP protocol, or one source address.
@@ -1066,15 +1080,18 @@ def _build_handler(ctx: GuiContext):
             # The source-address chip (issue #31). BOUND into the query like every filter;
             # an implausibly long value is REFUSED, never truncated.
             src = str((query.get("src") or [""])[0]).strip()
-            if len(src) > 64:
-                return self._error(400, "src filter is implausibly long")
-            if port is None and proto is None and not src:
+            dst = str((query.get("dst") or [""])[0]).strip()
+            for key, value in (("src", src), ("dst", dst)):
+                if len(value) > 64:
+                    return self._error(400, f"{key} filter is implausibly long")
+            if port is None and proto is None and not src and not dst:
                 return self._error(400,
-                                   "port, proto or src is required, e.g. /api/flows?port=443")
+                                   "port, proto or src is required (dst is also accepted), "
+                                   "e.g. /api/flows?port=443")
             try:
                 with self._with_client() as client:
                     payload = soc_mod.flows_matching(client, port=port, proto=proto, src=src,
-                                                     hours=hours)
+                                                     dst=dst, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("flow drill-down unavailable: %s", exc)
                 return self._json({
@@ -2305,9 +2322,18 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
+            filters: dict[str, str] = {"log": label}
+            for key in ("service", "query"):
+                raw = (query.get(key) or [""])[0].strip()
+                if not raw:
+                    continue
+                if len(raw) > 253:
+                    return self._error(400, f"{key} is too long to filter on")
+                filters[key] = raw
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.zeek_log_hosts(client, table=table, label=label, hours=hours)
+                    payload = soc_mod.zeek_log_hosts(client, table=table, label=label,
+                                                      hours=hours, filters=filters)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("zeek log detail unavailable: %s", exc)
                 return self._json({

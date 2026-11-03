@@ -19,6 +19,10 @@ EXFIL_FLOW = {
     "total_packets": 2_400_000,
     "unique_dst_ips": 2,
     "flow_count": 180,
+    "unique_dst_ports": 12,
+    "port_entropy": 2.4,
+    "activity_regularity": 0.8,
+    "burstiness": 1.7,
     "avg_bytes": 20_000_000,
     "avg_packets": 13_333,
 }
@@ -226,3 +230,52 @@ def test_explained_measurements_are_raw_not_log_transformed():
     for name in EXPLAINED_MEASUREMENTS:
         assert not name.startswith("log"), name
         assert name in EXFIL_FLOW, f"{name} is not a real aggregate column"
+
+
+def test_shape_and_behaviour_measurements_are_baselined_without_moving_primary():
+    """The card must show more than the three volume bars, but the severity rule stays put.
+
+    These are real model inputs from the diversity/temporal rows: a host can be flagged by
+    fan-out or port entropy while bytes look normal. The new values are contributions; the
+    primary (and therefore the production severity rule) remains one of the original volume
+    measurements until the operator has reviewed the new bars.
+    """
+    baseline = {
+        **EXFIL_BASELINE,
+        "avg_flow_count": 20.0, "stddev_flow_count": 3.0,
+        "avg_unique_ports": 4.0, "stddev_unique_ports": 1.0,
+        "avg_port_entropy": 0.9, "stddev_port_entropy": 0.2,
+        "avg_activity_regularity": 0.95, "stddev_activity_regularity": 0.05,
+        "avg_burstiness": 0.8, "stddev_burstiness": 0.1,
+    }
+    e = explain(EXFIL_FLOW, baseline)
+    parsed = json.loads(e["feature_contributions"])
+    for name in ("flow_count", "unique_dst_ports", "port_entropy",
+                 "activity_regularity", "burstiness"):
+        assert name in parsed, f"{name} is not explained even though a baseline exists"
+    assert e["primary_deviation_feature"] == "total_bytes"
+    assert parsed["unique_dst_ports"]["direction"] == "above"
+
+
+def test_nested_diversity_and_temporal_values_are_read_from_the_window_row():
+    """The worker attaches _diversity/_temporal; the explainer must read those, not zeros."""
+    flow = {
+        "total_bytes": 1, "total_packets": 1, "unique_dst_ips": 1, "flow_count": 1,
+        "_diversity": {"unique_dst_ports": 30, "port_entropy": 4.5},
+        "_temporal": {"activity_regularity": 0.1, "burstiness": 9.0},
+    }
+    baseline = {
+        "avg_bytes": 1.0, "stddev_bytes": 1.0,
+        "avg_packets": 1.0, "stddev_packets": 1.0,
+        "avg_unique_dsts": 1.0, "stddev_unique_dsts": 1.0,
+        "avg_flow_count": 1.0, "stddev_flow_count": 1.0,
+        "avg_unique_ports": 4.0, "stddev_unique_ports": 1.0,
+        "avg_port_entropy": 1.0, "stddev_port_entropy": 1.0,
+        "avg_activity_regularity": 1.0, "stddev_activity_regularity": 1.0,
+        "avg_burstiness": 1.0, "stddev_burstiness": 1.0,
+    }
+    parsed = json.loads(explain(flow, baseline)["feature_contributions"])
+    assert parsed["unique_dst_ports"]["actual"] == 30
+    assert parsed["port_entropy"]["actual"] == 4.5
+    assert parsed["activity_regularity"]["actual"] == 0.1
+    assert parsed["burstiness"]["actual"] == 9.0

@@ -1615,6 +1615,20 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
          "max_abs_z": v["max_z"], "n": v["n"]}
         for k, v in sorted(features.items())
     ]
+    # Coverage is a separate fact from the bars: a deployment whose baseline has not retrained
+    # carries only the volume contributions, and a reader must not mistake that for the model's
+    # full input set. The denominator is the production vector, read from the same constant the
+    # models use rather than hard-coded here.
+    try:
+        from weirvern.features import IF_FEATURES  # noqa: PLC0415 - keep status import-light
+
+        model_inputs = len(IF_FEATURES)
+    except Exception:  # noqa: BLE001 - the chart still renders; the denominator says unknown
+        model_inputs = None
+    out["feature_coverage"] = {
+        "baseline_features": len(features),
+        "model_inputs": model_inputs,
+    }
 
     # 5. NEAR MISSES (soc-2): windows that came close to the bar, or cleared it and were
     #    dropped by the agreement gate. These are the false-negative surface -- the evidence

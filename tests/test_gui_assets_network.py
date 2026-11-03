@@ -779,3 +779,37 @@ def test_service_connections_are_folded_after_direction_is_decided():
     assert e["direction"] == "request/reply" and e["ports"] == [443]
     assert e["source_ports"] == [51515, 51516]
     assert e["bytes"] == 600 and e["flows"] == 4
+
+
+def test_the_flow_drill_accepts_a_destination_filter_and_binds_it():
+    """HUNT-1: a host-page destination pivot needs NetFlow filtered to dst, not src.
+
+    The source filter answers "what did this host do"; the destination filter answers "who
+    else is talking to this box", which is the question a top-destinations row exists for.
+    """
+    from weirvern.admin import soc
+
+    class _C:
+        def __init__(self):
+            self.sqls = []
+            self.params = {}
+
+        def query(self, sql, parameters=None, **_kw):
+            self.sqls.append(sql)
+            if parameters:
+                self.params.update(parameters)
+
+            class R:
+                result_rows = []
+
+            return R()
+
+    c = _C()
+    out = soc.flows_matching(c, dst="198.51.100.9")
+    assert out["available"] is True, out
+    assert "dst_addr = %(dst)s" in c.sqls[0], c.sqls[0]
+    assert c.params["dst"] == "198.51.100.9"
+
+    c2 = _C()
+    soc.flows_matching(c2, dst="198.51.100.9", port=443)
+    assert "dst_addr = %(dst)s" in c2.sqls[0] and "dst_port = %(port)s" in c2.sqls[0], c2.sqls[0]

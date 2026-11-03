@@ -480,8 +480,9 @@
       <h2>Zeek <button class="info-btn" data-info="zk-info" aria-label="what the Zeek logs show and how to drill in" aria-expanded="false" title="what the Zeek logs show and how to drill in">i</button> <span class="muted" id="zk-window"></span></h2>
       <p class="muted" id="zk-summary">loading…</p>
       <div class="controls">
-        
+        <span class="muted" id="zk-filter-note"></span>
       </div>
+      <div id="zk-chips" class="chips" aria-live="polite"></div>
       <div class="info-text hidden" id="zk-info">
   <p><strong>What it is.</strong> What flows cannot record: the services hosts offer, TLS handshakes with JA4 fingerprints, DNS answers, file transfers, authentication.</p>
   <p><strong>What writes it.</strong> Zeek logs shipped to this hub.</p>
@@ -746,12 +747,12 @@
     </div>
 
     <div class="card">
-      <h2>Feature deviations <span class="muted">mean |z| against each host's own baseline</span> <button class="info-btn" data-info="m-features-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
+      <h2>Baseline deviations <span class="muted">mean |z| against each host's own baseline</span> <button class="info-btn" data-info="m-features-info" aria-label="how to read this card" aria-expanded="false" title="how to read this card">i</button></h2>
 <div class="info-text hidden" id="m-features-info">
-  <p><strong>What it is.</strong> Which features the models keep flagging, and how far from normal they sit (mean |z| against each host's own baseline).</p>
-  <p><strong>What writes it.</strong> The feature pipeline, per retrain.</p>
-  <p><strong>Last changed.</strong> Follows the window.</p>
-  <p><strong>Where to see it.</strong> Here — features that never deviate are not earning their place.</p>
+  <p><strong>What it is.</strong> The measurements the adaptive baseline can compare against a host's own history. It is not the model's full feature inventory: the Isolation Forest and Gradient Boosting vectors use 77 inputs, while only measurements with a per-host mean and standard deviation can produce a z-score here.</p>
+  <p><strong>What writes it.</strong> The per-host baseline, per retrain, and the feature contributions the explainer attaches to a flagged window.</p>
+  <p><strong>Last changed.</strong> Follows the baseline retrain and the selected window.</p>
+  <p><strong>Where to see it.</strong> Here; the coverage line under the chart names how many model inputs are represented.</p>
 </div>
       <div id="m-features" class="chart"></div>
     </div>
