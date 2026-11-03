@@ -2103,11 +2103,11 @@ function anClearAllFilters() {
 
 async function loadAnomalies() {
     scheduleURLSync();
-  // THE QUEUE CONTRACT. Incidents are the default: one row per high/critical, pageable episode
-  // with measured evidence. Leads hold low/medium and model-only episodes; All anomalies keeps
-  // every raw scored window reachable. The raw table has its own filters, so this branch must
-  // not pretend those filters apply to episodes.
-  const queueMode = (document.getElementById("f-queue-mode") || {}).value || "incidents";
+  // THE DEFAULT IS THE OBSERVATION LIST, matching the Network graph's alerted badge. Incidents
+  // and Leads are explicit queue views over the same evidence; they are opt-in so the map and
+  // the list cannot appear to describe different networks. The raw table has its own filters,
+  // so the episode branch must not pretend those filters apply to episodes.
+  const queueMode = (document.getElementById("f-queue-mode") || {}).value || "raw";
   if (queueMode !== "raw") {
     await loadEpisodeQueue(queueMode);
     return;

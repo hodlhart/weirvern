@@ -542,12 +542,13 @@
         <div id="an-sev" class="sev-tiles"></div>
       </div>
       <div class="controls">
-        <!-- THE DEFAULT QUEUE IS AN INCIDENT QUEUE. Low/medium and model-only episodes are
-             still reachable under Leads; raw scored windows remain under All anomalies. -->
+        <!-- THE DEFAULT IS THE FULL OBSERVATION LIST, which is what the Network graph's
+             "alerted" badge counts. Incidents and Leads are opt-in views over the same data;
+             opening one must never look like the network had fewer alerts than the map. -->
         <label>queue <select id="f-queue-mode">
-          <option value="incidents" selected>Incidents</option>
+          <option value="raw" selected>All anomalies</option>
+          <option value="incidents">Incidents</option>
           <option value="leads">Leads</option>
-          <option value="raw">All anomalies</option>
         </select></label>
         <label>min score <input type="number" id="f-min-score" value="0" min="0" max="1" step="0.05"></label>
         <label>limit <input type="number" id="f-limit" value="90" min="1" max="1000"></label>

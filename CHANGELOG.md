@@ -8,6 +8,9 @@ QUEUE TABLE LABELS.
   the address. The Host column stays the fact (the IP); the name is the convenience and is never
   substituted for it.
 - The queue's `windows` heading is now **Windows**.
+- The default Anomalies view is **All anomalies**, matching the Network graph's alert count;
+  Incidents and Leads are explicit views over the same evidence. The graph and the list now
+  bound anomaly rows by `window_start`, not by the later ingestion pass.
 - No detection, budgeting, or episode-identity behavior changed; this is display-only.
 
 ## 0.23.19 — 2026-11-02

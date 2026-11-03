@@ -756,7 +756,10 @@ def attach_host_status(client, nodes: dict[str, dict], edges: list[dict], *, hou
             "SELECT src_addr, count() AS n, max(detected_at) AS last_seen, "
             "       max(anomaly_score) AS score "
             "FROM weirvern.netflow_anomalies "
-            "WHERE detected_at >= %(since)s AND detected_at <= %(until)s "
+            # The Anomalies list is bounded by the WINDOW it describes, not by the
+            # ingestion pass that noticed it. The graph must use the same boundary,
+            # or a delayed detection makes the two views disagree about the range.
+            "WHERE window_start >= %(since)s AND window_start <= %(until)s "
             "GROUP BY src_addr",
             {**timewindow.w(hours)},
             "connection graph (anomalies)",
