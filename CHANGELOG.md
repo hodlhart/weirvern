@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.25 — 2026-11-04
+
+VR REMEDIATION: DNS VERBS BEHIND ONE DISCLOSURE.
+
+- Every DNS row now carries one native `<details>` summary; Block lives inside it, closed
+  at rest. 100 rows no longer put 100 verbs in the reading path. The summary is named,
+  stops the row's detail click, and the verb keeps its own keyboard target.
+- Pinned by pytest source contract and jsdom: one disclosure per row, closed at rest,
+  open in place, no detail row triggered by the summary.
+
 ## 0.23.24 — 2026-11-04
 
 VR REMEDIATIONS: ONE AUTO-REFRESH STATE, KEYBOARD-OPERABLE RULES.

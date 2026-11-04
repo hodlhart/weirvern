@@ -8218,6 +8218,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await H.loadDns();
     const rows = doc.querySelectorAll("#dn-rows tr.dc-row");
     check("the DNS view renders Q/A rows", rows.length === 2, "rows=" + rows.length);
+    const rowMore = rows[0].querySelector("td.dn-actions details.row-more");
+    check("a DNS row carries one actions disclosure, closed at rest",
+          !!rowMore && !rowMore.open && !!rowMore.querySelector("summary")
+          && !!rowMore.querySelector("button"),
+          rowMore ? "present" : "missing");
+    if (rowMore) {
+      rowMore.querySelector("summary").click();
+      check("the DNS row disclosure opens in place",
+            rowMore.open && !doc.querySelector("tr.dn-detail"), "summary bubbled to the row");
+      rowMore.open = false;
+    }
     check("the summary names the NXDOMAIN count",
           /NXDOMAIN/.test(doc.getElementById("dn-summary").textContent),
           doc.getElementById("dn-summary").textContent.slice(0, 90));

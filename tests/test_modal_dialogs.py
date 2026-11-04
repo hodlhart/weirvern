@@ -42,7 +42,7 @@ def test_the_rule_card_opens_in_the_modal_but_the_composer_is_a_sheet():
     assert 'id="rule-composer"' not in html, "the old centred composer survives"
 
 
-def test_the_dns_block_button_lives_in_its_own_far_right_column():
+def test_the_dns_block_verb_lives_behind_one_row_disclosure():
     html = (WEB / "index.html").read_text()
     thead = html[html.index("<th>time</th><th>client</th><th>query</th>"):]
     thead = thead[:thead.index("</tr>")]
@@ -51,4 +51,6 @@ def test_the_dns_block_button_lives_in_its_own_far_right_column():
     )
     js = (WEB / "dnsview.js").read_text()
     assert "q.appendChild(blk)" not in js, "the button moved OUT of the query cell"
-    assert "dn-actions" in js and "act.appendChild(blk)" in js
+    assert "dn-actions" in js and "dn-more" in js
+    assert "act.appendChild(more)" in js and "more.appendChild(blk)" in js
+    assert "act.appendChild(blk)" not in js, "the verb is row furniture again"

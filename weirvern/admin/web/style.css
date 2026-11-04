@@ -845,6 +845,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .bar-row.filter-active { background: var(--panel2); outline: 1px solid var(--accent); border-radius: var(--r-sm); }
 /* US-4: a row whose click opens a detail (DNS Q/A rows, Discover's feeds) says so at rest --
  * these carried no rule at all, so the only cue was a title attribute nobody sees. */
+.dn-actions { text-align: right; }
 .dc-row { cursor: pointer; }
 .dc-row:hover { background: var(--panel2); }
 /* The direction column names the ROLE OF THIS RECORD, not an arrow to interpret. Request

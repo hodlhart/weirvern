@@ -287,16 +287,20 @@ function dnRenderRows(d) {
       ax.textContent = (r.answers || "\u2014").slice(0, 40);
     }
     tr.appendChild(ax);
-    // PUSH THE NAME TO A RULE (the operator: "from dns tab i should be able to push a domain to
-    // a block rule"; then: "put the block or allow button in its own column on the far right").
-    // The action lives in its OWN trailing column now, never inside the query cell -- the
-    // composer opens in the modal, prefilled, and the filter-click on the cell is unchanged.
+    // PUSH THE NAME TO A RULE, but not from row furniture. A DNS list is a reading table: at
+    // rest each row carries ONE disclosure; the Block verb lives inside it, so 100 rows no
+    // longer put 100 buttons in the operator's path. The row click still opens the detail.
     const act = dnCell("");
     act.className = "dn-actions";
+    const more = el("details", { class: "row-more dn-more" });
+    const summary = el("summary", { attrs: { "aria-label": `actions for ${r.query}` }, text: "\u2026" });
+    summary.addEventListener("click", (e) => e.stopPropagation());
+    more.appendChild(summary);
     const blk = el("button", { class: "link", text: "Block\u2026",
-      attrs: { title: "turn this name into a rule" } });
+      attrs: { "aria-label": `open a rule for ${r.query}` } });
     blk.addEventListener("click", (e) => { e.stopPropagation(); openRuleComposer(r.query); });
-    act.appendChild(blk);
+    more.appendChild(blk);
+    act.appendChild(more);
     tr.appendChild(act);
     tr.title = "click for the full answers and the reverse lookup";
     tr.addEventListener("click", () => dnToggleDetail(tr, r));
