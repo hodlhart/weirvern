@@ -3048,7 +3048,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   check("the System card is the first thing on the Health tab",
         !!doc.getElementById("hp-system")
-        && doc.getElementById("view-health").firstElementChild ===
+        && doc.getElementById("view-health").querySelector(".card") ===
            doc.getElementById("hp-system").closest(".card"));
   check("the Weirlings fleet carries CPU and memory in the sensor row and throughput in the NIC rows",
         !!doc.querySelector("[data-wl-cpu]")
@@ -5829,10 +5829,10 @@ check("the gate's STATE is shown, not just a rule count",
 
 // THE OPERATOR'S ORDER (2026-10-19): overview first, then the working DNS gate, then the packet gate.
 check("the sluice page leads with the overview, the Domain Gate and then the Traffic Gate",
-      /Gate overview/.test((doc.querySelector("#view-sluice .card h2") || {}).textContent || "")
-      && /Domain Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[1] || {}).textContent || "")
-      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2")[2] || {}).textContent || ""),
-      (doc.querySelector("#view-sluice .card h2") || {}).textContent || "no first card");
+      /Gate overview/.test((doc.querySelector("#view-sluice .card h2, #view-sluice .card h3") || {}).textContent || "")
+      && /Domain Gate/.test((doc.querySelectorAll("#view-sluice .card h2, #view-sluice .card h3")[1] || {}).textContent || "")
+      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2, #view-sluice .card h3")[2] || {}).textContent || ""),
+      (doc.querySelector("#view-sluice .card h2, #view-sluice .card h3") || {}).textContent || "no first card");
 check("the two gate cards share one horizontal grid, not two stacked full-width cards",
       (() => {
         const g = doc.querySelector("#view-sluice .grid.gate-grid");
@@ -5844,15 +5844,15 @@ check("the two gate cards share one horizontal grid, not two stacked full-width 
 check("the Traffic Gate owns the fleet packet table",
       (() => {
         const cards = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")];
-        const traffic = cards.find((c) => /Traffic Gate/.test((c.querySelector("h2") || {}).textContent || ""));
-        const domain = cards.find((c) => /Domain Gate/.test((c.querySelector("h2") || {}).textContent || ""));
+        const traffic = cards.find((c) => /Traffic Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
+        const domain = cards.find((c) => /Domain Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
         return !!traffic && !!traffic.querySelector("#sl-gates")
           && !!domain && !domain.querySelector("#sl-gates");
       })(), "fleet table is not owned by the Traffic Gate");
 check("the Domain Gate carries no packet/interface facts",
       (() => {
         const domain = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")]
-          .find((c) => /Domain Gate/.test((c.querySelector("h2") || {}).textContent || ""));
+          .find((c) => /Domain Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
         return !!domain && !/packet state|packet rules|interfaces?/i.test(domain.textContent);
       })(), "DNS card still carries packet facts");
 const gateHeads = [...doc.querySelectorAll("#sl-gates thead th")].map((th) => th.textContent.trim());
@@ -6067,8 +6067,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
         && !sheet.querySelector("table"),
         "a read-only fact list survived in the sheet");
   check("...it says its purpose in the heading",
-        /Change this weirling/.test(sheet.querySelector("h2").textContent || ""),
-        sheet.querySelector("h2").textContent);
+        /Change this weirling/.test(sheet.querySelector("h2, h3").textContent || ""),
+        sheet.querySelector("h2, h3").textContent);
   check("...and explains the change in a short situation, not a fact sheet",
         !!bodyNow.querySelector(".wl-situation")
         && bodyNow.querySelectorAll(".wl-situation p").length <= 6,
@@ -6588,7 +6588,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   });
   check("no content-less cards on the Settings tab",
         emptyCards.length === 0,
-        emptyCards.map((c) => ((c.querySelector("h2") || {}).textContent || "?").trim()).join(", "));
+        emptyCards.map((c) => ((c.querySelector("h2, h3") || {}).textContent || "?").trim()).join(", "));
 }
 
 // ── an outage must never render as an empty fleet ────────────────────────────────────────────

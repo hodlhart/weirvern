@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.32 — 2026-11-04
+
+VR REMEDIATION: ONE VIEW HEADER.
+
+- Every view now has one header: a title, a count copied from that view's own summary, and one
+  primary verb (the view's existing primary moved into the header, or Refresh for a read view).
+- Old card/sheet `<h2>`s are demoted to `<h3>` at boot; only the header keeps the `<h2>`.
+  Counts follow their summary lines through a debounced observer.
+
 ## 0.23.31 — 2026-11-04
 
 VR REMEDIATION: THE TYPE RAMP IS THE ONLY TYPE.

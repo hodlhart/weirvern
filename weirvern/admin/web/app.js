@@ -4073,7 +4073,7 @@ function settingsJumpToStage() {
   if (!card) return;
   card.classList.remove("collapsed");
   card.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  const heading = card.querySelector("h2");
+  const heading = card.querySelector("h2, h3");
   if (heading) {
     heading.setAttribute("tabindex", "-1");
     heading.focus({ preventScroll: true });
@@ -4308,7 +4308,7 @@ function openSettingKey(key) {
     if (!row) return;
     const card = row.closest(".card");
     if (card && card.classList.contains("collapsed")) {
-      const head = card.querySelector(":scope > h2.acc");
+      const head = card.querySelector(":scope > h2.acc, :scope > h3.acc");
       if (head) head.click();
     }
     if (typeof row.scrollIntoView === "function") {
@@ -4925,6 +4925,113 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 /** Sign in / gate resolution at page load. Renders the right gate or boots the dashboard. */
+
+// ── ONE VIEW HEADER (VR-HDR) ─────────────────────────────────────────────────────────────────
+// Every view opens with one title, one count and one primary verb. The console has many cards
+// that once used <h2>; they are sub-blocks and are demoted to <h3> at boot. The header itself is
+// the only <h2> in the view, and its count is copied from the view's own summary line whenever
+// that line is re-rendered.
+const VH_COUNTS = Object.create(null);
+const VIEW_HEADER_META = {
+  health: { heading: "Health", count: "hp-summary" },
+  anomalies: { heading: "All anomalies", count: "an-count-line" },
+  network: { heading: "Network", count: "nw-caption" },
+  netflow: { heading: "Netflow", count: "nf-summary" },
+  discover: { heading: "Flows", count: "dc-summary" },
+  dns: { heading: "DNS", count: "dn-summary" },
+  zeek: { heading: "Zeek", count: "zk-summary" },
+  sluice: { heading: "Gate overview", count: "sl-count" },
+  weirlings: { heading: "Weirlings", count: "wl-count" },
+  assets: { heading: "Assets", count: "as-summary" },
+  models: { heading: "Models", count: "m-summary" },
+  settings: { heading: "Settings", count: "st-summary" },
+  logs: { heading: "Logs", count: "hp-alerts-note" },
+  evidence: { heading: "Evidence", count: "ev-sub" },
+  host: { heading: "Host", count: "" },
+  blocked: { heading: "Blocks", count: "bl-summary" },
+};
+
+function vhDemote(h2) {
+  if (!h2 || h2.classList.contains("view-title")) return;
+  const h3 = document.createElement("h3");
+  for (const attr of [...h2.attributes]) h3.setAttribute(attr.name, attr.value);
+  while (h2.firstChild) h3.appendChild(h2.firstChild);
+  h2.replaceWith(h3);
+}
+
+function installViewHeaders() {
+  for (const view of document.querySelectorAll(".view")) {
+    const key = String(view.id || "").replace(/^view-/, "");
+    const meta = VIEW_HEADER_META[key];
+    if (!meta) continue;
+    let head = view.querySelector(":scope > .view-head");
+    if (!head) {
+      head = el("div", { class: "view-head view-header" });
+      view.prepend(head);
+    }
+    let title = head.querySelector("h2");
+    if (!title) {
+      title = el("h2", { class: "view-title", text: meta.heading });
+      head.prepend(title);
+    } else {
+      title.classList.add("view-title");
+    }
+    if (!VH_COUNTS[key]) {
+      VH_COUNTS[key] = el("span", { class: "muted view-count", text: "—" });
+      title.appendChild(VH_COUNTS[key]);
+    }
+    // One primary verb: move the view's existing primary into the header (it keeps its id and
+    // listeners), or add Refresh for a reading-only view. Never clone: two controls for one job
+    // is the duplicate this header exists to remove.
+    const existing = [...view.querySelectorAll("button.primary")].find((b) =>
+      b !== title && !b.closest(".hidden, .sheet, .modal, [role='dialog'], [hidden]"));
+    if (existing && existing.parentElement !== head) {
+      head.appendChild(existing);
+    } else if (!existing && !head.querySelector("button.primary")) {
+      const refresh = el("button", { class: "primary", text: "Refresh" });
+      refresh.addEventListener("click", () => refreshAll());
+      head.appendChild(refresh);
+    }
+    for (const h2 of view.querySelectorAll("h2")) vhDemote(h2);
+    // settingsAccordion() wired the card headings before they were demoted; its listeners
+    // stayed on the removed <h2>. Re-wire the settings h3.acc headings it created.
+    if (key === "settings") {
+      for (const h3 of view.querySelectorAll(":scope > .card > h3.acc")) {
+        if (h3.dataset.accWired) continue;
+        h3.dataset.accWired = "1";
+        h3.addEventListener("click", (e) => {
+          if (e.target.closest("button, a, input, select")) return;
+          h3.closest(".card")?.classList.toggle("collapsed");
+        });
+      }
+    }
+    // The header title was the ONE h2 we kept; demote any h2 in sheets/modals outside views too.
+    for (const h2 of document.querySelectorAll("h2:not(.view-title)")) vhDemote(h2);
+    title.classList.add("view-title");
+  }
+  syncViewHeaderCounts();
+}
+
+function syncViewHeaderCounts() {
+  for (const [key, meta] of Object.entries(VIEW_HEADER_META)) {
+    const out = VH_COUNTS[key];
+    if (!out || !meta.count) continue;
+    const src = document.getElementById(meta.count);
+    if (!src) continue;
+    const text = String(src.innerText || src.textContent || "").replace(/\s+/g, " ").trim();
+    if (text && text !== out.textContent) out.textContent = text;
+  }
+}
+
+let VH_SYNC_TIMER = null;
+function scheduleViewHeaderSync() {
+  if (VH_SYNC_TIMER) return;
+  VH_SYNC_TIMER = setTimeout(() => {
+    VH_SYNC_TIMER = null;
+    syncViewHeaderCounts();
+  }, 40);
+}
+
 async function boot() {
   // THE RESPONSIVE PASS, before anything renders: a table wider than the screen must scroll
   // inside its own box rather than widen the page (see wrapTables and style.css).
@@ -4949,6 +5056,11 @@ async function boot() {
 /** What runs once there is (or may be) a usable identity: the pre-accounts posture or a
  *  signed-in account, with the forced-change gate in between. */
 async function bootAuthed() {
+  installViewHeaders();
+  if (window.MutationObserver && !window.__vhObserver) {
+    window.__vhObserver = new MutationObserver(scheduleViewHeaderSync);
+    window.__vhObserver.observe(document.body, { subtree: true, childList: true, characterData: true });
+  }
   refreshChrome();
   refreshAccountCard();
   if (AUTH.authenticated && AUTH.must_change) {

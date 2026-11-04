@@ -178,7 +178,7 @@ main { padding: 24px; max-width: 1500px; margin: 0 auto; }
   background: var(--surface); border: 0; border-radius: 8px;
   padding: 22px; margin-bottom: 18px; box-shadow: var(--shadow-low);
 }
-.card h2 { font-size: var(--fs-3); margin: 0 0 18px; text-transform: none;
+.card h2, .card h3 { font-size: var(--fs-3); margin: 0 0 18px; text-transform: none;
   letter-spacing: 0; color: var(--fg); font-weight: 600; }
 /* The evidence title carries a HOSTNAME, so it must not inherit the uppercase
  * transform above: showing "host-a.example" instead of "host-a.example" misrepresents how
@@ -511,6 +511,9 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
    place rather than a right-aligned button on one page and a left-aligned button on another. */
 .view-head.has-back { justify-content: flex-start; align-items: center; }
 .view-head h2 { margin: 0; }
+.view-head.view-header { margin: 0 0 14px; padding: 0 2px; align-items: baseline; }
+.view-title { font-size: var(--fs-4); font-weight: 600; margin: 0; }
+.view-count { margin-left: 8px; font-weight: 400; }
 /* The paged table's footer (US-A4): the held-back rows are named, and the way to see them is
    one button in the same row. */
 tr.show-more td { padding: 10px 8px 2px; }
