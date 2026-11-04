@@ -6972,6 +6972,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
   }
 
+  // ── ONE VIEW HEADER (VR-HDR) ─────────────────────────────────────────────────────────────────
+  {
+    const bad = [...doc.querySelectorAll(".view")].filter((v) => v.querySelectorAll("h2").length > 1);
+    check("no view carries more than one h2 header", bad.length === 0,
+          bad.map((v) => v.id + ":" + v.querySelectorAll("h2").length).join(", ") || "ok");
+    const tabs = [...doc.querySelectorAll(".tab[data-view]")].map((t) => t.dataset.view);
+    const missing = tabs.filter((id) => {
+      const v = doc.getElementById("view-" + id);
+      return !v || v.querySelectorAll("h2").length !== 1;
+    });
+    check("every tab view has exactly one h2 header", missing.length === 0, missing.join(", ") || "ok");
+  }
+
   // ── NO DEAD ENDS: the way back, the way forward, and the receipt (US-3) ─────────────────────
   {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
