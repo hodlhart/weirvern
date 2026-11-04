@@ -210,3 +210,13 @@ def test_sluice_rule_rows_are_keyboard_operable():
     js = (WEB / "sluice.js").read_text()
     assert 'tabindex: "0"' in js and 'role: "button"' in js
     assert 'e.key === "Enter"' in js and 'e.key === " "' in js
+
+
+def test_the_gate_state_and_rule_counts_are_stated_once_with_their_owner():
+    html = (WEB / "index.html").read_text()
+    assert 'id="sl-state"' not in html, "the old duplicate gate state came back"
+    assert html.count('id="sl-gate-state"') == 1
+    assert html.count('id="sl-gates"') == 1
+    assert "Packet rules installed (active / total)" in html
+    js = (WEB / "sluice.js").read_text()
+    assert "in the store" in js, "the Rules header lost its store label"

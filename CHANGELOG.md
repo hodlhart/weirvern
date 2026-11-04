@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.27 — 2026-11-04
+
+VR REMEDIATION: ONE GATE STATE, TWO LABELLED COUNTS.
+
+- Sluice keeps one packet-gate state (`#sl-gate-state`) plus the Domain Gate's own state; the
+  old duplicate `#sl-state` is absent. The Rules header now says `N in the store`, while the
+  fleet table names its column `Packet rules installed (active / total)` and its note states
+  the distinction. A pytest pins the single surfaces and the labels.
+
 ## 0.23.26 — 2026-11-04
 
 VR REMEDIATIONS: THE RULE IS THE RULING; THE CHAIN IS A RECORD.

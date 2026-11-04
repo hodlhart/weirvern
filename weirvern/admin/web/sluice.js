@@ -145,7 +145,8 @@ async function loadSluice() {
         ? "A gate marked stale has stopped reporting: its segment is NOT being filtered, "
           + "whatever the rule list says. This table reports packet enforcement only; DNS "
           + "blocking is enforced separately by the Domain Gate."
-        : "Every gate listed reported within its own interval. This table reports packet "
+        : "Every gate listed reported within its own interval. Rule counts here are installed "
+          + "on each gate; the Rules header counts the store. This table reports packet "
           + "enforcement only; DNS blocking is enforced separately by the Domain Gate.";
       for (const g of gates) {
         const ifaces = String(g.iface || "").split(/[,\s]+/).filter(Boolean);
@@ -194,9 +195,12 @@ async function loadSluice() {
   // looked like nothing happened. They stay in the record and behind "show revoked".
   if (!showRevoked) rules = rules.filter((r) => !r.revoked);
   const gateHidden = allRules.filter((r) => !slRuleGateMatches(r, SL_RULE_GATE)).length;
+  // THE STORE COUNT IS NOT THE INSTALLED COUNT. Say which one the header carries; the gate
+  // table labels its own active/total per gate, so the two numbers can be read together without
+  // looking like a contradiction.
   document.getElementById("sl-count").textContent = rules.length
-    ? `(${rules.length}${rules.length !== allRules.length ? ` of ${allRules.length}` : ""})`
-    : "";
+    ? `${rules.length}${rules.length !== allRules.length ? ` of ${allRules.length}` : ""} in the store`
+    : "no rules in the store";
 
   // US-9: THE REACH. A rule only bites where a sensor has a verified in-path channel (the same
   // test the gate form uses before it offers Block). Say the number beside the rules, and make
