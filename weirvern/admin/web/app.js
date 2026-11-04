@@ -103,6 +103,17 @@ function fmtTime(v) {
     hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+/** The anomalies table's two timestamp columns are a reading line, not a paragraph. Use a
+ *  numeric stamp that fits one line at the fixed column width; the row's detail still carries
+ *  the full local timestamp. */
+function fmtCompactTime(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /* A host cell shows the name AND the IP, never one instead of the other: the name is
  * convenient, the IP is the fact that lets an operator search a DHCP lease or a
  * firewall rule.
@@ -1745,6 +1756,17 @@ function rowMore(a, state) {
                                   text: "\u22ef" });
   box.appendChild(summary);
   const body = el("div", { class: "row-more-body" });
+  // THE ROW IS A READING LINE; THE DISCLOSURE OWNS THE FULL PROSE. The matched rule and why
+  // sentence are clamped at rest so 100 rows remain a table, not a 42,000px page.
+  if (a.matched_rule) {
+    body.appendChild(el("div", { class: "row-more-full", text: "Matched rule: " + a.matched_rule }));
+  }
+  if (a.detected_by_models) {
+    body.appendChild(el("div", { class: "row-more-full", text: "Models: " + a.detected_by_models }));
+  }
+  if (a.baseline_comparison) {
+    body.appendChild(el("div", { class: "row-more-full", text: a.baseline_comparison }));
+  }
   body.appendChild(anActions(a));
   const acts = reviewActs(a, state);
   if (acts) body.appendChild(acts);
@@ -2177,8 +2199,8 @@ async function loadAnomalies() {
     tbody.appendChild(el("tr", { class: "clickable",
                                  attrs: { title: "Show the raw evidence for this alert" },
                                  on: { click: () => openEvidence(a) } }, [
-      el("td", { class: "mono", text: fmtTime(a.detected_at) }),
-      el("td", { class: "mono", text: fmtTime(a.window_start) }),
+      el("td", { class: "mono an-stamp", text: fmtCompactTime(a.detected_at) }),
+      el("td", { class: "mono an-stamp", text: fmtCompactTime(a.window_start) }),
       // US-4: the expansion cue rides the cell at rest (chevron + aria-expanded), and the
       // handler exists for EVERY n -- with n==1 the cell used to be inert while a chip beside
       // it pointed at it as the target, a dead end for the server's single-occurrence case.
@@ -2196,30 +2218,32 @@ async function loadAnomalies() {
          [hostCell(a.src_addr, ""),
           a.watched ? el("span", { class: "watch-mark", text: " \u25cf",
                                    title: "on the watch list" }) : null]),
-      el("td", { class: "mono", text: a.hostname || "—" }),
+      el("td", { class: "mono an-hostname", text: a.hostname || "—" }),
       el("td", { class: "mono", text: (a.anomaly_score ?? 0).toFixed(3) }),
       el("td", { class: "dcell", attrs: { title: "filter the queue to this severity" },
                  on: { click: (e) => { e.stopPropagation(); anSetFilter("severity", a.severity); } } },
          [sevCell(a.severity)]),
       // US-5: each name in the models cell is an entity -- clicking one filters the queue to
       // that detector (the quiet-a-noisy-detector job's entry, beside the registry strip's).
-      el("td", { class: "mono" }, String(a.detected_by_models || "—").split(",")
-        .flatMap((nm, i, arr) => {
-          const clean = nm.trim();
-          const parts = [];
-          if (clean) {
-            const piece = el("span", { class: "dcell",
-                                       attrs: { title: "show only this detector's alerts" },
-                                       text: clean });
-            piece.addEventListener("click", (e) => {
-              e.stopPropagation();
-              anSetFilter("model", clean);
-            });
-            parts.push(piece);
-          }
-          if (i < arr.length - 1) parts.push(el("span", { text: ", " }));
-          return parts;
-        })),
+      el("td", { class: "mono" }, [
+        el("div", { class: "an-models-clamp" }, String(a.detected_by_models || "—").split(",")
+          .flatMap((nm, i, arr) => {
+            const clean = nm.trim();
+            const parts = [];
+            if (clean) {
+              const piece = el("span", { class: "dcell",
+                                         attrs: { title: "show only this detector's alerts" },
+                                         text: clean });
+              piece.addEventListener("click", (e) => {
+                e.stopPropagation();
+                anSetFilter("model", clean);
+              });
+              parts.push(piece);
+            }
+            if (i < arr.length - 1) parts.push(el("span", { text: ", " }));
+            return parts;
+          })),
+      ]),
       // WHERE IT HAPPENED (operator, 2026-10-19: "replace owner with location: weirling
       // name and network"). The server resolves it from the fleet's declared segments; a host
       // outside every segment says "unplaced" rather than naming a sensor that cannot see it.
@@ -2232,20 +2256,22 @@ async function loadAnomalies() {
                        ? `${a.location.network_name} (${a.location.network})` : a.location.network
                      }, which contains this host`
                    : "no weirling declares a network containing this address" } }),
-      el("td", { class: "muted", text: a.matched_rule || "—",
+      el("td", { class: "muted an-rule", text: a.matched_rule || "—",
                  attrs: { title: "what matched, from the detector registry" } }),
       el("td", {}, [
-        el("div", { text: a.baseline_comparison || "—" }),
-        a.primary_deviation_feature ? el("div", { class: "dcell mono",
-          text: "feature: " + a.primary_deviation_feature,
-          on: { click: (e) => { e.stopPropagation();
-            anSetFilter("feature", a.primary_deviation_feature); } } }) : null,
-        a.severity_basis ? el("div", { class: "muted", text: "severity: " + a.severity_basis }) : null,
-        contributing ? el("div", { class: "muted mono", text: contributing }) : null,
-        // US-9: the STABLE reason code. The why-sentence reads; this one is greppable.
-        a.reason_code ? el("div", { class: "reason-code mono",
-          attrs: { title: "stable reason code: detector initials + the measurement that moved" },
-          text: a.reason_code }) : null,
+        el("div", { class: "an-why-clamp" }, [
+          el("div", { text: a.baseline_comparison || "—" }),
+          a.primary_deviation_feature ? el("div", { class: "dcell mono",
+            text: "feature: " + a.primary_deviation_feature,
+            on: { click: (e) => { e.stopPropagation();
+              anSetFilter("feature", a.primary_deviation_feature); } } }) : null,
+          a.severity_basis ? el("div", { class: "muted", text: "severity: " + a.severity_basis }) : null,
+          contributing ? el("div", { class: "muted mono", text: contributing }) : null,
+          // US-9: the STABLE reason code. The why-sentence reads; this one is greppable.
+          a.reason_code ? el("div", { class: "reason-code mono",
+            attrs: { title: "stable reason code: detector initials + the measurement that moved" },
+            text: a.reason_code }) : null,
+        ]),
       ]),
       el("td", {}, [reviewCell(a), rowMore(a, a.review_state || "")]),
     ]));

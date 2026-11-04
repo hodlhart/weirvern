@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.29 — 2026-11-04
+
+VR REMEDIATION: ANOMALIES ROWS ARE READING LINES.
+
+- Compact the two timestamp columns, clamp the matched rule and host name to one line and
+  the why sentence to two, and move the full rule/model/why prose into the existing row
+  disclosure. Default limit drops 90 to 80 so a cold load fits the DOM budget.
+- Measured in the authenticated live console at 1440; 100-row and 390 measurements follow.
+
 ## 0.23.28 — 2026-11-04
 
 VR REMEDIATION: SERIES COLOUR TOKENS, NO HEX IN JS.

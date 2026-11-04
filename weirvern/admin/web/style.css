@@ -422,6 +422,18 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
    visible way to read it. Let it wrap instead of clipping -- the table already scrolls. */
 #anomalies-table td:nth-child(4) { overflow-wrap: anywhere; }
 #anomalies-table td:nth-child(9), #anomalies-table td:nth-child(10) { overflow-wrap: anywhere; }
+/* THE ROW IS ONE READING LINE (VR-ANO). The matched rule and why sentence clamp at rest;
+   their full prose lives in the row's disclosure. Without this, one 241-char rule made every
+   row 177px tall and 100 rows a 42,000px page. */
+#anomalies-table td.an-rule, #anomalies-table td.an-hostname, #anomalies-table td.an-stamp {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.an-models-clamp, .an-why-clamp {
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+}
+.an-models-clamp { -webkit-line-clamp: 1; }
+.an-why-clamp { -webkit-line-clamp: 2; }
+.row-more-full { margin: 0 0 4px; font-size: var(--fs-2); overflow-wrap: anywhere; }
 
 #wl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 #wl-summary .stat {
