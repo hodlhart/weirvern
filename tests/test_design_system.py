@@ -220,3 +220,10 @@ def test_the_gate_state_and_rule_counts_are_stated_once_with_their_owner():
     assert "Packet rules installed (active / total)" in html
     js = (WEB / "sluice.js").read_text()
     assert "in the store" in js, "the Rules header lost its store label"
+
+
+def test_chart_colours_are_tokens_not_hex_in_javascript():
+    js = "\n".join(p.read_text() for p in sorted(WEB.glob("*.js")))
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", js), "a chart colour bypassed the series token"
+    css = (WEB / "style.css").read_text()
+    assert "--series-1:" in css and "--series-10:" in css

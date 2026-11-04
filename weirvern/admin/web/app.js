@@ -4952,11 +4952,11 @@ async function bootAuthed() {
  */
 
 const MODEL_COLORS = {
-  "Isolation Forest": "#4797ff",
-  "Gradient Boosting": "#37be5f",
-  "DBSCAN": "#e79613",
-  "Adaptive Baseline": "#a78bfa",
-  "Ensemble": "#ee6368",
+  "Isolation Forest": "var(--series-1)",
+  "Gradient Boosting": "var(--series-2)",
+  "DBSCAN": "var(--series-3)",
+  "Adaptive Baseline": "var(--series-4)",
+  "Ensemble": "var(--series-5)",
 };
 
 /** A placeholder that says what is missing rather than rendering an empty box. */
@@ -5211,7 +5211,7 @@ function renderTrainingHistory(hist) {
   axisLabel(svg, plot.r, H - 10, fmtTime(new Date(tMax)), "end");
 
   for (const [name, pts] of series) {
-    const colour = MODEL_COLORS[name] || "#888";
+    const colour = MODEL_COLORS[name] || "var(--muted)";
     const d = pts.map((p, i) => `${i ? "L" : "M"}${xOf(new Date(p.t).getTime()).toFixed(1)},${yOf(p.n).toFixed(1)}`).join(" ");
     svg.appendChild(svgEl("path", { d, fill: "none", stroke: colour, "stroke-width": 1.8 }));
     // Last point marked and labelled: the current state is the useful figure.
@@ -5279,7 +5279,7 @@ function renderScoreDistribution(scores) {
       const h = (c / max) * (plot.b - plot.t);
       svg.appendChild(svgEl("rect", {
         x: plot.l + i * bw + 0.5, y: y - h, width: Math.max(1, bw - 1), height: h,
-        fill: MODEL_COLORS[n] || "#888", opacity: 0.85,
+        fill: MODEL_COLORS[n] || "var(--muted)", opacity: 0.85,
       }));
       y -= h;
     }
@@ -5304,7 +5304,7 @@ function renderAgreement(counts) {
   entries.sort((a, b) => b[1] - a[1]);
   const max = Math.max(1, ...entries.map(([, c]) => c));
   for (const [name, c] of entries) {
-    const colour = MODEL_COLORS[name] || "#888";
+    const colour = MODEL_COLORS[name] || "var(--muted)";
     const pct = (c / max) * 100;
     host.appendChild(el("div", { class: "bar-row" }, [
       el("span", { class: "bar-name", text: name }),
@@ -5347,7 +5347,7 @@ function renderFeatureDeviations(rows, coverage) {
                    title: `${r.feature}: mean |z| ${r.mean_abs_z.toFixed(2)}, peak ${r.max_abs_z.toFixed(2)}, n=${r.n}` }),
       el("span", { class: "bar-track" }, [
         el("span", { class: "bar-fill ghost", attrs: { style: `width:${wMax}%` } }),
-        el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:#4797ff` } }),
+        el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:var(--series-1)` } }),
       ]),
       el("span", { class: "bar-val", text: r.mean_abs_z.toFixed(2) }),
       alerts,
@@ -6413,7 +6413,7 @@ function trWindowSuffix() {
 }
 function trNote(text, isError) {
   const el = document.getElementById("tr-note");
-  if (el) { el.textContent = text; el.style.color = isError ? "#e66" : ""; }
+  if (el) { el.textContent = text; el.style.color = isError ? "var(--bad)" : ""; }
 }
 function trApply(range) {
   TIME_RANGE.mode = range.mode || "relative";

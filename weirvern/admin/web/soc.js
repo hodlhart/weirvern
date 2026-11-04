@@ -24,13 +24,16 @@
 // log families. Kept separate from MODEL_COLORS so a colour change to one cannot silently
 // recolour the other.
 const SOC_COLORS = {
-  conn: "#4797ff", dns: "#37be5f", ssl: "#e79613", http: "#a78bfa",
-  ssh: "#ee6368", notice: "#8899aa",
-  flows: "#4797ff", windows: "#37be5f", anomalies: "#ee6368", models: "#a78bfa",
+  conn: "var(--series-1)", dns: "var(--series-2)", ssl: "var(--series-3)",
+  http: "var(--series-4)", ssh: "var(--series-5)", notice: "var(--series-6)",
+  flows: "var(--series-1)", windows: "var(--series-2)", anomalies: "var(--series-5)",
+  models: "var(--series-4)",
 };
 
-const SOC_PALETTE = ["#4797ff", "#37be5f", "#e79613", "#a78bfa", "#ee6368", "#8899aa",
-                     "#53c4d4", "#d98cb3", "#a8b545", "#7f8cff"];
+const SOC_PALETTE = ["var(--series-1)", "var(--series-2)", "var(--series-3)",
+                     "var(--series-4)", "var(--series-5)", "var(--series-6)",
+                     "var(--series-7)", "var(--series-8)", "var(--series-9)",
+                     "var(--series-10)"];
 
 /** ONE SI FORMATTER FOR AXIS TICKS (GitHub #57).
  *

@@ -154,9 +154,9 @@ one value, one control. Queued refinements: the churn states and the failure lab
 
 ## 8. Changing the theme
 
-- Tokens are the API: change values in `:root`, not rules. No hex outside `:root` except
-  the two documented exceptions, both pinned by `tests/test_a11y.py`: the focus ring
-  (`#66a8ff`) and the `#fff` in the chip recipe's `color-mix` lightening.
+- Tokens are the API: change values in `:root`, not rules. There are no hex exceptions
+  outside `:root`; the focus ring uses `var(--accent)` and the chip lightening uses
+  `var(--fg)`, both pinned by `tests/test_a11y.py`.
 - A new colour must be a semantic role (a state or an affordance), never decoration.
 - Every pass runs the jsdom harness and `scripts/gate.sh` before it ships.
 - Visual changes ship as their own commit with the phase named, so the history reads as a

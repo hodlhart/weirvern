@@ -90,7 +90,11 @@ def collect(canon: dict) -> dict[str, Counter]:
     markup = (WEB / "index.html").read_text(encoding="utf-8")
     hover = len(TITLE_ATTR.findall(markup))
     for js in sorted(WEB.glob("*.js")):
-        hover += len(TITLE_PROP.findall(js.read_text(encoding="utf-8")))
+        js_text = js.read_text(encoding="utf-8")
+        hover += len(TITLE_PROP.findall(js_text))
+        # JS is a styling surface too (inline widths, chart strokes, legend fills). A hex in
+        # JS bypasses the CSS ratchet, so scan it with the same rule and the same baseline.
+        hexes.update(v.lower() for v in HEX.findall(js_text))
 
     return {"hex": hexes, "font_size": sizes, "radius": radii, "hover_only": Counter({"titles": hover})}
 

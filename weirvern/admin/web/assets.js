@@ -622,7 +622,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => { toggleTracked(r.edge.source); },
-    colour: () => "#4797ff",
+    colour: () => "var(--series-1)",
     format: (v) => fmtBytes(v),
     title: (r) => `track ${r.edge.source}`,
   });
@@ -634,7 +634,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => toggleTracked(r.node.id),
-    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "#37be5f" : "#8899aa"),
+    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "var(--series-2)" : "var(--series-6)"),
     format: (v) => `${v} peers`,
     title: (r) => (ASSETS_STATE.tracked.includes(r.node.id)
       ? `stop tracking ${r.node.id}` : `track ${r.node.id}`),
@@ -1177,8 +1177,8 @@ function drawGraph(host, nodes, edges, truncated) {
   if (legend) {
     legend.replaceChildren();
     const items = [
-      ["#4797ff", "host (size = bytes)"],
-      ["#37be5f", "tracked"],
+      ["var(--series-1)", "host (size = bytes)"],
+      ["var(--series-2)", "tracked"],
       ["var(--bad)", "blocked by a live block rule"],
       ["var(--warn)", "alerted: anomaly in this range"],
       ["edge width", "log of bytes"],
@@ -1522,7 +1522,7 @@ function loadFlowDetail(params) {
       }, {
         onClick: (r) => openHost(r.row.src_addr),
         format: (v) => fmtBytes(v),
-        colour: () => "#4797ff",
+        colour: () => "var(--series-1)",
         title: (r) => `drill into ${r.row.src_addr}`,
       });
       table.replaceChildren(...rows.map((r) => {

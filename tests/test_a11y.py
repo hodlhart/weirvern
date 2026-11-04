@@ -25,7 +25,7 @@ def test_the_ua_is_told_the_page_is_dark():
 
 def test_a_visible_focus_ring_exists_and_is_the_documented_exception():
     css = _css()
-    assert re.search(r":focus-visible \{ outline: none; box-shadow: 0 0 0 2px #66a8ff; \}", css), \
+    assert re.search(r":focus-visible \{ outline: none; box-shadow: 0 0 0 2px var\(--accent\); \}", css), \
         "the base focus-visible ring changed shape -- update this pin and docs/theme.md"
     # every control that opts its own outline out owns a keyboard ring of its own
     for sel in ("#palette-input:focus-visible", ".gate-field input:focus-visible"):

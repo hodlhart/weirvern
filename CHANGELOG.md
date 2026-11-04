@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.28 — 2026-11-04
+
+VR REMEDIATION: SERIES COLOUR TOKENS, NO HEX IN JS.
+
+- Added `--series-1..10` to the root palette. MODEL_COLORS, SOC_COLORS and SOC_PALETTE now
+  reference those tokens; fallbacks use `--muted` / `--bad`. No raw hex remains in `web/*.js`.
+- Replaced the last non-root CSS hex (`#fff`, `#66a8ff`) with `--fg` and `--accent`, so the
+  canon's hex count is zero. `canon_lint.py` now scans JS with the same rule and baseline.
+- Baseline regenerated after the debt was paid; a pytest pins the JS scan and the tokens.
+
 ## 0.23.27 — 2026-11-04
 
 VR REMEDIATION: ONE GATE STATE, TWO LABELLED COUNTS.
