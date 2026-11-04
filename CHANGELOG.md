@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.31 — 2026-11-04
+
+VR REMEDIATION: THE TYPE RAMP IS THE ONLY TYPE.
+
+- Every `font-size` in `style.css` now uses `--fs-1/2/3/4/6`; the last `font:` shorthand
+  uses `var(--fs-2)`. There are no raw px sizes left, and all five tokens are referenced.
+- Canon baseline regenerated with `font_size: 0`; a pytest pins the rule.
+
 ## 0.23.30 — 2026-11-04
 
 VR REMEDIATION: ANOMALIES ROWS FIT THE LINE AND THE BUDGET.

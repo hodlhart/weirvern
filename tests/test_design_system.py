@@ -227,3 +227,10 @@ def test_chart_colours_are_tokens_not_hex_in_javascript():
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", js), "a chart colour bypassed the series token"
     css = (WEB / "style.css").read_text()
     assert "--series-1:" in css and "--series-10:" in css
+
+
+def test_the_type_ramp_is_used_not_declared():
+    css = (WEB / "style.css").read_text()
+    assert not re.search(r"font-size:\s*[0-9.]+px", css), "a raw font-size came back"
+    for token in ("--fs-1", "--fs-2", "--fs-3", "--fs-4", "--fs-6"):
+        assert token in css, f"{token} is declared but never used"

@@ -35,12 +35,12 @@ def test_the_stylesheet_carries_both_breakpoints():
 
 
 def test_the_phone_block_carries_its_three_load_bearing_rules():
-    """16px fields (iOS Safari zooms the whole page under that on focus, and every tap after
-    that lands wrong), stacked settings rows (the control must not sit at the far edge of a
-    phone-width row), and a shorter force-map canvas (the 460px desktop height has no
-    phone-sized value)."""
+    """Fields at the 19px ramp token (iOS Safari zooms the whole page below 16px on focus, and
+    every tap after that lands wrong), stacked settings rows (the control must not sit at the
+    far edge of a phone-width row), and a shorter force-map canvas (the 460px desktop height
+    has no phone-sized value)."""
     phone = _css().split("@media (max-width: 720px)")[1]
-    assert "font-size: 16px" in phone
+    assert "font-size: var(--fs-4)" in phone
     assert ".setting { flex-direction: column" in phone
     assert ".graph { height:" in phone
     # The 16px rule must name each form family's own base selector: a bare `input` loses to

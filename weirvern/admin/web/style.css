@@ -90,7 +90,7 @@
 html, body { margin: 0; padding: 0; }
 body {
   background: var(--canvas); color: var(--fg-2);
-  font: 13px/20px var(--font);
+  font: var(--fs-2)/20px var(--font);
 }
 
 header {
@@ -109,8 +109,8 @@ header {
   object-fit: cover; flex: none;
   box-shadow: 0 0 0 1px var(--border);
 }
-h1 { font-size: 21px; font-weight: 400; margin: 0; }
-.status { display: flex; align-items: center; gap: 12px; font-size: 13px;
+h1 { font-size: var(--fs-4); font-weight: 400; margin: 0; }
+.status { display: flex; align-items: center; gap: 12px; font-size: var(--fs-2);
   flex-wrap: wrap; min-width: 0; }
 
 .pill {
@@ -134,7 +134,7 @@ button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: var(--btn-h); padding: 0 var(--btn-px);
   background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: var(--btn-r); font: inherit; font-size: 13px; line-height: 1;
+  border-radius: var(--btn-r); font: inherit; font-size: var(--fs-2); line-height: 1;
   cursor: pointer; letter-spacing: .25px; white-space: nowrap;
   transition: border-color var(--t-fast), background-color var(--t-fast), color var(--t-fast);
 }
@@ -178,7 +178,7 @@ main { padding: 24px; max-width: 1500px; margin: 0 auto; }
   background: var(--surface); border: 0; border-radius: 8px;
   padding: 22px; margin-bottom: 18px; box-shadow: var(--shadow-low);
 }
-.card h2 { font-size: 16px; margin: 0 0 18px; text-transform: none;
+.card h2 { font-size: var(--fs-3); margin: 0 0 18px; text-transform: none;
   letter-spacing: 0; color: var(--fg); font-weight: 600; }
 /* The evidence title carries a HOSTNAME, so it must not inherit the uppercase
  * transform above: showing "host-a.example" instead of "host-a.example" misrepresents how
@@ -186,9 +186,9 @@ main { padding: 24px; max-width: 1500px; margin: 0 auto; }
  * type or copy verbatim. It is also the page's subject, so it reads as a heading
  * rather than a section label. */
 #ev-title { text-transform: none; letter-spacing: 0; color: var(--fg);
-  font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  font-size: var(--fs-3); font-weight: 600; margin-bottom: 6px; }
 
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); }
 th {
   text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 600;
   border-bottom: 1px solid var(--border); white-space: nowrap;
@@ -196,7 +196,7 @@ th {
 td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 tr:last-child td { border-bottom: none; }
 tr.clickable:hover { background: var(--panel2); cursor: pointer; }
-.mono { font-family: var(--mono); font-size: 12px; }
+.mono { font-family: var(--mono); font-size: var(--fs-2); }
 
 .muted { color: var(--muted); }
 .sev-critical { color: var(--sev-critical); font-weight: 600; }
@@ -207,14 +207,14 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .bad { color: var(--crit); }
 
 .host { font-family: var(--mono); white-space: nowrap; }
-.host .ip { color: var(--muted); font-size: 11px; }
+.host .ip { color: var(--muted); font-size: var(--fs-1); }
 
 .controls { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 14px; }
-.controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.controls label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-2); color: var(--muted); }
 .controls label.check { flex-direction: row; align-items: center; gap: 6px; }
 .controls input {
   background: var(--panel2); border: 1px solid var(--border-solid); color: var(--fg);
-  border-radius: 6px; padding: 5px 9px; font-size: 13px; font-family: var(--mono);
+  border-radius: 6px; padding: 5px 9px; font-size: var(--fs-2); font-family: var(--mono);
 }
 .controls button { align-self: flex-end; }
 
@@ -226,7 +226,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
  */
 .review-chip {
   display: inline-block; border-radius: 999px; padding: 2px 8px;
-  font-size: 11px; border: 1px solid var(--border); color: var(--muted);
+  font-size: var(--fs-1); border: 1px solid var(--border); color: var(--muted);
   white-space: nowrap;
 }
 .review-none { color: var(--muted); }
@@ -238,11 +238,11 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .review-unavailable { color: var(--danger); border-style: dashed; }
 .review-remain {
   display: inline-block; border-radius: 999px; padding: 2px 8px; margin-left: 4px;
-  font-size: 11px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap;
+  font-size: var(--fs-1); border: 1px dashed var(--border); color: var(--muted); white-space: nowrap;
 }
 .review-adjust {
   display: inline-block; margin-left: 4px; padding: 1px 6px; border-radius: 4px;
-  font-size: 11px; color: var(--muted); background: var(--surface-2);
+  font-size: var(--fs-1); color: var(--muted); background: var(--surface-2);
   border: 1px solid var(--border);
 }
 /* A2: the row's seven verbs, one level down. Closed at rest, so the table is a table. */
@@ -251,7 +251,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   list-style: none; cursor: pointer; display: inline-flex; align-items: center;
   justify-content: center; width: var(--btn-h); height: var(--btn-h);
   border: 1px solid var(--border-solid); border-radius: var(--btn-r); color: var(--muted);
-  font-size: 13px; line-height: 1;
+  font-size: var(--fs-2); line-height: 1;
 }
 .row-more > summary::-webkit-details-marker { display: none; }
 .row-more > summary:hover { color: var(--fg); border-color: var(--accent); }
@@ -276,19 +276,19 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 /* The live action reads as an ACTION, not as one more muted review verb: same shape as the
    review buttons, but in the foreground colour. */
 .gate-open { color: var(--fg); border-color: var(--accent); }
-.gate-off { font-size: 11px; color: var(--muted); }
+.gate-off { font-size: var(--fs-1); color: var(--muted); }
 .gate-form {
   display: flex; flex-direction: column; gap: 5px; margin-top: 6px; padding: 8px 9px;
   border: 1px solid var(--border-solid); border-radius: 6px; background: var(--panel2);
 }
 .gate-form .gate-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.gate-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.gate-form label { display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-1); color: var(--muted); }
 .gate-form input, .gate-form select {
   background: var(--panel2); border: 1px solid var(--border-solid); color: var(--fg);
-  border-radius: 6px; padding: 4px 8px; font-size: 12px; font-family: var(--mono);
+  border-radius: 6px; padding: 4px 8px; font-size: var(--fs-2); font-family: var(--mono);
 }
 .gate-form .gate-why { width: 100%; }
-.gate-note { font-size: 11px; }
+.gate-note { font-size: var(--fs-1); }
 
 /* Fingerprint lookup on the identity view: the question pointing the OTHER way -- which hosts
    present this one stack. */
@@ -318,17 +318,17 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   border: 0; box-shadow: var(--shadow-high); border-radius: 14px; padding: 24px;
   display: flex; flex-direction: column; gap: 10px;
 }
-.gate-card h2 { margin: 0; font-size: 20px; }
+.gate-card h2 { margin: 0; font-size: var(--fs-4); }
 .gate-card form { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
-.gate-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.gate-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-2); color: var(--muted); }
 .gate-field input {
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
   border-radius: 8px; padding: 9px 10px; font: inherit;
 }
 .gate-field input:focus { outline: none; border-color: var(--accent); }
 /* BTN-1: a one-off size override used to live here; size is the base's business now. */
-.gate-error { color: var(--danger); font-size: 13px; margin: 0; min-height: 1em; }
-.gate-foot { font-size: 11px; margin: 4px 0 0; }
+.gate-error { color: var(--danger); font-size: var(--fs-2); margin: 0; min-height: 1em; }
+.gate-foot { font-size: var(--fs-1); margin: 4px 0 0; }
 /* The break-glass toggle on the gate: a link-shaped button, because it opens a form rather
    than submitting one. */
 .gate-linkish {
@@ -339,7 +339,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 
 /* ── the user list ─────────────────────────────────────────────────────────── */
 #st-users { width: 100%; border-collapse: collapse; margin: 8px 0; }
-#st-users th { text-align: left; font-size: 11px; letter-spacing: 0;
+#st-users th { text-align: left; font-size: var(--fs-1); letter-spacing: 0;
   color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--border); }
 #st-users td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .user-role {
@@ -363,9 +363,9 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
  * never-seen amber, disabled greyed -- so the eye lands on trouble without reading every label. */
 /* The rule card's fields: label left, value right, one line per field. */
 #bl-rule-body { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
-.rl-row { display: flex; gap: 12px; font-size: 13px; }
+.rl-row { display: flex; gap: 12px; font-size: var(--fs-2); }
 .rl-k { width: 72px; color: var(--muted); letter-spacing: 0;
-  font-size: 12px; padding-top: 2px; }
+  font-size: var(--fs-2); padding-top: 2px; }
 .rl-v { font-family: var(--mono); }
 
 /* THE FLEET ROWS, COLOUR CODED BY STATE (the operator, 2026-10-16: "Fleet needs to be color
@@ -378,8 +378,8 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
  * the affordance, so nothing in these cells takes a pointer. */
 .wl-spark-wrap { display: inline-flex; }
 .wl-spark { width: 88px; height: 22px; color: var(--accent); display: block; }
-.wl-spark-empty { font-size: 12px; }
-.tap { display: inline-block; font-size: 11px; line-height: 1; padding: 3px 7px;
+.wl-spark-empty { font-size: var(--fs-2); }
+.tap { display: inline-block; font-size: var(--fs-1); line-height: 1; padding: 3px 7px;
        border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .tap.on { color: var(--accent); border-color: var(--accent);
           background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -403,7 +403,7 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .hp-network { width: 100%; height: 300px; }
 .hp-node { fill: var(--accent); stroke: var(--bg); stroke-width: 1.5; }
 .hp-center { fill: var(--fg); }
-.hp-label { fill: var(--muted); font-size: 11px; }
+.hp-label { fill: var(--muted); font-size: var(--fs-1); }
 .hp-bars { height: 260px; display: flex; align-items: flex-end; }
 .hp-bar-row { display: flex; align-items: flex-end; gap: 3px; width: 100%; height: 100%; }
 .hp-bar { flex: 1; background: var(--accent); border-radius: var(--r-sm); min-height: 2px; }
@@ -449,7 +449,7 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
      the label spilled above and below the rounded pill. The tile sizes itself. */
   height: auto; white-space: normal;
 }
-#wl-summary .stat .v { font-size: 27px; line-height: 36px; }
+#wl-summary .stat .v { font-size: var(--fs-6); line-height: 36px; }
 #wl-summary .stat.ok .v { color: var(--ok); }
 /* WL-3: the combined feeds cell and the in-row NIC lines (operator, 2026-10-19). */
 .wl-feeds { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -489,7 +489,7 @@ tr.wl-nic-row > td:first-child { padding-left: 34px; }
   font-size: var(--fs-1); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 .settings-search input { width: 230px; height: var(--btn-h); padding: 0 10px;
   background: var(--panel2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: var(--btn-r); font-family: var(--mono); font-size: 13px; }
+  border-radius: var(--btn-r); font-family: var(--mono); font-size: var(--fs-2); }
 .settings-search input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 .settings-section { margin: 28px 0 9px; padding-bottom: 7px;
   border-bottom: 1px solid var(--border); color: var(--accent);
@@ -569,7 +569,7 @@ tr.show-more button { margin-left: 6px; }
   overflow: auto; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 14px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5); }
 .modal-x { position: absolute; top: 6px; right: 8px; background: none; border: none;
-  color: var(--muted); font-size: 18px; cursor: pointer; }
+  color: var(--muted); font-size: var(--fs-4); cursor: pointer; }
 .modal-x:hover { color: var(--fg); }
 body.modal-open { overflow: hidden; }
 /* Rule management: the pick column, the action icons, the bulk bar (2026-10-16). */
@@ -589,7 +589,7 @@ tr.sl-picked { background: var(--panel2); }
 .zk-bar-fill { height: 10px; background: var(--accent); border-radius: 2px; }
 .zk-name { text-align: right; }
 .occ-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
-.occ { font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.occ { font-size: var(--fs-2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .occ .review-acts { margin-top: 0; }
 tr.an-exp td { background: var(--panel2); }
 .sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 92px;
@@ -606,10 +606,10 @@ tr.an-exp td { background: var(--panel2); }
   outline: 2px solid var(--fg); outline-offset: 1px;
 }
 input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1px; }
-.sev-tiles .tile .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
+.sev-tiles .tile .v { font-size: var(--fs-6); line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums;
   line-height: 1.1; }
-.sev-tiles .tile .k { font-size: 13px; color: var(--muted);
+.sev-tiles .tile .k { font-size: var(--fs-2); color: var(--muted);
   letter-spacing: .5px; }
 
 .stats { display: flex; gap: 28px; flex-wrap: wrap; }
@@ -691,9 +691,9 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .stat { display: flex; flex-direction: column; gap: 2px; }
-.stat .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
+.stat .v { font-size: var(--fs-6); line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums; }
-.stat .k { font-size: 13px; color: var(--muted); }
+.stat .k { font-size: var(--fs-2); color: var(--muted); }
 
 /* Sparkline: pure CSS bars rather than a charting library. Adding 100KB of JS to
    draw ~24 rectangles is not a trade worth making on a tool whose selling point
@@ -707,7 +707,7 @@ input[type="checkbox"]:checked { outline: 2px solid var(--fg); outline-offset: 1
 .spark .bar:hover::after {
   content: attr(data-label); position: absolute; bottom: 100%; left: 50%;
   transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--border-solid);
-  padding: 3px 7px; border-radius: 4px; white-space: nowrap; font-size: 11px; z-index: 5;
+  padding: 3px 7px; border-radius: 4px; white-space: nowrap; font-size: var(--fs-1); z-index: 5;
 }
 .spark .bar.zero { background: var(--border); }
 
@@ -729,7 +729,7 @@ h2 > .muted:not(:empty)::before { content: "· "; }
 /* BF-9: the destructive echo -- target, blast radius, and the required reason. */
 .dest-confirm p { margin: 6px 0; }
 .dest-field { display: block; margin: 10px 0 4px; }
-.dest-field span { display: block; font-size: 13px; margin-bottom: 4px; }
+.dest-field span { display: block; font-size: var(--fs-2); margin-bottom: 4px; }
 .dest-reason, .dest-type { width: 100%; box-sizing: border-box; }
 .dest-acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 /* TH-5: the micro sparkline -- past buckets in the chart's own area colour, the CURRENT
@@ -761,7 +761,7 @@ svg.spark rect.cur { fill: var(--accent); }
 #tabs { display: flex; align-items: center; flex-wrap: nowrap; }
 .tab-group { display: flex; align-items: center; gap: 2px; flex: none; }
 .tab-group + .tab-group { margin-left: 16px; }
-#crumbs { padding: 5px 18px 7px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+#crumbs { padding: 5px 18px 7px; font-size: var(--fs-2); display: flex; align-items: center; gap: 6px; }
 #crumbs.hidden { display: none; }
 /* A DRILL CRUMB IS A BUTTON, NOT A BLUE HYPERLINK. The evidence page's crumb and its
    "Back to alerts" button were two exits in two visual languages. Crumbs that remain on
@@ -779,13 +779,13 @@ svg.spark rect.cur { fill: var(--accent); }
 #palette.hidden { display: none; }
 .palette-box { width: min(680px, 92vw); background: var(--surface-2); border: 1px solid var(--border-solid);
                border-radius: 8px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
-#palette-input { width: 100%; box-sizing: border-box; padding: 12px 14px; font-size: 15px;
+#palette-input { width: 100%; box-sizing: border-box; padding: 12px 14px; font-size: var(--fs-3);
                  background: var(--surface-2); color: inherit; border: 0; border-bottom: 1px solid var(--border-solid); }
 #palette-input:focus { outline: none; }
 #palette-results { max-height: 46vh; overflow: auto; }
 .palette-row { padding: 8px 14px; cursor: pointer; }
 .palette-row.active { background: var(--surface); border-left: 2px solid var(--accent); }
-.palette-path { font-size: 12px; margin-top: 2px; }
+.palette-path { font-size: var(--fs-2); margin-top: 2px; }
 .palette-empty { padding: 12px 14px; }
 /* `f`: the main table fills the screen, the way a wallboard is read. */
 .card.table-max { position: fixed; inset: 16px; z-index: 70; overflow: auto;
@@ -801,11 +801,11 @@ svg.spark rect.cur { fill: var(--accent); }
 #firstrun-body label { display: block; margin: 8px 0; color: var(--fg-2); }
 #firstrun-body input[type="number"] { width: 110px; margin-top: 4px; }
 .banner {
-  padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 13px;
+  padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: var(--fs-2);
   background: color-mix(in srgb, var(--crit) 12%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--crit) 35%, var(--border));
 }
-code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 12px; }
+code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: var(--fs-2); }
 
 /* ── models view ─────────────────────────────────────────────────────────────
  *
@@ -828,20 +828,20 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 .svg-chart { width: 100%; height: auto; display: block; overflow: hidden; }
 
 /* SVG text and lines do not inherit body colour, so they are set explicitly. */
-.svg-chart .axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.svg-chart .axis-label { fill: var(--muted); font-size: var(--fs-1); font-family: var(--mono); }
 .svg-chart .axis { stroke: var(--border); stroke-width: 1; }
 .svg-chart .grid { stroke: var(--border); stroke-width: 0.5; opacity: 0.5; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  font-size: var(--fs-2); color: var(--muted); font-family: var(--mono); }
 .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 /* The hop-ring legend swatch is a ring, not a fill. */
 .legend-swatch.ring { background: none; border: 1px dashed var(--border); border-radius: 50%; }
 
 .bar-row { display: grid; grid-template-columns: 160px 1fr 64px;
   align-items: center; gap: 10px; margin: 5px 0; }
-.bar-name { font-family: var(--mono); font-size: 12px; color: var(--muted);
+.bar-name { font-family: var(--mono); font-size: var(--fs-2); color: var(--muted);
   /* US-A5: a name that does not fit WRAPS. It used to be clipped with an ellipsis and the full
    * value was reachable only by hovering -- a meaning-only title, which the canon forbids. The
    * label column is fixed, so wrapping is the honest way to keep the whole name readable. */
@@ -852,7 +852,7 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-fam
 /* The pale extension shows the PEAK behind the mean, so a single large spike is not
  * hidden by an average that looks calm. */
 .bar-fill.ghost { background: var(--border); opacity: 0.55; }
-.bar-val { font-family: var(--mono); font-size: 12px; text-align: right; }
+.bar-val { font-family: var(--mono); font-size: var(--fs-2); text-align: right; }
 
 td.num { font-family: var(--mono); text-align: right; }
 /* The count is the number. The operator removed the occurrence trend that used to sit
@@ -889,13 +889,13 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 }
 .dcell:hover, .link:hover { border-bottom-style: solid; }
 /* US-9: the stable reason code on an alert row -- quiet, mono, greppable. */
-.reason-code { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.reason-code { font-size: var(--fs-1); color: var(--muted); margin-top: 2px; }
 /* US-10: a settings row's provenance line -- quiet, below the setting, with its two verbs. */
-.setting-prov { font-size: 11px; color: var(--muted); margin-top: 2px; display: flex;
+.setting-prov { font-size: var(--fs-1); color: var(--muted); margin-top: 2px; display: flex;
   flex-wrap: wrap; gap: 6px; align-items: baseline; }
 /* The verbs ARE .link elements (the single entity cue gives colour + pointer + underline);
  * this only strips the browser's button chrome. */
-.setting-prov .link { background: none; border: 0; padding: 0; font-size: 11px; }
+.setting-prov .link { background: none; border: 0; padding: 0; font-size: var(--fs-1); }
 /* the trail's own table: dense, mono where it matters */
 .wtl-note { margin: 6px 0; }
 .wtl-chip { margin-left: 4px; }
@@ -913,7 +913,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
 .chip { display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--mono); font-size: 12px; color: var(--fg);
+  font-family: var(--mono); font-size: var(--fs-2); color: var(--fg);
   background: var(--panel2); border: 1px solid var(--border-solid);
   border-radius: 999px; padding: 3px 10px; }
 /* US-1: most chips are STATUS (inert) and must not wear a pointer or a hover wash -- the cue
@@ -956,7 +956,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .graph .edge { stroke: var(--border); }
 .graph .node circle { stroke: var(--panel); stroke-width: 1.5; }
 .graph .node:hover circle { stroke: var(--accent); stroke-width: 2.5; }
-.graph .node text { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
+.graph .node text { font-family: var(--mono); font-size: var(--fs-1); fill: var(--muted); }
 .graph .node.selected circle { stroke: var(--accent); stroke-width: 3; }
 .graph .node.selected text { fill: var(--fg); }
 /* The map is draggable: grab/grabbing is the affordance, and touch-action keeps a touch
@@ -967,7 +967,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * panel-coloured halo and rides on top of the nodes: drawn bare underneath, a node sat on
  * top of "0 hops" on the settled demo map and it read as "hops". */
 .graph .ring { stroke: var(--border); stroke-dasharray: 4 6; opacity: 0.7; }
-.graph .ring-label { fill: var(--muted); font-family: var(--mono); font-size: 10px;
+.graph .ring-label { fill: var(--muted); font-family: var(--mono); font-size: var(--fs-1);
   paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
 
 /* A detector that is overdue gets a tint as well as a word: the table is skimmed, and a colour
@@ -990,7 +990,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
   border: 1px solid var(--border); }
 .pager-btn:hover:not(:disabled) { border-color: var(--accent); }
 .pager-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
-.pager-info { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.pager-info { font-family: var(--mono); font-size: var(--fs-2); color: var(--muted); }
 
 /* ── source → destination, the graph's click result ─────────────────────────
  * Laid out as two labelled sides with an arrow, because "source and destination" is the
@@ -1000,10 +1000,10 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .pair-side { display: flex; flex-direction: column; gap: 2px;
   background: var(--panel2); border: 1px solid var(--border-solid);
   border-radius: 4px; padding: 8px 12px; min-width: 190px; }
-.pair-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+.pair-label { font-size: var(--fs-1); letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--muted); }
-.pair-addr { font-family: var(--mono); font-size: 14px; color: var(--fg); }
-.pair-arrow { font-size: 20px; color: var(--accent); }
+.pair-addr { font-family: var(--mono); font-size: var(--fs-3); color: var(--fg); }
+.pair-arrow { font-size: var(--fs-4); color: var(--accent); }
 
 /* The invisible click target beneath each drawn edge. A 0.6-3px line is not a realistic
  * pointer target, so this carries the click; without it the edges are decorative. */
@@ -1019,15 +1019,15 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting { display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
   padding: 5px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .setting:last-child { border-bottom: none; }
-.setting-key { color: var(--muted); font-size: 12px; }
-.setting-val { font-family: var(--mono); font-size: 13px; color: var(--fg);
+.setting-key { color: var(--muted); font-size: var(--fs-2); }
+.setting-val { font-family: var(--mono); font-size: var(--fs-2); color: var(--fg);
   text-align: right; word-break: break-all; }
 /* A secret shows "(set, N chars)" rather than a value; muted so it does not read as data. */
 .setting-val.secret { color: var(--muted); font-style: italic; }
 /* A setting's provenance: where the value came from. Small and muted, because it qualifies the
  * value rather than competing with it -- but present, so a blank is never ambiguous. */
-.setting-applies { margin-left: 8px; font-size: 11px; color: var(--dim); }
-.setting-src { margin-left: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+.setting-applies { margin-left: 8px; font-size: var(--fs-1); color: var(--dim); }
+.setting-src { margin-left: 6px; font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .4px;
   color: var(--muted); opacity: .7; }
 
 /* The control cell: the widget plus its "?". Aligned right so the column of controls reads as
@@ -1035,7 +1035,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting-ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .setting-ctl-group { display: flex; align-items: center; gap: 8px; }
 /* The range hint beside a number input: visible so the legal range is never a surprise. */
-.setting-unit { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.setting-unit { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; }
 
 /* THE "?" BUTTON. Round, quiet, and identical on every row -- it is a discovery affordance, not
  * a control competing with the value beside it. `open` marks the expanded state. */
@@ -1046,7 +1046,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting-help-btn.open { color: var(--accent); border-color: var(--accent); }
 /* The explanation itself: full width under the row, readable prose, visually distinct from
  * values (not monospace) so it cannot be mistaken for data. */
-.setting-help { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--muted);
+.setting-help { flex-basis: 100%; font-size: var(--fs-2); line-height: 1.5; color: var(--muted);
   padding: 6px 0 4px 0; max-width: 720px; }
 
 /* ── the info button, and the panels it opens ──────────────────────────────
@@ -1066,7 +1066,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 /* The explanation: prose, readable width, visually distinct from data (the same contract as the
  * settings help). Closed by default -- the console stays a scan surface; depth opens on click. */
 .info-text {
-  font-size: 12px; line-height: 1.6; color: var(--muted); max-width: 760px;
+  font-size: var(--fs-2); line-height: 1.6; color: var(--muted); max-width: 760px;
   padding: 2px 0 6px;
 }
 
@@ -1075,7 +1075,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * "?" the setting rows use. The note area states what was measured; it is prose, so it
  * reads as a report rather than as data to act on. */
 .sonar-row { margin-top: 10px; }
-.sonar-note { font-size: 12px; line-height: 1.6; margin-top: 6px; max-width: 720px; }
+.sonar-note { font-size: var(--fs-2); line-height: 1.6; margin-top: 6px; max-width: 720px; }
 .sonar-note .sonar-note-item { margin-top: 2px; }
 .sonar-err { color: var(--danger); }
 
@@ -1084,7 +1084,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * nothing is worse than no field, and the operator needs to see at a glance which values this page
  * can actually change.
  */
-.setting-input { font-family: var(--mono); font-size: 13px; background: var(--card);
+.setting-input { font-family: var(--mono); font-size: var(--fs-2); background: var(--card);
   color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
   min-width: 180px; text-align: right; }
 .setting-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
@@ -1093,7 +1093,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .setting-number { min-width: 110px; }
 /* A dropdown sized to its content family -- wide enough for the longest known option, not the
  * full row. */
-.setting-select { font-family: var(--mono); font-size: 13px; background: var(--card);
+.setting-select { font-family: var(--mono); font-size: var(--fs-2); background: var(--card);
   color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
   min-width: 120px; text-align: right; }
 .setting-select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
@@ -1102,7 +1102,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * guess is the difference between logging and sending. */
 .setting-toggle-label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .setting-toggle { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
-.setting-toggle-state { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.setting-toggle-state { font-family: var(--mono); font-size: var(--fs-2); color: var(--muted); }
 /* A staged row is marked so it is obvious the shown value is NOT what is running yet. */
 .setting.staged .setting-input,
 .setting.staged .setting-select,
@@ -1113,16 +1113,16 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
 .stage-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; flex-wrap: wrap;
   border-bottom: 1px solid var(--border); }
 .stage-row:last-of-type { border-bottom: none; }
-.stage-key { font-size: 12px; color: var(--muted); }
+.stage-key { font-size: var(--fs-2); color: var(--muted); }
 .stage-arrow { color: var(--accent); }
-.stage-val { font-size: 13px; }
+.stage-val { font-size: var(--fs-2); }
 /* A warning is stated BEFORE apply, in the plan's own words. */
-.stage-warn { flex-basis: 100%; font-size: 12px; color: var(--warn); }
-.stage-was { font-size: 12px; color: var(--muted); }
+.stage-warn { flex-basis: 100%; font-size: var(--fs-2); color: var(--warn); }
+.stage-was { font-size: var(--fs-2); color: var(--muted); }
 .stage-res-item { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap;
-  padding: 3px 0; font-size: 12px; }
+  padding: 3px 0; font-size: var(--fs-2); }
 .stage-res-item .fail { color: var(--warn); }
-.stage-blast { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 6px;
+.stage-blast { margin-top: 8px; font-size: var(--fs-2); color: var(--muted); display: flex; gap: 6px;
   flex-wrap: wrap; }
 
 /* ── confidence chips (host identity) ──────────────────────────────────────
@@ -1133,7 +1133,7 @@ td .an-count { display: block; font-weight: 600; line-height: 1.1; text-align: r
  * Colour is paired with the word itself, never colour alone: the chip text is the confidence
  * value, so the label is readable without relying on hue.
  */
-.conf { display: inline-block; font-family: var(--mono); font-size: 11px;
+.conf { display: inline-block; font-family: var(--mono); font-size: var(--fs-1);
   letter-spacing: .02em; border-radius: 4px; padding: 1px 7px;
   border: 1px solid var(--border-solid); background: var(--panel2); color: var(--muted); }
 .conf-high { border-color: var(--accent); color: var(--fg); font-weight: 600; }
@@ -1242,8 +1242,8 @@ nav::-webkit-scrollbar-track { background: transparent; }
   /* A phone reads this page one column at a time. */
   main { padding: 12px; }
   header { flex-wrap: wrap; gap: 10px; padding: 10px 12px; }
-  .status { flex-wrap: wrap; gap: 8px; font-size: 12px; }
-  h1 { font-size: 15px; }
+  .status { flex-wrap: wrap; gap: 8px; font-size: var(--fs-2); }
+  h1 { font-size: var(--fs-3); }
   .card { padding: 12px; margin-bottom: 12px; }
   .grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .grid2 { gap: 8px 12px; }
@@ -1261,7 +1261,8 @@ nav::-webkit-scrollbar-track { background: transparent; }
   .controls input, .gate-field input, .setting-input, .setting-select, .user-role,
   #st-user-add input, #st-user-add select,
   #view-sluice input[type="text"], #view-sluice input[type="number"], #view-sluice select {
-    font-size: 16px;
+    /* iOS zooms below 16px; --fs-4 is 19px, the smallest ramp step that clears it. */
+    font-size: var(--fs-4);
   }
 
   /* Tap targets: desktop sizes assume a 2px cursor, not a finger. Measured at 390px: these
@@ -1296,9 +1297,9 @@ nav::-webkit-scrollbar-track { background: transparent; }
   input[type="text"], input[type="number"], input[type="password"], select { width: 100%; }
 
   .bar-row { grid-template-columns: 88px 1fr 52px; gap: 8px; }
-  .bar-name { font-size: 11px; }
+  .bar-name { font-size: var(--fs-1); }
   .stats { gap: 16px; }
-  .stat .v { font-size: 18px; }
+  .stat .v { font-size: var(--fs-4); }
   .pair-side { min-width: 0; flex: 1 1 140px; }
   .spark { height: 70px; }
   .pager { flex-wrap: wrap; }
@@ -1323,7 +1324,7 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .tr-panel .tr-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
 .tr-panel input[type="text"] { flex: 1 1 220px; min-width: 180px; }
 .tr-panel button { cursor: pointer; }
-#tr-note { margin: 8px 0 0; font-size: 12px; }
+#tr-note { margin: 8px 0 0; font-size: var(--fs-2); }
 
 /* ── Discover's click-a-value filters ────────────────────────────────────────────────────── */
 .dc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-height: 1.6em; }
@@ -1336,24 +1337,24 @@ nav::-webkit-scrollbar-track { background: transparent; }
 .dc-chip { display: inline-flex; align-items: center; gap: 4px; height: var(--btn-h);
   padding: 0 var(--btn-px);
   background: var(--panel); border: 1px dashed var(--line); border-radius: 12px;
-  font-size: 12px; }
+  font-size: var(--fs-2); }
 .dc-chip[aria-pressed="true"], .chip.act[aria-pressed="true"] {
   border-style: solid; border-color: var(--accent); color: var(--fg);
 }
 .dc-chip[aria-pressed="true"]::before, .chip.act[aria-pressed="true"]::before {
-  content: "\2713"; font-size: 11px; line-height: 1; color: var(--accent);
+  content: "\2713"; font-size: var(--fs-1); line-height: 1; color: var(--accent);
 }
 .dc-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px;
-  font-size: 13px; line-height: 1; }
+  font-size: var(--fs-2); line-height: 1; }
 .dc-chip-x:hover { color: var(--bad); }
 /* (US-4: the td.dcell rules moved into the single grammar block above.) */
 
 /* (US-4: deleted -- every .pill is a <button>, which the base button rule already cues.) */
-.pill-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: 13px;
+.pill-pop { position: fixed; z-index: 60; max-width: 460px; padding: 10px 12px; font-size: var(--fs-2);
   background: var(--panel2); border: 1px solid var(--border-solid); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
 .pill-pop .pill-line { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
-.pill-pop .pill-state { font-family: monospace; font-size: 11px; min-width: 34px;
+.pill-pop .pill-state { font-family: monospace; font-size: var(--fs-1); min-width: 34px;
   flex: 0 0 auto; }
 .pill-pop .pill-state.ok { color: var(--ok); }
 .pill-pop .pill-state.bad { color: var(--crit); }
@@ -1391,7 +1392,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .an-actions .watch-act { display: inline-flex; }
 .watch-mark { color: var(--accent); }
 .review-act.watched { border-color: var(--accent); color: var(--accent); }
-.gate-blast { margin: 6px 0 0; font-size: 12px; }
+.gate-blast { margin: 6px 0 0; font-size: var(--fs-2); }
 /* MODE AND FEEDS ARE TWO DECISIONS, NOT ONE LIST (operator, 2026-10-19). The per-interface
  * sheet groups the mode (siphon or loch) away from what it feeds (Zeek, NetFlow), and gives
  * the NetFlow source its own passive/active statement. */
@@ -1423,17 +1424,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .id-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .id-metric { background: var(--surface-2); border: 1px solid var(--border);
   border-radius: 8px; padding: 10px 12px; min-width: 0; }
-.id-metric .id-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+.id-metric .id-label { color: var(--muted); font-size: var(--fs-1); letter-spacing: .04em;
   text-transform: uppercase; }
-.id-metric .id-value { color: var(--fg); font-size: 15px; font-weight: 600; line-height: 1.3;
+.id-metric .id-value { color: var(--fg); font-size: var(--fs-3); font-weight: 600; line-height: 1.3;
   overflow-wrap: anywhere; }
-.id-metric .id-sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.id-metric .id-sub { color: var(--dim); font-size: var(--fs-1); margin-top: 2px; }
 .id-strongest { background: var(--wash-info); border: 1px solid var(--accent);
   border-radius: 8px; padding: 10px 12px; }
-.id-strongest .id-label { color: var(--accent); font-size: 11px; letter-spacing: .04em;
+.id-strongest .id-label { color: var(--accent); font-size: var(--fs-1); letter-spacing: .04em;
   text-transform: uppercase; }
 .id-strongest .id-value { color: var(--fg); margin-top: 3px; overflow-wrap: anywhere; }
-.id-dashboard h3 { margin: 4px 0 0; font-size: 13px; color: var(--muted);
+.id-dashboard h3 { margin: 4px 0 0; font-size: var(--fs-2); color: var(--muted);
   letter-spacing: .03em; text-transform: uppercase; }
 .id-dashboard ul { margin: 0; padding-left: 18px; }
 .id-dashboard li { padding: 2px 0; }
@@ -1449,12 +1450,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sys-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .sys-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 12px; min-width: 0; }
-.sys-card .sys-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+.sys-card .sys-label { color: var(--muted); font-size: var(--fs-1); letter-spacing: .04em;
   text-transform: uppercase; }
-.sys-card .sys-value { color: var(--fg); font-size: 19px; font-weight: 600; line-height: 1.1;
+.sys-card .sys-value { color: var(--fg); font-size: var(--fs-4); font-weight: 600; line-height: 1.1;
   margin-top: 2px; }
-.sys-card .sys-sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
-.sys-scope { margin: 0 0 10px; font-size: 11px; line-height: 1.45; }
+.sys-card .sys-sub { color: var(--dim); font-size: var(--fs-1); margin-top: 2px; }
+.sys-scope { margin: 0 0 10px; font-size: var(--fs-1); line-height: 1.45; }
 .sys-card .sys-bar { height: 6px; margin-top: 8px; background: var(--border); border-radius: 999px;
   overflow: hidden; }
 .sys-card .sys-bar.empty { opacity: .45; }
@@ -1479,7 +1480,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sys-facts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px 16px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .sys-card svg { display: block; width: 100%; height: 46px; margin-top: 8px; overflow: visible; }
-.sys-card .sys-empty { color: var(--dim); font-size: 11px; margin-top: 8px; }
+.sys-card .sys-empty { color: var(--dim); font-size: var(--fs-1); margin-top: 8px; }
 .sys-ifaces { margin-top: 12px; }
 .sys-ifaces table { width: 100%; }
 .sys-ifaces th { text-align: left; }
@@ -1492,11 +1493,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .wl-perf-strip { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 22px;
   padding: 2px 0; }
 .wl-perf-metric { display: flex; flex-direction: column; gap: 1px; min-width: 70px; }
-.wl-perf-value { color: var(--fg); font-family: var(--mono); font-size: 15px;
+.wl-perf-value { color: var(--fg); font-family: var(--mono); font-size: var(--fs-3);
   font-weight: 600; line-height: 1.15; white-space: nowrap; }
-.wl-perf-label { color: var(--muted); font-size: 11px; letter-spacing: .04em;
+.wl-perf-label { color: var(--muted); font-size: var(--fs-1); letter-spacing: .04em;
   text-transform: uppercase; }
-.wl-perf-sub { color: var(--dim); font-size: 11px; }
+.wl-perf-sub { color: var(--dim); font-size: var(--fs-1); }
 
 /* The original CPU/memory reading survives inside the fleet table: value first, label under. */
 td.wl-perf-cell { white-space: nowrap; }
@@ -1504,7 +1505,7 @@ td.wl-perf-cell .wl-perf-value { display: block; }
 td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 
 /* NIC headers under their sensor's name, not a page-wide header over the performance row. */
-#wl-table .wl-colhead th { padding-top: 2px; padding-bottom: 5px; font-size: 11px;
+#wl-table .wl-colhead th { padding-top: 2px; padding-bottom: 5px; font-size: var(--fs-1);
   letter-spacing: .04em; text-transform: uppercase; }
 
 /* SETTINGS PHONE LAYOUT (2026-10-22): the desktop jump tools stack, and the sticky pending
