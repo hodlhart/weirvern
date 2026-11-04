@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23.33 — 2026-11-04
+
+VR REMEDIATION: HEADER COUNTS STAY CURRENT.
+
+- The view-header count refreshes on a one-second timer as well as the DOM observer, so a
+  summary line that finishes loading after the view switch still reaches the header.
+
 ## 0.23.32 — 2026-11-04
 
 VR REMEDIATION: ONE VIEW HEADER.

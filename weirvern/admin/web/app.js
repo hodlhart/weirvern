@@ -5061,6 +5061,7 @@ async function bootAuthed() {
     window.__vhObserver = new MutationObserver(scheduleViewHeaderSync);
     window.__vhObserver.observe(document.body, { subtree: true, childList: true, characterData: true });
   }
+  if (!window.__vhTimer) window.__vhTimer = setInterval(syncViewHeaderCounts, 1000);
   refreshChrome();
   refreshAccountCard();
   if (AUTH.authenticated && AUTH.must_change) {
