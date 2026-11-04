@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.24 — 2026-11-04
+
+VR REMEDIATIONS: ONE AUTO-REFRESH STATE, KEYBOARD-OPERABLE RULES.
+
+- Removed the duplicate header auto-refresh checkbox. The one pill now reads `live · 15s`
+  or `paused`, and only it starts/stops the timer.
+- Sluice rule rows are tabbable, announce as buttons, open their sheet on Enter/Space,
+  and carry a visible focus ring; the row checkbox keeps its own keys.
+
 ## 0.23.23 — 2026-11-04
 
 AUDIT FIXES: URL-BACKED HUNTING.

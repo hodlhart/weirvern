@@ -197,3 +197,16 @@ def test_every_tab_id_agrees_with_its_view_and_its_ledger_entry():
         assert entry.get("label") == label.strip(), (
             f"{view_id}: tab says {label!r}, ledger says {entry.get('label')!r}"
         )
+
+
+def test_there_is_one_auto_refresh_control_and_it_names_its_live_state():
+    html = (WEB / "index.html").read_text()
+    assert 'id="auto-toggle"' in html
+    assert 'id="autorefresh"' not in html, "the duplicate checkbox came back"
+    assert "live · 15s" in html, "the pill does not state the cadence"
+
+
+def test_sluice_rule_rows_are_keyboard_operable():
+    js = (WEB / "sluice.js").read_text()
+    assert 'tabindex: "0"' in js and 'role: "button"' in js
+    assert 'e.key === "Enter"' in js and 'e.key === " "' in js

@@ -3867,7 +3867,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           spy.some((u) => /api\/anomalies/.test(u)), spy.join(" | ").slice(0, 90));
     const autoPill = doc.getElementById("auto-toggle");
     check("the auto-refresh pill names its state",
-          !!autoPill && /auto 15s/.test(autoPill.textContent));
+          !!autoPill && /live · 15s/.test(autoPill.textContent));
     if (autoPill) {
       autoPill.click();
       await new Promise((r) => setTimeout(r, 30));
@@ -3876,7 +3876,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             autoPill.textContent);
       autoPill.click();
       await new Promise((r) => setTimeout(r, 30));
-      check("...resuming puts it back", /\blive\b/.test(autoPill.textContent),
+      check("...resuming puts it back", /live · 15s/.test(autoPill.textContent),
             autoPill.textContent);
     }
     check("the title is the name, not an emoji",
@@ -6974,10 +6974,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // wiped a flashed row and a dn-detail). The checks below are about CLICK CONTRACTS, not
     // about the timer -- which has its own checks calling refreshAll directly -- so the timer
     // is stopped for the rest of the run.
-    const arBox = doc.getElementById("autorefresh");
-    if (arBox && arBox.checked) {
-      arBox.checked = false;
-      arBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const autoPillStop = doc.getElementById("auto-toggle");
+    if (autoPillStop && !/paused/.test(autoPillStop.textContent)) {
+      autoPillStop.click();
     }
     // 1. Evidence is two-way: a crumb back (filters intact) and a Copy-link that carries it.
     fetchOverride = (u) => (String(u).includes("/api/evidence")

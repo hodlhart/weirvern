@@ -367,7 +367,9 @@ async function loadSluice() {
 
     const tr = el("tr", { class: `sl-rule-row gate-${gateLabel.toLowerCase()}`,
                           attrs: { title: "click to open and edit this rule",
-                                   "data-rule-id": r.rule_id } }, [
+                                   "data-rule-id": r.rule_id, tabindex: "0",
+                                   role: "button",
+                                   "aria-label": `open rule ${r.describes || r.rule_id}` } }, [
       el("td", { class: "pick" }, [pick]),
       el("td", { class: "mono", text: r.describes || r.src_cidr || "—" }),
       el("td", {}, [el("span", { class: `chip rule-gate gate-${gateLabel.toLowerCase()}`,
@@ -389,6 +391,15 @@ async function loadSluice() {
     }
     tr.addEventListener("click", () => {
       openRuleSheet(r);
+    });
+    // A row that can be clicked must be reachable and operable from the keyboard. The guard
+    // keeps Enter/Space inside the row's own checkbox from opening the editor mid-selection.
+    tr.addEventListener("keydown", (e) => {
+      if (e.target !== tr) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openRuleSheet(r);
+      }
     });
     tbody.appendChild(tr);
   }

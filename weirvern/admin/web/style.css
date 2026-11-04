@@ -559,6 +559,7 @@ td.pick, th.pick { width: 1.6em; }
 .icon-btn.armed { border-color: var(--bad); color: var(--bad); }
 tr.sl-picked { background: var(--panel2); }
 .sl-rule-row { cursor: pointer; }
+.sl-rule-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .zk-bar { display: grid; grid-template-columns: 8em 1fr 4em; gap: 6px; align-items: center;
   cursor: pointer; padding: 2px 0; }
 .zk-bar-fill { height: 10px; background: var(--accent); border-radius: 2px; }
@@ -1493,23 +1494,21 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 
 /* ── TOUCH CONTROLS THE AUDIT STILL FOUND SMALL (2026-10-23) ────────────────────────────────
  * C-9 asks 44px for primary and 36px for secondary. These are the phone-width controls that
- * measured below the line: the anomaly filter fields/checkboxes (31px and 13px), the header's
- * auto-refresh box (13px), and the Weirlings selector/revoked box (21px/13px). The control is
+ * measured below the line: the anomaly filter fields/checkboxes (31px and 13px) and the
+ * Weirlings selector/revoked box (21px/13px). The control is
  * the input, not the label around it.
  */
 @media (max-width: 720px) {
   #view-anomalies .controls input[type="number"],
   #view-weirlings select,
   #view-weirlings .controls input[type="checkbox"],
-  .auto input#autorefresh,
   #view-anomalies .controls input[type="checkbox"] {
     min-height: 44px;
   }
   #view-anomalies .controls input[type="number"],
   #view-weirlings select { height: 44px; }
   #view-anomalies .controls input[type="checkbox"],
-  #view-weirlings .controls input[type="checkbox"],
-  .auto input#autorefresh {
+  #view-weirlings .controls input[type="checkbox"] {
     width: 44px;
     height: 44px;
   }

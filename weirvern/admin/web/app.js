@@ -4460,7 +4460,7 @@ function setAutoPaused(paused) {
   if (pill) {
     // LIVE / PAUSED, said plainly (BF-12): the pill is the answer to "is this page still
     // updating itself?" and nothing else on it competes with that question.
-    pill.textContent = AUTO_PAUSED ? "paused" : "live";
+    pill.textContent = AUTO_PAUSED ? "paused" : "live · 15s";
     pill.title = AUTO_PAUSED
       ? "auto-refresh is paused — click to resume"
       : "auto-refresh is live (every 15s) — click to pause";
@@ -4556,9 +4556,6 @@ document.addEventListener("DOMContentLoaded", () => {
     window.__updateWired = true;
     updateCheck.addEventListener("click", () => loadUpdateStatus(true).catch(showError));
   }
-  document.getElementById("autorefresh").addEventListener("change", (e) => {
-    if (e.target.checked) startAuto(15); else if (timer) clearInterval(timer);
-  });
   document.getElementById("h-go").addEventListener("click", () => {
     const a = document.getElementById("h-addr").value.trim();
     if (a) loadHost(a, String(trHours())).then(clearError).catch(showError);
