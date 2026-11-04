@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.26 — 2026-11-04
+
+VR REMEDIATIONS: THE RULE IS THE RULING; THE CHAIN IS A RECORD.
+
+- Evidence RULED now names the matched rule, or says "no rule — alert only". The review state
+  (acknowledged / resolved / false positive) belongs only to DONE.
+- Removed the chain's 1–5 numerals and the five equal tracks. Each stage is sized by its own
+  record and the chain scrolls rather than pretending to be a stepper.
+
 ## 0.23.25 — 2026-11-04
 
 VR REMEDIATION: DNS VERBS BEHIND ONE DISCLOSURE.

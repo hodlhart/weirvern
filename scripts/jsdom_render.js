@@ -2177,6 +2177,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           /3 flows/.test(txt) && /0\.910/.test(txt) && /4\.1x/.test(txt), txt.slice(0, 160));
     check("...and the ruling is stated in words",
           /acknowledged/.test(txt) && /still open/.test(txt), txt.slice(0, 200));
+    check("RULED names the rule (or says none), and DONE owns the review state",
+          /no rule \u2014 alert only/.test(steps[3].textContent)
+          && !/acknowledged/.test(steps[3].textContent)
+          && /acknowledged/.test(steps[4].textContent),
+          steps.map((s) => s.textContent).join(" | ").slice(0, 240));
+    check("the chain carries no step numerals", doc.querySelectorAll("#ev-chain .chain-n").length === 0);
   }
 
   // ── THE POINTS TABLE IS PAGED (US-A4) ──────────────────────────────────────────────────────

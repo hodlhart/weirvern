@@ -3422,15 +3422,23 @@ async function loadEvidence(addr, start, end) {
             ? String(a.baseline_comparison || `primary deviation: ${a.primary_deviation_feature}`)
             : "no explanation recorded",
           (a && (a.baseline_comparison || a.primary_deviation_feature)) ? "known" : "unknown"],
-        ["ruled", "ruled", reviewed[1], reviewed[0]],
-        ["done", "done", reviewed[0] === "closed" ? "closed" :
-          (reviewed[0] === "open" ? "still open \u2014 a decision is owed" : "unknown"),
+        // RULED IS THE RULE, NOT THE REVIEW STATE. "acknowledged" is what happened to the
+        // alert; the rule that matched (or the fact that none did) is the ruling. The review
+        // state belongs to DONE, where the decision is recorded.
+        ["ruled", "ruled",
+          a ? (a.matched_rule ? `rule: ${a.matched_rule}` : "no rule \u2014 alert only")
+            : "no verdict stored for this window",
+          a ? "known" : "unknown"],
+        ["done", "done",
+          reviewed[0] === "closed" ? `closed \u00b7 ${reviewed[1]}`
+            : (reviewed[0] === "open"
+              ? `${reviewed[1]} \u00b7 still open \u2014 a decision is owed`
+              : reviewed[1]),
           reviewed[0]],
       ];
       for (const [id, label, text, st] of stages) {
         box.appendChild(el("li", { class: `chain-step chain-${st}`,
           attrs: { "data-stage": id } }, [
-          el("span", { class: "chain-n", text: String(stages.findIndex((x) => x[0] === id) + 1) }),
           el("span", { class: "chain-label", text: label }),
           el("span", { class: "chain-text", text: text }),
           el("span", { class: "chain-state", text: st }),

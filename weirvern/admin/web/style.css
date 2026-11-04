@@ -496,12 +496,14 @@ tr.show-more button { margin-left: 6px; }
 
 /* The evidence chain (US-D1): five stages in the order they happened, each stating its own
    state. A stage with no record is drawn as unknown, not as an empty frame. */
-.chain { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px; padding: 0; margin: 12px 0; }
-.chain-step { display: flex; flex-direction: column; gap: 3px; min-width: 0;
+/* THE CHAIN IS A RECORD, NOT A STEPPER. There are no numerals and no five equal tracks:
+   each stage is sized by what it recorded, and the line scrolls when the record is wide. */
+.chain { list-style: none; display: flex; flex-wrap: nowrap; gap: 8px; padding: 0;
+  margin: 12px 0; overflow-x: auto; }
+.chain-step { display: flex; flex: 0 1 auto; flex-direction: column; gap: 3px;
+  min-width: 150px; max-width: 320px;
   padding: 8px 10px; border: 1px solid var(--border-solid); border-radius: var(--btn-r);
   background: var(--surface-2); }
-.chain-n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .chain-label { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .04em;
   color: var(--muted); }
 .chain-text { font-size: var(--fs-2); overflow-wrap: anywhere; }
