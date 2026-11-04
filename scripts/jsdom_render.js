@@ -102,10 +102,10 @@ async function main() {
 window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAssets,
                    BLOCKED_STATE, blOpenRuleById,
                    loadNetwork, drawGraph, computeLayout, settleGraph, nodeTitle, edgeTitle,
-                   toggleTracked, loadZeekLog, loadFlowDetail, openHost,
+                   toggleTracked, loadZeekLog, loadFlowDetail, openHost, zkSetFilters,
                      showView, loadSettings, loadHealthDeep,
                      STAGE, planStage, applyStage, discardStage, setToken, getToken, stageChange, renderStageMirror,
-                     syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, toggleAllHelp,
+                     syncURL, applyURLState, AN_FILTERS, M_FILTERS, ID_FILTERS, ZEEK_FILTERS, zkRenderChips, toggleAllHelp,
                      openHelpPanel, firstrunShow, anClearAllFilters, refreshAll,
                      loadModels, loadWeirlings, loadBlocked,
                      runSonar, stageSonarRecommendations, renderSonarNote, SONAR_STATE,
@@ -7158,10 +7158,27 @@ check("...a contradicted segment names BOTH segments on the issues list",
             && /service = ssl/.test((doc.getElementById("zk-chips") || {}).textContent || ""),
             (doc.getElementById("zk-chips") || {}).textContent || "no chips");
     }
+    // ── PIV-1: the host page is a URL location and a reload restores it ─────────────────────
+    H.showView("anomalies");
+    await sleep(100);
+    H.openHost("198.51.100.5");
+    await sleep(220);
+    H.syncURL();
+    check("a host page writes its address into the URL",
+          /v=host/.test(window.location.hash) && /h\.addr=198\.51\.100\.5/.test(window.location.hash),
+          window.location.hash);
+    window.location.hash = "#v=host&h.addr=198.51.100.5";
+    H.applyURLState();
+    await sleep(220);
+    check("a cold host URL restores the host page and its address",
+          doc.getElementById("view-host").classList.contains("active")
+          && H.HP_ADDR === "198.51.100.5", `${H.CURRENT_VIEW}/${H.HP_ADDR}`);
     // These pivots are real view filters; clear them so the later URL/cold-boot assertions
     // start from the same state they did before this section existed.
     try { H.NF_FILTERS.splice(0, H.NF_FILTERS.length); } catch (_e) { /* shape changed */ }
     try { H.dnClear(); } catch (_e) { /* shape changed */ }
+    try { H.ZEEK_FILTERS.splice(0, H.ZEEK_FILTERS.length); H.zkRenderChips(); H.syncURL(); } catch (_e) { /* shape changed */ }
+    await sleep(180);
     fetchOverride = null;
     // 3. the identity detail's exits.
     H.showView("identity");

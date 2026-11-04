@@ -582,7 +582,7 @@ _ADDR_COLUMN: dict[str, str] = {
 # host column; all panels then read the same host cohort. This is deliberately a host scope,
 # not a string filter on one table: silently ignoring a filter in the services or DNS panel is
 # the exact "dashboard agrees with itself only by accident" defect the console rules forbid.
-ZEEK_FILTER_FIELDS = ("log", "service", "query")
+ZEEK_FILTER_FIELDS = ("log", "service", "query", "host")
 
 
 def _zeek_filters(filters: dict[str, str] | None) -> dict[str, str]:
@@ -628,6 +628,12 @@ def _zeek_host_scope(filters: dict[str, str] | None, hours: int,
             "src_addr IN (SELECT DISTINCT src_addr FROM weirvern.zeek_dns "
             "WHERE ts >= %(since)s AND ts <= %(until)s AND query = %(query)s)"
         )
+    # A host pivot carries the host into every panel. The expression is the caller's address
+    # column (src_addr for the service/DNS panels, the log's own address expression for the
+    # count panel), so a host page can ask "this host's ssl" rather than "every ssl on the fleet".
+    if "host" in active:
+        params["host"] = active["host"]
+        clauses.append(f"{addr_expr} = %(host)s")
     return clauses, params
 
 

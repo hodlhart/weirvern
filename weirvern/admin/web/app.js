@@ -1822,13 +1822,14 @@ function anToggleOccurrences(tr, a) {
  * binds both into the anomalies query, so the list and its counts are the filtered truth --
  * never a smaller list the browser worked out by hiding rows it had already received.
  */
-const AN_FILTERS = { host: "", severity: "", model: "" };
+const AN_FILTERS = { host: "", severity: "", model: "", feature: "" };
 
 function anQuery() {
   let q = "";
   if (AN_FILTERS.host) q += "&host=" + encodeURIComponent(AN_FILTERS.host);
   if (AN_FILTERS.severity) q += "&severity=" + encodeURIComponent(AN_FILTERS.severity);
   if (AN_FILTERS.model) q += "&model=" + encodeURIComponent(AN_FILTERS.model);
+  if (AN_FILTERS.feature) q += "&feature=" + encodeURIComponent(AN_FILTERS.feature);
   return q;
 }
 
@@ -1838,14 +1839,15 @@ function anRenderChips() {
   box.replaceChildren();
   // US-6: ARRIVED THROUGH A LINK. These filters were not chosen on this screen -- they came in
   // the URL -- so the reason is said out loud, and one click shows everything again.
-  if (ARRIVED_FROM_LINK && (AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model)) {
+  if (ARRIVED_FROM_LINK && (AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model
+      || AN_FILTERS.feature)) {
     const arrival = el("button", { class: "dc-chip",
       attrs: { title: "these filters arrived with the link; click to show everything" },
       text: "arrived with filters \u2014 show everything \u00d7" });
     arrival.addEventListener("click", () => { ARRIVED_FROM_LINK = false; anClearAllFilters(); });
     box.appendChild(arrival);
   }
-  for (const field of ["host", "severity", "model"]) {
+  for (const field of ["host", "severity", "model", "feature"]) {
     if (!AN_FILTERS[field]) continue;
     const chip = el("button", { class: "dc-chip", attrs: { title: "remove this filter" },
       text: `${field} = ${AN_FILTERS[field]} \u00d7` });
@@ -2091,6 +2093,7 @@ function anClearAllFilters() {
   AN_FILTERS.host = "";
   AN_FILTERS.severity = "";
   AN_FILTERS.model = "";
+  AN_FILTERS.feature = "";
   ARRIVED_FROM_LINK = false;
   const min = document.getElementById("f-min-score");
   if (min) min.value = "0";
@@ -2150,8 +2153,8 @@ async function loadAnomalies() {
   const tbody = document.querySelector("#anomalies-table tbody");
   tbody.replaceChildren();
   if (!rows.length) {
-    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model ||
-                        Number(min) > 0 || unreviewedOnly || watchedOnly);
+    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model
+                        || AN_FILTERS.feature || Number(min) > 0 || unreviewedOnly || watchedOnly);
     const note = unreviewedOnly
       ? (Number(min) > 0
           ? `No unreviewed anomalies at or above score ${min}.`
@@ -2233,6 +2236,10 @@ async function loadAnomalies() {
                  attrs: { title: "what matched, from the detector registry" } }),
       el("td", {}, [
         el("div", { text: a.baseline_comparison || "—" }),
+        a.primary_deviation_feature ? el("div", { class: "dcell mono",
+          text: "feature: " + a.primary_deviation_feature,
+          on: { click: (e) => { e.stopPropagation();
+            anSetFilter("feature", a.primary_deviation_feature); } } }) : null,
         a.severity_basis ? el("div", { class: "muted", text: "severity: " + a.severity_basis }) : null,
         contributing ? el("div", { class: "muted mono", text: contributing }) : null,
         // US-9: the STABLE reason code. The why-sentence reads; this one is greppable.
@@ -2251,7 +2258,8 @@ async function loadAnomalies() {
   if (countLine) {
     const x = rows.reduce((s, r) => s + Number(r.n || 1), 0);
     const y = Number(payload.total_unfiltered);
-    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model);
+    const filtered = !!(AN_FILTERS.host || AN_FILTERS.severity || AN_FILTERS.model
+                        || AN_FILTERS.feature);
     countLine.textContent = (filtered && Number.isFinite(y))
       ? `showing ${x} of ${y} alerts \u2014 filters are on`
       : `${x} alert${x === 1 ? "" : "s"} on screen`;
@@ -2530,6 +2538,16 @@ async function loadHost(addr, hours) {
 const HP_BACK = document.getElementById("hp-back");
 if (HP_BACK) {
   HP_BACK.addEventListener("click", () => {
+    if (HOST_RETURN && HOST_RETURN.view === "host" && HOST_RETURN.addr) {
+      // A peer opened from a host page: go back to the prior host, then let THAT host's
+      // parent (the view the first host was opened from) own its own Back label.
+      const previous = HOST_RETURN;
+      HOST_RETURN = previous.parent || { pending: false, view: "assets", scroll: 0 };
+      showView("host");
+      loadHost(previous.addr, String(trHours())).catch(showError);
+      loadHostPage(previous.addr).catch(showError);
+      return;
+    }
     if (HOST_RETURN && HOST_RETURN.view) {
       returnWithScroll(HOST_RETURN.view, HOST_RETURN.scroll);
     } else {
@@ -2540,7 +2558,13 @@ if (HP_BACK) {
 
 function openHost(addr) {
   if (!addr) return;
-  if (CURRENT_VIEW && CURRENT_VIEW !== "assets" && CURRENT_VIEW !== "host") {
+  if (CURRENT_VIEW === "host" && HP_ADDR && String(HP_ADDR) !== String(addr)) {
+    // A peer opened FROM a host page. Keep the previous host as the parent so Back returns
+    // to the host the analyst was reading, not all the way out to Assets. The first host's
+    // own parent (the view it was opened from) rides along unchanged.
+    HOST_RETURN = { pending: true, view: "host", addr: HP_ADDR,
+                    scroll: Number(window.scrollY || 0), parent: HOST_RETURN };
+  } else if (CURRENT_VIEW && CURRENT_VIEW !== "assets" && CURRENT_VIEW !== "host") {
     // Remember where the jump started -- the labeled way back needs it, and so does the scroll.
     HOST_RETURN = { pending: true, view: CURRENT_VIEW, scroll: Number(window.scrollY || 0) };
   } else {
@@ -2564,6 +2588,9 @@ let HP_ADDR = "";
 
 async function loadHostPage(addr) {
   HP_ADDR = String(addr || "").trim();
+  // THE HOST IS A LOCATION. Write it as soon as it is known, not after a successful read:
+  // a slow/empty host page must still be reloadable and shareable.
+  scheduleURLSync();
   const hostView = document.getElementById("view-host");
   if (hostView) hostView.dataset.addr = HP_ADDR;
   const title = document.getElementById("hp-title");
@@ -2648,8 +2675,10 @@ function hpRenderExternal(ext) {
 
 /** A host-page measurement becomes a filtered destination view, keeping the global range. */
 function hpPivot(view, apply) {
-  showView(view);
+  // Set the destination's filter BEFORE switching: the switch issues the load that must carry
+  // it. The reverse order lets the unfiltered load land after the filtered one.
   if (typeof apply === "function") apply();
+  showView(view);
 }
 
 function hpPivotNetflow(field, value, label) {
@@ -2668,7 +2697,10 @@ function hpPivotDns(query) {
 
 function hpPivotZeek(service) {
   hpPivot("zeek", () => {
-    if (typeof zkSetFilter === "function") zkSetFilter("service", service, service);
+    if (typeof zkSetFilters !== "function" || !service) return;
+    // KEEP THE HOST. "ssl on this host" and "ssl anywhere on the fleet" are different
+    // investigations; the host page owns the former. One read for the complete state.
+    zkSetFilters([["host", HP_ADDR, HP_ADDR], ["service", service, service]]);
   });
 }
 
@@ -2676,6 +2708,33 @@ function hpPivotEvidence(anomaly) {
   if (typeof openEvidence === "function") {
     openEvidence(Object.assign({}, anomaly, { src_addr: HP_ADDR }));
   }
+}
+
+/** Evidence rows are doors too: DNS name -> host+name filter, Zeek service -> host+service,
+ *  JA4 -> the fingerprint lookup. Each target is made visible before the pivot applies. */
+function evidencePivotDns(addr, query) {
+  if (!query) return;
+  if (typeof dnApply === "function") {
+    dnApply([["dn-client", addr], ["dn-domain", query]]);
+  }
+  showView("dns");
+}
+
+function evidencePivotZeek(addr, service) {
+  if (!service) return;
+  if (typeof zkSetFilters === "function") {
+    zkSetFilters([["host", addr, addr], ["service", service, service]]);
+  }
+  showView("zeek");
+}
+
+function evidencePivotJa4(ja4) {
+  if (!ja4) return;
+  showView("assets");
+  const input = document.getElementById("fp-input");
+  const go = document.getElementById("fp-go");
+  if (input) input.value = ja4;
+  if (go) go.click();
 }
 
 function hpRenderGraph(dests) {
@@ -3321,6 +3380,11 @@ async function loadEvidence(addr, start, end) {
   document.getElementById("ev-sub").textContent =
     `Detection window ${fmtTime(d.window_start)} → ${fmtTime(d.window_end)}. ` +
     `These are the individual records the detector scored — not aggregates.`;
+  const evHost = document.getElementById("ev-host");
+  if (evHost) {
+    evHost.classList.remove("hidden");
+    evHost.onclick = () => openHost(d.src_addr);
+  }
   // US-3: the way back. Evidence is a drill, not a destination. The quiet button names
   // the destination; there is deliberately no second breadcrumb for the same exit.
   clearCrumbs();
@@ -3444,10 +3508,18 @@ async function loadEvidence(addr, start, end) {
     emptyRow(zk, 4, "No Zeek sessions in this window.");
   } else {
     for (const z of d.zeek_conn) {
+      const serviceCell = el("td", { class: z.service ? "dcell" : "",
+        text: z.service || z.dst_port || "—" });
+      if (z.service) {
+        serviceCell.addEventListener("click", (e) => {
+          e.stopPropagation();
+          evidencePivotZeek(d.src_addr, z.service);
+        });
+      }
       zk.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(z.ts) }),
         el("td", {}, [hostCell(z.dst_addr, z.hostname, d.src_addr)]),
-        el("td", { text: z.service || z.dst_port || "—" }),
+        serviceCell,
         el("td", { class: "mono", text: fmtBytes((z.orig_bytes ?? 0) + (z.resp_bytes ?? 0)) }),
       ]));
     }
@@ -3462,12 +3534,19 @@ async function loadEvidence(addr, start, end) {
     emptyRow(tl, 5, "No TLS sessions in this window.");
   } else {
     for (const s of d.zeek_ssl) {
+      const ja4Cell = el("td", { class: s.ja4 ? "mono dcell" : "mono", text: s.ja4 || "—" });
+      if (s.ja4) {
+        ja4Cell.addEventListener("click", (e) => {
+          e.stopPropagation();
+          evidencePivotJa4(s.ja4);
+        });
+      }
       tl.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(s.ts) }),
         el("td", {}, [hostCell(s.dst_addr, s.hostname, d.src_addr)]),
         el("td", { class: "mono", text: String(s.dst_port ?? "—") }),
         el("td", { text: s.server_name || "—" }),
-        el("td", { class: "mono", text: s.ja4 || "—" }),
+        ja4Cell,
       ]));
     }
   }
@@ -3478,9 +3557,17 @@ async function loadEvidence(addr, start, end) {
     emptyRow(dn, 3, "No DNS queries in this window.");
   } else {
     for (const q of d.zeek_dns) {
+      const queryCell = el("td", { class: q.query ? "mono dcell" : "mono",
+        text: q.query || "—" });
+      if (q.query) {
+        queryCell.addEventListener("click", (e) => {
+          e.stopPropagation();
+          evidencePivotDns(d.src_addr, q.query);
+        });
+      }
       dn.appendChild(el("tr", {}, [
         el("td", { class: "mono", text: fmtTime(q.ts) }),
-        el("td", { class: "mono", text: q.query || "—" }),
+        queryCell,
         el("td", { class: "mono", text: String(q.qtype ?? "—") }),
       ]));
     }
@@ -5240,6 +5327,14 @@ function renderFeatureDeviations(rows, coverage) {
   for (const r of rows) {
     const w = (r.mean_abs_z / max) * 100;
     const wMax = (r.max_abs_z / max) * 100;
+    const alerts = el("button", { class: "link", text: "alerts",
+      attrs: { "aria-label": `show anomalies whose primary feature is ${r.feature}` } });
+    alerts.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Set the state before the view switch: the switch issues the load that must carry it.
+      anSetFilter("feature", r.feature);
+      showView("anomalies");
+    });
     host.appendChild(el("div", { class: "bar-row dcell",
       attrs: { title: `${r.feature}: click to filter the points table to this feature` },
       on: { click: () => mSetFilter("feature", r.feature) } }, [
@@ -5250,6 +5345,7 @@ function renderFeatureDeviations(rows, coverage) {
         el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:#4797ff` } }),
       ]),
       el("span", { class: "bar-val", text: r.mean_abs_z.toFixed(2) }),
+      alerts,
     ]));
   }
   const inputs = coverage && Number(coverage.model_inputs);
@@ -6004,6 +6100,7 @@ function syncURL() {
   if (AN_FILTERS.host) p.set("an.host", AN_FILTERS.host);
   if (AN_FILTERS.severity) p.set("an.sev", AN_FILTERS.severity);
   if (AN_FILTERS.model) p.set("an.model", AN_FILTERS.model);
+  if (AN_FILTERS.feature) p.set("an.feature", AN_FILTERS.feature);
   // US-10: the write trail's filters ride the URL too.
   if (WTL_STATE.scope) p.set("au.scope", WTL_STATE.scope);
   if (WTL_STATE.action) p.set("au.action", WTL_STATE.action);
@@ -6040,6 +6137,9 @@ function syncURL() {
   if (typeof NF_FILTERS !== "undefined") {
     for (const f of NF_FILTERS) p.append("nf", f.field + ":" + f.value);
   }
+  if (typeof ZEEK_FILTERS !== "undefined") {
+    for (const f of ZEEK_FILTERS) p.append("zk", f.field + ":" + f.value);
+  }
   // `wl` IS A WEIRLINGS DEEP LINK, NOT GLOBAL STATE (operator, 2026-10-19: why does an
   // anomalies URL carry wl=weirvern-eth2?). It used to be written whenever a weirling sheet had
   // ever been opened, so the parameter survived a tab switch and then FORCED the next reload
@@ -6066,6 +6166,9 @@ function syncURL() {
     if (CURRENT_EVIDENCE.start) p.set("ev.start", String(CURRENT_EVIDENCE.start));
     if (CURRENT_EVIDENCE.end) p.set("ev.end", String(CURRENT_EVIDENCE.end));
   }
+  // The host page is a view with an address, not a transient modal. Without this key a
+  // reload/back/shared link lands on Assets; see applyURLState's explicit fallback.
+  if (viewForURL === "host" && HP_ADDR) p.set("h.addr", HP_ADDR);
   const qs = p.toString();
   const target = location.pathname + location.search + (qs ? "#" + qs : "");
   const viewChanged = viewForURL && LAST_HISTORY_VIEW && viewForURL !== LAST_HISTORY_VIEW;
@@ -6107,6 +6210,7 @@ function applyURLState() {
   if (p.get("an.host")) AN_FILTERS.host = p.get("an.host");
   if (p.get("an.sev")) AN_FILTERS.severity = p.get("an.sev");
   if (p.get("an.model")) AN_FILTERS.model = p.get("an.model");
+  if (p.get("an.feature")) AN_FILTERS.feature = p.get("an.feature");
   // US-6: filters that came from the URL are not this screen's choices -- say so.
   ARRIVED_FROM_LINK = !!(p.get("an.host") || p.get("an.sev") || p.get("an.model"));
   // US-10: the trail's filters (the cards re-read them on load).
@@ -6171,6 +6275,17 @@ function applyURLState() {
       }
     }
   }
+  const zkPairs = p.getAll("zk");
+  if (zkPairs.length && typeof ZEEK_FILTERS !== "undefined") {
+    ZEEK_FILTERS.splice(0, ZEEK_FILTERS.length);
+    for (const pair of zkPairs) {
+      const i = pair.indexOf(":");
+      if (i > 0) {
+        ZEEK_FILTERS.push({ field: pair.slice(0, i), value: pair.slice(i + 1),
+                            label: pair.slice(i + 1) });
+      }
+    }
+  }
   const dv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
   if (p.get("dc.addr")) dv("dc-addr", p.get("dc.addr"));
   if (p.get("dc.port")) dv("dc-port", p.get("dc.port"));
@@ -6205,10 +6320,20 @@ function applyURLState() {
     return true;
   }
   // #v=identity is an old alias of the merged Assets surface (the name still appears in
-  // bookmarks and palette history). #v=host with no address is not an investigation; send it
-  // to the inventory instead of leaving the default Health page lit under a host URL.
+  // bookmarks and palette history). A host URL with an address restores the actual host page;
+  // without one it is not an investigation, so it falls back to the inventory.
   if (v === "identity") v = "assets";
-  if (v === "host" && !p.get("h.addr") && !p.get("hp.addr")) v = "assets";
+  if (v === "host") {
+    const hostAddr = (p.get("h.addr") || p.get("hp.addr") || "").trim();
+    if (hostAddr) {
+      HOST_RETURN = { pending: false, view: "assets", scroll: 0 };
+      showView("host");
+      loadHost(hostAddr, String(trHours())).catch(showError);
+      loadHostPage(hostAddr).catch(showError);
+      return true;
+    }
+    v = "assets";
+  }
   if (v) {
     const tab = [...document.querySelectorAll(".tab")].find((t) => t.dataset.view === v);
     if (tab) showView(v);

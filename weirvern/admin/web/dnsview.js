@@ -272,8 +272,20 @@ function dnRenderRows(d) {
     rc.addEventListener("click", (e) => { e.stopPropagation(); dnApply([["dn-rcode", String(r.rcode)]]); });
     tr.appendChild(rc);
     const ans = (r.answer_ips || []);
-    const ax = dnCell(ans.length ? `${ans[0]}${ans.length > 1 ? " +" + (ans.length - 1) : ""}`
-                                 : (r.answers || "\u2014").slice(0, 40));
+    const ax = dnCell("", "mono");
+    if (ans.length) {
+      // An answer address is an ENTITY, not a string. Each address opens its host page; the
+      // row click still opens the DNS detail because every span stops propagation.
+      ans.forEach((ip, i) => {
+        const link = el("span", { class: "dcell", text: ip,
+          attrs: { "aria-label": `open ${ip} host page` } });
+        link.addEventListener("click", (e) => { e.stopPropagation(); openHost(ip); });
+        ax.appendChild(link);
+        if (i < ans.length - 1) ax.appendChild(el("span", { text: ", " }));
+      });
+    } else {
+      ax.textContent = (r.answers || "\u2014").slice(0, 40);
+    }
     tr.appendChild(ax);
     // PUSH THE NAME TO A RULE (the operator: "from dns tab i should be able to push a domain to
     // a block rule"; then: "put the block or allow button in its own column on the far right").

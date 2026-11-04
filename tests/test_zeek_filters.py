@@ -97,3 +97,12 @@ def test_an_unknown_log_is_refused_before_any_sql_runs():
     else:  # pragma: no cover
         raise AssertionError("an unknown log must not reach the query")
     assert client.seen == []
+
+
+def test_a_host_filter_is_exact_and_binds_its_parameter():
+    """A host-page service pivot must ask "this host", not "the whole fleet"."""
+    client = _Client()
+    soc.zeek_services(client, hours=24, filters={"host": "198.51.100.7"})
+    sql, params = client.seen[-1]
+    assert "src_addr = %(host)s" in sql
+    assert params["host"] == "198.51.100.7"

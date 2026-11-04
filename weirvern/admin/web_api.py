@@ -619,6 +619,10 @@ def models_payload(data: dict) -> dict:
         "model_counts": data.get("model_counts", {}),
         "feature_deviations": data.get("feature_deviations", []),
         "feature_coverage": data.get("feature_coverage", {}),
+        # The sample is not the window: the points panel is capped, so carry the independent
+        # window counts beside it or the headline inherits the cap.
+        "severity_counts": data.get("severity_counts", {}),
+        "anomaly_window": data.get("anomaly_window", {}),
         # SOC-2: what almost alerted, and WHY it did not. `available` is separate from the
         # list so the panel can say "the near-miss table does not exist yet" instead of
         # rendering an empty list, which would read as "nothing nearly alerted".
@@ -636,16 +640,29 @@ def models_payload(data: dict) -> dict:
     # charts. Deliberately factual: it describes what is present, not what it means.
     n = len(out["points"])
     runs = out["run_count"]
+    window = out.get("anomaly_window") or {}
+    total = window.get("total")
+    counts = (out.get("severity_counts") or {}).get("counts") or []
     if n == 0 and runs == 0:
         out["summary"] = "No training runs and no anomalies in the selected window."
     elif n == 0:
         out["summary"] = f"{runs} training run(s); no anomalies in the selected window."
     else:
         sev: dict[str, int] = {}
-        for pt in out["points"]:
-            sev[pt.get("severity") or "unknown"] = sev.get(pt.get("severity") or "unknown", 0) + 1
+        if total is not None and counts:
+            for row in counts:
+                sev[row.get("severity") or "unknown"] = int(row["count"] or 0)
+            display_total = int(total)
+        else:
+            for pt in out["points"]:
+                sev[pt.get("severity") or "unknown"] = sev.get(pt.get("severity") or "unknown", 0) + 1
+            display_total = n
         spread = ", ".join(f"{k} {v}" for k, v in sorted(sev.items()))
-        out["summary"] = f"{n} anomaly(ies) from {runs} training run(s) ({spread})."
+        sample = (f" Latest {n} shown in the points sample."
+                  if total is not None and display_total > n else "")
+        out["summary"] = (
+            f"{display_total} anomaly(ies) from {runs} training run(s) ({spread}).{sample}"
+        )
     return out
 
 

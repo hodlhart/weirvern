@@ -628,18 +628,21 @@ def _build_handler(ctx: GuiContext):
                     host_f = (query.get("host") or [""])[0].strip()
                     sev_f = (query.get("severity") or [""])[0].strip()
                     model_f = (query.get("model") or [""])[0].strip()
+                    feature_f = (query.get("feature") or [""])[0].strip()
                     if len(host_f) > 64 or len(sev_f) > 24 or len(model_f) > 64:
                         return self._error(400, "host, severity or model filter is implausibly long")
+                    if len(feature_f) > 64:
+                        return self._error(400, "feature filter is implausibly long")
                     # GROUPED (the operator, 2026-10-16): identical anomalies fold into one row
                     # carrying a count, with each occurrence's window behind the click. A
                     # duplicate-consuming list would quietly shrink the queue's coverage.
                     rows = status_mod.anomalies_grouped(
                         client, limit=limit, min_score=min_score, host=host_f, severity=sev_f,
-                        model=model_f, hours=hours)
+                        model=model_f, feature=feature_f, hours=hours)
                     # The header tiles: counts per severity under min-score + host, NOT under the
                     # severity filter itself (see status.anomaly_severity_counts for why).
                     severity_counts = status_mod.anomaly_severity_counts(
-                        client, min_score=min_score, host=host_f, hours=hours)
+                        client, min_score=min_score, host=host_f, feature=feature_f, hours=hours)
                     # FIRED VS ACTED-ON (BF-12): the alert-budget line. Same self-guarding
                     # shape as the severity counts -- a failed read is its own state.
                     discipline = status_mod.anomaly_discipline_counts(
@@ -1036,11 +1039,12 @@ def _build_handler(ctx: GuiContext):
                 return
             empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
             filters: dict[str, str] = {}
-            for key in ("log", "service", "query"):
+            for key in ("log", "service", "query", "host"):
                 raw = (query.get(key) or [""])[0].strip()
                 if not raw:
                     continue
-                if len(raw) > 253:
+                limit = 64 if key == "host" else 253
+                if len(raw) > limit:
                     return self._error(400, f"{key} is too long to filter on")
                 filters[key] = raw
             if filters.get("log") and filters["log"] not in dict(soc_mod.ZEEK_LOGS):

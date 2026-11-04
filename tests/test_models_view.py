@@ -383,3 +383,23 @@ def test_the_technique_block_renders_evidence_not_just_the_id():
     assert "parseTechniques" not in app
     assert "attack_techniques" not in app
     assert "MITRE ATT&CK" not in app
+
+
+def test_the_summary_uses_the_window_total_not_the_points_sample():
+    """The points panel is capped at 500; the headline must not inherit that cap."""
+    from weirvern.admin import web_api
+
+    out = web_api.models_payload({
+        "available": True, "hours": 24, "run_count": 9, "training_history": {},
+        "scores": {}, "model_counts": {}, "feature_deviations": [],
+        "points": [{"score": 0.9, "agreement": 1.0, "severity": "medium",
+                    "models": ["Isolation Forest"], "primary": "total_bytes",
+                    "magnitude": 3.0, "src_addr": "203.0.113.42"}],
+        "severity_counts": {"available": True, "reason": "",
+                            "counts": [{"severity": "low", "count": 300},
+                                       {"severity": "medium", "count": 303}]},
+        "anomaly_window": {"total": 603, "sample": 500, "sample_limit": 500},
+    })
+    assert "603 anomaly(ies)" in out["summary"]
+    assert "low 300, medium 303" in out["summary"]
+    assert "Latest 1 shown in the points sample." in out["summary"]

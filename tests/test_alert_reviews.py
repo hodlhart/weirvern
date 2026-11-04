@@ -519,3 +519,23 @@ def test_each_occurrence_in_the_unfold_carries_its_own_review_actions():
     assert 'if (state === "unavailable") return null;' in app, (
         "the unavailable path lost its no-controls rule"
     )
+
+
+def test_the_feature_filter_is_bound_in_the_queue_and_its_counts():
+    """A model feature bar must reach the queue as a server-side filter, not a client hide."""
+    class _C:
+        def __init__(self):
+            self.seen = []
+
+        def query(self, sql, parameters=None):
+            self.seen.append((sql, dict(parameters or {})))
+            return type("R", (), {"result_rows": [], "column_names": []})()
+
+    c = _C()
+    from weirvern.admin import status as st
+    st.anomalies_grouped(c, hours=24, feature="total_packets")
+    assert "primary_deviation_feature = %(feature)s" in c.seen[-1][0]
+    assert c.seen[-1][1]["feature"] == "total_packets"
+    st.anomaly_severity_counts(c, hours=24, feature="total_packets")
+    assert "primary_deviation_feature = %(feature)s" in c.seen[-1][0]
+    assert c.seen[-1][1]["feature"] == "total_packets"

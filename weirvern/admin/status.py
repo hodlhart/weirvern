@@ -1630,6 +1630,23 @@ def model_overview(client, hours: int = 72, settings=None) -> dict:
         "model_inputs": model_inputs,
     }
 
+    # THE SAMPLE IS NOT THE WINDOW. The points panel is capped at 500; the summary must not
+    # inherit that cap. Read the window's severity counts separately, so a reader cannot
+    # mistake "latest 500" for "all anomalies", and the UI can label the sample explicitly.
+    try:
+        window_counts = anomaly_severity_counts(client, hours=hours)
+        out["severity_counts"] = window_counts
+        window_total = sum(int(c.get("count") or 0) for c in (window_counts.get("counts") or []))
+        out["anomaly_window"] = {
+            "total": window_total if window_counts.get("available") else None,
+            "sample": len(points),
+            "sample_limit": 500,
+        }
+    except Exception as exc:  # noqa: BLE001 - the charts still render; the summary says unknown
+        logger.warning("model window counts failed: %s", exc)
+        out["severity_counts"] = {"available": False, "reason": str(exc)[:200], "counts": []}
+        out["anomaly_window"] = {"total": None, "sample": len(points), "sample_limit": 500}
+
     # 5. NEAR MISSES (soc-2): windows that came close to the bar, or cleared it and were
     #    dropped by the agreement gate. These are the false-negative surface -- the evidence
     #    a tuning loop needs that the Anomalies view structurally cannot show (it lists only
@@ -1933,7 +1950,8 @@ def noise_flows(client, hours: int = 24) -> dict:
 
 
 def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
-                       host: str = "", severity: str = "", model: str = "") -> list[dict]:
+                       host: str = "", severity: str = "", model: str = "",
+                       feature: str = "") -> list[dict]:
     """Anomalies WITH the explainability columns, as dicts.
 
     The GUI needs the WHY: which feature deviated, by how much,
@@ -1978,10 +1996,12 @@ def anomalies_detailed(client, limit: int = 100, min_score: float = 0.0, *,
         # never be shadowed by a longer name that contains it.
         + ("AND arrayExists(m -> trimBoth(m) = %(model)s, "
            "splitByChar(',', detected_by_models)) " if model else "")
+        + ("AND primary_deviation_feature = %(feature)s " if feature else "")
         + "ORDER BY detected_at DESC LIMIT %(n)s",
         parameters={"s": min_score, "n": limit, **({"host": host} if host else {}),
                     **({"sev": severity} if severity else {}),
-                    **({"model": model} if model else {})},
+                    **({"model": model} if model else {}),
+                    **({"feature": feature} if feature else {})},
     )
     cols = list(res.column_names)
     return [dict(zip(cols, row, strict=False)) for row in res.result_rows]
@@ -2155,7 +2175,7 @@ def anomalies_total_count(client, min_score: float = 0.0, *, hours: float = 24) 
 
 def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
                       host: str = "", severity: str = "", model: str = "",
-                      hours: float = 24) -> list[dict]:
+                      feature: str = "", hours: float = 24) -> list[dict]:
     """One row per DISTINCT anomaly, with its occurrence count and its windows.
 
     The operator, 2026-10-16: "These are identical in anomalies. Add a count column instead of
@@ -2183,6 +2203,11 @@ def anomalies_grouped(client, limit: int = 100, min_score: float = 0.0, *,
         where.append("arrayExists(m -> trimBoth(m) = %(model)s, "
                      "splitByChar(',', detected_by_models))")
         params["model"] = str(model)
+    if feature:
+        # The measurement the model named as primary. Exact, because a feature name is an
+        # identity here; a substring would let total_bytes match total_bytes_out.
+        where.append("primary_deviation_feature = %(feature)s")
+        params["feature"] = str(feature)
     result = client.query(
         # COUNT OCCURRENCES, NOT DETECTION PASSES (operator, 2026-10-21: "These are almost
         # exactly the same. The count should go up"). `detected_at` used to be in the GROUP BY,
@@ -2277,7 +2302,7 @@ def attach_group_reviews(rows: list[dict], idx: dict[tuple, dict], error: str | 
 
 
 def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "",
-                            hours: float = 24) -> dict:
+                            feature: str = "", hours: float = 24) -> dict:
     """How many anomalies carry each severity, under the page's current filters.
 
     THE SEVERITY FILTER IS DELIBERATELY NOT APPLIED. These counts are the tiles an operator
@@ -2292,6 +2317,9 @@ def anomaly_severity_counts(client, *, min_score: float = 0.0, host: str = "",
     if host:
         where.append("src_addr = %(host)s")
         params["host"] = str(host)
+    if feature:
+        where.append("primary_deviation_feature = %(feature)s")
+        params["feature"] = str(feature)
     try:
         rows = client.query(
             "SELECT severity, count() AS n FROM weirvern.netflow_anomalies WHERE "

@@ -373,7 +373,7 @@ async function loadNetflow() {
  * the log chart would leave the services and DNS panels silently answering a different
  * question. One value per field; a second click replaces it. */
 const ZEEK_FILTERS = [];
-const ZEEK_FIELD_LABELS = { log: "log", service: "service", query: "DNS name" };
+const ZEEK_FIELD_LABELS = { log: "log", service: "service", query: "DNS name", host: "host" };
 
 function zkQuery() {
   return ZEEK_FILTERS.map((f) => `&${f.field}=${encodeURIComponent(f.value)}`).join("");
@@ -391,12 +391,20 @@ function zkRenderChips() {
   }
 }
 
-function zkSetFilter(field, value, label) {
-  const at = ZEEK_FILTERS.findIndex((f) => f.field === field);
-  if (at >= 0) ZEEK_FILTERS.splice(at, 1);
-  ZEEK_FILTERS.push({ field, value: String(value), label: label || String(value) });
+function zkSetFilters(pairs) {
+  for (const [field, value, label] of pairs || []) {
+    const at = ZEEK_FILTERS.findIndex((f) => f.field === field);
+    if (at >= 0) ZEEK_FILTERS.splice(at, 1);
+    ZEEK_FILTERS.push({ field, value: String(value), label: label || String(value) });
+  }
   zkRenderChips();
+  // ONE read for the complete state: setting host and service separately would issue two
+  // requests and let the first response overwrite the second.
   loadZeek().then(clearError).catch(showError);
+}
+
+function zkSetFilter(field, value, label) {
+  zkSetFilters([[field, value, label]]);
 }
 
 function zkRemoveFilter(index) {

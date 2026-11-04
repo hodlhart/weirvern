@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.23 — 2026-11-04
+
+AUDIT FIXES: URL-BACKED HUNTING.
+
+- Host pages now write their address into the URL (`h.addr`); a cold host URL restores the
+  host page, and host -> peer -> Back returns to the previous host instead of Assets.
+- Evidence is a pivot surface: Open host page for the alert host, DNS rows filter DNS to the
+  host and name, Zeek service rows filter Zeek to host + service, and JA4 opens the fingerprint
+  lookup. Flow destinations already opened their host.
+- Zeek filters serialize as `zk=field:value`; a host-page service pivot carries both host and
+  service, so it no longer silently becomes a fleet-wide question.
+- DNS answer addresses are entity links that open their host page.
+- Models summary reports the window total/severity spread independently of the 500-row points
+  sample and labels the sample; a feature-deviation bar offers `alerts` to open Anomalies
+  filtered by that feature, and Anomalies accepts a bound `feature` filter in the queue and its
+  counts.
+
 ## 0.23.22 — 2026-11-03
 
 SLUICE GATE ALIGNMENT.
