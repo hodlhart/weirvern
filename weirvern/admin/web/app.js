@@ -4947,7 +4947,7 @@ const VIEW_HEADER_META = {
   settings: { heading: "Settings", count: "st-summary" },
   logs: { heading: "Logs", count: "hp-alerts-note" },
   evidence: { heading: "Evidence", count: "ev-sub" },
-  host: { heading: "Host", count: "" },
+  host: { heading: "Host", count: "hp-sub" },
   blocked: { heading: "Blocks", count: "bl-summary" },
 };
 
@@ -5018,7 +5018,12 @@ function syncViewHeaderCounts() {
     if (!out || !meta.count) continue;
     const src = document.getElementById(meta.count);
     if (!src) continue;
-    const text = String(src.innerText || src.textContent || "").replace(/\s+/g, " ").trim();
+    let text = String(src.innerText || src.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text && key === "settings") {
+      text = `${document.querySelectorAll("#view-settings > .card").length} sections`;
+    } else if (!text && key === "evidence") {
+      text = `${document.querySelectorAll("#ev-chain .chain-step").length} stages`;
+    }
     if (text && text !== out.textContent) out.textContent = text;
   }
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.34 — 2026-11-04
+
+VR-HDR follow-up: COUNTS WHERE THE VIEW HAS THEM.
+
+- Host copies its address/subtitle into the header count; Settings falls back to its card
+  count and Evidence to its five stages when their summary line is empty. No header shows a
+  bare dash as its count.
+
 ## 0.23.33 — 2026-11-04
 
 VR REMEDIATION: HEADER COUNTS STAY CURRENT.
