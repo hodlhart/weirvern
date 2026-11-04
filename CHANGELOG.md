@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.30 — 2026-11-04
+
+VR REMEDIATION: ANOMALIES ROWS FIT THE LINE AND THE BUDGET.
+
+- The review chip and row disclosure share one flex line; stacked they made every row 97px.
+- A full 100-row measurement now renders at ~58px per row and under 8,000px, with the default
+  limit at 68 rows so a cold load stays under the 6,000-element DOM budget.
+
 ## 0.23.29 — 2026-11-04
 
 VR REMEDIATION: ANOMALIES ROWS ARE READING LINES.

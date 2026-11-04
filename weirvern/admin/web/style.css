@@ -434,6 +434,10 @@ tr.wl-state-disabled { box-shadow: inset 3px 0 0 var(--border); }
 .an-models-clamp { -webkit-line-clamp: 1; }
 .an-why-clamp { -webkit-line-clamp: 2; }
 .row-more-full { margin: 0 0 4px; font-size: var(--fs-2); overflow-wrap: anywhere; }
+/* The review chip and the row disclosure sit on one line; stacking them made every row 97px
+   even after the prose was clamped. */
+.an-actions-row { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.an-actions-row .review-remain { display: none; }
 
 #wl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 #wl-summary .stat {

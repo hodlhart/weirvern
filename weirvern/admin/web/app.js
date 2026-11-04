@@ -2273,7 +2273,9 @@ async function loadAnomalies() {
             text: a.reason_code }) : null,
         ]),
       ]),
-      el("td", {}, [reviewCell(a), rowMore(a, a.review_state || "")]),
+      el("td", {}, [el("div", { class: "an-actions-row" }, [
+        reviewCell(a), rowMore(a, a.review_state || ""),
+      ])]),
     ]));
   }
 
