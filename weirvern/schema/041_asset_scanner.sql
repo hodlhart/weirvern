@@ -1,4 +1,4 @@
--- 021_asset_scanner.sql
+-- 041_asset_scanner.sql
 --
 -- THE ACTIVE INVENTORY LAYER. The Assets view has always been built from traffic Weirvern
 -- already saw; that is excellent for discovery but it cannot say whether a host is patched,
@@ -6,7 +6,7 @@
 -- gap: Nmap names the services, Nuclei checks the specific templates that match them.
 --
 -- THE REGISTRY IS KEYED BY A STABLE-AS-POSSIBLE IDENTITY, NOT JUST AN ADDRESS. A DHCP lease
--- moves; a finding attached to "192.168.2.50" then points at a different machine. The scanner
+-- moves; a finding attached to "198.51.100.50" then points at a different machine. The scanner
 -- prefers a MAC-derived key when Nmap or DHCP gives one and falls back to ip:<address> only
 -- when no hardware identity is available. The address is still stored because every passive
 -- source in this repository speaks in addresses.
