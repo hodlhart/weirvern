@@ -72,3 +72,4 @@ Thumbs.db
 *.pcap.bz2
 *.pcap.xz
 /captures/
+.venv
