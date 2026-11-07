@@ -64,6 +64,12 @@ from weirvern.admin import users as users_mod
 
 logger = logging.getLogger(__name__)
 
+
+def _iso(value: object) -> str:
+    """Render a datetime-like ClickHouse value without assuming the row is typed."""
+    fmt = getattr(value, "isoformat", None)
+    return str(fmt()) if callable(fmt) else str(value or "")
+
 STATIC_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
@@ -1469,7 +1475,7 @@ def _build_handler(ctx: GuiContext):
                 item = dict(job)
                 for key in ("requested_at", "lease_until", "started_at", "finished_at"):
                     value = item.get(key)
-                    item[key] = value.isoformat() if hasattr(value, "isoformat") else (value or "")
+                    item[key] = _iso(value)
                 out.append(item)
             self._json({"available": True, "reason": "", "jobs": out, "count": len(out)})
 

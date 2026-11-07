@@ -967,6 +967,12 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
             "status_reason": status_reason}
 
 
+def _iso(value: Any) -> str:
+    """Render a ClickHouse timestamp as ISO text, including from an untyped query row."""
+    fmt = getattr(value, "isoformat", None)
+    return str(fmt()) if callable(fmt) else str(value or "")
+
+
 def _asset_change_coverage(client, hours: int) -> dict:
     """What the ledger was actually watching, so an empty change list is not mistaken for
     a quiet network.
@@ -1005,10 +1011,10 @@ def _asset_change_coverage(client, hours: int) -> dict:
         "reason": "",
         "observations": int(h[0] or 0),
         "observed_assets": int(h[1] or 0),
-        "last_observation": h[2].isoformat() if hasattr(h[2], "isoformat") else str(h[2] or ""),
+        "last_observation": _iso(h[2]),
         "assets": int(r[0] or 0),
         "scanned": int(r[1] or 0),
-        "last_scan": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2] or ""),
+        "last_scan": _iso(r[2]),
     }
 
 
@@ -1059,7 +1065,7 @@ def asset_posture_overview(client: Any) -> dict:
             "expected": int(r[1] or 0), "watch": int(r[2] or 0),
             "suspicious": int(r[3] or 0), "high": int(r[4] or 0),
         },
-        "last_scored": last.isoformat() if hasattr(last, "isoformat") else str(last or ""),
+        "last_scored": _iso(last),
     }
 
 
