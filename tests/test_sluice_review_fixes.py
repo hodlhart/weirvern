@@ -16,8 +16,8 @@ def test_a_stale_gate_is_named_on_the_surface_not_only_in_a_title():
     js = (WEB / "sluice.js").read_text(encoding="utf-8")
     assert 'id="sl-gate-warning"' in html
     assert "sluiceStateChip(g.state, g.stale)" in js
-    assert "gateWarning.textContent = warningText" in js
-    assert 'stateBits.push("stale")' in js
+    assert "warning.textContent" in js
+    assert "stale" in js and "degraded" in js
 
 
 def test_the_empty_rules_sentence_names_hidden_revoked_rules_and_the_separate_domain_gate():

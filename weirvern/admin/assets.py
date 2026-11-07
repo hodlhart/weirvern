@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from typing import Any
 
 from weirvern import addressing, networks
 from weirvern.admin import revdns, timewindow
@@ -964,3 +965,148 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
             "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
             "edges": out, "status_available": status_available,
             "status_reason": status_reason}
+
+
+def _asset_change_coverage(client, hours: int) -> dict:
+    """What the ledger was actually watching, so an empty change list is not mistaken for
+    a quiet network.
+
+    The change count alone cannot distinguish "no differences" from "nothing was scanned".
+    These two reads are deliberately separate from the change query: a missing history table
+    must not turn a readable ledger into an unavailable one, and an empty history window is
+    reported with its coverage rather than as a silent zero.
+    """
+    span = timewindow.w(hours)
+    history = _rows(
+        client,
+        "SELECT count() AS observations, uniqExact(asset_key) AS observed_assets, "
+        "       max(observed_at) AS last_observation "
+        "FROM weirvern.asset_service_history "
+        "WHERE observed_at >= %(since)s AND observed_at <= %(until)s",
+        span,
+        "asset-change observations",
+    )
+    registry = _rows(
+        client,
+        "SELECT count() AS assets, countIf(scan_state = 'done') AS scanned, "
+        "       max(last_scan_at) AS last_scan "
+        "FROM weirvern.asset_registry FINAL",
+        {},
+        "asset-change registry coverage",
+    )
+    if history is None or registry is None:
+        return {"available": False, "reason": "the coverage query failed",
+                "observations": 0, "observed_assets": 0, "assets": 0, "scanned": 0,
+                "last_observation": "", "last_scan": ""}
+    h = history[0] if history else (0, 0, None)
+    r = registry[0] if registry else (0, 0, None)
+    return {
+        "available": True,
+        "reason": "",
+        "observations": int(h[0] or 0),
+        "observed_assets": int(h[1] or 0),
+        "last_observation": h[2].isoformat() if hasattr(h[2], "isoformat") else str(h[2] or ""),
+        "assets": int(r[0] or 0),
+        "scanned": int(r[1] or 0),
+        "last_scan": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2] or ""),
+    }
+
+
+def asset_posture_overview(client: Any) -> dict:
+    """The shadow asset-posture scorer's own state, for the Models view.
+
+    There is no trained classifier here yet: `asset-posture-1` is a deterministic scorer over
+    observed service changes. The card must still say what it is and why it has no rows, rather
+    than rendering an unexplained zero.
+    """
+    try:
+        rows = _rows(
+            client,
+            "SELECT count() AS scored, countIf(band = 'expected') AS expected, "
+            "       countIf(band = 'watch') AS watch, countIf(band = 'suspicious') AS suspicious, "
+            "       countIf(band = 'high') AS high, max(scored_at) AS last_scored, "
+            "       any(model_version) AS model_version "
+            "FROM weirvern.asset_posture_scores FINAL",
+            {},
+            "asset posture overview",
+        )
+        changes = _rows(
+            client,
+            "SELECT count() AS total FROM weirvern.asset_changes FINAL",
+            {},
+            "asset posture change total",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"the asset-posture read failed: {exc}",
+                "model_version": "asset-posture-1", "scored": 0, "total_changes": 0,
+                "bands": {"expected": 0, "watch": 0, "suspicious": 0, "high": 0},
+                "last_scored": ""}
+    if rows is None or changes is None:
+        return {"available": False, "reason": "the asset-posture tables could not be read",
+                "model_version": "asset-posture-1", "scored": 0, "total_changes": 0,
+                "bands": {"expected": 0, "watch": 0, "suspicious": 0, "high": 0},
+                "last_scored": ""}
+    r = rows[0] if rows else (0, 0, 0, 0, 0, None, "")
+    c = changes[0] if changes else (0,)
+    last = r[5]
+    return {
+        "available": True,
+        "reason": "",
+        "model_version": str(r[6] or "asset-posture-1"),
+        "scored": int(r[0] or 0),
+        "total_changes": int(c[0] or 0),
+        "bands": {
+            "expected": int(r[1] or 0), "watch": int(r[2] or 0),
+            "suspicious": int(r[3] or 0), "high": int(r[4] or 0),
+        },
+        "last_scored": last.isoformat() if hasattr(last, "isoformat") else str(last or ""),
+    }
+
+
+def asset_changes(client, hours: int = 24, limit: int = 100) -> dict:
+    """Recent Nmap service changes, with the shadow posture score when one exists.
+
+    This is a CHANGE LEDGER, not a second inventory: a row is the difference between two
+    successful scans. The score is deliberately advisory (the module's band is `expected`,
+    `watch`, `suspicious`, or `high`) and the payload says so; nothing here writes to a gate.
+    """
+    rows = _rows(
+        client,
+        "SELECT c.asset_key, c.ip, c.change_key, c.kind, c.port, c.protocol, "
+        "c.old_value, c.new_value, c.confidence, c.evidence, c.first_seen, c.last_seen, "
+        "c.review_state, s.score, s.band, s.reasons "
+        "FROM (SELECT * FROM weirvern.asset_changes FINAL) c "
+        "LEFT JOIN (SELECT * FROM weirvern.asset_posture_scores FINAL) s "
+        "ON c.asset_key = s.asset_key AND c.change_key = s.change_key "
+        "WHERE c.last_seen >= %(since)s AND c.last_seen <= %(until)s "
+        "ORDER BY c.last_seen DESC LIMIT %(n)s",
+        {**timewindow.w(hours), "n": max(1, min(int(limit), 500))},
+        "asset changes",
+    )
+    if rows is None:
+        return _unavailable("the asset-change query failed", hours=hours, changes=[])
+
+    out = []
+    for r in rows:
+        out.append({
+            "asset_key": str(r[0] or ""),
+            "ip": str(r[1] or ""),
+            "change_key": str(r[2] or ""),
+            "kind": str(r[3] or ""),
+            "port": int(r[4] or 0),
+            "protocol": str(r[5] or "tcp"),
+            "old_value": str(r[6] or ""),
+            "new_value": str(r[7] or ""),
+            "confidence": str(r[8] or ""),
+            "evidence": str(r[9] or ""),
+            "first_seen": r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10] or ""),
+            "last_seen": r[11].isoformat() if hasattr(r[11], "isoformat") else str(r[11] or ""),
+            "review_state": str(r[12] or "new"),
+            "posture": {
+                "score": float(r[13] or 0.0),
+                "band": str(r[14] or "unscored"),
+                "reasons": list(r[15] or []),
+            },
+        })
+    return {"available": True, "reason": "", "hours": hours, "changes": out,
+            "count": len(out), "coverage": _asset_change_coverage(client, hours)}

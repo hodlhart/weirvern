@@ -1664,3 +1664,30 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
 }
 
 .legend-swatch.outline { background: transparent; border: 1.5px dashed var(--warn); }
+
+/* ── Sluice Gate (2026-11-06 rebuild) ─────────────────────────────────────────────────────── */
+.sl2-head { align-items: center; }
+.sl2-link { align-self: center; }
+.sl2-gates { align-items: stretch; }
+.sl2-gate { min-width: 0; }
+.sl2-gate-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sl2-gate-head h2, .sl2-gate-head h3 { margin: 0; }
+.sl2-gate .stat-row { margin-top: 8px; }
+.sl2-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bad) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--bad) 28%, var(--line)); }
+.sl2-fleet-table { width: 100%; margin-top: 4px; }
+.sl2-rule-btn { display: block; width: 100%; text-align: left; padding: 0; border: 0;
+  background: none; color: var(--fg); font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.sl2-rule-btn:hover { color: var(--accent); text-decoration: underline; }
+.sl2-rule-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.sl2-show { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-1); }
+.sl2-delete { margin-top: 8px; }
+.flash-hit { animation: sl2-flash 1.8s ease-out; }
+@keyframes sl2-flash { 0% { background: color-mix(in srgb, var(--accent) 24%, transparent); } 100% { background: transparent; } }
+@media (max-width: 760px) {
+  .sl2-head { align-items: flex-start; }
+  .sl2-gates { grid-template-columns: 1fr; }
+  .sl2-gate-head { flex-wrap: wrap; }
+}
+

@@ -291,7 +291,7 @@ def test_the_gui_has_a_sensor_panel_element():
 def test_the_gui_renders_the_sensor_payload():
     """The Health view must render the sensor from the payload it already fetched."""
     js = (ROOT / "weirvern" / "admin" / "web" / "soc.js").read_text()
-    assert "sensorLine" in js, "the GUI never renders the sensor payload"
+    assert "renderHealthSensor" in js, "the GUI never renders the sensor payload"
     # It must read the sensor from the /api/health payload rather than a second request, or the
     # sensor's story and the health checks' story can disagree about the same moment.
     assert "d.sensor" in js, "loadHealthDeep does not pass the sensor payload to the renderer"
@@ -301,12 +301,11 @@ def test_the_gui_renders_the_sensor_payload():
 def test_the_renderer_distinguishes_not_running_from_running():
     """The frontend must not treat a dead sensor as merely stale-looking."""
     js = (ROOT / "weirvern" / "admin" / "web" / "soc.js").read_text()
-    body = js[js.index("function sensorLine"):]
-    body = body[:body.index("\n}") + 3]
+    body = js[js.index("function renderHealthSensor"):]
     assert "s.running" in body, (
         "the renderer ignores the running flag; a dead sensor would read as live"
     )
-    assert "NOT running" in body or "not running" in body.lower(), (
+    assert "not running" in body.lower(), (
         "the renderer has no wording for a stopped sensor; the panel would show the mode "
         "with no indication it is dead"
     )

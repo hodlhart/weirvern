@@ -138,7 +138,7 @@ def _routes() -> dict[str, str]:
     # path -> handler name, from the `if path == "/api/x": return self._handler(query)` shape.
     # The leading underscore is part of the method name, so the capture must keep it: without
     # it the route is recorded as `assets` and the comparison below fails against `_assets`.
-    return dict(re.findall(r'if path == "(/api/[\w/]+)":\s*\n\s*return self\.(_\w+)', src))
+    return dict(re.findall(r'if path == "(/api/[\w/-]+)":\s*\n\s*return self\.(_\w+)', src))
 
 
 def test_the_new_routes_are_registered_and_have_handlers():
@@ -172,7 +172,7 @@ def test_every_route_method_actually_exists():
 def test_the_route_paths_match_what_the_frontend_fetches():
     """A route and a fetch that disagree give a 404 the panel renders as 'no data'."""
     routed = set(_routes())
-    called = set(re.findall(r"`(/api/[\w]+)", ASSETS_JS))
+    called = set(re.findall(r"`(/api/[\w-]+)", ASSETS_JS))
     assert called, "assets.js fetches no /api path -- the regex or the code has changed"
     for path in called:
         assert path in routed, (

@@ -59,6 +59,7 @@ def test_the_pointer_sweep_no_dead_pointers():
     allowed = (
         "button", ".review-act", ".user-role", ".user-act", ".icon-btn", ".sl-rule-row",
         ".zk-bar", ".tile", ".sheet-close", ".crumb", ".palette-row", ".clickable",
+        ".sl2-rule-btn",
         ".dc-row", ".dcell", ".link", ".expander", ".chip.act", ".pager-btn",
         ".stat.clickable", ".dc-chip-x", ".tr-panel button", "h2.acc", ".modal-x",
         ".info-btn", ".graph", ".gate-field", ".sev-tiles",

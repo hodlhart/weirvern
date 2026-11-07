@@ -125,24 +125,19 @@ def test_the_routes_and_serializer_carry_the_new_state():
     assert "revoke_rules(" in body, "the revoke route must accept a selection"
 
 
-def test_the_view_has_checkboxes_bulk_parking_and_a_rule_sheet():
+def test_the_view_has_no_checkbox_furniture_and_one_rule_sheet():
     html = (WEB / "index.html").read_text()
-    for elem in ('id="sl-pick-all"', 'id="sl-bulk"', 'id="sl-bulk-disable"',
-                 'id="sl-bulk-enable"', 'id="sl-bulk-clear"'):
-        assert elem in html, f"{elem} missing from the rules view"
-    # Deleting a rule is a per-rule act in its sheet (SL-1, 2026-10-18), not a bulk button and
-    # not an icon in the list.
-    # The operator asked for a bulk delete (2026-10-19). It lives in the bulk bar, behind a
-    # required reason, and never as a per-row icon.
-    assert 'id="sl-bulk-delete"' in html, "the operator's bulk delete is missing"
-    assert 'id="sl-bulk-reason"' in html, "bulk delete has no reason field"
+    # The rebuild removed always-on selection furniture. A rule is opened from its sentence and
+    # deleted in its own sheet, behind a required reason and a second click.
+    assert 'id="sl-pick-all"' not in html
+    assert 'id="sl-bulk"' not in html
+    assert 'id="sl-rule-delete"' in html
+    assert 'id="sl-rule-delete-reason"' in html
     js = (WEB / "sluice.js").read_text()
-    assert "sl-pick" in js and "slConfirm" in js and "slBulkAct" in js
-    assert "openRuleSheet(" in js, "a row must open the rule sheet"
-    assert "slRuleRevoke(" in js and "sl-rule-delete" in html
-    assert "click again to confirm" in js
-    assert 'slIcon("trash")' not in js, "the row's trash icon belongs in the sheet now"
-    assert "blOpenRuleById(rid)" in js, "the sheet must still offer the Blocked-page view"
+    assert "slRuleRevoke(" in js
+    assert "openRuleSheet(" in js
+    assert "A reason is required to delete a rule" in js
+    assert 'slIcon("trash")' not in js
 
 
 

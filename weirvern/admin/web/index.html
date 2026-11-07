@@ -140,7 +140,6 @@
      sub-menus -- nothing collapses, every tab stays one click away). -->
 <nav id="tabs">
   <div class="tab-group" data-group="operations">
-    <button class="tab active" data-view="health">Health</button>
     <button class="tab" data-view="anomalies">Anomalies</button>
   </div>
   <div class="tab-group" data-group="network">
@@ -159,6 +158,12 @@
   </div>
   <div class="tab-group" data-group="telemetry">
     <button class="tab" data-view="models">Models</button>
+  </div>
+  <!-- HEALTH SITS BETWEEN THE MODEL LAYER AND SETTINGS (operator, 2026-11-05). It is the
+       pipeline's own state: models describe detection, Health explains whether the data and
+       stages that feed them are alive. -->
+  <div class="tab-group" data-group="health">
+    <button class="tab active" data-view="health">Health</button>
   </div>
   <div class="tab-group" data-group="console">
     <button class="tab" data-view="settings">Settings</button>
@@ -678,6 +683,12 @@
     </div>
 
     <div class="card">
+      <h2>Asset posture <span class="muted">shadow — not controlling alerts</span></h2>
+      <p class="muted" id="m-posture-note">loading…</p>
+      <div class="muted" id="m-posture-stats"></div>
+    </div>
+
+    <div class="card">
       <h2>Detection freshness <span class="muted" id="m-stale-window"></span></h2>
       <div id="m-stale-note"></div>
       <table id="m-stale">
@@ -944,11 +955,27 @@
           <th>Dests</th><th>Services</th>
           <th data-sort="anomalies" class="sortable">Anomalies</th>
           <th>Last seen</th>
+          <th>Scan</th>
         </tr></thead>
         <tbody></tbody>
       </table>
       <div id="as-pager" class="pager"></div>
       <p class="muted" id="as-empty"></p>
+    </div>
+
+    <div class="card">
+      <h2>Asset changes <span class="muted" id="ac-summary">loading…</span></h2>
+      <p class="muted">Differences between two successful Nmap scans. The posture band is advisory
+        shadow data; no rule is changed by it.</p>
+      <div id="ac-note"></div>
+      <p class="muted" id="ac-coverage"></p>
+      <table id="ac-table">
+        <thead><tr>
+          <th>When</th><th>Host</th><th>Change</th><th>From</th><th>To</th><th>Confidence</th><th>Posture</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted" id="ac-empty"></p>
     </div>
 
     <div class="card">
@@ -1132,229 +1159,161 @@
     deploys twice. The panel therefore leads with the gate's own state, because
     "armed" and "degraded, and here is why" must never look alike.
   -->
+  <!-- SLUICE GATE, REBUILT 2026-11-06.
+       ONE SURFACE: state, rules, and one rule sheet. The old page had a Gate overview that
+       repeated the two gate cards, a second composer, always-on bulk checkboxes, blocklist
+       management in the middle of enforcement, and two competing primary actions.
+       The gate fails open on purpose (a monitoring appliance must not take a network down when
+       its supervisor dies), so state leads and explains its consequence. -->
   <section id="view-sluice" class="view">
-    <!-- THE OPERATOR'S OVERVIEW BELONGS FIRST (operator, 2026-10-19: "put at a glance at the
-         top. But change its name"). "At a glance" named the reading habit, not the subject; this
-         is the gate's own overview. -->
-    <div class="card">
-      <div class="view-head">
-        <h2>Gate overview <span class="muted" id="sl-glance-note"></span></h2>
-        <div class="chips" id="sl-glance">
-          <div class="gate-summary" role="group" aria-label="Domain Gate overview">
-            <span class="gate-summary-label">Domain Gate <span class="muted">DNS</span></span>
-            <div class="chips" id="sl-glance-domain"></div>
-          </div>
-          <div class="gate-summary" role="group" aria-label="Traffic Gate overview">
-            <span class="gate-summary-label">Traffic Gate <span class="muted">packets</span></span>
-            <div class="chips" id="sl-glance-traffic"></div>
-          </div>
+    <div class="view-head sl2-head">
+      <!-- The view header supplies the title and the live count (VIEW_HEADER_META); the
+           primary verb is this view's own New rule button, which installViewHeaders moves
+           into the header. No second heading. -->
+      <div class="controls">
+        <button id="sl2-new" class="primary" type="button">New rule</button>
+      </div>
+    </div>
+    <!-- The header count is synced from this source by VIEW_HEADER_META. It is hidden because
+         the visible copy lives in the view header, not in the body. -->
+    <span id="sl2-count" class="hidden"></span>
+
+    <div class="grid sl2-gates">
+      <div class="card sl2-gate">
+        <div class="sl2-gate-head">
+          <h2>Domain Gate <span class="muted">DNS</span></h2>
+          <span class="chip" id="sl2-dom-chip">loading&hellip;</span>
+        </div>
+        <p class="muted" id="sl2-dom-line">loading&hellip;</p>
+        <div class="stat-row" id="sl2-dom-stats"></div>
+        <div class="controls">
+          <button id="sl2-dom-toggle" type="button" class="quiet">&hellip;</button>
+          <a class="link" href="#v=blocked">View blocks</a>
+          <a class="link" href="#v=settings">Blocklists in Settings</a>
         </div>
       </div>
-      <div class="controls sl-overview-actions">
-        <button id="sl-view-blocks" class="quiet" type="button">View blocks &rarr;</button>
+
+      <div class="card sl2-gate">
+        <div class="sl2-gate-head">
+          <h2>Traffic Gate <span class="muted">packets</span></h2>
+          <span class="chip" id="sl2-traf-chip">loading&hellip;</span>
+        </div>
+        <p class="muted" id="sl2-traf-line">loading&hellip;</p>
+        <p id="sl-gate-warning" class="muted hidden"></p>
+        <div class="stat-row" id="sl2-traf-stats"></div>
+        <div class="controls">
+          <button id="sl2-traf-toggle" type="button" class="quiet">&hellip;</button>
+          <span class="muted" id="sl2-traf-note"></span>
+        </div>
+        <div id="sl2-auto" class="sl2-auto hidden"></div>
       </div>
     </div>
 
-    <!--
-      WHERE THE RULES ARE ENFORCED. One rule store, many gates: the hub and every weirling that sits
-      in the path install the same rules on their own segment. A gate that has stopped reporting is
-      a segment the operator believes is filtered and is not, so this list is the only place that
-      distinction can be seen.
-    -->
-    <!-- TWO GATES, TWO JOBS (operator, 2026-10-19: "domain blocking works ... maybe have a Domain
-         Gate and a Traffic Gate?"). They fail independently and are read by different systems:
-         the Domain Gate answers DNS and keeps working with no packet rules at all; the Traffic
-         Gate drops packets in the kernel and can be disarmed while DNS blocking still enforces.
-         Showing one "gate" state for both made a working DNS gate look broken. -->
-    <div class="grid gate-grid">
-    <div class="card">
-      <h2>Domain Gate <button class="info-btn" data-info="sl-dom-info" aria-label="how the domain gate works" aria-expanded="false" title="how the domain gate works">i</button></h2>
-      <div class="info-text hidden" id="sl-dom-info">
-        <p><strong>What it is.</strong> The DNS half of enforcement: a name on an enabled blocklist, or a block-mode domain rule, is answered with a block answer. It needs no nft rules and keeps working while the Traffic Gate is disarmed.</p>
-        <p><strong>What writes it.</strong> The blocklist sync and the operator's domain rules; the switch below gates the domain half only.</p>
-        <p><strong>Last changed.</strong> Each change is an audit row; each hit is recorded in Blocks.</p>
-        <p><strong>Where to see it.</strong> Hits appear in Blocks with the name that matched. Blocklists and their switches live on the Settings tab.</p>
-      </div>
-      <div class="stat-row" id="dg-stats"></div>
-      <p class="muted" id="sl-dom-line">loading&hellip;</p>
-      <div class="sl-top-names">
-        <span class="muted">Names caught in the window</span>
-        <div class="chips" id="sl-top-names"></div>
-      </div>
-      <div class="controls">
-        <span class="sl-status-item">Domain blocking <strong id="sl-dom-state">loading&hellip;</strong></span>
-        <button id="sl-dom-toggle" type="button">&hellip;</button>
-        <span class="muted" id="sl-dom-note"></span>
-        <button id="dg-manage" type="button" class="link">Manage blocklists in Settings</button>
-      </div>
+    <div class="card hidden" id="sl2-fleet-card">
+      <div id="sl2-fleet"></div>
     </div>
 
     <div class="card">
-      <h2>Traffic Gate <button class="info-btn" data-info="sl-info" aria-label="what the traffic gate does and how it fails" aria-expanded="false" title="what the traffic gate does and how it fails">i</button></h2>
-      <div class="info-text hidden" id="sl-info">
-        <p><strong>What it is.</strong> The packet half of enforcement: nft rules on each weirling's capture interfaces that drop traffic. It fails open on purpose — if its supervisor dies the gate OPENS rather than taking your network down.</p>
-        <p><strong>What writes it.</strong> Operator blocks, plus the ensemble policy where you have opted in.</p>
-        <p><strong>Last changed.</strong> Every block and expiry is an audit row.</p>
-        <p><strong>Where to see it.</strong> The state line below says whether the kernel is enforcing; the fleet table says which segment each gate covers.</p>
+      <div class="view-head">
+        <h2>Rules <span class="muted" id="sl2-rules-note"></span></h2>
+        <label class="muted sl2-show"><input id="sl2-show-revoked" type="checkbox"> show revoked</label>
       </div>
-      <div class="stat-row" id="tg-stats"></div>
-      <div class="sl-status-line">
-        <span class="sl-status-item">Packet gate
-          <strong id="sl-gate-state">loading&hellip;</strong>
-          <button id="sl-bc-gate" type="button">&hellip;</button></span>
-        <span class="muted" id="sl-bc-auto-state"></span>
-        <button id="sl-bc-autopause" class="hidden" type="button">Pause auto-block</button>
-        <span class="muted" id="sl-bc-note"></span>
+      <div class="controls" id="sl2-filters" role="group" aria-label="filter rules by gate">
+        <span class="muted">show</span>
+        <button class="dc-chip active" type="button" data-gate="all" aria-pressed="true">All rules</button>
+        <button class="dc-chip" type="button" data-gate="domain" aria-pressed="false">Domain Gate</button>
+        <button class="dc-chip" type="button" data-gate="traffic" aria-pressed="false">Traffic Gate</button>
       </div>
-      <p id="sl-gate-warning" class="muted hidden"></p>
-      <h3 class="gate-subhead">Detection blocking <span class="muted">automatic rules from the ensemble</span></h3>
-      <div id="sl-policies" class="policy-strip"></div>
-      <p id="sl-criticality-note" class="muted"></p>
-      <h3 class="gate-subhead">Fleet packet gates <span class="muted" id="sl-gates-note"></span></h3>
+      <div id="sl-reach" class="chips"></div>
       <div class="tablewrap">
-        <table id="sl-gates">
-          <thead><tr><th>Weirling</th><th>Packet state</th><th>Interfaces</th><th>Packet rules installed (active / total)</th>
-            <th>Packets blocked</th><th>Last check</th><th>Path</th></tr></thead>
+        <table id="sl2-rules">
+          <thead>
+            <tr><th>Rule</th><th>Gate</th><th>State</th><th>Expires</th><th>Origin</th><th></th></tr>
+          </thead>
           <tbody></tbody>
         </table>
       </div>
-    </div>
-    </div>
-
-    <div class="card">
-      <h2>Rules <span id="sl-count" class="muted"></span>
-        <button id="sl-new-rule" class="primary" type="button">New rule</button>
-        <button id="sl-select" class="quiet" type="button">Select</button></h2>
-      <!-- US-9: what these rules can actually act on -- and each sensor is a door to its sheet. -->
-      <div id="sl-reach" class="chips"></div>
-      <div id="sl-bulk" class="hidden">
-        <span class="muted" id="sl-bulk-n"></span>
-        <span class="muted" id="sl-bulk-note"></span>
-        <input id="sl-bulk-reason" type="text" placeholder="reason (required to delete)" class="setting-input">
-        <button id="sl-bulk-disable" class="quiet">Disable selected</button>
-        <button id="sl-bulk-enable" class="quiet">Enable selected</button>
-        <button id="sl-bulk-delete" class="danger">Delete selected</button>
-        <button id="sl-bulk-clear" class="quiet">Clear</button>
-      </div>
-      <div class="controls">
-        
-        <label class="muted"><input id="sl-live-only" type="checkbox"> live rules only</label>
-        <label class="muted"><input id="sl-show-revoked" type="checkbox"> show revoked</label>
-      </div>
-      <div class="controls" id="sl-rule-gates" role="group" aria-label="filter rules by enforcement gate">
-        <span class="muted">show</span>
-        <button class="dc-chip active" type="button" data-rule-gate="all" aria-pressed="true">All rules</button>
-        <button class="dc-chip" type="button" data-rule-gate="domain" aria-pressed="false">Domain Gate</button>
-        <button class="dc-chip" type="button" data-rule-gate="traffic" aria-pressed="false">Traffic Gate</button>
-      </div>
-      <table id="sl-table">
-        <thead>
-          <tr>
-            <th class="pick"><input type="checkbox" id="sl-pick-all" aria-label="select every rule shown" title="select every rule shown"></th>
-            <th>rule</th><th>gate</th><th>state</th><th>origin</th><th>expires</th>
-            <th>severity</th><th>reason</th><th></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p id="sl-empty" class="empty"></p>
+      <p id="sl2-empty" class="empty"></p>
     </div>
 
-
-    <!-- RULE SHEET (SL-1, 2026-10-18): adding and deleting a rule is a focused act, so it happens
-         in the same right-side sheet the weirlings use -- never in a form sitting on the tab. One
-         composer: the DNS/Blocked "block this domain" entry point opens this sheet too. -->
-    <div id="sl-rule-sheet" class="card sheet hidden" tabindex="-1"
-         role="dialog" aria-modal="true" aria-labelledby="sl-rule-title" aria-hidden="true">
+    <!-- ONE RULE SHEET. Creation is target-first: choose domain or traffic, then only that
+         target's fields exist. A second composer is how the old page drifted. -->
+    <div id="sl-rule-sheet" class="card sheet hidden" tabindex="-1" role="dialog" aria-modal="true"
+         aria-labelledby="sl-rule-title" aria-hidden="true">
       <h2><span id="sl-rule-title">New rule</span>
-        <span class="muted" id="sl-rule-id"></span>
-        <button id="sl-rule-close" class="sheet-close" type="button" title="close this panel (Escape also closes)">Close</button></h2>
-      <!-- CREATE -->
-      <div id="sl-rule-create">
+        <span class="muted" id="sl2-sheet-id"></span>
+        <button class="sheet-close" type="button">Close</button></h2>
+
+      <div id="sl2-create">
         <div class="grid2">
-          <label>what to block
+          <label>what should this rule act on?
             <select id="sl-target-type">
-              <option value="domain" selected>a domain — answered by the Domain Gate</option>
-              <option value="address">an address or CIDR — dropped by the Traffic Gate</option>
+              <option value="domain" selected>a domain — answered in DNS by the Domain Gate</option>
+              <option value="traffic">an address or CIDR — dropped by the Traffic Gate</option>
             </select>
           </label>
-          <p id="sl-gate-hint" class="muted">Domain rules are answered in DNS by the Domain Gate; address rules are dropped by the Traffic Gate.</p>
+          <p class="muted" id="sl-gate-hint">Domain rules are answered by DNS; they do not write packet rules.</p>
         </div>
+
+        <div id="sl2-domain-fields">
+          <label>domain
+            <input id="sl2-domain" type="text" placeholder="ads.example.com" autocomplete="off">
+          </label>
+        </div>
+
+        <div id="sl2-traffic-fields" class="hidden">
+          <div class="grid2">
+            <label>source address or CIDR
+              <input id="sl2-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24" autocomplete="off">
+            </label>
+            <label>destination address or CIDR
+              <input id="sl2-dst" type="text" placeholder="optional" autocomplete="off">
+            </label>
+            <label>protocol
+              <select id="sl2-proto"><option value="">any</option><option value="tcp">tcp</option><option value="udp">udp</option><option value="icmp">icmp</option></select>
+            </label>
+            <label>destination port (optional)
+              <input id="sl2-port" type="number" min="0" max="65535" placeholder="any">
+            </label>
+            <label>direction
+              <select id="sl2-direction"><option value="forward" selected>forwarded traffic</option><option value="in">inbound to this weirling</option></select>
+            </label>
+          </div>
+        </div>
+
         <div class="grid2">
-          <label>source address or CIDR
-            <input id="sl-src" type="text" placeholder="198.51.100.7 or 198.51.100.0/24">
-          </label>
-          <label>destination (if no source is set)
-            <input id="sl-dst" type="text" placeholder="block traffic to this address">
-          </label>
-          <label>or block a domain
-            <input id="sl-domain" type="text" placeholder="ads.example.com">
-          </label>
           <label>mode
-            <select id="sl-mode">
-              <option value="alert">alert: record hits, block nothing</option>
-              <option value="block" selected>block</option>
-            </select>
-          </label>
-          <label>protocol
-            <select id="sl-proto">
-              <option value="">any</option>
-              <option value="tcp">tcp</option>
-              <option value="udp">udp</option>
-              <option value="icmp">icmp</option>
-            </select>
-          </label>
-          <label>destination port (optional)
-            <input id="sl-port" type="number" min="0" max="65535" placeholder="any">
-          </label>
-          <label>direction
-            <select id="sl-direction">
-              <option value="forward" selected>forwarded (traffic passing through)</option>
-              <option value="in">inbound (traffic to this weirling)</option>
-            </select>
+            <select id="sl2-mode"><option value="alert">alert — record hits, block nothing</option><option value="block" selected>block</option></select>
           </label>
           <label>duration in minutes (0 = until revoked)
-            <input id="sl-ttl" type="number" min="0" max="10080" value="60">
+            <input id="sl2-ttl" type="number" min="0" max="10080" value="60">
           </label>
         </div>
-        <label>reason (optional)
-          <input id="sl-reason" type="text" placeholder="why is this being blocked? asked later, always">
+        <label>reason (optional now; required to delete)
+          <input id="sl2-reason" type="text" placeholder="why does this rule exist?" autocomplete="off">
         </label>
         <div class="controls sheet-actions">
-          <button id="sl-block" class="primary" type="button">Create rule</button>
-          <span id="sl-block-note" class="muted"></span>
-          <button class="info-btn" data-info="sl-refuse-info" aria-label="what the gate refuses and why"
-                  aria-expanded="false">i</button>
+          <button id="sl2-create-submit" class="primary" type="button">Create rule</button>
+          <span id="sl2-create-note" class="muted"></span>
         </div>
-        <div class="info-text hidden" id="sl-refuse-info">
-  <p><strong>What it is.</strong> The safety refusals — on purpose: a rule that blocks the wrong thing takes a network down, so a rule with no address, a port without a protocol, the management interface, this weirling's own address, and anything covering the whole internet are refused.</p>
-  <p><strong>What writes it.</strong> The gate's validator, at submit time.</p>
-  <p><strong>Last changed.</strong> Nothing is stored — a refusal happens before anything exists.</p>
-  <p><strong>Where to see it.</strong> The message right here when a rule is refused; each refusal names its fix.</p>
-</div>
       </div>
-      <!-- AN EXISTING RULE: what it is, and the two acts that change it. Deleting lives here,
-           behind a second click, because it is the destructive one. -->
-      <div id="sl-rule-detail" class="hidden">
-        <div id="sl-rule-facts"></div>
-        <div class="controls">
-          <label>mode <select id="sl-rule-mode">
-            <option value="alert">alert: record hits, block nothing</option>
-            <option value="block">block</option>
-          </select></label>
-          <label>domain (domain rules only) <input id="sl-rule-domain" type="text" placeholder="ads.example.com or *.example.com"></label>
-          <button id="sl-rule-save" type="button">Save changes</button>
+
+      <div id="sl2-detail" class="hidden">
+        <div id="sl2-facts"></div>
+        <div class="grid2">
+          <label>mode
+            <select id="sl2-detail-mode"><option value="alert">alert — record only</option><option value="block">block</option></select>
+          </label>
+          <div class="controls">
+            <button id="sl2-mode-save" class="quiet" type="button">Save mode</button>
+            <button id="sl2-park" class="quiet" type="button">Park rule</button>
+          </div>
         </div>
-        <label>reason for deleting (required, recorded with your name)
-          <input id="sl-rule-delete-reason" type="text"
-                 placeholder="why is this rule going away?">
-        </label>
         <div class="controls sheet-actions">
-          <button id="sl-rule-toggle" type="button"></button>
-          <button id="sl-rule-delete" class="danger" type="button">Delete this rule</button>
-          <button id="sl-rule-blocked" class="quiet" type="button">View blocks</button>
+          <input id="sl-rule-delete-reason" type="text" placeholder="reason required to delete" autocomplete="off">
+          <button id="sl-rule-delete" class="danger" type="button">Delete rule</button>
         </div>
-        <p id="sl-rule-note" class="muted sonar-note" role="status" aria-live="polite"></p>
+        <p id="sl2-detail-note" class="muted"></p>
       </div>
     </div>
   </section>
@@ -1435,6 +1394,20 @@
            the answer is not the sensor count. -->
       <div id="wl-summary" class="stat-row"></div>
       <p id="wl-summary-note" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Scanner readiness <span class="muted" id="scanner-summary">loading…</span>
+        <button class="info-btn" data-info="scanner-info" aria-label="how the scanner profiles work" aria-expanded="false">i</button>
+      </h2>
+      <div class="info-text hidden" id="scanner-info">
+        <p><strong>What it is.</strong> What each scanner node can actually do. <strong>Basic</strong> is passive discovery plus port/service identity where available. <strong>Nmap</strong> adds safe Nmap service/version detection and NSE identity scripts.</p>
+        <p><strong>What Weirvern does not do.</strong> It does not download or install Nmap. The setup sheet gives the official package command for the node's operating system; the operator installs it. Weirvern detects it on the next scanner pass.</p>
+        <p><strong>Last changed.</strong> The scanner reports a capability row on every pass; a node with no row is <em>not reported</em>, not basic.</p>
+      </div>
+      <p id="scanner-note" class="muted">loading…</p>
+      <div id="scanner-list" class="scanner-list"></div>
+      <div class="controls"><button id="scanner-check" class="quiet" type="button">Check again</button></div>
     </div>
 
     <div class="card">

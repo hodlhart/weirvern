@@ -4560,8 +4560,8 @@ document.addEventListener("DOMContentLoaded", () => {
       loadBlockingControls().catch(() => {});
       // The score field moved to Settings with the duplicate card; land the operator on the
       // state line instead, and on the pause when the threshold is actually armed.
-      const pause = document.getElementById("sl-bc-autopause");
-      const line = document.getElementById("sl-bc-auto-state");
+      const pause = document.querySelector("#sl2-auto button");
+      const line = document.getElementById("sl2-auto");
       const target = (pause && !pause.classList.contains("hidden")) ? pause : line;
       if (target && target.focus) { target.setAttribute("tabindex", "-1"); target.focus(); }
     });
@@ -4940,7 +4940,7 @@ const VIEW_HEADER_META = {
   discover: { heading: "Flows", count: "dc-summary" },
   dns: { heading: "DNS", count: "dn-summary" },
   zeek: { heading: "Zeek", count: "zk-summary" },
-  sluice: { heading: "Gate overview", count: "sl-count" },
+  sluice: { heading: "Sluice Gate", count: "sl2-count" },
   weirlings: { heading: "Weirlings", count: "wl-count" },
   assets: { heading: "Assets", count: "as-summary" },
   models: { heading: "Models", count: "m-summary" },
@@ -5679,6 +5679,33 @@ function renderShadow(data) {
   }
 }
 
+function renderAssetPosture(data) {
+  const note = document.getElementById("m-posture-note");
+  const stats = document.getElementById("m-posture-stats");
+  if (!note || !stats) return;
+  if (!data || !data.available) {
+    note.textContent = "Asset posture unavailable: " +
+      ((data && data.reason) || "the read failed");
+    stats.textContent = "";
+    return;
+  }
+  const bands = data.bands || {};
+  const scored = Number(data.scored || 0);
+  const total = Number(data.total_changes || 0);
+  note.textContent = "The shadow scorer is " + (data.model_version || "asset-posture-1") +
+    ". It scores observed service changes and never blocks traffic or writes a detection score.";
+  if (!scored) {
+    stats.textContent = "No service change has been scored yet. " +
+      `${total.toLocaleString()} change(s) in the ledger; the scorer runs when the next real ` +
+      "change is observed.";
+  } else {
+    stats.textContent = `${scored.toLocaleString()} scored change(s) of ${total.toLocaleString()}; ` +
+      `expected ${Number(bands.expected || 0)}, watch ${Number(bands.watch || 0)}, ` +
+      `suspicious ${Number(bands.suspicious || 0)}, high ${Number(bands.high || 0)}` +
+      (data.last_scored ? `; last scored ${fmtTime(data.last_scored)}` : "") + ".";
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -5691,9 +5718,14 @@ async function loadModels() {
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
   const shadowPromise = getJSON("/api/models/shadow")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
+  // The asset-posture scorer is its own read: it scores the CHANGE ledger, not the flow model,
+  // so a failure here must not take the production model view down.
+  const posturePromise = getJSON("/api/asset-posture")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e) }));
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
   renderCalibration(await calPromise);
   renderShadow(await shadowPromise);
+  renderAssetPosture(await posturePromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");
 

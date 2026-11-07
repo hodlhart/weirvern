@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import ipaddress
 import json
 import logging
 import os
@@ -54,7 +55,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from weirvern import fleet_store, networks
+from weirvern import fleet_store, networks, scan_jobs
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import gui_auth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -490,6 +491,16 @@ def _build_handler(ctx: GuiContext):
             # (raw `flows` for per-edge facts, which the aggregate cannot provide).
             if path == "/api/assets":
                 return self._assets(query)
+            # The other half of the inventory: what CHANGED between scans. Read-only; the
+            # posture score is shadow data and never gates traffic.
+            if path == "/api/asset-changes":
+                return self._asset_changes(query)
+            if path == "/api/asset-posture":
+                return self._asset_posture()
+            # Manual scans are a read here (the queue) and a write below (the request). The
+            # scanner claims the row; this route never runs Nmap in the web process.
+            if path == "/api/scan-jobs":
+                return self._scan_jobs(query)
             if path == "/api/graph":
                 return self._graph(query)
             if path == "/api/zeeklog":
@@ -513,6 +524,8 @@ def _build_handler(ctx: GuiContext):
             # below and pass the operator gate, so a viewer cannot register or retire a sensor.
             if path == "/api/weirlings":
                 return self._weirlings(query)
+            if path == "/api/scanner":
+                return self._scanner()
             if path == "/api/weirlings/detail":
                 return self._weirlings_detail(query)
             if path == "/api/weirlings/probe":
@@ -1405,6 +1418,93 @@ def _build_handler(ctx: GuiContext):
                 })
             self._json(payload)
 
+        def _asset_changes(self, query: dict) -> None:
+            """Recent service changes and their shadow posture score.
+
+            `hours` is the same global window the rest of the console uses. An unreadable table
+            is reported as unavailable, not as "no changes" -- the distinction this codebase
+            keeps relearning.
+            """
+            hours = self._window_arg(query, 24, 1, 24 * 14)
+            if hours is None:
+                return
+            try:
+                with self._with_client() as client:
+                    payload = assets_mod.asset_changes(client, hours=hours)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("asset changes unavailable: %s", exc)
+                return self._json({
+                    "available": False, "changes": [], "count": 0,
+                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "data_error": str(exc),
+                })
+            self._json(payload)
+
+        def _asset_posture(self) -> None:
+            """The shadow asset-posture scorer's state. Read-only and advisory."""
+            try:
+                with self._with_client() as client:
+                    payload = assets_mod.asset_posture_overview(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("asset posture unavailable: %s", exc)
+                return self._json({"available": False, "reason": "cannot reach ClickHouse",
+                                   "model_version": "asset-posture-1", "scored": 0,
+                                   "total_changes": 0, "bands": {}, "last_scored": ""})
+            self._json(payload)
+
+        def _scan_jobs(self, query: dict) -> None:
+            """The manual-scan queue: recent requests, optionally for one address."""
+            ip = str((query.get("ip") or [""])[0]).strip()
+            try:
+                with self._with_client() as client:
+                    rows = scan_jobs.list_jobs(client, ip=ip, limit=20)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("scan jobs unavailable: %s", exc)
+                return self._json({
+                    "available": False, "reason": "the scan-job table is not readable",
+                    "jobs": [], "count": 0,
+                })
+            out = []
+            for job in rows:
+                item = dict(job)
+                for key in ("requested_at", "lease_until", "started_at", "finished_at"):
+                    value = item.get(key)
+                    item[key] = value.isoformat() if hasattr(value, "isoformat") else (value or "")
+                out.append(item)
+            self._json({"available": True, "reason": "", "jobs": out, "count": len(out)})
+
+        def _scan_job_create(self) -> None:
+            """Queue one host scan for the scanner to claim under a lease."""
+            if not self._authorize():
+                return
+            try:
+                body = self._read_body()
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            raw_ip = str(body.get("ip") or "").strip()
+            try:
+                ipaddress.ip_address(raw_ip)
+            except ValueError:
+                return self._error(400, "'ip' must be a single IP address")
+            try:
+                with self._with_client() as client:
+                    asset = scan_jobs.find_asset(client, raw_ip)
+                    if asset is None:
+                        return self._error(404, f"{raw_ip} is not in the asset registry")
+                    active = scan_jobs.active_for_asset(client, str(asset["asset_key"]))
+                    if active is not None:
+                        return self._json({
+                            "ok": True, "job_id": str(active["job_id"]),
+                            "ip": raw_ip, "state": str(active["state"]), "already": True,
+                        })
+                    job = scan_jobs.create_job(client, asset, requested_by="operator")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("scan job request failed: %s", exc)
+                return self._error(503, "the scan-job table is not ready; deploy scanner 0.14.13")
+            logger.info("manual scan queued for %s (%s)", raw_ip, job["job_id"])
+            self._json({"ok": True, "job_id": str(job["job_id"]), "ip": raw_ip,
+                        "state": "queued", "already": False})
+
         def _graph(self, query: dict) -> None:
             """The connection graph: nodes and edges, optionally restricted to tracked hosts.
 
@@ -1728,6 +1828,78 @@ def _build_handler(ctx: GuiContext):
                     payload["revoked"] = []
                     payload["revoked_reason"] = str(exc)
             self._json(payload)
+
+        def _scanner(self) -> None:
+            """Scanner readiness for the hub and every registered weirling.
+
+            The scanner writes `scanner_status`; this route is a read. A sensor with no row is
+            NOT "basic" -- it is "not reported", which is a different fact and needs the setup
+            sheet rather than a clean-looking profile.
+            """
+            try:
+                with self._with_client() as client:
+                    status_rows = client.query(
+                        "SELECT sensor_id, profile, nmap_available, nmap_version, nmap_path, "
+                        "nse_available, os_id, os_version, detail, last_check "
+                        "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
+                    ).result_rows
+                    registered = client.query(
+                        "SELECT sensor_id FROM weirvern.weirlings FINAL "
+                        "WHERE revoked_at IS NULL AND enabled = 1 ORDER BY sensor_id"
+                    ).result_rows
+            except Exception as exc:  # noqa: BLE001
+                return self._json({
+                    "available": False,
+                    "reason": f"scanner readiness could not be read: {str(exc)[:200]}",
+                    "sensors": [], "count": 0,
+                })
+
+            status: dict[str, dict] = {}
+            for row in status_rows:
+                sid = str(row[0] or "")
+                status[sid] = {
+                    "sensor_id": sid,
+                    "profile": str(row[1] or "basic"),
+                    "nmap_available": bool(row[2]),
+                    "nmap_version": str(row[3] or ""),
+                    "nmap_path": str(row[4] or ""),
+                    "nse_available": bool(row[5]),
+                    "os_id": str(row[6] or ""),
+                    "os_version": str(row[7] or ""),
+                    "detail": str(row[8] or ""),
+                    "last_check": row[9].isoformat() if hasattr(row[9], "isoformat") else str(row[9] or ""),
+                    "state": "reported",
+                }
+            for row in registered:
+                sid = str(row[0] or "")
+                status.setdefault(sid, {
+                    "sensor_id": sid, "profile": "unknown", "nmap_available": False,
+                    "nmap_version": "", "nmap_path": "", "nse_available": False,
+                    "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
+                    "last_check": "", "state": "not_reported",
+                })
+
+            commands = {
+                "debian": "sudo apt-get update && sudo apt-get install -y nmap",
+                "ubuntu": "sudo apt-get update && sudo apt-get install -y nmap",
+                "linuxmint": "sudo apt-get update && sudo apt-get install -y nmap",
+                "fedora": "sudo dnf install -y nmap",
+                "rhel": "sudo dnf install -y nmap",
+                "centos": "sudo dnf install -y nmap",
+                "rocky": "sudo dnf install -y nmap",
+                "almalinux": "sudo dnf install -y nmap",
+                "alpine": "sudo apk add nmap",
+                "arch": "sudo pacman -S --noconfirm nmap",
+                "darwin": "brew install nmap",
+            }
+            for item in status.values():
+                item["install_command"] = commands.get(str(item.get("os_id") or "").lower(), "")
+                item["install_url"] = "https://nmap.org/download.html"
+            sensors = sorted(status.values(), key=lambda item: (item["state"] != "reported", item["sensor_id"]))
+            self._json({
+                "available": True, "reason": "", "sensors": sensors, "count": len(sensors),
+                "local_sensor": _gate_sensor_name(),
+            })
 
         def _weirlings_probe_get(self, query: dict) -> None:
             """Read one queued/complete capture probe. A read: no login required."""
@@ -2945,6 +3117,10 @@ def _build_handler(ctx: GuiContext):
             # ── SLUICE GATE writes ────────────────────────────────────────────────────────
             if path == "/api/sluice/block":
                 return self._sluice_block()
+            # A manual scan is a request, not a scan run in the GUI process. The scanner
+            # claims it under a lease; the Assets row polls the result through the queue read.
+            if path == "/api/scan-jobs":
+                return self._scan_job_create()
             # ── FORCED RETRAIN writes ───────────────────────────────────────────────────────
             # `retrain` trains a CANDIDATE and changes nothing live; `keep` installs it over the
             # live artifacts (archiving them); `trash` deletes the candidate. All three are

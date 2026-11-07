@@ -898,13 +898,7 @@ async function loadHealthDeep() {
   // uses. It previously delegated to app.js's renderSensor, which targeted the Overview tab's
   // #sensor-body -- that tab is gone and the function with it, so the sensor's story is told
   // here, once, from the payload already in hand.
-  if (d.sensor && Object.keys(d.sensor).length) {
-    const host = document.getElementById("hp-sensor");
-    host.replaceChildren(el("p", { class: "muted", text: sensorLine(d.sensor) }));
-  } else {
-    document.getElementById("hp-sensor").replaceChildren(
-      el("p", { class: "muted", text: "The weirling has not reported." }));
-  }
+  renderHealthSensor(d.sensor || {});
 
   // SOC-8: the alert audit. "Nothing fired" and "it fired and was withheld" look identical
   // on every other surface, so the suppressed count is stated in the note rather than left
@@ -1110,22 +1104,64 @@ function pillPopoverInit() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") pop.hidden = true; });
 }
 
-/** One sentence of sensor state, from the fields the heartbeat actually carries.
+/** The Health tab's weirling card: structured state, not a sentence.
  *
- * Deliberately a summary rather than a second renderer: the Overview view owns the full
- * sensor panel, and the point of repeating it here is a one-line cross-check, not a rival
- * account of the same facts.
+ * A one-line summary made the operator parse five facts in prose. The card now leads with the
+ * state chip and gives the heartbeat's own measurements their own labelled cells. Every fact is
+ * visible; none lives only in a title. Missing values stay dashes, and a never-reported sensor
+ * is not rendered as a zero.
  */
-function sensorLine(s) {
-  const state = s.running ? "running" : (s.reported ? "NOT running" : "never reported");
-  const bits = [`mode ${s.mode || "unknown"}`, state];
-  if (s.iface) bits.push(`on ${s.iface}`);
-  if (s.hosts) bits.push(`${s.hosts} host(s) intercepted`);
-  if (s.age_s != null) bits.push(`heartbeat ${fmtAge(s.age_s)} ago`);
-  // An intercept that ran and stopped: the node may still be in-path, and this is the field
-  // that says so rather than letting a passive row imply the segment is untouched.
-  if (s.intercept_stopped) bits.push("an intercept ran and stopped — confirm the node was restored");
-  return bits.join(" · ");
+function renderHealthSensor(s) {
+  const host = document.getElementById("hp-sensor");
+  if (!host) return;
+  host.replaceChildren();
+  if (!s || !Object.keys(s).length || (s.reported === false && !s.error)) {
+    host.appendChild(el("p", { class: "muted", text: "The weirling has never reported." }));
+    return;
+  }
+  if (s.error) {
+    host.appendChild(el("div", { class: "banner bad" }, [
+      el("strong", { text: "Sensor state unavailable" }), el("span", { text: ` — ${s.error}` }),
+    ]));
+  }
+  const state = s.running ? "running" : (s.stale ? "stale" : "not running");
+  const stateCls = s.running ? "ok" : (s.stale ? "warn" : "bad");
+  const dash = (v) => (v === null || v === undefined || v === "") ? "—" : String(v);
+  const cells = [
+    ["mode", dash(s.mode)],
+    ["interface", dash(s.iface)],
+    ["segment", dash(s.segment)],
+    ["hosts", dash(s.hosts)],
+    ["mappings", dash(s.mappings)],
+    ["uptime", s.uptime_s != null ? fmtAge(s.uptime_s) : "—"],
+    ["heartbeat", s.age_s != null ? `${fmtAge(s.age_s)} ago` : "never"],
+    ["restores", dash(s.restores)],
+  ];
+  const row = el("div", { class: "stats" });
+  for (const [k, v] of cells) {
+    row.appendChild(el("div", { class: "stat" }, [
+      el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
+    ]));
+  }
+  host.appendChild(el("div", { class: "controls" }, [
+    el("span", { class: "chip " + stateCls, text: state }),
+    s.intercept_stopped
+      ? el("span", { class: "chip warn", text: "intercept stopped — confirm the node was restored" })
+      : null,
+  ].filter(Boolean)));
+  host.appendChild(row);
+  const failures = Array.isArray(s.failures) ? s.failures : [];
+  if (failures.length) {
+    host.appendChild(el("div", { class: "banner bad" }, [
+      el("strong", { text: "Reported failures" }),
+      el("span", { text: ` — ${failures.join("; ")}` }),
+    ]));
+  }
+  const others = Array.isArray(s.others) ? s.others : [];
+  if (others.length) {
+    host.appendChild(el("p", { class: "muted",
+      text: "Other reporting modes: " + others.map((o) => o.mode || o).join(", ") }));
+  }
 }
 
 

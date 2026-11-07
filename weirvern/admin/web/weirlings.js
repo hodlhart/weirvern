@@ -2502,3 +2502,114 @@ async function loadNetworkCoverage() {
     }
   }
 }
+
+
+// ── Scanner readiness ────────────────────────────────────────────────────────────────────────
+// NMAP IS OPTIONAL AND WEIRVERN NEVER INSTALLS IT. This card is a read surface plus a guided
+// command. The scanner writes `scanner_status` on every pass; a node with no row is
+// "not reported", which is not the same fact as "basic". After the operator installs Nmap
+// from their own package manager, the next scanner pass flips the profile automatically.
+function scannerChip(item) {
+  if (item.state === "not_reported") return el("span", { class: "chip muted", text: "not reported" });
+  if (item.profile === "nmap") return el("span", { class: "chip ok", text: "Nmap" });
+  return el("span", { class: "chip warn", text: "Basic" });
+}
+
+function scannerAge(value) {
+  if (!value) return "never";
+  const then = new Date(value).getTime();
+  if (!Number.isFinite(then)) return "—";
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 90) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m ago`;
+  return `${Math.round(m / 60)}h ago`;
+}
+
+async function loadScannerStatus() {
+  const list = document.getElementById("scanner-list");
+  const summary = document.getElementById("scanner-summary");
+  const note = document.getElementById("scanner-note");
+  if (!list || !summary || !note) return;
+  let d;
+  try {
+    d = await getJSON("/api/scanner");
+  } catch (err) {
+    summary.textContent = "unknown";
+    note.textContent = `Scanner readiness could not be read: ${err && err.message ? err.message : err}`;
+    list.replaceChildren();
+    return;
+  }
+  if (!d.available) {
+    summary.textContent = "unknown";
+    note.textContent = d.reason || "Scanner readiness is unavailable.";
+    list.replaceChildren();
+    return;
+  }
+  const sensors = d.sensors || [];
+  const ready = sensors.filter((x) => x.profile === "nmap").length;
+  summary.textContent = `${ready} of ${sensors.length} Nmap-ready`;
+  note.textContent = ready === sensors.length && sensors.length
+    ? "Every reporting node has Nmap. Identity scans use the deeper profile automatically."
+    : "Basic identity is active everywhere. Install Nmap on a node from its own package manager; Weirvern detects it on the next pass and never installs it for you.";
+  list.replaceChildren();
+  if (!sensors.length) {
+    list.appendChild(el("p", { class: "muted", text: "No scanner has reported yet." }));
+    return;
+  }
+  const table = el("table", { class: "scanner-table" });
+  table.appendChild(el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Scanner node" }), el("th", { text: "Profile" }),
+    el("th", { text: "Nmap" }), el("th", { text: "Last check" }), el("th", { text: "Setup" }),
+  ])]));
+  const body = el("tbody");
+  for (const item of sensors) {
+    const setupId = `scanner-setup-${item.sensor_id.replace(/[^a-z0-9_-]/gi, "_")}`;
+    const setup = el("div", { class: "scanner-setup hidden", attrs: { id: setupId } });
+    const command = item.install_command || "";
+    setup.appendChild(el("p", { class: "muted", text: "Install Nmap on this node with its own package manager. Weirvern does not download or install it." }));
+    if (command) {
+      const code = el("code", { class: "mono", text: command });
+      const copy = el("button", { class: "quiet", attrs: { type: "button" }, text: "Copy command" });
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(command);
+          copy.textContent = "Copied";
+          setTimeout(() => { copy.textContent = "Copy command"; }, 1600);
+        } catch (_e) { copy.textContent = "Select the command"; }
+      });
+      setup.appendChild(el("div", { class: "scanner-command" }, [code, copy]));
+    } else {
+      setup.appendChild(el("p", { class: "muted", text: "Use the official Nmap download page for this platform." }));
+    }
+    setup.appendChild(el("p", { class: "muted" }, [
+      el("a", { attrs: { href: item.install_url || "https://nmap.org/download.html", target: "_blank", rel: "noopener" }, text: "Official Nmap download" }),
+      el("span", { text: " · then click Check again." }),
+    ]));
+    const toggle = el("button", { class: "quiet", attrs: { type: "button" }, text: item.profile === "nmap" ? "Details" : "Set up" });
+    toggle.addEventListener("click", () => setup.classList.toggle("hidden"));
+    const row = el("tr", {}, [
+      el("td", {}, [el("span", { class: "mono", text: item.sensor_id }),
+        item.sensor_id === d.local_sensor ? el("span", { class: "muted", text: " · hub" }) : null].filter(Boolean)),
+      el("td", {}, [scannerChip(item)]),
+      el("td", {}, [el("span", { class: "mono", text: item.nmap_version || "—" })]),
+      el("td", { class: "muted", text: scannerAge(item.last_check) }),
+      el("td", {}, [toggle]),
+    ]);
+    body.appendChild(row);
+    const detailRow = el("tr", { class: "scanner-detail-row" }, [
+      el("td", { attrs: { colspan: "5" } }, [setup]),
+    ]);
+    body.appendChild(detailRow);
+  }
+  table.appendChild(body);
+  list.appendChild(table);
+}
+
+const scannerCheck = document.getElementById("scanner-check");
+if (scannerCheck) scannerCheck.addEventListener("click", () => loadScannerStatus().catch(showError));
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => loadScannerStatus().catch(() => {}));
+} else {
+  loadScannerStatus().catch(() => {});
+}

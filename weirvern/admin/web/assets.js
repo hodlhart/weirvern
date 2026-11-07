@@ -17,6 +17,7 @@
 
 const ASSET_API = {
   assets: (hours) => `/api/assets?hours=${hours}`,
+  assetChanges: (hours) => `/api/asset-changes?hours=${hours}`,
   graph: (hours, hosts) =>
     `/api/graph?hours=${hours}` +
     (hosts && hosts.length ? hosts.map((h) => `&host=${encodeURIComponent(h)}`).join("") : ""),
@@ -34,6 +35,7 @@ const ASSET_API = {
 const ASSETS_STATE = {
   hours: 24,
   inventory: null,   // the /api/assets payload
+  changes: null,     // the /api/asset-changes payload
   graph: null,       // the /api/graph payload
   tracked: [],       // addresses the operator selected on the Network view
   identity: {},      // address/name -> the identity verdict, for the inventory column
@@ -58,9 +60,43 @@ const ASSETS_STATE = {
 
 /* ── Assets: the inventory ─────────────────────────────────────────────────── */
 
+/** Queue a manual Nmap scan. The scanner owns execution; this only files the request. */
+function requestScan(ip, btn) {
+  if (!btn || btn.disabled) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Queueing…";
+  btn.title = "sending the scan request";
+  fetch("/api/scan-jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ip }),
+  })
+    .then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok !== true) {
+        throw new Error(data.error || `the request was refused (${response.status})`);
+      }
+      return data;
+    })
+    .then((data) => {
+      btn.textContent = "Queued";
+      btn.title = `scan job ${data.job_id} — ${data.state}`;
+    })
+    .catch((err) => {
+      btn.disabled = false;
+      btn.textContent = original;
+      btn.title = `scan request failed: ${err.message}`;
+      btn.classList.add("bad");
+    });
+}
+
 function loadAssets() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   const hours = trHours();  // the global time control is the range (one control, every view)
+  // The ledger is its own endpoint and must not wait behind a slow inventory query. Kick it
+  // off here; renderAssetChanges owns its loading and unavailable states.
+  loadAssetChanges(hours);
   // THE INVENTORY CARRIES IDENTITY NOW (operator, 2026-10-19). Fetch the verdicts in parallel
   // with the inventory, then fold them by address; a failed identity read leaves the column as
   // "—" and says why, never as a guessed label.
@@ -271,7 +307,7 @@ function renderAssets() {
   if (!rows.length) {
     tbody.replaceChildren(el("tr", {}, [
       el("td", {
-        class: "empty", attrs: { colspan: "11" },
+        class: "empty", attrs: { colspan: "12" },
         text: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
       }),
@@ -321,6 +357,17 @@ function renderAssets() {
         text: h.anomalies ? String(h.anomalies) : "0",
       }),
       el("td", { class: "mono muted", text: fmtTime(h.last_seen) }),
+      (() => {
+        const btn = el("button", {
+          class: "scan-now", text: "Scan now",
+          attrs: { type: "button", title: `queue a manual Nmap scan of ${h.addr}` },
+        });
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          requestScan(h.addr, btn);
+        });
+        return el("td", {}, [btn]);
+      })(),
     ]);
     tr.addEventListener("click", (ev) => {
       // Shift-click tracks instead of drilling, so the inventory feeds the graph without a
@@ -1601,4 +1648,84 @@ function loadZeekLog(log) {
       host.appendChild(chartEmpty(`Cannot read ${log}.log: ${err.message}.`));
       emptyRow(table, 3, "Nothing to show.");
     });
+}
+
+
+/* ── Asset changes: the Nmap ledger ────────────────────────────────────────── */
+
+function loadAssetChanges(hours) {
+  return getJSON(ASSET_API.assetChanges(hours))
+    .then((d) => { ASSETS_STATE.changes = d; renderAssetChanges(); })
+    .catch((err) => {
+      ASSETS_STATE.changes = { available: false, changes: [], reason: err.message };
+      renderAssetChanges();
+    });
+}
+
+function renderAssetChanges() {
+  const tbody = document.querySelector("#ac-table tbody");
+  const summary = document.getElementById("ac-summary");
+  const note = document.getElementById("ac-note");
+  const empty = document.getElementById("ac-empty");
+  const coverage = document.getElementById("ac-coverage");
+  if (!tbody || !summary || !note || !empty || !coverage) return;
+
+  const d = ASSETS_STATE.changes || {};
+  tbody.replaceChildren();
+  note.replaceChildren();
+  empty.textContent = "";
+  coverage.textContent = "";
+  if (!d.available) {
+    summary.textContent = "unavailable";
+    note.appendChild(el("p", { class: "warn", text:
+      `The change ledger could not be read: ${d.reason || "unknown error"}.` }));
+    return;
+  }
+
+  const rows = d.changes || [];
+  const cov = d.coverage || {};
+  if (cov.available) {
+    const scanAge = cov.last_scan
+      ? fmtAge(Math.max(0, (Date.now() - Date.parse(cov.last_scan)) / 1000)) + " ago"
+      : "never";
+    coverage.textContent = `Coverage: ${cov.scanned}/${cov.assets} assets scanned; ` +
+      `${cov.observations} observations across ${cov.observed_assets} hosts in this window; ` +
+      `last scan ${scanAge}.`;
+  } else {
+    coverage.textContent = `Coverage unavailable: ${cov.reason || "the scanner did not report a baseline"}.`;
+  }
+  summary.textContent = rows.length
+    ? `${rows.length} in the window`
+    : "none in the window";
+  if (!rows.length) {
+    empty.textContent = "No service changes between successful scans in this window. " +
+      "A change appears only when two scans disagree; a failed scan is not a change.";
+    return;
+  }
+
+  const bandClass = { expected: "ok", watch: "warn", suspicious: "bad", high: "bad" };
+  for (const c of rows) {
+    const when = c.last_seen ? new Date(c.last_seen) : null;
+    const age = when && !Number.isNaN(when.getTime())
+      ? fmtAge(Math.max(0, (Date.now() - when.getTime()) / 1000)) + " ago"
+      : "unknown";
+    const change = `${String(c.kind || "change").replaceAll("_", " ")} ${c.protocol}/${c.port}`;
+    const posture = c.posture || {};
+    const band = posture.band || "unscored";
+    const reasons = (posture.reasons || []).join(" ");
+    const chip = el("span", {
+      class: `chip ${bandClass[band] || "muted"}`,
+      text: band === "unscored" ? "unscored" : `${band} ${Number(posture.score || 0).toFixed(2)}`,
+      attrs: reasons ? { title: reasons } : {},
+    });
+    tbody.appendChild(el("tr", {}, [
+      el("td", { text: age }),
+      el("td", {}, [el("span", { class: "mono", text: c.ip || c.asset_key || "—" })]),
+      el("td", { text: change }),
+      el("td", { class: "muted", text: c.old_value || "—" }),
+      el("td", { text: c.new_value || "—" }),
+      el("td", { class: "muted", text: c.confidence || "—" }),
+      el("td", {}, [chip]),
+    ]));
+  }
 }

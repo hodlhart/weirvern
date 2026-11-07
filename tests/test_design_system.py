@@ -208,18 +208,21 @@ def test_there_is_one_auto_refresh_control_and_it_names_its_live_state():
 
 def test_sluice_rule_rows_are_keyboard_operable():
     js = (WEB / "sluice.js").read_text()
-    assert 'tabindex: "0"' in js and 'role: "button"' in js
-    assert 'e.key === "Enter"' in js and 'e.key === " "' in js
+    # The rule sentence is a real button, not a clickable row: one native control owns the
+    # doorway, so Enter and Space work without a hand-rolled keydown handler.
+    assert 'class: "sl2-rule-btn"' in js
+    assert 'el("button"' in js
+    assert 'addEventListener("click", () => openRuleSheet(rule))' in js
 
 
 def test_the_gate_state_and_rule_counts_are_stated_once_with_their_owner():
     html = (WEB / "index.html").read_text()
     assert 'id="sl-state"' not in html, "the old duplicate gate state came back"
-    assert html.count('id="sl-gate-state"') == 1
-    assert html.count('id="sl-gates"') == 1
-    assert "Packet rules installed (active / total)" in html
+    assert html.count('id="sl2-traf-chip"') == 1
+    assert html.count('id="sl2-fleet"') == 1
     js = (WEB / "sluice.js").read_text()
-    assert "in the store" in js, "the Rules header lost its store label"
+    assert "Fleet packet gates" in js
+    assert "rules in store" in js, "the Traffic Gate lost its store count"
 
 
 def test_chart_colours_are_tokens_not_hex_in_javascript():
