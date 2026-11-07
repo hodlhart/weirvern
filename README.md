@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  Current release: <strong>0.23.34</strong> · MIT · flow and protocol metadata only; payloads are never inspected
+  Current release: <strong>0.23.48</strong> · MIT · flow and protocol metadata only; payloads are never inspected
 </p>
 
 <p align="center">
@@ -225,6 +225,7 @@ for networks you own or are explicitly authorized to monitor.
 - [Deployment](docs/deployment.md) — requirements, install, verify, upgrade, remove
 - [Detection and alerting](docs/detection.md) — the ensemble, alert hygiene
 - [Portable ML](docs/portable-ml.md) — local warm-up, invariant features and per-network calibration
+- [Asset scanner](docs/scanner.md) — Nmap inventory, the change ledger and the shadow posture model
 - [Flow direction](docs/design/flow-direction.md) — request/reply evidence in the Flows tab
 - [Trunk ports](docs/design/trunk-default.md) — adaptive VLAN devices, the default topology
 - [Remote weirling gaps](docs/weirling-remote-gaps.md) — what a remote sensor still cannot do

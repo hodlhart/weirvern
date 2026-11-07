@@ -118,6 +118,45 @@ data:
   # reported it saved (live-measured).
   WEIRVERN_REVERSE_DNS: "private"
 
+  # Scanner OFF by default; set SCAN_ENABLED=1 in the cluster. A deployment with no weirling
+  # CIDRs logs that fact and scans nothing rather than guessing an RFC1918 range.
+  #
+  # SCAN_BOOTSTRAP=1 seeds the inventory on the first empty-registry pass. After that the
+  # registry is non-empty, so restarts scan only genuinely new hosts. New hosts are queued and
+  # scanned in the same pass.
+  SCAN_ENABLED: "0"
+  # NUCLEI IS OFF. Identity is Nmap -sV plus safe NSE scripts; no template tree or update
+  # lifecycle is required for the scanner to be useful on any network.
+  SCAN_NUCLEI_ENABLED: "0"
+  SCAN_INTERVAL_S: "60"
+  # Passive detection runs every loop (a ClickHouse read, no packets). The active Nmap sweep
+  # runs on this slower schedule; a two-/24 sweep every 60s was ~30k probes/hour for no new hosts.
+  SCAN_DISCOVERY_S: "300"
+  SCAN_PASSIVE_MINUTES: "10"
+  SCAN_RESCAN_S: "3600"
+  SCAN_JOB_LEASE_S: "900"
+  SCAN_BOOTSTRAP: "0"
+  SCAN_PORTS: "1-1024,3000,5000,8000-9000,9090,9443"
+  SCAN_TIMEOUT_S: "600"
+  SCAN_MAX_HOSTS: "16"
+  SCAN_NUCLEI_SEVERITY: "critical,high,medium"
+  SCAN_NUCLEI_TEMPLATES: "/opt/nuclei-templates"
+  # DESTRUCTIVE TEMPLATES ARE EXCLUDED EXPLICITLY, not just by severity. CVE-2019-5544
+  # (VMware OpenSLP) is a DoS template that sends a heap-overflow payload; it must never run
+  # against a home appliance. `dos`, `intrusive`, `fuzz`, `brute-force`, `headless` and `code`
+  # are all opt-in classes, never default inventory work.
+  SCAN_NUCLEI_EXCLUDE_TAGS: "dos,intrusive,fuzz,brute-force,headless,code"
+  SCAN_NUCLEI_EXCLUDE_IDS: "CVE-2019-5544"
+  SCAN_NUCLEI_TAGS: ""
+  SCAN_NUCLEI_CONCURRENCY: "25"
+  SCAN_NUCLEI_BULK_SIZE: "25"
+  SCAN_NUCLEI_RATE_LIMIT: "150"
+  SCAN_NUCLEI_TIMEOUT_S: "10"
+  SCAN_NUCLEI_RETRIES: "1"
+  SCAN_NUCLEI_MAX_HOST_ERROR: "5"
+  SCAN_NUCLEI_RESPONSE_SIZE: "1048576"
+  SCAN_NUCLEI_NO_INTERACTSH: "1"
+
   # ── Sensor mode ────────────────────────────────────────────────────────────
   # HOW the sensor gets its packets. Named for the creature: a wyvern keeps its
   # water in a LOCH and draws it through a SIPHON.

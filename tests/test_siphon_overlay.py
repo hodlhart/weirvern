@@ -46,16 +46,17 @@ def _caps(ds: dict) -> list[str]:
 
 @pytest.mark.parametrize("target", ["k8s/", "overlays/siphon/"])
 def test_the_overlay_does_not_break_the_base(target):
-    """Both must render 24 resources and keep the sensor's real arguments.
+    """Both must render 25 resources and keep the sensor's real arguments.
 
     22 since issue #16: the backup engine's allow-list ConfigMap joined the base (ClickHouse
     refuses BACKUP ... TO Disk without it). The 23rd and 24th are the mTLS ingest gateway's
     Deployment and Service, which are part of the default edge: an adopted weirling has no
-    database credential without them. The count is pinned to catch a resource disappearing or
-    the overlay silently dropping one, and it must be updated in the same commit that adds one.
+    database credential without them. The 25th is the asset scanner Deployment, which is
+    dormant unless SCAN_ENABLED is set. The count is pinned to catch a resource disappearing
+    or the overlay silently dropping one, and it must be updated in the same commit that adds one.
     """
     docs = _render(target)
-    assert len(docs) == 24, f"{target} rendered {len(docs)} resources"
+    assert len(docs) == 25, f"{target} rendered {len(docs)} resources"
     ds = _zeek(docs)
     c = ds["spec"]["template"]["spec"]["containers"][0]
     assert c.get("args"), "the startup script was lost"

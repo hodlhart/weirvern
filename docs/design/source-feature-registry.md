@@ -18,6 +18,14 @@ Status vocabulary:
 alert_events | output
 alert_episodes | output
 alert_reviews | output
+asset_changes | output
+asset_findings | output
+asset_observations | join-only
+asset_posture_scores | output
+asset_registry | join-only
+asset_scans | excluded
+asset_service_history | output
+asset_services | join-only
 baseline_history | feature-now
 blocklist_domains | excluded
 blocklist_sources | excluded
@@ -49,6 +57,8 @@ schema_versions | excluded
 sensor_status | join-only
 sluice_events | excluded
 sluice_rules | excluded
+scan_jobs | excluded
+scanner_status | join-only
 sluice_state | excluded
 table_size_history | excluded
 weirling_enrollments | excluded

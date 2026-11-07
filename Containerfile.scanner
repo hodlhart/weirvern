@@ -1,0 +1,33 @@
+# Weirvern scanner image: Nmap + safe NSE identity scripts on top of the Python package.
+#
+# A SEPARATE IMAGE, not the worker image. The worker must not carry a network scanner's binaries
+# or its attack surface, and the scanner must be replaceable without restarting the detection
+# pipeline. It is still a workload in the existing cluster -- no new LXC, no new host.
+#
+# NUCLEI IS NOT INSTALLED. The identity layer is Nmap -sV plus bundled safe NSE scripts
+# (http-title, ssl-cert, smb-os-discovery, snmp-sysdescr, ...). That keeps the appliance portable
+# to any network: no template tree, no update lifecycle, no community exploit template that can
+# turn out to be destructive. Nuclei remains an opt-in future exposure layer, not a dependency.
+#
+# BUILD (the tag is a deployment decision; the default is the same pattern as the worker):
+#   podman build -t weirvern-scanner -f Containerfile.scanner .
+FROM python:3.11-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      nmap ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY weirvern ./weirvern
+RUN pip install --no-cache-dir .
+
+RUN useradd --system --uid 10001 --create-home weirvern
+USER weirvern
+
+ENTRYPOINT ["python", "-m", "weirvern.scanner"]

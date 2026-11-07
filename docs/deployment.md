@@ -17,11 +17,11 @@ refuse to proceed, and how to upgrade or remove it.
 | [Pushover](https://pushover.net) account | free tier | 7,500 messages/month. Optional — alerts can log-only |
 
 **Cluster sizing.** Measured from the rendered manifests (not estimated): the
-shipped workloads total **1.74 CPU / 3.47 GiB of requests** and **9.75 CPU /
-13.88 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
+shipped workloads total **1.99 CPU / 3.72 GiB of requests** and **10.75 CPU /
+17.88 GiB of limits**. `scripts/measure_sizing.sh` prints exactly these numbers;
 its header states the inclusion rule (every container -- init containers included
--- of every rendered workload: worker, GUI, ClickHouse, goflow2, the Zeek
-DaemonSet, the schema Job and the prune CronJob). The earlier totals here were
+-- of every rendered workload: worker, GUI, ClickHouse, goflow2, the scanner,
+the Zeek DaemonSet, the schema Job and the prune CronJob). The earlier totals here were
 unreproducible because no method was stated; rerun the script after any manifest
 change.
 
