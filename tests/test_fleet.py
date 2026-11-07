@@ -585,3 +585,17 @@ def test_the_summary_PUBLISHES_the_unknown_count_even_when_it_is_zero():
     broken.state = U
     s2 = summarise([healthy, broken])
     assert s2[U] == 1, s2
+
+
+def test_monitored_networks_are_validated_and_deduplicated():
+    assert fleet.validate_networks(["198.51.100.0/24", "198.51.100.7/32"]) == (
+        "198.51.100.0/24", "198.51.100.7/32",
+    )
+    assert fleet.validate_networks("") == ()
+    with pytest.raises(fleet.FleetError, match="not a CIDR"):
+        fleet.validate_networks(["third floor IDF"])
+
+
+def test_networks_are_part_of_a_registration_and_survive_an_unrelated_edit():
+    reg = fleet.make_registration("edge-1", networks=["198.51.100.0/24"])
+    assert reg.networks == ("198.51.100.0/24",)

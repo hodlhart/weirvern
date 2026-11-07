@@ -743,7 +743,7 @@
       <table id="as-table">
         <thead><tr>
           <th>Address</th><th>Name</th><th>Bytes</th><th>Out / In</th><th>Flows</th>
-          <th>Dests</th><th>Services</th><th>Anomalies</th><th>Last seen</th>
+          <th>Dests</th><th>Services</th><th>Anomalies</th><th>Scan</th><th>Findings</th><th>Last seen</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -1176,6 +1176,14 @@
         was put back.
       </div>
       <div id="wl-detail-body"></div>
+      <div class="controls hidden" id="wl-networks">
+        <label>monitored networks
+          <input id="wl-networks-input" class="setting-input" type="text" spellcheck="false"
+                 placeholder="198.51.100.0/24, 203.0.113.0/24" autocomplete="off">
+        </label>
+        <button id="wl-networks-save" type="button">Save networks</button>
+        <span id="wl-networks-note" class="muted"></span>
+      </div>
       <!-- THE SENSOR'S OWN INTERCEPT PLAN (loch/siphon + what to intercept). Shown for every
            REGISTERED sensor except this hub's own: the plan travels to the sensor in its own
            registry row, its agent reads it there, and the sensor reports back the mode it

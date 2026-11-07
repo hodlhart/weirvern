@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
@@ -356,6 +356,10 @@ class Registration:
     sensor_id: str
     address: str = ""
     segment: str = ""
+    # THE NETWORKS THIS WEIRLING MONITORS. `segment` is where it sits (free text is allowed);
+    # `networks` is the scan/inventory scope it actually covers. Empty is the pre-existing state
+    # and means "not declared", not "covers nothing": the scanner will not guess.
+    networks: tuple[str, ...] = ()
     expected_mode: str = "loch"
     enabled: bool = True
     note: str = ""
@@ -423,6 +427,35 @@ def validate_address(address: str) -> str:
         ) from exc
 
 
+def validate_networks(networks: Iterable[str] | None) -> tuple[str, ...]:
+    """Canonical CIDRs for the networks this weirling monitors.
+
+    A network is a DECLARATION, so an unparsable value is refused rather than dropped: silently
+    ignoring "198.51.100.0/33" would leave the scanner with a smaller scope than the operator
+    asked for, which is the same silent-underreach as a skipped source. Free text belongs in
+    `segment` (where the sensor sits), not here.
+    """
+    if networks is None:
+        return ()
+    raw = networks.split(",") if isinstance(networks, str) else list(networks)
+    out: list[str] = []
+    for token in raw:
+        value = str(token or "").strip()
+        if not value:
+            continue
+        try:
+            network = ipaddress.ip_network(value, strict=False)
+        except ValueError as exc:
+            raise FleetError(
+                f"monitored network {value!r} is not a CIDR. Use an address range such as "
+                f"198.51.100.0/24; free text belongs in the segment field."
+            ) from exc
+        canonical = str(network)
+        if canonical not in out:
+            out.append(canonical)
+    return tuple(out)
+
+
 def validate_mode(mode: str) -> str:
     """A registration mode, or raise FleetError.
 
@@ -443,6 +476,7 @@ def validate_mode(mode: str) -> str:
 
 
 def make_registration(sensor_id: str, *, address: str = "", segment: str = "",
+                      networks: Iterable[str] | None = None,
                       expected_mode: str = "loch", note: str = "",
                       now: datetime | None = None) -> Registration:
     """A validated registration. The single place a new sensor is constructed."""
@@ -450,6 +484,7 @@ def make_registration(sensor_id: str, *, address: str = "", segment: str = "",
         sensor_id=validate_sensor_id(sensor_id),
         address=validate_address(address),
         segment=(segment or "").strip()[:120],
+        networks=validate_networks(networks),
         expected_mode=validate_mode(expected_mode),
         enabled=True,
         note=(note or "").strip()[:500],
@@ -486,6 +521,8 @@ class SensorHealth:
     address: str = ""
     # DECLARED: the operator's own label for where this sensor sits.
     segment: str = ""
+    # DECLARED: the networks this weirling monitors. Empty is "not declared", never "none".
+    networks: tuple[str, ...] = ()
     # OBSERVED: what the sensor itself reported. Carried separately rather than overwriting the
     # declaration, for the same reason `expected_mode` and `reported_mode` are separate -- one is
     # a claim somebody made, the other is a fact the sensor produced, and they disagree exactly
@@ -583,6 +620,7 @@ def classify(reg: Registration | None, heartbeats: list[dict], *,
         state="",
         address=(reg.address if reg else ""),
         segment=(reg.segment if reg else ""),
+        networks=(reg.networks if reg else ()),
         reported_segment=str((newest or {}).get("segment") or ""),
         expected_mode=(reg.expected_mode if reg else ""),
         reported_mode=reported_mode,

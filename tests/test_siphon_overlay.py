@@ -54,7 +54,7 @@ def test_the_overlay_does_not_break_the_base(target):
     dropping one, and it must be updated in the same commit that adds one.
     """
     docs = _render(target)
-    assert len(docs) == 22, f"{target} rendered {len(docs)} resources"
+    assert len(docs) == 23, f"{target} rendered {len(docs)} resources"
     ds = _zeek(docs)
     c = ds["spec"]["template"]["spec"]["containers"][0]
     assert c.get("args"), "the startup script was lost"

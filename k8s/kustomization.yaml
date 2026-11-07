@@ -34,6 +34,7 @@ resources:
   - 32-zeek.yaml
   - 33-worker.yaml
   - 34-gui.yaml
+  - 36-scanner.yaml
   # Rotation enforcement. Zeek rotates hourly and deletes nothing; this is what bounds
   # the log directory. See the file's header for why it is a CronJob and not a loop
   # inside the sensor or the worker.
@@ -109,4 +110,8 @@ images:
   # A roll-forward must change THIS value, not the live object:
   #   kustomize edit set image weirvern-worker=ghcr.io/<you>/weirvern-worker:v0.13.0
   - name: weirvern-worker
-    newTag: "0.14.2"
+    newTag: "0.14.14"
+  # The scanner is a separate image but is released with the same tag; it has no k8s
+  # manifest image override of its own because this transformer is the one place tags live.
+  - name: weirvern-scanner
+    newTag: "0.14.14"

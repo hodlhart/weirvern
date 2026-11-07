@@ -1162,6 +1162,7 @@ def _build_handler(ctx: GuiContext):
                             client, include_revoked=True) if not r.live]
                     payload["revoked"] = [
                         {"sensor_id": r.sensor_id, "segment": r.segment,
+                         "networks": list(r.networks),
                          "address": r.address, "expected_mode": r.expected_mode,
                          "note": r.note,
                          "revoked_at": (r.revoked_at.isoformat()
@@ -1894,6 +1895,7 @@ def _build_handler(ctx: GuiContext):
                         str(body.get("sensor_id") or ""),
                         address=str(body.get("address") or ""),
                         segment=str(body.get("segment") or ""),
+                        networks=body.get("networks"),
                         expected_mode=str(body.get("expected_mode") or "loch"),
                         note=str(body.get("note") or ""),
                     )

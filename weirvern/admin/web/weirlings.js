@@ -295,6 +295,14 @@ async function openWeirling(sensorId) {
     if (showPlan) wlRenderPlan(r);
     else { WL_PLAN.sensor_id = ""; WL_PLAN.changes = {}; WL_PLAN.survey = null; }
   }
+  const networksBox = document.getElementById("wl-networks");
+  if (networksBox) {
+    networksBox.classList.toggle("hidden", !r.registered);
+    const input = document.getElementById("wl-networks-input");
+    if (input) input.value = (r.networks || []).join(", ");
+    const netNote = document.getElementById("wl-networks-note");
+    if (netNote) netNote.textContent = "";
+  }
   const wlSel = document.getElementById("wl-mode-select");
   if (wlSel) {
     wlSel.value = (String(r.reported_mode || "").toLowerCase() === "siphon")
@@ -326,6 +334,8 @@ async function openWeirling(sensorId) {
       text: (r.interfaces || []).join(", ") || "— (not reported)" })],
     ["address", el("span", { class: "mono", text: r.address || "— (not known yet)" })],
     ["declared segment", el("span", { text: r.segment || "— (not declared)" })],
+    ["monitored networks", el("span", { class: "mono",
+      text: (r.networks || []).join(", ") || "— (not declared)" })],
     ["reported segment", el("span", { text: r.reported_segment || "— (not reported)" })],
     ["declared mode", el("span", { class: "mono", text: r.expected_mode || "—" })],
     ["reported mode", el("span", { class: "mono", text: r.reported_mode || "—" })],
@@ -414,6 +424,9 @@ function wireWeirlings() {
   // ── the per-sensor intercept plan's own controls ─────────────────────────────────────────
   // Its listeners are separate from the local sensor's (`wl-mode-select` above): one value,
   // one control, and each control writes through the mechanism that can reach ITS sensor.
+  const networksSave = document.getElementById("wl-networks-save");
+  if (networksSave) networksSave.addEventListener("click", () => saveWeirlingNetworks().catch(showError));
+
   const planMode = document.getElementById("wl-plan-mode");
   if (planMode) planMode.addEventListener("change", () => wlPlanModeChanged().catch(showError));
   const planSonar = document.getElementById("wl-plan-sonar");
@@ -718,6 +731,34 @@ async function wlPlanModeChanged() {
   }
   const landed = await wlApplyPlanChanges(changes, { confirmed: want === "siphon" });
   if (!landed) sel.value = prev;
+}
+
+async function saveWeirlingNetworks() {
+  const sensor = wlDetail;
+  const note = document.getElementById("wl-networks-note");
+  if (!sensor || !sensor.sensor_id) return;
+  const raw = (document.getElementById("wl-networks-input").value || "").trim();
+  const networks = raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+  if (note) note.textContent = "saving…";
+  try {
+    const d = await postJSON("/api/weirlings/register", {
+      sensor_id: sensor.sensor_id,
+      // The detail address may be the OBSERVED one learned from a heartbeat. Do not turn an
+      // observation into a declaration: an empty value preserves whatever was declared.
+      address: "",
+      segment: sensor.segment || "",
+      expected_mode: sensor.expected_mode || "loch",
+      networks,
+    });
+    if (!d || d.ok !== true) {
+      if (note) note.textContent = `Refused: ${(d && d.error) || "the server did not accept this"}`;
+      return;
+    }
+    if (note) note.textContent = "saved.";
+    await openWeirling(sensor.sensor_id);
+  } catch (err) {
+    if (note) note.textContent = `Could not save: ${err && err.message ? err.message : err}`;
+  }
 }
 
 async function saveWeirling() {

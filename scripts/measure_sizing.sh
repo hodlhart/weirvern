@@ -12,7 +12,12 @@
 # the schema Job and the prune CronJob.
 set -eu
 
-kustomize build k8s/ | python3 -c '
+# Prefer the repository venv when it exists: the CI image and a developer checkout both have
+# PyYAML there, while a minimal system python may not. The method stays the same either way.
+PYTHON=python3
+[ -x .venv/bin/python ] && PYTHON=.venv/bin/python
+
+kustomize build k8s/ | "$PYTHON" -c '
 import sys, yaml
 
 def q(v):

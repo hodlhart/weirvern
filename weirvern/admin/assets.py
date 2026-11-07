@@ -339,6 +339,8 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     for addr, entry in hosts.items():
         entry["name"] = names.get(addr, "")
 
+    _attach_scanner_state(client, hosts)
+
     ordered = sorted(
         hosts.values(),
         key=lambda h: (h["anomalies"], h["bytes"]),
@@ -354,6 +356,63 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         "sources_read": [k for k, ok in read_ok.items() if ok],
         "sources_failed": [k for k, ok in read_ok.items() if not ok],
     }
+
+
+def _attach_scanner_state(client, hosts: dict[str, dict]) -> None:
+    """Merge the active scanner's registry and findings into the passive inventory.
+
+    THE PASSIVE LIST IS STILL THE LIST. A host appears here because Weirvern saw it; the scanner
+    fields are annotations, never a replacement. If the scanner tables are absent (an older
+    deployment or a failed migration), the inventory remains readable and every scan field is
+    simply blank -- the same rule the rest of this module follows for unavailable sources.
+    """
+    if not hosts:
+        return
+    try:
+        registry = client.query(
+            "SELECT ip, mac, scan_state, last_scan_at, scan_error "
+            "FROM weirvern.asset_registry FINAL"
+        ).result_rows
+        services = client.query(
+            "SELECT ip, port, protocol, service FROM weirvern.asset_services FINAL"
+        ).result_rows
+        findings = client.query(
+            "SELECT ip, count() AS n, groupUniqArray(severity) "
+            "FROM weirvern.asset_findings FINAL GROUP BY ip"
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001 - scanner is an annotation, not the inventory
+        logger.info("asset inventory: scanner tables unavailable: %s", exc)
+        return
+
+    by_ip = {str(row[0]): row for row in registry}
+    ports: dict[str, list[dict]] = {}
+    for row in services:
+        ports.setdefault(str(row[0]), []).append({
+            "port": int(row[1] or 0), "protocol": str(row[2] or ""), "service": str(row[3] or ""),
+        })
+    finding_counts: dict[str, dict] = {}
+    for row in findings:
+        finding_counts[str(row[0])] = {
+            "count": int(row[1] or 0),
+            "severities": [str(value) for value in (row[2] or [])],
+        }
+
+    for host in hosts.values():
+        addr = str(host.get("addr") or "")
+        reg = by_ip.get(addr)
+        if reg:
+            host["mac"] = str(reg[1] or "")
+            host["scan"] = {
+                "state": str(reg[2] or ""),
+                "last_scan_at": reg[3].isoformat() if hasattr(reg[3], "isoformat") else str(reg[3] or ""),
+                "error": str(reg[4] or ""),
+            }
+        else:
+            host["scan"] = {"state": "", "last_scan_at": "", "error": ""}
+        host["open_ports"] = ports.get(addr, [])
+        finding = finding_counts.get(addr, {"count": 0, "severities": []})
+        host["finding_count"] = finding["count"]
+        host["finding_severities"] = finding["severities"]
 
 
 def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:

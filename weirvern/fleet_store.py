@@ -57,7 +57,11 @@ TABLE = "weirvern.weirlings"
 # is what keeps a pre-plan reader aligned instead of shifted.
 COLUMNS = ["sensor_id", "address", "segment", "expected_mode", "enabled", "note",
            "added_at", "updated_at", "revoked_at",
-           *[f"plan_{f}" for f in PLAN_FIELDS]]
+           *[f"plan_{f}" for f in PLAN_FIELDS],
+           # APPENDED LAST, after the plan columns, because this table's reader and fixtures
+           # are positional. A deployed row written before 022 has no `networks`; the named
+           # reader below defaults it to () rather than shifting every other value.
+           "networks"]
 
 
 class FleetStoreError(RuntimeError):
@@ -81,6 +85,7 @@ def _row_to_registration(row: dict) -> Registration:
         sensor_id=str(row.get("sensor_id") or ""),
         address=str(row.get("address") or ""),
         segment=str(row.get("segment") or ""),
+        networks=tuple(str(value) for value in (row.get("networks") or [])),
         expected_mode=str(row.get("expected_mode") or ""),
         enabled=bool(row.get("enabled")),
         note=str(row.get("note") or ""),
@@ -186,13 +191,15 @@ def _write_registration_row(client: Client, reg: Registration, now: datetime) ->
           reg.revoked_at or None,
           # Positional, in COLUMNS order -- which is why the plan's fields are appended last
           # and enumerated from PLAN_FIELDS rather than typed out here.
-          *[plan[f] for f in PLAN_FIELDS]],
+          *[plan[f] for f in PLAN_FIELDS],
+          list(reg.networks)],
         ],
         column_names=COLUMNS,
     )
 
 
 def register(client: Client, sensor_id: str, *, address: str = "", segment: str = "",
+             networks: list[str] | tuple[str, ...] | None = None,
              expected_mode: str = "loch", note: str = "", now: datetime | None = None,
              clear: set[str] | None = None, plan: SensorPlan | None = None) -> Registration:
     """Create or update a registration. Raises FleetError on bad input, FleetStoreError on a
@@ -215,7 +222,7 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
     That way neither behaviour is a surprise, and the destructive one has to be asked for.
     """
     sid = validate_sensor_id(sensor_id)
-    reg = make_registration(sid, address=address, segment=segment,
+    reg = make_registration(sid, address=address, segment=segment, networks=networks,
                             expected_mode=expected_mode, note=note, now=now)
     existing = None
     try:
@@ -239,6 +246,13 @@ def register(client: Client, sensor_id: str, *, address: str = "", segment: str 
                 # Not named (or named empty) and the caller did not ask to clear it: keep what the
                 # operator already declared rather than blanking it.
                 merged[field_name] = getattr(existing, field_name, "")
+        # `networks` uses `None` as "the caller said nothing", unlike the three strings above,
+        # because an empty list is a deliberate clear. A form that predates the field therefore
+        # keeps the operator's existing networks instead of silently narrowing scan scope.
+        if "networks" in (clear or set()):
+            merged["networks"] = ()
+        elif networks is None:
+            merged["networks"] = existing.networks
         # `expected_mode` is not merged: it defaults to a real value ("loch"), so an absent argument
         # is indistinguishable from "loch" and merging it would make the mode unchangeable.
         reg = Registration(**merged)
@@ -471,6 +485,7 @@ def _health_to_json(h: SensorHealth) -> dict:
         "is_problem": h.is_problem,
         "address": h.address,
         "segment": h.segment,
+        "networks": list(h.networks),
         "reported_segment": h.reported_segment,
         "expected_mode": h.expected_mode,
         "reported_mode": h.reported_mode,

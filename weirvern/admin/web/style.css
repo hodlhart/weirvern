@@ -77,45 +77,47 @@ header {
   object-fit: cover; flex: none;
   box-shadow: 0 0 0 1px var(--border);
 }
-h1 { font-size: 19px; font-weight: 400; margin: 0; }
+h1 { font-size: 21px; font-weight: 400; margin: 0; }
 .status { display: flex; align-items: center; gap: 12px; font-size: 13px; }
 
 .pill {
-  padding: 3px 10px; border-radius: 999px; font-weight: 600;
-  background: var(--panel2); border: 1px solid var(--border-solid);
+  padding: 4px 11px; border-radius: 6px; font-weight: 600;
+  background: var(--surface-2); color: var(--muted); border: 1px solid transparent;
 }
-.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
-.pill.bad { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--border)); }
+.pill.ok { background: var(--wash-ok); color: color-mix(in srgb, var(--ok) 78%, #fff); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
+  color: color-mix(in srgb, var(--warn) 82%, #fff); }
+.pill.bad { background: var(--wash-bad); color: color-mix(in srgb, var(--crit) 78%, #fff); }
 
 button {
   background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-solid);
-  border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+  border-radius: 6px; padding: 6px 13px; font-size: 13px; cursor: pointer;
   letter-spacing: .25px; transition: border-color var(--t-fast), background-color var(--t-fast);
 }
 button:hover { border-color: var(--accent); }
 .auto { color: var(--muted); display: flex; align-items: center; gap: 5px; }
 
 nav {
-  display: flex; gap: 2px; padding: 0 20px;
+  display: flex; gap: 2px; padding: 0 24px;
   background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .tab {
-  border: none; background: none; border-radius: 0; padding: 10px 16px;
+  border: none; background: none; border-radius: 0; padding: 12px 16px;
   color: var(--muted); border-bottom: 2px solid transparent;
 }
 .tab:hover { color: var(--fg); border-color: transparent; }
 .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
 
-main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+main { padding: 24px; max-width: 1500px; margin: 0 auto; }
 .view { display: none; }
 .view.active { display: block; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px; }
 .card {
   background: var(--surface); border: 0; border-radius: 8px;
-  padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow-low);
+  padding: 22px; margin-bottom: 18px; box-shadow: var(--shadow-low);
 }
-.card h2 { font-size: 15px; margin: 0 0 16px; text-transform: none;
+.card h2 { font-size: 16px; margin: 0 0 18px; text-transform: none;
   letter-spacing: 0; color: var(--fg); font-weight: 600; }
 /* The evidence title carries a HOSTNAME, so it must not inherit the uppercase
  * transform above: showing "host-a.example" instead of "host-a.example" misrepresents how
@@ -127,10 +129,10 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th {
-  text-align: left; padding: 6px 10px; color: var(--muted); font-weight: 600;
+  text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 600;
   border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-td { padding: 6px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 tr:last-child td { border-bottom: none; }
 tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .mono { font-family: var(--mono); font-size: 12px; }
@@ -167,8 +169,10 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
   white-space: nowrap;
 }
 .review-none { color: var(--muted); }
-.review-ack { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-.review-resolved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
+.review-ack { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
+  color: color-mix(in srgb, var(--warn) 82%, #fff); }
+.review-resolved { background: var(--wash-ok); border-color: transparent;
+  color: color-mix(in srgb, var(--ok) 78%, #fff); }
 .review-fp { color: var(--muted); text-decoration: line-through; }
 .review-unavailable { color: var(--danger, #e05c5c); border-style: dashed; }
 .review-remain {
@@ -230,7 +234,7 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 }
 .gate-card {
   width: 100%; max-width: 360px; background: var(--panel);
-  border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+  border: 0; box-shadow: var(--shadow-high); border-radius: 14px; padding: 24px;
   display: flex; flex-direction: column; gap: 10px;
 }
 .gate-card h2 { margin: 0; font-size: 20px; }
@@ -354,10 +358,10 @@ tr.sl-picked { background: var(--panel2); }
 .occ { font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .occ .review-acts { margin-top: 0; }
 tr.an-exp td { background: var(--panel2); }
-.sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 84px;
-  padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border-solid);
-  border-radius: 10px; cursor: pointer; text-align: left; color: var(--fg); }
-.sev-tiles .tile.active { border-color: var(--ok); }
+.sev-tiles .tile { display: flex; flex-direction: column; gap: 1px; min-width: 92px;
+  padding: 10px 14px; background: var(--surface-2); border: 0;
+  border-radius: 8px; box-shadow: var(--ring); cursor: pointer; text-align: left; color: var(--fg); }
+.sev-tiles .tile.active { box-shadow: 0 0 0 1px var(--accent); }
 .sev-tiles .tile .v { font-size: 27px; line-height: 36px; font-weight: 600; font-family: var(--font);
   font-variant-numeric: tabular-nums;
   line-height: 1.1; }
@@ -498,6 +502,15 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .chip:hover { border-color: var(--accent); }
 .chip .x { color: var(--muted); font-weight: 700; }
 .chip .x:hover { color: var(--danger, #e05c5c); }
+/* The fleet's state chips (alive/stale/never seen/unregistered/disabled) reuse `.chip` with a
+ * state modifier. The modifiers existed since the fleet shipped but rendered neutral -- the
+ * colour lived only in the row's left bar. They now wear the same wash fills as .pill, so the
+ * word and the colour arrive together (phase 2 follow-up). */
+.chip.ok { background: var(--wash-ok); border-color: transparent; color: color-mix(in srgb, var(--ok) 78%, #fff); }
+.chip.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-2)); border-color: transparent;
+  color: color-mix(in srgb, var(--warn) 82%, #fff); }
+.chip.bad { background: var(--wash-bad); border-color: transparent; color: color-mix(in srgb, var(--crit) 78%, #fff); }
+.chip.muted { background: var(--surface-2); border-color: transparent; color: var(--muted); }
 
 /* ── the connection graph canvas ───────────────────────────────────────────
  * A fixed viewport height with the SVG filling it, so the layout has real bounds to work
@@ -667,7 +680,8 @@ td.link:hover, .link:hover { text-decoration: underline; }
 .stage-warn { flex-basis: 100%; font-size: 12px; color: var(--warn, #d9a441); }
 .stage-blast { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 6px;
   flex-wrap: wrap; }
-button.primary { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+button.primary:hover { background: var(--accent-hover); border-color: transparent; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── confidence chips (host identity) ──────────────────────────────────────
@@ -887,3 +901,9 @@ html { scrollbar-width: thin; scrollbar-color: var(--hover) transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ── the visible layer (phase 2, 2026-10-17): rows answer the cursor, the login card floats ── */
+tbody tr:hover td { background: rgba(249,250,250,.025); }
+
+/* native controls join the palette (phase 2 follow-up, 2026-10-17) */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }

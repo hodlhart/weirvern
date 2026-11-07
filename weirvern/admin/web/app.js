@@ -2464,11 +2464,11 @@ async function bootAuthed() {
  */
 
 const MODEL_COLORS = {
-  "Isolation Forest": "#4ea1ff",
-  "Gradient Boosting": "#5ec26a",
-  "DBSCAN": "#e0a34a",
-  "Adaptive Baseline": "#c07ad6",
-  "Ensemble": "#e05c5c",
+  "Isolation Forest": "#4797ff",
+  "Gradient Boosting": "#37be5f",
+  "DBSCAN": "#e79613",
+  "Adaptive Baseline": "#a78bfa",
+  "Ensemble": "#ee6368",
 };
 
 /** A placeholder that says what is missing rather than rendering an empty box. */
@@ -2737,7 +2737,7 @@ function renderFeatureDeviations(rows) {
                    title: `${r.feature}: mean |z| ${r.mean_abs_z.toFixed(2)}, peak ${r.max_abs_z.toFixed(2)}, n=${r.n}` }),
       el("span", { class: "bar-track" }, [
         el("span", { class: "bar-fill ghost", attrs: { style: `width:${wMax}%` } }),
-        el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:#4ea1ff` } }),
+        el("span", { class: "bar-fill", attrs: { style: `width:${w}%;background:#4797ff` } }),
       ]),
       el("span", { class: "bar-val", text: r.mean_abs_z.toFixed(2) }),
     ]));

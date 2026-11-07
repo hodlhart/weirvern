@@ -9,7 +9,7 @@ network already exports — plus a Zeek sensor for the protocol layer — into p
 baselines, flags the deviations that match real attack shapes, and shows a human *why*, with the
 measurements that fired.
 
-Current release: **0.14.2** · Runs on any conformant Kubernetes · No payload inspection · Alerts
+Current release: **0.14.14** · Runs on any conformant Kubernetes · No payload inspection · Alerts
 via [Pushover](https://pushover.net), or log-only.
 
 ## What it does
@@ -178,6 +178,7 @@ The worker and the schema Job read the Secret at start; see
 
 ## Documentation
 
+- [Scanner](docs/scanner.md) — Nmap/Nuclei asset discovery, new-host scans, inventory tables
 - [Architecture](docs/architecture.md) — workloads, the two sensor modes, the channel, TLS
 - [Theme](docs/theme.md) — the console's visual system: principles, tokens, component recipes, phases
   fingerprinting, passive identity, and what this design does not scale to yet.

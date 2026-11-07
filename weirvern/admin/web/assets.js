@@ -153,7 +153,7 @@ function renderAssets() {
   if (!rows.length) {
     tbody.replaceChildren(el("tr", {}, [
       el("td", {
-        class: "empty", attrs: { colspan: "9" },
+        class: "empty", attrs: { colspan: "11" },
         text: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
       }),
@@ -180,6 +180,16 @@ function renderAssets() {
       el("td", {
         class: h.anomalies ? "mono" : "mono muted",
         text: h.anomalies ? String(h.anomalies) : "0",
+      }),
+      el("td", {
+        class: "mono muted",
+        text: (h.scan && h.scan.state) || "—",
+        title: h.scan && h.scan.error ? h.scan.error : (h.scan && h.scan.last_scan_at ? `last scan ${fmtTime(h.scan.last_scan_at)}` : "not scanned"),
+      }),
+      el("td", {
+        class: h.finding_count ? "mono" : "mono muted",
+        text: h.finding_count ? String(h.finding_count) : "—",
+        title: (h.finding_severities || []).join(", ") || "no scanner findings",
       }),
       el("td", { class: "mono muted", text: fmtTime(h.last_seen) }),
     ]);
@@ -385,7 +395,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => { toggleTracked(r.edge.source); },
-    colour: () => "#4ea1ff",
+    colour: () => "#4797ff",
     format: (v) => fmtBytes(v),
     title: (r) => `track ${r.edge.source}`,
   });
@@ -397,7 +407,7 @@ function renderNetwork() {
     })),
   }, {
     onClick: (r) => toggleTracked(r.node.id),
-    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "#5ec26a" : "#8899aa"),
+    colour: (r) => (ASSETS_STATE.tracked.includes(r.node.id) ? "#37be5f" : "#8899aa"),
     format: (v) => `${v} peers`,
     title: (r) => (ASSETS_STATE.tracked.includes(r.node.id)
       ? `stop tracking ${r.node.id}` : `track ${r.node.id}`),
@@ -849,7 +859,7 @@ function drawGraph(host, nodes, edges, truncated) {
     });
     g.appendChild(svgEl("circle", {
       r: r.toFixed(1),
-      fill: selected ? "#5ec26a" : "#4ea1ff",
+      fill: selected ? "#37be5f" : "#4797ff",
       opacity: selected ? "1" : "0.78",
     }));
     // Labels only when asked for, or for a selected node: 250 labels in a circle is a smear.
@@ -886,8 +896,8 @@ function drawGraph(host, nodes, edges, truncated) {
   if (legend) {
     legend.replaceChildren();
     const items = [
-      ["#4ea1ff", "host (size = bytes)"],
-      ["#5ec26a", "tracked"],
+      ["#4797ff", "host (size = bytes)"],
+      ["#37be5f", "tracked"],
       ["edge width", "log of bytes"],
     ];
     if (layout.rings.length) {
@@ -1178,7 +1188,7 @@ function loadFlowDetail(params) {
       }, {
         onClick: (r) => openHost(r.row.src_addr),
         format: (v) => fmtBytes(v),
-        colour: () => "#4ea1ff",
+        colour: () => "#4797ff",
         title: (r) => `drill into ${r.row.src_addr}`,
       });
       table.replaceChildren(...rows.map((r) => {

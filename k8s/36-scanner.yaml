@@ -1,0 +1,71 @@
+# The active asset scanner: Nmap for services, Nuclei for template matches.
+#
+# WHY A SEPARATE DEPLOYMENT. Discovery must continue if the scanner dies, and a scan must not
+# block ingest or detection. The worker is node-pinned to the sensor; this Deployment is also
+# node-pinned to the sensor node so it sees the LAN from the same network vantage point.
+#
+# WHY hostNetwork. A pod on the overlay network scans the pod network unless it is routed; the
+# sensor node is the one place with a LAN interface. Nmap is run with --unprivileged connect
+# scans, so no NET_RAW is requested and no raw-packet capability is added to the namespace.
+#
+# ENABLING IT. The scanner is dormant until SCAN_ENABLED=1. The scope is read from each enabled
+# weirling's declared `networks` list on every pass; there is no second CIDR list to keep in step.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weirvern-scanner
+  namespace: weirvern
+  labels:
+    app.kubernetes.io/name: weirvern-scanner
+    app.kubernetes.io/part-of: weirvern
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weirvern-scanner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weirvern-scanner
+        app.kubernetes.io/part-of: weirvern
+    spec:
+      nodeSelector:
+        weirvern.io/sensor-node: "true"
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: scanner
+          image: weirvern-scanner
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "weirvern.scanner"]
+          envFrom:
+            - configMapRef:
+                name: weirvern-env
+            - secretRef:
+                name: weirvern-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              # MEASURED on the live box: the Nuclei process peaks near 2 GiB while loading the
+              # pinned template set, so the original 512Mi limit OOM-killed the scanner mid-scan.
+              # 4Gi leaves headroom for Nmap + Nuclei without starving the rest of the node.
+              cpu: "1"
+              memory: "4Gi"
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import weirvern.scanner"]
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3

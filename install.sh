@@ -244,8 +244,9 @@ cd "$PROJECT_DIR"
 
 WORKER_TAG=$(awk -F'"' '/newTag/ {print $2; exit}' k8s/kustomization.yaml)
 ZEEK_TAG=$(awk '/image: weirvern-zeek/ {sub(/.*weirvern-zeek:/, ""); print; exit}' k8s/32-zeek.yaml)
+SCANNER_TAG="$WORKER_TAG"
 [ -n "$WORKER_TAG" ] && [ -n "$ZEEK_TAG" ] || die "could not read the image tags from k8s/ (is this a full checkout?)"
-ok "images this deployment expects: weirvern-worker:$WORKER_TAG, weirvern-zeek:$ZEEK_TAG"
+ok "images this deployment expects: weirvern-worker:$WORKER_TAG, weirvern-zeek:$ZEEK_TAG, weirvern-scanner:$SCANNER_TAG"
 
 # ── node preparation ──────────────────────────────────────────────────────────────
 log "Node preparation"
@@ -560,6 +561,8 @@ else
     ok "built weirvern-worker:$WORKER_TAG"
     docker build -q -t "weirvern-zeek:$ZEEK_TAG" -f zeek/Containerfile zeek/ >/dev/null
     ok "built weirvern-zeek:$ZEEK_TAG"
+    docker build -q -t "weirvern-scanner:$SCANNER_TAG" -f Containerfile.scanner . >/dev/null
+    ok "built weirvern-scanner:$SCANNER_TAG"
 fi
 
 log "Importing images into k3s's containerd"
@@ -568,6 +571,7 @@ log "Importing images into k3s's containerd"
 # ImagePullBackOff on a node that has the image in a different daemon.
 docker save "weirvern-worker:$WORKER_TAG" | k3s ctr images import - >/dev/null
 docker save "weirvern-zeek:$ZEEK_TAG" | k3s ctr images import - >/dev/null
+docker save "weirvern-scanner:$SCANNER_TAG" | k3s ctr images import - >/dev/null
 ok "imported $(k3s ctr images ls 2>/dev/null | grep -c 'weirvern-') weirvern image(s)"
 
 # ── deploy ────────────────────────────────────────────────────────────────────────
