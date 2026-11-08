@@ -2688,6 +2688,7 @@ async function loadHostPage(addr) {
     }
   }
   hpRenderExternal(d.external);
+  hpRenderScanExposure(d.exposure);
   hpRenderGraph(d.top_destinations || []);
   hpRenderFlow(d.timeline || []);
   hpRenderDns(d.dns_queries || []);
@@ -2731,6 +2732,123 @@ function hpRenderExternal(ext) {
   if (ext.errors && ext.errors.length) {
     box.appendChild(el("div", { class: "ext-error muted",
       text: `Some readings are unavailable: ${ext.errors.join("; ")}` }));
+  }
+}
+
+/** The host page's scanner card: the services Nmap saw and the findings recorded against them.
+ *
+ * THE THREE STATES MUST STAY SEPARATE. No registry row/`pending` is "not scanned"; a done scan
+ * with no findings is "clear"; a failed scan is "failed". None of them is proof the host is
+ * patched -- Nmap banners are hints, and the findings table is historical (Nuclei is off).
+ */
+function hpRenderScanExposure(exp) {
+  const card = document.getElementById("hp-scan-card");
+  const box = document.getElementById("hp-scan");
+  if (!card || !box) return;
+  box.replaceChildren();
+  if (!exp) {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  if (exp.available === false) {
+    box.appendChild(el("p", { class: "muted",
+      text: `Scanned exposure is unavailable: ${exp.reason || "the scanner read failed"}. ` +
+            "This is not a clean result." }));
+    return;
+  }
+  const band = String(exp.exposure || "unknown");
+  const cls = ["critical", "high"].includes(band) ? "bad"
+    : band === "medium" ? "warn" : "muted";
+  const counts = exp.counts || {};
+  const total = Number(counts.total || 0);
+  const stats = el("div", { class: "stats" }, [
+    el("div", { class: "stat" }, [
+      el("div", { class: "k", text: "exposure" }),
+      el("div", { class: "v" }, [el("span", { class: `chip ${cls}`, text: band })]),
+    ]),
+    el("div", { class: "stat" }, [
+      el("div", { class: "k", text: "services" }),
+      el("div", { class: "v", text: exp.services && exp.services.length ? String(exp.services.length) : "—" }),
+    ]),
+    el("div", { class: "stat" }, [
+      el("div", { class: "k", text: "findings" }),
+      el("div", { class: "v", text: total ? String(total) : "0" }),
+    ]),
+    el("div", { class: "stat" }, [
+      el("div", { class: "k", text: "last scan" }),
+      el("div", { class: "v", text: exp.last_scan ? fmtTime(exp.last_scan) : "—" }),
+    ]),
+  ]);
+  box.appendChild(stats);
+
+  if (exp.registered === false) {
+    box.appendChild(el("p", { class: "muted",
+      text: "No scanner record for this address. It has not been scanned — that is not the same " +
+            "as clear." }));
+  } else {
+    box.appendChild(el("p", { class: "muted",
+      text: `Scan state: ${exp.state || "unknown"}${exp.last_scan ? ` · last completed ${fmtTime(exp.last_scan)}` : ""}. ` +
+            "Nmap service banners are hints, not proof of patch level." }));
+    if (exp.error) {
+      box.appendChild(el("p", { class: "muted", text: `Last scan error: ${exp.error}` }));
+    }
+  }
+
+  const services = exp.services || [];
+  if (services.length) {
+    const table = el("table", {}, [
+      el("thead", {}, [el("tr", {}, [
+        el("th", { text: "port" }), el("th", { text: "proto" }), el("th", { text: "service" }),
+        el("th", { text: "product / version" }),
+      ])]),
+      el("tbody", {}, services.slice(0, 30).map((x) => el("tr", {}, [
+        el("td", { class: "mono", text: String(x.port ?? "—") }),
+        el("td", { class: "mono", text: x.protocol || "—" }),
+        el("td", { text: x.service || "—" }),
+        el("td", { class: "muted",
+          text: [x.product, x.version].filter(Boolean).join(" ") || "—" }),
+      ]))),
+    ]);
+    if (services.length > 30) {
+      box.appendChild(el("p", { class: "muted",
+        text: `Showing 30 of ${services.length} observed services.` }));
+    }
+    box.appendChild(table);
+  } else {
+    box.appendChild(el("p", { class: "muted",
+      text: exp.registered === false ? "No services recorded — the host has not been scanned."
+        : "No open services recorded by the last successful scan." }));
+  }
+
+  const findings = exp.findings || [];
+  if (findings.length) {
+    const table = el("table", {}, [
+      el("thead", {}, [el("tr", {}, [
+        el("th", { text: "severity" }), el("th", { text: "finding" }),
+        el("th", { text: "template" }), el("th", { text: "last seen" }),
+      ])]),
+      el("tbody", {}, findings.slice(0, 30).map((f) => el("tr", {}, [
+        el("td", {}, [sevCell(f.severity)]),
+        el("td", { text: f.name || "—", attrs: { title: f.remediation || "" } }),
+        el("td", { class: "mono muted", text: f.template_id || "—" }),
+        el("td", { class: "mono muted", text: f.last_seen ? fmtTime(f.last_seen) : "—" }),
+      ]))),
+    ]);
+    if (findings.length > 30) {
+      box.appendChild(el("p", { class: "muted",
+        text: `Showing 30 of ${findings.length} recorded findings.` }));
+    }
+    box.appendChild(table);
+  } else if (exp.registered !== false) {
+    box.appendChild(el("p", { class: "muted",
+      text: "No recorded findings for this host. A clear finding set is not proof the host is patched." }));
+  }
+
+  if (exp.registered !== false) {
+    const btn = el("button", { class: "quiet", text: "Scan now", attrs: { type: "button" } });
+    btn.addEventListener("click", () => requestScan(HP_ADDR, btn));
+    box.appendChild(el("div", { class: "controls" }, [btn]));
   }
 }
 

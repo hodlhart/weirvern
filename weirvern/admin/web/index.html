@@ -870,6 +870,10 @@
       <h2>External exposure <span class="muted">observed · not alert entities</span></h2>
       <div id="hp-external"></div>
     </div>
+    <div class="card hidden" id="hp-scan-card">
+      <h2>Scanned exposure <span class="muted">Nmap services and recorded findings</span></h2>
+      <div id="hp-scan"></div>
+    </div>
     <div class="grid">
       <div class="card">
         <h2>Connections <span class="muted">this host and its top peers</span></h2>
@@ -955,6 +959,7 @@
           <th>Dests</th><th>Services</th>
           <th data-sort="anomalies" class="sortable">Anomalies</th>
           <th>Last seen</th>
+          <th>Exposure</th>
           <th>Scan</th>
         </tr></thead>
         <tbody></tbody>

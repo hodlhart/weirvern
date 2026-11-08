@@ -68,9 +68,13 @@ different MAC, it is treated as a new asset.
 | `asset_findings` | Historical/optional Nuclei matches; no new rows while Nuclei is disabled. |
 | `asset_scans` | Append-only audit of every scan attempt, including failures and the command line. |
 
-The Assets inventory reads these tables when they exist and annotates its rows with **Scan** and
-**Findings**. If the tables are missing, the passive inventory still renders; the annotation is
-not allowed to break the inventory.
+The Assets inventory reads these tables when they exist and annotates its rows with **Exposure**
+and **Scan**. Exposure is one word plus the recorded finding count: `critical`, `high`, `medium`,
+`low`, `clear`, `not scanned`, `failed`, or `unknown`. A done scan with no recorded finding is
+**clear**; a host with no scan is **not scanned**; a failed scan is **failed**. None of those is
+proof that the host is patched. The Host page carries the same reading as a **Scanned exposure**
+card with its services and findings. If the tables are missing, the passive inventory still
+renders; the annotation is not allowed to break the inventory.
 
 ## Nuclei is off
 

@@ -4400,9 +4400,22 @@ def _build_handler(ctx: GuiContext):
             try:
                 with self._with_client() as client:
                     detail = status_mod.host_detail(client, addr, hours=hours)
+                    # The scanner is an annotation on the host page, never a reason to fail
+                    # the page. A missing table is reported inside `exposure.available` and
+                    # rendered as "unavailable", not as "not scanned".
+                    try:
+                        exposure = assets_mod.asset_exposure(client, addr)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("host exposure unavailable for %s: %s", addr, exc)
+                        exposure = {"available": False,
+                                    "reason": "the scanner exposure read failed",
+                                    "registered": False, "state": "unknown",
+                                    "exposure": "unknown", "services": [], "findings": [], "counts": {}}
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, f"cannot reach ClickHouse: {exc}")
-            self._json(web_api.host_payload(detail))
+            payload = web_api.host_payload(detail)
+            payload["exposure"] = exposure
+            self._json(payload)
 
         def _evidence(self, query: dict) -> None:
             """The alert-evidence pivot: the RAW records inside one detection window.

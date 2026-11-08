@@ -360,6 +360,222 @@ def _hops_from_ttl(ttl: int) -> int:
     return 8
 
 
+
+
+# ── SCANNED EXPOSURE ────────────────────────────────────────────────────────────────────────
+# The inventory's Scan column says whether Nmap ran; this layer says what it FOUND. They are
+# deliberately separate states: "not scanned" is not "clear", and a scan that failed is not a
+# host with no findings. The scanner is optional, so a missing table degrades the annotation
+# without taking the passive inventory down with it.
+
+_SCAN_BANDS = ("critical", "high", "medium", "low")
+_SCAN_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1, "unknown": 0}
+
+
+def _scan_band(state: str, counts: dict | None) -> str:
+    """The one word the inventory can honestly print for a host's scan state.
+
+    NOT SCANNED and CLEAR are different answers. A done scan with no recorded finding is
+    `clear`; a host with no registry row, a pending row, or an in-flight scan is not. A failed
+    scan is `failed`, never `clear`. `unknown` means the findings source could not be read.
+    """
+    state = str(state or "").lower()
+    if state == "error":
+        return "failed"
+    if state == "unknown":
+        return "unknown"
+    if state in ("pending", "queued", "scanning"):
+        return "not scanned"
+    if state != "done":
+        return "not scanned"
+    if counts is None:
+        return "unknown"
+    for band in _SCAN_BANDS:
+        if int(counts.get(band, 0) or 0) > 0:
+            return band
+    if int(counts.get("info", 0) or 0) > 0:
+        return "low"
+    return "clear"
+
+
+def _scan_ts(value: Any) -> str:
+    """An unset ClickHouse DateTime is epoch zero; do not render it as a real scan time."""
+    text = _iso(value)
+    return "" if not text or text.startswith("1970-01-01") else text
+
+
+def _scan_summaries(client: Any) -> tuple[dict[str, dict], list[str], dict[str, bool]]:
+    """One bulk read of the scanner's three small tables, keyed by host address.
+
+    Three grouped queries, not one per asset: the inventory renders up to 200 hosts, and a
+    per-host Nmap read would put a second slow query behind every row. The caller keeps the
+    three readable flags so a missing/optional table is named instead of becoming a zero.
+    """
+    registry = _rows(
+        client,
+        "SELECT ip, asset_key, hostname, scan_state, last_scan_at, scan_error "
+        "FROM weirvern.asset_registry FINAL",
+        {},
+        "asset inventory (scan registry)",
+    )
+    services = _rows(
+        client,
+        "SELECT ip, count() AS services FROM weirvern.asset_services FINAL GROUP BY ip",
+        {},
+        "asset inventory (scan services)",
+    )
+    findings = _rows(
+        client,
+        "SELECT ip, countIf(lower(severity) = 'critical') AS critical, "
+        "       countIf(lower(severity) = 'high') AS high, "
+        "       countIf(lower(severity) = 'medium') AS medium, "
+        "       countIf(lower(severity) = 'low') AS low, "
+        "       countIf(lower(severity) = 'info') AS info, count() AS total "
+        "FROM weirvern.asset_findings FINAL GROUP BY ip",
+        {},
+        "asset inventory (scan findings)",
+    )
+    readable = {"registry": registry is not None, "services": services is not None,
+                "findings": findings is not None}
+    failed = [name for name, ok in readable.items() if not ok]
+    out: dict[str, dict] = {}
+    for r in registry or []:
+        ip = str(r[0] or "")
+        if not ip:
+            continue
+        out[ip] = {
+            "state": str(r[3] or "pending"),
+            "last_scan": _scan_ts(r[4]),
+            "error": str(r[5] or ""),
+            "services": None,
+            "findings": None,
+        }
+    for r in services or []:
+        ip = str(r[0] or "")
+        if ip in out:
+            out[ip]["services"] = int(r[1] or 0)
+    for r in findings or []:
+        ip = str(r[0] or "")
+        if ip not in out:
+            continue
+        counts = {"critical": int(r[1] or 0), "high": int(r[2] or 0),
+                  "medium": int(r[3] or 0), "low": int(r[4] or 0),
+                  "info": int(r[5] or 0), "total": int(r[6] or 0)}
+        out[ip]["findings"] = counts
+    # A readable findings table with no row for a scanned host means ZERO findings, not an
+    # unknown read. Only a failed table leaves `None`, which stays `unknown` in the band.
+    if findings is not None:
+        for entry in out.values():
+            if entry["findings"] is None:
+                entry["findings"] = {"critical": 0, "high": 0, "medium": 0,
+                                     "low": 0, "info": 0, "total": 0}
+    for entry in out.values():
+        entry["exposure"] = _scan_band(entry["state"], entry["findings"])
+    return out, failed, readable
+
+
+def _attach_scan_summaries(hosts: dict[str, dict], summaries: dict[str, dict],
+                           readable: dict[str, bool]) -> None:
+    """Attach a compact, honest scan object to each inventory row."""
+    for addr, host in hosts.items():
+        entry = summaries.get(addr)
+        if entry is None:
+            # No registry row means the scanner has not adopted this host. If the registry
+            # itself failed, the state is unknown rather than a claim of "not scanned".
+            state = "not_scanned" if readable["registry"] else "unknown"
+            host["scan"] = {
+                "state": state, "exposure": _scan_band(state, None),
+                "last_scan": "", "error": "",
+                "services": None, "findings": None, "available": readable["registry"],
+            }
+            continue
+        host["scan"] = {
+            **entry,
+            "available": readable["registry"] or readable["services"] or readable["findings"],
+        }
+
+
+def asset_exposure(client: Any, addr: str) -> dict:
+    """The host page's scanner card: state, services and recorded findings for ONE address.
+
+    `available=False` is a broken source, not a clean host. An address with no registry row is
+    `registered=False` + state `not_scanned`; that is a real answer and must remain distinct
+    from a failed read. Findings are evidence, not proof of exploitability.
+    """
+    registry = _rows(
+        client,
+        "SELECT ip, asset_key, hostname, scan_state, last_scan_at, scan_error "
+        "FROM weirvern.asset_registry FINAL WHERE ip = %(ip)s LIMIT 1",
+        {"ip": addr},
+        "host exposure (registry)",
+    )
+    services = _rows(
+        client,
+        "SELECT port, protocol, service, product, version, cpe, observed_at "
+        "FROM weirvern.asset_services FINAL WHERE ip = %(ip)s ORDER BY port",
+        {"ip": addr},
+        "host exposure (services)",
+    )
+    findings = _rows(
+        client,
+        "SELECT severity, name, template_id, cve, last_seen, remediation "
+        "FROM weirvern.asset_findings FINAL WHERE ip = %(ip)s ORDER BY last_seen DESC",
+        {"ip": addr},
+        "host exposure (findings)",
+    )
+    errors = []
+    if registry is None:
+        errors.append("registry")
+    if services is None:
+        errors.append("services")
+    if findings is None:
+        errors.append("findings")
+    if registry is None:
+        return _unavailable("the scanner registry could not be read",
+                            registered=False, state="unknown", exposure="unknown",
+                            errors=errors, services=[], findings=[], counts={})
+    if not registry:
+        return {
+            "available": services is not None and findings is not None,
+            "reason": "", "registered": False, "state": "not_scanned",
+            "exposure": "not scanned", "last_scan": "", "error": "",
+            "errors": errors,
+            "services": [{"port": int(r[0] or 0), "protocol": str(r[1] or ""),
+                          "service": str(r[2] or ""), "product": str(r[3] or ""),
+                          "version": str(r[4] or ""), "cpe": str(r[5] or ""),
+                          "observed_at": _scan_ts(r[6])}
+                         for r in services or []],
+            "findings": [], "counts": {},
+        }
+    r = registry[0]
+    counts = None
+    if findings is not None:
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0}
+        for f in findings:
+            sev = str(f[0] or "unknown").lower()
+            if sev in counts:
+                counts[sev] += 1
+            counts["total"] += 1
+    state = str(r[3] or "pending")
+    return {
+        "available": services is not None and findings is not None,
+        "reason": "" if not errors else f"could not read the scanner {', '.join(errors)} table(s)",
+        "registered": True, "state": state,
+        "exposure": _scan_band(state, counts),
+        "last_scan": _scan_ts(r[4]), "error": str(r[5] or ""),
+        "errors": errors,
+        "services": [{"port": int(x[0] or 0), "protocol": str(x[1] or ""),
+                      "service": str(x[2] or ""), "product": str(x[3] or ""),
+                      "version": str(x[4] or ""), "cpe": str(x[5] or ""),
+                      "observed_at": _scan_ts(x[6])}
+                     for x in services or []],
+        "findings": [{"severity": str(x[0] or "unknown"), "name": str(x[1] or ""),
+                      "template_id": str(x[2] or ""), "cve": str(x[3] or ""),
+                      "last_seen": _scan_ts(x[4]), "remediation": str(x[5] or "")}
+                     for x in findings or []],
+        "counts": counts or {},
+    }
+
 def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
     """Every host we have seen, with a per-host summary, for the asset inventory view.
 
@@ -506,6 +722,11 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         hosts[host]["role_source"] = str(r[3] or "auto")
         hosts[host]["role_confidence"] = float(r[4] or 0)
 
+    # ---- 6. Scanned exposure. A separate grouped read; a missing scanner table degrades
+    #         this annotation but never the passive inventory.
+    summaries, scan_failed, scan_readable = _scan_summaries(client)
+    _attach_scan_summaries(hosts, summaries, scan_readable)
+
     ordered = sorted(
         hosts.values(),
         key=lambda h: (h["anomalies"], h["bytes"]),
@@ -518,6 +739,8 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
         "count": len(ordered),
         "hosts": ordered,
         "unreadable": zeek_unreadable,
+        "scan_available": not scan_failed,
+        "scan_sources_failed": scan_failed,
         "sources_read": [k for k, ok in read_ok.items() if ok],
         "sources_failed": [k for k, ok in read_ok.items() if not ok],
     }

@@ -161,15 +161,21 @@ function renderAssetFacets(all) {
 /** The inventory's four first questions: how many, how many are active now, how many carry an
  *  anomaly, and how many are outside the monitored networks. Counts are over the SCOPED set so
  *  the tiles and the table cannot disagree. */
-function renderAssetStats(all) {
+function renderAssetStats(all, payload = {}) {
   const box = document.getElementById("as-stats");
   if (!box) return;
   const now = Date.now();
   const active = all.filter((h) => h.last_seen && (now - Date.parse(h.last_seen)) < 3600e3).length;
   const anomalies = all.filter((h) => Number(h.anomalies) > 0).length;
   const external = all.filter((h) => netScope(h.addr) === "external").length;
+  // A finding is an exposure observation, not a vulnerability proof. Count only the bands
+  // that an operator would triage; "clear" and "not scanned" are not findings.
+  const exposed = all.filter((h) => h.scan &&
+    ["critical", "high", "medium", "low"].includes(String(h.scan.exposure || ""))).length;
+  const scanKnown = payload.scan_available !== false && all.some((h) => h.scan);
   const cells = [["hosts", String(all.length)], ["active (1h)", String(active)],
-                 ["with anomalies", String(anomalies)], ["external", String(external)]];
+                 ["with anomalies", String(anomalies)], ["external", String(external)],
+                 ["with findings", scanKnown ? String(exposed) : "—"]];
   box.replaceChildren(...cells.map(([k, v]) => el("div", { class: "stat" }, [
     el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
   ])));
@@ -275,7 +281,7 @@ function renderAssets() {
   summary.textContent = (why.length
     ? `${rows.length} of ${all.length} hosts ${why.join(" and ")}`
     : `${all.length} hosts in the last ${d.hours}h`) + range;
-  renderAssetStats(all);
+  renderAssetStats(all, d);
 
   // The facet itself: what services this inventory actually saw, most common first.
   renderAssetFacets(all);
@@ -302,12 +308,19 @@ function renderAssets() {
             "the asset rows are still complete.",
     }));
   }
+  if ((d.scan_sources_failed || []).length) {
+    note.appendChild(el("p", {
+      class: "muted",
+      text: `Scanned exposure is incomplete: the ${d.scan_sources_failed.join(", ")} read failed; ` +
+            "those cells say unknown, not clear.",
+    }));
+  }
 
   tbody.replaceChildren();
   if (!rows.length) {
     tbody.replaceChildren(el("tr", {}, [
       el("td", {
-        class: "empty", attrs: { colspan: "12" },
+        class: "empty", attrs: { colspan: "13" },
         text: q ? `No host matches “${ASSETS_STATE.search}”.`
                 : "No host has been seen in this window.",
       }),
@@ -357,6 +370,34 @@ function renderAssets() {
         text: h.anomalies ? String(h.anomalies) : "0",
       }),
       el("td", { class: "mono muted", text: fmtTime(h.last_seen) }),
+      (() => {
+        const scan = h.scan || null;
+        const cell = el("td");
+        if (!scan) {
+          cell.className = "muted";
+          cell.textContent = "—";
+          cell.title = "scanner status is not attached to this row";
+          return cell;
+        }
+        const band = String(scan.exposure || "unknown");
+        const cls = ["critical", "high"].includes(band) ? "bad"
+          : band === "medium" ? "warn" : "muted";
+        const total = scan.findings && Number(scan.findings.total || 0);
+        const chip = el("span", {
+          class: `chip ${cls}`,
+          text: total ? `${band} · ${total}` : band,
+        });
+        cell.appendChild(chip);
+        const bits = [];
+        if (scan.state) bits.push(`scan ${scan.state}`);
+        if (scan.services !== null && scan.services !== undefined) {
+          bits.push(`${scan.services} service${Number(scan.services) === 1 ? "" : "s"}`);
+        }
+        if (scan.last_scan) bits.push(`last ${fmtTime(scan.last_scan)}`);
+        if (scan.error) bits.push(`error: ${scan.error}`);
+        cell.title = bits.join(" · ");
+        return cell;
+      })(),
       (() => {
         const btn = el("button", {
           class: "scan-now", text: "Scan now",
