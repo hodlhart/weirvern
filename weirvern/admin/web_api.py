@@ -586,8 +586,12 @@ def baselines_payload(data: dict) -> dict:
         "last_fired": data.get("last_fired"),
         # The reverse-map name beside the address, like every other host row in this console:
         # the IP is the fact and the name is the convenience, never a replacement.
-        "hosts": [{**h, "hostname": _hostname(h.get("src_addr"))}
-                  for h in (data.get("hosts") or [])],
+        # THE CARD RENDERS TWELVE ROWS; THE PAYLOAD CAN HOLD THOUSANDS. Resolving every
+        # hostname here made /api/baselines take >25s on a 2,935-host baseline: the SQL is
+        # fast, the per-host PTR loop is not. Name only the rows the card can display; the
+        # rest keep their address (and the UI already falls back to it).
+        "hosts": [{**h, "hostname": _hostname(h.get("src_addr")) if i < 12 else None}
+                  for i, h in enumerate(data.get("hosts") or [])],
         "errors": data.get("errors"),
     }
 

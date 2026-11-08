@@ -81,6 +81,11 @@ function sluiceStateChip(state, stale) {
 async function loadSluice() {
   if (typeof scheduleURLSync === "function") scheduleURLSync();
   let d;
+  // SETTINGS ARE INDEPENDENT OF THE GATE QUERY. Sequentially awaiting them made a 2.3s
+  // gate read plus another round trip before the view could render; start the settings
+  // read alongside it and join only when both are needed.
+  const settingsPromise = getJSON("/api/settings")
+    .catch(() => null);
   try {
     const slHours = typeof trHours === "function" ? trHours() : 24;
     d = await getJSON(`/api/sluice?hours=${slHours}`);
@@ -89,11 +94,7 @@ async function loadSluice() {
     return;
   }
   SL2_STATE.data = d;
-  try {
-    SL2_STATE.settings = await getJSON("/api/settings");
-  } catch (_err) {
-    SL2_STATE.settings = null;
-  }
+  SL2_STATE.settings = await settingsPromise;
   if (!d.available) showDataError(d.reason || "the gate state is unavailable");
   renderSluiceGates(d);
   renderSluiceRules(d);

@@ -95,6 +95,24 @@ def test_the_payload_passes_counts_and_availability_through():
     assert bad == {"available": False, "reason": "boom"}
 
 
+def test_the_payload_resolves_only_the_rows_the_card_renders(monkeypatch):
+    """The baseline card shows twelve rows; resolving a PTR for every host is a tab stall.
+
+    A 2,935-host baseline made `/api/baselines` exceed 25 seconds while its SQL completed in
+    roughly a quarter second. Pin the serializer to the visible page, not the whole table.
+    """
+    from weirvern.admin import web_api
+
+    seen: list[str] = []
+    monkeypatch.setattr(web_api, "_hostname", lambda addr: seen.append(str(addr)) or "host")
+
+    hosts = [{"src_addr": f"198.51.100.{i}"} for i in range(20)]
+    out = web_api.baselines_payload({"available": True, "host_count": 20, "hosts": hosts})
+    assert len(seen) == 12, f"resolved {len(seen)} hostnames, expected the 12 rendered rows"
+    assert out["hosts"][0]["hostname"] == "host"
+    assert out["hosts"][-1]["hostname"] is None
+
+
 def test_the_route_reads_through_the_context_manager():
     src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     assert 'if path == "/api/baselines":' in src

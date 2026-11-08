@@ -166,22 +166,53 @@ function emptyRow(tbody, cols, message, action) {
  * copy silently won for every call site -- app.js's and soc.js's error semantics were decided
  * by script order, which nothing would have caught if the order changed. Kept here because
  * this file loads first and the other shared helpers live here too. */
+// A tab revisit inside one refresh beat should not pay for the same read again. The cache is
+// deliberately short: the live pill still refreshes every 15s, and every write clears it so a
+// form submit cannot read its own stale pre-write snapshot.
+const GET_CACHE = new Map();
+const GET_CACHE_TTL_MS = 8000;
+// The same read can be started by the view loader and by the boot observer at once. Sharing
+// the in-flight promise prevents two expensive ClickHouse reads for one tab activation.
+const GET_INFLIGHT = new Map();
+function clearGetCache() { GET_CACHE.clear(); }
+
 async function getJSON(url) {
+  const headers = requestHeaders();
   // ── THE GLOBAL TIME RANGE RIDES EVERY WINDOWED READ ─────────────────────────────────────────
   // In absolute mode the console appends from/to to any read that carries `hours=`: the server
   // honours the exact range, so the per-view `hours` box can never silently widen it.
   if (TIME_RANGE.mode === "absolute" && url.indexOf("hours=") !== -1 && url.indexOf("from=") === -1) {
     url += "&" + trWindowSuffix();
   }
-  const res = await fetch(url, { headers: requestHeaders() });
-  // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
-  // "undefined", and a 200 with a bad body must not throw here with a parse error where the
-  // caller expects the payload contract.
-  const body = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new Error((body && body.error) || `${res.status} ${res.statusText}`.trim());
+  const cached = GET_CACHE.get(url);
+  if (cached && Date.now() - cached.at < GET_CACHE_TTL_MS) return cached.body;
+  const inflight = GET_INFLIGHT.get(url);
+  if (inflight) return inflight;
+  const request = (async () => {
+    const res = await fetch(url, { headers });
+    // Parse ONCE, tolerating a non-JSON body: an error page must not turn a status into
+    // "undefined", and a 200 with a bad body must not throw here with a parse error where the
+    // caller expects the payload contract.
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((body && body.error) || `${res.status} ${res.statusText}`.trim());
+    }
+    GET_CACHE.set(url, { at: Date.now(), body });
+    if (GET_CACHE.size > 96) {
+      const now = Date.now();
+      for (const [key, entry] of GET_CACHE) {
+        if (now - entry.at >= GET_CACHE_TTL_MS) GET_CACHE.delete(key);
+      }
+      while (GET_CACHE.size > 96) GET_CACHE.delete(GET_CACHE.keys().next().value);
+    }
+    return body;
+  })();
+  GET_INFLIGHT.set(url, request);
+  try {
+    return await request;
+  } finally {
+    GET_INFLIGHT.delete(url);
   }
-  return body;
 }
 
 /* ── sensor ─────────────────────────────────────────────────────────────── */
@@ -394,6 +425,7 @@ async function changePassword(current, next) {
 
 /** A POST to a write route, with whatever credentials this tab holds. Throws with the server's reason. */
 async function postJSON(path, body) {
+  clearGetCache();
   const resp = await window.fetch(path, {
     method: "POST",
     headers: requestHeaders({ "Content-Type": "application/json" }),
@@ -413,6 +445,7 @@ async function postJSON(path, body) {
 
 /** POST and read NDJSON progress lines, returning the final result object. */
 async function postNDJSON(path, body, onProgress) {
+  clearGetCache();
   const resp = await window.fetch(path, {
     method: "POST",
     headers: requestHeaders({ "Content-Type": "application/json" }),
@@ -4506,6 +4539,7 @@ function setAutoPaused(paused) {
 
 async function refreshAll(opts = {}) {
   if (AUTO_PAUSED) return;
+  clearGetCache();
   setAutoNote("updating…");
   try {
     await loadHealthDeep();
