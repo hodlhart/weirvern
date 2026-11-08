@@ -2762,6 +2762,10 @@ function hpRenderScanExposure(exp) {
     : band === "medium" ? "warn" : "muted";
   const counts = exp.counts || {};
   const total = Number(counts.total || 0);
+  // A done scan that observed no service is a measured zero. A host with no scanner record
+  // is not measured, so it keeps the em dash.
+  const serviceCount = exp.registered === false ? null
+    : (Array.isArray(exp.services) ? exp.services.length : null);
   const stats = el("div", { class: "stats" }, [
     el("div", { class: "stat" }, [
       el("div", { class: "k", text: "exposure" }),
@@ -2769,7 +2773,7 @@ function hpRenderScanExposure(exp) {
     ]),
     el("div", { class: "stat" }, [
       el("div", { class: "k", text: "services" }),
-      el("div", { class: "v", text: exp.services && exp.services.length ? String(exp.services.length) : "—" }),
+      el("div", { class: "v", text: serviceCount === null ? "—" : String(serviceCount) }),
     ]),
     el("div", { class: "stat" }, [
       el("div", { class: "k", text: "findings" }),
