@@ -9,7 +9,7 @@ not a one-time checklist.
 |---|---|---|
 | Program accountable | Samuel Hart | monthly review |
 | Execution / evidence | Hermes Agent | weekly, and every card close |
-| Fixed-budget review | Operator (single-token reviewer) | monthly and before any promotion |
+| Fixed-budget review | Operator (single-token reviewer) | monthly; automated promotion runs inside the charter envelope |
 | Release approval | Operator | every production change |
 
 Weekly: inspect the Models tab shadow channels and drift channel; confirm no channel is
@@ -105,6 +105,10 @@ card closes. A card may not be closed while it is listed here as blocked.
 
 ## 8. Approval boundary
 
-No production alert path, model artifact, UI deployment or schema application without operator
-approval. Shadow work writes only candidate/measurement tables. The live cluster remains the
-last approved release until the release ritual is run and verified.
+The operator sets the autonomy envelope once (`ml-charter.md`): page budget, allowed families,
+shadow soak, canary size, rollback thresholds, promotion rate and kill switch. Automated
+promotion, canary and retirement execute **inside** that envelope without per-model approval.
+Anything outside it — a new model family, a changed page budget, a schema change or a production
+deployment — still needs operator approval. Shadow work writes only candidate/measurement
+tables. The live cluster remains the last approved release until the release ritual is run and
+verified.

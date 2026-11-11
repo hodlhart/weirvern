@@ -16,6 +16,7 @@ gap to file, not an invitation to improvise.
 | Release, CVE response, SBOM | `supply-chain.md`, `slo.md`, `release-checklist.md` |
 | Launch cutover and 30-day review | `launch-checklist.md`, `launch-review-30d.md` |
 | Load, soak and failure injection | `load-and-failure.md` |
+| ML charter, risk register and autonomy envelope | `ml-charter.md`, `ml-risk-register.md` |
 | Test pyramid, gate stages, skips | `test-strategy.md` |
 | Network exposure and TLS | `security-surface.md` |
 | Accounts, sessions, RBAC, secrets | `accounts-secrets-rbac.md` |
