@@ -13,7 +13,10 @@ gap to file, not an invitation to improvise.
 | Change the schema safely | `schema-migration.md` |
 | Back up, restore, recover a node | `release-dr-drill.md` |
 | Capacity, restarts and single-node limits | `capacity-and-failure.md` |
-| Release, CVE response, SBOM | `supply-chain.md`, `slo.md` |
+| Release, CVE response, SBOM | `supply-chain.md`, `slo.md`, `release-checklist.md` |
+| Launch cutover and 30-day review | `launch-checklist.md`, `launch-review-30d.md` |
+| Load, soak and failure injection | `load-and-failure.md` |
+| Test pyramid, gate stages, skips | `test-strategy.md` |
 | Network exposure and TLS | `security-surface.md` |
 | Accounts, sessions, RBAC, secrets | `accounts-secrets-rbac.md` |
 | Privacy requests and lawful basis | `privacy-operations.md` |
