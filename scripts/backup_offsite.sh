@@ -9,7 +9,7 @@
 #   scripts/backup_offsite.sh <backup-name>  # pull an existing backup by name
 #
 # Environment:
-#   WEIRVERN_REMOTE_HOST   ssh target, default root@weirvern.home
+#   WEIRVERN_REMOTE_HOST   ssh target, default root@sensor.example
 #   WEIRVERN_REMOTE_REPO   checkout on the target, default /opt/weirvern
 #   WEIRVERN_BACKUP_DIR    local destination, default /home/admin/weirvern-backups
 #   WEIRVERN_BACKUP_KEY    passphrase file, default /home/admin/.weirvern-backup.key
@@ -21,11 +21,12 @@
 set -eu
 umask 077
 
-REMOTE="${WEIRVERN_REMOTE_HOST:-root@weirvern.home}"
+REMOTE="${WEIRVERN_REMOTE_HOST:-root@sensor.example}"
 REMOTE_REPO="${WEIRVERN_REMOTE_REPO:-/opt/weirvern}"
 DEST="${WEIRVERN_BACKUP_DIR:-/home/admin/weirvern-backups}"
 KEY="${WEIRVERN_BACKUP_KEY:-/home/admin/.weirvern-backup.key}"
 KEEP="${WEIRVERN_BACKUP_KEEP:-14}"
+REMOTE_KEEP="${WEIRVERN_BACKUP_REMOTE_KEEP:-7}"
 
 die() { echo "error: $*" >&2; exit 1; }
 [ -r "$KEY" ] || die "backup key not readable: $KEY (create one with: openssl rand -base64 32 > $KEY; chmod 600 $KEY)"
@@ -94,6 +95,17 @@ for old in $(ls -1t "$DEST"/*.tar.gz.gpg 2>/dev/null || true); do
         rm -f "$old" "$DEST/$base-models.tar.gz.gpg" "$DEST/$base.manifest"
         echo "pruned: $old"
     fi
+done
+
+# The ClickHouse PVC is a second retention surface. Keep it bounded too; the
+# off-cluster copy is the durable history, not the PVC.
+OLD_REMOTE=$(ssh "$REMOTE" "cd '$REMOTE_REPO' && sh scripts/backup_clickhouse.sh --list | sort | head -n -$REMOTE_KEEP" 2>/dev/null || true)
+for old_name in $OLD_REMOTE; do
+    case "$old_name" in
+        ""|*/*|*..*) continue ;;
+    esac
+    ssh "$REMOTE" "cd '$REMOTE_REPO' && sh scripts/backup_clickhouse.sh --prune '$old_name'" >/dev/null 2>&1 || true
+    echo "pruned remote: $old_name"
 done
 
 echo "offsite backup: $OUT"
