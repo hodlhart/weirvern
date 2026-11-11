@@ -34,6 +34,19 @@ die() { echo "error: $*" >&2; exit 1; }
 
 ch() { kubectl -n "$NAMESPACE" exec "$POD" -- clickhouse-client -q "$1"; }
 in_pod() { kubectl -n "$NAMESPACE" exec "$POD" -- sh -c "$1"; }
+in_pod_stdin() { kubectl -n "$NAMESPACE" exec -i "$POD" -- sh -c "$1"; }
+counts_query() {
+    printf "%s\n" "flows" "netflow_anomalies" "flows_aggregated" |
+    while read -r table; do
+        ch "SELECT '$table', count() FROM weirvern.$table FORMAT TSV"
+    done
+}
+restored_counts_query() {
+    printf "%s\n" "flows" "netflow_anomalies" "flows_aggregated" |
+    while read -r table; do
+        ch "SELECT '$table', count() FROM weirvern_restore.$table FORMAT TSV"
+    done
+}
 
 valid_name() {
     case "${1:-}" in
@@ -45,9 +58,23 @@ valid_name() {
 cmd_backup() {
     name=$1
     valid_name "$name" || die "refusing the backup name '$name'"
+    # Counts BEFORE and AFTER the backup. `flows` is high-write and has a short TTL;
+    # the backup is a consistent set of parts but the live table can grow while it runs,
+    # so no single post-hoc count is the snapshot boundary. TTL-free tables must match
+    # exactly; the append-only flow table must fall inside the pre/post range.
+    counts_before=$(counts_query)
     ch "BACKUP DATABASE weirvern TO Disk('$DISK', '$BASE/$name')"
+    counts_after=$(counts_query)
+    in_pod_stdin "cat > '/var/lib/clickhouse/$BASE/$name.counts'" <<EOF
+pre
+$counts_before
+post
+$counts_after
+EOF
     echo "backup written: /var/lib/clickhouse/$BASE/$name (on the clickhouse PVC)"
     echo "  size: $(in_pod "du -sh /var/lib/clickhouse/$BASE/$name | cut -f1")"
+    echo "  pre/post snapshot counts:"
+    printf '%s\n' "$counts_before" "$counts_after" | sed 's/^/    /' 
 }
 
 cmd_list() {
@@ -59,15 +86,51 @@ cmd_restore() {
     valid_name "$name" || die "refusing the backup name '$name'"
     ch "DROP DATABASE IF EXISTS weirvern_restore"
     ch "RESTORE DATABASE weirvern AS weirvern_restore FROM Disk('$DISK', '$BASE/$name')"
-    echo "restored into the SCRATCH database weirvern_restore; live vs restored:"
-    ch "SELECT 'flows' AS table, (SELECT count() FROM weirvern.flows) AS live, \
-(SELECT count() FROM weirvern_restore.flows) AS restored \
-UNION ALL SELECT 'netflow_anomalies', (SELECT count() FROM weirvern.netflow_anomalies), \
-(SELECT count() FROM weirvern_restore.netflow_anomalies) \
-UNION ALL SELECT 'flows_aggregated', (SELECT count() FROM weirvern.flows_aggregated), \
-(SELECT count() FROM weirvern_restore.flows_aggregated)"
+    echo "restored into the SCRATCH database weirvern_restore"
+    manifest="/var/lib/clickhouse/$BASE/$name.counts"
+    if in_pod "test -f '$manifest'"; then
+        expected=$(in_pod "cat '$manifest'")
+        actual=$(restored_counts_query)
+        pre=$(printf '%s\n' "$expected" | awk '/^pre$/{on=1;next} /^post$/{on=0} on')
+        post=$(printf '%s\n' "$expected" | awk '/^post$/{on=1;next} on')
+        echo "snapshot vs restored (pre/post backup bounds):"
+        printf '%s\n' "$pre" | sed 's/^/  pre      /'
+        printf '%s\n' "$post" | sed 's/^/  post     /'
+        printf '%s\n' "$actual" | sed 's/^/  restored /'
+        ok=1
+        for table in flows netflow_anomalies flows_aggregated; do
+            p=$(printf '%s\n' "$pre" | awk -v t="$table" '$1==t{print $2}')
+            q=$(printf '%s\n' "$post" | awk -v t="$table" '$1==t{print $2}')
+            a=$(printf '%s\n' "$actual" | awk -v t="$table" '$1==t{print $2}')
+            [ -n "$p" ] && [ -n "$q" ] && [ -n "$a" ] || { echo "MISSING count for $table" >&2; ok=0; continue; }
+            case "$table" in
+                flows|flows_aggregated)
+                    # These tables have TTLs (3d raw, 7d aggregates). A restore can
+                    # legitimately drop rows that expired between backup and restore;
+                    # exact parity is not a valid invariant for them.
+                    [ "$a" -gt 0 ] 2>/dev/null && [ "$a" -le "$q" ] 2>/dev/null || { echo "OUT OF RANGE $table: restored $a, snapshot max $q" >&2; ok=0; }
+                    echo "  TTL table $table: restored $a <= snapshot post $q (expired rows may be absent)"
+                    ;;
+                *)
+                    if [ "$p" = "$q" ]; then
+                        [ "$a" = "$p" ] || { echo "MISMATCH $table: restored $a, snapshot $p" >&2; ok=0; }
+                    else
+                        [ "$a" -ge "$p" ] 2>/dev/null && [ "$a" -le "$q" ] 2>/dev/null || { echo "OUT OF RANGE $table: restored $a, expected $p..$q" >&2; ok=0; }
+                    fi
+                    ;;
+            esac
+        done
+        [ "$ok" = 1 ] || { echo "MISMATCH: restored snapshot is outside the backup-time bounds" >&2; exit 1; }
+        echo "PASS: restored snapshot is within the pre/post backup bounds (exact for TTL-free tables)."
+    else
+        echo "WARNING: no snapshot .counts file for '$name'; this backup predates snapshot-count verification."
+        echo "Live-now counts are shown for context only; they are NOT a valid snapshot comparison:"
+        ch "SELECT 'flows' AS table, count() AS live_now FROM weirvern.flows \
+UNION ALL SELECT 'netflow_anomalies', count() FROM weirvern.netflow_anomalies \
+UNION ALL SELECT 'flows_aggregated', count() FROM weirvern.flows_aggregated"
+    fi
     echo
-    echo "the two columns must match, table for table. Inspect freely, then drop the scratch:"
+    echo "inspect freely, then drop the scratch:"
     echo "  kubectl -n $NAMESPACE exec $POD -- clickhouse-client -q 'DROP DATABASE weirvern_restore'"
 }
 
@@ -75,7 +138,7 @@ cmd_prune() {
     name=$1
     valid_name "$name" || die "refusing the backup name '$name'"
     in_pod "test -d /var/lib/clickhouse/$BASE/$name" || die "no such backup: $name"
-    in_pod "rm -rf /var/lib/clickhouse/$BASE/$name"
+    in_pod "rm -rf /var/lib/clickhouse/$BASE/$name /var/lib/clickhouse/$BASE/$name.counts"
     echo "pruned $BASE/$name"
 }
 
