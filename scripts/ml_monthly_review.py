@@ -78,6 +78,13 @@ def main() -> int:
 
     now = datetime.now(UTC)
     next_review = (now + timedelta(days=30)).date().isoformat()
+    # A review is a tracked document. Host addresses belong in the live view, not in a file
+    # that gets committed: the sanitation gate rejects real private addresses in the tree.
+    # Keep the unknown-role COUNT; the names stay available from /api/ml/coverage.
+    roles = coverage.get("roles")
+    if isinstance(roles, dict):
+        roles["top_unknown"] = []
+        roles["top_unknown_redacted"] = "live view only; not written to the archive"
     report = review.build_report(
         generated_at=now, boards=_boards(), slo=slo, coverage=coverage,
         cards=card_rows, calibration=calibration, verification=verification,

@@ -80,6 +80,9 @@ WORKDIR /app
 # and there is no repo-level schema directory to add.
 COPY pyproject.toml README.md LICENSE ./
 COPY weirvern ./weirvern
+# OP-3: the archived monthly reviews are read by /api/ml/review. They are docs, not package
+# data, so they need an explicit copy; without this the dashboard correctly says no archive.
+COPY docs/reviews ./docs/reviews
 RUN pip install --no-cache-dir .
 
 # Non-root runtime (lesson: the container ran as root in v1–v19). The UID must
