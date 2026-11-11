@@ -14,4 +14,5 @@ CREATE TABLE IF NOT EXISTS weirvern.fleet_audit (
     reason   String,
     actor    String
 ) ENGINE = MergeTree()
-ORDER BY (at, scope, action, target);
+ORDER BY (at, scope, action, target)
+TTL at + INTERVAL 365 DAY;

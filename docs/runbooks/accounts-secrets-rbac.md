@@ -11,6 +11,9 @@
   does not disclose whether the account exists.
 - The operator token is a break-glass write credential, not a user account. It is never rendered
   in a URL and is not logged.
+- Successful and rejected sign-ins, and sign-outs, append `scope=auth` rows to the write trail
+  (actor, target, reason, time). The credential is never part of that row.
+- The write trail has a 365-day TTL; it is append-only and the GUI exposes only its read route.
 
 ## Tokens, passwords and secrets
 

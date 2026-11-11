@@ -421,6 +421,9 @@ def evidence_payload(d: dict) -> dict:
         "window_end": _jsonable(d.get("window_end")),
         "anomaly": d.get("anomaly"),
         "flow_summary": _summary(d),
+        # Every raw source behind the evidence, with its own age and state. The page must not
+        # present a verdict as fresh when a source is stale, failed or simply absent.
+        "source_freshness": d.get("source_freshness") or {},
         "flows": evidence_rows(d.get("flows"), [
             "time_flow_start", "dst_addr", "dst_port", "proto", "bytes",
             "packets", "duration_ms"]),

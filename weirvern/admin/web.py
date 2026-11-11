@@ -3243,6 +3243,21 @@ def _build_handler(ctx: GuiContext):
                                 "must_change": False, "via": ""})
             self._json(payload)
 
+        def _audit_auth(self, action: str, username: str, reason: str) -> None:
+            """Append the authentication fact without ever touching the credential.
+
+            The write trail is the operator's audit surface; a sign-in is a privileged action
+            even when it fails. A failed audit write must not turn a valid sign-in into an
+            error -- the same contract as settings and fleet writes.
+            """
+            try:
+                with self._with_client() as ch:
+                    fleet_store.write_audit(
+                        ch, scope="auth", action=action, target=(username or "(empty)"),
+                        reason=reason, actor=(username or "(anonymous)"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("authentication audit write failed: %s", exc)
+
         def _login(self) -> None:
             """Verify a username and password, and mint a session.
 
@@ -3284,6 +3299,7 @@ def _build_handler(ctx: GuiContext):
                         time.sleep(delay)
                 logger.warning("rejected a sign-in for %r from %s",
                                username or "(empty)", addr or "unknown")
+                self._audit_auth("login", username, "rejected")
                 return self._json({
                     "ok": False,
                     "error": "the username or password is not correct",
@@ -3294,6 +3310,7 @@ def _build_handler(ctx: GuiContext):
                                           must_change=record.must_change)
             token = ctx.sessions.create(identity)
             logger.info("signed in %s from %s", record.username, addr or "unknown")
+            self._audit_auth("login", record.username, "signed in")
             self._json({
                 "ok": True, "session": token, "username": identity.username,
                 "role": identity.role, "must_change": identity.must_change,
@@ -3315,6 +3332,7 @@ def _build_handler(ctx: GuiContext):
             if sessions is not None:
                 sessions.revoke(gui_auth.session_from_request(self))
             logger.info("signed out %s", ident.username)
+            self._audit_auth("logout", ident.username, "signed out")
             self._json({"ok": True})
 
         def _password(self) -> None:

@@ -37,7 +37,7 @@ import pytest
 from weirvern.admin import users as users_mod
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB = ROOT / "weirvern" / "admin" / "web" / "web.py"
+WEB = ROOT / "weirvern" / "admin" / "web.py"
 
 
 # ── a fake cluster client, duck-typed to what UserStore uses ────────────────────────────────
@@ -1466,3 +1466,20 @@ def test_the_open_gate_is_a_WARNING_not_a_debug_line(caplog):
     assert any("login gate is OFF" in r.message for r in caplog.records), (
         f"an unreadable store logged nothing at WARNING: {[r.message for r in caplog.records]}"
     )
+
+# ── 4. the audit trail records authentication without the credential ───────────────────────
+
+def test_login_and_logout_append_auth_audit_rows():
+    """A sign-in is a privileged action; the trail must not depend on the process log surviving.
+
+    The route cannot be driven over a socket in this suite, so the property is asserted on the
+    shipped source in the narrowest way: both the success/failure login path and logout call the
+    auth audit helper, and the helper writes scope="auth" with no password argument.
+    """
+    src = WEB.read_text()
+    assert 'self._audit_auth("login", username, "rejected")' in src
+    assert 'self._audit_auth("login", record.username, "signed in")' in src
+    assert 'self._audit_auth("logout", ident.username, "signed out")' in src
+    helper = src[src.index("def _audit_auth"):src.index("def _login")]
+    assert 'scope="auth"' in helper
+    assert "password" not in helper.lower(), "the auth audit helper must never receive a password"

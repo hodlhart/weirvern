@@ -2576,6 +2576,66 @@ def incident_detail(client, src_addr: str, episode_start: str, settings=None) ->
     }
 
 
+SOURCE_FRESHNESS_SECONDS = 900
+SOURCE_CLOCK_SKEW_SECONDS = 120
+
+
+def classify_source(count: int | None, age_s: float | None) -> dict:
+    """Turn one source's row count and age into a word the operator can act on.
+
+    An absent source is not a clean source. `not measured` covers a table that returned no row
+    (including a read failure); `failed` covers a future timestamp, which is a clock fault, not
+    freshness. The evidence page renders these words verbatim instead of turning them into zero.
+    """
+    if count is None:
+        return {"state": "unknown", "reason": "the source could not be read", "age_s": None}
+    if int(count) <= 0:
+        return {"state": "not measured", "reason": "no records in the source", "age_s": None}
+    if age_s is None:
+        return {"state": "unknown", "reason": "the source has rows but no readable age",
+                "age_s": None}
+    if age_s < -SOURCE_CLOCK_SKEW_SECONDS:
+        return {"state": "failed", "reason": "newest record is in the future (clock fault)",
+                "age_s": round(float(age_s), 1)}
+    if age_s > SOURCE_FRESHNESS_SECONDS:
+        return {"state": "stale", "reason": f"newest record is {_human_age(age_s)} old",
+                "age_s": round(float(age_s), 1)}
+    return {"state": "fresh", "reason": f"newest record is {_human_age(age_s)} old",
+            "age_s": round(float(age_s), 1)}
+
+
+def source_freshness(client) -> dict:
+    """The age of every raw source the evidence page reads, measured at the source.
+
+    The page already says which model fired; this says whether the inputs behind it were
+    arriving. A source that cannot be read or has no rows is `not measured`, never fresh.
+    """
+    sources = {
+        "flows": ("weirvern.flows", "time_flow_start"),
+        "zeek_conn": ("weirvern.zeek_conn", "ts"),
+        "zeek_ssl": ("weirvern.zeek_ssl", "ts"),
+        "zeek_dns": ("weirvern.zeek_dns", "ts"),
+        "zeek_notice": ("weirvern.zeek_notice", "ts"),
+    }
+    out: dict[str, dict] = {}
+    for name, (table, column) in sources.items():
+        try:
+            # max() only: a full count() on a billion-row flow table is a scan this page cannot
+            # afford. An empty table returns the epoch, which is `not measured`, not "56 years
+            # stale"; a real timestamp carries its own age.
+            rows = client.query(
+                f"SELECT max({column}), dateDiff('second', max({column}), now()) FROM {table}"
+            ).result_rows
+            newest, age = (rows[0][0], rows[0][1]) if rows else (None, None)
+            has_rows = newest is not None and getattr(newest, "year", 1970) > 1970
+            out[name] = classify_source(1 if has_rows else 0, age if has_rows else None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("source freshness %s failed: %s", name, exc)
+            out[name] = {"state": "unknown", "reason": "the source could not be read",
+                         "age_s": None}
+    return out
+
+
 def alert_evidence(client, src_addr: str, window_start: str,
                    window_end: str | None = None) -> dict:
     """The RAW records behind one alert -- the actual pivot.
@@ -2717,6 +2777,9 @@ def alert_evidence(client, src_addr: str, window_start: str,
         "ORDER BY ts LIMIT 50",
         params, "notice",
     )
+    # THE INPUTS BEHIND THE VERDICT. A model can only be as current as the sources feeding it;
+    # an alert whose window is inside a gap must say that, not present a fresh-looking score.
+    out["source_freshness"] = source_freshness(client)
     return out
 
 

@@ -104,7 +104,7 @@ def backup_age_hours(directory: Path) -> float | None:
         return None
 
 
-def collect(host: str = "weirvern.home") -> list[Slo]:
+def collect(host: str = "sensor.example") -> list[Slo]:
     ingest = _query("SELECT dateDiff('second', max(timestamp), now()) FROM weirvern.flows")
     models = _query("SELECT dateDiff('second', max(trained_at), now()) FROM weirvern.ml_models")
     scored = _query("SELECT dateDiff('second', max(computed_at), now()) FROM weirvern.ml_window_scores")
@@ -149,7 +149,7 @@ def collect(host: str = "weirvern.home") -> list[Slo]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--host", default="weirvern.home")
+    ap.add_argument("--host", default="sensor.example")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     if not os.environ.get("WEIRVERN_SENSOR_HOST"):

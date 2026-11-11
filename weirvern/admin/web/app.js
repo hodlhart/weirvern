@@ -3697,11 +3697,24 @@ async function loadEvidence(addr, start, end) {
         ack: ["open", "acknowledged"],
         unavailable: ["unknown", "review state could not be read"],
       }[state] || ["open", "not reviewed yet"];
+      // Source freshness is part of the evidence, not a footer. A verdict built on a stale or
+      // unreadable source must say so in the same chain as the detection, and "not measured" is
+      // a state of its own -- never zero flows and never a green check.
+      const sf = d.source_freshness || {};
+      const sfRows = Object.entries(sf).map(([name, v]) => {
+        const state = (v && v.state) || "unknown";
+        return `${name}: ${state}${v && v.reason ? ` (${v.reason})` : ""}`;
+      });
+      const sfState = Object.values(sf).some((v) => v && (v.state === "failed" || v.state === "unknown"))
+        ? "unknown"
+        : (Object.values(sf).some((v) => v && v.state === "stale") ? "open" : "known");
       const stages = [
         ["observed", "observed", s
           ? `${Number(s.flows || 0).toLocaleString()} flows \u00b7 ${fmtBytes(s.bytes)} \u00b7 ` +
             `${s.unique_destinations ?? "\u2014"} destinations in this window`
-          : "no flow records in this window", s ? "known" : "unknown"],
+          : "unknown \u2014 no flow record was read for this window", s ? "known" : "unknown"],
+        ["sources", "sources", sfRows.length ? sfRows.join(" \u00b7 ")
+          : "not measured \u2014 no source freshness was returned", sfState],
         ["detected", "detected", a
           ? `${sevText(a.severity) || "\u2014"} \u00b7 score ` +
             `${Number(a.anomaly_score ?? 0).toFixed(3)} \u00b7 ${a.detected_by_models || "\u2014"}` +
@@ -3744,6 +3757,7 @@ async function loadEvidence(addr, start, end) {
     verdict.appendChild(el("p", { class: "muted" }, [
       el("span", {}, [sevCell(d.anomaly.severity)]),
       el("span", { text: `  score ${(d.anomaly.anomaly_score ?? 0).toFixed(3)}` }),
+      el("span", { text: `  · decision value, not a probability` }),
       el("span", { text: `  · models: ${d.anomaly.detected_by_models || "—"}` }),
     ]));
     if (d.anomaly.baseline_comparison) {
