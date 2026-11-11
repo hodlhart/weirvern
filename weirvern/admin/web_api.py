@@ -643,6 +643,16 @@ def models_payload(data: dict) -> dict:
                         for row in data.get("model_cards", [])],
         "model_cards_available": data.get("model_cards_available", False),
         "model_cards_reason": data.get("model_cards_reason", ""),
+        # CE-4: the fixed-budget report's verification fields. No live auto-label evidence is
+        # wired into this read yet; say `not measured` rather than presenting a silent zero.
+        "verification": data.get("verification", {
+            "available": False,
+            "reason": "no auto-label verification report is attached to the live view",
+            "verified_attack_windows": None,
+            "verified_negative_hours": None,
+            "verification_coverage": None,
+            "live_precision": "not measured",
+        }),
         "points": [],
     }
     for pt in data.get("points", []):

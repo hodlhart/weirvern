@@ -451,6 +451,10 @@ def _build_handler(ctx: GuiContext):
                 return self._fingerprints(query)
             if path == "/api/models":
                 return self._models(query)
+            if path == "/api/ml/coverage":
+                return self._ml_coverage()
+            if path == "/api/ml/slo":
+                return self._ml_slo()
             if path == "/api/models/calibration":
                 return self._models_calibration()
             if path == "/api/models/shadow":
@@ -864,6 +868,31 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
+            self._json(data)
+
+        def _ml_slo(self) -> None:
+            """OP-1: the operating numbers, with window/source and explicit not-measured states."""
+            try:
+                with self._with_client() as client:
+                    from weirvern.models import quality  # noqa: PLC0415
+                    data = quality.report(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot read the ML SLO report: {exc}",
+                                   "windows": [], "live_precision": "not measured"})
+            self._json(data)
+
+        def _ml_coverage(self) -> None:
+            """GT-3: the source/role truth report. Read-only and explicitly unavailable on failure."""
+            try:
+                with self._with_client() as client:
+                    from weirvern.models import source_coverage  # noqa: PLC0415
+                    data = source_coverage.collect(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot read source coverage: {exc}",
+                                   "sources": [], "roles": {}, "models": [],
+                                   "promotion_ok": False})
             self._json(data)
 
         def _models(self, query: dict) -> None:

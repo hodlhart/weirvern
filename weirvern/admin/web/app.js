@@ -6031,6 +6031,93 @@ function renderModelCards(data) {
   }
 }
 
+/* CE-4: verified evidence is synthetic/canary/background; weak and unknown are named. */
+function renderVerification(v) {
+  const note = document.getElementById("m-verify");
+  if (!note) return;
+  if (!v || v.available === false) {
+    note.textContent = "Not measured: " + ((v && v.reason) || "no verification report") +
+      ". Weak labels are not counted as verified; live precision is not measured without an oracle.";
+    return;
+  }
+  const fmt = (x) => (x === null || x === undefined ? "not measured" : String(x));
+  note.textContent = `Verified attacks: ${fmt(v.verified_attack_windows)} · verified negative hours: ` +
+    `${fmt(v.verified_negative_hours)} · coverage: ${fmt(v.verification_coverage)} · ` +
+    `live precision: ${v.live_precision || "not measured"}`;
+}
+
+/* OP-1: one row per metric, one column per window. A metric absent from a window says
+ * "not measured" in that cell; it never becomes a zero. */
+function renderMlSlo(data) {
+  const note = document.getElementById("m-slo-note");
+  const body = document.querySelector("#m-slo tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  if (!data || data.available === false) {
+    note.textContent = "Unavailable: " + ((data && data.reason) || "the SLO report was not read");
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+      text: "No metric can be represented as measured." })]));
+    return;
+  }
+  const windows = data.windows || [];
+  const names = [];
+  for (const w of windows) for (const m of (w.metrics || [])) if (!names.includes(m.name)) names.push(m.name);
+  note.textContent = "Live precision: " + (data.live_precision || "not measured") +
+    ". Missing labels, dead sources and absent channels are named in the cell, not shown as zero.";
+  for (const name of names) {
+    const cells = windows.map((w) => (w.metrics || []).find((m) => m.name === name));
+    const first = cells.find(Boolean) || {};
+    const fmt = (v) => (v === null || v === undefined ? "not measured" : String(v));
+    body.appendChild(el("tr", {}, [
+      el("td", { text: name }),
+      ...cells.map((m) => el("td", { class: "num", text: fmt(m && m.value) })),
+      el("td", { class: "muted", text: fmt(first.target) }),
+      el("td", { text: first.state || "not measured" }),
+      el("td", { class: "muted", text: first.source || "—" }),
+    ]));
+  }
+}
+
+/* GT-3: the source/role truth card. An empty source is NOT a quiet network; it is either
+ * `not measured` (zero rows) or `unknown` (a failed read), and the card says which. Unknown-role
+ * hosts are named as a configuration gap. */
+function renderSourceCoverage(data) {
+  const note = document.getElementById("m-cov-note");
+  const body = document.querySelector("#m-cov tbody");
+  const roles = document.getElementById("m-roles");
+  if (!note || !body) return;
+  body.replaceChildren();
+  if (!data || data.available === false) {
+    note.textContent = "Unavailable: " + ((data && data.reason) || "source coverage was not read");
+    if (roles) roles.textContent = "";
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 6 },
+      text: "No source can be represented as covered." })]));
+    return;
+  }
+  const sources = data.sources || [];
+  note.textContent = (data.promotion_ok ? "All required sources usable. " : "Promotion blocked: required source missing. ") +
+    sources.length + " source(s) measured; zero rows, failed reads and stale data are named, not shown as clear.";
+  for (const src of sources) {
+    const state = String(src.state || "unknown");
+    body.appendChild(el("tr", {}, [
+      el("td", { text: src.name || "—" }),
+      el("td", { class: "num", text: src.rows == null ? "not measured" : Number(src.rows).toLocaleString() }),
+      el("td", { text: src.last ? fmtTime(src.last) : "not measured" }),
+      el("td", { text: state }),
+      el("td", { text: src.usable ? "yes" : "no" }),
+      el("td", { class: "muted", text: src.reason || "—" }),
+    ]));
+  }
+  if (roles) {
+    const r = data.roles || {};
+    const counts = (r.counts || []).map((x) => `${x.role} ${x.count}`).join(" · ");
+    const top = (r.top_unknown || []).join(", ");
+    roles.textContent = "Roles: " + (counts || "not measured") +
+      (r.unknown == null ? " · unknown count not measured" : ` · unknown ${r.unknown}`) +
+      (top ? ` · top unknown: ${top}` : "");
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -6047,7 +6134,14 @@ async function loadModels() {
   // so a failure here must not take the production model view down.
   const posturePromise = getJSON("/api/asset-posture")
     .catch((e) => ({ available: false, reason: String(e && e.message || e) }));
+  const coveragePromise = getJSON("/api/ml/coverage")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e),
+                     sources: [], roles: {}, models: [], promotion_ok: false }));
+  const sloPromise = getJSON("/api/ml/slo")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e), windows: [] }));
   const data = await getJSON("/api/models?hours=" + encodeURIComponent(hours));
+  renderMlSlo(await sloPromise);
+  renderSourceCoverage(await coveragePromise);
   renderCalibration(await calPromise);
   renderShadow(await shadowPromise);
   renderAssetPosture(await posturePromise);
@@ -6071,6 +6165,7 @@ async function loadModels() {
 
   mRenderChips();
   renderModelCards(data);
+  renderVerification(data.verification || {});
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});

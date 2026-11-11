@@ -33,6 +33,13 @@ DEFAULT_BASELINE_MODELS = ("Adaptive Baseline", "Isolation Forest", "Gradient Bo
 # candidate cannot claim a win merely by moving the unbounded alert count.
 RAW_ALERT_SCORE = 0.60
 
+# CE-4: only machine-verified evidence may pass the gate. `weak` is a label with unknown
+# accuracy; `unknown` is a label whose source was not recorded. Neither is a verified positive.
+VERIFIED_SOURCES = frozenset({"synthetic", "canary", "background"})
+MIN_VERIFIED_ATTACK_WINDOWS = 1
+MIN_VERIFIED_NEGATIVE_HOURS = 0.1
+POLICY_VERSION = "ce4-v1"
+
 
 @dataclass(frozen=True)
 class ScoreRow:
@@ -86,6 +93,13 @@ class Metrics:
     latency_min: float | None = None
     explanation_coverage: float | None = None
     labels_available: bool = False
+    verified_attack_windows: int = 0
+    verified_negative_hours: float | None = None
+    verification_coverage: float | None = None
+    weak_only_selected: int = 0
+    unlabelled_selected: int = 0
+    clean_replay_false_alarms_per_host_day: float | None = None
+    live_precision: str = "not measured"
     distribution: dict[str, dict[str, float]] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
 
@@ -99,7 +113,16 @@ class Metrics:
             "false_alarms_per_host_day": _rounded(self.false_alarms_per_host_day),
             "episode_count": self.episode_count, "latency_min": _rounded(self.latency_min),
             "explanation_coverage": _rounded(self.explanation_coverage),
-            "labels_available": self.labels_available, "distribution": self.distribution,
+            "labels_available": self.labels_available,
+            "verified_attack_windows": self.verified_attack_windows,
+            "verified_negative_hours": _rounded(self.verified_negative_hours),
+            "verification_coverage": _rounded(self.verification_coverage),
+            "weak_only_selected": self.weak_only_selected,
+            "unlabelled_selected": self.unlabelled_selected,
+            "clean_replay_false_alarms_per_host_day":
+                _rounded(self.clean_replay_false_alarms_per_host_day),
+            "live_precision": self.live_precision,
+            "distribution": self.distribution,
             "reasons": list(self.reasons),
         }
 
@@ -238,33 +261,77 @@ def measure(windows: dict[tuple[datetime, str], Window], *, models: Iterable[str
     days_measured = max(1, len(by_day) if not days else min(days, len(by_day) or 1))
     raw = sum(1 for score in scores.values() if score >= RAW_ALERT_SCORE)
     label_index = _label_index(labels)
+
+    def _tier(item: dict[str, Any]) -> str:
+        source = str(item.get("label_source") or "").strip().lower()
+        if source in VERIFIED_SOURCES:
+            return "verified"
+        if source == "weak":
+            return "weak"
+        return "unknown"
+
+    def _label_kind(item: dict[str, Any]) -> str:
+        return str(item.get("label") or "").strip().lower()
+
+    verified_attack = {key for key, item in label_index.items()
+                       if _label_kind(item) == "attack" and _tier(item) == "verified"}
+    verified_benign = {key for key, item in label_index.items()
+                       if _label_kind(item) == "benign" and _tier(item) == "verified"}
     labels_available = bool(label_index)
-    attack = {key for key, item in label_index.items() if item.get("label") == "attack"}
-    benign = {key for key, item in label_index.items() if item.get("label") == "benign"}
-    true_selected = [item for item in selected if (item.window_start, item.src_addr) in attack]
-    false_selected = [item for item in selected if (item.window_start, item.src_addr) in benign]
+    true_selected = [item for item in selected
+                     if (item.window_start, item.src_addr) in verified_attack]
+    false_selected = [item for item in selected
+                      if (item.window_start, item.src_addr) in verified_benign]
+    selected_label_tiers = [
+        _tier(label_index[(item.window_start, item.src_addr)])
+        for item in selected if (item.window_start, item.src_addr) in label_index
+    ]
+    weak_only_selected = sum(1 for tier in selected_label_tiers if tier in ("weak", "unknown"))
+    unlabelled_selected = sum(
+        1 for item in selected if (item.window_start, item.src_addr) not in label_index
+    )
+    verification_coverage = (
+        (len(selected) - weak_only_selected - unlabelled_selected) / len(selected)
+        if selected else None
+    )
+    negative_hours = 0.0
+    for _key, item in label_index.items():
+        if _label_kind(item) == "benign" and _tier(item) == "verified":
+            try:
+                negative_hours += max(0.0, float(item.get("duration_min") or 5.0)) / 60.0
+            except (TypeError, ValueError):
+                negative_hours += 5.0 / 60.0
+    clean_replay_false = [
+        item for item in false_selected
+        if str((label_index.get((item.window_start, item.src_addr)) or {})
+               .get("label_source") or "").lower() == "background"
+    ]
     precision = (len(true_selected) / len(selected)) if labels_available and selected else None
     detected = {(item.window_start, item.src_addr) for item in true_selected}
-    detection_rate = (len(detected) / len(attack)) if labels_available and attack else None
+    detection_rate = (len(detected) / len(verified_attack)) if labels_available and verified_attack else None
     # The denominator is every observed host-day, not just the selected slots: otherwise a
     # candidate that alerts on one host looks like it has the same false-alarm rate as one
     # that alerts across ten.
     host_days = {(window.src_addr, _day(window.window_start)) for window in windows.values()}
     false_per_host_day = (len(false_selected) / len(host_days)) if labels_available and host_days else None
+    clean_replay_false_per_host_day = (
+        len(clean_replay_false) / len(host_days) if labels_available and host_days else None
+    )
     latency = None
     if labels_available and true_selected:
         starts: list[float] = []
-        for item in true_selected:
-            label = label_index.get((item.window_start, item.src_addr)) or {}
+        for selected_item in true_selected:
+            label = label_index.get((selected_item.window_start, selected_item.src_addr)) or {}
             start = as_datetime(label.get("start"))
             if start is not None:
-                starts.append(max(0.0, (item.window_start - start).total_seconds() / 60.0))
+                starts.append(max(0.0, (selected_item.window_start - start).total_seconds() / 60.0))
         if starts:
             latency = sum(starts) / len(starts)
     explanation = None
     if explanations is not None and selected:
-        explanation = sum(1 for item in selected
-                          if bool(explanations.get((item.window_start, item.src_addr)))) / len(selected)
+        explanation = sum(1 for selected_item in selected
+                          if bool(explanations.get((selected_item.window_start,
+                                                    selected_item.src_addr)))) / len(selected)
     return Metrics(
         name=name, budget_per_day=int(budget_per_day), days=days_measured,
         windows=len(windows), selected=len(selected),
@@ -273,11 +340,18 @@ def measure(windows: dict[tuple[datetime, str], Window], *, models: Iterable[str
         false_alarms_per_host_day=false_per_host_day,
         episode_count=_episodes(selected, gap_minutes), latency_min=latency,
         explanation_coverage=explanation, labels_available=labels_available,
+        verified_attack_windows=len(verified_attack),
+        verified_negative_hours=round(negative_hours, 4) if labels_available else None,
+        verification_coverage=verification_coverage,
+        weak_only_selected=weak_only_selected,
+        unlabelled_selected=unlabelled_selected,
+        clean_replay_false_alarms_per_host_day=clean_replay_false_per_host_day,
         distribution=score_distribution(windows.values(), models),
     )
 
 
-def promote(baseline: Metrics, candidate: Metrics, *, tolerance: float = 0.0) -> Decision:
+def promote(baseline: Metrics, candidate: Metrics, *, tolerance: float = 0.0,
+            coverage: dict[str, Any] | None = None) -> Decision:
     """The promotion gate. Conservative by construction.
 
     A candidate must be measured on labels, must not regress detection, precision or false
@@ -285,8 +359,33 @@ def promote(baseline: Metrics, candidate: Metrics, *, tolerance: float = 0.0) ->
     caps both sides to the same number of slots, so a candidate cannot win by flooding.
     """
     reasons: list[str] = []
+    # GT-3: a model cannot be promoted on a source that was not measured. This is deliberately
+    # separate from model accuracy: a healthy score over a dead feed is not evidence.
+    if coverage is not None and not coverage.get("promotion_ok", False):
+        missing = coverage.get("required_missing") or []
+        reasons.append("source coverage is not usable"
+                       + (": " + ", ".join(str(x) for x in missing) if missing else ""))
     if not candidate.labels_available:
         reasons.append("no labels: precision, detection and false alarms are unmeasured")
+    # CE-4: verified evidence, not a label count. A weak-only or unlabelled candidate is not
+    # measurable no matter how attractive its alert count looks.
+    if candidate.verified_attack_windows < MIN_VERIFIED_ATTACK_WINDOWS:
+        reasons.append(
+            f"verified attack windows {candidate.verified_attack_windows} < "
+            f"{MIN_VERIFIED_ATTACK_WINDOWS}; weak/unknown labels are not ground truth"
+        )
+    if (candidate.verified_negative_hours is None
+            or candidate.verified_negative_hours < MIN_VERIFIED_NEGATIVE_HOURS):
+        reasons.append(
+            f"verified negative hours {candidate.verified_negative_hours} < "
+            f"{MIN_VERIFIED_NEGATIVE_HOURS}"
+        )
+    if candidate.weak_only_selected and candidate.verification_coverage is not None \
+            and candidate.verification_coverage <= 0:
+        reasons.append("every selected window has only weak or unknown labels")
+    if (candidate.clean_replay_false_alarms_per_host_day is not None
+            and candidate.clean_replay_false_alarms_per_host_day > candidate.budget_per_day):
+        reasons.append("clean-replay false alarms exceed the page budget")
     if not baseline.labels_available:
         reasons.append("baseline has no labels: there is no comparison to win")
     if candidate.detection_rate is None or baseline.detection_rate is None:

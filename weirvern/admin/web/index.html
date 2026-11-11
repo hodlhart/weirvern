@@ -670,6 +670,44 @@
       </div>
     </div>
 
+    <div class="card">
+      <h2>Verification coverage <span class="muted">machine-generated evidence, not human labels</span></h2>
+      <p class="muted" id="m-verify">loading…</p>
+    </div>
+
+    <!--
+      OP-1: THE OPERATING NUMBERS, NOT A DECORATIVE CHART. Every row names its window, source
+      and target; live precision is `not measured` without an oracle, and a missing source is
+      never drawn as zero.
+    -->
+    <div class="card">
+      <h2>ML quality SLO <span class="muted">7 / 14 / 30 days</span></h2>
+      <p class="muted" id="m-slo-note">loading…</p>
+      <div class="tablewrap">
+        <table id="m-slo">
+          <thead><tr><th>Metric</th><th>7 d</th><th>14 d</th><th>30 d</th><th>Target</th><th>State</th><th>Source</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!--
+      GT-3: SOURCE COVERAGE IS NOT A MODEL SCORE. A zero-row source is `not measured`, not a
+      quiet network; an unknown-role host is a configuration gap, not a workstation. This card
+      is the guard before training, scoring and promotion.
+    -->
+    <div class="card">
+      <h2>Source coverage <span class="muted">before training, scoring and promotion</span></h2>
+      <p class="muted" id="m-cov-note">loading…</p>
+      <div class="tablewrap">
+        <table id="m-cov">
+          <thead><tr><th>Source</th><th>Rows</th><th>Newest row</th><th>State</th><th>Usable</th><th>Why</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" id="m-roles"></p>
+    </div>
+
     <!--
       STALENESS FIRST, because it is the question this view could not answer. Isolation Forest,
       Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour interval and

@@ -27,9 +27,11 @@ def _fixture():
     labels = [
         {"src_addr": "198.51.100.10", "window_start": base.isoformat(),
          "label": "attack", "start": (base - timedelta(minutes=5)).isoformat(),
-         "scenario": "port_scan"},
-        {"src_addr": "198.51.100.13", "window_start": base.isoformat(), "label": "benign"},
-        {"src_addr": "198.51.100.14", "window_start": base.isoformat(), "label": "benign"},
+         "scenario": "port_scan", "label_source": "synthetic"},
+        {"src_addr": "198.51.100.13", "window_start": base.isoformat(), "label": "benign",
+         "label_source": "background", "duration_min": 5},
+        {"src_addr": "198.51.100.14", "window_start": base.isoformat(), "label": "benign",
+         "label_source": "background", "duration_min": 5},
     ]
     return base, _rows(baseline, base), labels
 
@@ -121,3 +123,20 @@ def test_distribution_is_over_every_window_not_only_alerts():
     dist = evaluation.score_distribution(windows.values(), ("Isolation Forest",))
     assert dist["Isolation Forest"]["count"] == 3
     assert "p99" in dist["Isolation Forest"]
+
+
+def test_weak_only_labels_cannot_promote():
+    base, rows, labels = _fixture()
+    weak = [dict(item) for item in labels]
+    for item in weak:
+        item["label_source"] = "weak"
+    windows = evaluation.build_windows(rows)
+    baseline = evaluation.measure(windows, models=("Adaptive Baseline",), budget_per_day=1,
+                                  name="baseline", labels=weak)
+    candidate = evaluation.measure(windows, models=("Adaptive Baseline",), budget_per_day=1,
+                                   name="candidate", labels=weak)
+    decision = evaluation.promote(baseline, candidate)
+    assert not decision.promote
+    assert any("verified attack windows" in reason for reason in decision.reasons)
+    assert any("verified negative hours" in reason for reason in decision.reasons)
+    assert candidate.verified_attack_windows == 0

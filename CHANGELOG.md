@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.54 — 2026-11-11
+
+SOURCE COVERAGE, QUALITY SLO AND VERIFIED EVIDENCE.
+
+- Adds `/api/ml/coverage`: per-source rows/newest/state/usable, unknown-role hosts, and a
+  promotion gate that refuses a missing required source.
+- Adds `/api/ml/slo`: 7/14/30-day alerts/day, precision `not measured`, false alarms, latency,
+  episodes/pageable, drift and shadow freshness.
+- Promotion requires synthetic/canary/background verified evidence; weak-only labels are
+  reported and rejected, and live precision remains `not measured`.
+- Models view shows source coverage, ML quality SLO and verification coverage.
+
 ## 0.23.53 — 2026-11-11
 
 MODEL CARDS: A NAME IN A SCORE IS NOT A MODEL.
