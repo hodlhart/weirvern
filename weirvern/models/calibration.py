@@ -154,6 +154,23 @@ def eligibility(client: Client, settings: Settings) -> dict[str, bool]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("eligibility: could not read model artifact dates (stale gate skipped): %s",
                        exc)
+
+    # PR-1: a calibration score is not permission to serve. The model must also have a current
+    # card whose status is `production`. This is deliberately fail-closed: a missing table, a
+    # retired card and a name nobody registered all produce False. A deployment can see why in
+    # the Models view and in this log line rather than discovering it as silent silence.
+    try:
+        from weirvern.models import cards as _cards  # noqa: PLC0415
+        registered = _cards.registration(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("eligibility: could not read model cards; no model is registered: %s", exc)
+        registered = {}
+    barred = sorted(name for name in out if not registered.get(name, False))
+    if barred:
+        logger.warning("eligibility: %s barred by model card: %s", len(barred), ", ".join(barred))
+    for name in list(out):
+        if not registered.get(name, False):
+            out[name] = False
     return out
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.53 — 2026-11-11
+
+MODEL CARDS: A NAME IN A SCORE IS NOT A MODEL.
+
+- Adds `ml_model_cards` with artifact hash, feature/calibration versions, evaluation and
+  rollback reference, and status (`shadow`/`canary`/`production`/`retired`).
+- Eligibility now requires a current `production` card; a missing or retired card bars the
+  model from the fused score. Existing four families are seeded from measured artifacts;
+  DBSCAN is retired.
+- `/api/models` and Models → Model cards show the card in words.
+
 ## 0.23.34 — 2026-11-04
 
 VR-HDR follow-up: COUNTS WHERE THE VIEW HAS THEM.

@@ -879,6 +879,16 @@ def _build_handler(ctx: GuiContext):
             try:
                 with self._with_client() as client:
                     data = status_mod.model_overview(client, hours=hours, settings=ctx.settings)
+                    # PR-1: the registry is its own read. A broken card query must not hide the
+                    # training history, and a broken history must not make the cards look absent.
+                    try:
+                        from weirvern.models import cards as _cards  # noqa: PLC0415
+                        data["model_cards"] = _cards.current_cards(client)
+                        data["model_cards_available"] = True
+                    except Exception as card_exc:  # noqa: BLE001
+                        data["model_cards"] = []
+                        data["model_cards_available"] = False
+                        data["model_cards_reason"] = f"cannot read the model registry: {card_exc}"
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}"})

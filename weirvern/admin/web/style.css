@@ -1691,3 +1691,8 @@ td.wl-perf-cell .wl-perf-label { display: block; margin-top: 1px; }
   .sl2-gate-head { flex-wrap: wrap; }
 }
 
+
+/* PR-1: a card status is read in words, never by colour alone. Production is the only
+   status that may contribute to the fused score; the word carries that, the colour repeats it. */
+.card-status { font-weight: 600; }
+.card-status.production { color: var(--sev-high); }

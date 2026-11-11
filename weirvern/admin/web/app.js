@@ -5985,6 +5985,52 @@ function renderAssetPosture(data) {
   }
 }
 
+/* ── model cards (PR-1) ─────────────────────────────────────────────────────────────────────
+ * A CARD IS THE ANSWER TO "WHAT EXACTLY IS SCORING?". The name in a row is not enough: the
+ * artifact hash, feature and calibration versions, evaluation and rollback reference are the
+ * identity. A status that is not `production` means the name must not contribute to the fused
+ * score; the worker enforces that, and this table says so in words.
+ */
+function renderModelCards(data) {
+  const note = document.getElementById("m-cards-note");
+  const body = document.querySelector("#m-cards tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  const cards = (data && data.model_cards) || [];
+  if (!data || data.model_cards_available === false) {
+    note.textContent = "Unavailable: " + ((data && data.model_cards_reason) || "the model registry was not read");
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: 9 }, text: "No card can be shown, so no model is represented as registered." }),
+    ]));
+    return;
+  }
+  if (!cards.length) {
+    note.textContent = "No model card is registered. No model may contribute to the fused score.";
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "muted", attrs: { colspan: 9 }, text: "The registry is empty." }),
+    ]));
+    return;
+  }
+  note.textContent = `${cards.length} card(s); only a production card may contribute to the fused score.`;
+  for (const c of cards) {
+    const status = String(c.status || "unknown");
+    const shortHash = c.artifact_hash ? String(c.artifact_hash).slice(0, 12) + "…" : "not recorded";
+    const approved = (c.approved_by ? String(c.approved_by) : "not recorded") +
+      (c.approved_at ? " · " + fmtTime(c.approved_at) : "");
+    body.appendChild(el("tr", {}, [
+      el("td", { text: c.model_name || c.model_id || "—" }),
+      el("td", {}, [el("span", { class: "card-status" + (status === "production" ? " production" : ""), text: status })]),
+      el("td", { text: c.version || "—" }),
+      el("td", { class: "mono", attrs: { title: c.artifact_hash || "" }, text: shortHash }),
+      el("td", { text: c.feature_version || "—" }),
+      el("td", { text: c.calibration_version || "—" }),
+      el("td", { text: c.eval_report_id || "not measured" }),
+      el("td", { text: approved }),
+      el("td", { text: c.rollback_ref || "—" }),
+    ]));
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -6024,6 +6070,7 @@ async function loadModels() {
   if (sum) sum.textContent = data.summary || "";
 
   mRenderChips();
+  renderModelCards(data);
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
   renderScoreDistribution(data.scores || {});

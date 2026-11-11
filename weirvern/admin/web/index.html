@@ -654,6 +654,23 @@
     </div>
 
     <!--
+      PR-1: A NAME IN A SCORE IS NOT A MODEL. The cards below are the durable identity behind
+      each name: the artifact hash, the feature and calibration versions, the evaluation and
+      the rollback reference. A model with no production card is barred from the fused score,
+      so this table is a safety surface, not decoration.
+    -->
+    <div class="card">
+      <h2>Model cards <span class="muted">registry</span></h2>
+      <p class="muted" id="m-cards-note">loading…</p>
+      <div class="tablewrap">
+        <table id="m-cards">
+          <thead><tr><th>Model</th><th>Status</th><th>Version</th><th>Artifact hash</th><th>Feature</th><th>Calibration</th><th>Evaluation</th><th>Owner / approved</th><th>Rollback</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!--
       STALENESS FIRST, because it is the question this view could not answer. Isolation Forest,
       Gradient Boosting and DBSCAN went 16 hours without a retrain against a 6-hour interval and
       this page showed three healthy-looking lines, because it plotted run COUNT rather than

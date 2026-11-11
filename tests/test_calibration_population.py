@@ -16,10 +16,14 @@ class Result:
 
 
 class FakeClient:
-    def __init__(self, population_rows=None, calibration_rows=None, trained_rows=None):
+    def __init__(self, population_rows=None, calibration_rows=None, trained_rows=None,
+                 card_rows=None):
         self.population_rows = population_rows or []
         self.calibration_rows = calibration_rows or []
         self.trained_rows = trained_rows or []
+        self.card_rows = card_rows if card_rows is not None else [
+            _card("Isolation Forest"), _card("DBSCAN"),
+        ]
         self.inserts = []
 
     def query(self, sql, parameters=None):
@@ -30,10 +34,19 @@ class FakeClient:
                           self.calibration_rows)
         if "FROM weirvern.ml_models" in sql:
             return Result(["model_type", "max(trained_at)"], self.trained_rows)
+        if "FROM weirvern.ml_model_cards" in sql:
+            return Result([], self.card_rows)
         raise AssertionError(sql)
 
     def insert(self, table, rows, column_names=None):
         self.inserts.append((table, rows, column_names))
+
+
+def _card(name, status="production"):
+    """The card row shape cards._rows maps positionally; content is what this test needs."""
+    return [name.lower().replace(" ", "-"), name, "v4", "hash", BASE, BASE, "4", "v1",
+            "not_measured", status, "operator", "operator", BASE, "rollback", "use", "out",
+            "limit", BASE]
 
 
 def population():

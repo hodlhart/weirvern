@@ -47,6 +47,7 @@ ml_changepoints | output
 ml_drift | output
 ml_review_adjustments | output
 ml_models | output
+ml_model_cards | output
 ml_temporal_scores | output
 model_actions | excluded
 near_misses | output

@@ -636,6 +636,13 @@ def models_payload(data: dict) -> dict:
         "near_misses": data.get("near_misses", []),
         "near_misses_available": data.get("near_misses_available", False),
         "near_misses_reason": data.get("near_misses_reason", ""),
+        # PR-1: the model card is the durable identity behind a name in the score. The
+        # view renders status and rollback in words; a missing registry is a named failure,
+        # not an empty list that looks like "no models".
+        "model_cards": [{k: _jsonable(v) for k, v in row.items()}
+                        for row in data.get("model_cards", [])],
+        "model_cards_available": data.get("model_cards_available", False),
+        "model_cards_reason": data.get("model_cards_reason", ""),
         "points": [],
     }
     for pt in data.get("points", []):

@@ -26,7 +26,7 @@ scan_one() {
     echo "$OUT/${name}.vuln.json"
 }
 
-WORKER=${WEIRVERN_WORKER_IMAGE:-weirvern-worker:0.23.52}
+WORKER=${WEIRVERN_WORKER_IMAGE:-weirvern-worker:0.23.53}
 SCANNER=${WEIRVERN_SCANNER_IMAGE:-weirvern-scanner:0.14.14}
 WORKER_SCAN=$(scan_one "$WORKER" | tail -1)
 SCANNER_SCAN=$(scan_one "$SCANNER" | tail -1)
