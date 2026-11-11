@@ -4,7 +4,7 @@
 |---|---|
 | Launch date | 2026-11-11 |
 | Version / commit | `0.23.52` / `525f30a` |
-| Deployment | Single-node k3s on `weirvern.home` (CT 111) |
+| Deployment | Single-node k3s on `sensor.example` (CT 111) |
 | Rollback target | `weirvern-worker:0.23.17`; data via `prod-readiness-20261111-044707` |
 | Rollback owner | Weirvern operator |
 | On-call | Single operator; escalation through the operator's normal channel |
