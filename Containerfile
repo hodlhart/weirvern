@@ -11,7 +11,7 @@
 #
 # Lesson from v1–v19: the deployment must NOT install dependencies at container
 # boot. Everything is installed at build time and pinned in pyproject.toml.
-FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 # iproute2 IS A RUNTIME DEPENDENCY, not a debugging convenience.
 #
