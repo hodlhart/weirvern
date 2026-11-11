@@ -455,6 +455,8 @@ def _build_handler(ctx: GuiContext):
                 return self._ml_coverage()
             if path == "/api/ml/slo":
                 return self._ml_slo()
+            if path == "/api/ml/review":
+                return self._ml_review()
             if path == "/api/models/calibration":
                 return self._models_calibration()
             if path == "/api/models/shadow":
@@ -869,6 +871,17 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
             self._json(data)
+
+        def _ml_review(self) -> None:
+            """OP-3: the archived review is read from disk, never recomputed in the GUI."""
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                from weirvern.models import review  # noqa: PLC0415
+                root = Path(__file__).resolve().parents[2]
+                self._json(review.latest_report(root))
+            except Exception as exc:  # noqa: BLE001
+                self._json({"available": False, "reason": f"cannot read the archived review: {exc}"})
 
         def _ml_slo(self) -> None:
             """OP-1: the operating numbers, with window/source and explicit not-measured states."""

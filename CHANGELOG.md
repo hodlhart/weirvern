@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.55 — 2026-11-11
+
+MONTHLY PROGRAM REVIEW: A PASSING REVIEW CANNOT HIDE A BLOCKED CARD.
+
+- Adds `scripts/ml_monthly_review.py`: reads drift/SLO, calibration FAR, source coverage,
+  model cards, verification and shadow freshness, then archives a JSON and Markdown review.
+- A blocked or missing phase card fails the review and is named by id and title.
+- Missing verified attacks, verified negative hours or a generator version fails the review;
+  an unlabelled zero is never accepted.
+- Adds `/api/ml/review` and a Models program-review card showing status, next review and the
+  named blocked cards. No model is deleted; retirement remains a status with provenance.
+
 ## 0.23.54 — 2026-11-11
 
 SOURCE COVERAGE, QUALITY SLO AND VERIFIED EVIDENCE.

@@ -599,6 +599,13 @@ def baselines_payload(data: dict) -> dict:
     }
 
 
+def _latest_review() -> dict:
+    from pathlib import Path
+
+    from weirvern.models import review
+    return review.latest_report(Path(__file__).resolve().parents[2])
+
+
 def models_payload(data: dict) -> dict:
     """Serialise model_overview() for the frontend.
 
@@ -645,6 +652,7 @@ def models_payload(data: dict) -> dict:
         "model_cards_reason": data.get("model_cards_reason", ""),
         # CE-4: the fixed-budget report's verification fields. No live auto-label evidence is
         # wired into this read yet; say `not measured` rather than presenting a silent zero.
+        "review": data.get("review") or _latest_review(),
         "verification": data.get("verification", {
             "available": False,
             "reason": "no auto-label verification report is attached to the live view",

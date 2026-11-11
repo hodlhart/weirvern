@@ -6031,6 +6031,21 @@ function renderModelCards(data) {
   }
 }
 
+/* OP-3: the archive is the decision record. A failed review names every blocked phase card. */
+function renderReview(r) {
+  const note = document.getElementById("m-review");
+  if (!note) return;
+  if (!r || r.available === false) {
+    note.textContent = "No archived review: " + ((r && r.reason) || "not run") +
+      ". A missing review is not a passing review.";
+    return;
+  }
+  const failures = (r.blocked_cards || []).map((c) => `${c.id} ${c.title} (${c.status})`);
+  note.textContent = `Status: ${r.status || "unknown"} · next: ${r.next_review || "not scheduled"} · ` +
+    `decision: ${r.decision || "not recorded"}.` +
+    (failures.length ? ` Blocked: ${failures.join("; ")}` : "");
+}
+
 /* CE-4: verified evidence is synthetic/canary/background; weak and unknown are named. */
 function renderVerification(v) {
   const note = document.getElementById("m-verify");
@@ -6165,6 +6180,7 @@ async function loadModels() {
 
   mRenderChips();
   renderModelCards(data);
+  renderReview(data.review || {});
   renderVerification(data.verification || {});
   renderStaleness(data.staleness || [], data.retrain_interval_h);
   renderTrainingHistory(data.training_history || {});
