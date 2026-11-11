@@ -33,8 +33,8 @@ The card is not complete until the log ends with `SOAK PASS`.
 | Failure | How injected | Expected | Executed |
 |---|---|---|---|
 | Worker restart | delete the worker pod; deployment recreates it | ready in seconds; health green; no data loss | **yes — ready in 3 s**, health green, new pod `weirvern-worker-6d4454fcf6-68m78` |
-| GUI/API failure | scale GUI to zero | console unreachable; API reads fail; restore to one | **partial** — during termination the old pod kept answering, so no clean outage was observed; restore took 17 s |
-| ClickHouse restart | delete the ClickHouse pod; PVC persists | short write gap; schema and data intact; health recovers | no — deferred; a single-node restart can drop in-flight UDP flow records and needs a backup window |
+| GUI/API failure | scale GUI to zero and wait for the pod to disappear | console unreachable; API reads fail; restore to one | **yes — clean outage observed**; restore and healthz 200 took 44 s |
+| ClickHouse restart | delete the ClickHouse pod; PVC persists | short write gap; schema and data intact; health recovers | **yes — ready in 42 s**, health green, 3-day TTL still active; flow count fell 5,169,770 → 5,020,179 as the TTL boundary advanced, not a schema loss. In-flight UDP records during the gap are not recoverable and are recorded as a known gap |
 | Sensor loss | stop the sensor/ingest path; wait past freshness threshold | source reads stale/not measured; no false "clean" | no — requires a second sensor or a controlled segment |
 | Expired certificate | use an expired test cert on a scratch listener | TLS error visible; no silent fallback | no — would require replacing the live cert; do in a scratch namespace |
 | Alert delivery failure | disable Pushover; force an alert | delivery row says `not_configured`; report fails | **yes by configuration** — `PUSHOVER_ENABLED=0`; `slo_report.py` reports a breach, not green |
