@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+from weirvern.models import ripple
 from weirvern.models.ripple import ChannelEvidence, fisher_combined_p, fuse
 
 
@@ -65,3 +66,22 @@ def test_result_is_json_friendly_and_names_contributors():
     assert data["contributors"][0]["channel"] == "dns"
     assert data["pageable"] is False
     assert all(math.isfinite(v) for v in (data["confidence"], data["combined_p"]))
+
+
+def test_empirical_pvalue_and_shadow_adapter():
+    ref = [0.1, 0.2, 0.3, 0.4, 0.5]
+    assert ripple.empirical_pvalue(0.3, ref) == 0.6666666666666666
+    rows = [
+        {"model_name": "GraphSpecialist", "score": 0.9, "family": "graph", "scale": "5m",
+         "model_version": "v1", "freshness_s": 60},
+        {"model_name": "DNSSpecialist", "score": 0.8, "family": "dns", "scale": "1h",
+         "model_version": "v1", "freshness_s": 120},
+    ]
+    evidence = ripple.evidence_from_shadow(rows, reference_by_model={
+        "GraphSpecialist": [0.1, 0.2, 0.3], "DNSSpecialist": [0.1, 0.2, 0.3]})
+    assert len(evidence) == 2
+    assert all(ch.pvalue <= 1.0 for ch in evidence)
+    out = ripple.fuse(evidence)
+    assert out.status in {"ripple", "observation"}
+    # A model without a reference population must not be assigned a fabricated p-value.
+    assert not ripple.evidence_from_shadow([rows[0]], reference_by_model={})

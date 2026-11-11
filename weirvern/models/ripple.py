@@ -158,5 +158,46 @@ def fuse(
                         unknown=unknown, pageable=pageable)
 
 
+def empirical_pvalue(score: float, reference: list[float]) -> float:
+    """Rank-based p-value: no distribution assumption, and an empty reference is not zero."""
+    ref = [float(x) for x in reference if math.isfinite(float(x))]
+    if not ref:
+        return float("nan")
+    return float((1 + sum(1 for x in ref if x >= float(score))) / (len(ref) + 1))
+
+
+def evidence_from_shadow(
+    rows: list[dict[str, Any]],
+    *,
+    reference_by_model: dict[str, list[float]],
+    family_by_model: dict[str, str] | None = None,
+    scale_by_model: dict[str, str] | None = None,
+) -> list[ChannelEvidence]:
+    """Turn shadow rows (model_name, score, computed_at, freshness_s) into channel evidence.
+
+    The p-value is empirical against that model's own reference population, not a raw score.
+    A model with no reference is skipped rather than given a fabricated p-value.
+    """
+    out: list[ChannelEvidence] = []
+    for row in rows:
+        model = str(row.get("model_name") or row.get("channel") or "")
+        ref = reference_by_model.get(model) or []
+        p = empirical_pvalue(float(row.get("score") or 0.0), ref)
+        if not math.isfinite(p):
+            continue
+        out.append(ChannelEvidence(
+            channel=str(row.get("channel") or model),
+            family=str((family_by_model or {}).get(model) or row.get("family") or model),
+            scale=str((scale_by_model or {}).get(model) or row.get("scale") or "5m"),
+            model_id=model,
+            model_version=str(row.get("model_version") or "unknown"),
+            score=float(row.get("score") or 0.0),
+            pvalue=p,
+            freshness_s=float(row.get("freshness_s") or 0.0),
+            present=bool(row.get("present", True)),
+        ))
+    return out
+
+
 __all__ = ["ChannelEvidence", "DEFAULT_MAX_FRESHNESS_S", "DEFAULT_MAX_P", "RippleResult",
-           "SCALES", "fisher_combined_p", "fuse"]
+           "SCALES", "empirical_pvalue", "evidence_from_shadow", "fisher_combined_p", "fuse"]
