@@ -49,6 +49,16 @@ A source whose age cannot be read is `unknown`, not zero. A future timestamp bey
 - A ClickHouse backup (`prod-readiness-20261111-0500`) restored into `weirvern_restore` in
   3.17s. `netflow_anomalies` matched exactly; TTL-managed flow tables were non-empty and inside
   their pre/post backup bounds, with expiry explained.
+- **Exact score replay, fixed window:** `ml_window_scores` for
+  `2026-11-10 22:00:00`–`22:30:00` (America/Chicago), read with `FINAL` because the table is
+  `ReplacingMergeTree`:
+  - live: 416 rows, `sum(cityHash64(src_addr, model_name, toString(score), model_version))`
+    = `15832185913492734196`
+  - restored: 416 rows, same hash `15832185913492734196`
+  - `computed_at` range 22:06:15–22:31:20 on both
+  No row was missing and no score changed. Without `FINAL`, the raw counts differed
+  (416 vs 468) because the restored parts had not merged; that is a storage detail, not a
+  replay gap.
 - The archived model set was extracted and loaded: Isolation Forest v4, schema 4, 77 features,
   scored a fixed fixture at `0.1500738323`.
 - `scripts/eval_detection.py` records its seed, inputs and phase, and re-runs the deterministic
