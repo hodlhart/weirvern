@@ -6031,6 +6031,45 @@ function renderModelCards(data) {
   }
 }
 
+/* CE-2: every channel has one disposition; no blank and no automatic promote. */
+function renderDispositions(r) {
+  const note = document.getElementById("m-dispositions");
+  if (!note) return;
+  const rows = r.channels || [];
+  if (!rows.length) { note.textContent = "No shadow-channel inventory."; return; }
+  const counts = {};
+  for (const row of rows) counts[row.disposition] = (counts[row.disposition] || 0) + 1;
+  note.textContent = rows.length + " channels: " +
+    Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" · ") +
+    ". No channel is promoted without a generated-ground-truth fixed-budget win.";
+}
+
+/* PR-2/PR-3: the policy and the append-only ledger. */
+function renderPromotionLedger(policy, ledger) {
+  const note = document.getElementById("m-ledger");
+  if (!note) return;
+  const rows = ledger.rows || [];
+  note.textContent = `Policy ${policy.policy_version || "not measured"} · max in flight ` +
+    `${policy.max_in_flight ?? "not measured"} · shadow ${policy.shadow_min_days ?? "not measured"} d. ` +
+    (rows.length ? `Last decision: ${rows[rows.length - 1].action || "—"} at ${rows[rows.length - 1].recorded_at || "—"}.`
+                 : "No decision ledger archive; no automatic promotion has been recorded.");
+}
+
+/* CE-3: last fixed-budget report; an absent report is not a pass. */
+function renderEvalReport(r) {
+  const note = document.getElementById("m-eval");
+  if (!note) return;
+  if (!r || r.available === false) {
+    note.textContent = "No archived evaluation: " + ((r && r.reason) || "not run") +
+      ". Live precision is not measured without a canary or oracle.";
+    return;
+  }
+  const c = r.candidate || {};
+  note.textContent = `Status: ${r.status || "unknown"} · report ${r.report_id || "—"} · ` +
+    `precision ${c.precision ?? "not measured"} · detection ${c.detection_rate ?? "not measured"} · ` +
+    `live precision: ${r.live_precision || "not measured"} · generator ${r.generator_version || "not recorded"}.`;
+}
+
 /* OP-3: the archive is the decision record. A failed review names every blocked phase card. */
 function renderReview(r) {
   const note = document.getElementById("m-review");
@@ -6180,6 +6219,9 @@ async function loadModels() {
 
   mRenderChips();
   renderModelCards(data);
+  renderDispositions(data.dispositions || {});
+  renderPromotionLedger(data.promotion_policy || {}, data.ledger || {});
+  renderEvalReport(data.eval_report || {});
   renderReview(data.review || {});
   renderVerification(data.verification || {});
   renderStaleness(data.staleness || [], data.retrain_interval_h);

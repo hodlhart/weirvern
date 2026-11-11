@@ -31,6 +31,7 @@ SCENARIO_HOSTS = {
     "dns_tunnel": "198.51.100.213",
     "quic_c2": "198.51.100.214",
     "http_c2": "198.51.100.215",
+    "tls_churn": "198.51.100.216",
 }
 
 
@@ -226,6 +227,16 @@ def generate(args) -> int:
                         f = _flow((t0 + 17 + i % 5) * 1_000_000_000,
                                   SCENARIO_HOSTS["http_c2"], f"203.0.113.{100 + i}",
                                   46000 + i, 8080, 6, 8_000_000, 6_000, rng=rng)
+                        fh.write(json.dumps(f) + "\n")
+                        total += 1
+                # TLS/JA4 churn: many short TLS sessions to distinct destinations. The flow
+                # side sees the connection fan-out; the JA4 family itself is specialist work,
+                # which is why this scenario names flows_aggregated as its source table.
+                if elapsed < 8:
+                    for i in range(30):
+                        f = _flow((t0 + 23 + i % 7) * 1_000_000_000,
+                                  SCENARIO_HOSTS["tls_churn"], f"203.0.113.{150 + i}",
+                                  47000 + i, 443, 6, 120_000, 90, rng=rng)
                         fh.write(json.dumps(f) + "\n")
                         total += 1
 

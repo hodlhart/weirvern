@@ -66,3 +66,26 @@ def test_scenario_checker_fails_closed_when_a_verdict_is_missing():
     broken = eval_mod.scenario_results(missing, start)
     assert not broken[0]["passed"], "the checker passed with a scenario's verdict removed"
     assert broken[0]["severity"] == ""
+
+
+def test_scenario_corpus_covers_ten_families_and_names_its_bar():
+    eval_mod = _eval_module()
+    assert len(eval_mod.SCENARIO_SPECS) >= 10
+    for spec in eval_mod.SCENARIO_SPECS:
+        assert spec["family"]
+        assert spec["source_table"]
+        assert spec["deadline_min"] > 0
+        assert spec["bar_reason"]
+
+
+def test_auto_label_manifest_is_generated_by_the_simulator():
+    eval_mod = _eval_module()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = eval_mod.auto_label_manifest(start, generator_version="eval_detection-v1")
+    assert len(rows) == len(eval_mod.SCENARIO_SPECS)
+    for row in rows:
+        assert row["label"] == "attack"
+        assert row["label_source"] == "synthetic"
+        assert row["generator_version"] == "eval_detection-v1"
+        assert row["scenario_id"] in {s["key"] for s in eval_mod.SCENARIO_SPECS}
+        assert row["window_start"]

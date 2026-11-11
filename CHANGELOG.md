@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.23.56 — 2026-11-11
+
+SHADOW DISPOSITIONS, EVALUATION ARCHIVE, PROMOTION POLICY AND PROGRAM LEDGER.
+
+- Adds the CE-2 shadow-channel inventory: every channel has one disposition (merge/retire), a
+  named consumer or reason, and `not measured` evidence rather than an invented budget win.
+- Adds CE-3 `scripts/ml_eval_report.py`: archived fixed-budget reports with seed, scenario,
+  generator and auto-label versions, confidence intervals, previous-report regression checks and
+  live precision `not measured`.
+- Adds PR-2 `models/promotion.py`: one automatic promotion in flight, 14-day shadow soak,
+  canary p95/error rollback, degraded telemetry block and kill-switch freeze.
+- Adds PR-3 `models/ledger.py` and `scripts/ml_program_gate.py`: append-only decisions and a gate
+  that fails on every blocked phase card, missing model-card identity or missing verification.
+- Adds GT-2 scenario fields and the simulator-generated `auto_labels` manifest, including the
+  TLS/JA4 churn scenario and the benign-heavy-day descriptor.
+
 ## 0.23.55 — 2026-11-11
 
 MONTHLY PROGRAM REVIEW: A PASSING REVIEW CANNOT HIDE A BLOCKED CARD.

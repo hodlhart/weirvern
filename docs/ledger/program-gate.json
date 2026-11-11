@@ -1,0 +1,78 @@
+{
+  "blocked_cards": [
+    {
+      "board": "wv-ml-truth",
+      "id": "t_c511ef1c",
+      "status": "blocked",
+      "title": "GT-1 \u2014 Automated ground truth and weak-label pipeline"
+    },
+    {
+      "board": "wv-ml-truth",
+      "id": "t_7b3d365e",
+      "status": "blocked",
+      "title": "GT-4 \u2014 Canary and honeypot automated positives"
+    },
+    {
+      "board": "wv-ml-truth",
+      "id": "t_a6886454",
+      "status": "blocked",
+      "title": "GT-2 \u2014 Scenario corpus for every model family"
+    },
+    {
+      "board": "wv-ml-candidates",
+      "id": "t_7edcfc5d",
+      "status": "blocked",
+      "title": "CE-1 \u2014 HDBSCAN vs DBSCAN at a fixed budget"
+    },
+    {
+      "board": "wv-ml-candidates",
+      "id": "t_662ba4f7",
+      "status": "blocked",
+      "title": "CE-5 \u2014 Multi-scale ripple ensemble"
+    },
+    {
+      "board": "wv-ml-candidates",
+      "id": "t_c36ebb27",
+      "status": "blocked",
+      "title": "CE-2 \u2014 Shadow-specialist disposition matrix"
+    },
+    {
+      "board": "wv-ml-candidates",
+      "id": "t_f7fcd9c5",
+      "status": "blocked",
+      "title": "CE-3 \u2014 Reproducible monthly evaluation report"
+    },
+    {
+      "board": "wv-ml-promotion",
+      "id": "t_6eadd9ae",
+      "status": "blocked",
+      "title": "PR-2 \u2014 Autonomous canary promotion and rollback"
+    },
+    {
+      "board": "wv-ml-promotion",
+      "id": "t_3deb4781",
+      "status": "blocked",
+      "title": "PR-3 \u2014 Autonomous decision ledger and program gate"
+    }
+  ],
+  "failures": [
+    "wv-ml-truth t_c511ef1c GT-1 \u2014 Automated ground truth and weak-label pipeline (blocked)",
+    "wv-ml-truth t_7b3d365e GT-4 \u2014 Canary and honeypot automated positives (blocked)",
+    "wv-ml-truth t_a6886454 GT-2 \u2014 Scenario corpus for every model family (blocked)",
+    "wv-ml-candidates t_7edcfc5d CE-1 \u2014 HDBSCAN vs DBSCAN at a fixed budget (blocked)",
+    "wv-ml-candidates t_662ba4f7 CE-5 \u2014 Multi-scale ripple ensemble (blocked)",
+    "wv-ml-candidates t_c36ebb27 CE-2 \u2014 Shadow-specialist disposition matrix (blocked)",
+    "wv-ml-candidates t_f7fcd9c5 CE-3 \u2014 Reproducible monthly evaluation report (blocked)",
+    "wv-ml-promotion t_6eadd9ae PR-2 \u2014 Autonomous canary promotion and rollback (blocked)",
+    "wv-ml-promotion t_3deb4781 PR-3 \u2014 Autonomous decision ledger and program gate (blocked)",
+    "verification evidence is missing"
+  ],
+  "gate_version": "pr3-v1",
+  "generated_at": "2026-11-11T18:37:58.620646+00:00",
+  "kind": "program-gate",
+  "missing_model_cards": [],
+  "status": "fail",
+  "verification_failures": [
+    "verification evidence is missing"
+  ]
+}

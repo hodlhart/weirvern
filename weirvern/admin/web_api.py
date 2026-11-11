@@ -599,6 +599,37 @@ def baselines_payload(data: dict) -> dict:
     }
 
 
+def _dispositions() -> dict:
+    from weirvern.models import dispositions
+    return dispositions.build_record()
+
+
+def _promotion_policy() -> dict:
+    from weirvern.models import promotion
+    return {"available": True, "policy_version": promotion.POLICY_VERSION,
+            "max_in_flight": promotion.MAX_IN_FLIGHT,
+            "shadow_min_days": promotion.SHADOW_MIN_DAYS,
+            "canary_max_p95_ratio": promotion.CANARY_MAX_P95_RATIO,
+            "note": "automatic inside the charter envelope; the ledger records every action"}
+
+
+def _ledger_tail(limit: int = 5) -> dict:
+    from pathlib import Path
+
+    from weirvern.models import ledger
+    path = Path(__file__).resolve().parents[2] / "docs" / "ledger" / "ml-decisions.jsonl"
+    rows = ledger.read(path)
+    return {"available": bool(rows), "path": str(path), "rows": rows[-limit:],
+            "reason": "" if rows else "no decision ledger archive"}
+
+
+def _latest_eval_report() -> dict:
+    from pathlib import Path
+
+    from weirvern.models import eval_report
+    return eval_report.latest_report(Path(__file__).resolve().parents[2])
+
+
 def _latest_review() -> dict:
     from pathlib import Path
 
@@ -653,6 +684,10 @@ def models_payload(data: dict) -> dict:
         # CE-4: the fixed-budget report's verification fields. No live auto-label evidence is
         # wired into this read yet; say `not measured` rather than presenting a silent zero.
         "review": data.get("review") or _latest_review(),
+        "eval_report": data.get("eval_report") or _latest_eval_report(),
+        "dispositions": data.get("dispositions") or _dispositions(),
+        "promotion_policy": data.get("promotion_policy") or _promotion_policy(),
+        "ledger": data.get("ledger") or _ledger_tail(),
         "verification": data.get("verification", {
             "available": False,
             "reason": "no auto-label verification report is attached to the live view",

@@ -457,6 +457,10 @@ def _build_handler(ctx: GuiContext):
                 return self._ml_slo()
             if path == "/api/ml/review":
                 return self._ml_review()
+            if path == "/api/ml/eval-report":
+                return self._ml_eval_report()
+            if path == "/api/ml/ledger":
+                return self._ml_ledger()
             if path == "/api/models/calibration":
                 return self._models_calibration()
             if path == "/api/models/shadow":
@@ -871,6 +875,28 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"available": False,
                                    "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
             self._json(data)
+
+        def _ml_ledger(self) -> None:
+            """PR-3: the append-only decision trail, read-only."""
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                from weirvern.models import ledger  # noqa: PLC0415
+                path = Path(__file__).resolve().parents[2] / "docs" / "ledger" / "ml-decisions.jsonl"
+                rows = ledger.read(path)
+                self._json({"available": bool(rows), "path": str(path), "rows": rows[-20:]})
+            except Exception as exc:  # noqa: BLE001
+                self._json({"available": False, "reason": f"cannot read the decision ledger: {exc}"})
+
+        def _ml_eval_report(self) -> None:
+            """CE-3: the archived fixed-budget report, read-only."""
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                from weirvern.models import eval_report  # noqa: PLC0415
+                self._json(eval_report.latest_report(Path(__file__).resolve().parents[2]))
+            except Exception as exc:  # noqa: BLE001
+                self._json({"available": False, "reason": f"cannot read the evaluation report: {exc}"})
 
         def _ml_review(self) -> None:
             """OP-3: the archived review is read from disk, never recomputed in the GUI."""
