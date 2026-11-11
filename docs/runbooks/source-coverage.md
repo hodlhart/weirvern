@@ -24,14 +24,25 @@ exemptions from silently becoming “unused”.
 
 ## Clock and staleness
 
-- Hub time is ClickHouse `now()`; source time is the table's own event column
-  (`timestamp`, `ts`, `detected_at`).
-- Current ages were positive (247s, 219s, 132s at the snapshot); no source timestamp was in
-  the future.
-- The freshness bound is 15 minutes for ingest/Zeek, matching `ingest_freshness`/`zeek_freshness`.
-  A future timestamp beyond 120 seconds is treated as clock skew and reported as a fault, not a
-  fresh source.
-- A source whose age cannot be read is `unknown`, not zero.
+`scripts/source_health.py` is the executable gate. It reads each source's count, newest event
+and age against ClickHouse's own `now()`, and exits non-zero when a required source is empty,
+stale, or has an event more than 120 seconds in the future. `zeek_*` and `sensor_status` are
+optional sources: an empty optional source is reported, not used to fail a flow-only deployment.
+
+Run:
+
+```sh
+WEIRVERN_SENSOR_HOST=root@<sensor> python scripts/source_health.py --json
+```
+
+Measured at the snapshot: flows 247s, `zeek_conn` 219s, anomalies 132s; no source timestamp was
+in the future. Live gate output (2026-11-11 23:08 local / 05:08 UTC) was `ok=true` with all
+required sources fresh. `zeek_notice` was 1544s old and correctly reported `stale` as an optional
+source rather than silently zeroed.
+
+The freshness bound is 15 minutes for ingest and Zeek, matching `ingest_freshness`/`zeek_freshness`.
+A source whose age cannot be read is `unknown`, not zero. A future timestamp beyond 120 seconds is
+`clock_skew`, not freshness.
 
 ## Replay and restore
 
