@@ -1292,6 +1292,61 @@ def asset_posture_overview(client: Any) -> dict:
     }
 
 
+def asset_findings_list(client: Any, *, ip: str = "", severity: str = "",
+                        limit: int = 500) -> dict:
+    """Recorded scanner findings, newest first, for the Findings drill.
+
+    Findings are historical evidence, not a live alert feed: they carry the scanner's last
+    observation even when it is days old. A readable table with no rows is an answer; a table
+    that could not be read is not. The caller gets both the rows and the counts so the view can
+    say which state it is in.
+    """
+    limit = max(1, min(int(limit or 500), 500))
+    where = []
+    params: dict[str, Any] = {"n": limit}
+    if ip:
+        where.append("ip = %(ip)s")
+        params["ip"] = str(ip)
+    if severity:
+        where.append("lower(severity) = %(severity)s")
+        params["severity"] = str(severity).lower()
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    findings = _rows(
+        client,
+        "SELECT ip, severity, name, template_id, cve, last_seen, remediation "
+        "FROM weirvern.asset_findings FINAL" + clause +
+        " ORDER BY last_seen DESC LIMIT %(n)s",
+        params,
+        "asset findings",
+    )
+    if findings is None:
+        return _unavailable("the scanner findings table could not be read",
+                            findings=[], count=0, counts={})
+    # The registry carries the scanner's own hostname; a PTR is not required for this view.
+    registry = _rows(
+        client,
+        "SELECT ip, hostname FROM weirvern.asset_registry FINAL",
+        {},
+        "asset findings (registry names)",
+    )
+    names = {str(r[0] or ""): str(r[1] or "") for r in (registry or [])}
+    rows = [{
+        "ip": str(r[0] or ""),
+        "hostname": names.get(str(r[0] or ""), ""),
+        "severity": str(r[1] or "unknown").lower(),
+        "name": str(r[2] or ""),
+        "template_id": str(r[3] or ""),
+        "cve": str(r[4] or ""),
+        "last_seen": _scan_ts(r[5]),
+        "remediation": str(r[6] or ""),
+    } for r in findings]
+    counts: dict[str, int] = {"total": len(rows)}
+    for row in rows:
+        counts[row["severity"]] = counts.get(row["severity"], 0) + 1
+    return {"available": True, "reason": "", "findings": rows, "count": len(rows),
+            "counts": counts, "registry_read": registry is not None}
+
+
 def asset_changes(client, hours: int = 24, limit: int = 100) -> dict:
     """Recent Nmap service changes, with the shadow posture score when one exists.
 

@@ -906,6 +906,41 @@
     </div>
   </section>
 
+  <!-- ── Findings drill (the scanner's recorded evidence) ───────────────────────────── -->
+  <!-- FINDINGS ARE A DRILL, NOT A TAB. The Assets exposure cell and the host scanner card open
+       this surface; the Assets tab stays lit behind it. The view is reachable as #v=findings
+       and keeps the host filter in the URL so a shared finding link is reproducible. -->
+  <section id="view-findings" class="view">
+    <div class="view-head has-back">
+      <button id="fd-back" class="quiet" type="button">Back to Assets</button>
+      <h2 id="fd-title">Findings</h2>
+      <span id="fd-summary" class="muted"></span>
+    </div>
+    <div class="card">
+      <div id="fd-stats" class="stat-row"></div>
+      <div class="controls">
+        <label>severity
+          <select id="fd-severity">
+            <option value="">all severities</option>
+            <option value="critical">critical</option>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+            <option value="info">info</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </label>
+        <label id="fd-host-filter" class="muted hidden"></label>
+      </div>
+      <div id="fd-note"></div>
+      <div class="tablewrap"><table id="fd-table">
+        <thead><tr><th>Severity</th><th>Host</th><th>Finding</th><th>Template</th><th>Last seen</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <p class="muted" id="fd-empty"></p>
+    </div>
+  </section>
+
   <section id="view-assets" class="view">
     <div class="card">
       <h2>Asset inventory <button class="info-btn" data-info="as-info" aria-label="what this inventory lists and how to drill in" aria-expanded="false" title="what this inventory lists and how to drill in">i</button> <span class="muted" id="as-summary">loading…</span></h2>

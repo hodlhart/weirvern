@@ -499,6 +499,8 @@ def _build_handler(ctx: GuiContext):
                 return self._assets(query)
             # The other half of the inventory: what CHANGED between scans. Read-only; the
             # posture score is shadow data and never gates traffic.
+            if path == "/api/findings":
+                return self._findings(query)
             if path == "/api/asset-changes":
                 return self._asset_changes(query)
             if path == "/api/asset-posture":
@@ -1422,6 +1424,35 @@ def _build_handler(ctx: GuiContext):
                     "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
                     "data_error": str(exc),
                 })
+            self._json(payload)
+
+        def _findings(self, query: dict) -> None:
+            """Recorded scanner findings for the Findings drill. Read-only.
+
+            Findings are historical evidence: the global time window does not hide them,
+            because a finding observed last week is still a fact about the host today. The
+            severity filter is an allow-list, and the host filter is a plain equality on a
+            parameterized value.
+            """
+            ip = str((query.get("ip") or [""])[0]).strip()
+            if ip and (len(ip) > 64 or not all(c.isalnum() or c in ".:-_" for c in ip)):
+                return self._error(400, "ip does not look like an address")
+            severity = str((query.get("severity") or [""])[0]).strip().lower()
+            if severity and severity not in {"critical", "high", "medium", "low", "info", "unknown"}:
+                return self._error(400, "severity must be critical, high, medium, low, info or unknown")
+            try:
+                limit = int((query.get("limit") or ["500"])[0])
+            except ValueError:
+                return self._error(400, "limit must be an integer")
+            try:
+                with self._with_client() as client:
+                    payload = assets_mod.asset_findings_list(
+                        client, ip=ip, severity=severity, limit=limit)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("findings unavailable: %s", exc)
+                return self._json({"available": False, "findings": [], "count": 0,
+                                   "counts": {}, "reason": "cannot reach ClickHouse"})
+            payload["filter"] = {"ip": ip, "severity": severity}
             self._json(payload)
 
         def _asset_changes(self, query: dict) -> None:

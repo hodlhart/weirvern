@@ -23,6 +23,10 @@ const API = {
   review: "/api/review",
   watch: "/api/watch",
   host: (addr, hours) => `/api/host?addr=${encodeURIComponent(addr)}&hours=${hours}`,
+  findings: (ip = "", severity = "") =>
+    `/api/findings` +
+    (ip ? `?ip=${encodeURIComponent(ip)}` : "") +
+    (severity ? `${ip ? "&" : "?"}severity=${encodeURIComponent(severity)}` : ""),
   evidence: (addr, start, end) =>
     `/api/evidence?addr=${encodeURIComponent(addr)}&start=${encodeURIComponent(start)}` +
     (end ? `&end=${encodeURIComponent(end)}` : ""),
@@ -2455,6 +2459,107 @@ function statCells(k, v, opts) {
   return cells;
 }
 
+/* ── FINDINGS: the scanner's recorded evidence ─────────────────────────────────────────────── */
+/* A drill, not a tab. The Assets exposure cell and the host scanner card open it; the Assets
+ * tab stays lit behind it. Findings are historical, so the global time window deliberately does
+ * not hide them -- a finding from last week is still a fact about the host today. */
+const FINDINGS_STATE = { ip: "", severity: "", data: null };
+
+async function loadFindings() {
+  scheduleURLSync();
+  const data = await getJSON(API.findings(FINDINGS_STATE.ip, FINDINGS_STATE.severity));
+  FINDINGS_STATE.data = data;
+  renderFindings();
+}
+
+function renderFindings() {
+  const tbody = document.querySelector("#fd-table tbody");
+  const summary = document.getElementById("fd-summary");
+  const stats = document.getElementById("fd-stats");
+  const note = document.getElementById("fd-note");
+  const empty = document.getElementById("fd-empty");
+  const hostFilter = document.getElementById("fd-host-filter");
+  const sev = document.getElementById("fd-severity");
+  if (!tbody || !summary || !stats || !note || !empty) return;
+
+  const view = document.getElementById("view-findings");
+  if (view) view.dataset.loaded = "1";
+  const title = document.getElementById("fd-title");
+  if (title) title.textContent = "Findings";
+  const d = FINDINGS_STATE.data || {};
+  tbody.replaceChildren();
+  note.replaceChildren();
+  empty.textContent = "";
+  if (sev && sev.value !== FINDINGS_STATE.severity) sev.value = FINDINGS_STATE.severity;
+  if (hostFilter) {
+    hostFilter.replaceChildren();
+    hostFilter.classList.toggle("hidden", !FINDINGS_STATE.ip);
+    if (FINDINGS_STATE.ip) {
+      hostFilter.appendChild(el("span", { text: `host: ${FINDINGS_STATE.ip}` }));
+      const clear = el("button", { class: "quiet", text: "clear", attrs: { type: "button" } });
+      clear.addEventListener("click", () => { FINDINGS_STATE.ip = ""; loadFindings().catch(showError); });
+      hostFilter.appendChild(clear);
+    }
+  }
+  if (d.available === false) {
+    summary.textContent = "unavailable";
+    stats.replaceChildren();
+    note.appendChild(el("p", { class: "warn",
+      text: `Findings could not be read: ${d.reason || "unknown error"}. This is not a clean result.` }));
+    return;
+  }
+  const rows = d.findings || [];
+  const counts = d.counts || {};
+  summary.textContent = `${rows.length} finding${rows.length === 1 ? "" : "s"}` +
+    (FINDINGS_STATE.ip ? ` for ${FINDINGS_STATE.ip}` : "") +
+    (FINDINGS_STATE.severity ? ` at ${FINDINGS_STATE.severity}` : "");
+  stats.replaceChildren(...[
+    ["findings", String(counts.total || rows.length)],
+    ["critical", String(counts.critical || 0)],
+    ["high", String(counts.high || 0)],
+    ["medium", String(counts.medium || 0)],
+    ["low", String(counts.low || 0)],
+  ].map(([k, v]) => el("div", { class: "stat" }, [
+    el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
+  ])));
+  if (!rows.length) {
+    empty.textContent = FINDINGS_STATE.ip || FINDINGS_STATE.severity
+      ? "No recorded findings match this filter. A clear finding set is not proof the host is patched."
+      : "No recorded findings. A clear finding set is not proof the host is patched.";
+    return;
+  }
+  for (const f of rows) {
+    const tr = el("tr", { class: "clickable", attrs: { title: `open ${f.ip} on the host page` } }, [
+      el("td", {}, [sevCell(f.severity)]),
+      el("td", {}, [el("span", { class: "mono", text: f.ip || "—" }),
+                    f.hostname ? el("span", { class: "muted", text: ` · ${f.hostname}` }) : null]),
+      el("td", { text: f.name || "—", attrs: { title: f.remediation || "" } }),
+      el("td", { class: "mono muted", text: f.template_id || "—" }),
+      el("td", { class: "mono muted", text: f.last_seen ? fmtTime(f.last_seen) : "—" }),
+    ]);
+    tr.addEventListener("click", () => openHost(f.ip));
+    tbody.appendChild(tr);
+  }
+}
+
+function openFindings(ip = "") {
+  FINDINGS_STATE.ip = String(ip || "").trim();
+  FINDINGS_STATE.severity = "";
+  showView("findings");
+}
+
+// One wiring pass: the controls exist after the markup is parsed, and a second listener would
+// fire the same query twice on every change.
+const FD_BACK = document.getElementById("fd-back");
+if (FD_BACK) FD_BACK.addEventListener("click", () => showView("assets"));
+const FD_SEVERITY = document.getElementById("fd-severity");
+if (FD_SEVERITY) {
+  FD_SEVERITY.addEventListener("change", () => {
+    FINDINGS_STATE.severity = String(FD_SEVERITY.value || "");
+    loadFindings().catch(showError);
+  });
+}
+
 async function loadHost(addr, hours) {
   const d = await getJSON(API.host(addr, hours));
 
@@ -2850,9 +2955,11 @@ function hpRenderScanExposure(exp) {
   }
 
   if (exp.registered !== false) {
-    const btn = el("button", { class: "quiet", text: "Scan now", attrs: { type: "button" } });
-    btn.addEventListener("click", () => requestScan(HP_ADDR, btn));
-    box.appendChild(el("div", { class: "controls" }, [btn]));
+    const scan = el("button", { class: "quiet", text: "Scan now", attrs: { type: "button" } });
+    scan.addEventListener("click", () => requestScan(HP_ADDR, scan));
+    const findings = el("button", { class: "quiet", text: "Open findings", attrs: { type: "button" } });
+    findings.addEventListener("click", () => openFindings(HP_ADDR));
+    box.appendChild(el("div", { class: "controls" }, [scan, findings]));
   }
 }
 
@@ -4489,7 +4596,7 @@ function returnWithScroll(view, scroll) {
 /* US-3: a DRILL VIEW keeps its family's tab lit (Evidence belongs to Anomalies), and the URL
  * follows the VIEW NAME rather than whichever tab happens to match: `v=evidence` was
  * previously unwritable because no tab carried it, so a shared link lost the drill. */
-const TAB_FOR_DRILL = { evidence: "anomalies", blocked: "sluice" };
+const TAB_FOR_DRILL = { evidence: "anomalies", blocked: "sluice", findings: "assets" };
 let CURRENT_VIEW = "";
 // ONE ASSETS TAB, ONE NETWORK SCOPE (operator, 2026-10-19). "monitored" means a private or
 // link-local address -- the networks this deployment's sensors actually sit on; "external" is
@@ -4563,6 +4670,7 @@ function showView(name) {
     loadAssets().then(clearError).catch(showError);
     loadIdentity().then(clearError).catch(showError);
   }
+  if (name === "findings") loadFindings().then(clearError).catch(showError);
   if (name === "network") loadNetwork().then(clearError).catch(showError);
   // The SOC views load on demand rather than on every refresh cycle: they run several
   // aggregate queries each, and firing them every 15s in the background would put load on
@@ -4596,7 +4704,7 @@ const VIEW_LOADERS = {
   netflow: () => loadNetflow(), dns: () => loadDns(), zeek: () => loadZeek(),
   discover: () => loadDiscover(), sluice: () => loadSluice(), blocked: () => loadBlocked(),
   weirlings: () => loadWeirlings(), models: () => loadModels(), identity: () => loadIdentity(),
-  assets: () => loadAssets(),
+  assets: () => loadAssets(), findings: () => loadFindings(),
   // US-3: Evidence joins the refreshable views -- it is the view most likely to be re-read
   // while an operator watches a live incident.
   evidence: () => (CURRENT_EVIDENCE && CURRENT_EVIDENCE.addr
@@ -5105,6 +5213,7 @@ const VIEW_HEADER_META = {
   evidence: { heading: "Evidence", count: "ev-sub" },
   host: { heading: "Host", count: "hp-sub" },
   blocked: { heading: "Blocks", count: "bl-summary" },
+  findings: { heading: "Findings", count: "fd-summary" },
 };
 
 function vhDemote(h2) {
@@ -6508,6 +6617,10 @@ function syncURL() {
   // The host page is a view with an address, not a transient modal. Without this key a
   // reload/back/shared link lands on Assets; see applyURLState's explicit fallback.
   if (viewForURL === "host" && HP_ADDR) p.set("h.addr", HP_ADDR);
+  if (viewForURL === "findings") {
+    if (FINDINGS_STATE.ip) p.set("fd.ip", FINDINGS_STATE.ip);
+    if (FINDINGS_STATE.severity) p.set("fd.sev", FINDINGS_STATE.severity);
+  }
   const qs = p.toString();
   const target = location.pathname + location.search + (qs ? "#" + qs : "");
   const viewChanged = viewForURL && LAST_HISTORY_VIEW && viewForURL !== LAST_HISTORY_VIEW;
@@ -6656,6 +6769,14 @@ function applyURLState() {
   // TAB_FOR_DRILL, and `showView` loads /api/blocked.
   if (v === "blocked") {
     showView("blocked");
+    return true;
+  }
+  // FINDINGS IS A DRILL, NOT A TAB (the Assets tab stays lit behind it). Handle it before
+  // the tab lookup, or a shared finding link silently falls through to Health.
+  if (v === "findings") {
+    FINDINGS_STATE.ip = String(p.get("fd.ip") || "").trim();
+    FINDINGS_STATE.severity = String(p.get("fd.sev") || "").trim();
+    showView("findings");
     return true;
   }
   // #v=identity is an old alias of the merged Assets surface (the name still appears in

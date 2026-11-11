@@ -388,6 +388,11 @@ function renderAssets() {
           text: total ? `${band} · ${total}` : band,
         });
         cell.appendChild(chip);
+        cell.classList.add("dcell");
+        cell.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (typeof openFindings === "function") openFindings(h.addr);
+        });
         const bits = [];
         if (scan.state) bits.push(`scan ${scan.state}`);
         if (scan.services !== null && scan.services !== undefined) {
@@ -395,7 +400,7 @@ function renderAssets() {
         }
         if (scan.last_scan) bits.push(`last ${fmtTime(scan.last_scan)}`);
         if (scan.error) bits.push(`error: ${scan.error}`);
-        cell.title = bits.join(" · ");
+        cell.title = bits.concat(["open recorded findings"]).join(" · ");
         return cell;
       })(),
       (() => {

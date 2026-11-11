@@ -96,6 +96,14 @@
       "module": "assets.js"
     },
     {
+      "id": "findings",
+      "label": "Findings",
+      "job": "the scanner's recorded findings behind one host's exposure",
+      "tab": false,
+      "module": "app.js",
+      "debt": "drill-only: reached from Assets exposure and the Host scanner card; #v=findings remains a compatible URL"
+    },
+    {
       "id": "models",
       "label": "Models",
       "job": "when did the baseline last learn",

@@ -30,10 +30,24 @@ before trusting a zero or a quiet channel.
 
 ## 3. Fixed-budget gate
 
-The comparison harness is `scripts/eval_detection.py` against the disposable ClickHouse corpus.
-Every candidate reports the same budget, the same seeded attacks, the benign false-positive
-count and its latency. A candidate that does not beat the current baseline at that budget is
-recorded as rejected; it is not promoted on a plausible story.
+Two harnesses answer two different questions, and a promotion needs both:
+
+1. `scripts/eval_detection.py` runs the REAL pipeline against a disposable ClickHouse corpus and
+   proves seeded attacks reach a verdict. It is the scenario/detection proof.
+2. `scripts/eval_budget.py` reads the live calibration population (`ml_window_scores`) and a
+   candidate (`ml_candidate_scores`), takes the top `--budget-per-day` windows per UTC day, and
+   reports precision@k, detection rate, false alarms per host/day, episode count, latency,
+   explanation coverage and runtime. It is read-only.
+
+```
+python scripts/eval_budget.py --days 7 --budget-per-day 10 \
+    --candidate-model HDBSCAN --labels /path/to/labels.json --output /tmp/report.json
+```
+
+The label file is required for precision and detection. Without labels the report says
+`not measured` and the promotion gate refuses. Every candidate reports the same budget, the
+same labelled window and the benign false-positive count; a candidate that wins only by
+alerting more is rejected. A rejection is recorded; it is not promoted on a plausible story.
 
 ## 4. Retirement rule
 
