@@ -23,6 +23,52 @@ def test_a_short_series_is_skipped_not_scored_as_zero():
     assert profile.size == 0 and idx == -1 and score == 0.0 and nearest == -1
 
 
+def test_the_blocked_profile_equals_the_broadcast_definition():
+    """The dot-product form must compute the same number the n x n x m form did.
+
+    ||a-b||^2 = 2m - 2<a,b> holds only for z-normalised windows; if that assumption ever stops
+    being true (a change to the normalisation), this test is what notices.
+    """
+    rng = np.random.default_rng(11)
+    values = list(rng.normal(0, 1, 90))
+    m = 6
+    got, got_idx, got_score, got_nearest = matrix_profile(values, m=m)
+
+    x = np.asarray(values, dtype=float)
+    win = np.lib.stride_tricks.sliding_window_view(x, m).astype(float, copy=True)
+    win -= win.mean(axis=1, keepdims=True)
+    sd = win.std(axis=1, keepdims=True)
+    win = np.divide(win, sd, out=np.zeros_like(win), where=sd > 1e-12)
+    dist = np.linalg.norm(win[:, None, :] - win[None, :, :], axis=2)
+    for i in range(len(win)):
+        lo, hi = max(0, i - m + 1), min(len(win), i + m)
+        dist[i, lo:hi] = np.inf
+    expected = dist.min(axis=1)
+    expected[~np.isfinite(expected)] = 0.0
+
+    assert np.allclose(got, expected, atol=1e-9)
+    assert got_idx == int(np.argmax(expected))
+    assert got_nearest == int(np.argmin(dist[got_idx]))
+
+
+def test_a_long_series_is_bounded_before_the_pairwise_profile():
+    """A busy host's series must not size the intermediate.
+
+    Measured live 2026-11-12: the n x n x m intermediate OOM-killed the worker at 4 GiB, then at
+    7 GiB, every ~35 s once the NetFlow feed was restored -- 8,000 points is ~6 GB of float64.
+    """
+    from weirvern.models.temporal import MAX_POINTS
+
+    rng = np.random.default_rng(3)
+    values = list(rng.normal(0, 1, 20_000))
+    values[9_000:9_040] = [40.0, -40.0] * 20          # a discord at ~45% of the series
+    profile, idx, score, nearest = matrix_profile(values, m=12)
+
+    assert profile.size <= MAX_POINTS
+    assert score > 0
+    assert 0.30 <= idx / profile.size <= 0.60, idx
+
+
 def test_page_hinkley_finds_a_step_and_does_not_fire_on_noise():
     step = [0.0] * 30 + [10.0] * 30
     changes = page_hinkley(step)

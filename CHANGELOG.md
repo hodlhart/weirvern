@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.64 — 2026-11-12
+
+THE MATRIX PROFILE BUILT AN n x n x m ARRAY, AND THE RESTORED FLOW FEED MADE n LARGE.
+
+- `temporal.matrix_profile` computed the pairwise window distance as
+  `np.linalg.norm(win[:, None, :] - win[None, :, :], axis=2)`: an n x n x 12 float64 intermediate,
+  96 bytes per window PAIR. Its own comment assumed an ~864-point series (71 MB). Measured live: the
+  busiest host has **6,961 points** over three days, which is **4.6 GB in one expression** -- the
+  worker OOM-killed at 4 GiB, and still at 7 GiB, every ~35 seconds, once the NetFlow tap was
+  restored and hosts carried real series again.
+- The distance now comes from the z-normalised identity ||a-b||^2 = 2m - 2<a,b>, accumulated a
+  BLOCK of rows at a time: the intermediate is `block_rows x n`, never `n x n x m`.
+- The series is bucket-averaged to `MAX_POINTS` (2048) before profiling, so a host's traffic volume
+  cannot size the job; buckets are consecutive runs, so the reduced series stays chronological and
+  the reported window maps back to a real row.
+- Tests: the blocked profile is bit-for-bit the broadcast definition on a small series; a
+  20,000-point series stays bounded and still finds its discord.
+
 ## 0.23.63 — 2026-11-12
 
 TRIM IN PLACE: A RENAME WAS SWAPPING THE INODE UNDER THE COLLECTOR.
