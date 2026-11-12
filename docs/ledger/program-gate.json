@@ -50,12 +50,6 @@
     },
     {
       "board": "wv-ml-data",
-      "id": "t_2fe931d1",
-      "status": "blocked",
-      "title": "DATA-0 \u2014 Data coverage contract and inventory"
-    },
-    {
-      "board": "wv-ml-data",
       "id": "t_d2db265e",
       "status": "blocked",
       "title": "DATA-1 \u2014 Make DNS visible for every monitored host"
@@ -136,7 +130,6 @@
     "wv-ml-ripple t_5afd6c80 RIP-6 \u2014 Automatic evaluation and promotion loop (blocked)",
     "wv-ml-ripple t_383e92f2 RIP-7 \u2014 Product surface and per-site onboarding (blocked)",
     "wv-ml-ripple t_bd350233 RIP-8 \u2014 Independent audit and promotion gate (blocked)",
-    "wv-ml-data t_2fe931d1 DATA-0 \u2014 Data coverage contract and inventory (blocked)",
     "wv-ml-data t_d2db265e DATA-1 \u2014 Make DNS visible for every monitored host (blocked)",
     "wv-ml-data t_ebd19c2e DATA-2 \u2014 Role and identity coverage (blocked)",
     "wv-ml-data t_2989a4ee DATA-3 \u2014 Clean attack-free background replay (blocked)",
@@ -152,7 +145,7 @@
     "verification evidence is missing"
   ],
   "gate_version": "pr3-v2",
-  "generated_at": "2026-11-12T00:51:55.338060+00:00",
+  "generated_at": "2026-11-12T01:30:44.913032+00:00",
   "kind": "program-gate",
   "missing_model_cards": [],
   "status": "fail",
