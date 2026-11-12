@@ -1,0 +1,678 @@
+{
+  "blocked_cards": [
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_81c45fc1",
+      "status": "blocked",
+      "title": "RIP-1 \u2014 Truth layer: ripple generator, clean replay and canaries"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_429b6447",
+      "status": "blocked",
+      "title": "RIP-2 \u2014 Multi-scale temporal detector"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_4a6a8a9d",
+      "status": "blocked",
+      "title": "RIP-3 \u2014 Relational graph detector"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_8ef0f275",
+      "status": "blocked",
+      "title": "RIP-4 \u2014 Protocol-semantic detector"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_d0257785",
+      "status": "todo",
+      "title": "RIP-5 \u2014 Calibrated fusion and explanation"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_5afd6c80",
+      "status": "blocked",
+      "title": "RIP-6 \u2014 Automatic evaluation and promotion loop"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_383e92f2",
+      "status": "blocked",
+      "title": "RIP-7 \u2014 Product surface and per-site onboarding"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_bd350233",
+      "status": "blocked",
+      "title": "RIP-8 \u2014 Independent audit and promotion gate"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_d2db265e",
+      "status": "blocked",
+      "title": "DATA-1 \u2014 Make DNS visible for every monitored host"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_ebd19c2e",
+      "status": "blocked",
+      "title": "DATA-2 \u2014 Role and identity coverage"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_2989a4ee",
+      "status": "blocked",
+      "title": "DATA-3 \u2014 Clean attack-free background replay"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_7dba8e52",
+      "status": "blocked",
+      "title": "DATA-4 \u2014 Synthetic ripple generator"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_e18236b3",
+      "status": "blocked",
+      "title": "DATA-5 \u2014 Canary and honeypot services"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_8f207ba1",
+      "status": "blocked",
+      "title": "DATA-6 \u2014 Auto-label assembly and provenance"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_b3a2c3ee",
+      "status": "blocked",
+      "title": "DATA-7 \u2014 Leakage-safe splits and evaluation manifest"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_90dd0234",
+      "status": "blocked",
+      "title": "DATA-8 \u2014 Data quality SLO and gap dashboard"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_13919fdd",
+      "status": "blocked",
+      "title": "DATA-9 \u2014 Per-site onboarding and backfill"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_9731c2a1",
+      "status": "blocked",
+      "title": "DATA-10 \u2014 Nmap/scanner asset telemetry in the data contract"
+    },
+    {
+      "board": "wv-prod-release",
+      "id": "t_d470d880",
+      "status": "blocked",
+      "title": "REL-1 \u2014 Load, soak and failure-injection testing"
+    },
+    {
+      "board": "wv-prod-program",
+      "id": "t_2698e1ae",
+      "status": "blocked",
+      "title": "PRG-2 \u2014 Production readiness gate and launch decision"
+    }
+  ],
+  "calibration": [
+    {
+      "computed_at": "2026-11-11 19:38:47",
+      "model_name": "Adaptive Baseline",
+      "model_version": "0.23.57",
+      "observed_far": 0.009978832778953735,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-11-11 19:38:47",
+      "model_name": "DBSCAN",
+      "model_version": "0.23.57",
+      "observed_far": 1,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-11-11 19:38:47",
+      "model_name": "Gradient Boosting",
+      "model_version": "0.23.57",
+      "observed_far": 0.010220743876625341,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-11-11 19:38:47",
+      "model_name": "Isolation Forest",
+      "model_version": "0.23.57",
+      "observed_far": 0.009676443906864228,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 21:02:12",
+      "model_name": "Adaptive Baseline",
+      "model_version": "0.23.16",
+      "observed_far": 0.06035950804162725,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 21:02:12",
+      "model_name": "DBSCAN",
+      "model_version": "0.23.16",
+      "observed_far": 0.9735126324368378,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 21:02:12",
+      "model_name": "Gradient Boosting",
+      "model_version": "0.23.16",
+      "observed_far": 0.009596928982725527,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 21:02:12",
+      "model_name": "Isolation Forest",
+      "model_version": "0.23.16",
+      "observed_far": 0.008827628929843581,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 20:57:52",
+      "model_name": "Adaptive Baseline",
+      "model_version": "0.23.15",
+      "observed_far": 0.06035950804162725,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 20:57:52",
+      "model_name": "DBSCAN",
+      "model_version": "0.23.15",
+      "observed_far": 0.9735126324368378,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 20:57:52",
+      "model_name": "Gradient Boosting",
+      "model_version": "0.23.15",
+      "observed_far": 0.009596928982725527,
+      "target_far": 0.01
+    },
+    {
+      "computed_at": "2026-10-31 20:57:52",
+      "model_name": "Isolation Forest",
+      "model_version": "0.23.15",
+      "observed_far": 0.008827628929843581,
+      "target_far": 0.01
+    }
+  ],
+  "coverage": {
+    "available": true,
+    "models": [
+      {
+        "name": "Adaptive Baseline",
+        "reason": "required source missing: flows, flows_aggregated",
+        "usable": false
+      },
+      {
+        "name": "Isolation Forest",
+        "reason": "required source missing: flows, flows_aggregated",
+        "usable": false
+      },
+      {
+        "name": "Gradient Boosting",
+        "reason": "required source missing: flows, flows_aggregated",
+        "usable": false
+      },
+      {
+        "name": "DBSCAN",
+        "reason": "required source missing: flows, flows_aggregated",
+        "usable": false
+      }
+    ],
+    "promotion_ok": false,
+    "required": [
+      "flows",
+      "flows_aggregated"
+    ],
+    "required_missing": [
+      "flows",
+      "flows_aggregated"
+    ],
+    "roles": {
+      "counts": [
+        {
+          "count": 13633,
+          "role": "external"
+        },
+        {
+          "count": 83,
+          "role": "unknown"
+        },
+        {
+          "count": 66,
+          "role": "workstation"
+        },
+        {
+          "count": 6,
+          "role": "media"
+        },
+        {
+          "count": 1,
+          "role": "server"
+        }
+      ],
+      "top_unknown": [],
+      "top_unknown_redacted": "live view only; not written to the archive",
+      "unknown": 83
+    },
+    "sources": [
+      {
+        "column": "time_flow_start",
+        "last": "2026-11-11 19:17:57.000",
+        "name": "flows",
+        "reason": "newest row is 383 min old",
+        "required": true,
+        "rows": 5202488,
+        "state": "stale",
+        "table": "weirvern.flows",
+        "usable": false
+      },
+      {
+        "column": "window_start",
+        "last": "2026-11-11 19:15:00",
+        "name": "flows_aggregated",
+        "reason": "newest row is 386 min old",
+        "required": true,
+        "rows": 924152,
+        "state": "stale",
+        "table": "weirvern.flows_aggregated",
+        "usable": false
+      },
+      {
+        "column": "ts",
+        "last": "2026-11-11 19:40:16",
+        "name": "zeek_conn",
+        "reason": "newest row is 361 min old",
+        "required": false,
+        "rows": 6353522,
+        "state": "stale",
+        "table": "weirvern.zeek_conn",
+        "usable": false
+      },
+      {
+        "column": "ts",
+        "last": "2026-11-11 19:17:56",
+        "name": "zeek_ssl",
+        "reason": "newest row is 383 min old",
+        "required": false,
+        "rows": 139058,
+        "state": "stale",
+        "table": "weirvern.zeek_ssl",
+        "usable": false
+      },
+      {
+        "column": "ts",
+        "last": "2026-11-11 19:41:30",
+        "name": "zeek_dns",
+        "reason": "newest row is 360 min old",
+        "required": false,
+        "rows": 350741,
+        "state": "stale",
+        "table": "weirvern.zeek_dns",
+        "usable": false
+      },
+      {
+        "column": "ts",
+        "last": "2026-11-11 19:34:19",
+        "name": "zeek_notice",
+        "reason": "newest row is 367 min old",
+        "required": false,
+        "rows": 2219,
+        "state": "stale",
+        "table": "weirvern.zeek_notice",
+        "usable": false
+      }
+    ]
+  },
+  "decision": "fix: complete the named phase cards and attach verified evidence",
+  "failures": [
+    "wv-ml-ripple t_81c45fc1 RIP-1 \u2014 Truth layer: ripple generator, clean replay and canaries (blocked)",
+    "wv-ml-ripple t_429b6447 RIP-2 \u2014 Multi-scale temporal detector (blocked)",
+    "wv-ml-ripple t_4a6a8a9d RIP-3 \u2014 Relational graph detector (blocked)",
+    "wv-ml-ripple t_8ef0f275 RIP-4 \u2014 Protocol-semantic detector (blocked)",
+    "wv-ml-ripple t_d0257785 RIP-5 \u2014 Calibrated fusion and explanation (todo)",
+    "wv-ml-ripple t_5afd6c80 RIP-6 \u2014 Automatic evaluation and promotion loop (blocked)",
+    "wv-ml-ripple t_383e92f2 RIP-7 \u2014 Product surface and per-site onboarding (blocked)",
+    "wv-ml-ripple t_bd350233 RIP-8 \u2014 Independent audit and promotion gate (blocked)",
+    "wv-ml-data t_d2db265e DATA-1 \u2014 Make DNS visible for every monitored host (blocked)",
+    "wv-ml-data t_ebd19c2e DATA-2 \u2014 Role and identity coverage (blocked)",
+    "wv-ml-data t_2989a4ee DATA-3 \u2014 Clean attack-free background replay (blocked)",
+    "wv-ml-data t_7dba8e52 DATA-4 \u2014 Synthetic ripple generator (blocked)",
+    "wv-ml-data t_e18236b3 DATA-5 \u2014 Canary and honeypot services (blocked)",
+    "wv-ml-data t_8f207ba1 DATA-6 \u2014 Auto-label assembly and provenance (blocked)",
+    "wv-ml-data t_b3a2c3ee DATA-7 \u2014 Leakage-safe splits and evaluation manifest (blocked)",
+    "wv-ml-data t_90dd0234 DATA-8 \u2014 Data quality SLO and gap dashboard (blocked)",
+    "wv-ml-data t_13919fdd DATA-9 \u2014 Per-site onboarding and backfill (blocked)",
+    "wv-ml-data t_9731c2a1 DATA-10 \u2014 Nmap/scanner asset telemetry in the data contract (blocked)",
+    "wv-prod-release t_d470d880 REL-1 \u2014 Load, soak and failure-injection testing (blocked)",
+    "wv-prod-program t_2698e1ae PRG-2 \u2014 Production readiness gate and launch decision (blocked)",
+    "verification report is missing; unlabelled zero is not a clean result"
+  ],
+  "generated_at": "2026-11-12T01:41:43.415479+00:00",
+  "model_cards": [
+    {
+      "approved_at": "2026-11-11 02:32:27",
+      "approved_by": "operator",
+      "artifact_hash": "c736c6b397f5e522c3fdd99585fbee5f87d90644ed39eb4996b8d227c4faa1b6",
+      "calibration_version": "2026-11-11T08:32:27Z",
+      "eval_report_id": "not_measured",
+      "feature_version": 4,
+      "intended_use": "Per-host volumetric baseline for anomaly scoring and context.",
+      "known_limitations": "Baseline drifts with the host population; retrain after a topology change.",
+      "model_id": "adaptive-baseline",
+      "model_name": "Adaptive Baseline",
+      "out_of_scope": "Not a classifier; not evidence of an attack on its own.",
+      "owner": "operator",
+      "rollback_ref": "models/Adaptive Baseline_v3.pkl + weirvern-worker:0.23.17",
+      "status": "production",
+      "training_window_end": "2026-11-11 02:32:23",
+      "training_window_start": "2026-11-10 02:32:23",
+      "updated_at": "2026-11-11 08:33:48",
+      "version": "v4"
+    },
+    {
+      "approved_at": "2026-11-11 02:32:27",
+      "approved_by": "operator",
+      "artifact_hash": "9c528d3a400e620ecf6e2cfe1ab0fde5f1e346961d14ed4fa2ca165c0de1092d",
+      "calibration_version": "2026-11-11T08:32:27Z",
+      "eval_report_id": "not_measured",
+      "feature_version": 4,
+      "intended_use": "Historical density detector; retained for comparison only.",
+      "known_limitations": "Measured observed FAR 0.9735 against target 0.01; ineligible.",
+      "model_id": "dbscan",
+      "model_name": "DBSCAN",
+      "out_of_scope": "Must not contribute to the fused production score.",
+      "owner": "operator",
+      "rollback_ref": "models/DBSCAN_v3.pkl + weirvern-worker:0.23.17",
+      "status": "retired",
+      "training_window_end": "2026-11-11 00:47:02",
+      "training_window_start": "2026-11-08 00:47:02",
+      "updated_at": "2026-11-11 08:33:48",
+      "version": "v4"
+    },
+    {
+      "approved_at": "2026-11-11 02:32:27",
+      "approved_by": "operator",
+      "artifact_hash": "3c8ffb252f3d59869af296d6d9b505f3d86134838441ef42661753637eb1b9f6",
+      "calibration_version": "2026-11-11T08:32:27Z",
+      "eval_report_id": "not_measured",
+      "feature_version": 4,
+      "intended_use": "Supervised student of the Isolation Forest family in the fused score.",
+      "known_limitations": "Label quality is the limit; the fixed-budget report is not attached to this artifact.",
+      "model_id": "gradient-boosting",
+      "model_name": "Gradient Boosting",
+      "out_of_scope": "Inherits its training labels; not a standalone ground truth.",
+      "owner": "operator",
+      "rollback_ref": "models/Gradient Boosting_v3.pkl + weirvern-worker:0.23.17",
+      "status": "production",
+      "training_window_end": "2026-11-11 00:47:02",
+      "training_window_start": "2026-11-08 00:47:02",
+      "updated_at": "2026-11-11 08:33:48",
+      "version": "v4"
+    },
+    {
+      "approved_at": "2026-11-11 02:32:27",
+      "approved_by": "operator",
+      "artifact_hash": "9ad91fb954d7af5b2899749d72a4fa69db9a1c104de699d16466f52208e7243a",
+      "calibration_version": "2026-11-11T08:32:27Z",
+      "eval_report_id": "not_measured",
+      "feature_version": 4,
+      "intended_use": "Unsupervised flow-shape detector in the fused anomaly score.",
+      "known_limitations": "Scores drift with traffic mix; the fixed-budget report is not attached to this artifact.",
+      "model_id": "isolation-forest",
+      "model_name": "Isolation Forest",
+      "out_of_scope": "Not a malware classifier; no payload or process visibility.",
+      "owner": "operator",
+      "rollback_ref": "models/Isolation Forest_v3.pkl + weirvern-worker:0.23.17",
+      "status": "production",
+      "training_window_end": "2026-11-11 00:47:02",
+      "training_window_start": "2026-11-08 00:47:02",
+      "updated_at": "2026-11-11 08:33:48",
+      "version": "v4"
+    }
+  ],
+  "next_review": "2026-12-12",
+  "note": "A model is never deleted by this review; retirement is a status and a provenance trail.",
+  "queries": 25,
+  "review_id": "ml-program-2026-11-12",
+  "slo": {
+    "available": true,
+    "disclaimer": "live precision is not measured without an oracle; no zero is shown in its place",
+    "live_precision": "not measured",
+    "windows": [
+      {
+        "available": true,
+        "days": 7,
+        "metrics": [
+          {
+            "name": "alerts/day",
+            "note": "1 high/critical; 22 hosts",
+            "source": "netflow_anomalies",
+            "state": "observed",
+            "target": "page budget: 2 pages/host/day",
+            "value": 792.29
+          },
+          {
+            "name": "precision at the page budget",
+            "note": "no oracle: an operator review is not a verified label",
+            "source": "alert_reviews",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "false alarms / host / day",
+            "note": "no clean-background replay has been attached to this window",
+            "source": "clean replay",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "detection latency",
+            "note": "median seconds from window start to detection",
+            "source": "netflow_anomalies",
+            "state": "meets",
+            "target": 300,
+            "value": 284.0
+          },
+          {
+            "name": "episodes",
+            "note": "1 pageable; 0 paged",
+            "source": "alert_episodes",
+            "state": "observed",
+            "target": "one incident, not every window",
+            "value": 1180
+          },
+          {
+            "name": "pageable episodes / day",
+            "note": "",
+            "source": "alert_episodes",
+            "state": "observed",
+            "target": "2 per host/day",
+            "value": 0.14
+          },
+          {
+            "name": "drift notices",
+            "note": "a drift row is a notice, not an alert",
+            "source": "ml_drift",
+            "state": "observed",
+            "target": "review, never a page",
+            "value": 5529
+          },
+          {
+            "name": "shadow freshness",
+            "note": "seconds since the last scored population row",
+            "source": "ml_window_scores",
+            "state": "stale",
+            "target": 900,
+            "value": 1107
+          }
+        ],
+        "source_days": 11
+      },
+      {
+        "available": true,
+        "days": 14,
+        "metrics": [
+          {
+            "name": "alerts/day",
+            "note": "2347 high/critical; 24 hosts",
+            "source": "netflow_anomalies",
+            "state": "observed",
+            "target": "page budget: 2 pages/host/day",
+            "value": 1236.21
+          },
+          {
+            "name": "precision at the page budget",
+            "note": "no oracle: an operator review is not a verified label",
+            "source": "alert_reviews",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "false alarms / host / day",
+            "note": "no clean-background replay has been attached to this window",
+            "source": "clean replay",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "detection latency",
+            "note": "median seconds from window start to detection",
+            "source": "netflow_anomalies",
+            "state": "meets",
+            "target": 300,
+            "value": 280.0
+          },
+          {
+            "name": "episodes",
+            "note": "the episode source covers 11 day(s); a 14-day figure over it would be that number wearing a 14-day label",
+            "source": "alert_episodes",
+            "state": "not measured",
+            "target": "one incident, not every window",
+            "value": null
+          },
+          {
+            "name": "pageable episodes / day",
+            "note": "the episode source covers 11 day(s)",
+            "source": "alert_episodes",
+            "state": "not measured",
+            "target": "2 per host/day",
+            "value": null
+          },
+          {
+            "name": "drift notices",
+            "note": "a drift row is a notice, not an alert",
+            "source": "ml_drift",
+            "state": "observed",
+            "target": "review, never a page",
+            "value": 9938
+          },
+          {
+            "name": "shadow freshness",
+            "note": "seconds since the last scored population row",
+            "source": "ml_window_scores",
+            "state": "stale",
+            "target": 900,
+            "value": 1109
+          }
+        ],
+        "source_days": 11
+      },
+      {
+        "available": true,
+        "days": 30,
+        "metrics": [
+          {
+            "name": "alerts/day",
+            "note": "4444 high/critical; 24 hosts",
+            "source": "netflow_anomalies",
+            "state": "observed",
+            "target": "page budget: 2 pages/host/day",
+            "value": 783.03
+          },
+          {
+            "name": "precision at the page budget",
+            "note": "no oracle: an operator review is not a verified label",
+            "source": "alert_reviews",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "false alarms / host / day",
+            "note": "no clean-background replay has been attached to this window",
+            "source": "clean replay",
+            "state": "not measured",
+            "target": null,
+            "value": null
+          },
+          {
+            "name": "detection latency",
+            "note": "median seconds from window start to detection",
+            "source": "netflow_anomalies",
+            "state": "meets",
+            "target": 300,
+            "value": 279.5
+          },
+          {
+            "name": "episodes",
+            "note": "the episode source covers 11 day(s); a 30-day figure over it would be that number wearing a 30-day label",
+            "source": "alert_episodes",
+            "state": "not measured",
+            "target": "one incident, not every window",
+            "value": null
+          },
+          {
+            "name": "pageable episodes / day",
+            "note": "the episode source covers 11 day(s)",
+            "source": "alert_episodes",
+            "state": "not measured",
+            "target": "2 per host/day",
+            "value": null
+          },
+          {
+            "name": "drift notices",
+            "note": "a drift row is a notice, not an alert",
+            "source": "ml_drift",
+            "state": "observed",
+            "target": "review, never a page",
+            "value": 9938
+          },
+          {
+            "name": "shadow freshness",
+            "note": "seconds since the last scored population row",
+            "source": "ml_window_scores",
+            "state": "stale",
+            "target": 900,
+            "value": 1111
+          }
+        ],
+        "source_days": 11
+      }
+    ]
+  },
+  "status": "fail",
+  "verification": {
+    "available": false,
+    "reason": "not supplied"
+  },
+  "verification_failures": [
+    "verification report is missing; unlabelled zero is not a clean result"
+  ]
+}
