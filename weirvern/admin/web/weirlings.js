@@ -385,6 +385,16 @@ async function wlBulk(kind, btn) {
 /** WL-2: ONE SENTENCE ABOUT THE CHANGE, not a fact sheet. It names the state (and the first
  *  finding, when there is one) because a control whose situation is hidden is a control you
  *  press blind; everything else moved to the row, the Logs tab and this sheet's settings. */
+/** Compact age for evidence lines; an unknown age says so rather than reading as zero. */
+function wlAge(seconds) {
+  if (seconds == null || !isFinite(seconds)) return "an unknown time";
+  const s = Math.max(0, Math.round(Number(seconds)));
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  if (s < 172800) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
 function wlSituation(r) {
   const state = String(r.state || "unknown").replace(/_/g, " ");
   const bits = [`state: ${state}` + (r.registered ? "" : " (not adopted)")];
@@ -401,7 +411,19 @@ function wlSituation(r) {
   // The sheet's evidence line makes the same distinction: a siphon is not a channel.
   if (wlChannelEnabled() && r.channel && r.channel.state) cap.push(`channel ${r.channel.state}`);
   const nf = r.netflow || {};
-  if (nf.known) cap.push(nf.observed ? `${Number(nf.flows || 0).toLocaleString()} flows in 24h` : "no flows in 24h");
+  // OBSERVED IS NOT FRESH (operator, 2026-11-12: "look at weirling when netflow is enabled").
+  // A 24-hour count keeps a dead exporter looking healthy for a whole day; the row now states
+  // the last flow's age and calls a silent feed stale.
+  if (nf.known) {
+    if (!nf.observed) {
+      cap.push("no flows in 24h");
+    } else if (nf.fresh) {
+      cap.push(`${Number(nf.flows || 0).toLocaleString()} flows in 24h`
+        + (nf.age_s != null ? ` \u00b7 last ${wlAge(nf.age_s)} ago` : ""));
+    } else {
+      cap.push(`NetFlow STALE \u2014 last flow ${wlAge(nf.age_s)} ago`);
+    }
+  }
   const zk = r.zeek || {};
   if (zk.known) cap.push(zk.observed ? `Zeek observed${zk.last_at ? ` ${zk.last_at}` : ""}` : "Zeek not observed");
   if (cap.length) box.appendChild(el("p", { class: "muted", text: `Evidence: ${cap.join(" \u00b7 ")}.` }));

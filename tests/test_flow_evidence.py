@@ -27,9 +27,10 @@ class Stub:
 
 
 def test_flow_evidence_maps_by_exporter_and_skips_empty_fleets():
-    c = Stub([("198.51.100.7", 42, "2026-09-23 12:00:00")])
+    c = Stub([("198.51.100.7", 42, "2026-09-23 12:00:00", 600)])
     out, err = fleet_store.flow_evidence(c, ["198.51.100.7", ""])
     assert err == "" and out["198.51.100.7"]["flows"] == 42
+    assert out["198.51.100.7"]["age_s"] == 600
     assert "sampler_address IN" in c.calls[0]["sql"]
     assert c.calls[0]["params"]["addrs"] == ["198.51.100.7"]
     empty_stub = Stub([])

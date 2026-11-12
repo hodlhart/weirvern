@@ -443,6 +443,12 @@ def read_heartbeats(client: Client) -> tuple[list[dict], str | None]:
 # and must never render as a flat zero line that reads as measured idle traffic.
 
 
+#: An exporter that has not been heard from in this long is stale, not merely quiet. A NetFlow
+#: exporter with a one-minute active timeout produces records continuously, so fifteen minutes of
+#: silence means the feed is broken, not that the network is idle.
+NETFLOW_STALE_S = 900
+
+
 def flow_evidence(client: Client, addresses: list[str], *, hours: int = 24,
                   now: datetime | None = None) -> tuple[dict[str, dict], str]:
     """Per exporter address: how many flows in the window and when the last one landed."""
@@ -454,15 +460,23 @@ def flow_evidence(client: Client, addresses: list[str], *, hours: int = 24,
     # so a 60-minute window matched nothing beside 7,100 stored flows. Comparing in the DB's
     # timezone removes the skew without guessing anyone's offset.
     try:
+        # THE AGE IS COMPUTED BY THE DATABASE, in the database's own clock. A 24-hour count
+        # stays non-zero for a day after an exporter dies, which is how a dead feed read as
+        # healthy on the Weirlings tab (measured live 2026-11-12: last flow 01:17, tab still
+        # said "observed"). The age cannot be derived from `last_at` in Python without
+        # re-introducing the timezone skew this query exists to avoid.
         rows = client.query(
-            "SELECT sampler_address, count(), max(timestamp) FROM weirvern.flows "
+            "SELECT sampler_address, count(), max(timestamp), "
+            "dateDiff('second', max(timestamp), now()) AS age_s FROM weirvern.flows "
             f"WHERE timestamp > now() - INTERVAL {int(hours)} HOUR "
             "AND sampler_address IN %(addrs)s "
             "GROUP BY sampler_address",
             parameters={"addrs": addrs},
         ).result_rows
-        out = {str(addr): {"flows": int(n or 0), "last_at": str(last) if last else ""}
-               for addr, n, last in rows}
+        out = {str(addr): {"flows": int(n or 0),
+                           "last_at": str(last) if last else "",
+                           "age_s": int(age) if age is not None else None}
+               for addr, n, last, age in rows}
         return out, ""
     except Exception as exc:  # noqa: BLE001
         return {}, str(exc)

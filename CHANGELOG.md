@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.62 — 2026-11-12
+
+OBSERVED IS NOT FRESH: THE WEIRLINGS TAB CAN NOW SEE A DEAD EXPORTER.
+
+- The NetFlow evidence line counted flows over 24 hours, so an exporter that stopped at 01:17 still
+  read as "9,000 flows in 24h" and the row looked healthy until the next day. Measured live:
+  zero packets on 2055/6343 for two hours while the tab said observed.
+- `fleet_store.flow_evidence` now returns the age of the newest flow, computed by ClickHouse
+  (`dateDiff`) in the database's own clock so the timezone skew that query exists to avoid cannot
+  come back through Python. The fleet payload carries `fresh`, `stale` and `age_s`, and the reason
+  names the silence ("exporter silent for 2h").
+- The Weirlings sheet states the last flow's age for a live feed and calls a silent one
+  `NetFlow STALE`, instead of implying a 24-hour-old count means it is working.
+
 ## 0.23.61 — 2026-11-12
 
 THE TRIM MUST NOT TAKE THE WRITER'S ACCESS WITH IT.

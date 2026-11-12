@@ -70,6 +70,24 @@ def _iso(value: object) -> str:
     fmt = getattr(value, "isoformat", None)
     return str(fmt()) if callable(fmt) else str(value or "")
 
+
+def _human_age(seconds: float | int | str | None) -> str:
+    """How long ago, in the unit a person reads. Unknown age says so; it never reads as zero."""
+    if seconds is None:
+        return "an unknown time"
+    try:
+        total = int(max(0.0, float(seconds)))
+    except (TypeError, ValueError):
+        return "an unknown time"
+    if total < 90:
+        return f"{total}s"
+    if total < 5400:
+        return f"{total // 60}m"
+    if total < 172800:
+        return f"{total // 3600}h"
+    return f"{total // 86400}d"
+
+
 STATIC_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
@@ -1919,6 +1937,10 @@ def _build_handler(ctx: GuiContext):
                 flows = sum(int(e.get("flows") or 0) for e in evs)
                 last = max((str(e.get("last_at") or "") for e in evs if e.get("last_at")),
                            default="")
+                # THE NEWEST EVIDENCE WINS: one exporter still sending means the feed is up.
+                ages: list[int] = [int(e["age_s"]) for e in evs if e.get("age_s") is not None]
+                age_s: int | None = min(ages) if ages else None
+                stale = bool(keys) and (age_s is None or age_s > fleet_store.NETFLOW_STALE_S)
                 merged_series = [0] * 12
                 has_series = False
                 for k in keys:
@@ -1931,6 +1953,11 @@ def _build_handler(ctx: GuiContext):
                 row["netflow"] = {
                     "known": bool(keys),
                     "observed": flows > 0,
+                    # OBSERVED IS NOT FRESH. A 24-hour count keeps a dead exporter looking
+                    # healthy for a day; `fresh` and `age_s` say whether it is sending NOW.
+                    "fresh": bool(keys) and not stale and flows > 0,
+                    "stale": stale,
+                    "age_s": age_s,
                     "flows": flows,
                     "last_at": last,
                     # NETFLOW IS SENSOR-SCOPED, NOT PER-NIC. NETFLOW_IFACE is one sensor-level
@@ -1940,8 +1967,9 @@ def _build_handler(ctx: GuiContext):
                     "scope_label": "netflow",
                     "scope_note": ("the hub sees one sensor-wide NetFlow feed; it cannot "
                                    "attribute it to this NIC"),
-                    "why": ("" if flows else
-                            ("no flows from this sensor's exporter in 24h" if keys
+                    "why": ("" if (flows and not stale) else
+                            (f"exporter silent for {_human_age(age_s)}" if keys and stale
+                             else "no flows from this sensor's exporter in 24h" if keys
                              else ("the sensor has not reported an address yet"
                                    if ev_err else "no address reported yet"))),
                 }
