@@ -322,3 +322,21 @@ def test_a_component_with_no_cap_says_so_rather_than_claiming_success(_isolated_
     """
     out = enforce.render([enforce.enforce_zeek(0)])
     assert "unset" in out
+
+
+def test_a_trim_preserves_the_mode_the_writer_needs(_isolated_dirs):
+    """Replacing the log creates a new inode; if the mode changes, the collector cannot append.
+
+    Measured live 2026-11-12: the prune job (uid 10001) rewrote flows.jsonl as 644 while goflow2
+    runs as uid 100, so the collector hit "permission denied" and NetFlow went dark.
+    """
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    rows = "".join(json.dumps({"i": i, "pad": "p" * 120}) + "\n" for i in range(2000))
+    f.write_text(rows)
+    f.chmod(0o664)
+
+    enforce.enforce_netflow(0.05)
+
+    assert f.stat().st_size > 0
+    assert f.stat().st_mode & 0o777 == 0o664, "the collector's write bit must survive the trim"

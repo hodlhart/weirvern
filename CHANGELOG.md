@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.61 — 2026-11-12
+
+THE TRIM MUST NOT TAKE THE WRITER'S ACCESS WITH IT.
+
+- Replacing the flow log creates a new inode owned by whoever ran the prune. On the live
+  deployment that is uid 10001 (mode 644), while goflow2 runs as uid 100 — so after a trim the
+  collector could not append to its own log and NetFlow went dark. The rewrite now carries the
+  original uid, gid and mode across the replace; a chown the process is not allowed to perform is
+  not fatal.
+- Verified live before the fix: `open /data/flows.jsonl: permission denied for file transport` on
+  restart. After restoring ownership the collector binds 2055 and 6343 again.
+- Test: a 664 log survives a trim with its mode intact.
+
 ## 0.23.59 — 2026-11-12
 
 ANY COLLECTED SOURCE CAN CARRY A RIPPLE.

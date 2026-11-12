@@ -21,10 +21,12 @@ Each is idempotent and safe to run repeatedly.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import shutil
+import stat
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,8 +205,9 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
         if excess <= 0:
             break
         try:
-            size = p.stat().st_size
-            old_inode = p.stat().st_ino
+            st = p.stat()
+            size = st.st_size
+            old_inode = st.st_ino
             guard = _reader_boundary(p, size)  # the reader's cursor, when it is for THIS file
             if size <= excess and guard is None:
                 # The whole file goes; it is entirely older than the cut, and no reader is
@@ -232,6 +235,14 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
                 # (measured 2026-11-12: exit 137, BackoffLimitExceeded, cap never enforced while
                 # the disk filled). copyfileobj moves it in bounded chunks instead.
                 shutil.copyfileobj(src, out, length=1024 * 1024)
+            # KEEP THE WRITER'S ACCESS. Replacing the log creates a new inode owned by whoever
+            # ran the prune; the collector runs as a different user (measured live 2026-11-12:
+            # goflow2 runs as uid 100, the prune job as 10001, mode 644 -> the collector got
+            # "permission denied" on its own log and NetFlow stopped). Ownership and mode are
+            # carried across the rewrite; a chown we are not allowed to do is not fatal.
+            with contextlib.suppress(PermissionError, AttributeError):
+                os.chown(tmp, st.st_uid, st.st_gid)
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))
             tmp.replace(p)
             # AFTER the replace, deliberately: in the millisecond between the two, a reader
             # pass falls back to the old re-read behaviour -- the known degraded path --
