@@ -49,13 +49,32 @@ class ChannelSpec:
     family: str
     table: str
     host_column: str
-    value_column: str | None
+    value_column: str | None = None
     scale: str = "5m"
+    #: "count"     -- volume only (the default)
+    #: "diversity" -- volume plus distinct values of `value_column`
+    #: "ratio"     -- the fraction of rows matching `predicate`
+    kind: str = "count"
+    predicate: str | None = None
+    #: Rows that belong in the denominator. Without this, a field that is mostly unpopulated
+    #: (measured live: zeek_ssl.validation_status is empty on 138,439 of 139,058 sessions)
+    #: makes every ratio look like noise. The denominator must be "rows where the field is
+    #: meaningful", not "all rows".
+    denominator: str | None = None
 
     def sql(self, *, since_s: int) -> str:
-        value = (f", uniqExact({self.value_column}) AS u" if self.value_column
-                 else ", 0 AS u")
-        return (f"SELECT {self.host_column}, toStartOfFiveMinute(ts) AS w, count() AS n{value} "
+        if self.kind == "diversity":
+            if not self.value_column:
+                raise ValueError(f"{self.channel}: a diversity channel needs a value column")
+            value = f", uniqExact({self.value_column}) AS u"
+        elif self.kind == "ratio":
+            if not self.predicate:
+                raise ValueError(f"{self.channel}: a ratio channel needs a predicate")
+            value = f", countIf({self.predicate}) AS u"
+        else:
+            value = ", 0 AS u"
+        n_expr = f"countIf({self.denominator})" if self.denominator else "count()"
+        return (f"SELECT {self.host_column}, toStartOfFiveMinute(ts) AS w, {n_expr} AS n{value} "
                 f"FROM {self.table} "
                 f"WHERE ts >= now() - INTERVAL {int(since_s)} SECOND "
                 f"GROUP BY {self.host_column}, w ORDER BY w")
@@ -63,12 +82,27 @@ class ChannelSpec:
 
 #: The sources this deployment already collects and the ripple layer could not hear.
 SPECS: tuple[ChannelSpec, ...] = (
-    ChannelSpec("http", "http", "weirvern.zeek_http", "src_addr", "user_agent"),
-    ChannelSpec("files", "files", "weirvern.zeek_files", "src_addr", "mime_type"),
-    ChannelSpec("ssh", "ssh", "weirvern.zeek_ssh", "src_addr", "client"),
-    ChannelSpec("weird", "weird", "weirvern.zeek_weird", "src_addr", "name"),
-    ChannelSpec("quic", "quic", "weirvern.zeek_quic", "src_addr", "server_name"),
-    ChannelSpec("dhcp", "dhcp", "weirvern.zeek_dhcp", "client_addr", "host_name"),
+    ChannelSpec("http", "http", "weirvern.zeek_http", "src_addr", "user_agent", kind="diversity"),
+    ChannelSpec("files", "files", "weirvern.zeek_files", "src_addr", "mime_type", kind="diversity"),
+    ChannelSpec("ssh", "ssh", "weirvern.zeek_ssh", "src_addr", "client", kind="diversity"),
+    ChannelSpec("weird", "weird", "weirvern.zeek_weird", "src_addr", "name", kind="diversity"),
+    ChannelSpec("quic", "quic", "weirvern.zeek_quic", "src_addr", "server_name", kind="diversity"),
+    ChannelSpec("dhcp", "dhcp", "weirvern.zeek_dhcp", "client_addr", "host_name", kind="diversity"),
+    # The second-order fields of sources already in the fusion. Each is a fraction of the
+    # host's own traffic, so the baseline is comparable across hosts and volumes.
+    ChannelSpec("tls_unvalidated", "tls", "weirvern.zeek_ssl", "src_addr", kind="ratio",
+                predicate="lower(validation_status) != 'ok'",
+                denominator="validation_status != ''"),
+    ChannelSpec("tls_ja4_variety", "tls", "weirvern.zeek_ssl", "src_addr", "ja4_orig",
+                kind="diversity"),
+    ChannelSpec("dns_tcp", "dns", "weirvern.zeek_dns", "src_addr", kind="ratio",
+                predicate="proto = 'tcp'"),
+    ChannelSpec("dns_reverse", "dns", "weirvern.zeek_dns", "src_addr", kind="ratio",
+                predicate="query LIKE '%in-addr.arpa%'"),
+    ChannelSpec("conn_reset", "conn", "weirvern.zeek_conn", "src_addr", kind="ratio",
+                predicate="conn_state IN ('RSTO','RSTR','S0','REJ')"),
+    ChannelSpec("conn_service_variety", "conn", "weirvern.zeek_conn", "src_addr", "service",
+                kind="diversity"),
 )
 
 
@@ -123,35 +157,44 @@ def evidence(client: Any, hosts: list[str], *, now: datetime | None = None,
             rows = list(client.query(spec.sql(since_s=since_s)).result_rows)
         except Exception:  # noqa: BLE001 - one missing source must not silence the others
             continue
-        value_index = 3 if spec.value_column else None
+        value_index = 3 if spec.kind in {"diversity", "ratio"} else None
         for host, windows in _per_host(rows, value_index).items():
             if host not in wanted or len(windows) < MIN_WINDOWS + 1:
                 continue
             history, current = windows[:-1], windows[-1]
-            # Score every historical window against the ones before it, with the same function
-            # used on the current one. That is what makes the rank meaningful.
-            scores: list[float] = []
-            for index, (_w, n, u) in enumerate(history):
-                prior = history[:index]
-                if not prior:
-                    scores.append(SCORE_FLOOR)
-                    continue
-                scores.append(score_window(
-                    n, u,
-                    median_n=_median([x[1] for x in prior]),
-                    median_u=_median([x[2] for x in prior])))
-            median_n = _median([w[1] for w in history])
-            median_u = _median([w[2] for w in history])
-            score = score_window(current[1], current[2], median_n=median_n, median_u=median_u)
-            reference = [s for s in scores if math.isfinite(s)]
+            if spec.kind == "ratio":
+                # A ratio is already normalised: "12% of this host's connections reset" is
+                # comparable across volumes without dividing by a median. Dividing again would
+                # make a host whose normal is 0.01 explode on a single event.
+                reference = [round(u / n, 6) if n else 0.0 for (_w, n, u) in history]
+                score = round(current[2] / current[1], 6) if current[1] else 0.0
+            else:
+                # Score every historical window against the ones before it, with the same
+                # function used on the current one. That is what makes the rank meaningful.
+                reference = []
+                for index, (_w, n, u) in enumerate(history):
+                    prior = history[:index]
+                    if not prior:
+                        reference.append(SCORE_FLOOR)
+                        continue
+                    reference.append(score_window(
+                        n, u,
+                        median_n=_median([x[1] for x in prior]),
+                        median_u=_median([x[2] for x in prior])))
+                score = score_window(
+                    current[1], current[2],
+                    median_n=_median([w[1] for w in history]),
+                    median_u=_median([w[2] for w in history]))
+
+            reference = [value for value in reference if math.isfinite(value)]
             pvalue = empirical_pvalue(score, reference)
             if not math.isfinite(pvalue):
                 continue
-            age_s = max(0.0, (moment - current[0]).total_seconds())
             out.setdefault(host, []).append(ChannelEvidence(
                 channel=spec.channel, family=spec.family, scale=spec.scale,
                 model_id=f"source:{spec.channel}", model_version="source-scan/1",
-                score=score, pvalue=pvalue, freshness_s=age_s, present=True))
+                score=score, pvalue=pvalue,
+                freshness_s=max(0.0, (moment - current[0]).total_seconds()), present=True))
     return out
 
 

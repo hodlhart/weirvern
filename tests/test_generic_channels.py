@@ -96,3 +96,43 @@ def test_the_score_is_a_ratio_not_an_arbitrary_number():
     assert channels.score_window(50, 2, median_n=5, median_u=2) == 10.0
     # A quiet window with many distinct values is what a tunnel looks like: diversity must count.
     assert channels.score_window(1, 20, median_n=5, median_u=2) > 5
+
+
+def test_a_ratio_channel_scores_the_fraction_itself():
+    host = "198.51.100.20"
+    start = START
+    rows = [(host, start + timedelta(minutes=5 * i), 100, 2) for i in range(30)]  # 2% normally
+    rows.append((host, NOW, 100, 40))                                             # 40% now
+    client = FakeClient({"weirvern.zeek_conn": rows})
+    specs = (channels.ChannelSpec("conn_reset", "conn", "weirvern.zeek_conn", "src_addr",
+                                  kind="ratio", predicate="conn_state IN ('RSTO','RSTR')"),)
+
+    found = channels.evidence(client, [host], now=NOW, specs=specs)
+    item = found[host][0]
+    assert item.score == 0.4
+    assert item.pvalue <= 0.05
+
+
+def test_a_ratio_channel_with_a_flat_history_is_not_significant():
+    host = "198.51.100.21"
+    rows = [(host, START + timedelta(minutes=5 * i), 100, 2) for i in range(31)]
+    client = FakeClient({"weirvern.zeek_conn": rows})
+    specs = (channels.ChannelSpec("conn_reset", "conn", "weirvern.zeek_conn", "src_addr",
+                                  kind="ratio", predicate="conn_state IN ('RSTO','RSTR')"),)
+
+    found = channels.evidence(client, [host], now=NOW, specs=specs)
+    assert found[host][0].pvalue > 0.5
+
+
+def test_a_diversity_channel_counts_distinct_values_not_rows():
+    host = "198.51.100.22"
+    rows = [(host, START + timedelta(minutes=5 * i), 10, 2) for i in range(30)]
+    rows.append((host, NOW, 10, 9))          # same volume, nine new fingerprints
+    client = FakeClient({"weirvern.zeek_ssl": rows})
+    specs = (channels.ChannelSpec("tls_ja4_variety", "tls", "weirvern.zeek_ssl", "src_addr",
+                                  "ja4_orig", kind="diversity"),)
+
+    found = channels.evidence(client, [host], now=NOW, specs=specs)
+    item = found[host][0]
+    assert item.score > 3
+    assert item.pvalue <= 0.05
