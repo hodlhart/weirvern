@@ -112,11 +112,18 @@ def fuse(
     for ch in channels:
         if ch.valid(max_freshness_s=max_freshness_s):
             valid.append(ch)
+            continue
+        # THE REASON NAMES THE ACTUAL DEFECT. This used to check the p-value first, so a
+        # channel that was simply absent (present=False, pvalue=nan) was reported as
+        # "no p-value" -- which reads like a broken model rather than a feed that never
+        # reported. The distinction is the whole point of the unknown contract.
+        if not ch.present:
+            reason = "missing"
+        elif not math.isfinite(ch.pvalue):
+            reason = "no p-value"
         else:
-            reason = "stale" if ch.present else "missing"
-            if not math.isfinite(ch.pvalue):
-                reason = "no p-value"
-            unknown.append({"channel": ch.channel, "family": ch.family, "reason": reason})
+            reason = "stale"
+        unknown.append({"channel": ch.channel, "family": ch.family, "reason": reason})
 
     if not valid:
         return RippleResult(

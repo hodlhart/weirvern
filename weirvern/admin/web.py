@@ -453,6 +453,8 @@ def _build_handler(ctx: GuiContext):
                 return self._models(query)
             if path == "/api/ml/coverage":
                 return self._ml_coverage()
+            if path == "/api/ml/ripple":
+                return self._ml_ripple()
             if path == "/api/ml/slo":
                 return self._ml_slo()
             if path == "/api/ml/review":
@@ -932,6 +934,24 @@ def _build_handler(ctx: GuiContext):
                                    "reason": f"cannot read source coverage: {exc}",
                                    "sources": [], "roles": {}, "models": [],
                                    "promotion_ok": False})
+            self._json(data)
+
+        def _ml_ripple(self) -> None:
+            """RIP-5: the latest fused ripple evaluation; unavailable is a named state.
+
+            The payload carries the whole explanation -- contributors, families, scales and the
+            named unknown channels -- because the question this view answers is "why did it or
+            did it not fire", not "what is the score".
+            """
+            try:
+                with self._with_client() as client:
+                    data = status_mod.ripple_overview(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot reach ClickHouse: {exc}",
+                                   "rows": [], "pageable": False, "counts": {},
+                                   "contributors": [], "scales": [], "families": [],
+                                   "unknown": []})
             self._json(data)
 
         def _models(self, query: dict) -> None:

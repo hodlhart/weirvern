@@ -2579,6 +2579,22 @@ def main() -> None:
                             logger.info("ML drift: %s pair(s), %s notice(s); retrain=%s",
                                         drift["rows"], len(drift.get("notices", [])),
                                         drift["retrain"]["trigger"])
+                        # RIP-5: the fusion pass runs where the evidence was just written, not
+                        # on a separate timer. The specialists above are hourly, so a fusion on
+                        # the 5-minute detection cycle would almost always find every channel
+                        # stale and persist an unknown -- an honest answer, but not a useful
+                        # one. Its own try/except: a fusion failure must name itself, not be
+                        # reported as a generic shadow-pass failure that blames the detectors.
+                        try:
+                            from weirvern.models import ripple_shadow as _ripple  # noqa: PLC0415
+
+                            fused = _ripple.run(client)
+                            logger.info(
+                                "ML ripple: %s host(s) — %s ripple, %s observation, %s unknown",
+                                fused["hosts"], fused["ripple"], fused["observation"],
+                                fused["unknown"])
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("ML ripple pass failed (detection continues): %s", exc)
                     shadow_tick += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("ML shadow pass failed (detection continues): %s", exc)

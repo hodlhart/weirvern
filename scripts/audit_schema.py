@@ -265,6 +265,16 @@ def main() -> int:
         "tcp_flags", "forwarding_status", "src_as", "dst_as", "in_if", "out_if",
     }
 
+    # THE SHADOW ROW is another caller-built contract, not a table. `ripple.evidence_from_shadow`
+    # accepts rows assembled by whoever has the scores -- the worker's ripple pass today, the
+    # tests directly -- and its documented keys are pinned by tests/test_ripple.py. These four
+    # were reported as phantoms the moment the adapter landed (commit 240eaad) and failed the
+    # whole gate; the names are real, the table is what does not exist.
+    SHADOW_ROW = {
+        "model_name", "channel", "family", "scale", "score", "model_version", "freshness_s",
+        "present",
+    }
+
     phantom: list[str] = []
     for path in SRC:
         if path.suffix != ".py":
@@ -286,6 +296,8 @@ def main() -> int:
             if key in COLLECTOR_JSON:
                 continue
             if key in FLEET_PAYLOAD:
+                continue
+            if key in SHADOW_ROW:
                 continue
             if not re.match(r"^[a-z][a-z0-9_]*$", key):
                 continue

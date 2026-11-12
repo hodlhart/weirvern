@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -3632,6 +3633,104 @@ def shadow_overview(client) -> dict:
             "latest": "", "state": "unavailable",
         })
     return {"available": True, "reason": "", "rows": rows}
+
+
+# The fusion pass runs with the hourly shadow specialists; two missed passes is the point at
+# which the panel should say the answer is old rather than present it as current.
+RIPPLE_STALE_AFTER_S = 2 * 3600
+_RIPPLE_STATUS_RANK = {"ripple": 0, "observation": 1, "unknown": 2}
+
+
+def ripple_overview(client, *, limit: int = 50) -> dict:
+    """The latest fused ripple evaluation, read from `ml_ripple` (RIP-5).
+
+    THREE STATES, NOT ONE: an unreadable table, a table with no evaluation yet, and an
+    evaluation that fused nothing are different facts, and the Models card must name which one
+    it is looking at. Collapsing them into an empty list is how "not running" and "running and
+    finding nothing" become the same picture.
+
+    `pageable` is false by construction: the page decision belongs to the alert budget, and a
+    shadow pass that could page would be a second, unaudited alert path.
+    """
+    empty = {"available": False, "reason": "", "pageable": False, "rows": [], "counts": {},
+             "contributors": [], "scales": [], "families": [], "unknown": []}
+    try:
+        head = client.query(
+            "SELECT count() AS n, max(evaluated_at) AS ts FROM weirvern.ml_ripple"
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001 - a panel must not break the page
+        return {**empty, "reason": f"cannot read the ripple table: {type(exc).__name__}: "
+                                   f"{str(exc)[:160]}"}
+    total, latest = head[0] if head else (0, None)
+    if not int(total or 0) or latest is None:
+        return {**empty, "reason": "no ripple evaluation has been recorded yet"}
+
+    try:
+        raw = client.query(
+            "SELECT evaluated_at, src_addr, status, reason, confidence, combined_p, families, "
+            "scales, contributors, unknown_channels, channel_count, model_version "
+            "FROM weirvern.ml_ripple WHERE evaluated_at = %(ts)s",
+            parameters={"ts": latest},
+        ).result_rows
+    except Exception as exc:  # noqa: BLE001
+        return {**empty, "reason": f"cannot read the ripple evaluation: {type(exc).__name__}: "
+                                   f"{str(exc)[:160]}"}
+
+    def _list(value) -> list:
+        if isinstance(value, list):
+            return value
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    rows: list[dict[str, Any]] = []
+    for (_evaluated_at, src, status, reason, confidence, combined_p, families, scales,
+         contributors, unknown, channel_count, version) in raw:
+        rows.append({
+            "src_addr": str(src or ""),
+            "status": str(status or "unknown"),
+            "reason": str(reason or ""),
+            "confidence": float(confidence or 0.0),
+            "combined_p": float(combined_p or 0.0),
+            "families": _list(families),
+            "scales": _list(scales),
+            "contributors": _list(contributors),
+            "unknown": _list(unknown),
+            "channel_count": int(channel_count or 0),
+            "model_version": str(version or ""),
+        })
+    if not rows:
+        return {**empty, "reason": "the recorded evaluation has no rows for its own timestamp"}
+
+    rows.sort(key=lambda r: (_RIPPLE_STATUS_RANK.get(r["status"], 9), -r["confidence"]))
+    headline = rows[0]
+    stamp = latest.replace(tzinfo=datetime.UTC) if latest.tzinfo is None else latest
+    age = max(0.0, (utcnow() - stamp).total_seconds())
+    counts = Counter(r["status"] for r in rows)
+    return {
+        "available": True,
+        "reason": "",
+        "pageable": False,
+        "evaluated_at": stamp.isoformat(),
+        "age_s": round(age, 1),
+        "stale": age > RIPPLE_STALE_AFTER_S,
+        "status": headline["status"],
+        "headline_reason": headline["reason"],
+        "src_addr": headline["src_addr"],
+        "confidence": headline["confidence"],
+        "combined_p": headline["combined_p"],
+        "families": headline["families"],
+        "scales": headline["scales"],
+        "contributors": headline["contributors"],
+        "unknown": headline["unknown"],
+        "model_version": headline["model_version"],
+        "counts": {"hosts": len(rows), "ripple": counts.get("ripple", 0),
+                   "observation": counts.get("observation", 0),
+                   "unknown": counts.get("unknown", 0)},
+        "rows": rows[:limit],
+    }
 
 
 def detectors_overview(client) -> dict:
