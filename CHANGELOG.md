@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.23.57 — 2026-11-12
+
+RIPPLE FUSION WIRED, AND A COVERAGE CONTRACT THAT MEASURES HOSTS.
+
+- RIP-5: `models/ripple_shadow.py` reads the three shadow stores, calibrates every model against
+  its own recent population (2000 scores/model, 7 days), fuses per host with `ripple.fuse()` and
+  records one row per host in the new `ml_ripple` table. Missing channels are named, unknown
+  stays unknown, `pageable` is always 0 and the alert path is untouched.
+- `GET /api/ml/ripple` returns the latest fused evaluation with contributors, families, scales,
+  named unknown channels and the reason it did or did not fire; a failed read is
+  `available:false` with the reason, never an empty success.
+- The Models tab gains a Ripple evidence card: what fired, on which host, at which scales, from
+  which channels, and which channels were dark.
+- Fixes `fuse()`: an absent channel is `missing`, not `no p-value` (the p-value check ran first).
+- Fixes the gate failure left by 240eaad: the schema audit read the adapter's caller-built row
+  keys as phantom columns; they are a contract pinned by tests.
+- DATA-0: `docs/design/data-coverage-contract.json` plus `models/data_contract.py` and
+  `GET /api/ml/data-contract`. Coverage is measured against the monitored host population
+  (the same predicate the detectors train on), with required/optional, accepted missingness,
+  per-host observation status, a named top-gap report and a per-family usability verdict.
+- Fixes the monthly review and program gate judging archived 2026-10 boards: they now read the
+  active boards, so the ledger reflects the programme that is actually running.
+- Fixes the 30-day episode window: the source only covers ~14 days, so the window is now
+  `not measured` with the source's real span instead of a 14-day number wearing a 30-day label.
+- Fixes `scripts/bump_version.sh` for the README's `<strong>` release line, which had drifted.
+
 ## 0.23.56 — 2026-11-11
 
 SHADOW DISPOSITIONS, EVALUATION ARCHIVE, PROMOTION POLICY AND PROGRAM LEDGER.

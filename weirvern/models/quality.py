@@ -55,6 +55,20 @@ def _window(client: Any, days: int) -> dict[str, Any]:
         episode_error = f"episode query failed: {type(exc).__name__}"
     else:
         episode_error = ""
+    # HOW FAR BACK THE EPISODE TABLE ACTUALLY GOES. Without this, a 30-day label over a
+    # 14-day source reports the 14-day number twice and looks like a plateau (measured on the
+    # live box 2026-11-11: the 14- and 30-day windows were identical). A window the source
+    # cannot cover is "not measured", never a number wearing a longer label.
+    episode_source_days = None
+    try:
+        crow = client.query(
+            "SELECT dateDiff('day', min(episode_start), now()) FROM weirvern.alert_episodes FINAL"
+        ).result_rows
+        if crow and crow[0] and crow[0][0] is not None:
+            episode_source_days = int(crow[0][0])
+    except Exception:  # noqa: BLE001
+        episode_source_days = None
+    episode_covered = episode_source_days is None or int(days) <= episode_source_days + 1
     shadow_age = None
     try:
         srow = client.query(
@@ -83,11 +97,21 @@ def _window(client: Any, days: int) -> dict[str, Any]:
         _metric("detection latency", latency, 300, "breach" if latency is not None and latency > 300
                 else ("meets" if latency is not None else "not measured"), "netflow_anomalies",
                 "median seconds from window start to detection"),
-        _metric("episodes", episodes, "one incident, not every window", "observed",
-                "alert_episodes", episode_error or f"{pageable} pageable; {paged} paged"),
-        _metric("pageable episodes / day", round(pageable / days, 2) if pageable is not None else None,
-                "2 per host/day", "observed" if pageable is not None else "not measured",
-                "alert_episodes", episode_error),
+        _metric("episodes", episodes if episode_covered else None,
+                "one incident, not every window",
+                "observed" if episode_covered and episodes is not None else "not measured",
+                "alert_episodes",
+                episode_error or (f"{pageable} pageable; {paged} paged" if episode_covered else
+                                  f"the episode source covers {episode_source_days} day(s); a "
+                                  f"{days}-day figure over it would be that number wearing a "
+                                  f"{days}-day label")),
+        _metric("pageable episodes / day",
+                round(pageable / days, 2) if pageable is not None and episode_covered else None,
+                "2 per host/day",
+                "observed" if pageable is not None and episode_covered else "not measured",
+                "alert_episodes",
+                episode_error or ("" if episode_covered else
+                                  f"the episode source covers {episode_source_days} day(s)")),
         _metric("drift notices", drift, "review, never a page",
                 "observed" if drift is not None else "not measured", "ml_drift",
                 "a drift row is a notice, not an alert"),
@@ -96,7 +120,8 @@ def _window(client: Any, days: int) -> dict[str, Any]:
                 else ("stale" if shadow_age is not None else "not measured"),
                 "ml_window_scores", "seconds since the last scored population row"),
     ]
-    return {"days": days, "available": True, "metrics": metrics}
+    return {"days": days, "available": True, "source_days": episode_source_days,
+            "metrics": metrics}
 
 
 def report(client: Any, windows: tuple[int, ...] = WINDOWS) -> dict[str, Any]:

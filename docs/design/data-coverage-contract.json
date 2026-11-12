@@ -1,0 +1,90 @@
+{
+  "version": "1",
+  "updated": "2026-11-12",
+  "window_hours": 24,
+  "host_population": {
+    "definition": "source addresses inside a network scope declared monitored",
+    "source": "weirvern.network_scopes",
+    "predicate": "monitored = 1 AND deleted = 0",
+    "fallback": "with no declarations the legacy behaviour applies (every address is in scope) and the report says so; it is never reported as full coverage"
+  },
+  "sources": [
+    {
+      "name": "flows",
+      "table": "weirvern.flows",
+      "time_column": "time_flow_start",
+      "host_column": "src_addr",
+      "required": true,
+      "freshness_s": 900,
+      "accepted_missing_pct": 0,
+      "accepted_missingness": "every monitored host must be observed in the window; a host with no flows is not observed, not quiet",
+      "feeds": ["flow", "beacon", "exposure"]
+    },
+    {
+      "name": "flows_aggregated",
+      "table": "weirvern.flows_aggregated",
+      "time_column": "window_start",
+      "host_column": "src_addr",
+      "required": true,
+      "freshness_s": 900,
+      "accepted_missing_pct": 0,
+      "accepted_missingness": "the temporal, change-point and challenger families read this table; an absent row is not a zero score",
+      "feeds": ["temporal", "changepoint", "candidate"]
+    },
+    {
+      "name": "zeek_conn",
+      "table": "weirvern.zeek_conn",
+      "time_column": "ts",
+      "host_column": "src_addr",
+      "required": false,
+      "freshness_s": 900,
+      "accepted_missing_pct": 10,
+      "accepted_missingness": "a few hosts may be silent; measured 22/22 monitored hosts on 2026-11-12",
+      "feeds": ["graph"]
+    },
+    {
+      "name": "zeek_dns",
+      "table": "weirvern.zeek_dns",
+      "time_column": "ts",
+      "host_column": "src_addr",
+      "required": false,
+      "freshness_s": 900,
+      "accepted_missing_pct": 10,
+      "accepted_missingness": "hosts that do not resolve names are legitimately absent; measured 21/22 on 2026-11-12",
+      "feeds": ["dns"]
+    },
+    {
+      "name": "zeek_ssl",
+      "table": "weirvern.zeek_ssl",
+      "time_column": "ts",
+      "host_column": "src_addr",
+      "required": false,
+      "freshness_s": 900,
+      "accepted_missing_pct": 20,
+      "accepted_missingness": "hosts that never initiate TLS are legitimately absent; measured 19/22 on 2026-11-12",
+      "feeds": ["tls"]
+    },
+    {
+      "name": "zeek_notice",
+      "table": "weirvern.zeek_notice",
+      "time_column": "ts",
+      "host_column": "src_addr",
+      "required": false,
+      "freshness_s": 3600,
+      "accepted_missing_pct": 100,
+      "accepted_missingness": "opportunistic: a notice is emitted only when Zeek raises one, so absence is normal and is never read as zero",
+      "feeds": []
+    },
+    {
+      "name": "ml_window_scores",
+      "table": "weirvern.ml_window_scores",
+      "time_column": "computed_at",
+      "host_column": "src_addr",
+      "required": true,
+      "freshness_s": 900,
+      "accepted_missing_pct": 0,
+      "accepted_missingness": "the production detectors' calibration population; without it every model card reads not-measured",
+      "feeds": ["baseline", "isolation_forest", "gradient_boosting", "dbscan"]
+    }
+  ]
+}

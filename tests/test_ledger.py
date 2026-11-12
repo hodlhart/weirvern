@@ -24,13 +24,13 @@ def test_complete_boards_and_verification_pass():
 
 def test_blocked_card_and_missing_card_fail_with_names():
     boards = _boards()
-    boards["wv-ml-ops"][0]["status"] = "blocked"
+    boards[ledger.PHASE_BOARDS[-1]][0]["status"] = "blocked"
     out = ledger.gate(boards=boards,
                       model_cards=[{"model_name": "AB", "status": "production",
                                     "artifact_hash": ""}],
                       verification=_verification())
     assert out["status"] == "fail"
-    assert out["blocked_cards"][0]["id"] == "t_wv-ml-ops"
+    assert out["blocked_cards"][0]["id"] == f"t_{ledger.PHASE_BOARDS[-1]}"
     assert out["missing_model_cards"] == ["AB"]
 
 

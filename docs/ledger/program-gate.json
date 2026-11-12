@@ -1,39 +1,158 @@
 {
   "blocked_cards": [
     {
-      "board": "wv-ml-truth",
-      "id": "t_c511ef1c",
+      "board": "wv-ml-ripple",
+      "id": "t_81c45fc1",
       "status": "blocked",
-      "title": "GT-1 \u2014 Automated ground truth and weak-label pipeline"
+      "title": "RIP-1 \u2014 Truth layer: ripple generator, clean replay and canaries"
     },
     {
-      "board": "wv-ml-truth",
-      "id": "t_7b3d365e",
+      "board": "wv-ml-ripple",
+      "id": "t_429b6447",
       "status": "blocked",
-      "title": "GT-4 \u2014 Canary and honeypot automated positives"
+      "title": "RIP-2 \u2014 Multi-scale temporal detector"
     },
     {
-      "board": "wv-ml-candidates",
-      "id": "t_7edcfc5d",
+      "board": "wv-ml-ripple",
+      "id": "t_4a6a8a9d",
       "status": "blocked",
-      "title": "CE-1 \u2014 HDBSCAN vs DBSCAN at a fixed budget"
+      "title": "RIP-3 \u2014 Relational graph detector"
     },
     {
-      "board": "wv-ml-candidates",
-      "id": "t_662ba4f7",
+      "board": "wv-ml-ripple",
+      "id": "t_8ef0f275",
       "status": "blocked",
-      "title": "CE-5 \u2014 Multi-scale ripple ensemble"
+      "title": "RIP-4 \u2014 Protocol-semantic detector"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_d0257785",
+      "status": "todo",
+      "title": "RIP-5 \u2014 Calibrated fusion and explanation"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_5afd6c80",
+      "status": "blocked",
+      "title": "RIP-6 \u2014 Automatic evaluation and promotion loop"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_383e92f2",
+      "status": "blocked",
+      "title": "RIP-7 \u2014 Product surface and per-site onboarding"
+    },
+    {
+      "board": "wv-ml-ripple",
+      "id": "t_bd350233",
+      "status": "blocked",
+      "title": "RIP-8 \u2014 Independent audit and promotion gate"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_2fe931d1",
+      "status": "blocked",
+      "title": "DATA-0 \u2014 Data coverage contract and inventory"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_d2db265e",
+      "status": "blocked",
+      "title": "DATA-1 \u2014 Make DNS visible for every monitored host"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_ebd19c2e",
+      "status": "blocked",
+      "title": "DATA-2 \u2014 Role and identity coverage"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_2989a4ee",
+      "status": "blocked",
+      "title": "DATA-3 \u2014 Clean attack-free background replay"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_7dba8e52",
+      "status": "blocked",
+      "title": "DATA-4 \u2014 Synthetic ripple generator"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_e18236b3",
+      "status": "blocked",
+      "title": "DATA-5 \u2014 Canary and honeypot services"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_8f207ba1",
+      "status": "blocked",
+      "title": "DATA-6 \u2014 Auto-label assembly and provenance"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_b3a2c3ee",
+      "status": "blocked",
+      "title": "DATA-7 \u2014 Leakage-safe splits and evaluation manifest"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_90dd0234",
+      "status": "blocked",
+      "title": "DATA-8 \u2014 Data quality SLO and gap dashboard"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_13919fdd",
+      "status": "blocked",
+      "title": "DATA-9 \u2014 Per-site onboarding and backfill"
+    },
+    {
+      "board": "wv-ml-data",
+      "id": "t_9731c2a1",
+      "status": "blocked",
+      "title": "DATA-10 \u2014 Nmap/scanner asset telemetry in the data contract"
+    },
+    {
+      "board": "wv-prod-release",
+      "id": "t_d470d880",
+      "status": "blocked",
+      "title": "REL-1 \u2014 Load, soak and failure-injection testing"
+    },
+    {
+      "board": "wv-prod-program",
+      "id": "t_2698e1ae",
+      "status": "blocked",
+      "title": "PRG-2 \u2014 Production readiness gate and launch decision"
     }
   ],
   "failures": [
-    "wv-ml-truth t_c511ef1c GT-1 \u2014 Automated ground truth and weak-label pipeline (blocked)",
-    "wv-ml-truth t_7b3d365e GT-4 \u2014 Canary and honeypot automated positives (blocked)",
-    "wv-ml-candidates t_7edcfc5d CE-1 \u2014 HDBSCAN vs DBSCAN at a fixed budget (blocked)",
-    "wv-ml-candidates t_662ba4f7 CE-5 \u2014 Multi-scale ripple ensemble (blocked)",
+    "wv-ml-ripple t_81c45fc1 RIP-1 \u2014 Truth layer: ripple generator, clean replay and canaries (blocked)",
+    "wv-ml-ripple t_429b6447 RIP-2 \u2014 Multi-scale temporal detector (blocked)",
+    "wv-ml-ripple t_4a6a8a9d RIP-3 \u2014 Relational graph detector (blocked)",
+    "wv-ml-ripple t_8ef0f275 RIP-4 \u2014 Protocol-semantic detector (blocked)",
+    "wv-ml-ripple t_d0257785 RIP-5 \u2014 Calibrated fusion and explanation (todo)",
+    "wv-ml-ripple t_5afd6c80 RIP-6 \u2014 Automatic evaluation and promotion loop (blocked)",
+    "wv-ml-ripple t_383e92f2 RIP-7 \u2014 Product surface and per-site onboarding (blocked)",
+    "wv-ml-ripple t_bd350233 RIP-8 \u2014 Independent audit and promotion gate (blocked)",
+    "wv-ml-data t_2fe931d1 DATA-0 \u2014 Data coverage contract and inventory (blocked)",
+    "wv-ml-data t_d2db265e DATA-1 \u2014 Make DNS visible for every monitored host (blocked)",
+    "wv-ml-data t_ebd19c2e DATA-2 \u2014 Role and identity coverage (blocked)",
+    "wv-ml-data t_2989a4ee DATA-3 \u2014 Clean attack-free background replay (blocked)",
+    "wv-ml-data t_7dba8e52 DATA-4 \u2014 Synthetic ripple generator (blocked)",
+    "wv-ml-data t_e18236b3 DATA-5 \u2014 Canary and honeypot services (blocked)",
+    "wv-ml-data t_8f207ba1 DATA-6 \u2014 Auto-label assembly and provenance (blocked)",
+    "wv-ml-data t_b3a2c3ee DATA-7 \u2014 Leakage-safe splits and evaluation manifest (blocked)",
+    "wv-ml-data t_90dd0234 DATA-8 \u2014 Data quality SLO and gap dashboard (blocked)",
+    "wv-ml-data t_13919fdd DATA-9 \u2014 Per-site onboarding and backfill (blocked)",
+    "wv-ml-data t_9731c2a1 DATA-10 \u2014 Nmap/scanner asset telemetry in the data contract (blocked)",
+    "wv-prod-release t_d470d880 REL-1 \u2014 Load, soak and failure-injection testing (blocked)",
+    "wv-prod-program t_2698e1ae PRG-2 \u2014 Production readiness gate and launch decision (blocked)",
     "verification evidence is missing"
   ],
-  "gate_version": "pr3-v1",
-  "generated_at": "2026-11-11T18:45:01.103352+00:00",
+  "gate_version": "pr3-v2",
+  "generated_at": "2026-11-12T00:51:55.338060+00:00",
   "kind": "program-gate",
   "missing_model_cards": [],
   "status": "fail",

@@ -42,16 +42,16 @@ def test_a_complete_program_with_verified_evidence_passes():
 
 def test_a_blocked_card_fails_the_review_and_names_it():
     boards = _boards()
-    boards["wv-ml-truth"][0]["status"] = "blocked"
+    boards[review.PHASE_BOARDS[0]][0]["status"] = "blocked"
     out = _report(boards=boards)
     assert out["status"] == "fail"
-    assert out["blocked_cards"][0]["id"] == "t_wv-ml-truth"
-    any("wv-ml-truth" in failure for failure in out["failures"])
+    assert out["blocked_cards"][0]["id"] == f"t_{review.PHASE_BOARDS[0]}"
+    any(review.PHASE_BOARDS[0] in failure for failure in out["failures"])
 
 
 def test_a_missing_board_fails_the_review():
     boards = _boards()
-    del boards["wv-ml-candidates"]
+    del boards[review.PHASE_BOARDS[1]]
     out = _report(boards=boards)
     assert out["status"] == "fail"
     assert any(card["status"] == "missing" for card in out["blocked_cards"])

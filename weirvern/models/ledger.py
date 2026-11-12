@@ -11,9 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-PHASE_BOARDS = ("wv-ml-truth", "wv-ml-candidates", "wv-ml-promotion", "wv-ml-ops")
+# THE BOARDS THE PROGRAM GATE READS. These were the five 2026-10 boards, all archived since;
+# the gate kept judging archived cards and appending their blocked rows to the decision ledger,
+# which is why the ledger looked stale on the live box (measured 2026-11-12). The active set is
+# the ripple programme, the data programme, the release and the program board.
+PHASE_BOARDS = ("wv-ml-ripple", "wv-ml-data", "wv-prod-release", "wv-prod-program")
 DONE = "done"
 RETIRE_AFTER_FAILED_REVIEWS = 2
+GATE_VERSION = "pr3-v2"
 
 
 def append(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
@@ -92,9 +97,9 @@ def gate(*, boards: dict[str, list[dict[str, Any]]], model_cards: list[dict[str,
         "blocked_cards": blocked,
         "missing_model_cards": missing_cards,
         "verification_failures": verify_failures,
-        "gate_version": "pr3-v1",
+        "gate_version": GATE_VERSION,
     }
 
 
-__all__ = ["PHASE_BOARDS", "RETIRE_AFTER_FAILED_REVIEWS", "append", "gate", "read",
+__all__ = ["GATE_VERSION", "PHASE_BOARDS", "RETIRE_AFTER_FAILED_REVIEWS", "append", "gate", "read",
            "retirement_decision"]

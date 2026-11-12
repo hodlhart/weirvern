@@ -13,6 +13,8 @@ class _Client:
     def query(self, sql, parameters=None):
         if "netflow_anomalies" in sql:
             return SimpleNamespace(result_rows=[(120, 4, 9, 42.0)])
+        if "dateDiff('day', min(episode_start)" in sql:
+            return SimpleNamespace(result_rows=[(10,)])
         if "alert_episodes" in sql:
             return SimpleNamespace(result_rows=[(10, 2, 1)])
         if "ml_window_scores" in sql:
@@ -44,6 +46,18 @@ def test_a_failed_source_is_not_rendered_as_zero():
     first = out["windows"][0]
     assert first["available"] is False
     assert first["metrics"][0]["state"] == "not measured"
+
+
+def test_a_window_the_episode_source_cannot_cover_is_not_measured():
+    # Measured live 2026-11-11: the 14- and 30-day windows returned the same episode count,
+    # because the source only held 14 days. A 30-day label over it is a lie, not a plateau.
+    out = quality.report(_Client())
+    by_days = {w["days"]: w for w in out["windows"]}
+    ep30 = next(m for m in by_days[30]["metrics"] if m["name"] == "episodes")
+    assert ep30["state"] == "not measured" and ep30["value"] is None
+    assert "10 day(s)" in ep30["note"]
+    ep7 = next(m for m in by_days[7]["metrics"] if m["name"] == "episodes")
+    assert ep7["state"] == "observed" and ep7["value"] == 10
 
 
 def test_slo_is_exposed_on_the_models_surface():

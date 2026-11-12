@@ -455,6 +455,8 @@ def _build_handler(ctx: GuiContext):
                 return self._ml_coverage()
             if path == "/api/ml/ripple":
                 return self._ml_ripple()
+            if path == "/api/ml/data-contract":
+                return self._ml_data_contract()
             if path == "/api/ml/slo":
                 return self._ml_slo()
             if path == "/api/ml/review":
@@ -952,6 +954,24 @@ def _build_handler(ctx: GuiContext):
                                    "rows": [], "pageable": False, "counts": {},
                                    "contributors": [], "scales": [], "families": [],
                                    "unknown": []})
+            self._json(data)
+
+        def _ml_data_contract(self) -> None:
+            """DATA-0: what 'covered' means, measured against the live tables.
+
+            The answer carries the denominator (monitored hosts), the per-source state and
+            accepted missingness, the per-host coverage and the family usability. A failure is
+            `available:false` with the reason, never an empty list that reads as full coverage.
+            """
+            try:
+                with self._with_client() as client:
+                    from weirvern.models import data_contract  # noqa: PLC0415
+                    data = data_contract.inventory(client)
+            except Exception as exc:  # noqa: BLE001
+                return self._json({"available": False,
+                                   "reason": f"cannot read the data contract: {exc}",
+                                   "sources": [], "families": [], "gaps": [], "hosts": [],
+                                   "population": {}, "promotion_ok": False})
             self._json(data)
 
         def _models(self, query: dict) -> None:

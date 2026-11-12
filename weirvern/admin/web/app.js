@@ -6172,6 +6172,60 @@ function renderSourceCoverage(data) {
   }
 }
 
+function renderRipple(data) {
+  const note = document.getElementById("m-ripple-note");
+  const body = document.querySelector("#m-ripple tbody");
+  if (!note || !body) return;
+  body.replaceChildren();
+  if (!data || !data.available) {
+    note.textContent = "Ripple evidence unavailable: " +
+      ((data && data.reason) || "the read failed") +
+      " — that is not the same as a quiet network.";
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+      text: "No fusion result was read." })]));
+    return;
+  }
+  const counts = data.counts || {};
+  const age = Number(data.age_s);
+  note.textContent = "Last fusion " + fmtTime(data.evaluated_at) +
+    (Number.isFinite(age) ? " (" + Math.max(0, Math.round(age / 60)) + " min ago)" : "") +
+    ": " + (counts.ripple || 0) + " ripple, " + (counts.observation || 0) +
+    " observation, " + (counts.unknown || 0) + " unknown across " +
+    (counts.hosts || 0) + " host(s). " +
+    (data.status === "ripple"
+      ? "Fired on " + (data.src_addr || "the segment") + ": " + (data.headline_reason || "") + "."
+      : "Not a ripple: " + (data.headline_reason || data.reason || "no reason recorded") + ".") +
+    " Pageable: no — the page decision is separate." +
+    (data.stale ? " This answer is older than two passes." : "");
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.appendChild(el("tr", {}, [el("td", { class: "muted", attrs: { colspan: 7 },
+      text: "Nothing was fused in the last evaluation." })]));
+    return;
+  }
+  for (const r of rows) {
+    const unknown = r.unknown || [];
+    const unknownText = unknown.length
+      ? unknown.slice(0, 3).map((u) => (u.channel || "?") + " (" + (u.reason || "unknown") + ")")
+          .join(", ") + (unknown.length > 3 ? " +" + (unknown.length - 3) + " more" : "")
+      : "none";
+    const top = (r.contributors || [])[0];
+    const pct = Number(r.confidence);
+    body.appendChild(el("tr", {}, [
+      el("td", { class: "mono", text: r.src_addr || "segment" }),
+      el("td", {}, [el("strong", { text: r.status || "unknown" }),
+                    el("div", { class: "muted", text: r.reason || "" })]),
+      el("td", { class: "num", text: Number.isFinite(pct) ? (pct * 100).toFixed(1) + "%" : "—" }),
+      el("td", { class: "muted", text: (r.families || []).join(" / ") + " · " +
+                                        (r.scales || []).join(" / ") }),
+      el("td", { class: "muted mono", text: top
+        ? top.channel + " p=" + Number(top.pvalue).toFixed(3) : "—" }),
+      el("td", { class: "muted", text: unknownText }),
+      el("td", { class: "num", text: Number(r.channel_count || 0) }),
+    ]));
+  }
+}
+
 async function loadModels() {
   scheduleURLSync();
   const hours = String(trHours());
@@ -6183,6 +6237,10 @@ async function loadModels() {
   const calPromise = getJSON("/api/models/calibration")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
   const shadowPromise = getJSON("/api/models/shadow")
+    .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
+  // RIP-5's fusion is its own read: a broken ripple store must not take down the shadow
+  // channel inventory, and a dead channel must not hide the fused answer.
+  const ripplePromise = getJSON("/api/ml/ripple")
     .catch((e) => ({ available: false, reason: String(e && e.message || e), rows: [] }));
   // The asset-posture scorer is its own read: it scores the CHANGE ledger, not the flow model,
   // so a failure here must not take the production model view down.
@@ -6198,6 +6256,7 @@ async function loadModels() {
   renderSourceCoverage(await coveragePromise);
   renderCalibration(await calPromise);
   renderShadow(await shadowPromise);
+  renderRipple(await ripplePromise);
   renderAssetPosture(await posturePromise);
   const sum = document.getElementById("m-summary");
   const win = document.getElementById("m-window");

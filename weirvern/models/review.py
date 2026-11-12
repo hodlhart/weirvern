@@ -11,7 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-PHASE_BOARDS = ("wv-ml-truth", "wv-ml-candidates", "wv-ml-promotion", "wv-ml-ops")
+# ONE source of truth for the phase set: the gate and the review must judge the same boards,
+# or a review can pass while the gate fails on a board it never looked at.
+from weirvern.models.ledger import PHASE_BOARDS  # noqa: E402
+
 DONE = "done"
 
 
