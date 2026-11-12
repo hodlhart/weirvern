@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.23.59 — 2026-11-12
+
+ANY COLLECTED SOURCE CAN CARRY A RIPPLE.
+
+- `models/generic_channels.py` adds six sources that were collected but never reached the ripple
+  layer: zeek_http (116k rows), zeek_files (81k), zeek_ssh (19k), zeek_weird (1.6M), zeek_quic
+  (5.9k), zeek_dhcp (1.3k). A source becomes a channel by declaration (table, host column,
+  diversity column, family); the score is the same everywhere — this window's volume and diversity
+  against the host's own trailing seven days — and the p-value is that score's rank among the
+  host's own historical windows.
+- Absence is absence: a host with less than two hours of history for a source produces no evidence,
+  and one broken source cannot silence the others. The two-family rule still applies, so a new
+  source must be corroborated before anything becomes a ripple.
+- Query cost measured on the live deployment: 0.41 s for zeek_weird over seven days (15,186
+  host-windows), 0.40 s for zeek_http; the whole pass adds roughly 2.5 s per hour.
+
 ## 0.23.58 — 2026-11-12
 
 PRUNE STREAMS THE FLOW LOG, AND THE RIPPLE THRESHOLD IS DERIVED, NOT CHOSEN.
