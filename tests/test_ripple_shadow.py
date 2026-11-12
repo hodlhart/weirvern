@@ -22,7 +22,7 @@ REFERENCE = [i / 100.0 for i in range(50)]  # 0.00 .. 0.49
 class FakeClient:
     """Answers the six reads by shape, and records the one write."""
 
-    def __init__(self, *, references=None, recent=None, fail=None):
+    def __init__(self, *, references=None, recent=None, fail=None, history=None):
         self.references = references if references is not None else {
             "ml_candidate_scores": [("FlowSpecialist", v) for v in REFERENCE]
                                    + [("DNSSpecialist", v) for v in REFERENCE],
@@ -30,6 +30,8 @@ class FakeClient:
             "ml_changepoints": [("changepoint:bytes:up", v) for v in REFERENCE],
         }
         self.recent = recent if recent is not None else {}
+        # The deployment's own fused history: what the operating point is derived from.
+        self.history = history if history is not None else []
         self.fail = fail or set()
         self.inserted = []
 
@@ -37,6 +39,8 @@ class FakeClient:
         for table in self.fail:
             if table in sql:
                 raise RuntimeError(f"{table} unavailable")
+        if "FROM weirvern.ml_ripple" in sql:
+            return SimpleNamespace(result_rows=list(self.history))
         is_reference = "BY model" in sql
         source = self.references if is_reference else self.recent
         for table, rows in source.items():
@@ -122,11 +126,14 @@ def test_stale_rows_are_unknown_not_evidence():
 
 
 def test_run_persists_one_row_per_host_and_never_pages_or_alerts():
-    client = FakeClient(recent=_recent(cp=(0.99, 288)))
+    # A warm deployment: enough of its own history that the operating point can be derived.
+    history = [(0.9, "198.51.100.5") for _ in range(200)]
+    client = FakeClient(recent=_recent(cp=(0.99, 288)), history=history)
     summary = ripple_shadow.run(client, now=NOW)
 
     assert summary["hosts"] == 1 and summary["rows"] == 1
     assert summary["ripple"] == 1
+    assert summary["operating_point"]["cold_start"] is False
     table, rows, columns = client.inserted[0]
     assert table == "weirvern.ml_ripple"
     assert len(rows) == 1
@@ -225,3 +232,15 @@ def test_one_evidence_per_channel_and_scale_keeps_the_most_significant():
     assert len(out) == 2, "one evidence per channel AND scale"
     five_minute = next(item for item in out if item.scale == "5m")
     assert five_minute.pvalue == 0.0005 and five_minute.score == 0.99
+
+
+def test_a_deployment_with_no_history_abstains_instead_of_firing():
+    client = FakeClient(recent=_recent(cp=(0.99, 288)), history=[])
+    summary = ripple_shadow.run(client, now=NOW)
+
+    assert summary["ripple"] == 0
+    assert summary["unknown"] == 1
+    assert summary["operating_point"]["cold_start"] is True
+    rows = client.inserted[0][1]
+    assert rows[0][2] == "unknown"
+    assert "learning" in rows[0][3]

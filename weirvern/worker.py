@@ -2589,10 +2589,13 @@ def main() -> None:
                             from weirvern.models import ripple_shadow as _ripple  # noqa: PLC0415
 
                             fused = _ripple.run(client)
+                            point = fused["operating_point"]
                             logger.info(
-                                "ML ripple: %s host(s) — %s ripple, %s observation, %s unknown",
+                                "ML ripple: %s host(s) — %s ripple, %s observation, %s unknown "
+                                "(max_p %s, %s samples, %s)",
                                 fused["hosts"], fused["ripple"], fused["observation"],
-                                fused["unknown"])
+                                fused["unknown"], point["max_p"], point["samples"],
+                                "COLD START — abstaining" if point["cold_start"] else "warm")
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("ML ripple pass failed (detection continues): %s", exc)
                     shadow_tick += 1

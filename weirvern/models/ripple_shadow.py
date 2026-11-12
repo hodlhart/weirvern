@@ -29,6 +29,7 @@ from typing import Any
 from clickhouse_connect.driver.client import Client
 
 from weirvern.clock import utcnow
+from weirvern.models import operating_point
 from weirvern.models.ripple import ChannelEvidence, evidence_from_shadow, fuse
 
 MODEL_VERSION = "ripple-1"
@@ -244,8 +245,36 @@ def strongest_per_channel(evidence: list[ChannelEvidence]) -> list[ChannelEviden
     return list(best.values())
 
 
+FUSED_HISTORY_SQL = """
+SELECT combined_p, src_addr
+FROM weirvern.ml_ripple
+WHERE combined_p > 0 AND combined_p <= 1
+ORDER BY evaluated_at DESC
+LIMIT 20000
+"""
+
+
+def fused_history(client: Client) -> tuple[list[float], int]:
+    """(every fused p-value this deployment has produced, how many hosts produced them).
+
+    The deployment's own history is the only calibration source that exists: no labels, no
+    operator, no second system to compare against.
+    """
+    values: list[float] = []
+    hosts: set[str] = set()
+    for row in _query(client, FUSED_HISTORY_SQL):
+        value, host = row[0], str(row[1] or "")
+        if value is None:
+            continue
+        values.append(float(value))
+        if host:
+            hosts.add(host)
+    return values, len(hosts)
+
+
 def evaluate(client: Client, *, now: datetime | None = None,
-             lookback_s: int = EVIDENCE_LOOKBACK_S) -> list[dict[str, Any]]:
+             lookback_s: int = EVIDENCE_LOOKBACK_S, max_p: float | None = None,
+             abstain_reason: str | None = None) -> list[dict[str, Any]]:
     """One fused result per host with fresh evidence, or one segment-level unknown."""
     moment = _aware(now or utcnow()).replace(microsecond=0)
     references = reference_population(client)
@@ -260,7 +289,14 @@ def evaluate(client: Client, *, now: datetime | None = None,
         evidence = strongest_per_channel(
             evidence_from_shadow(by_host[host], reference_by_model=references))
         evidence.extend(missing_channels(references, {ch.channel for ch in evidence}))
-        out.append(_record(host, fuse(evidence), moment))
+        verdict = fuse(evidence) if max_p is None else fuse(evidence, max_p=max_p)
+        record = _record(host, verdict, moment)
+        if abstain_reason:
+            # Cold start is not a failure to detect: it is the only honest answer before the
+            # deployment knows what its own normal looks like.
+            record["status"] = "unknown"
+            record["reason"] = abstain_reason
+        out.append(record)
     return out
 
 
@@ -295,7 +331,11 @@ def run(client: Client, *, now: datetime | None = None,
     Persisting an `unknown` row matters: the API and the Models card must be able to say
     "nothing was fused, and here is why", rather than showing the last good answer forever.
     """
-    results = evaluate(client, now=now, lookback_s=lookback_s)
+    history, host_count = fused_history(client)
+    point = operating_point.derive(history, hosts=host_count)
+    results = evaluate(client, now=now, lookback_s=lookback_s,
+                       max_p=point.max_p,
+                       abstain_reason=point.reason if point.cold_start else None)
     if results:
         client.insert(
             "weirvern.ml_ripple",
@@ -314,9 +354,11 @@ def run(client: Client, *, now: datetime | None = None,
         "observation": counts.get("observation", 0),
         "unknown": counts.get("unknown", 0),
         "rows": len(results),
+        "operating_point": point.as_dict(),
     }
 
 
-__all__ = ["CANDIDATE_FAMILIES", "EVIDENCE_LOOKBACK_S", "MAX_HOSTS", "MODEL_VERSION",
+__all__ = ["CANDIDATE_FAMILIES", "EVIDENCE_LOOKBACK_S", "FUSED_HISTORY_SQL", "MAX_HOSTS",
+           "MODEL_VERSION", "fused_history",
            "REFERENCE_DAYS", "REFERENCE_SAMPLE", "changepoint_scale", "evaluate",
            "family_scale_for", "missing_channels", "recent_rows", "reference_population", "run"]
