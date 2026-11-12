@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.65 — 2026-11-12
+
+CLICKHOUSE'S OWN LOGS WERE 37 GiB OF A 42 GiB VOLUME.
+
+- Measured live: the `weirvern` database held 519 MiB of product data while the server's diagnostic
+  tables held ~37 GiB — text_log 19.0 GiB at trace level (472M rows), query_log 5.5 GiB,
+  processors_profile_log 4.8 GiB, trace_log 3.7 GiB, part_log 2.7 GiB. The volume was 75% full.
+- `zz-weirvern-logs.xml` (a config.d drop-in, like the backup one) sets text_log to `warning` and
+  gives every diagnostic table a TTL: 3 days for text/trace, 7 for query/part/metric/asynchronous/
+  processors. The file log keeps its own level, so an operator still has the full server log.
+- The live tables were also given the same TTLs directly, which drained 35.5 GiB of expired parts
+  and took the volume from 24 GB free to 52 GB.
+
 ## 0.23.64 — 2026-11-12
 
 THE MATRIX PROFILE BUILT AN n x n x m ARRAY, AND THE RESTORED FLOW FEED MADE n LARGE.

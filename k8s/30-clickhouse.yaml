@@ -23,6 +23,42 @@ data:
         <allowed_path>/var/lib/clickhouse/backups</allowed_path>
       </backups>
     </clickhouse>
+  # ── THE SERVER'S OWN DIAGNOSTIC LOGS MUST NOT OUTGROW THE DATABASE ─────────────────────────────
+  #
+  # Measured on the live box 2026-11-12: the `weirvern` database — every table of product data —
+  # occupied 519 MiB of a 42 GiB volume. The rest was ClickHouse writing about itself: text_log
+  # 19.0 GiB / 472M rows (captured at TRACE), query_log 5.5 GiB, processors_profile_log 4.8 GiB,
+  # trace_log 3.7 GiB, part_log 2.7 GiB. The volume was 75% full and the next write would have
+  # been an outage, not a slow query.
+  #
+  # TTLs were set on the live tables, which drains them; this is what stops the tap. text_log at
+  # `warning` still records everything an operator needs to explain a fault (the file log keeps
+  # its own level), and it is the trace-level flood that made the table 19 GiB.
+  zz-weirvern-logs.xml: |
+    <clickhouse>
+      <text_log>
+        <level>warning</level>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+      </text_log>
+      <query_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+      </query_log>
+      <part_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+      </part_log>
+      <metric_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+      </metric_log>
+      <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+      </asynchronous_metric_log>
+      <processors_profile_log>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+      </processors_profile_log>
+      <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+      </trace_log>
+    </clickhouse>
 ---
 # ClickHouse — the storage layer.
 #
@@ -181,6 +217,13 @@ spec:
               mountPath: /etc/clickhouse-server/config.d/zz-weirvern-backups.xml
               subPath: zz-weirvern-backups.xml
               readOnly: true
+            # A SECOND file mount, for the same reason: this is a file projection, so a second
+            # ConfigMap key needs its own mount. Listing the key in the volume's `items` is not
+            # enough -- the mount paths are what reach the container.
+            - name: clickhouse-config
+              mountPath: /etc/clickhouse-server/config.d/zz-weirvern-logs.xml
+              subPath: zz-weirvern-logs.xml
+              readOnly: true
           resources:
             requests:
               cpu: "500m"
@@ -224,6 +267,12 @@ spec:
             items:
               - key: zz-weirvern-backups.xml
                 path: zz-weirvern-backups.xml
+              # The log caps are a SEPARATE drop-in and must be listed here too: this volume uses
+              # an explicit `items` projection, so a key that is not named never reaches the
+              # container -- the ConfigMap alone is not enough, and the failure is silent (the
+              # file simply is not there, and ClickHouse keeps its default trace-level text_log).
+              - key: zz-weirvern-logs.xml
+                path: zz-weirvern-logs.xml
   volumeClaimTemplates:
     # NOTE: this template applies only to a NEWLY created StatefulSet. Changing
     # it for an existing one has no effect on the already-bound claim.
