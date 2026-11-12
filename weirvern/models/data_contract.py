@@ -4,7 +4,7 @@ WHY THIS EXISTS. Coverage was reported source by source, with no host denominato
 statement of what a missing row means. A panel could therefore say "DNS: 350k rows, fresh" while
 most monitored hosts had never been seen in DNS at all, and no detector could tell whether its
 own family was usable. This module reads the machine-readable contract in
-`docs/design/data-coverage-contract.json`, measures it against the live tables, and returns one
+`weirvern/data/data-coverage-contract.json`, measures it against the live tables, and returns one
 shape that separates:
 
   * required from optional (a required source missing blocks promotion);
@@ -24,8 +24,12 @@ from typing import Any
 
 from weirvern import networks
 
-ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_PATH = ROOT / "docs" / "design" / "data-coverage-contract.json"
+# THE CONTRACT SHIPS WITH THE PACKAGE. It lived in docs/design first, and the live image then
+# answered `available:false` with ENOENT: the Containerfile copies weirvern/ and three docs
+# directories, not docs/design. Runtime data belongs in the package (same reason the schema
+# ships there), so the contract is read from beside this module.
+ROOT = Path(__file__).resolve().parents[1]
+CONTRACT_PATH = ROOT / "data" / "data-coverage-contract.json"
 
 MAX_HOSTS = 500          # the per-host list is capped; the counts are not
 TOP_GAPS = 10            # names per source in the gap report

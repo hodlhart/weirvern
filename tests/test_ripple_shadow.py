@@ -207,3 +207,21 @@ def test_the_headline_prefers_a_ripple_and_carries_the_explanation():
     assert out["contributors"][0]["channel"] == "DNSSpecialist"
     assert out["unknown"][0]["reason"] == "missing"
     assert out["scales"] == ["5m", "24h"]
+
+
+def test_one_evidence_per_channel_and_scale_keeps_the_most_significant():
+    # Measured live 2026-11-12: HDBSCAN wrote hundreds of correlated candidates per host and
+    # every one of them entered Fisher's combination, which is not a valid independence
+    # assumption and produced a 187 KB payload for 22 hosts.
+    def row(scale: str, pvalue: float, score: float) -> ChannelEvidence:
+        return ChannelEvidence(channel="HDBSCAN", family="candidate", scale=scale,
+                               model_id="HDBSCAN", model_version="v", score=score,
+                               pvalue=pvalue, freshness_s=1.0)
+
+    rows = [row("5m", 0.9 - i * 0.01, 0.1) for i in range(50)]
+    rows.append(row("5m", 0.0005, 0.99))
+    rows.append(row("1h", 0.30, 0.50))
+    out = ripple_shadow.strongest_per_channel(rows)
+    assert len(out) == 2, "one evidence per channel AND scale"
+    five_minute = next(item for item in out if item.scale == "5m")
+    assert five_minute.pvalue == 0.0005 and five_minute.score == 0.99

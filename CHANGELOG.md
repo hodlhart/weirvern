@@ -16,10 +16,16 @@ RIPPLE FUSION WIRED, AND A COVERAGE CONTRACT THAT MEASURES HOSTS.
 - Fixes `fuse()`: an absent channel is `missing`, not `no p-value` (the p-value check ran first).
 - Fixes the gate failure left by 240eaad: the schema audit read the adapter's caller-built row
   keys as phantom columns; they are a contract pinned by tests.
-- DATA-0: `docs/design/data-coverage-contract.json` plus `models/data_contract.py` and
+- DATA-0: `weirvern/data/data-coverage-contract.json` plus `models/data_contract.py` and
   `GET /api/ml/data-contract`. Coverage is measured against the monitored host population
   (the same predicate the detectors train on), with required/optional, accepted missingness,
   per-host observation status, a named top-gap report and a per-family usability verdict.
+  The contract ships inside the package: kept under `docs/design/` it was absent from the
+  image, and the live endpoint answered `available:false` with a file-not-found error.
+- Ripple evidence is collapsed to one entry per channel and scale, keeping the most
+  significant. HDBSCAN writes hundreds of correlated candidates per host, and feeding all of
+  them into Fisher's combination violates its independence assumption: the first live pass
+  called 3 of 22 hosts ripples and returned 187 KB for 22 hosts.
 - Fixes the monthly review and program gate judging archived 2026-10 boards: they now read the
   active boards, so the ledger reflects the programme that is actually running.
 - Fixes the 30-day episode window: the source only covers ~14 days, so the window is now

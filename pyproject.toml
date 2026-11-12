@@ -48,7 +48,7 @@ include = ["weirvern*"]
 # k8s/50-schema-job.yaml). Declaring it here is what makes that work; without
 # this line the .sql file is absent from an installed package and the schema
 # step silently does nothing.
-weirvern = ["schema/*.sql", "admin/web/*"]
+weirvern = ["schema/*.sql", "admin/web/*", "data/*.json"]
 # The web GUI's assets must ship inside the wheel for the same class of reason:
 # the GUI Server reads them at request time from weirvern/admin/web. Without this
 # the page returns a 500 naming the missing file (the handler is explicit about

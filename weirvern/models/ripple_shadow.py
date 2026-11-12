@@ -225,6 +225,25 @@ def missing_channels(references: dict[str, list[float]],
     return out
 
 
+def strongest_per_channel(evidence: list[ChannelEvidence]) -> list[ChannelEvidence]:
+    """One piece of evidence per (channel, family, scale), keeping the most significant.
+
+    WHY: Fisher's method assumes independent tests. HDBSCAN writes a score for every candidate
+    in a bucket -- measured live on 2026-11-12, hundreds per host -- and every one of them is
+    correlated with the others. Feeding all of them into one combination makes the combined
+    p-value spuriously tiny: the first live pass reported 3 of 22 hosts as ripples and returned
+    a 187 KB payload for 22 hosts. Collapsing to the strongest per channel and scale keeps the
+    independence assumption defensible and the payload readable.
+    """
+    best: dict[tuple[str, str, str], ChannelEvidence] = {}
+    for item in evidence:
+        key = (item.channel, item.family, item.scale)
+        held = best.get(key)
+        if held is None or (item.pvalue, -item.score) < (held.pvalue, -held.score):
+            best[key] = item
+    return list(best.values())
+
+
 def evaluate(client: Client, *, now: datetime | None = None,
              lookback_s: int = EVIDENCE_LOOKBACK_S) -> list[dict[str, Any]]:
     """One fused result per host with fresh evidence, or one segment-level unknown."""
@@ -238,7 +257,8 @@ def evaluate(client: Client, *, now: datetime | None = None,
 
     out: list[dict[str, Any]] = []
     for host in sorted(by_host)[:MAX_HOSTS]:
-        evidence = evidence_from_shadow(by_host[host], reference_by_model=references)
+        evidence = strongest_per_channel(
+            evidence_from_shadow(by_host[host], reference_by_model=references))
         evidence.extend(missing_channels(references, {ch.channel for ch in evidence}))
         out.append(_record(host, fuse(evidence), moment))
     return out
