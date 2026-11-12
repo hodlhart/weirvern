@@ -29,7 +29,7 @@ from typing import Any
 from clickhouse_connect.driver.client import Client
 
 from weirvern.clock import utcnow
-from weirvern.models import operating_point
+from weirvern.models import generic_channels, operating_point
 from weirvern.models.ripple import ChannelEvidence, evidence_from_shadow, fuse
 
 MODEL_VERSION = "ripple-1"
@@ -284,11 +284,17 @@ def evaluate(client: Client, *, now: datetime | None = None,
         result = fuse(missing_channels(references))
         return [_record("", result, moment)]
 
+    # Sources with no specialist of their own still carry signal (http, files, ssh, weird,
+    # quic, dhcp). They are scored the same way and enter the same fusion; a source that is
+    # quiet produces nothing rather than a zero.
+    from_source = generic_channels.evidence(client, sorted(by_host)[:MAX_HOSTS], now=moment)
+
     out: list[dict[str, Any]] = []
     for host in sorted(by_host)[:MAX_HOSTS]:
         evidence = strongest_per_channel(
             evidence_from_shadow(by_host[host], reference_by_model=references))
         evidence.extend(missing_channels(references, {ch.channel for ch in evidence}))
+        evidence.extend(from_source.get(host, []))
         verdict = fuse(evidence) if max_p is None else fuse(evidence, max_p=max_p)
         record = _record(host, verdict, moment)
         if abstain_reason:
