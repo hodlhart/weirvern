@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.58 — 2026-11-12
+
+PRUNE STREAMS THE FLOW LOG, AND THE RIPPLE THRESHOLD IS DERIVED, NOT CHOSEN.
+
+- `enforce_netflow` read the remainder of the flow log into memory (`fh.read()`) before rewriting
+  it. Live, that file reached 17.9 GB against a 1024 MB cap, so the prune CronJob was OOM-killed
+  at its 256Mi limit every five minutes (exit 137, BackoffLimitExceeded) and the cap was never
+  enforced while the disk filled. The trim now streams with `shutil.copyfileobj` in 1 MiB chunks;
+  a regression test asserts the peak allocation stays bounded on a 26 MB file.
+- `models/operating_point.py`: the fused decision no longer takes a hand-picked `max_p`. The
+  deployment states a budget (1% of host-evaluations may become a ripple) and the threshold is
+  derived from the quantile of its own fused p-values, bounded by the 0.05 it replaces. Measured
+  live on 0.23.57, the constant called 6 of 44 host-evaluations a ripple (13.6% of hosts, hourly).
+- Cold start: below 100 evaluations per monitored host, every host is reported `unknown` with the
+  counts in the reason. A new install says "learning baseline" instead of calling one host in
+  seven anomalous on its first day. The worker log carries the threshold, sample count and warm
+  or cold state.
+
 ## 0.23.57 — 2026-11-12
 
 RIPPLE FUSION WIRED, AND A COVERAGE CONTRACT THAT MEASURES HOSTS.

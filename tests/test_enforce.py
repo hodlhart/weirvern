@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,31 @@ def test_netflow_trim_leaves_only_parseable_json_lines(_isolated_dirs):
             json.loads(line)
         except json.JSONDecodeError as exc:
             pytest.fail(f"line {n} is not valid JSON after the trim: {line[:60]!r} ({exc})")
+
+
+def test_a_large_trim_streams_instead_of_reading_the_file_into_memory(_isolated_dirs):
+    """The flow log reached 17.9 GB live; reading the remainder OOM-killed the prune job.
+
+    A trim must move bytes in bounded chunks. tracemalloc is the cheap stand-in for a memory
+    limit: the whole-file read this replaced allocated the remainder (tens of MB here), while
+    a streamed copy holds one chunk at a time.
+    """
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    row = json.dumps({"i": 0, "pad": "p" * 200}) + "\n"
+    with open(f, "w") as fh:
+        for i in range(120_000):
+            fh.write(row.replace('"i": 0', f'"i": {i}'))
+
+    tracemalloc.start()
+    r = enforce.enforce_netflow(1.0)  # ~1 MB cap against a ~26 MB file
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert r.actions == 1
+    assert peak < 8 * 1024 * 1024, f"trim allocated {peak / 1048576:.1f} MB; it must stream"
+    assert f.stat().st_size > 0
+    assert json.loads(f.read_text().splitlines()[0])
 
 
 def test_netflow_under_cap_is_untouched(_isolated_dirs):

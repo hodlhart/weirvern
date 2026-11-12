@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -214,20 +215,23 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
                 continue
             # Partial trim: drop the OLDEST bytes, then discard the remainder of the line
             # the cut landed in so the file still starts at a record boundary.
-            with open(p, "rb") as fh:
-                fh.seek(min(int(excess), size))
-                _ = fh.readline()  # partial line -- discarded on purpose
-                cut = fh.tell()
+            tmp = p.with_suffix(p.suffix + ".trim")
+            with open(p, "rb") as src, open(tmp, "wb") as out:
+                src.seek(min(int(excess), size))
+                _ = src.readline()  # partial line -- discarded on purpose
+                cut = src.tell()
                 if guard is not None and cut > guard:
                     # The reader's offset is itself a record start: cut EXACTLY there, and
                     # discard nothing -- the readline above would otherwise have eaten an
                     # unread record. Fewer bytes are freed; the next pass frees the rest.
                     cut = guard
-                    fh.seek(cut)
-                rest = fh.read()
-            tmp = p.with_suffix(p.suffix + ".trim")
-            with open(tmp, "wb") as fh:
-                fh.write(rest)
+                    src.seek(cut)
+                # STREAM, NEVER read(). The file being trimmed is the flow log, and on the live
+                # deployment it reached 17.9 GB against a 1 GB cap. Reading the remainder into
+                # memory OOM-killed the prune CronJob at its 256Mi limit every five minutes
+                # (measured 2026-11-12: exit 137, BackoffLimitExceeded, cap never enforced while
+                # the disk filled). copyfileobj moves it in bounded chunks instead.
+                shutil.copyfileobj(src, out, length=1024 * 1024)
             tmp.replace(p)
             # AFTER the replace, deliberately: in the millisecond between the two, a reader
             # pass falls back to the old re-read behaviour -- the known degraded path --
