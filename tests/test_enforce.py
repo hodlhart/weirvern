@@ -340,3 +340,21 @@ def test_a_trim_preserves_the_mode_the_writer_needs(_isolated_dirs):
 
     assert f.stat().st_size > 0
     assert f.stat().st_mode & 0o777 == 0o664, "the collector's write bit must survive the trim"
+
+
+def test_a_trim_keeps_the_inode_the_collector_has_open(_isolated_dirs):
+    """A rename swaps the inode under an open writer; its later records go to the unlinked file.
+
+    Measured live 2026-11-12: flows stopped at 19:17:57, the visible log froze at the trim point,
+    and the disk filled to 17.9 GB through a handle nothing could see.
+    """
+    d = _isolated_dirs["netflow"]
+    f = d / "flows.jsonl"
+    rows = "".join(json.dumps({"i": i, "pad": "p" * 120}) + "\n" for i in range(2000))
+    f.write_text(rows)
+    before = f.stat().st_ino
+
+    enforce.enforce_netflow(0.05)
+
+    assert f.stat().st_ino == before, "the collector's open handle must stay valid"
+    assert f.stat().st_size > 0

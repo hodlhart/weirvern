@@ -21,12 +21,10 @@ Each is idempotent and safe to run repeatedly.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 import shutil
-import stat
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -235,18 +233,26 @@ def enforce_netflow(cap_mb: float) -> ComponentResult:
                 # (measured 2026-11-12: exit 137, BackoffLimitExceeded, cap never enforced while
                 # the disk filled). copyfileobj moves it in bounded chunks instead.
                 shutil.copyfileobj(src, out, length=1024 * 1024)
-            # KEEP THE WRITER'S ACCESS. Replacing the log creates a new inode owned by whoever
-            # ran the prune; the collector runs as a different user (measured live 2026-11-12:
-            # goflow2 runs as uid 100, the prune job as 10001, mode 644 -> the collector got
-            # "permission denied" on its own log and NetFlow stopped). Ownership and mode are
-            # carried across the rewrite; a chown we are not allowed to do is not fatal.
-            with contextlib.suppress(PermissionError, AttributeError):
-                os.chown(tmp, st.st_uid, st.st_gid)
-            os.chmod(tmp, stat.S_IMODE(st.st_mode))
-            tmp.replace(p)
-            # AFTER the replace, deliberately: in the millisecond between the two, a reader
-            # pass falls back to the old re-read behaviour -- the known degraded path --
-            # rather than applying a shift for a rewrite that has not happened yet.
+            # REWRITE THE FILE IN PLACE -- SAME INODE, NOT A RENAME.
+            #
+            # A rename creates a NEW inode while the COLLECTOR still holds the old one open,
+            # and every record it writes afterwards goes into the unlinked file and vanishes.
+            # Measured live 2026-11-12: flows stopped at 19:17:57, the log on disk stayed at
+            # the trim point while the disk filled to 17.9 GB through a handle nothing could
+            # see, and a restart then failed with "permission denied" on a file owned by the
+            # prune's user. Carrying the mode and owner across the rename did not fix it --
+            # the handle, not the permission, was the problem.
+            #
+            # The collector opens this log for append, so writing the kept bytes back at
+            # offset 0 and truncating keeps its handle valid: its next record lands after
+            # ours. Ownership and mode are untouched by construction.
+            with p.open("r+b") as out, tmp.open("rb") as kept:
+                out.seek(0)
+                shutil.copyfileobj(kept, out, length=1024 * 1024)
+                out.truncate()
+            tmp.unlink(missing_ok=True)
+            # The hint records the trim even though the inode did not change: the reader's
+            # cursor is now past the end, and this is what moves it instead of re-reading.
             _append_trim_hint(p, old_inode, p.stat().st_ino, cut)
             r.actions += 1
             excess -= cut

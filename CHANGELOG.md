@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.63 — 2026-11-12
+
+TRIM IN PLACE: A RENAME WAS SWAPPING THE INODE UNDER THE COLLECTOR.
+
+- `enforce_netflow` wrote the kept tail to a temporary file and `replace()`d the log. That gives
+  the log a new inode while goflow2 still holds the old one open, so every record it wrote
+  afterwards went into the unlinked file: flows stopped at 19:17:57, the log on disk froze at the
+  trim point, and the disk filled to 17.9 GB through a handle nothing could see. Restarting the
+  collector then failed with "permission denied" on a file owned by the prune's user.
+- The kept bytes are now written back into the same inode at offset 0 and the file truncated. The
+  collector opens this log for append, so its handle stays valid and its next record lands after
+  the trim; ownership and mode cannot change because the file is never replaced.
+- The trim hint is still recorded (the reader's cursor is past the end and must be shifted).
+- Tests: the trim preserves the inode, and the mode the writer needs.
+
 ## 0.23.62 — 2026-11-12
 
 OBSERVED IS NOT FRESH: THE WEIRLINGS TAB CAN NOW SEE A DEAD EXPORTER.
