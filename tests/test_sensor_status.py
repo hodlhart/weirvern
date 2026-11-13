@@ -538,7 +538,13 @@ def test_a_naive_now_is_treated_as_LOCAL_not_UTC():
     aware = status._aware(datetime.datetime(2026, 9, 18, 12, 0, 0))
     assert aware.tzinfo is not None, "a naive datetime was left naive"
     # The attached offset must be this machine's, not zero (unless the machine IS UTC).
-    local_offset = datetime.datetime.now().astimezone().utcoffset()
+    #
+    # ASK FOR THE SAME DATE, NOT TODAY'S. The value under test is a September datetime, and
+    # comparing its offset against `now()`'s makes the test calendar-dependent: it passed
+    # until US DST ended on 2026-11-01 and has been red ever since, because September is
+    # CDT (-5) while November is CST (-6). The assertion is about which timezone gets
+    # attached, not about what the offset happens to be this week.
+    local_offset = datetime.datetime(2026, 9, 18, 12, 0, 0).astimezone().utcoffset()
     assert aware.utcoffset() == local_offset, (
         f"naive datetimes are being labelled {aware.utcoffset()} but local time is "
         f"{local_offset}; ages would be shifted by the difference"
