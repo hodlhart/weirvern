@@ -190,6 +190,44 @@ def _gate_sensor_name() -> str:
         return socket.gethostname() or "sensor"
 
 
+
+# ── A READ FAILURE IS WORDED BY WHAT WAS OBSERVED (WV1-20) ────────────────────────────────────
+#
+# Every data path in this module reported `cannot reach ClickHouse: {exc}` regardless of cause --
+# 39 sites. Measured on a box with no database and no kubectl, /api/health returned
+#
+#     "data_error": "cannot reach ClickHouse: [Errno 2] No such file or directory: 'kubectl'"
+#
+# so the cause was a missing binary and the message asserted a database fault. cli.py already
+# records this exact confusion as a known trap: "the symptom appears as 'the GUI cannot reach
+# ClickHouse', which sends you looking" in the wrong place. The GUI went on producing it anyway.
+#
+# The distinction the reader needs is only this: a connection-shaped failure is a ClickHouse
+# problem to chase, anything else (a missing binary, a permission, a bad value) is not, and saying
+# "ClickHouse" for those costs someone an afternoon.
+_CONNECT_HINTS = (
+    "connection refused", "connect call failed", "timed out", "timeout", "unreachable",
+    "no route to host", "name or service not known", "nodename nor servname",
+    "temporary failure in name resolution", "connection reset", "broken pipe",
+    "max retries exceeded", "failed to establish a new connection", "econnrefused",
+    "econnreset", "ehostunreach", "enetunreach",
+)
+
+
+def read_failure(exc: BaseException | None) -> str:
+    """Word a failed read by what was observed, not by the layer we assume broke."""
+    if exc is None:
+        return "the data could not be read"
+    detail = type(exc).__name__
+    text = str(exc).strip()
+    if text:
+        detail = f"{detail}: {text}"
+    lowered = text.lower()
+    if isinstance(exc, (ConnectionError, TimeoutError)) or any(h in lowered for h in _CONNECT_HINTS):
+        return f"cannot reach ClickHouse: {detail}"
+    return f"could not read the data: {detail}"
+
+
 class GuiContext:
     """Everything a request handler needs, assembled once at startup.
 
@@ -751,7 +789,7 @@ def _build_handler(ctx: GuiContext):
                     if watched_only and watch_err is None:
                         rows = [r for r in rows if r.get("watched")]
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(web_api.anomalies_payload(
                 rows, severity_counts=severity_counts, discipline=discipline,
                 watch_error=watch_err, total_unfiltered=total_unfiltered))
@@ -766,7 +804,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     payload = status_mod.episodes_recent(client, hours=hours, limit=limit)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             # The queue's Host column is the fact (the address); Hostname is the convenience.
             # Resolve it here, next to the anomaly route, so both tables use the same cached
             # reverse-DNS path. A missing name is an empty cell, never an invented label.
@@ -862,7 +900,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     out = status_mod.pipeline_audit(client)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(out)
 
         def _detectors(self) -> None:
@@ -875,7 +913,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     out = status_mod.detectors_overview(client)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(out)
 
         def _models_calibration(self) -> None:
@@ -885,7 +923,7 @@ def _build_handler(ctx: GuiContext):
                     data = status_mod.calibration_overview(client, ctx.settings)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
-                                   "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
+                                   "reason": read_failure(exc), "rows": []})
             self._json(web_api.calibration_payload(data))
 
         def _models_shadow(self) -> None:
@@ -895,7 +933,7 @@ def _build_handler(ctx: GuiContext):
                     data = status_mod.shadow_overview(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
-                                   "reason": f"cannot reach ClickHouse: {exc}", "rows": []})
+                                   "reason": read_failure(exc), "rows": []})
             self._json(data)
 
         def _ml_ledger(self) -> None:
@@ -968,7 +1006,7 @@ def _build_handler(ctx: GuiContext):
                     data = status_mod.ripple_overview(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
-                                   "reason": f"cannot reach ClickHouse: {exc}",
+                                   "reason": read_failure(exc),
                                    "rows": [], "pageable": False, "counts": {},
                                    "contributors": [], "scales": [], "families": [],
                                    "unknown": []})
@@ -1017,7 +1055,7 @@ def _build_handler(ctx: GuiContext):
                         data["model_cards_reason"] = f"cannot read the model registry: {card_exc}"
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
-                                   "reason": f"cannot reach ClickHouse: {exc}"})
+                                   "reason": read_failure(exc)})
             self._json(web_api.models_payload(data))
 
         def _baselines(self) -> None:
@@ -1029,7 +1067,7 @@ def _build_handler(ctx: GuiContext):
                     data = status_mod.baselines_overview(client)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False,
-                                   "reason": f"cannot reach ClickHouse: {exc}"})
+                                   "reason": read_failure(exc)})
             self._json(web_api.baselines_payload(data))
 
         def _model_retrain(self) -> None:
@@ -1048,7 +1086,7 @@ def _build_handler(ctx: GuiContext):
                                 or actions.latest(client, actions.TRASH))
             except Exception as exc:  # noqa: BLE001
                 return self._json(web_api.retrain_payload(
-                    None, None, available=False, reason=f"cannot reach ClickHouse: {exc}"))
+                    None, None, available=False, reason=read_failure(exc)))
             self._json(web_api.retrain_payload(row, decision))
 
         def _model_retrain_write(self) -> None:
@@ -1161,7 +1199,7 @@ def _build_handler(ctx: GuiContext):
             for key, hi in (("proto", 255), ("dport", 65535)):
                 if filters[key] and (not filters[key].isdigit() or int(filters[key]) > hi):
                     return self._error(400, f"{key} must be a number <= {hi}")
-            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            empty = {"available": False, "reason": "the data could not be read", "points": []}
             try:
                 with self._with_client() as client:
                     volume = soc_mod.flow_volume_series(client, hours=hours, filters=filters)
@@ -1178,9 +1216,9 @@ def _build_handler(ctx: GuiContext):
                 return self._json({"volume": empty, "protocols": empty, "ports": empty,
                                    "spread": empty,
                                    "talkers": {"available": False, "points": [],
-                                               "reason": f"cannot reach ClickHouse: {type(exc).__name__}"},
+                                               "reason": read_failure(exc)},
                                    "noise": {},
-                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+                                   "data_error": read_failure(exc)})
             self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers,
                                               noise=noise))
 
@@ -1194,7 +1232,7 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            empty = {"available": False, "reason": "the data could not be read", "points": []}
             filters: dict[str, str] = {}
             for key in ("log", "service", "query", "host"):
                 raw = (query.get(key) or [""])[0].strip()
@@ -1216,7 +1254,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("zeek view unavailable: %s", exc)
                 return self._json({"counts": empty, "timeline": empty, "services": empty,
                                    "dns": empty, "filters": filters,
-                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+                                   "data_error": read_failure(exc)})
             payload = web_api.zeek_payload(counts, timeline, services, dns)
             payload["filters"] = filters
             self._json(payload)
@@ -1257,7 +1295,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("flow drill-down unavailable: %s", exc)
                 return self._json({
                     "available": False, "points": [],
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                     "data_error": str(exc),
                 })
             self._json(payload)
@@ -1272,7 +1310,7 @@ def _build_handler(ctx: GuiContext):
                     payload = soc_mod.discover_trends(client, hours=hours)
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False, "feeds": {},
-                                   "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   "reason": read_failure(exc),
                                    "data_error": str(exc)})
             self._json(payload)
 
@@ -1358,7 +1396,7 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("discover unavailable: %s", exc)
                 return self._json({"available": False, "rows": [], "reason":
-                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   read_failure(exc),
                                    "data_error": str(exc)})
             self._json(payload)
 
@@ -1405,7 +1443,7 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("dns view unavailable: %s", exc)
                 return self._json({"available": False, "rows": [], "reason":
-                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   read_failure(exc),
                                    "data_error": str(exc)})
             self._json(payload)
 
@@ -1433,7 +1471,7 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("blocked view unavailable: %s", exc)
                 return self._json({"available": False, "hits": [], "reason":
-                                   f"cannot reach ClickHouse: {type(exc).__name__}",
+                                   read_failure(exc),
                                    "data_error": str(exc)})
             self._json(payload)
 
@@ -1451,7 +1489,7 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("reverse lookup unavailable: %s", exc)
                 return self._json({"available": False, "domains": [], "reason":
-                                   f"cannot reach ClickHouse: {type(exc).__name__}"})
+                                   read_failure(exc)})
             self._json(payload)
 
         def _system(self, query: dict) -> None:
@@ -1512,11 +1550,11 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            empty = {"available": False, "reason": "cannot reach ClickHouse", "points": []}
+            empty = {"available": False, "reason": "the data could not be read", "points": []}
             report = None
             sensor: dict = {}
             ingest, sizes = empty, empty
-            audit: dict = {"available": False, "reason": "cannot reach ClickHouse",
+            audit: dict = {"available": False, "reason": "the data could not be read",
                            "by_reason": [], "recent": [], "suppressed": 0,
                            "total": 0, "truncated": False, "names": {}}
             try:
@@ -1536,7 +1574,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("health view unavailable: %s", exc)
                 return self._json({"health": None, "ingest": empty, "tables": empty,
                                    "sensor": {}, "alerts": audit,
-                                   "data_error": f"cannot reach ClickHouse: {exc}"})
+                                   "data_error": read_failure(exc)})
             self._json(web_api.health_deep_payload(report, ingest, sizes, sensor, audit))
 
         def _assets(self, query: dict) -> None:
@@ -1557,7 +1595,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("asset inventory unavailable: %s", exc)
                 return self._json({
                     "available": False, "hosts": [],
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                     "data_error": str(exc),
                 })
             self._json(payload)
@@ -1587,7 +1625,7 @@ def _build_handler(ctx: GuiContext):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("findings unavailable: %s", exc)
                 return self._json({"available": False, "findings": [], "count": 0,
-                                   "counts": {}, "reason": "cannot reach ClickHouse"})
+                                   "counts": {}, "reason": "the data could not be read"})
             payload["filter"] = {"ip": ip, "severity": severity}
             self._json(payload)
 
@@ -1608,7 +1646,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("asset changes unavailable: %s", exc)
                 return self._json({
                     "available": False, "changes": [], "count": 0,
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                     "data_error": str(exc),
                 })
             self._json(payload)
@@ -1620,7 +1658,7 @@ def _build_handler(ctx: GuiContext):
                     payload = assets_mod.asset_posture_overview(client)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("asset posture unavailable: %s", exc)
-                return self._json({"available": False, "reason": "cannot reach ClickHouse",
+                return self._json({"available": False, "reason": "the data could not be read",
                                    "model_version": "asset-posture-1", "scored": 0,
                                    "total_changes": 0, "bands": {}, "last_scored": ""})
             self._json(payload)
@@ -1713,7 +1751,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("graph unavailable: %s", exc)
                 return self._json({
                     "available": False, "nodes": [], "edges": [],
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                     "data_error": str(exc),
                 })
             self._json(payload)
@@ -1738,7 +1776,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("host identity unavailable: %s", exc)
                 return self._json({
                     "available": False, "hosts": [], "count": 0, "coverage": None,
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                 })
             self._json(payload)
 
@@ -2359,7 +2397,7 @@ def _build_handler(ctx: GuiContext):
                         "LIMIT 500").result_rows
             except Exception as exc:  # noqa: BLE001
                 return self._json({"available": False, "sources": [], "custom": [],
-                                   "reason": f"cannot reach ClickHouse: {exc}"})
+                                   "reason": read_failure(exc)})
             self._json({"available": True, "reason": "", "sources": sources,
                         "custom": [str(r[0]) for r in custom_rows]})
 
@@ -2384,7 +2422,7 @@ def _build_handler(ctx: GuiContext):
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+                return self._json({"ok": False, "error": read_failure(exc)}, 503)
             self._json({"ok": True, "source": src,
                         "note": ("on \u2014 its names join the watch set at the next load"
                                  if enabled else
@@ -2415,7 +2453,7 @@ def _build_handler(ctx: GuiContext):
             except SluiceError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+                return self._json({"ok": False, "error": read_failure(exc)}, 503)
             self._json({"ok": True, "rule": {"rule_id": rule.rule_id,
                                              "describes": rule.describes(),
                                              "domain": rule.domain}})
@@ -2507,7 +2545,7 @@ def _build_handler(ctx: GuiContext):
             except SluiceError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": f"cannot reach ClickHouse: {exc}"}, 503)
+                return self._json({"ok": False, "error": read_failure(exc)}, 503)
             self._json({"ok": True, "rule": {"rule_id": rule.rule_id, "describes": rule.describes(),
                                              "mode": rule.mode}})
 
@@ -2697,7 +2735,7 @@ def _build_handler(ctx: GuiContext):
                 logger.warning("zeek log detail unavailable: %s", exc)
                 return self._json({
                     "available": False, "points": [], "log": label,
-                    "reason": f"cannot reach ClickHouse: {type(exc).__name__}",
+                    "reason": read_failure(exc),
                     "data_error": str(exc),
                 })
             self._json(payload)
@@ -4607,7 +4645,7 @@ def _build_handler(ctx: GuiContext):
                                     "registered": False, "state": "unknown",
                                     "exposure": "unknown", "services": [], "findings": [], "counts": {}}
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             payload = web_api.host_payload(detail)
             payload["exposure"] = exposure
             self._json(payload)
@@ -4641,7 +4679,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     data = status_mod.alert_evidence(client, addr, start, end)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(web_api.evidence_payload(data))
 
         def _incident(self, query: dict) -> None:
@@ -4664,7 +4702,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     data = status_mod.incident_detail(client, addr, start)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(web_api.incident_payload(data))
 
         def _fingerprints(self, query: dict) -> None:
@@ -4686,7 +4724,7 @@ def _build_handler(ctx: GuiContext):
                 with self._with_client() as client:
                     payload = status_mod.fingerprint_hosts(client, ja4)
             except Exception as exc:  # noqa: BLE001
-                return self._error(503, f"cannot reach ClickHouse: {exc}")
+                return self._error(503, read_failure(exc))
             self._json(payload)
 
     return Handler
