@@ -195,6 +195,13 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    loadIdentity, showIdentityDetail,
                    loadRetrain, retrainAction,
                    loadSluice, wireSluice, renderSluiceRules, renderSluiceGates,
+                   // THE RESPONSE CACHE MUST BE CLEARABLE, OR A STUBBED RE-FETCH IS NEVER SEEN.
+                   // getJSON returns a cached body for 8s and dedupes in-flight requests, so a
+                   // check that installs fetchOverride and re-loads an endpoint already fetched
+                   // gets the CACHED payload and its override is never called. Measured as an
+                   // empty URL list inside the override. Every stubbed read in this file is
+                   // subject to it, which makes this a seam the harness needs, not a convenience.
+                   clearGetCache,
                    renderSluiceFleet, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
@@ -4094,22 +4101,60 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();   // tidy back to the healthy fixture
   }
 
-  // ── A FAILED SLUICE READ MUST NOT RENDER AS "off" (WV1-07) -- NOT ASSERTED HERE ─────────────
+  // ── A FAILED SLUICE READ MUST NOT RENDER AS "off" (WV1-07) ──────────────────────────────────
   //
-  // The fix is in sluice.js (renderSluiceGates branches on d.available === false). This harness
-  // CANNOT measure it: `fetchOverride` was never invoked for the /api/sluice call from
-  // H.loadSluice(), measured by logging every URL the override saw -- the list was empty. The
-  // gate card still re-rendered, from the harness's normal healthy router, so every assertion
-  // read healthy data no matter which stub was installed.
+  // Measured live with no database: /api/sluice answered available:false with a reason and the
+  // Traffic Gate card still said chip "off" plus "The packet gate is off. Rules still record hits,
+  // but no packet is dropped." while the Rules panel on the same screen said "Reach unavailable".
   //
-  // Three attempts are recorded so the next person does not repeat them: `window.fetch = fn`
-  // (the bundle reads the `fetchOverride` binding, so this does nothing), a stub returning a bare
-  // object (needs {ok, status, json}), and asserting after a sleep (a pending render from an
-  // earlier block overwrites the card, so it must be read immediately after the await).
-  //
-  // Left as a note rather than as failing checks: five red lines asserting a product defect that
-  // was never measured is exactly the false signal this file spent a session removing. Whoever
-  // wires the override to this call site should add the assertions back with it.
+  // THIS CHECK NEEDS clearGetCache(), AND THAT IS WHY IT EXISTS ONLY NOW. getJSON serves a cached
+  // body for eight seconds, so re-loading an endpoint the run has already fetched returns the
+  // CACHED payload: fetchOverride is never called, the stub is ignored, and the assertions read
+  // healthy data whatever is installed. Three earlier attempts failed on that, not on the product.
+  // Any future check that stubs a read of an already-fetched endpoint needs the same line.
+  {
+    H.clearGetCache();
+    fetchOverride = (u) => (String(u).includes("/api/sluice") && !String(u).includes("/api/sluice/")
+      ? { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: false, reason: "cannot read the gate: FileNotFoundError",
+          gate: {}, gates: [], blocklists: [], hits: [] }) }
+      : null);
+    await H.loadSluice();
+    // READ IMMEDIATELY: a pending render from an earlier block can resolve during a sleep and
+    // overwrite the card, which would make this measure the previous render instead.
+    const chipNow = (needEl("sl2-traf-chip").textContent || "").trim();
+    const lineNow = (needEl("sl2-traf-line").textContent || "").trim();
+    const disabledNow = needEl("sl2-traf-toggle").disabled;
+    const statsNow = (needEl("sl2-traf-stats").textContent || "").trim();
+    fetchOverride = null;
+
+    check("a failed gate read does not render the chip as 'off'",
+          chipNow.toLowerCase() !== "off", `chip read ${JSON.stringify(chipNow)}`);
+    check("...it says the state is unavailable instead", /unavailable/i.test(chipNow), chipNow);
+    check("...the line carries the reason and disclaims the card",
+          /cannot read the gate/i.test(lineNow) && /no claim/i.test(lineNow), lineNow.slice(0, 110));
+    // `disabled` ALONE DOES NOT DISCRIMINATE. With an empty gate payload the button is already
+    // disabled for an unrelated reason ("no nft backend"), so that assertion passes with the fix
+    // reverted -- measured by mutation. The TITLE is what the fix sets, so it is what proves it.
+    check("...the traffic toggle is disabled rather than arming a gate it cannot see",
+          disabledNow === true
+          && /could not be read/i.test(needEl("sl2-traf-toggle").title || ""),
+          `disabled=${disabledNow} title=${JSON.stringify(needEl("sl2-traf-toggle").title || "")}`);
+    check("...and the stats are not rendered as zeros", statsNow === "", statsNow.slice(0, 80));
+
+    H.clearGetCache();
+    await H.loadSluice();   // tidy back
+    H.clearGetCache();
+  }
+
+  {
+    // DIAGNOSTIC: is the harness router still the live window.fetch, and does it consult
+    // fetchOverride? If a block restored an older reference, later overrides are never read.
+    const body = String(window.fetch);
+    console.log("  [DIAG] window.fetch consults fetchOverride: " + /fetchOverride/.test(body));
+    console.log("  [DIAG] window.fetch is the harness router: " + /POSTED\.push/.test(body));
+    console.log("  [DIAG] typeof fetchOverride: " + typeof fetchOverride);
+  }
 
   // ── THE RULES SURFACE (US-SL1, the operator's rules 1-3 and the absorbed A3) ────────────────
   {
