@@ -201,7 +201,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    // gets the CACHED payload and its override is never called. Measured as an
                    // empty URL list inside the override. Every stubbed read in this file is
                    // subject to it, which makes this a seam the harness needs, not a convenience.
-                   clearGetCache, openRuleSheet,
+                   clearGetCache, openRuleSheet, loadBlocklistPane,
                    renderSluiceFleet, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
@@ -4260,6 +4260,118 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
     H.clearGetCache();
     await H.loadDns();   // tidy back to the healthy fixture
+    H.clearGetCache();
+  }
+
+  // ── A DESTRUCTIVE CONTROL IS NOT ONE CLICK (WV1-12, WV1-14) ──────────────────────────────────
+  //
+  // Both of these posted on a single click. `sl2Create` (block mode) and `sl2Delete` already
+  // required a two-step confirm, so parking a live block rule -- which re-opens the path it was
+  // blocking -- was the odd one out, and the blocklist toggle was the whole <tr>, so clicking the
+  // error text to READ it changed DNS enforcement.
+  {
+    H.clearGetCache();
+    fetchOverride = null;
+    H.openRuleSheet({ rule_id: "r-live-1", describes: "example.com", domain: "example.com",
+                      mode: "block", disabled: false, origin: "operator", hits: 3 });
+
+    const park = doc.getElementById("sl2-park");
+    const note = doc.getElementById("sl2-detail-note");
+    const posts = [];
+    fetchOverride = (url, opts) => {
+      posts.push(`${(opts && opts.method) || "GET"} ${url}`);
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                               json: async () => ({ ok: true }) });
+    };
+
+    check("parking a live rule starts from a button that names the rule's state",
+          !!park && park.textContent.trim() === "Park rule",
+          park ? `label=${JSON.stringify(park.textContent)}` : "no #sl2-park");
+
+    if (park) park.click();
+    await new Promise((r) => setTimeout(r, 80));
+    const armedLabel = park ? String(park.textContent) : "";
+    const armedNote = note ? String(note.textContent) : "";
+    const armedFlag = park ? park.dataset.confirm : null;
+
+    check("...one click only ARMS parking, it does not post",
+          posts.length === 0, `requests=${JSON.stringify(posts)}`);
+    check("...and says what parking does before it does it",
+          armedFlag === "1" && /reachable again/i.test(armedNote),
+          `confirm=${JSON.stringify(armedFlag)} note=${JSON.stringify(armedNote.slice(0, 80))}`);
+    check("...with the label changed so the armed state is visible",
+          /^Confirm: park rule$/.test(armedLabel), `label=${JSON.stringify(armedLabel)}`);
+
+    if (park) park.click();
+    await new Promise((r) => setTimeout(r, 120));
+    // COUNT THE POSTS, NOT THE REQUESTS: a successful park reloads the pane, so the list also
+    // holds the GETs that reload issues. Asserting length === 1 measured the reload, not the post.
+    //
+    // THIS CHECK DOES NOT DISCRIMINATE THE FIX, AND SAYS SO RATHER THAN IMPLYING IT DOES. A
+    // successful park closes the rule sheet, which clears SL2_STATE.current, so the second click
+    // returns early -- two clicks produce exactly ONE post whether or not the two-step exists.
+    // Measured: with `if (false)` in place of the arming branch this still passes. It is kept
+    // because it catches the opposite regression (a two-step control that posts on both clicks),
+    // and the discrimination for THIS fix lives in the three checks above, all of which flip.
+    const parkPosts = posts.filter((p) => p === "POST /api/sluice/rule/disabled");
+    check("...the second click posts the change, once",
+          parkPosts.length === 1, `posts=${JSON.stringify(parkPosts)}`);
+    fetchOverride = null;
+    H.clearGetCache();
+  }
+
+  // ── THE BLOCKLIST ROW IS INERT (WV1-14) ─────────────────────────────────────────────────────
+  {
+    H.clearGetCache();
+    const posts = [];
+    fetchOverride = (url, opts) => {
+      const method = (opts && opts.method) || "GET";
+      if (method === "GET" && String(url).includes("/api/blocklists")) {
+        return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true,
+          sources: [{ source_id: "hagezi-light", name: "HaGeZi LIGHT", enabled: true,
+                      domain_count: 1200, fetched_at: "2026-11-13T09:00:00Z",
+                      last_error: "HTTP 429 from the mirror; retrying in 15m" }] }) });
+      }
+      posts.push(`${method} ${url}`);
+      return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                               json: async () => ({ ok: true }) });
+    };
+
+    await H.loadBlocklistPane();
+    const row = doc.querySelector("#sl-bl-rows tr");
+    check("a blocklist row is rendered", !!row, "no row in #sl-bl-rows");
+
+    check("the row itself is not a click target",
+          !!row && !row.classList.contains("clickable"),
+          row ? `class=${JSON.stringify(row.className)}` : "no row");
+
+    // The cell that used to be a trap: the error text an operator wants to read and copy.
+    const cells = row ? Array.from(row.children) : [];
+    const errCell = cells[4];
+    if (errCell) errCell.click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("...clicking the error text does not toggle the list",
+          posts.length === 0, `requests=${JSON.stringify(posts)}`);
+
+    const btn = row ? row.querySelector("button") : null;
+    check("the toggle is a button that names what it does",
+          !!btn && /turn (on|off)/i.test(String(btn.textContent)),
+          btn ? `label=${JSON.stringify(btn.textContent)}` : "no button in the row");
+
+    if (btn) btn.click();
+    await new Promise((r) => setTimeout(r, 80));
+    check("...one click only arms the toggle",
+          posts.length === 0 && !!btn.dataset.confirm,
+          `requests=${JSON.stringify(posts)} confirm=${JSON.stringify(btn.dataset.confirm)}`);
+
+    if (btn) btn.click();
+    await new Promise((r) => setTimeout(r, 120));
+    check("...the second click posts the change",
+          posts.length === 1 && /\/api\/blocklists\/enable/.test(posts[0]),
+          `requests=${JSON.stringify(posts)}`);
+
+    fetchOverride = null;
     H.clearGetCache();
   }
 

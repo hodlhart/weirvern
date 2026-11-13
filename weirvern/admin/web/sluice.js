@@ -485,6 +485,9 @@ function sl2SyncKind() {
 }
 
 let SL_CREATE_ARM_TIMER = null;
+// One per two-step action, so arming one control cannot disarm another (WV1-12, WV1-14).
+let SL_PARK_ARM_TIMER = null;
+let SL_BL_ARM_TIMER = null;
 function slCreateDisarm() {
   if (SL_CREATE_ARM_TIMER) { clearTimeout(SL_CREATE_ARM_TIMER); SL_CREATE_ARM_TIMER = null; }
   const btn = document.getElementById("sl2-create-submit");
@@ -557,6 +560,10 @@ function sl2OpenDetail(rule) {
   if (park) {
     park.textContent = rule.disabled ? "Restore rule" : "Park rule";
     park.disabled = Boolean(rule.revoked || rule.not_live);
+    // A pending confirm belongs to the sheet it was armed in. Without this, opening another rule
+    // shows "Park rule" while the button is still armed, so the next click would post (WV1-12).
+    delete park.dataset.confirm;
+    if (SL_PARK_ARM_TIMER) { clearTimeout(SL_PARK_ARM_TIMER); SL_PARK_ARM_TIMER = null; }
   }
   const note = document.getElementById("sl2-detail-note");
   if (note) {
@@ -682,6 +689,32 @@ async function sl2Park() {
   if (!rule) return;
   const btn = document.getElementById("sl2-park");
   const note = document.getElementById("sl2-detail-note");
+  // ── TWO STEP (WV1-12) ─────────────────────────────────────────────────────────────────────
+  //
+  // One click here flipped a rule's enforcement. Parking a live block rule RE-OPENS the path it
+  // was blocking, and restoring re-arms it, so this was the most consequential single click in the
+  // sheet and the only destructive one without a confirm -- `sl2Create` (block mode) and
+  // `sl2Delete` both had one. Worse, the button sits next to Delete and reads like a status chip.
+  const parking = !rule.disabled;
+  if (!btn.dataset.confirm) {
+    btn.dataset.confirm = "1";
+    btn.textContent = parking ? "Confirm: park rule" : "Confirm: restore rule";
+    note.textContent = parking
+      ? "Parking stops this rule's enforcement: whatever it blocks becomes reachable again until "
+        + "you restore it. The rule is kept and still records. Click again to confirm."
+      : "Restoring re-arms this rule and whatever it blocks is blocked again. Click again to "
+        + "confirm.";
+    if (SL_PARK_ARM_TIMER) clearTimeout(SL_PARK_ARM_TIMER);
+    SL_PARK_ARM_TIMER = setTimeout(() => {
+      if (SL_PARK_ARM_TIMER === null) return;
+      SL_PARK_ARM_TIMER = null;
+      delete btn.dataset.confirm;
+      btn.textContent = parking ? "Park rule" : "Restore rule";
+    }, 6000);
+    return;
+  }
+  delete btn.dataset.confirm;
+  if (SL_PARK_ARM_TIMER) { clearTimeout(SL_PARK_ARM_TIMER); SL_PARK_ARM_TIMER = null; }
   btn.disabled = true;
   try {
     const out = await postJSON("/api/sluice/rule/disabled", { rule_id: rule.rule_id, disabled: !rule.disabled });
@@ -745,17 +778,28 @@ function renderBlocklists(d) {
     const state = s.last_error
       ? el("span", { class: "chip bad", text: "last sync failed" })
       : (s.fetched_at ? el("span", { class: "chip ok", text: "ok" }) : el("span", { class: "chip muted", text: "never fetched" }));
-    const tr = el("tr", { class: "clickable", attrs: { title: s.enabled
-      ? "click to turn this list off — its names leave the watch set"
-      : "click to turn this list on — its names join the watch set" } }, [
+    // ── THE ROW IS INERT; A BUTTON CARRIES THE TOGGLE (WV1-14) ──────────────────────────────
+    //
+    // The whole <tr> used to be the toggle, and one of its cells is `s.last_error.slice(0, 90)`.
+    // Clicking that error text to READ it, or to select it for a bug report, silently disabled a
+    // DNS blocklist and changed enforcement. The hover title was the only warning, which does not
+    // exist on touch and was not announced for keyboard.
+    //
+    // Extending `tr.clickable` keyboard activation to these rows made it worse rather than better:
+    // tabbing through this pane and pressing Enter would toggle a list. A row whose whole surface
+    // performs a state change cannot be made safe by adding a key handler; the action has to move
+    // into a control that says what it does.
+    const toggle = el("button", { class: "quiet", attrs: { type: "button" },
+      text: s.enabled ? "Turn off" : "Turn on" });
+    toggle.addEventListener("click", () => slToggleSource(s, toggle).catch(showError));
+    const tr = el("tr", {}, [
       el("td", {}, [el("span", { class: "chip " + (s.enabled ? "ok" : "muted"), text: s.enabled ? "on" : "off" }),
         el("span", { text: " " + s.name })]),
-      el("td", {}, [state]),
+      el("td", {}, [state, el("span", { text: " " }), toggle]),
       el("td", { class: "mono", text: String(s.domain_count || 0) }),
       el("td", { class: "muted", text: s.fetched_at ? fmtTime(new Date(s.fetched_at)) : "—" }),
       el("td", { class: "muted", text: s.last_error ? s.last_error.slice(0, 90) : "—" }),
     ]);
-    tr.addEventListener("click", () => slToggleSource(s));
     body.appendChild(tr);
   }
 }
@@ -778,9 +822,33 @@ async function loadBlocklistPane() {
   renderBlocklists({ blocklists: (d && d.sources) || [] });
 }
 
-async function slToggleSource(s) {
+async function slToggleSource(s, btn) {
   const note = document.getElementById("sl-bl-note");
   const want = !s.enabled;
+  // TWO STEP (WV1-14). Enabling or disabling a source changes which names get answered from the
+  // block list, so it names the effect before it happens.
+  if (btn && !btn.dataset.confirm) {
+    btn.dataset.confirm = "1";
+    const label = btn.textContent;
+    btn.textContent = want ? "Confirm: on" : "Confirm: off";
+    if (note) {
+      note.textContent = want
+        ? `Turning ${s.name} on adds its names to the watch set. Click again to confirm.`
+        : `Turning ${s.name} off removes its names from the watch set, so queries for them stop `
+          + "being answered from this list. Click again to confirm.";
+    }
+    if (SL_BL_ARM_TIMER) clearTimeout(SL_BL_ARM_TIMER);
+    SL_BL_ARM_TIMER = setTimeout(() => {
+      SL_BL_ARM_TIMER = null;
+      delete btn.dataset.confirm;
+      btn.textContent = label;
+    }, 6000);
+    return;
+  }
+  if (btn) {
+    delete btn.dataset.confirm;
+    if (SL_BL_ARM_TIMER) { clearTimeout(SL_BL_ARM_TIMER); SL_BL_ARM_TIMER = null; }
+  }
   if (note) note.textContent = `${want ? "enabling" : "disabling"} ${s.name}…`;
   try {
     const out = await postJSON("/api/blocklists/enable", { source_id: s.source_id, enabled: want });
