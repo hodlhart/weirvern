@@ -63,7 +63,7 @@ TTL window_start + INTERVAL 7 DAY;
 -- writing to the old table and the new one empty.
 DROP VIEW IF EXISTS weirvern.flows_window_mv;
 
-CREATE MATERIALIZED VIEW weirvern.flows_window_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS weirvern.flows_window_mv
 TO weirvern.flows_window
 AS
 SELECT

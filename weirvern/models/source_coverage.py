@@ -21,6 +21,11 @@ from typing import Any
 SOURCES: dict[str, tuple[str, str | None, bool]] = {
     "flows": ("weirvern.flows", "time_flow_start", True),
     "flows_aggregated": ("weirvern.flows_aggregated", "window_start", True),
+    # The folded per-host-window table the ML path reads. Registered separately from
+    # `flows_aggregated` because the two have different fragmentation and different
+    # cardinality semantics; a coverage check that conflated them would report the old
+    # table's health while the models read the new one.
+    "flows_window": ("weirvern.flows_window", "window_start", True),
     "zeek_conn": ("weirvern.zeek_conn", "ts", False),
     "zeek_ssl": ("weirvern.zeek_ssl", "ts", False),
     "zeek_dns": ("weirvern.zeek_dns", "ts", False),
