@@ -164,7 +164,11 @@ def test_the_worker_stores_them_best_effort():
     wrapped, and this pins the wrapping rather than trusting review."""
     src = (ROOT / "weirvern" / "worker.py").read_text()
     i = src.index("weirvern.near_misses")
-    region = src[i - 400:i + 2200]
+    # The span reaches BACK to the `detect_flows` call that produces the near misses, and forward
+    # over the wrapped insert. It is generous on purpose: the distance between them is ordinary
+    # code, and a log statement added in between is not a regression. A tight slice here fails on
+    # edits that are entirely correct, which trains the next reader to widen it without thinking.
+    region = src[max(0, i - 1200):i + 2200]
     assert "except Exception" in region and "continuing" in region, (
         "the near-miss insert is not wrapped; a failure would take the sweep with it"
     )

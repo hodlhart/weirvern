@@ -16,6 +16,7 @@ from weirvern.config import ModelConfig, Settings
 from weirvern.models.detectors import AdaptiveBaselineDetector
 from weirvern.worker import (
     AGG_BUCKET_S,
+    MAX_CATCHUP_BUCKETS,
     _collapse_partial_aggregates,
     _covered_through,
     _load_detect_cursor,
@@ -800,17 +801,52 @@ def test_a_SLOW_cycle_re_covers_the_buckets_it_would_have_skipped():
     )
 
 
-def test_the_window_always_ends_at_NOW_so_coverage_means_covered():
-    """The returned cursor is the sweep's start, in every branch -- so the next cycle's window starts
-    from what THIS one actually reached, and a cursor can never claim more than was examined."""
+def test_the_cursor_never_claims_more_than_ONE_CHUNK_was_examined():
+    """The returned cursor is the COVERAGE BOUNDARY, not the wall clock.
+
+    It used to be `now` in every branch, which is correct only while a single cycle examines the
+    whole window. Once a cycle is bounded to MAX_CATCHUP_BUCKETS, a cursor of `now` would mark the
+    unread remainder as covered -- the silent-skip defect this file has already fixed twice.
+
+    MEASURED 2026-11-12: with `since` 17 hours back, one cycle read about 37,000 host-windows and was
+    OOMKilled at a 6 Gi limit BEFORE it could save the cursor. The cursor therefore never advanced
+    and the next cycle repeated the same window, so a stalled cursor became a crash loop. Bounding
+    the read without also bounding the cursor would swap one silent failure for another.
+
+    The invariant, in every branch: the cursor is never in the future, and it never claims more
+    coverage than one cycle is allowed to examine.
+    """
+    settings = Settings()
+    now = utcnow()
+    cap = timedelta(seconds=MAX_CATCHUP_BUCKETS * AGG_BUCKET_S)
+    for cursor in (None, now - timedelta(seconds=300), now - timedelta(seconds=1183),
+                   now + timedelta(hours=3), now - timedelta(hours=100)):
+        since, new_cursor = _covered_through(settings, cursor)
+        assert new_cursor is not None, f"no cursor returned for {cursor}"
+        assert new_cursor <= now + timedelta(seconds=1), (
+            f"the cursor {new_cursor} is in the FUTURE for input {cursor}, so every later sweep "
+            f"would examine nothing"
+        )
+        assert new_cursor - since <= cap + timedelta(seconds=1), (
+            f"for input {cursor} the cursor claims {new_cursor - since} of coverage, more than the "
+            f"{cap} one cycle may examine -- the unread remainder would be marked covered"
+        )
+
+
+def test_a_HEALTHY_cycle_still_ends_the_window_at_NOW():
+    """The cap must change nothing when cycles run on time.
+
+    A recovery mechanism that also alters the healthy path is a rewrite wearing a fix's clothes.
+    When the cursor is recent, the returned cursor is still `now`, so coverage still means covered
+    and the sweep's window arithmetic is exactly what it was.
+    """
     settings = Settings()
     now = utcnow()
     for cursor in (None, now - timedelta(seconds=300), now - timedelta(seconds=1183),
-                   now + timedelta(hours=3), now - timedelta(hours=100)):
+                   now + timedelta(hours=3)):
         _since, new_cursor = _covered_through(settings, cursor)
-        assert new_cursor is not None, f"no cursor returned for {cursor}"
         assert new_cursor >= now - timedelta(seconds=5), (
-            f"the cursor {new_cursor} predates the sweep for input {cursor}"
+            f"a healthy cycle for input {cursor} did not reach the present: {new_cursor}"
         )
 
 
@@ -1550,3 +1586,157 @@ def test_the_shared_event_actually_stops_a_REAL_ingest_loop_and_checkpoints():
             f"the restart re-ingested {c2.rows} rows from an unchanged file -- duplicate rows in a "
             f"MergeTree with no deduplication"
         )
+
+
+# ── THE SWEEP MUST SAY WHAT IT DID, INCLUDING WHEN IT DID NOTHING ──────────────────────────────
+#
+# MEASURED OUTAGE (2026-11-12). The NetFlow summariser died, so no flows reached ClickHouse, so
+# `flows_window` stopped at 17:55 while every Zeek table kept filling. `detection_sweep` read zero
+# host-windows and returned an empty list IN COMPLETE SILENCE. Nothing in the log, nothing on the
+# console, pod green, restarts 0. Detection was dark for sixteen hours and the only way to find it
+# was to query the tables by hand and notice the timestamps had stopped.
+#
+# The silence also hid a second failure: because the cursor never advanced, the next sweep's window
+# began at 07:35 and grew until one cycle tried to cover seventeen hours, roughly 37,000 windows,
+# and was OOMKilled before it could advance. A silent empty read became a memory outage.
+#
+# These tests drive the REAL `detection_sweep` with a stubbed table reader and assert on the log,
+# because the log IS the fix. They fail if any of the four statements is removed.
+
+
+def _stub_empty_aggregates(monkeypatch):
+    """Make the aggregate read return nothing, which is the outage's exact state."""
+    import weirvern.db as db
+
+    def fake_named(client, query, **params):  # noqa: ANN001
+        return [], []
+
+    def fake_rows(client, query, **params):  # noqa: ANN001
+        return []
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", fake_rows)
+
+
+def test_a_sweep_that_reads_nothing_SAYS_SO(monkeypatch, caplog):
+    """The empty read is the most important thing this function can report.
+
+    It used to return in silence, which made a dead ingest pipeline indistinguishable from a quiet
+    network -- opposite diagnoses, identical output, sixteen hours of blind detection.
+    """
+    _stub_empty_aggregates(monkeypatch)
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.WARNING):
+        verdicts = detection_sweep(fake_ch, [StubDetector(0.9)], Settings(), ModelConfig())
+
+    assert verdicts == []
+    text = caplog.text.lower()
+    assert "examined nothing" in text, (
+        "a sweep that read no host-windows must say so; silence here hid a sixteen-hour outage"
+    )
+    # It must say WHERE to look, not just that something is wrong.
+    assert "time_flow_start" in text, (
+        "the warning must name the query that distinguishes dead ingest from a quiet network"
+    )
+
+
+def test_a_scored_sweep_states_its_counts(monkeypatch, caplog):
+    """An operator must be able to tell a one-window sweep from a forty-thousand-window sweep.
+
+    That difference is what turns a stalled cursor into an OOM kill, and nothing reported it.
+    """
+    _install_db_stubs(monkeypatch, existing_anomalies=[])
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.INFO):
+        detection_sweep(fake_ch, [StubDetector(0.9), StubDetector(0.88)], Settings(), ModelConfig())
+
+    text = caplog.text.lower()
+    assert "detection sweep: window from" in text, "the sweep must state the window it covered"
+    assert "host-window" in text and "scored" in text, (
+        "the sweep must state how many host-windows it read and how many it scored"
+    )
+
+
+def test_a_catching_up_sweep_BOUNDS_its_read(monkeypatch, caplog):
+    """A capped cursor is worthless if the read still pulls the whole backlog.
+
+    This is the exact shape of the OOM measured on 2026-11-12: `since` sat 17 hours back and every
+    aggregate query carried a lower bound only, so one cycle read about 37,000 host-windows and died
+    before it could save the cursor. Bounding the cursor without bounding the read would fix nothing.
+    """
+    import weirvern.db as db
+    from weirvern import worker as w
+
+    seen: list[dict] = []
+
+    def fake_named(client, query, **params):  # noqa: ANN001
+        if "since" in params:
+            seen.append(dict(params))
+        if "flows_aggregated_diversity" in query or "flows_aggregated_temporal" in query:
+            return ["window_start", "src_addr"], []
+        return AGG_COLS, AGG_ROWS
+
+    def fake_rows(client, query, **params):  # noqa: ANN001
+        return []
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", fake_rows)
+    # A 20-hour backlog, far beyond one chunk.
+    monkeypatch.setattr(w, "_load_detect_cursor", lambda _s: utcnow() - timedelta(hours=20))
+
+    fake_ch, _ = _capturing_client()
+    with caplog.at_level(logging.INFO):
+        detection_sweep(fake_ch, [StubDetector(0.9)], Settings(), ModelConfig())
+
+    assert seen, "the sweep issued no bounded read at all"
+    first = seen[0]
+    assert "until" in first, (
+        "the aggregate read carried a lower bound only, which is the unbounded-catch-up shape "
+        "that was OOMKilled at 37,000 host-windows"
+    )
+    lo = datetime.strptime(first["since"], "%Y-%m-%d %H:%M:%S")
+    hi = datetime.strptime(first["until"], "%Y-%m-%d %H:%M:%S")
+    span = (hi - lo).total_seconds()
+    cap = MAX_CATCHUP_BUCKETS * AGG_BUCKET_S
+    assert span <= cap + 60, (
+        f"a catching-up sweep asked for {span / 3600:.1f}h of aggregates in one pass against a "
+        f"{cap / 3600:.1f}h cap"
+    )
+    # And the backlog must be STATED, so an operator knows the system is behind and catching up.
+    assert "behind" in caplog.text.lower() and "chunk" in caplog.text.lower(), (
+        "draining a backlog silently is how a stalled cursor stayed invisible"
+    )
+
+
+def test_a_below_threshold_sweep_is_not_confused_with_a_dark_one(monkeypatch, caplog):
+    """These are opposite diagnoses and they used to produce the same empty result.
+
+    "Scored 4,000 windows, nothing crossed the bar" is a healthy quiet network. "Read nothing" is a
+    dead pipeline. Both used to return [] and log nothing, so neither could be told from the other.
+    """
+    import weirvern.db as db
+
+    def fake_named(client, query, **params):  # noqa: ANN001
+        if "flows_aggregated_diversity" in query or "flows_aggregated_temporal" in query:
+            return ["window_start", "src_addr"], []
+        return AGG_COLS, AGG_ROWS
+
+    def fake_rows(client, query, **params):  # noqa: ANN001
+        return []
+
+    monkeypatch.setattr(db, "fetch_rows_named", fake_named)
+    monkeypatch.setattr(db, "fetch_rows", fake_rows)
+
+    fake_ch, _ = _capturing_client()
+    # A stub that never scores high enough: everything runs, nothing crosses the threshold.
+    with caplog.at_level(logging.INFO):
+        verdicts = detection_sweep(fake_ch, [StubDetector(0.01)], Settings(), ModelConfig())
+
+    text = caplog.text.lower()
+    assert "none above threshold" in text, (
+        "a scored sweep with no verdicts must say it scored, so it is not read as a dark sweep"
+    )
+    assert "examined nothing" not in text, (
+        "and it must NOT claim it read nothing, which would invert the diagnosis"
+    )
+
