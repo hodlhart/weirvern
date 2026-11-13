@@ -4221,6 +4221,48 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           JSON.stringify(spans.map((s) => (s.textContent || "").slice(0, 24))));
   }
 
+  // ── DNS FAILED READ: THE FACET STRIP AND THE PAGER (WV1-09) ─────────────────────────────────
+  //
+  // dnsview.js's own comment says the empty-versus-unavailable conflation was removed from this
+  // view; two panels still had it. An empty facet strip reads as "no domains and no clients in the
+  // window", and "0-0 of 0" is exactly what a genuinely empty result prints -- so a failed query
+  // looked like a quiet network on the tab an operator is most likely to trust.
+  //
+  // The histogram and rows already branch this way, so the assertions below are the class, not a
+  // new idea: the summary's wording is reused deliberately.
+  {
+    H.clearGetCache();
+    fetchOverride = (u) => (String(u).includes("/api/dns")
+      // offset > 0 WITH a non-zero total ON PURPOSE: at offset 0 and total 0 the two nav buttons
+      // are already disabled for arithmetic reasons, so "both disabled" would pass with the fix
+      // reverted -- measured. This fixture makes the fix the only thing that disables them.
+      ? { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: false, reason: "cannot reach ClickHouse: OperationalError",
+          rows: [], total: 500, offset: 100, facets: {}, histogram: [] }) }
+      : null);
+    await H.loadDns();
+    const facetText = (needEl("dn-facets").textContent || "").trim();
+    const pagerText = (needEl("dn-page").textContent || "").trim();
+    const newerDisabled = needEl("dn-newer").disabled;
+    const olderDisabled = needEl("dn-older").disabled;
+    fetchOverride = null;
+    H.clearGetCache();
+
+    check("a failed DNS read does not leave the facet strip blank",
+          facetText.length > 0, `facet strip: ${JSON.stringify(facetText.slice(0, 80))}`);
+    check("...it says the facets could not be listed",
+          /Cannot list these/i.test(facetText), facetText.slice(0, 120));
+    check("...and the pager does not print the empty-result '0-0 of 0'",
+          pagerText === "", `pager: ${JSON.stringify(pagerText)}`);
+    check("...with both nav buttons disabled, because there is no range to walk",
+          newerDisabled === true && olderDisabled === true,
+          `newer=${newerDisabled} older=${olderDisabled}`);
+
+    H.clearGetCache();
+    await H.loadDns();   // tidy back to the healthy fixture
+    H.clearGetCache();
+  }
+
   {
     // DIAGNOSTIC: is the harness router still the live window.fetch, and does it consult
     // fetchOverride? If a block restored an older reference, later overrides are never read.
