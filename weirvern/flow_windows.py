@@ -45,6 +45,33 @@ _MERGE_BODY = """
 """
 
 
+def between(start: str, end: str) -> str:
+    """The folded-window predicate for a formatted start and end.
+
+    THIS EXISTS BECAUSE A NESTED STRING LITERAL INSIDE AN F-STRING IS NOT SUBSTITUTED.
+
+    Every detector's training query is one big f-string whose `WHERE` clause reads
+    `BETWEEN '{s}' AND '{e}'` and gets filled in correctly. Writing the SAME predicate as a
+    plain literal inside an f-string EXPRESSION --
+
+        f"FROM {flow_windows.folded(\"window_start BETWEEN '{s}' AND '{e}'\")}"
+
+    -- passes `{s}` through untouched, because that inner string is not part of the outer
+    f-string at all. ClickHouse then fails with
+
+        Cannot read DateTime: neither Date nor Time was parsed successfully:
+        while converting '{s}' to DateTime
+
+    and because `Adaptive Baseline.train` runs BEFORE the sweep in the worker loop, the
+    exception took the WHOLE loop down on every cycle. Measured on the live box, 2026-11-12:
+    one sweep completed, the next died in `train_if_due`, and detection stopped again.
+
+    Python 3.11 cannot nest an f-string inside an f-string expression either (that is PEP 701,
+    Python 3.12), and the deployed image is 3.11, so the predicate is built here in plain code.
+    """
+    return f"window_start BETWEEN '{start}' AND '{end}'"
+
+
 def folded(predicate: str, alias: str = "a") -> str:
     """Return a derived table of merged host-windows, filtered by `predicate`.
 
