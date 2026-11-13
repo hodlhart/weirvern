@@ -32,6 +32,7 @@ from sklearn.preprocessing import StandardScaler
 from weirvern import networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
+from weirvern import flow_windows
 from weirvern.models.base import BaseDetector, ModelMetadata
 from weirvern.models.scoring import (
     calibrate_distance,
@@ -181,7 +182,7 @@ class IsolationForestDetector(BaseDetector):
                 coalesce(d.bytes_stddev, 0) / NULLIF(a.total_bytes, 0),
                 coalesce(d.unique_connections, a.flow_count) / NULLIF(a.flow_count, 1),
 {zeek_cols}
-            FROM weirvern.v_flows_window a
+            FROM {flow_windows.folded("window_start BETWEEN '{s}' AND '{e}'")}
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
             {zeek_join}
@@ -190,8 +191,11 @@ class IsolationForestDetector(BaseDetector):
               AND (
                   sipHash64(a.src_addr, a.window_start) % 10 < 7
                   OR a.total_bytes IN (
-                      SELECT total_bytes FROM weirvern.v_flows_window
-                      WHERE window_start BETWEEN '{s}' AND '{e}'
+                      SELECT total_bytes FROM (
+                          SELECT window_start, src_addr, sumMerge(total_bytes) AS total_bytes
+                          FROM weirvern.flows_window
+                          WHERE window_start BETWEEN '{s}' AND '{e}'
+                          GROUP BY window_start, src_addr)
                       ORDER BY total_bytes DESC LIMIT {int(self.cfg.if_extremes)})
                   OR coalesce(d.unique_dst_ports, 0) IN (
                       SELECT unique_dst_ports FROM weirvern.flows_aggregated_diversity
@@ -387,7 +391,7 @@ class DBSCANDetector(BaseDetector):
                 coalesce(t.activity_regularity, 1.0),
                 coalesce(t.burstiness, 1.0),
 {zeek_cols}
-            FROM weirvern.v_flows_window a
+            FROM {flow_windows.folded("window_start BETWEEN '{s}' AND '{e}'")}
             LEFT JOIN weirvern.flows_aggregated_diversity d
                 ON a.window_start = d.window_start AND a.src_addr = d.src_addr
             LEFT JOIN weirvern.flows_aggregated_temporal t
@@ -645,7 +649,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                 sqrt(varPop(coalesce(z.zeek_s0_ratio, 0)
                     * coalesce(z.zeek_conn_count, 0)))                  AS zeek_s0_count_sd,
                 sqrt(varPop(coalesce(z.zeek_notice_count, 0)))          AS zeek_notice_sd
-            FROM weirvern.v_flows_window a
+            FROM {flow_windows.folded("window_start BETWEEN '{s}' AND '{e}'")}
             {zeek_join}
             WHERE a.window_start BETWEEN '{s}' AND '{e}'{excl}{scope_filter}
             GROUP BY a.src_addr
@@ -707,7 +711,7 @@ class AdaptiveBaselineDetector(BaseDetector):
                     avg(coalesce(t.activity_regularity, 1)), sqrt(varPop(coalesce(t.activity_regularity, 1))),
                     avg(coalesce(t.burstiness, 1)), sqrt(varPop(coalesce(t.burstiness, 1))),
                     count(d.window_start) AS div_n, count(t.window_start) AS temp_n
-                FROM weirvern.v_flows_window a
+                FROM {flow_windows.folded("window_start BETWEEN '{s}' AND '{e}'")}
                 LEFT JOIN weirvern.flows_aggregated_diversity d
                     ON d.window_start = a.window_start AND d.src_addr = a.src_addr
                 LEFT JOIN weirvern.flows_aggregated_temporal t

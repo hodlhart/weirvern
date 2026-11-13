@@ -77,45 +77,17 @@ SELECT
 FROM weirvern.flows
 GROUP BY window_start, src_addr;
 
--- The read shape every consumer uses. Training, scoring, the signature path and the
--- evaluation harness all read this, so there is exactly one definition of a window and
--- nobody has to remember `sumMerge` at each call site.
--- The read shape every consumer uses. Training, scoring, the signature path and the
--- evaluation harness all read this, so there is exactly one definition of a window and
--- nobody has to remember `sumMerge` at each call site.
+-- NO READ VIEW. This was tried and was the bug.
 --
--- THE MERGE LIVES IN A SUBQUERY, and that is not stylistic. When a query over an
--- AggregatingMergeTree contains a GROUP BY, ClickHouse merges the state columns itself
--- and then rejects an explicit `-Merge` combinator on the already-merged result with
--- "Illegal type UInt64 of argument for aggregate function with Merge suffix". Isolating
--- the merge in a derived table leaves the outer select working on plain columns, which
--- is unambiguous and survives whatever the analyzer decides to do.
+-- A view containing `GROUP BY` forces ClickHouse to materialise the entire grouped
+-- table before an outer `WHERE` can filter. On 2026-11-12 a five-minute sweep through
+-- such a view asked for the whole retained history and the worker was OOMKilled three
+-- times at a 4 GiB limit.
 --
--- Also note `CREATE VIEW`, not `CREATE OR REPLACE VIEW`: the latter re-analyses an
--- existing view in place and hits the same combinator error.
-DROP VIEW IF EXISTS weirvern.v_flows_window;
-
-CREATE VIEW weirvern.v_flows_window AS
-SELECT
-    m.window_start,
-    m.window_start + INTERVAL 5 MINUTE          AS window_end,
-    m.src_addr,
-    m.flow_count,
-    m.total_bytes,
-    m.total_packets,
-    m.unique_dst_ips,
-    m.total_bytes / greatest(m.flow_count, 1)   AS avg_bytes,
-    m.total_packets / greatest(m.flow_count, 1) AS avg_packets,
-    m.updated_at
-FROM (
-    SELECT
-        window_start,
-        src_addr,
-        countMerge(flow_count)    AS flow_count,
-        sumMerge(total_bytes)     AS total_bytes,
-        sumMerge(total_packets)   AS total_packets,
-        uniqMerge(unique_dst_ips) AS unique_dst_ips,
-        max(updated_at)           AS updated_at
-    FROM weirvern.flows_window
-    GROUP BY window_start, src_addr
-) AS m;
+-- Readers instead splice the merge in with the time predicate beside it, through
+-- `weirvern/flow_windows.py:folded()`, so part pruning still applies. That module is
+-- the single definition of a folded host-window.
+--
+-- The two rules for anyone touching this table:
+--   1. Use `-Merge` combinators. The columns are states, not values.
+--   2. Put the window predicate in the SAME select as the merge, never outside a view.

@@ -1694,10 +1694,14 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
         # DBSCAN 0.7178 in one and 0.6487 in the other for the same host -- a detection flipped out
         # by a tie. An ORDER BY makes the read reproducible within a run and across runs; the fold
         # below still does the arithmetic.
-        "SELECT * FROM weirvern.v_flows_window WHERE window_start >= %(since)s AND "
+        "SELECT window_start, window_start + INTERVAL 5 MINUTE AS window_end, src_addr, "
+        "countMerge(flow_count) AS flow_count, sumMerge(total_bytes) AS total_bytes, "
+        "sumMerge(total_packets) AS total_packets, uniqMerge(unique_dst_ips) AS unique_dst_ips "
+        "FROM weirvern.flows_window WHERE window_start >= %(since)s AND "
         # The models learn about HOSTS. A window keyed on ff02::2 would train the baseline on a
         # multicast group's "behaviour" (see weirvern/addressing.py for the measurement).
         + addressing.sql_host("src_addr") + " "
+        + "GROUP BY window_start, src_addr "
         "ORDER BY window_start, src_addr",
         since=since,
     )
