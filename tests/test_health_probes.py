@@ -186,15 +186,19 @@ def test_every_probe_carries_a_detail_string():
 # The evidence is written per cycle by two independent paths: `baseline_history.computed_at` (the
 # baseline detector's train) and `near_misses.replaced_at` (the sweep scoring a host-window).
 
-def _loop_probe(base, near, **settings_kw):
+def _loop_probe(scoring, training, **settings_kw):
     """The `detect_loop` probe for a given pair of (count, age) readings.
 
-    `base`/`near` are tuples shaped like the probe's SQL result: (count, age_seconds), or None for
-    "the query returned nothing at all".
+    `scoring` comes from `ml_window_scores` -- every scored host-window, before the threshold.
+    `training` comes from `baseline_history` -- the baseline detector's train().
+
+    THEY ARE DIFFERENT FACTS, and the probe used to pass if EITHER was fresh. Training keeps its
+    own schedule, so it stayed fresh through a sixteen-hour scoring outage and the green verdict
+    was wrong. The scoring age is the verdict; the training age is evidence.
     """
     by_fragment = {
-        "FROM weirvern.baseline_history": [base] if base is not None else [],
-        "FROM weirvern.near_misses": [near] if near is not None else [],
+        "FROM weirvern.ml_window_scores": [scoring] if scoring is not None else [],
+        "FROM weirvern.baseline_history": [training] if training is not None else [],
     }
     return _probe("detect_loop", by_fragment=by_fragment, **settings_kw)
 
@@ -209,19 +213,48 @@ def test_a_STOPPED_loop_is_not_ok():
     """THE DEFECT THIS PROBE EXISTS FOR: the loop stopped and nothing noticed."""
     p = _loop_probe((216, 7200), (329, 7200))
     assert p is not None and p.ok is False, f"a 2h-stale loop must not be ok: {p.detail!r}"
-    assert "stopped" in str(p.detail).lower()
+    assert "NOTHING SCORED" in str(p.detail), f"the detail must name the fault: {p.detail!r}"
 
 
-def test_EITHER_signal_being_fresh_is_enough():
-    """A single signal going quiet for a BENIGN reason must not read as a stopped loop --
-    nothing may score in a window, or the baseline may lack samples. The loop ran if either ran."""
-    assert _loop_probe((216, 99999), (1, 30)).ok is True
-    assert _loop_probe((1, 30), (329, 99999)).ok is True
+def test_TRAINING_being_fresh_does_NOT_excuse_scoring_being_stale():
+    """THE LIVE OUTAGE, inverted (2026-11-12).
+
+    This test used to be called `test_EITHER_signal_being_fresh_is_enough` and asserted the
+    opposite. Its stated reason was that a single signal can go quiet for a benign cause: nothing
+    scores in a window, or the baseline lacks samples. That was true of `near_misses`, which only
+    moves when something scores ABNORMALLY -- but the fix widened the check until the healthiest
+    signal decided the verdict, and that is what hid sixteen hours of dark detection: training ran
+    the whole time, so the freshest age was minutes old while nothing was scored at all.
+    """
+    p = _loop_probe((216, 99999), (329, 30))
+    assert p is not None and p.ok is False, (
+        "training being fresh must not excuse scoring being stale -- that is exactly the state "
+        f"the live box sat in for 16 hours. Got ok={p.ok}, detail={p.detail!r}"
+    )
+
+
+def test_scoring_fresh_with_lagging_training_is_ok():
+    """The converse, and it is not symmetry for its own sake: scoring is the product. A baseline
+    that is due for retraining while windows are still being scored is a maintenance note, not an
+    outage, and calling it one would train the operator to ignore the probe."""
+    p = _loop_probe((216, 30), (329, 99999))
+    assert p is not None and p.ok is True, f"{p.detail!r}"
 
 
 def test_BOTH_signals_stale_is_not_ok():
     """The converse, so the either/or above cannot be satisfied by weakening this."""
     assert _loop_probe((216, 99999), (329, 99999)).ok is False
+
+
+def test_training_running_but_NEVER_scored_is_named_as_its_own_fault():
+    """A loop that trains and never scores is not "never ran" -- something IS running, and saying
+    "the loop has never run" would send the next person to the wrong place."""
+    p = _loop_probe(None, (329, 40))
+    assert p is not None and p.ok is False
+    assert "NOTHING HAS EVER BEEN SCORED" in str(p.detail), f"{p.detail!r}"
+    assert "monitored network scope" in str(p.detail), (
+        "the one benign cause must be named, or this reads as a code fault every time"
+    )
 
 
 def test_an_EMPTY_table_reads_as_NEVER_RAN_not_as_stale():
@@ -253,7 +286,7 @@ def test_the_probe_NAMES_its_evidence():
     """An operator reading ok=False needs to know which signal it judged, and a green verdict
     should be auditable after the fact."""
     p = _loop_probe((216, 120), (329, 200))
-    assert "baseline" in str(p.detail) and "scores" in str(p.detail), f"{p.detail!r}"
+    assert "scored" in str(p.detail) and "trained" in str(p.detail), f"{p.detail!r}"
 
 
 def test_a_broken_query_does_not_produce_a_false_verdict():
@@ -271,7 +304,7 @@ def test_a_broken_query_does_not_produce_a_false_verdict():
     """
     class _SelectivelyExploding(_StubClient):
         def query(self, sql, *a, **kw):
-            if "baseline_history" in sql or "near_misses" in sql:
+            if "ml_window_scores" in sql or "baseline_history" in sql:
                 raise RuntimeError("clickhouse is unreachable")
             return super().query(sql, *a, **kw)
 
