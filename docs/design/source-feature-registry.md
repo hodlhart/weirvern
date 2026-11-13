@@ -32,6 +32,7 @@ blocklist_sources | excluded
 dns_reverse_map | join-only
 fleet_audit | excluded
 flows | join-only
+flows_window | feature-now
 flows_aggregated | feature-now
 flows_aggregated_diversity | feature-now
 flows_aggregated_temporal | feature-now
@@ -102,6 +103,17 @@ to a model: a single flow is not a host-window, and the raw addresses are join k
 | `src_addr`, `dst_addr`, `src_port`, `dst_port`, `proto`, `etype` | join-only | entity/edge keys; aggregate before any feature |
 | `bytes`, `packets`, `tcp_flags`, `sampling_rate` | feature-planned | raw-flow/scan specialist; sampling confidence |
 | `src_as`, `dst_as`, `src_vlan`, `dst_vlan`, `ip_tos`, `ip_ttl`, `frag_offset` | feature-planned | AS/VLAN context, fragmentation, TTL anomalies |
+
+### `flows_window`
+
+The folded per-host-window table the ML path reads: one row per (window, src_addr)
+by construction, an AggregatingMergeTree holding partial aggregate states that the
+engine merges on the sorting key. It supersedes `flows_aggregated` as the models'
+input because that table holds one row per insert block, so a reader summing its
+cardinality column over-counts any destination seen from two blocks. Measured
+2026-11-12: 251 destinations per window summed against 2.11 true.
+Read it with `-Merge` combinators and the window predicate in the same select;
+`weirvern/flow_windows.py:folded()` is the single definition.
 
 ### `flows_aggregated`
 

@@ -1065,7 +1065,9 @@ def test_the_sweeps_aggregate_reads_are_ORDERED():
     storage engine's, not the code's.
     """
     src = (ROOT / "weirvern" / "worker.py").read_text()
-    for table in ("flows_aggregated", "flows_aggregated_diversity", "flows_aggregated_temporal"):
+    # `flows_aggregated` is no longer read by the sweep: the folded table replaced it,
+    # so a duplicated insert-block key cannot reach a model at all.
+    for table in ("flows_window", "flows_aggregated_diversity", "flows_aggregated_temporal"):
         needle = f"FROM weirvern.{table} WHERE window_start >= %(since)s"
         i = src.index(needle)
         assert "ORDER BY window_start, src_addr" in src[i:i + 520], (

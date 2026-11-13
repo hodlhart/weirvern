@@ -109,6 +109,8 @@ def test_the_models_input_excludes_non_hosts_too():
     the baseline on something that is not a host."""
     src = (addressing.__file__.rsplit("weirvern/", 1)[0] + "weirvern/worker.py")
     text = Path(src).read_text()
-    for table in ("flows_aggregated", "flows_aggregated_diversity", "flows_aggregated_temporal"):
+    # `flows_aggregated` is no longer read by the sweep: the folded table replaced it,
+    # so a duplicated insert-block key cannot reach a model at all.
+    for table in ("flows_window", "flows_aggregated_diversity", "flows_aggregated_temporal"):
         i = text.index(f"FROM weirvern.{table} WHERE window_start >= %(since)s AND")
         assert 'addressing.sql_host("src_addr")' in text[i:i + 500], table
