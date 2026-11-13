@@ -1918,8 +1918,16 @@ def _run_intercept(args: argparse.Namespace, runner, plan, ic_mod) -> int:
         stack.close()
 
     st = runner.status()
-    print(f"\n  restored. watchdog: {st['watchdog_restores']} restore(s), "
-          f"{st['watchdog_refreshes']} refresh(es)")
+    # "restored." IS A CLAIM ABOUT THE SEGMENT (WV1-27). It was printed unconditionally, so a
+    # teardown whose restore frames all failed still told the operator the network was clean.
+    _restored = int(st.get("watchdog_restores") or 0)
+    _attempted = int(st.get("watchdog_restore_attempted") or 0)
+    if _restored or not _attempted:
+        print(f"\n  restored. watchdog: {_restored} restore(s), "
+              f"{st['watchdog_refreshes']} refresh(es)")
+    else:
+        _warn(f"NOT RESTORED: 0 of {_attempted} ARP mapping(s) could be sent. Hosts may still "
+              f"treat this box as their gateway until their ARP entries expire.")
     # The deadline firing is the orphaned-session case: no signal arrived, no caller asked
     # for the stop, and the mappings were withdrawn anyway. It must not read like a normal end.
     if st.get("deadline_reached"):

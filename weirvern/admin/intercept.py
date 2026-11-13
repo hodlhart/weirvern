@@ -866,7 +866,19 @@ class Intercept:
         and worse problem than a rule that cannot be deleted, and one must not skip the other.
         """
         if self.watchdog is not None:
-            self.watchdog.stop()
+            # THE RETURN IS READ (WV1-27). Its two neighbours here -- remove_forwarding_path below
+            # and _sysctls.restore() after it -- were both fixed to read their results; the
+            # watchdog was the one that restores the forged ARP mappings, and it was the one whose
+            # outcome nobody looked at. The watchdog logs the detail; this warns once, here, because
+            # a caller reading teardown output should not have to parse another module's log lines.
+            restored = self.watchdog.stop()
+            if restored == 0 and getattr(self.watchdog, "restore_attempted", 0):
+                logger.warning(
+                    "NO ARP mapping was restored on %s: every restore frame failed to send, so "
+                    "host(s) still believe this box is their gateway. Their entries expire on their "
+                    "own, but until then traffic may be relayed or dropped. Do not report this "
+                    "segment as clean.", self.plan.iface,
+                )
         # The policy rule must go too: left behind, it sends ALL traffic arriving on this
         # interface to a table that has no routes once the address is removed, which would
         # break traffic the operator never asked us to touch.
@@ -1030,6 +1042,8 @@ class Intercept:
             "running": self.active,
             "uptime_s": round(time.time() - self.started_at, 1) if self.started_at else 0.0,
             "watchdog_restores": self.watchdog.restored_count if self.watchdog else 0,
+            "watchdog_restore_attempted": (self.watchdog.restore_attempted
+                                           if self.watchdog else 0),
             "watchdog_refreshes": self.watchdog.refresh_count if self.watchdog else 0,
             "watchdog_failures": list(self.watchdog.failures) if self.watchdog else [],
             "watchdog_failures_overflow": self.watchdog.failures_overflow if self.watchdog else 0,
