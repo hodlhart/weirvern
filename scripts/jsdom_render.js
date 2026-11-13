@@ -4263,6 +4263,31 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     H.clearGetCache();
   }
 
+  // ── ROW OPENERS ARE KEYBOARD REACHABLE (WV1-10) ─────────────────────────────────────────────
+  //
+  // `tr.clickable` opens a hit's detail or a DNS row's answers. `.clickable` had no keyboard
+  // handler anywhere in weirvern/admin/web (zero hits for a keydown reaching it) and a <tr> is not
+  // focusable, so reviewing a hit without a mouse was impossible. The filter cells INSIDE those
+  // rows were already handled by markFilterCells, which is why the gap survived: the row looked
+  // wired in exactly the way a reviewer would check.
+  {
+    H.clearGetCache();
+    fetchOverride = null;
+    await H.loadDns();
+    const row = doc.querySelector("#dn-rows tr.clickable") || doc.querySelector("tr.clickable");
+
+    check("a DNS row opener carries a tabindex", !!row && row.getAttribute("tabindex") === "0",
+          row ? `tabindex=${JSON.stringify(row.getAttribute("tabindex"))}` : "no .clickable row");
+
+    let fired = 0;
+    if (row) {
+      row.addEventListener("click", () => { fired += 1; });
+      row.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    check("...and Enter activates it, once", fired === 1, `clicks=${fired}`);
+  }
+
   {
     // DIAGNOSTIC: is the harness router still the live window.fetch, and does it consult
     // fetchOverride? If a block restored an older reference, later overrides are never read.

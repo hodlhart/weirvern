@@ -4202,6 +4202,24 @@ function markFilterCells() {
     const title = cell.getAttribute("title");
     if (title && !cell.getAttribute("aria-label")) cell.setAttribute("aria-label", title);
   }
+  // ── ROW OPENERS TOO (WV1-10) ──────────────────────────────────────────────────────────────
+  //
+  // `tr.clickable` opens a hit's detail or a DNS row's answers, and there was no keyboard path to
+  // it anywhere in this directory: `.clickable` had no handler and a <tr> is not focusable, so
+  // reviewing a hit without a mouse was impossible. The filter cells INSIDE those rows were already
+  // fine, which is why the gap survived review -- the row looked wired.
+  //
+  // Deliberately NOT role="button": a <tr> is a table row, and overriding that role breaks table
+  // navigation for a screen reader (row and column counts, cell reading). `tabindex` plus the
+  // delegated Enter/Space in filterCellWiring makes it reachable and operable while leaving the
+  // semantics alone. The better long-term shape is a real <button> in the first cell, the way the
+  // Sluice rule rows do it; that is a per-view change, and this covers every row that exists now.
+  for (const row of document.querySelectorAll("tr.clickable:not([data-kb])")) {
+    row.dataset.kb = "1";
+    row.setAttribute("tabindex", "0");
+    const rowTitle = row.getAttribute("title");
+    if (rowTitle && !row.getAttribute("aria-label")) row.setAttribute("aria-label", rowTitle);
+  }
 }
 
 function filterCellWiring() {
@@ -4216,11 +4234,19 @@ function filterCellWiring() {
     queueMicrotask(() => { queued = false; markFilterCells(); });
   }).observe(main, { childList: true, subtree: true });
   document.addEventListener("keydown", (e) => {
-    const cell = e.target && e.target.closest ? e.target.closest(".dcell") : null;
-    if (!cell) return;
-    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    if (!(e.key === "Enter" || e.key === " " || e.key === "Spacebar")) return;
+    if (!(e.target && e.target.closest)) return;
+    // A filter cell first, then a row opener. Both are activated the same way.
+    const cell = e.target.closest(".dcell");
+    if (cell) {
       e.preventDefault();
       cell.click();
+      return;
+    }
+    const row = e.target.closest("tr.clickable");
+    if (row) {
+      e.preventDefault();
+      row.click();
     }
   });
 }
