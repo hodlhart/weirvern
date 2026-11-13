@@ -1758,7 +1758,8 @@ function renderAssetChanges() {
       `${cov.observations} observations across ${cov.observed_assets} hosts in this window; ` +
       `last scan ${scanAge}.`;
   } else {
-    coverage.textContent = `Coverage unavailable: ${cov.reason || "the scanner did not report a baseline"}.`;
+    coverage.textContent = `Coverage unavailable: ` +
+      `${cov.reason || "the scanner did not report a baseline"}.`;
   }
   summary.textContent = rows.length
     ? `${rows.length} in the window`
