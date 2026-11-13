@@ -10,8 +10,17 @@
 #   weirvern-agent-<id>     the heartbeat: observes the capture's logs, writes sensor_status
 #   /usr/local/bin/weirvern-weirling   status / start / stop, ON the target
 #
-# THE MANAGEMENT NIC IS NEVER A CAPTURE PORT (Samuel's standing rule): the target's
-# default-route interface is REFUSED, not warned about, on both sides of the wire.
+# PREFER AN INDEPENDENT CAPTURE PORT; SUPPORT A SINGLE-NIC HOST. With no --iface the first
+# port that is up, physical, not loopback and not the default route is chosen. A host with one
+# NIC has no such port, so --allow-management-nic nominates the management NIC instead and the
+# unit starts DEGRADED: it sees only that host's own traffic, not the segment, and on wireless
+# not even other stations' frames. The cost is printed at deploy time and at every start.
+#
+# THE MANAGEMENT NIC IS STILL THE WRONG PLACE TO CAPTURE, and it is still the wrong place to
+# ENFORCE, which is a harder rule: capture is a read, enforcement on the box's own uplink takes
+# the box out of the network. --gate therefore REFUSES the management NIC unconditionally, and
+# its check does not consult --allow-management-nic. --gate combined with --allow-management-nic
+# is refused outright on a single-NIC host.
 #
 # IT DOES NOT REGISTER THE SENSOR. Registration is an operator's declaration in the Weirlings
 # view ("who is this and whose is it"); the row appears as UNREGISTERED until someone says so.
@@ -30,7 +39,11 @@
 #
 #   --hub         ssh destination of the weirvern hub (images, ClickHouse, the site policy)
 #   --target      ssh destination of the new sensor box; "local" = this machine
-#   --iface       the DEDICATED capture port on the target (never its management NIC)
+#   --iface       the capture port on the target. OMIT IT to let the script prefer the first
+#                 up, physical port that is not the management NIC
+#   --allow-management-nic  accept the target's management NIC as the capture port, for a host
+#                 with only one NIC. The unit starts DEGRADED (host traffic only). Refused in
+#                 combination with --gate
 #   --sensor-id   the fleet identity this weirling reports under ([a-z0-9-], max 64)
 #   --expose      allow patching clickhouse-external to a NodePort when the target is not
 #                 the hub (needed for the agent to reach the database)
@@ -70,6 +83,7 @@ IFACE=""
 SENSOR_ID=""
 SEGMENT=""
 EXPOSE=0
+ALLOW_MGMT=0
 GATE=0
 GATE_IFACE=""
 NETFLOW=0
@@ -94,6 +108,7 @@ while [ $# -gt 0 ]; do
         --sensor-id) SENSOR_ID="${2:?--sensor-id needs a value}"; shift 2 ;;
         --segment) SEGMENT="${2:?--segment needs a value}"; shift 2 ;;
         --expose) EXPOSE=1; shift ;;
+        --allow-management-nic) ALLOW_MGMT=1; shift ;;
         --gate) GATE=1; shift ;;
         --netflow) NETFLOW=1; shift ;;
         --mtls) MTLS=1; shift ;;
@@ -114,7 +129,6 @@ done
 [ -n "$TARGET" ] || die "--target is required (or \"local\")"
 if [ "$REMOVE" = "0" ]; then
     [ -n "$HUB" ] || die "--hub is required for an install (images, ClickHouse, the site policy)"
-    [ -n "$IFACE" ] || die "--iface is required -- which DEDICATED port does this weirling capture?"
     [ -n "$SENSOR_ID" ] || die "--sensor-id is required -- it is the fleet identity"
 fi
 
@@ -205,11 +219,58 @@ if [ -z "$DEFROUTE" ]; then
     # path must not start. The operator can name the port and re-run once `ip route` works.
     die "could not determine the target's default-route interface; refusing to guess (is iproute2 installed?)"
 fi
+# ── PREFER AN INDEPENDENT PORT; SUPPORT A SINGLE-NIC HOST ─────────────────────────────────────
+#
+# A host with one NIC has no dedicated port, and a sensor that will not start there is not a
+# sensor. The preference is expressed as SELECTION: with no --iface, take the first port that is
+# up, physical, not loopback and not the management NIC. Only if there is no such port does the
+# management NIC become a candidate, and then only with --allow-management-nic.
+#
+# THE GATE IS DELIBERATELY NOT RELAXED WITH IT. Capturing on the management NIC is a read.
+# Enforcing there is the box's own uplink, so it takes out the machine doing the blocking. The
+# gate keeps its unconditional refusal further down, and it does not consult $ALLOW_MGMT.
+if [ -z "$IFACE" ]; then
+    IFACE="$(rsh "$TARGET" "for d in /sys/class/net/*; do \
+        n=\${d##*/}; \
+        [ \"\$n\" = lo ] && continue; \
+        [ \"\$n\" = '$DEFROUTE' ] && continue; \
+        [ \"\$(cat \"\$d/operstate\" 2>/dev/null)\" = up ] || continue; \
+        [ -e \"\$d/device\" ] || continue; \
+        echo \"\$n\"; break; done" | tr -d '\r')"
+    if [ -n "$IFACE" ]; then
+        say "  no --iface given; chose '$IFACE' (up, physical, not the management port)"
+    fi
+fi
+
+if [ -z "$IFACE" ]; then
+    if [ "$ALLOW_MGMT" = "1" ]; then
+        IFACE="$DEFROUTE"
+        say "  no independent port exists on $TARGET; using the management NIC '$IFACE' as allowed"
+    else
+        die "no independent capture port on $TARGET -- '$DEFROUTE' is the management NIC and is \
+not used for capture by default. Name a port with --iface, or, if this host has only one NIC, \
+pass --allow-management-nic to accept a DEGRADED sensor that sees only its own traffic."
+    fi
+fi
+
 if [ "$IFACE" = "$DEFROUTE" ]; then
-    die "REFUSING: '$IFACE' is the target's management NIC (default route). Use a dedicated capture port."
+    if [ "$ALLOW_MGMT" != "1" ]; then
+        die "REFUSING: '$IFACE' is the target's management NIC (default route). Use a dedicated \
+capture port, or pass --allow-management-nic if this host has only one NIC."
+    fi
+    if [ "$GATE" = "1" ]; then
+        die "--gate cannot be combined with --allow-management-nic: capturing on the management \
+NIC is a read, but ENFORCING on it is this box's own uplink. Point the gate at the interface \
+traffic traverses, or leave the gate off this unit."
+    fi
+    say "  !! capture port: $IFACE is the MANAGEMENT NIC -- DEGRADED sensor (accepted explicitly)"
+    say "     it sees only this host's own traffic plus broadcast/multicast, not the segment"
+    say "     on wireless it does not even see other stations' frames"
+    say "     its logs are host telemetry: they include the DNS names and peers this box uses"
+else
+    say "  capture port: $IFACE (target's management port is $DEFROUTE -- untouched)"
 fi
 case "$IFACE" in lo) die "REFUSING: 'lo' is the loopback interface" ;; esac
-say "  capture port: $IFACE (target's management port is $DEFROUTE -- untouched)"
 
 if [ "$INLINE" = "1" ]; then
     # INLINE IS A TOPOLOGY, NOT A MODE. The bridge must already exist and have exactly two
@@ -407,7 +468,7 @@ rsh "$TARGET" "cat > /usr/local/bin/weirvern-weirling && chmod 0755 /usr/local/b
 #!/bin/sh
 # weirvern-weirling -- generated by deploy-weirling.sh for identity "$SENSOR_ID" ($IFACE).
 set -eu
-ID='$SENSOR_ID'; IFACE='$IFACE'; MGMT='$DEFROUTE'
+ID='$SENSOR_ID'; IFACE='$IFACE'; MGMT='$DEFROUTE'; ALLOW_MGMT='$ALLOW_MGMT'
 ZEEK_IMG='$ZEEK_IMG'; WORKER_IMG='$WORKER_IMG'
 NETFLOW='$NETFLOW'; GOFLOW_IMG='netsampler/goflow2:v2.2.6'
 LOGDIR=/var/lib/weirvern-weirling/logs; FLOWDIR=/var/lib/weirvern-weirling/flows
@@ -427,7 +488,14 @@ case "\${1:-status}" in
   start)
     NOW="\$(ip route show default 2>/dev/null | sed -n 's/.*dev \\([^ ]*\\).*/\\1/p' | head -1)"
     if [ "\$IFACE" = "\$MGMT" ] || [ "\$IFACE" = "\$NOW" ]; then
-      echo "weirvern-weirling: REFUSING to capture on '\$IFACE' -- management NIC" >&2; exit 1
+      if [ "\$ALLOW_MGMT" != "1" ]; then
+        echo "weirvern-weirling: REFUSING to capture on '\$IFACE' -- management NIC." >&2
+        echo "  This host has only one NIC? Reinstall with --allow-management-nic to accept a" >&2
+        echo "  DEGRADED sensor that sees only its own traffic." >&2
+        exit 1
+      fi
+      echo "weirvern-weirling: capturing on the MANAGEMENT NIC '\$IFACE' -- DEGRADED, accepted." >&2
+      echo "  Sees this host's own traffic only. Not the segment. Not other stations." >&2
     fi
     docker rm -f "weirvern-capture-\$ID" "weirvern-agent-\$ID" "weirvern-gate-\$ID" "weirvern-netflow-\$ID" >/dev/null 2>&1 || true
     # TRUNK IS THE DEFAULT, NOT A MODE. Sonar's observation is run before capture starts:

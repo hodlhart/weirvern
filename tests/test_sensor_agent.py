@@ -89,6 +89,69 @@ def test_a_port_that_does_not_exist_is_refused(monkeypatch):
     assert "does not exist" in str(e.value)
 
 
+# ── PREFER AN INDEPENDENT PORT, SUPPORT A SINGLE-NIC HOST (2026-11-12) ────────────────────────
+#
+# The rule was an unconditional refusal, and on a laptop with one NIC that means no sensor at
+# all. The refusal now has one explicit way past it, and the three tests below pin the shape of
+# that permission: it must be opt-in, it must name itself in the refusal, and the cost must be
+# stated rather than discovered later from a thin dashboard.
+
+def test_the_refusal_TELLS_you_how_to_accept_a_single_NIC_host(monkeypatch):
+    """A refusal that does not name its own escape hatch is a dead end. An operator with one
+    NIC needs to be told the flag exists, in the refusal, not by reading the source."""
+    monkeypatch.setattr("weirvern.admin.interfaces.probe_local", lambda *a, **k: _probe())
+    monkeypatch.delenv("ZEEK_ALLOW_MGMT_IFACE", raising=False)
+    with pytest.raises(SystemExit) as e:
+        sensor_agent.capture_port_check("eth0")
+    assert "--allow-management-nic" in str(e.value), (
+        f"the refusal must name the opt-in for a single-NIC host: {e.value}"
+    )
+
+
+def test_the_management_nic_is_ACCEPTED_when_explicitly_allowed(monkeypatch, caplog):
+    """Allowed means allowed -- and loud. The sensor starts, and says exactly what it will not
+    see, because a single-NIC weirling is a different instrument from a SPAN-fed one."""
+    import logging
+
+    monkeypatch.setattr("weirvern.admin.interfaces.probe_local", lambda *a, **k: _probe())
+    with caplog.at_level(logging.WARNING):
+        assert sensor_agent.capture_port_check("eth0", allow_management=True) == "eth0"
+
+    text = caplog.text
+    assert "DEGRADED" in text, f"the acceptance must be marked degraded: {text!r}"
+    assert "THIS HOST" in text, "it must say the sensor sees only this host's traffic"
+    assert "wireless" in text, "the wireless caveat is the one that silently yields nothing"
+    assert "gate" in text.lower(), (
+        "it must warn that enforcement is unaffected by this flag, or the next person will "
+        "assume the permission generalises to blocking on the uplink"
+    )
+
+
+def test_the_permission_can_come_from_the_environment(monkeypatch):
+    """The deploy script passes the decision through the container environment, so the env var
+    is the operator's permission at run time. Both spellings of "on" must work."""
+    monkeypatch.setattr("weirvern.admin.interfaces.probe_local", lambda *a, **k: _probe())
+    for value in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("ZEEK_ALLOW_MGMT_IFACE", value)
+        assert sensor_agent.capture_port_check("eth0") == "eth0", f"{value!r} should permit"
+    for value in ("0", "", "no", "off"):
+        monkeypatch.setenv("ZEEK_ALLOW_MGMT_IFACE", value)
+        with pytest.raises(SystemExit):
+            sensor_agent.capture_port_check("eth0")
+
+
+def test_an_INDEPENDENT_port_is_never_treated_as_degraded(monkeypatch, caplog):
+    """The preference half. A dedicated port must not carry the management warnings, or every
+    correctly-deployed sensor will report itself degraded and the warning becomes noise."""
+    import logging
+
+    monkeypatch.setattr("weirvern.admin.interfaces.probe_local", lambda *a, **k: _probe())
+    monkeypatch.delenv("ZEEK_ALLOW_MGMT_IFACE", raising=False)
+    with caplog.at_level(logging.WARNING):
+        assert sensor_agent.capture_port_check("eth2") == "eth2"
+    assert "DEGRADED" not in caplog.text, f"a dedicated port must not read as degraded: {caplog.text!r}"
+
+
 def test_a_failed_probe_refuses_rather_than_permits(monkeypatch):
     from weirvern.admin.interfaces import ProbeResult
 
