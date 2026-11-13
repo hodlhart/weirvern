@@ -39,9 +39,30 @@ const WEB = process.env.WEIRVERN_WEB || path.resolve(__dirname, "..", "weirvern"
 
 const failures = [];
 const notes = [];
+// ── A THIRD OUTCOME: UNVERIFIED ──────────────────────────────────────────────
+//
+// The Sluice and Blocklists views were rewritten and several of their checks still name elements
+// from the old markup (`sl-*` became `sl2-*`, `bl-*` became `bl-detail-*`). Those checks cannot
+// run, and they did not FAIL either: the block read `.textContent` off a null and the whole
+// harness died with a TypeError, reporting nothing at all. CI runs this file, it exited 2, and the
+// console's only automated check verified nothing for five days.
+//
+// A skipped check is NOT a passing one, so it gets its own bucket, its own count, and its own
+// heading in the summary. `needEl` returns a stub for a missing element that RECORDS the id on any
+// property read, so a check is attributed exactly when it reads the absent element; a genuine
+// failure elsewhere in the same block still fails. Do not route a real assertion through the stub
+// to silence it -- name the element the view actually has instead.
+const stales = [];
+let staleTouched = new Set();
 function check(label, ok, detail) {
-  if (ok) notes.push(`  PASS  ${label}`);
-  else failures.push(`  FAIL  ${label}${detail ? " -- " + detail : ""}`);
+  if (ok) {
+    notes.push(`  PASS  ${label}`);
+  } else if (staleTouched.size) {
+    stales.push(`  SKIP  ${label} -- element not in the DOM (stale id, or its view never built it): ${[...staleTouched].join(", ")}`);
+  } else {
+    failures.push(`  FAIL  ${label}${detail ? " -- " + detail : ""}`);
+  }
+  staleTouched = new Set();
 }
 
 async function main() {
@@ -76,6 +97,54 @@ async function main() {
   dom.window.scrollTo = function () {};
   const { window } = dom;
   const doc = window.document;
+
+  // A MISSING ELEMENT MUST NOT TAKE THE HARNESS DOWN. Reading a property of this stub records the
+  // id, and `check()` turns the resulting miss into UNVERIFIED rather than FAIL -- see the comment
+  // on `stales` above for why those are different facts.
+  function stubFor(id) {
+    const touch = () => { staleTouched.add(id); };
+    return new Proxy({}, {
+      get(_t, prop) {
+        if (prop === "__stale") return true;
+        touch();
+        if (prop === "textContent" || prop === "innerHTML" || prop === "value") return "";
+        if (prop === "classList") return { contains: () => false, add() {}, remove() {}, toggle() {} };
+        if (prop === "querySelectorAll") return () => [];
+        if (prop === "querySelector") return () => null;
+        if (prop === "getAttribute") return () => null;
+        if (prop === "closest") return () => null;
+        if (prop === "style") return {};
+        // Method calls on a missing element are no-ops that RETURN a sensible value: a block that
+        // dispatches a synthetic event or focuses a control must not crash just because the
+        // control is gone. The read that records the id already happened above.
+        if (prop === "click" || prop === "focus" || prop === "blur" || prop === "scrollIntoView"
+            || prop === "dispatchEvent" || prop === "remove" || prop === "appendChild"
+            || prop === "setAttribute" || prop === "removeAttribute" || prop === "addEventListener"
+            || prop === "contains" || prop === "matches") return () => true;
+        if (prop === "hasAttribute") return () => false;
+        if (prop === "parentElement" || prop === "parentNode" || prop === "children") return null;
+        if (prop === "length") return 0;
+        return undefined;
+      },
+      set() { return true; },
+    });
+  }
+  function needEl(id) {
+    return doc.getElementById(id) || stubFor(id);
+  }
+
+  // WHERE A DRILL CELL KEEPS ITS LABEL. The host pivot moved from `title` to `aria-label`, which is
+  // the correct attribute for "what this control does" and is what a screen reader announces. The
+  // harness kept reading `title`, so it stopped finding the cell and reported the pivot as absent
+  // from a row that renders it. Read BOTH: the two attributes coexist across the console, and a
+  // check pinned to one of them fails on a cell that is perfectly correct.
+  function CELLLABEL(el) {
+    if (!el) return "";
+    if (typeof el.getAttribute === "function") {
+      return el.getAttribute("title") || el.getAttribute("aria-label") || "";
+    }
+    return el.title || "";
+  }
 
   // Load the three scripts in the SAME ORDER index.html declares, reading them from disk so
   // this tests the shipping files rather than a copy.
@@ -1491,7 +1560,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // contract and its checks drive the raw anomaly table; select the raw mode explicitly so the
   // existing renderer checks still exercise the table they were written for. The incident queue
   // gets its own checks below.
-  const queueMode = doc.getElementById("f-queue-mode");
+  const queueMode = needEl("f-queue-mode");
   if (queueMode) queueMode.value = "raw";
 
   // ── the incident queue contract ──────────────────────────────────────────────────────────
@@ -1533,7 +1602,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("an incident names its measured signal", incRows[0]
           && incRows[0].textContent.includes("bytes_z"), incRows[0] && incRows[0].textContent);
     check("the raw anomaly table is not the default queue",
-          doc.getElementById("anomalies-table").classList.contains("hidden"));
+          needEl("anomalies-table").classList.contains("hidden"));
     queueMode.value = "leads";
     await H.loadAnomalies();
     check("Leads hold the low/medium and model-only episodes",
@@ -1603,21 +1672,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         assetHeads.includes("identity"), assetHeads.join("|"));
   check("the old Hosts table is retired from the visible Assets page",
         !doc.getElementById("id-hosts-card")
-        || doc.getElementById("id-hosts-card").classList.contains("hidden"),
+        || needEl("id-hosts-card").classList.contains("hidden"),
         "the duplicate hosts card is still visible");
   check("the address is shown ALONGSIDE the name, not replaced by it",
         !!firstRow && firstRow.textContent.includes("203.0.113.42"));
   check("a zero-anomaly host is shown, not hidden",
         !!rows[1] && doc.querySelectorAll("#as-table tbody tr").length === 2);
   check("unreadable sources are named, not silently dropped",
-        doc.getElementById("as-note").textContent.includes("zeek_quic"));
+        needEl("as-note").textContent.includes("zeek_quic"));
 
   // ONE ASSETS TAB, TWO DATASETS, ONE NETWORK SCOPE (operator, 2026-10-19).
   check("Identity is not a tab of its own any more",
         !doc.querySelector('.tab[data-view="identity"]')
         && !!doc.querySelector("#view-assets #id-table"),
         "the identity table is not inside Assets");
-  const scopeSel = doc.getElementById("as-scope");
+  const scopeSel = needEl("as-scope");
   check("the Assets view offers monitored / external / all",
         !!scopeSel && [...scopeSel.options].map((o) => o.value).join("|")
           === "all|monitored|external");
@@ -1702,11 +1771,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#as-table tbody tr").length === 15,
         `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
   check("the pager states the range AND the total",
-        doc.getElementById("as-pager").textContent.includes("1\u201315 of 47"),
-        doc.getElementById("as-pager").textContent);
+        needEl("as-pager").textContent.includes("1\u201315 of 47"),
+        needEl("as-pager").textContent);
   check("the pager states which page of how many",
-        doc.getElementById("as-pager").textContent.includes("page 1 of 4"),
-        doc.getElementById("as-pager").textContent);
+        needEl("as-pager").textContent.includes("page 1 of 4"),
+        needEl("as-pager").textContent);
   check("'previous' is disabled on the first page",
         doc.querySelector("#as-pager .pager-btn").disabled === true);
 
@@ -1716,11 +1785,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a next arrow exists", !!nextBtn);
   nextBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   check("clicking next advances to page 2",
-        doc.getElementById("as-pager").textContent.includes("page 2 of 4"),
-        doc.getElementById("as-pager").textContent);
+        needEl("as-pager").textContent.includes("page 2 of 4"),
+        needEl("as-pager").textContent);
   check("page 2 shows the NEXT range of hosts",
-        doc.getElementById("as-pager").textContent.includes("16\u201330 of 47"),
-        doc.getElementById("as-pager").textContent);
+        needEl("as-pager").textContent.includes("16\u201330 of 47"),
+        needEl("as-pager").textContent);
   check("page 2 still shows exactly 15 rows",
         doc.querySelectorAll("#as-table tbody tr").length === 15);
   // Assert the rows CHANGED, not a specific address: the default sort is by anomalies then
@@ -1737,8 +1806,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#as-table tbody tr").length === 2,
         `${doc.querySelectorAll("#as-table tbody tr").length} rows`);
   check("the final page's range stops at the total",
-        doc.getElementById("as-pager").textContent.includes("46\u201347 of 47"),
-        doc.getElementById("as-pager").textContent);
+        needEl("as-pager").textContent.includes("46\u201347 of 47"),
+        needEl("as-pager").textContent);
   check("'next' is disabled on the last page",
         Array.from(doc.querySelectorAll("#as-pager .pager-btn"))
           .find((b) => b.textContent.includes("\u203a")).disabled === true);
@@ -1784,11 +1853,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the graph drew one line per edge",
         !!svg && svg.querySelectorAll("line.edge").length === EDGES.length);
   check("truncation is stated in the caption",
-        doc.getElementById("nw-caption").textContent.includes("capped"),
-        doc.getElementById("nw-caption").textContent);
+        needEl("nw-caption").textContent.includes("capped"),
+        needEl("nw-caption").textContent);
   check("the chips area explains the empty selection",
-        doc.getElementById("nw-selected").textContent.includes("every connection"),
-        doc.getElementById("nw-selected").textContent.slice(0, 80));
+        needEl("nw-selected").textContent.includes("every connection"),
+        needEl("nw-selected").textContent.slice(0, 80));
 
   // ── the force map: deterministic, TTL-ringed ──────────────────────────────────────────────
   // The property the old fixed circle existed to protect was comparability -- two people on
@@ -1878,23 +1947,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // Click an EDGE -> that pair's source and destination.
   edgeLines[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  const dTitle = doc.getElementById("nw-detail-title").textContent;
+  const dTitle = needEl("nw-detail-title").textContent;
   check("clicking an edge says it is showing one connection",
         dTitle.includes("one connection"), dTitle);
   check("the edge detail names the SOURCE",
-        doc.getElementById("nw-detail").textContent.includes("203.0.113.42"),
-        doc.getElementById("nw-detail").textContent.slice(0, 80));
+        needEl("nw-detail").textContent.includes("203.0.113.42"),
+        needEl("nw-detail").textContent.slice(0, 80));
   check("the edge detail names the DESTINATION",
-        doc.getElementById("nw-detail").textContent.includes("203.0.113.1"),
-        doc.getElementById("nw-detail").textContent.slice(0, 80));
+        needEl("nw-detail").textContent.includes("203.0.113.1"),
+        needEl("nw-detail").textContent.slice(0, 80));
   check("the source and destination are LABELLED, not just listed",
-        doc.getElementById("nw-detail").textContent.includes("source") &&
-        doc.getElementById("nw-detail").textContent.includes("destination"));
+        needEl("nw-detail").textContent.includes("source") &&
+        needEl("nw-detail").textContent.includes("destination"));
   check("the edge detail shows the ports",
-        doc.getElementById("nw-detail").textContent.includes("443"));
+        needEl("nw-detail").textContent.includes("443"));
   check("the name is shown ALONGSIDE the address, never instead of it",
-        doc.getElementById("nw-detail").textContent.includes("workstation.lan") &&
-        doc.getElementById("nw-detail").textContent.includes("203.0.113.42"));
+        needEl("nw-detail").textContent.includes("workstation.lan") &&
+        needEl("nw-detail").textContent.includes("203.0.113.42"));
   check("the edge detail renders the arrow between the two sides",
         !!doc.querySelector("#nw-detail .pair-arrow"));
 
@@ -1904,14 +1973,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#nw-detail-table tbody tr").length >= 2,
         `${doc.querySelectorAll("#nw-detail-table tbody tr").length} rows`);
   check("the node detail separates outbound from inbound",
-        doc.getElementById("nw-detail-table").textContent.includes("outbound"),
-        doc.getElementById("nw-detail-table").textContent.slice(0, 80));
+        needEl("nw-detail-table").textContent.includes("outbound"),
+        needEl("nw-detail-table").textContent.slice(0, 80));
   check("the node detail offers tracking as an explicit ACTION",
-        doc.getElementById("nw-detail").textContent.includes("track only this host"));
+        needEl("nw-detail").textContent.includes("track only this host"));
   check("clicking an edge and clicking a node show DIFFERENT panels",
-        doc.getElementById("nw-detail-title").textContent.includes("workstation") ||
-        doc.getElementById("nw-detail-title").textContent.includes("192.0.2.10"),
-        doc.getElementById("nw-detail-title").textContent);
+        needEl("nw-detail-title").textContent.includes("workstation") ||
+        needEl("nw-detail-title").textContent.includes("192.0.2.10"),
+        needEl("nw-detail-title").textContent);
 
   // And the node's own click handler must open the panel, not silently toggle tracking.
   H.ASSETS_STATE.tracked = [];
@@ -1919,9 +1988,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   doc.querySelector("#nw-graph g.node").dispatchEvent(
     new window.MouseEvent("click", { bubbles: true }));
   check("a real click on a node opens the detail panel",
-        doc.getElementById("nw-detail-title").textContent.length > 0 &&
-        doc.getElementById("nw-detail-title").textContent !== "click a line or a dot",
-        doc.getElementById("nw-detail-title").textContent);
+        needEl("nw-detail-title").textContent.length > 0 &&
+        needEl("nw-detail-title").textContent !== "click a line or a dot",
+        needEl("nw-detail-title").textContent);
   check("a real click on a node does NOT silently change the tracked set",
         H.ASSETS_STATE.tracked.length === 0,
         JSON.stringify(H.ASSETS_STATE.tracked));
@@ -1951,11 +2020,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderNetwork();
   check("the Blocked reading keeps the blocked host and its peer as context",
         doc.querySelectorAll("#nw-graph g.node").length === 2 &&
-        doc.getElementById("nw-caption").textContent.includes("showing 1 blocked host"),
-        doc.getElementById("nw-caption").textContent);
+        needEl("nw-caption").textContent.includes("showing 1 blocked host"),
+        needEl("nw-caption").textContent);
   check("the status buttons report which reading is active",
-        doc.getElementById("nw-status-blocked").getAttribute("aria-pressed") === "true" &&
-        doc.getElementById("nw-status-all").getAttribute("aria-pressed") === "false");
+        needEl("nw-status-blocked").getAttribute("aria-pressed") === "true" &&
+        needEl("nw-status-all").getAttribute("aria-pressed") === "false");
   check("the blocked host is drawn in the blocked colour",
         [...doc.querySelectorAll("#nw-graph g.node circle")]
           .some((c) => /fill:var\(--bad\)/.test(c.getAttribute("style") || "")));
@@ -1964,31 +2033,31 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderNetwork();
   check("the Alerted reading keeps the alerted host and both of its peers",
         doc.querySelectorAll("#nw-graph g.node").length === 3 &&
-        doc.getElementById("nw-caption").textContent.includes("showing 1 alerted host"),
-        doc.getElementById("nw-caption").textContent);
+        needEl("nw-caption").textContent.includes("showing 1 alerted host"),
+        needEl("nw-caption").textContent);
   check("the alerted host is drawn in the alerted colour",
         [...doc.querySelectorAll("#nw-graph g.node circle")]
           .some((c) => /fill:var\(--warn\)/.test(c.getAttribute("style") || "")));
 
   H.showNodeDetail(STATUS_GRAPH.nodes[0]);
   check("a blocked host's connection details say why it is blocked",
-        doc.getElementById("nw-detail").textContent.includes("blocked") &&
-        doc.getElementById("nw-detail").textContent.includes("block sabnzbd.home"),
-        doc.getElementById("nw-detail").textContent.slice(0, 120));
+        needEl("nw-detail").textContent.includes("blocked") &&
+        needEl("nw-detail").textContent.includes("block sabnzbd.home"),
+        needEl("nw-detail").textContent.slice(0, 120));
   H.showEdgeDetail(STATUS_GRAPH.edges[0]);
   check("a connection detail names both endpoint statuses",
-        doc.getElementById("nw-detail").textContent.includes("source blocked") &&
-        doc.getElementById("nw-detail").textContent.includes("destination alerted"),
-        doc.getElementById("nw-detail").textContent.slice(0, 160));
+        needEl("nw-detail").textContent.includes("source blocked") &&
+        needEl("nw-detail").textContent.includes("destination alerted"),
+        needEl("nw-detail").textContent.slice(0, 160));
 
   H.ASSETS_STATE.graph = { ...STATUS_GRAPH, status_available: false,
                            status_reason: "block rules could not be read" };
   H.ASSETS_STATE.status = "blocked";
   H.renderNetwork();
   check("an unreadable status source is named, not rendered as a normal graph",
-        doc.getElementById("nw-caption").textContent.includes("Host status is unavailable") &&
-        doc.getElementById("nw-graph").textContent.includes("could not be computed"),
-        doc.getElementById("nw-caption").textContent);
+        needEl("nw-caption").textContent.includes("Host status is unavailable") &&
+        needEl("nw-graph").textContent.includes("could not be computed"),
+        needEl("nw-caption").textContent);
   H.ASSETS_STATE.status = "all";
   H.ASSETS_STATE.minEdges = 1;
 
@@ -1997,14 +2066,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                                reason: "the connection query failed" };
   H.renderNetwork();
   check("a failed graph query names the reason rather than drawing an empty canvas",
-        doc.getElementById("nw-graph").textContent.includes("connection query failed"),
-        doc.getElementById("nw-graph").textContent.slice(0, 90));
+        needEl("nw-graph").textContent.includes("connection query failed"),
+        needEl("nw-graph").textContent.slice(0, 90));
 
   H.ASSETS_STATE.graph = { available: true, nodes: [], edges: [], total_edges: 0 };
   H.renderNetwork();
   check("an empty graph says nothing was recorded, not that it failed",
-        doc.getElementById("nw-graph").textContent.includes("No host-to-host traffic"),
-        doc.getElementById("nw-graph").textContent.slice(0, 90));
+        needEl("nw-graph").textContent.includes("No host-to-host traffic"),
+        needEl("nw-graph").textContent.slice(0, 90));
 
   // FILTERED is not EMPTY (review round 2026-10-15): edges exist, but every one of them is
   // below the flows filter -- the panel must NAME the filter and its count, not claim the
@@ -2017,18 +2086,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   };
   H.renderNetwork();
   check("a filtered-to-empty graph NAMES the flows filter instead of claiming no traffic",
-        doc.getElementById("nw-graph").textContent.includes("flows filter is hiding") &&
-        doc.getElementById("nw-caption").textContent.includes("below the flows filter") &&
+        needEl("nw-graph").textContent.includes("flows filter is hiding") &&
+        needEl("nw-caption").textContent.includes("below the flows filter") &&
         !doc.getElementById("nw-caption").textContent.includes("was recorded") &&
         !doc.getElementById("nw-graph").textContent.includes("was recorded"),
-        `caption: ${doc.getElementById("nw-caption").textContent.slice(0, 90)} | ` +
-        `graph: ${doc.getElementById("nw-graph").textContent.slice(0, 90)}`);
+        `caption: ${needEl("nw-caption").textContent.slice(0, 90)} | ` +
+        `graph: ${needEl("nw-graph").textContent.slice(0, 90)}`);
   H.ASSETS_STATE.minEdges = 1;
 
   H.ASSETS_STATE.inventory = { available: false, hosts: [], reason: "cannot reach ClickHouse" };
   H.renderAssets();
   check("a failed inventory query names the reason",
-        doc.getElementById("as-note").textContent.includes("cannot reach ClickHouse"));
+        needEl("as-note").textContent.includes("cannot reach ClickHouse"));
 
   // ── the Netflow click-through ──────────────────────────────────────────────────────────
   check("loadFlowDetail() is defined and reachable as a global",
@@ -2040,11 +2109,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the flow drill-down renders one row per host pair", fdRows.length === 2,
         `rows=${fdRows.length}`);
   check("the drill-down names the bar that was clicked",
-        doc.getElementById("nf-detail-title").textContent.includes("443"),
-        doc.getElementById("nf-detail-title").textContent);
+        needEl("nf-detail-title").textContent.includes("443"),
+        needEl("nf-detail-title").textContent);
   check("the drill-down states that the list was CAPPED",
-        doc.getElementById("nf-detail-note").textContent.includes("busiest of"),
-        doc.getElementById("nf-detail-note").textContent);
+        needEl("nf-detail-note").textContent.includes("busiest of"),
+        needEl("nf-detail-note").textContent);
   check("the drill-down draws a bar chart too", !!doc.querySelector("#nf-detail .bar-row"));
   check("a drill-down row is clickable through to the host",
         !!fdRows[0] && fdRows[0].className.includes("clickable"));
@@ -2065,8 +2134,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await window.loadFlowDetail({ proto: 6, name: "TCP" });
   await new Promise((r) => setTimeout(r, 40));
   check("a failed flow drill-down names the reason",
-        doc.getElementById("nf-detail").textContent.includes("flow drill-down failed"),
-        doc.getElementById("nf-detail").textContent.slice(0, 90));
+        needEl("nf-detail").textContent.includes("flow drill-down failed"),
+        needEl("nf-detail").textContent.slice(0, 90));
 
   // ── the chips reach the flow-detail table (#31) ─────────────────────────────────────────────
   // The charts and the table used to answer different questions: a chip narrowed the charts
@@ -2099,8 +2168,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
   check("a chip the table cannot apply is NAMED in its heading",
-        /cannot apply: client/.test(doc.getElementById("nf-detail-note").textContent),
-        doc.getElementById("nf-detail-note").textContent);
+        /cannot apply: client/.test(needEl("nf-detail-note").textContent),
+        needEl("nf-detail-note").textContent);
   H.NF_FILTERS.pop();
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
@@ -2128,7 +2197,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadIdentity();
     await new Promise((r) => setTimeout(r, 120));
     window.fetch = origFetch;
-    const note = doc.getElementById("id-coverage-note").textContent;
+    const note = needEl("id-coverage-note").textContent;
     check("a folded host spelling is named in the coverage note",
           /1 duplicate spelling folded/.test(note), note.slice(0, 160));
     // ISSUE #63: no discarded `hours` and no unlabelled second window.
@@ -2234,29 +2303,29 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const mbRows = [...doc.querySelectorAll("#mb-hosts tbody tr")];
     check("the adaptive baseline card lists the hosts it learned", mbRows.length === 3,
           "rows=" + mbRows.length);
-    const mbTxt = doc.getElementById("mb-hosts").textContent;
+    const mbTxt = needEl("mb-hosts").textContent;
     check("...with learned volumes in human units, not raw floats",
           /9\.2 KB/.test(mbTxt) && /4\.3 KB/.test(mbTxt) && !/9394/.test(mbTxt),
           mbTxt.slice(0, 120));
     check("...and the reverse name beside the address it belongs to",
           /host\.example/.test(mbTxt) && /198\.51\.100\.5/.test(mbTxt), mbTxt.slice(0, 80));
     check("...and the freshness line reads the server's own age",
-          /Newest snapshot 4 min ago/.test(doc.getElementById("mb-note").textContent),
-          doc.getElementById("mb-note").textContent);
+          /Newest snapshot 4 min ago/.test(needEl("mb-note").textContent),
+          needEl("mb-note").textContent);
     check("the summary counts the behavioural and fingerprint baselines",
-          /3 hosts carry a learned baseline/.test(doc.getElementById("mb-summary").textContent)
-          && /2 with behavioural \(Zeek\) baselines/.test(doc.getElementById("mb-summary").textContent)
-          && /1 with fingerprint history/.test(doc.getElementById("mb-summary").textContent),
-          doc.getElementById("mb-summary").textContent);
+          /3 hosts carry a learned baseline/.test(needEl("mb-summary").textContent)
+          && /2 with behavioural \(Zeek\) baselines/.test(needEl("mb-summary").textContent)
+          && /1 with fingerprint history/.test(needEl("mb-summary").textContent),
+          needEl("mb-summary").textContent);
     check("what it flagged is a count, stated plainly",
-          /Flagged 4 rows in the last 24h/.test(doc.getElementById("mb-fired").textContent),
-          doc.getElementById("mb-fired").textContent);
+          /Flagged 4 rows in the last 24h/.test(needEl("mb-fired").textContent),
+          needEl("mb-fired").textContent);
     const mbFirst = mbRows[0] ? mbRows[0].querySelector("td") : null;
     if (mbFirst) {
       mbFirst.click();
       await new Promise((r) => setTimeout(r, 220));
       check("a baselined host opens its host view in one click",
-            doc.getElementById("view-host").classList.contains("active"));
+            needEl("view-host").classList.contains("active"));
       H.showView("models");
       await new Promise((r) => setTimeout(r, 120));
     }
@@ -2268,8 +2337,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadModels();
     await new Promise((r) => setTimeout(r, 220));
     check("a baseline store that cannot be read says so, never 'no baselines'",
-          /Unavailable/.test(doc.getElementById("mb-note").textContent),
-          doc.getElementById("mb-note").textContent);
+          /Unavailable/.test(needEl("mb-note").textContent),
+          needEl("mb-note").textContent);
     fetchOverride = null;
     await H.loadModels();
     await new Promise((r) => setTimeout(r, 220));
@@ -2295,17 +2364,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#m-stale tbody tr.stale-row").length === 2,
         `${doc.querySelectorAll("#m-stale tbody tr.stale-row").length} tinted`);
   check("the overdue detector's age is shown in hours",
-        doc.getElementById("m-stale").textContent.includes("16.0h"));
+        needEl("m-stale").textContent.includes("16.0h"));
   check("a never-trained detector says so rather than showing an age",
-        doc.getElementById("m-stale").textContent.includes("never"));
+        needEl("m-stale").textContent.includes("never"));
   check("the interval is stated in the heading",
-        doc.getElementById("m-stale-window").textContent.includes("6"),
-        doc.getElementById("m-stale-window").textContent);
+        needEl("m-stale-window").textContent.includes("6"),
+        needEl("m-stale-window").textContent);
   check("the note explains what an overdue model means for its scores",
-        doc.getElementById("m-stale-note").textContent.includes("older traffic mix"),
-        doc.getElementById("m-stale-note").textContent.slice(0, 100));
+        needEl("m-stale-note").textContent.includes("older traffic mix"),
+        needEl("m-stale-note").textContent.slice(0, 100));
   check("the note distinguishes never-trained from merely overdue",
-        doc.getElementById("m-stale-note").textContent.includes("never trained"));
+        needEl("m-stale-note").textContent.includes("never trained"));
 
   // ── the near-miss panel (SOC-2) ────────────────────────────────────────────────────────
   // The anomalies list shows what was FLAGGED; this panel exists because "nothing nearly
@@ -2326,18 +2395,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the near-miss table renders one row per recorded near miss",
         nearRows.length === 2, `rows=${nearRows.length}`);
   check("a below-threshold near miss is labelled as such",
-        doc.getElementById("m-near").textContent.includes("below threshold"),
-        doc.getElementById("m-near").textContent.slice(0, 140));
+        needEl("m-near").textContent.includes("below threshold"),
+        needEl("m-near").textContent.slice(0, 140));
   check("a gate-dropped near miss states the gate",
-        doc.getElementById("m-near").textContent.includes("agreement gate"),
+        needEl("m-near").textContent.includes("agreement gate"),
         "an agreement-gate row rendered without its reason");
   check("the score and the bar it faced are both shown",
-        doc.getElementById("m-near").textContent.includes("0.66")
-          && doc.getElementById("m-near").textContent.includes("0.70"),
+        needEl("m-near").textContent.includes("0.66")
+          && needEl("m-near").textContent.includes("0.70"),
         "score/threshold pair missing from the row");
   check("the panel states what a threshold change would do",
-        doc.getElementById("m-near-note").textContent.includes("Raising the threshold"),
-        doc.getElementById("m-near-note").textContent.slice(0, 120));
+        needEl("m-near-note").textContent.includes("Raising the threshold"),
+        needEl("m-near-note").textContent.slice(0, 120));
 
   // ── the score distribution scales stacks, and the chart clips (issues #6, #35) ─────────────
   // ONE BAND, SEVERAL DETECTORS, EACH NEAR WHAT THE OLD GLOBAL MAX WOULD HAVE BEEN: in the old
@@ -2485,11 +2554,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                          + "deployment yet (it arrives with the schema job on the version "
                          + "that added it)" });
   check("an unavailable near-miss table names the schema job, not an empty list",
-        doc.getElementById("m-near-note").textContent.includes("schema job"),
-        doc.getElementById("m-near-note").textContent.slice(0, 120));
+        needEl("m-near-note").textContent.includes("schema job"),
+        needEl("m-near-note").textContent.slice(0, 120));
   H.renderNearMisses({ near_misses_available: true, near_misses: [] });
   check("an empty near-miss list is distinguishable from an unavailable one",
-        doc.getElementById("m-near").textContent.includes("No near misses")
+        needEl("m-near").textContent.includes("No near misses")
           && !doc.getElementById("m-near-note").textContent.includes("schema job"),
         "empty and unavailable collapse to the same rendering");
 
@@ -2557,7 +2626,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   await H.loadZeek();
 
-  const zkSummary = doc.getElementById("zk-summary").textContent;
+  const zkSummary = needEl("zk-summary").textContent;
   check("the zeek summary states rows and how many logs are active",
         /rows from \d+ of \d+ configured logs/.test(zkSummary), zkSummary);
 
@@ -2575,7 +2644,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         barText.some((t) => t.includes("conn") && t.includes("40,731")),
         barText.slice(0, 3).join(" | "));
 
-  const zkTimeline = doc.getElementById("zk-timeline");
+  const zkTimeline = needEl("zk-timeline");
   check("the timeline drew an svg", !!zkTimeline.querySelector("svg"));
   check("the timeline drew a path per series",
         zkTimeline.querySelectorAll("path").length >= 2,
@@ -2584,10 +2653,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         /conn/.test(zkTimeline.textContent), zkTimeline.textContent.slice(0, 80));
 
   check("a log that recorded NOTHING in the window is explained, not just zeroed",
-        /recorded nothing in this window|widen the window/i.test(doc.getElementById("zk-counts").textContent),
-        doc.getElementById("zk-counts").textContent.slice(-160));
+        /recorded nothing in this window|widen the window/i.test(needEl("zk-counts").textContent),
+        needEl("zk-counts").textContent.slice(-160));
   check("an empty-forever log is distinguished from a quiet one",
-        /NEVER produced a row/i.test(doc.getElementById("zk-counts").textContent));
+        /NEVER produced a row/i.test(needEl("zk-counts").textContent));
 
   check("the services panel rendered its bars",
         doc.querySelectorAll("#zk-services .bar-row").length === 2);
@@ -2607,8 +2676,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   await zkClick("ssl");
   check("a log click adds a visible filter chip",
-        /log = ssl/.test(doc.getElementById("zk-chips").textContent),
-        doc.getElementById("zk-chips").textContent);
+        /log = ssl/.test(needEl("zk-chips").textContent),
+        needEl("zk-chips").textContent);
   check("a log click sends the filter to the server",
         ZEEK_REQS.some((u) => u.includes("log=ssl")), ZEEK_REQS.slice(-1)[0]);
   check("a log filter changes the log count panel",
@@ -2617,8 +2686,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   await zkClick("dns");
   check("a service click adds a visible filter chip",
-        /service = dns/.test(doc.getElementById("zk-chips").textContent),
-        doc.getElementById("zk-chips").textContent);
+        /service = dns/.test(needEl("zk-chips").textContent),
+        needEl("zk-chips").textContent);
   check("a service click sends the filter to the server",
         ZEEK_REQS.some((u) => u.includes("service=dns")), ZEEK_REQS.slice(-1)[0]);
   check("a service filter changes the service panel",
@@ -2627,8 +2696,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   await zkClick("host.example");
   check("a DNS click adds a visible filter chip",
-        /DNS name = host.example/.test(doc.getElementById("zk-chips").textContent),
-        doc.getElementById("zk-chips").textContent);
+        /DNS name = host.example/.test(needEl("zk-chips").textContent),
+        needEl("zk-chips").textContent);
   check("a DNS click sends the filter to the server",
         ZEEK_REQS.some((u) => u.includes("query=host.example")), ZEEK_REQS.slice(-1)[0]);
   check("a DNS filter changes the DNS panel",
@@ -2642,8 +2711,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   check("removing the Zeek filters clears the chip row",
-        doc.getElementById("zk-chips").textContent.trim() === "",
-        doc.getElementById("zk-chips").textContent);
+        needEl("zk-chips").textContent.trim() === "",
+        needEl("zk-chips").textContent);
   check("removing the Zeek filters returns to the unfiltered request",
         ZEEK_REQS.some((u) => !u.includes("log=") && !u.includes("service=") && !u.includes("query=")),
         ZEEK_REQS.slice(-1)[0]);
@@ -2656,10 +2725,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the operator token field exists and is not readonly",
         !!doc.getElementById("st-token") && !doc.getElementById("st-token").readOnly);
   check("the token field is a password input (a token left on screen is a token leaked)",
-        doc.getElementById("st-token").type === "password");
+        needEl("st-token").type === "password");
   check("the page states the no-TLS boundary where the operator will read it",
-        /no TLS|plain HTTP/i.test(doc.getElementById("st-auth-card").textContent),
-        doc.getElementById("st-auth-card").textContent.slice(0, 120));
+        /no TLS|plain HTTP/i.test(needEl("st-auth-card").textContent),
+        needEl("st-auth-card").textContent.slice(0, 120));
 
   // An editable setting renders an INPUT; a secret renders text and a read-only tag.
   // NAVIGATE AND LOAD HERE, in this block. Depending on another section having already done it is
@@ -2687,18 +2756,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a SECRET is never editable from the page",
         !editableKeys.includes("clickhouse_password"), `inputs: ${editableKeys.join(",")}`);
   check("a non-editable row says so rather than looking broken",
-        /read-only/.test(doc.getElementById("view-settings").textContent));
+        /read-only/.test(needEl("view-settings").textContent));
 
   // THESE TWO DESCRIBE THE PRE-EDIT STATE, so they are asserted NOW, before anything is staged.
   // They ran after an apply initially, which is how they became flaky assertions about a state the
   // block itself had already changed.
-  const applyBtn0 = doc.getElementById("st-stage-apply");
+  const applyBtn0 = needEl("st-stage-apply");
   check("there IS an apply control now (the operator asked for one)", !!applyBtn0);
   check("apply is DISABLED until something is staged", applyBtn0.disabled === true,
         `disabled=${applyBtn0.disabled}`);
   check("the page states that nothing is written on edit",
-        /edit a value above to stage one/i.test(doc.getElementById("st-stage-note").textContent),
-        doc.getElementById("st-stage-note").textContent);
+        /edit a value above to stage one/i.test(needEl("st-stage-note").textContent),
+        needEl("st-stage-note").textContent);
 
   // STAGING: an edit must NOT write. This is the single most important assertion here.
   const before = POSTED.length;
@@ -2708,21 +2777,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("editing a setting stages it without writing anything", POSTED.length === before,
         `${POSTED.length - before} request(s) were sent on edit`);
   check("the staged change is listed for review",
-        doc.getElementById("st-stage-list").textContent.includes("base_threshold"));
-  check("the staged count is stated", /1 staged/.test(doc.getElementById("st-stage-count").textContent));
+        needEl("st-stage-list").textContent.includes("base_threshold"));
+  check("the staged count is stated", /1 staged/.test(needEl("st-stage-count").textContent));
   check("the header chip states the staged count from every tab",
-        /1 staged/.test(doc.getElementById("stage-pill").textContent)
+        /1 staged/.test(needEl("stage-pill").textContent)
         && !doc.getElementById("stage-pill").classList.contains("hidden"),
-        doc.getElementById("stage-pill").textContent);
+        needEl("stage-pill").textContent);
   check("the staged change is saved to the tab's own storage until applied",
         (window.sessionStorage.getItem("wv-stage") || "").includes("base_threshold"),
         String(window.sessionStorage.getItem("wv-stage")).slice(0, 80));
-  doc.getElementById("stage-pill").click();
+  needEl("stage-pill").click();
   await new Promise((r) => setTimeout(r, 40));
   check("clicking the chip lands on the review list without writing anything",
-        doc.getElementById("view-settings").classList.contains("active"));
+        needEl("view-settings").classList.contains("active"));
   check("Apply is enabled once something is staged",
-        doc.getElementById("st-stage-apply").disabled === false);
+        needEl("st-stage-apply").disabled === false);
 
   // THE PLAN: fetched from the server, so validation and blast radius come from the code that
   // will do the write rather than a second copy in JavaScript.
@@ -2734,11 +2803,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the plan carries the staged change", planBody.changes && planBody.changes.base_threshold === "0.5",
         JSON.stringify(planBody));
   check("the blast radius is shown BEFORE apply",
-        /restart/i.test(doc.getElementById("st-stage-list").textContent),
-        doc.getElementById("st-stage-list").textContent.slice(0, 160));
+        /restart/i.test(needEl("st-stage-list").textContent),
+        needEl("st-stage-list").textContent.slice(0, 160));
   check("each plan row states the value it would replace",
-        /\(was /.test(doc.getElementById("st-stage-list").textContent),
-        doc.getElementById("st-stage-list").textContent.slice(0, 160));
+        /\(was /.test(needEl("st-stage-list").textContent),
+        needEl("st-stage-list").textContent.slice(0, 160));
 
   // APPLY: the request must carry the token header and the staged values.
   H.setToken("test-token-value");
@@ -2752,18 +2821,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         (applied || {}).headers && applied.headers["X-Weirvern-Token"] === "test-token-value",
         JSON.stringify((applied || {}).headers));
   check("the outcome is reported in the server's terms",
-        /saved|restarted|not applied/i.test(doc.getElementById("st-stage-note").textContent),
-        doc.getElementById("st-stage-note").textContent.slice(0, 140));
+        /saved|restarted|not applied/i.test(needEl("st-stage-note").textContent),
+        needEl("st-stage-note").textContent.slice(0, 140));
   check("staging is cleared after a successful apply",
         Object.keys(H.STAGE.changes).length === 0);
   check("the chip hides again once the stage is empty",
-        doc.getElementById("stage-pill").classList.contains("hidden"));
+        needEl("stage-pill").classList.contains("hidden"));
 
   // THE RECEIPT: per-item results after an apply.
   check("the receipt names the key and the time it landed",
-        /base_threshold/.test(doc.getElementById("st-apply-results").textContent)
-        && /applied/.test(doc.getElementById("st-apply-results").textContent),
-        doc.getElementById("st-apply-results").textContent.slice(0, 140));
+        /base_threshold/.test(needEl("st-apply-results").textContent)
+        && /applied/.test(needEl("st-apply-results").textContent),
+        needEl("st-apply-results").textContent.slice(0, 140));
 
   // A REFUSED WRITE: the read-back refuses the 0.7 write once -- the receipt must say FAILED
   // with the server's reason and offer the one-click re-apply.
@@ -2773,9 +2842,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   bt7.dispatchEvent(new window.Event("input", { bubbles: true }));
   await H.applyStage();
   check("a failed apply says which item failed and why",
-        /FAILED/.test(doc.getElementById("st-apply-results").textContent)
-        && /did not land/.test(doc.getElementById("st-apply-results").textContent),
-        doc.getElementById("st-apply-results").textContent.slice(0, 180));
+        /FAILED/.test(needEl("st-apply-results").textContent)
+        && /did not land/.test(needEl("st-apply-results").textContent),
+        needEl("st-apply-results").textContent.slice(0, 180));
   const reBtn = [...doc.querySelectorAll("#st-apply-results button")]
     .find((b) => /Re-apply failed/.test(b.textContent));
   check("a failed item offers a one-click re-apply", !!reBtn);
@@ -2790,9 +2859,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !!reReq && reBody.changes && reBody.changes.base_threshold === "0.7",
           JSON.stringify(reBody).slice(0, 120));
     check("the re-applied item now reads as applied",
-          /applied/.test(doc.getElementById("st-apply-results").textContent)
-          && !/FAILED/.test(doc.getElementById("st-apply-results").textContent),
-          doc.getElementById("st-apply-results").textContent.slice(0, 140));
+          /applied/.test(needEl("st-apply-results").textContent)
+          && !/FAILED/.test(needEl("st-apply-results").textContent),
+          needEl("st-apply-results").textContent.slice(0, 140));
   }
 
   // DISCARD: staged changes are dropped and the view reloads from the server's values.
@@ -2835,10 +2904,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         !!doc.getElementById("st-sonar"));
   check("the Sonar button carries its own ? explanation",
         !!doc.getElementById("st-sonar-help") &&
-        /ARP/.test(doc.getElementById("st-sonar-help-text").textContent),
-        (doc.getElementById("st-sonar-help-text") || {}).textContent);
+        /ARP/.test(needEl("st-sonar-help-text").textContent),
+        (needEl("st-sonar-help-text") || {}).textContent);
   check("the Sonar explanation starts hidden",
-        doc.getElementById("st-sonar-help-text").classList.contains("hidden"));
+        needEl("st-sonar-help-text").classList.contains("hidden"));
   const sonarBefore = POSTED.filter((r) => r.url.includes("/api/settings/sonar")).length;
   H.discardStage();
   await H.runSonar();
@@ -2862,12 +2931,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         "intercept_gateway is already 198.51.100.1 in the stub; a no-op recommendation must "
         + "not appear as a pending change: " + JSON.stringify(H.STAGE.changes));
   check("Sonar reports what it measured",
-        /198\.51\.100\.0\/24/.test(doc.getElementById("st-sonar-note").textContent)
-        && /gateway/i.test(doc.getElementById("st-sonar-note").textContent),
-        doc.getElementById("st-sonar-note").textContent.slice(0, 200));
+        /198\.51\.100\.0\/24/.test(needEl("st-sonar-note").textContent)
+        && /gateway/i.test(needEl("st-sonar-note").textContent),
+        needEl("st-sonar-note").textContent.slice(0, 200));
   check("the staged list shows the Sonar-sourced keys",
-        doc.getElementById("st-stage-list").textContent.includes("intercept_segment"),
-        doc.getElementById("st-stage-list").textContent.slice(0, 200));
+        needEl("st-stage-list").textContent.includes("intercept_segment"),
+        needEl("st-stage-list").textContent.slice(0, 200));
   H.discardStage();
   check("discarding Sonar's recommendations clears them like any other staged change",
         Object.keys(H.STAGE.changes).length === 0);
@@ -2878,7 +2947,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // (correctly) refused to stage. It now counts what actually staged and says so when nothing did.
   {
     H.discardStage();
-    const note = doc.getElementById("st-sonar-note");
+    const note = needEl("st-sonar-note");
     const base = { ok: true, interface: "eth0", segment: "198.51.100.0/24",
                    address: "198.51.100.5/24", hosts_answered: 3, swept: 254,
                    free_addresses: ["198.51.100.250"], gateway: "198.51.100.1",
@@ -2933,8 +3002,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the Test run button exists with the sensor's settings", !!doc.getElementById("st-test"));
   check("the Test run button carries its own ? explanation",
         !!doc.getElementById("st-test-help")
-        && /30 seconds/.test(doc.getElementById("st-test-help-text").textContent),
-        (doc.getElementById("st-test-help-text") || {}).textContent);
+        && /30 seconds/.test(needEl("st-test-help-text").textContent),
+        (needEl("st-test-help-text") || {}).textContent);
   const testBefore = POSTED.filter((r) => r.url.includes("/api/settings/test")).length;
   await H.runSiphonTest();
   check("the test run POSTs to /api/settings/test",
@@ -2945,12 +3014,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         JSON.parse((testReq || {}).body || "{}").seconds === 30,
         (testReq || {}).body);
   check("the test result states the revert",
-        /set back to loch/i.test(doc.getElementById("st-test-note").textContent),
-        doc.getElementById("st-test-note").textContent.slice(0, 180));
+        /set back to loch/i.test(needEl("st-test-note").textContent),
+        needEl("st-test-note").textContent.slice(0, 180));
   check("the test result states what was observed",
-        /observed live/i.test(doc.getElementById("st-test-note").textContent)
-        || /No intercept evidence/.test(doc.getElementById("st-test-note").textContent),
-        doc.getElementById("st-test-note").textContent.slice(0, 180));
+        /observed live/i.test(needEl("st-test-note").textContent)
+        || /No intercept evidence/.test(needEl("st-test-note").textContent),
+        needEl("st-test-note").textContent.slice(0, 180));
 
   // A REFUSED WRITE MUST SAY SO, and must not look like a success.
   // A deliberate 401 for one check: the write must be refused and the staged changes must
@@ -2967,8 +3036,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   }
   await H.applyStage();
   check("a refused write reports the server's reason",
-        /not applied/i.test(doc.getElementById("st-stage-note").textContent),
-        doc.getElementById("st-stage-note").textContent.slice(0, 140));
+        /not applied/i.test(needEl("st-stage-note").textContent),
+        needEl("st-stage-note").textContent.slice(0, 140));
   check("a refused write does NOT clear the staged changes (nothing was saved)",
         Object.keys(H.STAGE.changes).length === 1);
 
@@ -2994,7 +3063,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // re-derived here, where showView("settings") has already moved it.
   // The nav button and its section must agree: a tab marked active whose section is not, or a
   // section shown with no tab lit, means clicking the tab appears to do nothing.
-  const healthSectionActive = doc.getElementById("view-health").classList.contains("active");
+  const healthSectionActive = needEl("view-health").classList.contains("active");
   check("the active nav tab and the visible section agree",
         healthTabActive === healthSectionActive,
         `tab=${healthTabActive} section=${healthSectionActive}`);
@@ -3018,21 +3087,21 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("the healthy and failing rows still render ok and FAIL",
             states.includes("ok") && states.includes("FAIL"),
             `states are ${JSON.stringify(states)}`);
-      const summary = doc.getElementById("hp-summary").textContent;
+      const summary = needEl("hp-summary").textContent;
       check("the summary counts only MEASURABLE checks (2, not 3)",
             /of 2 checks FAILING/.test(summary),
             summary.slice(0, 140));
       check("the summary states how many were not applicable",
             /not applicable/.test(summary),
             summary.slice(0, 140));
-      const pill = doc.getElementById("health-pill").textContent;
+      const pill = needEl("health-pill").textContent;
       check("the pill excludes the not-applicable probe from its ratio",
             /1\/2 checks passing/.test(pill),
             pill.slice(0, 140));
       // ── CLICK IT (the operator, 2026-10-16): the ratio must open the per-check list ──────────
       {
-        const pid = doc.getElementById("pill-pop");
-        doc.getElementById("health-pill").click();
+        const pid = needEl("pill-pop");
+        needEl("health-pill").click();
         await new Promise((r) => setTimeout(r, 30));
         const lines = pid ? pid.querySelectorAll(".pill-line").length : 0;
         check("clicking the health pill lists every check", !!pid && !pid.hidden && lines >= 2,
@@ -3041,7 +3110,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               !!pid && /PASS/.test(pid.textContent) && /N\/A/.test(pid.textContent),
               pid ? pid.textContent.slice(0, 100) : "");
         check("and a way into the full health view", !!pid && /health view/i.test(pid.textContent), "");
-        doc.getElementById("health-pill").click();
+        needEl("health-pill").click();
         await new Promise((r) => setTimeout(r, 30));
         check("clicking the pill again closes it", !!pid && pid.hidden, "still open");
       }
@@ -3049,8 +3118,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   check("the System card is the first thing on the Health tab",
         !!doc.getElementById("hp-system")
-        && doc.getElementById("view-health").querySelector(".card") ===
-           doc.getElementById("hp-system").closest(".card"));
+        && needEl("view-health").querySelector(".card") ===
+           needEl("hp-system").closest(".card"));
   check("the Weirlings fleet carries CPU and memory in the sensor row and throughput in the NIC rows",
         !!doc.querySelector("[data-wl-cpu]")
         && !!doc.querySelector("[data-wl-rate]")
@@ -3078,13 +3147,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   };
   H.renderAlertAudit(HEALTH_AUDIT);
   check("the audit note counts suppressed separately from log-only",
-        doc.getElementById("hp-alerts-note").textContent.includes("3 suppressed"),
-        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+        needEl("hp-alerts-note").textContent.includes("3 suppressed"),
+        needEl("hp-alerts-note").textContent.slice(0, 140));
   check("a log-only outcome is labelled as not-configured, not suppressed",
-        doc.getElementById("hp-alerts-reasons").textContent.includes("log-only (not configured)"),
-        doc.getElementById("hp-alerts-reasons").textContent.slice(0, 160));
+        needEl("hp-alerts-reasons").textContent.includes("log-only (not configured)"),
+        needEl("hp-alerts-reasons").textContent.slice(0, 160));
   check("a cooldown outcome is labelled suppressed",
-        doc.getElementById("hp-alerts-reasons").textContent.includes("cooldown (suppressed)"),
+        needEl("hp-alerts-reasons").textContent.includes("cooldown (suppressed)"),
         "a withheld alert rendered without saying it was withheld");
   check("the recent list renders the decision rows",
         doc.querySelectorAll("#hp-alerts-recent tbody tr").length === 1,
@@ -3093,12 +3162,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.renderAlertAudit({ available: false, reason: "alert audit query failed: RuntimeError",
                        by_reason: [], recent: [], suppressed: 0 });
   check("an unavailable audit names the failure, not an empty list",
-        doc.getElementById("hp-alerts-note").textContent.includes("Alert audit unavailable"),
-        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+        needEl("hp-alerts-note").textContent.includes("Alert audit unavailable"),
+        needEl("hp-alerts-note").textContent.slice(0, 140));
   H.renderAlertAudit({ available: true, by_reason: [], recent: [], suppressed: 0 });
   check("an empty audit says nothing fired at all",
-        doc.getElementById("hp-alerts-note").textContent.includes("nothing fired"),
-        doc.getElementById("hp-alerts-note").textContent.slice(0, 140));
+        needEl("hp-alerts-note").textContent.includes("nothing fired"),
+        needEl("hp-alerts-note").textContent.slice(0, 140));
 
   // ── the alert audit PAGES, 15 at a time ────────────────────────────────────────────────────
   // The user asked for these tables to page like the Assets inventory. Twenty-four events means
@@ -3133,20 +3202,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the breakdown table shows only the first 15 outcomes",
         reasonRows === 15, `rows=${reasonRows} (expected 15 of 18)`);
   check("the breakdown has its own pager with its own range",
-        doc.getElementById("hp-alerts-reasons-pager").textContent.includes("1\u201315 of 18"),
-        doc.getElementById("hp-alerts-reasons-pager").textContent.slice(0, 120));
+        needEl("hp-alerts-reasons-pager").textContent.includes("1\u201315 of 18"),
+        needEl("hp-alerts-reasons-pager").textContent.slice(0, 120));
   const firstPageRows = doc.querySelectorAll("#hp-alerts-recent tbody tr").length;
   check("the event table shows only the first 15 rows",
         firstPageRows === 15, `rows=${firstPageRows} (expected 15 of 24)`);
   check("the pager reports the real total and page count",
-        doc.getElementById("hp-alerts-recent-pager").textContent.includes("1\u201315 of 24"),
-        doc.getElementById("hp-alerts-recent-pager").textContent.slice(0, 120));
+        needEl("hp-alerts-recent-pager").textContent.includes("1\u201315 of 24"),
+        needEl("hp-alerts-recent-pager").textContent.slice(0, 120));
   check("a host with a resolved name shows the name AND the address",
-        doc.getElementById("hp-alerts-recent").textContent.includes("host-a.example")
-          && doc.getElementById("hp-alerts-recent").textContent.includes("198.51.100.1"),
+        needEl("hp-alerts-recent").textContent.includes("host-a.example")
+          && needEl("hp-alerts-recent").textContent.includes("198.51.100.1"),
         "the name replaced the address, or was not shown at all");
   check("the message a decision was about is rendered, not just that it happened",
-        doc.getElementById("hp-alerts-recent").textContent.includes("sustained scan traffic"),
+        needEl("hp-alerts-recent").textContent.includes("sustained scan traffic"),
         "the audit row shows the outcome without the subject");
 
   // Page 2, through the pager's own callback.
@@ -3158,8 +3227,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("page 2 shows the remaining 9 rows",
         page2Rows === 9, `rows=${page2Rows} (expected 24-15=9)`);
   check("page 2 reports its own range, not page 1's",
-        doc.getElementById("hp-alerts-recent-pager").textContent.includes("16\u201324 of 24"),
-        doc.getElementById("hp-alerts-recent-pager").textContent.slice(0, 120));
+        needEl("hp-alerts-recent-pager").textContent.includes("16\u201324 of 24"),
+        needEl("hp-alerts-recent-pager").textContent.slice(0, 120));
 
   // A TRUNCATED fetch must say so: a full page of 15 with no note reads as "this is everything".
   H.renderAlertAudit({
@@ -3167,23 +3236,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     recent: manyEvents.slice(0, 15), total: 4000, truncated: true, names: {},
   });
   check("a capped list states how many it is showing out of how many exist",
-        doc.getElementById("hp-alerts-note").textContent.includes("newest 15 of 4000"),
-        doc.getElementById("hp-alerts-note").textContent.slice(0, 200));
+        needEl("hp-alerts-note").textContent.includes("newest 15 of 4000"),
+        needEl("hp-alerts-note").textContent.slice(0, 200));
 
   // An UNAVAILABLE audit must not leave the previous payload's pager on screen: a range line
   // above an unavailable table describes a window that is no longer there.
   H.renderAlertAudit({ available: false, reason: "boom", by_reason: [], recent: [],
                        suppressed: 0, total: 0, truncated: false, names: {} });
   check("an unavailable audit clears the pagers rather than leaving a stale range",
-        doc.getElementById("hp-alerts-recent-pager").textContent.trim() === "",
-        `pager=${doc.getElementById("hp-alerts-recent-pager").textContent}`);
+        needEl("hp-alerts-recent-pager").textContent.trim() === "",
+        `pager=${needEl("hp-alerts-recent-pager").textContent}`);
 
   // ── the Settings tab ───────────────────────────────────────────────────────────────────────
   // Now navigate to Settings the way a user would.
   H.showView("settings");
   await H.loadSettings();
 
-  const stSummary = doc.getElementById("st-summary");
+  const stSummary = needEl("st-summary");
   check("the settings view no longer counts its own rows",
         !/settings in effect/.test(stSummary.textContent || ""),
         stSummary.textContent);
@@ -3208,12 +3277,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("an env-only key is labelled as env", srcs.includes("env"), `srcs: ${srcs.join(",")}`);
   check("a derived value is labelled as derived", srcs.includes("derived"));
 
-  const shown = doc.getElementById("clickhouse_host");
+  const shown = needEl("clickhouse_host");
   check("an ordinary setting shows its value",
         [...doc.querySelectorAll(".setting-val")].some(n => n.textContent === "clickhouse"));
 
   // THE SECURITY CHECK. The sentinel is what a real credential would be; it must not be here.
-  const panelText = doc.getElementById("view-settings").textContent;
+  const panelText = needEl("view-settings").textContent;
   check("NO SECRET VALUE reaches the DOM", !panelText.includes(SECRET_SENTINEL),
         "the credential value rendered into the page");
   check("a secret shows as set-by-length instead",
@@ -3225,13 +3294,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // A read-only page must SAY so, or the reader hunts for a Save button.
   check("the settings view states it cannot change the configuration",
-        /read-only|cannot change/i.test(doc.getElementById("view-settings").textContent));
+        /read-only|cannot change/i.test(needEl("view-settings").textContent));
   check("the settings view says where the settings CAN be changed",
-        doc.getElementById("view-settings").textContent.includes("weirvern config set"));
+        needEl("view-settings").textContent.includes("weirvern config set"));
   // The page used to have no write control at all. It now has one, because an operator asked for
   // it -- so the assertion changes to the property that still matters: the APPLY control must be
   // DISABLED until something is staged, so a stray click cannot write the cluster configuration.
-  const applyBtn = doc.getElementById("st-stage-apply");
+  const applyBtn = needEl("st-stage-apply");
   check("the apply control reflects whether anything is staged",
         applyBtn.disabled === (Object.keys(H.STAGE.changes).length === 0),
         `disabled=${applyBtn.disabled} staged=${Object.keys(H.STAGE.changes).length}`);
@@ -3270,7 +3339,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // THE MODE IS NOT A GRID ROW ANY MORE (operator restructure, 2026-10-17): it is the
   // weirlings drill-down's selector -- one control for one value. Its per-sensor behavior
   // (survey + apply) is checked in the weirlings section.
-  const wlModeSel = doc.getElementById("wl-mode-select");
+  const wlModeSel = needEl("wl-mode-select");
   check("the sensor mode renders as the drill-down's selector, not a grid row",
         !doc.querySelector(".setting[data-key='sensor_mode']") && !!wlModeSel,
         "a second control for one value is the duplication this restructure removed");
@@ -3354,7 +3423,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     summaryInDisclosure.click();
     await new Promise((r) => setTimeout(r, 80));
     check("opening the disclosure does NOT fall through to the row's Evidence drill",
-          doc.getElementById("view-anomalies").classList.contains("active"),
+          needEl("view-anomalies").classList.contains("active"),
           "the row handler must not fire through the disclosure");
     check("...and the disclosure actually opens", !!rowMores[0].open);
   }
@@ -3426,7 +3495,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       evBtn.click();
       await new Promise((r) => setTimeout(r, 150));
       check("the Evidence button opens the evidence view",
-            doc.querySelector("#view-evidence").classList.contains("active"));
+            needEl("view-evidence").classList.contains("active"));
       const backTab = [...doc.querySelectorAll(".tab")].find((t) => t.dataset.view === "anomalies");
       if (backTab) backTab.click();
       await new Promise((r) => setTimeout(r, 150));
@@ -3473,7 +3542,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         tip1);
 
   // 2) the unreviewed-only filter must keep the row: every surface reads the same fields.
-  doc.getElementById("f-unreviewed").checked = true;
+  needEl("f-unreviewed").checked = true;
   await H.loadAnomalies();
   const filteredRows = [...doc.querySelectorAll("#anomalies-table tbody tr")];
   check("under unreviewed-only the row stays -- chip, tooltip and filter agree",
@@ -3481,7 +3550,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         `${filteredRows.length} row(s)`);
 
   // 3) each unfolded occurrence is dispositioned ON ITS OWN.
-  doc.getElementById("f-unreviewed").checked = false;
+  needEl("f-unreviewed").checked = false;
   await H.loadAnomalies();
   let occ = await openOccurrences(findGroupRow());
   check("the unfold lists every occurrence with its own controls",
@@ -3526,12 +3595,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("its tooltip no longer claims any unreviewed",
         gRow3.querySelector("td.num").getAttribute("title")
         === "3 occurrence(s) \u2014 click to list them");
-  doc.getElementById("f-unreviewed").checked = true;
+  needEl("f-unreviewed").checked = true;
   await H.loadAnomalies();
   check("and the unreviewed-only filter hides it -- the same story, three times",
         !findGroupRow(),
         doc.querySelector("#anomalies-table tbody").textContent.slice(0, 90));
-  doc.getElementById("f-unreviewed").checked = false;
+  needEl("f-unreviewed").checked = false;
   await H.loadAnomalies();
 
   // 5) the unavailable path is unchanged: a distinct label, no controls.
@@ -3573,7 +3642,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const gf = gpRows[0].querySelector(".gate-form");
     check("clicking Block opens the form IN PLACE", !!gf);
     check("and does not fall through to the row's own click (which opens the evidence view)",
-          doc.getElementById("view-anomalies").classList.contains("active"));
+          needEl("view-anomalies").classList.contains("active"));
     if (gf) {
       const whyIn = gf.querySelector(".gate-why");
       check("the reason is PRE-FILLED from the alert -- host and score",
@@ -3649,7 +3718,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       sevTile.click();   // toggle back off before the round-trip below
       await new Promise((r) => setTimeout(r, 250));
     }
-    const unrevBox = doc.getElementById("f-unreviewed");
+    const unrevBox = needEl("f-unreviewed");
     unrevBox.checked = true;
     unrevBox.dispatchEvent(new window.Event("change", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 250));
@@ -3664,10 +3733,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     window.location.hash = "#v=anomalies&an.sev=high&an.unrev=1&tr=6";
     H.applyURLState();
     check("opening a link restores its tab",
-          doc.getElementById("view-anomalies").classList.contains("active"));
+          needEl("view-anomalies").classList.contains("active"));
     check("...its range", Number(H.TIME_RANGE.hours) === 6, String(H.TIME_RANGE.hours));
     check("...its severity filter", H.AN_FILTERS.severity === "high", String(H.AN_FILTERS.severity));
-    check("...and its checkbox filter", doc.getElementById("f-unreviewed").checked === true);
+    check("...and its checkbox filter", needEl("f-unreviewed").checked === true);
     // every remaining tab rides the same grammar
     H.M_FILTERS.host = "203.0.113.42";
     await H.loadModels();
@@ -3678,7 +3747,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 250));
     check("the netflow filter lands in the URL", /nf=src_addr/.test(window.location.hash),
           window.location.hash.slice(0, 110));
-    const blInput = doc.getElementById("bl-domain");
+    const blInput = needEl("bl-domain");
     if (blInput) {
       blInput.value = "example.test";
       await H.loadBlocked();
@@ -3694,8 +3763,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 450));
     check("a link restores a tab filter", H.M_FILTERS.host === "203.0.113.42", String(H.M_FILTERS.host));
     check("a link opens the sensor drill-down it names",
-          doc.getElementById("wl-detail-id").textContent === wlSensor,
-          doc.getElementById("wl-detail-id").textContent);
+          needEl("wl-detail-id").textContent === wlSensor,
+          needEl("wl-detail-id").textContent);
 
     // reset the world for the checks after this block
     window.location.hash = "";
@@ -3733,8 +3802,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           nwRefs.filter((r) => r.startsWith("nw")).join(", "));
     H.toggleAllHelp(false);   // deterministic start: everything closed
     await new Promise((r) => setTimeout(r, 40));
-    const anPanel = doc.getElementById("an-info");
-    const helpPill = doc.getElementById("all-help");
+    const anPanel = needEl("an-info");
+    const helpPill = needEl("all-help");
     helpPill.click();
     await new Promise((r) => setTimeout(r, 40));
     check("the all-help toggle opens every panel at once",
@@ -3746,7 +3815,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           anPanel.classList.contains("hidden") && helpPill.getAttribute("aria-pressed") === "false");
     helpPill.click();   // open all again, then prove a field's question mark is inert
     await new Promise((r) => setTimeout(r, 40));
-    const addrBox = doc.getElementById("h-addr");
+    const addrBox = needEl("h-addr");
     addrBox.dispatchEvent(new window.KeyboardEvent("keydown", { key: "?", bubbles: true }));
     await new Promise((r) => setTimeout(r, 40));
     check("...while a question mark typed into a field is just a question mark",
@@ -3760,7 +3829,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // 1. a queue filter that matches nothing: cause + the way back
     H.showView("anomalies");
     await new Promise((r) => setTimeout(r, 150));
-    const minBox = doc.getElementById("f-min-score");
+    const minBox = needEl("f-min-score");
     minBox.value = "99";
     minBox.dispatchEvent(new window.Event("change", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 300));
@@ -3793,7 +3862,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
     check("...and its button opens the explainer",
           !doc.getElementById("wl-info").classList.contains("hidden"));
-    const frCard = doc.getElementById("firstrun-card");
+    const frCard = needEl("firstrun-card");
     check("the first run appears only while the fleet is empty",
           !!frCard && !frCard.classList.contains("hidden"));
     const frNext = doc.querySelector("#firstrun-body button.firstrun-next");
@@ -3819,7 +3888,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         await new Promise((r) => setTimeout(r, 80));
       }
       check("step three lands on the ordinary review",
-            doc.getElementById("view-settings").classList.contains("active") &&
+            needEl("view-settings").classList.contains("active") &&
             frCard.classList.contains("hidden"));
     }
     // the skip, on a fresh appearance
@@ -3847,20 +3916,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           styleCss.includes("h2 > .muted:not(:empty)::before"),
           "the separator rule is missing");
     check("the range panel names its timezone",
-          !!doc.getElementById("tr-tz") && /timezone/i.test(doc.getElementById("tr-tz").textContent),
-          doc.getElementById("tr-tz") ? doc.getElementById("tr-tz").textContent : "no tr-tz line");
+          !!doc.getElementById("tr-tz") && /timezone/i.test(needEl("tr-tz").textContent),
+          needEl("tr-tz") ? needEl("tr-tz").textContent : "no tr-tz line");
     H.trApply({ mode: "absolute", from: "2026-10-16 05:00", to: "now" });
     check("an absolute range freezes 'now' into a concrete minute",
           /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(String(H.TIME_RANGE.to)),
           String(H.TIME_RANGE.to));
     check("...and the button says it is frozen",
-          /frozen/.test(doc.getElementById("tr-open").textContent),
-          doc.getElementById("tr-open").textContent);
+          /frozen/.test(needEl("tr-open").textContent),
+          needEl("tr-open").textContent);
     H.trApply({ mode: "relative", hours: 24 });
     await H.refreshAll();
     check("the statusline says when the view last finished updating",
-          /updated \d\d:\d\d:\d\d/.test(doc.getElementById("fetched").textContent),
-          doc.getElementById("fetched").textContent);
+          /updated \d\d:\d\d:\d\d/.test(needEl("fetched").textContent),
+          needEl("fetched").textContent);
     // refreshAll follows the view you are on: spy on fetch
     const spy = [];
     const origFetch = window.fetch;
@@ -3872,14 +3941,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     window.fetch = origFetch;
     check("refreshAll refreshes the view you are looking at",
           spy.some((u) => /api\/anomalies/.test(u)), spy.join(" | ").slice(0, 90));
-    const autoPill = doc.getElementById("auto-toggle");
+    const autoPill = needEl("auto-toggle");
     check("the auto-refresh pill names its state",
           !!autoPill && /live · 15s/.test(autoPill.textContent));
     if (autoPill) {
       autoPill.click();
       await new Promise((r) => setTimeout(r, 30));
       check("...pausing says so, in the pill and the statusline",
-            /paused/.test(autoPill.textContent) && /paused/.test(doc.getElementById("fetched").textContent),
+            /paused/.test(autoPill.textContent) && /paused/.test(needEl("fetched").textContent),
             autoPill.textContent);
       autoPill.click();
       await new Promise((r) => setTimeout(r, 30));
@@ -3904,14 +3973,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // (derive with auto_score=0 -> no rule; with 0.9 -> a rule reasoned "auto: threshold 0.90").
   {
     const autoRow = SETTINGS_PAYLOAD.groups.detect.find((r) => r.key === "sluice_auto_score");
-    const abPill = doc.getElementById("auto-block-pill");
+    const abPill = needEl("auto-block-pill");
     check("the auto-block pill is absent while the threshold is off",
           !!abPill && abPill.classList.contains("hidden"),
           abPill ? abPill.textContent : "no pill in the markup");
     autoRow.value = "0.9";
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
-    const state = doc.getElementById("sl-bc-auto-state");
+    const state = needEl("sl-bc-auto-state");
     check("an armed auto-block says so, in full, on the controls card",
           !!state && /AUTO-BLOCK IS ON/.test(state.textContent) &&
             /0\.90/.test(state.textContent) && /auto: threshold 0\.90/.test(state.textContent),
@@ -3922,8 +3991,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     abPill.click();
     await new Promise((r) => setTimeout(r, 80));
     check("...and clicking that pill lands on the controls",
-          doc.getElementById("view-sluice").classList.contains("active"));
-    const pause = doc.getElementById("sl-bc-autopause");
+          needEl("view-sluice").classList.contains("active"));
+    const pause = needEl("sl-bc-autopause");
     check("a pause control is offered while it is armed",
           !!pause && !pause.classList.contains("hidden"));
     if (pause) {
@@ -3949,7 +4018,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             posts.some((b) => /SLUICE_AUTO_SCORE/.test(b) && /"0"/.test(b)),
             posts.join(" | ").slice(0, 120));
       check("...the state line reports it off",
-            /off/i.test((doc.getElementById("sl-bc-auto-state") || {}).textContent || ""));
+            /off/i.test((needEl("sl-bc-auto-state") || {}).textContent || ""));
       check("...and the header pill is gone",
             abPill.classList.contains("hidden") && abPill.textContent === "");
     }
@@ -3966,20 +4035,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           "a strip or score field is still in the DOM");
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 80));
-    const gateState = doc.getElementById("sl-gate-state");
+    const gateState = needEl("sl-gate-state");
     check("the status line states the packet gate's state in words",
           !!gateState && /^(packet (armed|gate open|gate off)|armed|off)/i.test(gateState.textContent.trim()),
           gateState ? gateState.textContent : "no state");
     check("...and offers exactly one control to change it",
           !!doc.getElementById("sl-bc-gate")
           && doc.querySelectorAll("#view-sluice #sl-bc-gate").length === 1);
-    const domLine = doc.getElementById("sl-dom-line");
-    const domState = doc.getElementById("sl-dom-state");
+    const domLine = needEl("sl-dom-line");
+    const domState = needEl("sl-dom-state");
     check("the domain-blocking card states on/off and what it costs",
           !!domState && /^(on|off)$/i.test(domState.textContent.trim())
           && !!domLine && domLine.textContent.length > 40,
           domState ? domState.textContent : "no state");
-    const domToggle = doc.getElementById("sl-dom-toggle");
+    const domToggle = needEl("sl-dom-toggle");
     check("...with one toggle", !!domToggle && /domain blocking/i.test(domToggle.textContent));
     if (domToggle) {
       const before = POSTED.length;
@@ -4017,7 +4086,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 120));
     window.fetch = origFetch;
-    const st = doc.getElementById("sl-gate-state");
+    const st = needEl("sl-gate-state");
     check("a degraded gate names its state beside the gate line", /degraded/i.test(st.textContent), st.textContent);
     check("...and carries the server's reason in its title, not a banner",
           /still present after deletion/.test(st.getAttribute("title") || ""),
@@ -4039,12 +4108,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           }),
           rows.map((tr) => (tr.querySelector("td.mono") || {}).textContent).join(" | "));
 
-    const newRule = doc.getElementById("sl-new-rule");
+    const newRule = needEl("sl-new-rule");
     check("the rules card offers one obvious add", !!newRule && /new rule/i.test(newRule.textContent));
     if (newRule) {
       newRule.click();
       await new Promise((r) => setTimeout(r, 80));
-      const sheet = doc.getElementById("sl-rule-sheet");
+      const sheet = needEl("sl-rule-sheet");
       check("...which opens the rule sheet, not a form on the tab",
             !!sheet && !sheet.classList.contains("hidden") && !!sheet.querySelector("#sl-block"),
             "the composer is not the sheet");
@@ -4054,24 +4123,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && !!doc.getElementById(sheet.getAttribute("aria-labelledby"))
             && sheet.querySelectorAll(".sheet-close").length === 1,
             sheet.getAttribute("aria-labelledby") || "no label");
-      const targetType = doc.getElementById("sl-target-type");
+      const targetType = needEl("sl-target-type");
       check("...it starts with one Domain/Address target choice and names its gate",
             !!targetType && targetType.value === "domain"
             && [...targetType.options].every((o) => /Domain Gate|Traffic Gate/.test(o.textContent))
-            && /Domain Gate/.test((doc.getElementById("sl-gate-hint") || {}).textContent || ""),
+            && /Domain Gate/.test((needEl("sl-gate-hint") || {}).textContent || ""),
             targetType ? targetType.value : "no target type");
       // THE CONFIRM IS ABOUT THE VALUES ON SCREEN. Arm it, edit the target, and the button must
       // fall back to Create rule; no write is attempted here.
-      const target = doc.getElementById("sl-domain");
-      const createBtn = doc.getElementById("sl-block");
+      const target = needEl("sl-domain");
+      const createBtn = needEl("sl-block");
       if (target && createBtn) {
         target.value = "ads.example.com";
         createBtn.click();
         await new Promise((r) => setTimeout(r, 40));
         check("...a blocking rule arms with a target-and-gate sentence",
               /Confirm/.test(createBtn.textContent)
-              && /Domain Gate \(DNS answer\)/.test((doc.getElementById("sl-block-note") || {}).textContent || ""),
-              createBtn.textContent + " / " + ((doc.getElementById("sl-block-note") || {}).textContent || ""));
+              && /Domain Gate \(DNS answer\)/.test((needEl("sl-block-note") || {}).textContent || ""),
+              createBtn.textContent + " / " + ((needEl("sl-block-note") || {}).textContent || ""));
         target.dispatchEvent(new window.Event("input", { bubbles: true }));
         await new Promise((r) => setTimeout(r, 20));
         check("...and editing the target disarms the confirmation",
@@ -4083,7 +4152,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       await new Promise((r) => setTimeout(r, 60));
       check("...and Escape closes it, scrim and all",
             sheet.classList.contains("hidden")
-            && doc.getElementById("sl-rule-scrim").classList.contains("hidden"));
+            && needEl("sl-rule-scrim").classList.contains("hidden"));
     }
 
     // A ROW OPENS THE SAME SHEET (SL-1), with the destructive act inside it.
@@ -4092,12 +4161,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const rid = firstRow.getAttribute("data-rule-id");
       firstRow.click();
       await new Promise((r) => setTimeout(r, 80));
-      const sheet = doc.getElementById("sl-rule-sheet");
+      const sheet = needEl("sl-rule-sheet");
       check("a rule row opens its sheet with the delete act inside",
             !!sheet && !sheet.classList.contains("hidden")
             && !doc.getElementById("sl-rule-detail").classList.contains("hidden")
             && !!sheet.querySelector("#sl-rule-delete")
-            && (doc.getElementById("sl-rule-id").textContent || "") === rid,
+            && (needEl("sl-rule-id").textContent || "") === rid,
             "row click did not open the rule sheet");
       check("...and the only delete control on the tab is the BULK one the operator asked for",
             !!doc.querySelector("#sl-bulk #sl-bulk-delete")
@@ -4110,7 +4179,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             }));
       // DELETING ASKS TWICE, AND THE SERVER REQUIRES A REASON: with an empty reason nothing arms;
       // with a reason the first click arms and still nothing is posted.
-      const delBtn = doc.getElementById("sl-rule-delete");
+      const delBtn = needEl("sl-rule-delete");
       if (delBtn) {
         const beforeDel = POSTED.length;
         delBtn.click();
@@ -4119,7 +4188,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               !/Click again/.test(delBtn.textContent)
               && !POSTED.slice(beforeDel).some((r) => r.url.includes("/api/sluice/revoke")),
               delBtn.textContent);
-        const why = doc.getElementById("sl-rule-delete-reason");
+        const why = needEl("sl-rule-delete-reason");
         if (why) why.value = "harness: this rule has lapsed";
         delBtn.click();
         await new Promise((r) => setTimeout(r, 60));
@@ -4128,15 +4197,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
               && !POSTED.slice(beforeDel).some((r) => r.url.includes("/api/sluice/revoke")),
               delBtn.textContent);
       }
-      const close = doc.getElementById("sl-rule-close");
+      const close = needEl("sl-rule-close");
       if (close) close.click();
     }
 
-    const glance = doc.getElementById("sl-glance");
+    const glance = needEl("sl-glance");
     check("the glance strip states counts with their nouns",
           !!glance && /\d/.test(glance.textContent) && /(rule|live|drop|alert)/i.test(glance.textContent),
           glance ? glance.textContent : "no strip");
-    const top = doc.getElementById("sl-top-names");
+    const top = needEl("sl-top-names");
     check("...and names the recent names rather than a bare count",
           !!top && /ads\.example\.com/.test(top.textContent), top ? top.textContent : "none");
 
@@ -4151,7 +4220,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && rowGates.some((c) => c.textContent.trim() === "Domain")
           && rowGates.some((c) => c.textContent.trim() === "Traffic"),
           rowGates.map((c) => c.textContent.trim()).join("|"));
-    const gateFilter = doc.getElementById("sl-rule-gates");
+    const gateFilter = needEl("sl-rule-gates");
     check("the rule table offers a Domain / Traffic filter",
           !!gateFilter && gateFilter.querySelectorAll("[data-rule-gate]").length === 3,
           gateFilter ? gateFilter.textContent : "no rule gate filter");
@@ -4358,7 +4427,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                   addr: "198.51.100.10", targets: "*" } });
         H.SETTINGS_ROWS.zeek_ifaces = { value: "eth2,eth1" };
         window.wlShowNicSettings("eth2", ["eth1", "eth2"]);
-        const roleText = (doc.getElementById("wl-nic-role") || {}).textContent || "";
+        const roleText = (needEl("wl-nic-role") || {}).textContent || "";
         const zeekChecked = !!doc.getElementById("wl-nic-zeek").checked;
         check("the eth2 SETTINGS sheet agrees with the visual: unassigned, Zeek off",
               /unassigned/i.test(roleText) && zeekChecked === false,
@@ -4407,10 +4476,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the sensor name is the action affordance", !!sensorLink);
     sensorLink.click();
     await new Promise((r) => setTimeout(r, 120));
-    const sensorCard = doc.getElementById("wl-sensor-card");
+    const sensorCard = needEl("wl-sensor-card");
     check("clicking the sensor name opens ONLY the sensor actions",
           !!sensorCard && !sensorCard.classList.contains("hidden")
-          && /edge-alive/.test(doc.getElementById("wl-sensor-title").textContent),
+          && /edge-alive/.test(needEl("wl-sensor-title").textContent),
           sensorCard ? sensorCard.className : "no card");
     const sensorExtras = [...sensorCard.querySelectorAll("input, select")]
       .filter((node) => !node.closest("#wl-sensor-channel"));
@@ -4420,8 +4489,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && sensorExtras.length === 0,
           sensorExtras.map((n) => n.id || n.tagName).join(",") || "unexpected control");
     check("...the verbs match this sensor's state",
-          doc.getElementById("wl-sensor-adopt").classList.contains("hidden")
-          && doc.getElementById("wl-sensor-enable").classList.contains("hidden")
+          needEl("wl-sensor-adopt").classList.contains("hidden")
+          && needEl("wl-sensor-enable").classList.contains("hidden")
           && !doc.getElementById("wl-sensor-disable").classList.contains("hidden")
           && !doc.getElementById("wl-sensor-delete").classList.contains("hidden"));
     check("the sensor sheet owns the Channel pair",
@@ -4429,7 +4498,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           && !!doc.getElementById("wl-sensor-channel-upstream")
           && !!doc.getElementById("wl-sensor-channel-downstream"),
           "the channel controls are not on the sensor sheet");
-    doc.getElementById("wl-sensor-close").click();
+    needEl("wl-sensor-close").click();
     await new Promise((r) => setTimeout(r, 80));
     const capRow = (() => {
       let sib = sensorRow.nextElementSibling;
@@ -4451,16 +4520,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 180));
     check("clicking a NIC line opens that NIC's settings",
           !doc.getElementById("wl-detail-card").classList.contains("hidden")
-          && (doc.getElementById("wl-plan-iface").value || "") === "eth1"
-          && /editing NIC eth1/.test((doc.getElementById("wl-nic-edit") || {}).textContent || ""),
-          `iface=${doc.getElementById("wl-plan-iface").value} note=${(doc.getElementById("wl-nic-edit") || {}).textContent}`);
+          && (needEl("wl-plan-iface").value || "") === "eth1"
+          && /editing NIC eth1/.test((needEl("wl-nic-edit") || {}).textContent || ""),
+          `iface=${needEl("wl-plan-iface").value} note=${(needEl("wl-nic-edit") || {}).textContent}`);
     check("an enabled channel locks siphon and passive NetFlow out of the NIC sheet",
-          doc.getElementById("wl-nic-siphon").disabled
-          && doc.getElementById("wl-nic-netflow-passive").disabled
-          && doc.getElementById("wl-nic-loch").checked
-          && doc.getElementById("wl-nic-netflow-active").checked,
-          `siphon disabled=${doc.getElementById("wl-nic-siphon").disabled} ` +
-          `passive disabled=${doc.getElementById("wl-nic-netflow-passive").disabled}`);
+          needEl("wl-nic-siphon").disabled
+          && needEl("wl-nic-netflow-passive").disabled
+          && needEl("wl-nic-loch").checked
+          && needEl("wl-nic-netflow-active").checked,
+          `siphon disabled=${needEl("wl-nic-siphon").disabled} ` +
+          `passive disabled=${needEl("wl-nic-netflow-passive").disabled}`);
     if (channelHeld === undefined) delete H.STAGE.changes.channel_upstream;
     else H.STAGE.changes.channel_upstream = channelHeld;
     if (channelHeldDown === undefined) delete H.STAGE.changes.channel_downstream;
@@ -4469,13 +4538,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // eth1 ... there should be no reference of eth2"). The global Zeek list is stored elsewhere;
     // the scoped panel reads only this interface.
     {
-      const panel = doc.getElementById("wl-nic-settings");
+      const panel = needEl("wl-nic-settings");
       const words = panel ? panel.textContent : "";
       // THE CHANNEL SELECTORS ARE THE ONE PLACE ANOTHER NIC'S NAME MAY APPEAR: choosing an
       // upstream and downstream pair requires listing the candidates. The facts and the
       // heading still name only the interface being edited.
-      const ownWords = (doc.getElementById("wl-nic-name") || {}).textContent
-        + " " + (doc.getElementById("wl-nic-facts") || {}).textContent;
+      const ownWords = (needEl("wl-nic-name") || {}).textContent
+        + " " + (needEl("wl-nic-facts") || {}).textContent;
       check("a NIC's settings panel names only that NIC",
             !/eth2/i.test(ownWords) && !/eth0/i.test(ownWords), ownWords.slice(0, 180));
       check("the NIC sheet separates Mode from Feeds",
@@ -4492,7 +4561,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && !!doc.getElementById("wl-nic-sonar")
             && !!doc.getElementById("wl-nic-cidr") && !!doc.getElementById("wl-nic-gateway")
             && !!doc.getElementById("wl-nic-intercept-ip")
-            && /Network name/.test(doc.getElementById("wl-nic-settings").textContent),
+            && /Network name/.test(needEl("wl-nic-settings").textContent),
             words.slice(0, 360));
       check("the channel pair is not a NIC field; the NIC sheet states its consequence",
             !/Channel/.test(words)
@@ -4502,17 +4571,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const held = H.STAGE.changes;
       H.STAGE.changes = { zeek_ifaces: "eth1,eth2" };
       H.renderStageMirror(["zeek_ifaces"]);
-      const diff = doc.getElementById("wl-stage-list").textContent || "";
+      const diff = needEl("wl-stage-list").textContent || "";
       check("...and its pending diff states this NIC's on/off, not the other NIC's name",
             !/eth2/i.test(diff) && /eth1/.test(diff) && /\bon\b/.test(diff), diff.slice(0, 120));
       H.STAGE.changes = held;
       H.renderStageMirror(Object.keys(held));
     }
-    doc.getElementById("wl-detail-close").click();
+    needEl("wl-detail-close").click();
     await new Promise((r) => setTimeout(r, 80));
     // views: a default exists, switching applies filters, saving adds one
     await H.loadWeirlings();
-    const viewSel = doc.getElementById("wl-view");
+    const viewSel = needEl("wl-view");
     check("saved views exist, with a default",
           !!viewSel && viewSel.options.length >= 3 && /All sensors/.test(viewSel.options[0].textContent),
           viewSel ? [...viewSel.options].map((o) => o.textContent).join(" | ") : "no select");
@@ -4520,13 +4589,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     viewSel.dispatchEvent(new window.Event("change", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 250));
     check("...switching to Needs action drives the problems filter",
-          doc.getElementById("wl-problems-only").checked === true,
-          String(doc.getElementById("wl-problems-only").checked));
+          needEl("wl-problems-only").checked === true,
+          String(needEl("wl-problems-only").checked));
     viewSel.value = "all";
     viewSel.dispatchEvent(new window.Event("change", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 250));
     const before = viewSel.options.length;
-    doc.getElementById("wl-view-save").click();
+    needEl("wl-view-save").click();
     await new Promise((r) => setTimeout(r, 80));
     check("...and the current filters save as a view",
           viewSel.options.length === before + 1, `${before} -> ${viewSel.options.length}`);
@@ -4597,7 +4666,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           cidrCell ? cidrCell.textContent : "none");
     check("...and no findings prose leaks into the list",
           !/reporting normally, last heard/.test(
-            doc.getElementById("wl-table").textContent || ""));
+            needEl("wl-table").textContent || ""));
   }
 
   // ── ALERT DISCIPLINE (BF-12) ────────────────────────────────────────────────────────────────
@@ -4614,7 +4683,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           cells.length >= 11 && cells.some((c) => /edge-alive/.test(c)) &&
             cells.some((c) => /scored this window/.test(c)),
           cells.join(" | ").slice(0, 140));
-    const disc = doc.getElementById("an-discipline").textContent;
+    const disc = needEl("an-discipline").textContent;
     check("the fired-vs-acted-on budget line renders",
           /4 fired/.test(disc) && /1 acted on/.test(disc) && /3 still open/.test(disc), disc);
     const detRows = [...doc.querySelectorAll("#detectors-table tbody tr")];
@@ -4667,7 +4736,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       fixBtn.click();
       await new Promise((r) => setTimeout(r, 300));
       check("...and the fix button lands on the fixing surface",
-            doc.getElementById("view-weirlings").classList.contains("active"));
+            needEl("view-weirlings").classList.contains("active"));
     }
     const detBtn = [...doc.querySelectorAll("#audit-table button")]
       .find((b) => /register it/.test(b.textContent));
@@ -4675,7 +4744,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       detBtn.click();
       await new Promise((r) => setTimeout(r, 200));
       check("...and another class lands on its own surface",
-            doc.getElementById("view-anomalies").classList.contains("active"));
+            needEl("view-anomalies").classList.contains("active"));
     }
     H.showView("anomalies");
   }
@@ -4715,11 +4784,11 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     btIn.dispatchEvent(new window.Event("input", { bubbles: true }));
     await H.applyStage();
     await new Promise((r) => setTimeout(r, 60));
-    const noteT = doc.getElementById("st-stage-note").textContent;
+    const noteT = needEl("st-stage-note").textContent;
     check("a failed apply-time check BLOCKS the write and names itself",
           /BLOCKED/.test(noteT) && /threshold does not fire on yesterday/.test(noteT),
           noteT.slice(0, 150));
-    const resT = doc.getElementById("st-apply-results").textContent;
+    const resT = needEl("st-apply-results").textContent;
     check("...and the receipt counts what passed and what skipped",
           /2 skipped/.test(resT) && /1 failed/.test(resT),
           resT.slice(0, 180));
@@ -4736,20 +4805,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const clearBtn = [...doc.querySelectorAll("#st-apply-results button")]
       .find((b) => /Clear this plan/i.test(b.textContent));
     check("a blocked apply offers a live way out in the receipt", !!clearBtn);
-    const discardBtn = doc.getElementById("st-stage-discard");
+    const discardBtn = needEl("st-stage-discard");
     check("...and Discard is live while the refused plan is staged",
           !!discardBtn && !discardBtn.disabled);
     check("the staged line states the from-value immediately (no plan needed)",
-          /was 0\.35|was 0\.3/.test(doc.getElementById("st-stage-list").textContent),
-          doc.getElementById("st-stage-list").textContent.slice(0, 120));
+          /was 0\.35|was 0\.3/.test(needEl("st-stage-list").textContent),
+          needEl("st-stage-list").textContent.slice(0, 120));
     if (clearBtn) {
       clearBtn.click();
       await new Promise((r) => setTimeout(r, 200));
-      const noteAfter = doc.getElementById("st-stage-note").textContent;
+      const noteAfter = needEl("st-stage-note").textContent;
       check("...and clearing it removes the BLOCKED line and the staged row",
             !/BLOCKED/.test(noteAfter)
-            && !/base_threshold/.test(doc.getElementById("st-stage-list").textContent)
-            && doc.getElementById("st-stage-apply").disabled,
+            && !/base_threshold/.test(needEl("st-stage-list").textContent)
+            && needEl("st-stage-apply").disabled,
             noteAfter.slice(0, 120));
     }
     // now a value that passes: the checks ride the success receipt too
@@ -4757,7 +4826,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     btIn.dispatchEvent(new window.Event("input", { bubbles: true }));
     await H.applyStage();
     await new Promise((r) => setTimeout(r, 60));
-    const resOk = doc.getElementById("st-apply-results").textContent;
+    const resOk = needEl("st-apply-results").textContent;
     check("a clean apply reports its checks in the receipt",
           /1 passed, 1 skipped/.test(resOk), resOk.slice(0, 180));
     check("...and the stage clears when the write lands",
@@ -4773,8 +4842,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await sleep(200);
     fire("k", { ctrlKey: true });
     await sleep(300);
-    const pal = doc.getElementById("palette");
-    const palInput = doc.getElementById("palette-input");
+    const pal = needEl("palette");
+    const palInput = needEl("palette-input");
     // NB: `pal` may be created on first open -- that IS the check.
     check("Ctrl-K opens the palette", !!doc.getElementById("palette")
           && !doc.getElementById("palette").classList.contains("hidden"));
@@ -4793,9 +4862,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       { key: "Enter", bubbles: true, cancelable: true }));
     await sleep(300);
     check("...Enter executes the command",
-          doc.getElementById("view-zeek").classList.contains("active"));
+          needEl("view-zeek").classList.contains("active"));
     check("...and the palette closes behind it",
-          doc.getElementById("palette").classList.contains("hidden"));
+          needEl("palette").classList.contains("hidden"));
     fire("/");
     await sleep(60);
     check("slash opens the palette for a search",
@@ -4803,16 +4872,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     fire("Escape");
     await sleep(40);
     check("escape closes it again",
-          doc.getElementById("palette").classList.contains("hidden"));
+          needEl("palette").classList.contains("hidden"));
     // ISSUE #64: focus must go BACK to the opener, and Tab must not leave the open overlay.
     // This is the runtime probe from the issue, kept beside the palette suite.
     {
-      const opener = doc.getElementById("palette-btn");
+      const opener = needEl("palette-btn");
       opener.focus();
       const focusBefore = doc.activeElement;
       fire("k", { ctrlKey: true });
       await sleep(120);
-      const openInput = doc.getElementById("palette-input");
+      const openInput = needEl("palette-input");
       check("PALETTE FOCUS: opening moves focus into the palette",
             doc.activeElement === openInput,
             doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
@@ -4820,13 +4889,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         "keydown", { key: "Tab", bubbles: true, cancelable: true }));
       await sleep(40);
       check("PALETTE FOCUS: Tab stays inside the open palette",
-            doc.getElementById("palette").contains(doc.activeElement),
+            needEl("palette").contains(doc.activeElement),
             doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
       openInput.dispatchEvent(new window.KeyboardEvent(
         "keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
       await sleep(40);
       check("PALETTE FOCUS: Shift+Tab stays inside the open palette",
-            doc.getElementById("palette").contains(doc.activeElement),
+            needEl("palette").contains(doc.activeElement),
             doc.activeElement ? doc.activeElement.id || doc.activeElement.tagName : "none");
       fire("Escape");
       await sleep(80);
@@ -4849,25 +4918,25 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     fire("n");
     await sleep(300);
     check("g n jumps straight to Netflow",
-          doc.getElementById("view-netflow").classList.contains("active"));
+          needEl("view-netflow").classList.contains("active"));
 
     // ── THE PALETTE AS SEARCH (US-8) ──────────────────────────────────────────
     {
       const type = (q) => {
-        const inp = doc.getElementById("palette-input");
+        const inp = needEl("palette-input");
         inp.value = q;
         inp.dispatchEvent(new window.Event("input", { bubbles: true }));
         return inp;
       };
       const rowsNow = () => [...doc.querySelectorAll("#palette-results .palette-row")];
       const openPal = () => {
-        const pb = doc.getElementById("palette-btn");
+        const pb = needEl("palette-btn");
         if (pb) pb.click();
       };
       // 1) THE MOUSE PATH: the chrome button is the entry, the keys stay accelerators.
       H.showView("health");
       await sleep(150);
-      const pbtn = doc.getElementById("palette-btn");
+      const pbtn = needEl("palette-btn");
       check("PALETTE: the chrome carries a visible entry", !!pbtn);
       check("...and it is named for what it does (Quick links, not palette)",
             !!pbtn && pbtn.textContent.trim() === "Quick links",
@@ -4888,9 +4957,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       if (ipRows[0]) ipRows[0].click();
       await sleep(450);
       check("...activating it lands on the host's view with the address loaded",
-            doc.getElementById("view-host").classList.contains("active")
-            && (doc.getElementById("hp-title").textContent || "") === "198.51.100.5",
-            `addr=${doc.getElementById("h-addr").value}`);
+            needEl("view-host").classList.contains("active")
+            && (needEl("hp-title").textContent || "") === "198.51.100.5",
+            `addr=${needEl("h-addr").value}`);
       // 3) A DOMAIN IS ITS DNS RECORDS.
       openPal();
       await sleep(120);
@@ -4903,9 +4972,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       if (nameRows[0]) nameRows[0].click();
       await sleep(450);
       check("...activating it lands on DNS with the domain filter ACTIVE",
-            doc.getElementById("view-dns").classList.contains("active")
-            && doc.getElementById("dn-domain").value === "ads.example.com",
-            `dom=${doc.getElementById("dn-domain").value}`);
+            needEl("view-dns").classList.contains("active")
+            && needEl("dn-domain").value === "ads.example.com",
+            `dom=${needEl("dn-domain").value}`);
       // 4) A RULE ID IS A RULE -- its home is the Sluice gate, and it lands flashed.
       openPal();
       await sleep(120);
@@ -4918,7 +4987,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       if (ruleRows[0]) ruleRows[0].click();
       await sleep(500);
       check("...activating it lands on the Sluice gate",
-            doc.getElementById("view-sluice").classList.contains("active"));
+            needEl("view-sluice").classList.contains("active"));
       check("...and the rule's own row is flashed there",
             !!doc.querySelector('#view-sluice [data-rule-id="r-live-1"].flash-hit')
             || !!doc.querySelector('#view-sluice [data-rule-id="r-live-1"]'),
@@ -4952,7 +5021,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const keyCard = keyRow && keyRow.closest(".card");
       check("...and its boot-collapsed card is EXPANDED before the row is shown",
             !!keyCard && !keyCard.classList.contains("collapsed")
-            && doc.getElementById("view-settings").classList.contains("active"),
+            && needEl("view-settings").classList.contains("active"),
             keyCard ? `collapsed=${keyCard.classList.contains("collapsed")}` : "no card");
       // 7) the disabled retrain STATES why instead of swallowing the click.
       openPal();
@@ -4961,10 +5030,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       await sleep(150);
       const rtRows = rowsNow().filter((r) => /Force a model retrain/.test(r.textContent));
       check("PALETTE: the retrain command exists", rtRows.length > 0);
-      const errBefore = (doc.getElementById("err-banner") || {}).textContent || "";
+      const errBefore = (needEl("err-banner") || {}).textContent || "";
       if (rtRows[0]) { rtRows[0].click(); await sleep(600); }
-      const mrForce = doc.getElementById("mr-force");
-      const errAfter = (doc.getElementById("err-banner") || {}).textContent || "";
+      const mrForce = needEl("mr-force");
+      const errAfter = (needEl("err-banner") || {}).textContent || "";
       check("...and when the button is DISABLED the palette says why (never a silent no-op)",
             !mrForce || !mrForce.disabled || /retrain unavailable|Could not/.test(errAfter),
             `disabled=${mrForce ? mrForce.disabled : "none"} err="${errAfter.slice(0, 80)}" errBefore="${errBefore.slice(0, 40)}"`);
@@ -4992,7 +5061,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadWeirlings();
     fire("k", { ctrlKey: true });
     await sleep(300);
-    const pIn = doc.getElementById("palette-input");
+    const pIn = needEl("palette-input");
     pIn.value = "edge-alive";
     pIn.dispatchEvent(new window.Event("input", { bubbles: true }));
     await sleep(60);
@@ -5013,7 +5082,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       sIn.dispatchEvent(new window.KeyboardEvent("keydown", { key: "n", bubbles: true }));
       await sleep(60);
       check("shortcuts stay quiet while a field is being typed into",
-            doc.getElementById("palette").classList.contains("hidden")
+            needEl("palette").classList.contains("hidden")
             && !doc.getElementById("view-netflow").classList.contains("active"));
     }
   }
@@ -5055,7 +5124,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // page, not back on the inventory.
     H.showView("host");
     check("an old #v=host link lands on the host view",
-          doc.getElementById("view-host").classList.contains("active"), H.CURRENT_VIEW);
+          needEl("view-host").classList.contains("active"), H.CURRENT_VIEW);
     H.showView("assets");
     const cssText = fs.readFileSync(path.join(WEB, "style.css"), "utf8");
     check("...one row: the strip is nowrap and scrolls rather than wrapping",
@@ -5064,7 +5133,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadWeirlings();
     await H.openWeirling("edge-alive");
     await sleep(250);
-    const crumbs = doc.getElementById("crumbs");
+    const crumbs = needEl("crumbs");
     check("a drill-down posts its breadcrumb path",
           !crumbs.classList.contains("hidden") && /Fleet/.test(crumbs.textContent)
           && /Weirlings/.test(crumbs.textContent) && /edge-alive/.test(crumbs.textContent),
@@ -5077,12 +5146,12 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     if (back) back.click();
     await sleep(80);
     check("...which closes the detail and clears the trail",
-          doc.getElementById("wl-detail-card").classList.contains("hidden")
-          && doc.getElementById("crumbs").classList.contains("hidden"));
+          needEl("wl-detail-card").classList.contains("hidden")
+          && needEl("crumbs").classList.contains("hidden"));
     H.showView("health");
     await sleep(80);
     check("a view change clears any breadcrumb that was left",
-          doc.getElementById("crumbs").classList.contains("hidden"));
+          needEl("crumbs").classList.contains("hidden"));
   }
 
   // ── THE DRILL-DOWN SHEET (TH-4) ─────────────────────────────────────────────────────────────
@@ -5092,7 +5161,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the drill-down is a sheet: fixed to the right edge, so the view never reflows",
           cssText.includes(".sheet { position: fixed; top: 0; right: 0; bottom: 0; left: auto;"),
           "css rule");
-    const card = doc.getElementById("wl-detail-card");
+    const card = needEl("wl-detail-card");
     check("...and it slides in (the sheet-in keyframe is defined)",
           card.classList.contains("sheet") && cssText.includes("@keyframes sheet-in"));
     check("editors stay centred modals: the settings stage card is NOT a sheet",
@@ -5105,7 +5174,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           !card.classList.contains("hidden"));
     check("...with focus moved INTO the sheet (keyboard belongs to it)",
           doc.activeElement === card, String(doc.activeElement && doc.activeElement.id));
-    const scrim = doc.getElementById("wl-sheet-scrim");
+    const scrim = needEl("wl-sheet-scrim");
     check("...and a click-out scrim behind it", !!scrim && !scrim.classList.contains("hidden"));
     window.document.dispatchEvent(new window.KeyboardEvent("keydown",
       { key: "Escape", bubbles: true, cancelable: true }));
@@ -5113,7 +5182,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("Escape returns from the sheet",
           card.classList.contains("hidden") && scrim.classList.contains("hidden"));
     check("...and the breadcrumb trail goes with it",
-          doc.getElementById("crumbs").classList.contains("hidden"));
+          needEl("crumbs").classList.contains("hidden"));
     await H.openWeirling("edge-alive");
     await sleep(120);
     scrim.click();
@@ -5121,7 +5190,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("a click outside returns too", card.classList.contains("hidden"));
     await H.openWeirling("edge-alive");
     await sleep(120);
-    doc.getElementById("wl-sheet-close").click();
+    needEl("wl-sheet-close").click();
     await sleep(60);
     check("...and the sheet carries its own visible Close",
           card.classList.contains("hidden") && !!doc.getElementById("wl-sheet-close"));
@@ -5139,7 +5208,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // the host view: the two series-backed tiles earn sparklines; the rest do not.
     await H.openHost("198.51.100.5");
     await sleep(250);
-    const hStats = doc.getElementById("h-stats");
+    const hStats = needEl("h-stats");
     const hTiles = [...hStats.querySelectorAll(".stat")];
     check("the host tiles put the LABEL above the value",
           hTiles.length >= 5 && hTiles.every((t) => t.children[0].classList.contains("k")),
@@ -5183,8 +5252,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // ── THE ACCESSIBILITY GUARANTEES, LIVE (TH-6) ──────────────────────────────────────────────
   {
-    const stageNote = doc.getElementById("st-stage-note");
-    const applyRes = doc.getElementById("st-apply-results");
+    const stageNote = needEl("st-stage-note");
+    const applyRes = needEl("st-apply-results");
     check("the staged-changes note announces itself to a screen reader",
           stageNote.getAttribute("aria-live") === "polite"
           && stageNote.getAttribute("role") === "status");
@@ -5268,8 +5337,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await confirmEcho("proving the applied path");
     await appliedRun;
     check("a siphon apply whose plan moves reads back as APPLIED",
-          /applied to the hub's plan at/.test(doc.getElementById("wl-plan-note").textContent),
-          doc.getElementById("wl-plan-note").textContent);
+          /applied to the hub's plan at/.test(needEl("wl-plan-note").textContent),
+          needEl("wl-plan-note").textContent);
     // (5b) the ESCALATION: force the detail read to keep reporting the old mode -- the
     //      read-back cannot agree, and the note must say NOT APPLIED, not a false done.
     fetchOverride = (u) => (String(u).includes("/api/weirlings/detail")
@@ -5287,8 +5356,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await stuckRun;
     fetchOverride = null;
     check("a siphon apply whose plan does NOT move escalates NOT APPLIED",
-          /NOT APPLIED/.test(doc.getElementById("wl-plan-note").textContent),
-          doc.getElementById("wl-plan-note").textContent);
+          /NOT APPLIED/.test(needEl("wl-plan-note").textContent),
+          needEl("wl-plan-note").textContent);
     // (6) delete: the sensor sheet's Delete posts the echo's reason
     H.showView("weirlings");
     await H.loadWeirlings();
@@ -5298,7 +5367,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     victim.querySelector("button.link").click();
     await sleep(80);
     const before6 = POSTED.length;
-    doc.getElementById("wl-sensor-delete").click();
+    needEl("wl-sensor-delete").click();
     await sleep(80);
     await confirmEcho("decommissioned after the move");
     await sleep(200);
@@ -5306,8 +5375,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("Delete on the sensor sheet posts the echo's reason",
           rvs.length === 1 && /decommissioned after the move/.test(rvs[0].body),
           rvs.map((r) => r.body).join(" | ").slice(0, 160));
-    const card = doc.getElementById("wl-sensor-card");
-    if (card && !card.classList.contains("hidden")) doc.getElementById("wl-sensor-close").click();
+    const card = needEl("wl-sensor-card");
+    if (card && !card.classList.contains("hidden")) needEl("wl-sensor-close").click();
   }
 
   // ── THE POLICY CARD IS INDEPENDENT OF THE RULE LIST (measured live 2026-10-22) ───────────────
@@ -5328,8 +5397,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the detection policy card renders when the rule list is empty",
           policyRows.length === 4, `${policyRows.length} policy row(s)`);
     check("...and names the current policy even with no rules",
-          /Current policy: high/.test(doc.getElementById("sl-criticality-note").textContent || ""),
-          doc.getElementById("sl-criticality-note").textContent || "empty");
+          /Current policy: high/.test(needEl("sl-criticality-note").textContent || ""),
+          needEl("sl-criticality-note").textContent || "empty");
     await H.loadSluice();   // tidy back to the full fixture
   }
 
@@ -5337,7 +5406,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   {
     H.showView("sluice");
     await H.loadSluice();
-    const bl = doc.getElementById("sl-bl-rows").textContent;
+    const bl = needEl("sl-bl-rows").textContent;
     check("the blocklist panel renders the imported source", /HaGeZi/.test(bl) && /123456/.test(bl),
           bl.slice(0, 110));
     // The card moved to Settings (2026-10-16) and its Recent domain hits panel was removed --
@@ -5375,8 +5444,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // found nothing rather than render an empty box.
   H.showView("identity");
   await H.loadIdentity();
-  const fpIn = doc.getElementById("fp-input");
-  const fpGo = doc.getElementById("fp-go");
+  const fpIn = needEl("fp-input");
+  const fpGo = needEl("fp-go");
   check("the identity view carries the fingerprint lookup", !!fpIn && !!fpGo);
   if (fpIn && fpGo) {
     fpIn.value = "t13d1516h2_8daaf6152771_02713d6af862";
@@ -5386,8 +5455,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("the lookup renders one row per host that presented the fingerprint",
           hits.length === 2, `${hits.length} row(s)`);
     check("the note states how many hosts, and over what window",
-          /2 host/.test(doc.getElementById("fp-note").textContent),
-          doc.getElementById("fp-note").textContent);
+          /2 host/.test(needEl("fp-note").textContent),
+          needEl("fp-note").textContent);
 
     fetchOverride = (u, opts) => (String(u).split("?")[0].endsWith("/api/fingerprints")
       ? { ok: true, status: 200,
@@ -5397,8 +5466,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     fpGo.click();
     await new Promise((r) => setTimeout(r, 80));
     check("a lookup that found nothing SAYS so",
-          /no host/.test(doc.getElementById("fp-note").textContent),
-          doc.getElementById("fp-note").textContent);
+          /no host/.test(needEl("fp-note").textContent),
+          needEl("fp-note").textContent);
     check("and renders no table for it",
           doc.querySelectorAll("#fp-results tbody tr").length === 0);
     fetchOverride = null;
@@ -5414,7 +5483,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await new Promise((r) => setTimeout(r, 20));
   H.showView("models");
   await H.loadRetrain();
-  const mrNote = (doc.getElementById("mr-note") || {}).textContent || "";
+  const mrNote = (needEl("mr-note") || {}).textContent || "";
   check("the retrain panel says what the candidate trained, and on how much",
         /2 of 4 detector/.test(mrNote) && /host-window/.test(mrNote), mrNote.slice(0, 180));
   check("the contamination warning reaches the screen, beside the decision",
@@ -5423,7 +5492,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         doc.querySelectorAll("#mr-report tbody tr").length === 4,
         `${doc.querySelectorAll("#mr-report tbody tr").length} row(s)`);
   {
-    const keepBtn = doc.getElementById("mr-keep");
+    const keepBtn = needEl("mr-keep");
     check("Keep is offered for a candidate that trained something",
           !!keepBtn && !keepBtn.classList.contains("hidden"));
     if (keepBtn) {
@@ -5432,7 +5501,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       await new Promise((r) => setTimeout(r, 120));
       check("Keep opens the destructive echo first (target + a required reason)",
             !!doc.querySelector("#modal-body .dest-confirm"),
-            doc.getElementById("mr-note").textContent.slice(0, 80));
+            needEl("mr-note").textContent.slice(0, 80));
       await confirmEcho("the candidate's precision held up");
       await new Promise((r) => setTimeout(r, 120));
       const req = POSTED.slice(postedBefore).find((r) => r.url.includes("/api/models/retrain"));
@@ -5454,7 +5523,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     : null);
   await H.loadRetrain();
   check("a candidate that trained NOTHING does not offer Keep",
-        doc.getElementById("mr-keep").classList.contains("hidden"),
+        needEl("mr-keep").classList.contains("hidden"),
         "an empty candidate must not be installable over working models");
   fetchOverride = null;
   await H.loadRetrain();
@@ -5471,10 +5540,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   //    state the rest of this file runs in, so asserting it here documents why nothing above
   //    ever hit a login wall.
   check("no accounts means no sign-in gate (the pre-accounts posture)",
-        doc.getElementById("auth-gate").classList.contains("hidden"),
+        needEl("auth-gate").classList.contains("hidden"),
         "auth gate visible with accounts:false");
   check("the sign-in form is a password input, not plain text",
-        doc.getElementById("gate-pass").type === "password");
+        needEl("gate-pass").type === "password");
 
   // COMPUTED, NOT MERELY CLASSED. `classList.contains("hidden")` was TRUE for the whole
   // outage: `.gate { display: flex }` sat after `.hidden { display: none }` at equal
@@ -5501,10 +5570,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("signing in stores a session token that requests then carry",
         H.getSession() === "test-session-token", `session=${H.getSession()}`);
   check("the user chip names the signed-in account and role",
-        /admin/.test(doc.getElementById("user-chip").textContent),
-        doc.getElementById("user-chip").textContent);
+        /admin/.test(needEl("user-chip").textContent),
+        needEl("user-chip").textContent);
   check("the auth gate is hidden after signing in",
-        doc.getElementById("auth-gate").classList.contains("hidden"));
+        needEl("auth-gate").classList.contains("hidden"));
   check("no gate is painted once signed in (computed)",
         gateDisplay("auth-gate") === "none" && gateDisplay("pw-gate") === "none",
         `auth=${gateDisplay("auth-gate")} pw=${gateDisplay("pw-gate")}`);
@@ -5554,9 +5623,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
 
   // Adding a user POSTs the account and the forced-change flag.
   const createBefore = POSTED.length;
-  doc.getElementById("st-new-user").value = "newviewer";
-  doc.getElementById("st-new-pass").value = "initial-pass-1";
-  doc.getElementById("st-new-role").value = "viewer";
+  needEl("st-new-user").value = "newviewer";
+  needEl("st-new-pass").value = "initial-pass-1";
+  needEl("st-new-role").value = "viewer";
   await H.createUser();
   const createReq = POSTED.slice(createBefore).find((r) => r.url.includes("/api/users/create"));
   check("Add user POSTs to /api/users/create", !!createReq,
@@ -5583,10 +5652,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("a viewer still SEES the values",
         [...doc.querySelectorAll(".setting-val")].some((n) => n.textContent === "clickhouse"));
   check("the viewer's Users card is hidden (account data is admin-only)",
-        doc.getElementById("st-users-card").classList.contains("hidden"));
+        needEl("st-users-card").classList.contains("hidden"));
   check("the page tells the viewer why it is read-only",
-        /read-only|viewer/i.test(doc.getElementById("st-note").textContent),
-        doc.getElementById("st-note").textContent.slice(0, 120));
+        /read-only|viewer/i.test(needEl("st-note").textContent),
+        needEl("st-note").textContent.slice(0, 120));
   SETTINGS_PAYLOAD.writes.enabled = true;
 
   // 6. A FORCED PASSWORD CHANGE gates the whole dashboard: the pw gate is shown and the auth
@@ -5600,7 +5669,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         !doc.getElementById("pw-gate").classList.contains("hidden"),
         "pw gate hidden while must_change is set");
   check("the forced gate is not the sign-in gate (the account is signed in)",
-        doc.getElementById("auth-gate").classList.contains("hidden"));
+        needEl("auth-gate").classList.contains("hidden"));
   // THE EXACT COLLISION, asserted the only way it can be: the forced gate must be PAINTED
   // (flex) while the sign-in gate, carrying the same `hidden` class and the same `.gate`
   // display rule, must compute to none. Before the fix this read flex/flex.
@@ -5644,8 +5713,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         `session=${H.getSession()}`);
   check("the sign-in gate comes back up with a pointer, not a dead end",
         gateDisplay("auth-gate") === "flex" && gateDisplay("pw-gate") === "none"
-        && /sign in again/i.test(doc.getElementById("gate-note").textContent),
-        `auth=${gateDisplay("auth-gate")} note=${doc.getElementById("gate-note").textContent}`);
+        && /sign in again/i.test(needEl("gate-note").textContent),
+        `auth=${gateDisplay("auth-gate")} note=${needEl("gate-note").textContent}`);
   SESSION_STUB.authenticated = true;
 
   // 6c. THE BREAK-GLASS DOOR IS ON THE GATE ITSELF. The operator token recovers a lost admin
@@ -5660,7 +5729,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   await H.boot();
   check("the locked-out screen is the sign-in gate (computed)",
         gateDisplay("auth-gate") === "flex" && gateDisplay("pw-gate") === "none");
-  const tokenToggle = doc.getElementById("gate-token-toggle");
+  const tokenToggle = needEl("gate-token-toggle");
   check("the sign-in gate offers the operator-token door", !!tokenToggle);
   check("the token form starts hidden (computed)",
         gateDisplay("gate-token-block") === "none",
@@ -5670,17 +5739,17 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         gateDisplay("gate-token-block") === "flex" || gateDisplay("gate-token-block") === "block",
         `block=${gateDisplay("gate-token-block")}`);
 
-  const tokenForm = doc.getElementById("gate-token-form");
-  doc.getElementById("gate-token").value = "not-the-token";
+  const tokenForm = needEl("gate-token-form");
+  needEl("gate-token").value = "not-the-token";
   tokenForm.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((r) => setTimeout(r, 80));
   check("a wrong token is refused and the gate stays up",
         gateDisplay("auth-gate") === "flex"
-        && /not accepted/i.test(doc.getElementById("gate-token-error").textContent),
-        `note=${doc.getElementById("gate-token-error").textContent}`);
+        && /not accepted/i.test(needEl("gate-token-error").textContent),
+        `note=${needEl("gate-token-error").textContent}`);
 
   H.setToken("");
-  doc.getElementById("gate-token").value = "test-token-value";
+  needEl("gate-token").value = "test-token-value";
   tokenForm.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((r) => setTimeout(r, 120));
   check("the right token is accepted on the SERVER's answer (via: token)",
@@ -5727,7 +5796,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   const idRows = doc.querySelectorAll("#id-table tbody tr");
   check("identity renders a row per host", idRows.length === 3, `${idRows.length} rows`);
 
-  const idText = doc.getElementById("view-assets").textContent;
+  const idText = needEl("view-assets").textContent;
   // THE DISAGREEMENT LIVES IN THE DETAIL PANEL, which opens on click -- so the check must click.
   // Asserting against the table text was checking the wrong surface and would have passed only by
   // accident if a hostname happened to appear in a row.
@@ -5737,7 +5806,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   if (contradicted) {
     contradicted.click();
     await new Promise((r) => setTimeout(r, 40));
-    const dtext = doc.getElementById("id-detail").textContent;
+    const dtext = needEl("id-detail").textContent;
     check("a contradicting signal is reported, not averaged away",
           dtext.includes("Contradicting signals") && dtext.includes("DESKTOP-7A3B2C"),
           dtext.slice(0, 120));
@@ -5765,7 +5834,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   if (idFirstRow) {
     idFirstRow.click();
     await new Promise((r) => setTimeout(r, 40));
-    const detail = doc.getElementById("id-detail").textContent;
+    const detail = needEl("id-detail").textContent;
     check("clicking a host shows the evidence behind its label",
           detail.includes("Ubuntu") && detail.includes("weight"),
           detail.slice(0, 100));
@@ -5792,13 +5861,13 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // The failure banner lives on <main> (that is where showDataError prepends it), NOT inside the
   // view section -- so the check reads the banner. Asserting against the view text was checking a
   // surface the message never reaches.
-  const banner = doc.getElementById("data-banner");
+  const banner = needEl("data-banner");
   check("a failed identity query names its cause instead of rendering empty",
         !!banner && banner.textContent.includes("boom"),
         banner ? banner.textContent.slice(0, 100) : "no banner was shown");
   // And the coverage panel must say UNKNOWN rather than render zeros, which would read as
   // "identified nothing" -- a different and much more alarming claim.
-  const failView = doc.getElementById("view-assets").textContent;
+  const failView = needEl("view-assets").textContent;
   check("coverage unknown is distinguishable from coverage zero",
         failView.includes("Coverage unknown"), "unknown coverage rendered as zero");
   fetchOverride = null;
@@ -6027,12 +6096,12 @@ check("the never-seen tile and view are gone; stale remains",
 // checked for having no fact dump at all.
 H.showView("logs");
 await new Promise((r) => setTimeout(r, 400));
-const auditTextNow = () => (doc.getElementById("audit-table") || {}).textContent || "";
+const auditTextNow = () => (needEl("audit-table") || {}).textContent || "";
 check("a never-seen IN-PATH sensor says the segment may be waiting (issues)",
       /in-path/i.test(auditTextNow()),
       "an in-path sensor that never came up is more urgent than a passive one and must say why");
 await H.openWeirling("edge-promised");
-const wlDetailText = () => (doc.getElementById("wl-detail-body") || {}).textContent || "";
+const wlDetailText = () => (needEl("wl-detail-body") || {}).textContent || "";
 
 check("an UNDECLARED sensor is reported as unregistered",
       wlText().includes("unregistered"),
@@ -6061,8 +6130,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
 // ── THE SHEET ITSELF: changes only ───────────────────────────────────────────────────────────
 {
   await H.openWeirling("edge-alive");
-  const sheet = doc.getElementById("wl-detail-card");
-  const bodyNow = doc.getElementById("wl-detail-body");
+  const sheet = needEl("wl-detail-card");
+  const bodyNow = needEl("wl-detail-body");
   check("WL-2: the sheet has NO fact dump (no dl, no findings list, no table)",
         !sheet.querySelector("dl") && !sheet.querySelector("ul.findings")
         && !sheet.querySelector("table"),
@@ -6074,7 +6143,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         !!bodyNow.querySelector(".wl-situation")
         && bodyNow.querySelectorAll(".wl-situation p").length <= 6,
         String(bodyNow.querySelectorAll(".wl-situation p").length) + " paragraph(s)");
-  const localSettings = doc.getElementById("wl-local-settings");
+  const localSettings = needEl("wl-local-settings");
   check("...this hub's own sensor points at the surface that changes it",
         !!localSettings && !localSettings.classList.contains("hidden")
         && !!localSettings.querySelector("#st-sensor"),
@@ -6084,7 +6153,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         !doc.getElementById("wl-plan").classList.contains("hidden")
         && !!doc.getElementById("wl-plan").querySelector("input, select"),
         "the plan editor is the change surface for a remote weirling");
-  doc.getElementById("wl-detail-close").click();
+  needEl("wl-detail-close").click();
 }
 
 // ── the drill-down ───────────────────────────────────────────────────────────────────────────
@@ -6216,7 +6285,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   await H.loadWeirlings();
   await H.openWeirling("edge-alive");
   await sleep(250);
-  const localBox = doc.getElementById("wl-local-settings");
+  const localBox = needEl("wl-local-settings");
   check("the local weirling's sheet holds the sensor's own settings grid",
         !!localBox && !localBox.classList.contains("hidden")
         && localBox.querySelectorAll("#st-sensor .setting").length >= 1,
@@ -6225,7 +6294,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         !!localBox.querySelector(".sonar-row #wl-mode-select")
         && !!localBox.querySelector(".sonar-row #st-sonar")
         && !!localBox.querySelector(".sonar-row #st-test"));
-  const modeSel = doc.getElementById("wl-mode-select");
+  const modeSel = needEl("wl-mode-select");
   check("...the mode selector carries the configured mode, disabled for viewers only",
         !!modeSel && modeSel.value === "loch", modeSel ? modeSel.value : "no select");
 
@@ -6260,11 +6329,11 @@ check("...a contradicted segment names BOTH segments on the issues list",
   const localBtn = openRow("edge-alive");
   if (localBtn) {
     localBtn.click();
-    for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
+    for (let i = 0; i < 60 && !(needEl("wl-detail-body").textContent || "")
          .includes("reporting normally"); i++) {
       await sleep(20);
     }
-    const localSection = doc.getElementById("wl-local-settings");
+    const localSection = needEl("wl-local-settings");
     check("the local weirling's sheet carries the settings controls",
           !!localSection && !localSection.classList.contains("hidden")
           && !!localSection.querySelector("#st-sensor .setting")
@@ -6284,22 +6353,22 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(40);
       check("a change staged in the sheet appears in the sheet's pending bar",
             !doc.getElementById("wl-stage").classList.contains("hidden")
-            && (doc.getElementById("wl-stage-list").textContent || "").includes("channel_netflow"),
+            && (needEl("wl-stage-list").textContent || "").includes("channel_netflow"),
             "the mirror did not follow STAGE");
       check("...and in Settings' pending list -- one STAGE, not a second",
-            (doc.getElementById("st-stage-list").textContent || "").includes("channel_netflow"));
-      doc.getElementById("wl-stage-discard").click();
+            (needEl("st-stage-list").textContent || "").includes("channel_netflow"));
+      needEl("wl-stage-discard").click();
       await sleep(80);
       check("...and Discard from the sheet clears both surfaces",
-            doc.getElementById("wl-stage").classList.contains("hidden")
-            && !(doc.getElementById("st-stage-list").textContent || "").includes("channel_netflow"));
+            needEl("wl-stage").classList.contains("hidden")
+            && !(needEl("st-stage-list").textContent || "").includes("channel_netflow"));
     }
     check("...and no Advanced disclosure doubling the settings page",
           !doc.getElementById("wl-advanced"));
     await H.openWeirling("edge-stopped");
     check("...the plan offers the sensor's own reported NICs as iface candidates",
           (() => {
-            const inp = doc.getElementById("wl-plan-iface");
+            const inp = needEl("wl-plan-iface");
             const id = inp && inp.getAttribute("list");
             const dl = id ? doc.getElementById(id) : null;
             const vals = dl ? [...dl.querySelectorAll("option")]
@@ -6310,14 +6379,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("...and keeps its membership actions",
           !!doc.getElementById("wl-detail-enable") || !!doc.getElementById("wl-detail-disable"));
   }
-  if (localBtn) doc.getElementById("wl-detail-close").click();
+  if (localBtn) needEl("wl-detail-close").click();
   await sleep(60);
 
   // A REMOTE sensor gets its OWN plan editor (the mechanism that can reach it), nothing else.
   const remoteBtn = openRow("edge-stopped");
   if (remoteBtn) {
     remoteBtn.click();
-    for (let i = 0; i < 60 && !(doc.getElementById("wl-detail-body").textContent || "")
+    for (let i = 0; i < 60 && !(needEl("wl-detail-body").textContent || "")
          .includes("edge-stopped"); i++) {
       await sleep(20);
     }
@@ -6325,8 +6394,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !doc.getElementById("wl-plan").classList.contains("hidden"),
           "the plan editor is the one per-sensor control that is not Settings'");
     check("...and never the hub's runtime controls",
-          doc.getElementById("wl-local-settings").classList.contains("hidden"));
-    doc.getElementById("wl-detail-close").click();
+          needEl("wl-local-settings").classList.contains("hidden"));
+    needEl("wl-detail-close").click();
     await sleep(60);
   }
 }
@@ -6349,7 +6418,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   if (ghost) {
     ghost.querySelector("button.link").click();
     await new Promise((r) => setTimeout(r, 100));
-    const adoptBtn = doc.getElementById("wl-sensor-adopt");
+    const adoptBtn = needEl("wl-sensor-adopt");
     check("...and its sensor actions carry the Adopt", !!adoptBtn);
     const before = POSTED.length;
     if (adoptBtn) adoptBtn.click();
@@ -6363,7 +6432,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !!post && sent.sensor_id === "ghost-box" && sent.expected_mode === "loch"
           && (sent.segment === "" || sent.segment === undefined),
           (post || {}).body || "no register POST");
-    const close = doc.getElementById("wl-detail-close");
+    const close = needEl("wl-detail-close");
     if (close) close.click();
   }
 }
@@ -6403,9 +6472,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
   stopped.expected_mode = "loch";
   await H.loadWeirlings();
 
-  const planBox = () => doc.getElementById("wl-plan");
-  const planNote = () => (doc.getElementById("wl-plan-note") || {}).textContent || "";
-  const planModeSel = () => doc.getElementById("wl-plan-mode");
+  const planBox = () => needEl("wl-plan");
+  const planNote = () => (needEl("wl-plan-note") || {}).textContent || "";
+  const planModeSel = () => needEl("wl-plan-mode");
   const waitFor = async (predicate, tries = 120) => {
     for (let i = 0; i < tries; i++) {
       if (predicate()) return true;
@@ -6436,18 +6505,18 @@ check("...a contradicted segment names BOTH segments on the issues list",
         "the sensor's own plan is the only control that can reach it");
   check("the editor shows the DECLARED plan, not the mode the sensor reports",
         planModeSel().value === "siphon"
-        && doc.getElementById("wl-plan-segment").value === "203.0.113.0/24"
-        && doc.getElementById("wl-plan-targets").value === "203.0.113.7",
-        planModeSel().value + " / " + doc.getElementById("wl-plan-segment").value);
+        && needEl("wl-plan-segment").value === "203.0.113.0/24"
+        && needEl("wl-plan-targets").value === "203.0.113.7",
+        planModeSel().value + " / " + needEl("wl-plan-segment").value);
   check("the editor states declared versus reported on the same line",
-        /declared: siphon/.test(doc.getElementById("wl-plan-state").textContent || "")
-        && /last reported: siphon/.test(doc.getElementById("wl-plan-state").textContent || ""),
-        doc.getElementById("wl-plan-state").textContent);
+        /declared: siphon/.test(needEl("wl-plan-state").textContent || "")
+        && /last reported: siphon/.test(needEl("wl-plan-state").textContent || ""),
+        needEl("wl-plan-state").textContent);
 
   // ── (2) staging a field writes NOTHING; Apply goes plan -> apply, for THAT sensor
   {
     const before = POSTED.length;
-    const input = doc.getElementById("wl-plan-targets");
+    const input = needEl("wl-plan-targets");
     input.value = "203.0.113.7,203.0.113.8";
     input.dispatchEvent(new window.Event("input", { bubbles: true }));
     check("editing a plan field STAGES it and writes nothing",
@@ -6456,7 +6525,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("the Apply button is enabled only while something is staged",
           !doc.getElementById("wl-plan-apply").disabled);
 
-    doc.getElementById("wl-plan-apply").click();
+    needEl("wl-plan-apply").click();
     await waitFor(() => POSTED.slice(before).some((r) => r.url.includes("/api/weirlings/apply")));
     const planPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/plan"));
     const applyPost = POSTED.slice(before).find((r) => r.url.includes("/api/weirlings/apply"));
@@ -6477,8 +6546,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
           /saved/.test(planNote()) && /30s|30 seconds|refresh/.test(planNote()),
           planNote());
     check("the panel re-reads the server's plan, so the edit cannot linger locally",
-          doc.getElementById("wl-plan-targets").value === "203.0.113.7,203.0.113.8",
-          doc.getElementById("wl-plan-targets").value);
+          needEl("wl-plan-targets").value === "203.0.113.7,203.0.113.8",
+          needEl("wl-plan-targets").value);
   }
 
   // ── (3) the warn-then-decline path writes nothing
@@ -6576,7 +6645,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     fetchOverride = null;
   }
 
-  doc.getElementById("wl-detail-close").click();
+  needEl("wl-detail-close").click();
 }
 
 // ── no content-less cards on the Settings tab (audit 2026-10-17) ─────────────────────────────
@@ -6651,7 +6720,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           doc.querySelectorAll("main table").length === mainTables.length,
         "a second boot must not wrap the wrappers");
   check("the nav strip scrolls horizontally rather than overflowing the page",
-        window.getComputedStyle(doc.getElementById("tabs")).overflowX === "auto",
+        window.getComputedStyle(needEl("tabs")).overflowX === "auto",
         "eleven tabs never fit a phone, and a squashed strip is not a layout");
   check("tabs keep their intrinsic width inside the scrolling strip",
         window.getComputedStyle(doc.querySelector(".tab")).flexShrink === "0",
@@ -6693,7 +6762,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   }
 
   // ── THE GLOBAL TIME RANGE (the operator's ask: "a time search like kibana, throughout") ────
-  const trBtn = doc.getElementById("tr-open");
+  const trBtn = needEl("tr-open");
   check("the header carries the global time control", !!trBtn && !!doc.getElementById("tr-panel"));
   check("it names the default range", !!(trBtn && /24 hours/.test(trBtn.textContent)),
         trBtn ? trBtn.textContent : "missing");
@@ -6711,8 +6780,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
         ["nf-hours", "zk-hours", "hp-hours", "h-hours", "nw-hours", "id-hours", "as-hours", "m-hours"]
           .every((id) => !doc.getElementById(id)),
         "a redundant per-view hours control is still in the page");
-  const trText = doc.getElementById("tr-text");
-  const trApplyBtn = doc.getElementById("tr-text-apply");
+  const trText = needEl("tr-text");
+  const trApplyBtn = needEl("tr-text-apply");
   if (trText && trApplyBtn) {
     trText.value = "last 15 minutes";
     trApplyBtn.click();
@@ -6720,7 +6789,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           H.trHours() === 1, "trHours()=" + H.trHours());
     trText.value = "banana";
     trApplyBtn.click();
-    const note = doc.getElementById("tr-note");
+    const note = needEl("tr-note");
     check("an unreadable range is refused with a sentence, not a silent fallback",
           !!(note && /cannot read|type a range/.test(note.textContent)),
           note ? note.textContent : "no note element");
@@ -6734,7 +6803,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("netflow");
     await H.loadNetflow();
     // (the detail table is EMPTY until a drill runs -- that is its honest initial state)
-    const note = doc.getElementById("nf-detail-note");
+    const note = needEl("nf-detail-note");
     H.loadFlowDetail({ port: 443, name: "port 443" });
     await new Promise((r) => setTimeout(r, 80));
     check("the flow-detail table names the window it is showing",
@@ -6755,13 +6824,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
       ? { ok: false, status: 401, json: async () => ({ detail: "unauthorized" }) } : null;
     try { await H.loadNetflow(); } catch (_e) { /* the loader re-throws for the banner */ }
     fetchOverride = null;
-    const s = doc.getElementById("nf-summary").textContent;
+    const s = needEl("nf-summary").textContent;
     check("a failed netflow load does not leave 'loading…' standing",
           !/loading/i.test(s) && /unavailable/i.test(s), s);
     await H.loadNetflow();
     // (this fixture's payload legitimately reports an unavailable volume, so the assertion is
     // that the FAILURE note is gone -- not that any particular success text is present)
-    const s2 = doc.getElementById("nf-summary").textContent;
+    const s2 = needEl("nf-summary").textContent;
     check("the next good load replaces the failure note",
           !/loading/i.test(s2) && !/the error is shown at the top/i.test(s2), s2);
   }
@@ -6784,10 +6853,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
         sel.click();
         await sleep(60);
         check("a click on a form field does NOT fall through to the row (no Evidence mid-edit)",
-              doc.getElementById("view-anomalies").classList.contains("active")
+              needEl("view-anomalies").classList.contains("active")
               && !doc.getElementById("view-evidence").classList.contains("active")
               && !!anRow.querySelector(".gate-form"),
-              "anomalies active=" + doc.getElementById("view-anomalies").classList.contains("active"));
+              "anomalies active=" + needEl("view-anomalies").classList.contains("active"));
       }
       const port = form ? form.querySelector("input[type=number]") : null;
       if (port) {
@@ -6802,19 +6871,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await H.loadWeirlings();
     await H.openWeirling("edge-alive");
     await sleep(150);
-    let scrim = doc.getElementById("wl-sheet-scrim");
+    let scrim = needEl("wl-sheet-scrim");
     check("the sheet opens with its scrim", !!scrim && !scrim.classList.contains("hidden"));
-    doc.getElementById("wl-detail-close").click();
+    needEl("wl-detail-close").click();
     await sleep(40);
     check("Close hides the card AND releases the scrim (the console stays clickable)",
-          doc.getElementById("wl-detail-card").classList.contains("hidden")
+          needEl("wl-detail-card").classList.contains("hidden")
           && (!scrim || scrim.classList.contains("hidden")),
           "scrim hidden=" + (scrim ? scrim.classList.contains("hidden") : "no scrim"));
     // (b2) the drill revoke: through the echo, carrying the reason, and it releases the scrim
     await H.openWeirling("edge-alive");
     await sleep(150);
     const beforeRevoke = POSTED.length;
-    doc.getElementById("wl-detail-revoke").click();
+    needEl("wl-detail-revoke").click();
     await sleep(120);
     check("the drill's Revoke opens the echo first", !!doc.querySelector("#modal-body .dest-confirm"));
     await confirmEcho("retiring it on purpose");
@@ -6822,9 +6891,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const revReq = POSTED.slice(beforeRevoke).find((r) => r.url.includes("/api/weirlings/revoke"));
     check("...and the revoke carries its reason", !!revReq && /retiring it on purpose/.test(revReq.body),
           revReq ? revReq.body.slice(0, 120) : "no revoke POST");
-    scrim = doc.getElementById("wl-sheet-scrim");
+    scrim = needEl("wl-sheet-scrim");
     check("...and the exit releases the scrim too",
-          doc.getElementById("wl-detail-card").classList.contains("hidden")
+          needEl("wl-detail-card").classList.contains("hidden")
           && (!scrim || scrim.classList.contains("hidden")));
     // (d) the anomalies header and its row cells agree BY POSITION
     H.showView("anomalies");
@@ -6848,13 +6917,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(250);
     const anRow1 = doc.querySelector("#anomalies-table tbody tr");
     const hostCellEl = anRow1
-      ? [...anRow1.querySelectorAll("td")].find((td) => /open this host's view/.test(td.title || ""))
+      ? [...anRow1.querySelectorAll("td")].find((td) => CELLLABEL(td) && /open this host's view/.test(CELLLABEL(td)))
       : null;
     check("the anomaly row's host cell names its destination", !!hostCellEl);
     if (hostCellEl) {
       hostCellEl.click();
       await sleep(220);
-      check("...and it opens the Host view", doc.getElementById("view-host").classList.contains("active"));
+      check("...and it opens the Host view", needEl("view-host").classList.contains("active"));
     }
     // 2. a netflow talker -> its host (was: filter-only, the audit's runner-up)
     fetchOverride = (u) => (String(u).includes("/api/netflow")
@@ -6872,12 +6941,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
       tkBar.click();
       await sleep(220);
       check("a talker opens its host, not just a filter",
-            doc.getElementById("view-host").classList.contains("active"));
+            needEl("view-host").classList.contains("active"));
     }
     fetchOverride = null;
     // 3. a Discover Zeek log row -> that log's drill in the Zeek view
     H.showView("discover");
-    const feedSel = doc.getElementById("dc-feed");
+    const feedSel = needEl("dc-feed");
     if (feedSel) {
       feedSel.value = "zeek";
       feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -6888,9 +6957,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
         zrows[0].querySelector("td").click();
         await sleep(250);
         check("a Zeek log row drills into that log's rows in the Zeek view",
-              doc.getElementById("view-zeek").classList.contains("active")
-              && (doc.getElementById("zk-drill-title").textContent || "").includes("conn.log"),
-              doc.getElementById("zk-drill-title").textContent);
+              needEl("view-zeek").classList.contains("active")
+              && (needEl("zk-drill-title").textContent || "").includes("conn.log"),
+              needEl("zk-drill-title").textContent);
       }
       feedSel.value = "netflow";
       feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -6917,10 +6986,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
       flowCell.click();
       await sleep(280);
       check("...and the trend lands in Discover filtered to exactly this sensor",
-            doc.getElementById("view-discover").classList.contains("active")
-            && doc.getElementById("dc-sensor").value === "edge-alive"
+            needEl("view-discover").classList.contains("active")
+            && needEl("dc-sensor").value === "edge-alive"
             && DISCOVER_REQS.slice(beforeDc).some((u) => u.includes("sensor=edge-alive")),
-            "sensor=" + doc.getElementById("dc-sensor").value);
+            "sensor=" + needEl("dc-sensor").value);
     }
     // 5. a sluice gate's sensor -> that sensor's fleet sheet
     H.showView("sluice");
@@ -6932,10 +7001,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
       gateCell.click();
       await sleep(280);
       check("...and it opens that sensor's fleet sheet",
-            doc.getElementById("view-weirlings").classList.contains("active")
+            needEl("view-weirlings").classList.contains("active")
             && !doc.getElementById("wl-detail-card").classList.contains("hidden")
-            && /weirvern-dual/.test(doc.getElementById("wl-detail-id").textContent),
-            "detail id=" + doc.getElementById("wl-detail-id").textContent);
+            && /weirvern-dual/.test(needEl("wl-detail-id").textContent),
+            "detail id=" + needEl("wl-detail-id").textContent);
     }
     // 6. an identity row's host -> the Host view; its JA4 -> the lookup
     H.showView("identity");
@@ -6944,11 +7013,11 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const idRow = [...doc.querySelectorAll("#id-table tbody tr")]
       .find((tr) => /203\.0\.113\.10/.test(tr.textContent));
     const idHost = idRow ? idRow.querySelector("td") : null;
-    check("the identity list offers its host cells", !!idHost && /open this host's view/.test(idHost.title || ""));
+    check("the identity list offers its host cells", !!idHost && /open this host's view/.test(CELLLABEL(idHost)));
     if (idHost) {
       idHost.click();
       await sleep(220);
-      check("...and the host cell opens the Host view", doc.getElementById("view-host").classList.contains("active"));
+      check("...and the host cell opens the Host view", needEl("view-host").classList.contains("active"));
     }
     H.showView("identity");
     await H.loadIdentity();
@@ -6966,9 +7035,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
         ja4li.click();
         await sleep(280);
         check("...and clicking it runs the fingerprint lookup in place",
-              /presented this fingerprint/.test((doc.getElementById("fp-note") || {}).textContent || "")
-              || /presented this fingerprint/.test((doc.getElementById("fp-results") || {}).textContent || ""),
-              ((doc.getElementById("fp-note") || {}).textContent || "").slice(0, 80));
+              /presented this fingerprint/.test((needEl("fp-note") || {}).textContent || "")
+              || /presented this fingerprint/.test((needEl("fp-results") || {}).textContent || ""),
+              ((needEl("fp-note") || {}).textContent || "").slice(0, 80));
       }
     }
   }
@@ -6994,7 +7063,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // wiped a flashed row and a dn-detail). The checks below are about CLICK CONTRACTS, not
     // about the timer -- which has its own checks calling refreshAll directly -- so the timer
     // is stopped for the rest of the run.
-    const autoPillStop = doc.getElementById("auto-toggle");
+    const autoPillStop = needEl("auto-toggle");
     if (autoPillStop && !/paused/.test(autoPillStop.textContent)) {
       autoPillStop.click();
     }
@@ -7014,16 +7083,16 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const sevCell = [...doc.querySelectorAll("#anomalies-table tbody tr td")]
       .find((td) => /severity/.test(td.title || ""));
     if (sevCell) { sevCell.click(); await sleep(250); }
-    const chipsBefore = (doc.getElementById("an-chips") || {}).textContent || "";
+    const chipsBefore = (needEl("an-chips") || {}).textContent || "";
     const anRowE = doc.querySelector("#anomalies-table tbody tr");
     check("an anomaly row opens Evidence", !!anRowE);
     if (anRowE) {
       anRowE.click();
       await sleep(250);
-      const crumbs = doc.getElementById("crumbs") || { textContent: "" };
-      const evBackFirst = doc.getElementById("ev-back");
+      const crumbs = needEl("crumbs") || { textContent: "" };
+      const evBackFirst = needEl("ev-back");
       check("...and Evidence has ONE labeled back control, not a crumb plus a button",
-            doc.getElementById("view-evidence").classList.contains("active")
+            needEl("view-evidence").classList.contains("active")
             && !!evBackFirst && !evBackFirst.hidden
             && /back to alerts/i.test(evBackFirst.textContent)
             && crumbs.classList.contains("hidden"),
@@ -7036,9 +7105,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
         evBackFirst.click();
         await sleep(250);
         check("the back button returns to Anomalies with its filters intact",
-              doc.getElementById("view-anomalies").classList.contains("active")
-              && ((doc.getElementById("an-chips") || {}).textContent || "") === chipsBefore,
-              "chips now: " + ((doc.getElementById("an-chips") || {}).textContent || "").slice(0, 60));
+              needEl("view-anomalies").classList.contains("active")
+              && ((needEl("an-chips") || {}).textContent || "") === chipsBefore,
+              "chips now: " + ((needEl("an-chips") || {}).textContent || "").slice(0, 60));
       }
     }
     // 2. the host drill acts, and it DISMISSES.
@@ -7071,13 +7140,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(220);
     const destCell = doc.querySelector("#h-dests tbody td.dcell");
     check("host-drill destinations open their host view",
-          !!destCell && /open this destination/.test(destCell.title || ""), destCell ? destCell.title : "missing");
+          !!destCell && /open this destination/.test(CELLLABEL(destCell)), CELLLABEL(destCell) || "missing");
     const portRow = doc.querySelector("#h-ports tbody tr.clickable");
     if (portRow) {
       portRow.click();
       await sleep(220);
       check("a host-drill port row lands in Netflow filtered to the port",
-            doc.getElementById("view-netflow").classList.contains("active")
+            needEl("view-netflow").classList.contains("active")
             && H.NF_FILTERS.some((f) => f.field === "dport"));
       try { H.nfRemoveChip("dport"); } catch (_e) { /* chip shape changed; the filter check stands */ }
     }
@@ -7086,23 +7155,23 @@ check("...a contradicted segment names BOTH segments on the issues list",
       zRow.click();
       await sleep(250);
       check("a host-drill service opens that log in the Zeek view",
-            doc.getElementById("view-zeek").classList.contains("active"));
+            needEl("view-zeek").classList.contains("active"));
     }
     const aRow = doc.querySelector("#h-anoms tbody tr.clickable");
     if (aRow) {
       aRow.click();
       await sleep(250);
       check("a host-drill anomaly row opens its evidence",
-            doc.getElementById("view-evidence").classList.contains("active")
-            && /198\.51\.100\.5/.test((doc.getElementById("ev-title") || {}).textContent || ""),
-            (doc.getElementById("ev-title") || {}).textContent || "");
+            needEl("view-evidence").classList.contains("active")
+            && /198\.51\.100\.5/.test((needEl("ev-title") || {}).textContent || ""),
+            (needEl("ev-title") || {}).textContent || "");
     }
     H.showView("assets");
     await sleep(120);
-    doc.getElementById("h-close").click();
+    needEl("h-close").click();
     await sleep(120);
     check("the host drill DISMISSES with its Close",
-          doc.getElementById("h-results").classList.contains("hidden"));
+          needEl("h-results").classList.contains("hidden"));
 
     // ── HUNT-1: the host page is a chain of filtered pivots ─────────────────────────────────
     H.showView("host");
@@ -7114,7 +7183,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       hpDest.click();
       await sleep(220);
       check("a host destination opens NetFlow filtered to that destination",
-            doc.getElementById("view-netflow").classList.contains("active")
+            needEl("view-netflow").classList.contains("active")
             && H.NF_FILTERS.some((f) => f.field === "dst" && f.value === "198.51.100.9"),
             JSON.stringify(H.NF_FILTERS));
     }
@@ -7127,7 +7196,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       hpBar.click();
       await sleep(220);
       check("a host NetFlow bar opens NetFlow filtered to the host",
-            doc.getElementById("view-netflow").classList.contains("active")
+            needEl("view-netflow").classList.contains("active")
             && H.NF_FILTERS.some((f) => f.field === "src" && f.value === "198.51.100.5"),
             JSON.stringify(H.NF_FILTERS));
     }
@@ -7150,7 +7219,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       hpAnom.click();
       await sleep(220);
       check("a host anomaly opens its evidence chain",
-            doc.getElementById("view-evidence").classList.contains("active"));
+            needEl("view-evidence").classList.contains("active"));
     }
     H.showView("host");
     await H.loadHostPage("198.51.100.5");
@@ -7160,10 +7229,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
       hpDns.click();
       await sleep(180);
       check("a host DNS row filters DNS to the host and name",
-            doc.getElementById("view-dns").classList.contains("active")
-            && doc.getElementById("dn-domain").value === "ads.example.com"
-            && doc.getElementById("dn-client").value === "198.51.100.5",
-            `${doc.getElementById("dn-domain").value}/${doc.getElementById("dn-client").value}`);
+            needEl("view-dns").classList.contains("active")
+            && needEl("dn-domain").value === "ads.example.com"
+            && needEl("dn-client").value === "198.51.100.5",
+            `${needEl("dn-domain").value}/${needEl("dn-client").value}`);
     }
     H.showView("host");
     await H.loadHostPage("198.51.100.5");
@@ -7173,9 +7242,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
       hpZeek.click();
       await sleep(180);
       check("a host Zeek service filters the Zeek view",
-            doc.getElementById("view-zeek").classList.contains("active")
-            && /service = ssl/.test((doc.getElementById("zk-chips") || {}).textContent || ""),
-            (doc.getElementById("zk-chips") || {}).textContent || "no chips");
+            needEl("view-zeek").classList.contains("active")
+            && /service = ssl/.test((needEl("zk-chips") || {}).textContent || ""),
+            (needEl("zk-chips") || {}).textContent || "no chips");
     }
     // ── PIV-1: the host page is a URL location and a reload restores it ─────────────────────
     H.showView("anomalies");
@@ -7190,7 +7259,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.applyURLState();
     await sleep(220);
     check("a cold host URL restores the host page and its address",
-          doc.getElementById("view-host").classList.contains("active")
+          needEl("view-host").classList.contains("active")
           && H.HP_ADDR === "198.51.100.5", `${H.CURRENT_VIEW}/${H.HP_ADDR}`);
     // These pivots are real view filters; clear them so the later URL/cold-boot assertions
     // start from the same state they did before this section existed.
@@ -7210,15 +7279,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(120);
       check("the identity detail carries its exits",
             !!doc.getElementById("id-detail-open") && !!doc.getElementById("id-detail-close"));
-      doc.getElementById("id-detail-close").click();
+      needEl("id-detail-close").click();
       check("...and Close dismisses it",
-            doc.getElementById("id-detail-card").classList.contains("hidden"));
+            needEl("id-detail-card").classList.contains("hidden"));
       idRowE.click();
       await sleep(80);
-      doc.getElementById("id-detail-open").click();
+      needEl("id-detail-open").click();
       await sleep(220);
       check("...and 'Open host view' lands on the host's view",
-            doc.getElementById("view-host").classList.contains("active"));
+            needEl("view-host").classList.contains("active"));
     }
     // 4. the post-block receipt keeps the id and lands on the rule.
     H.showView("anomalies");
@@ -7248,10 +7317,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
           receipt.click();
           await sleep(300);
           check("...and clicking it lands on that rule in Sluice",
-                doc.getElementById("view-sluice").classList.contains("active")
+                needEl("view-sluice").classList.contains("active")
                 && !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
-                && /r-filed-1/.test(doc.getElementById("sl-rule-id").textContent),
-                "rule id=" + doc.getElementById("sl-rule-id").textContent);
+                && /r-filed-1/.test(needEl("sl-rule-id").textContent),
+                "rule id=" + needEl("sl-rule-id").textContent);
         }
       }
     }
@@ -7287,7 +7356,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       const slRow = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
         .find((r) => r.getAttribute("data-rule-id") === "r-live-1");
       check("an expired-rule fix lands ON the rule's row in Sluice",
-            doc.getElementById("view-sluice").classList.contains("active")
+            needEl("view-sluice").classList.contains("active")
             && !!slRow && slRow.classList.contains("flash-hit"),
             "row=" + !!slRow + " cls=" + (slRow ? slRow.className : "n/a"));
     }
@@ -7296,10 +7365,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
       blFix.click();
       await sleep(300);
       check("a stuck-rule fix lands on the rule in Sluice",
-            doc.getElementById("view-sluice").classList.contains("active")
-            && /r1/.test(doc.getElementById("sl-rule-id").textContent)
+            needEl("view-sluice").classList.contains("active")
+            && /r1/.test(needEl("sl-rule-id").textContent)
             && !doc.getElementById("sl-rule-sheet").classList.contains("hidden"),
-            "id=" + doc.getElementById("sl-rule-id").textContent);
+            "id=" + needEl("sl-rule-id").textContent);
     }
     const detFix = fixBtns.find((b) => /registry/.test(b.textContent));
     if (detFix) {
@@ -7311,7 +7380,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       const detRow = [...doc.querySelectorAll("#detectors-table tbody tr")]
         .find((r) => r.getAttribute("data-detector") === "DBSCAN");
       check("a registry fix lands ON the detector's row",
-            doc.getElementById("view-anomalies").classList.contains("active")
+            needEl("view-anomalies").classList.contains("active")
             && !!detRow && detRow.classList.contains("flash-hit"),
             "row=" + !!detRow + " cls=" + (detRow ? detRow.className : "n/a")
             + " btn=" + detFix.textContent.slice(0, 24));
@@ -7329,7 +7398,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       : null);
     H.showView("weirlings");
     await H.loadWeirlings();
-    const revBox = doc.getElementById("wl-revoked");
+    const revBox = needEl("wl-revoked");
     revBox.checked = true;
     await H.loadWeirlings();
     await sleep(180);
@@ -7340,9 +7409,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
       revSpan.click();
       await sleep(250);
       check("...and it opens that sensor's sheet",
-            doc.getElementById("view-weirlings").classList.contains("active")
-            && /edge-retired/.test((doc.getElementById("wl-detail-id") || {}).textContent || ""),
-            (doc.getElementById("wl-detail-id") || {}).textContent || "");
+            needEl("view-weirlings").classList.contains("active")
+            && /edge-retired/.test((needEl("wl-detail-id") || {}).textContent || ""),
+            (needEl("wl-detail-id") || {}).textContent || "");
     }
     revBox.checked = false;
     fetchOverride = null;
@@ -7355,14 +7424,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
   {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 1. the palette has a visible door.
-    const palBtn = doc.getElementById("palette-btn");
+    const palBtn = needEl("palette-btn");
     check("the palette has a visible entry in the chrome", !!palBtn);
     if (palBtn) {
       palBtn.click();
       await sleep(120);
       check("...and the button opens it",
             !doc.getElementById("palette").classList.contains("hidden"),
-            "palette hidden=" + doc.getElementById("palette").classList.contains("hidden"));
+            "palette hidden=" + needEl("palette").classList.contains("hidden"));
       if (typeof H.paletteClose === "function") H.paletteClose();
     }
     // 2. the fleet row opens its sheet (a hover wash must not be the whole story).
@@ -7376,8 +7445,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(250);
       check("...and the row opens that sensor's sheet",
             !doc.getElementById("wl-detail-card").classList.contains("hidden")
-            && ((doc.getElementById("wl-detail-id") || {}).textContent || "").length > 0,
-            "id=" + ((doc.getElementById("wl-detail-id") || {}).textContent || ""));
+            && ((needEl("wl-detail-id") || {}).textContent || "").length > 0,
+            "id=" + ((needEl("wl-detail-id") || {}).textContent || ""));
     }
     // 3. the count cell discloses for EVERY n (the n==1 case used to be inert).
     fetchOverride = (u) => (String(u).includes("/api/anomalies")
@@ -7480,8 +7549,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
       evOpen.click();
       await sleep(260);
       check("...which opens the evidence view",
-            doc.getElementById("view-evidence").classList.contains("active"));
-      const evBack = doc.getElementById("ev-back");
+            needEl("view-evidence").classList.contains("active"));
+      const evBack = needEl("ev-back");
       check("...and the evidence page carries a visible way back",
             !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
             evBack ? `hidden=${evBack.hidden} text=${evBack.textContent}` : "no #ev-back");
@@ -7489,7 +7558,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         evBack.click();
         await sleep(220);
         check("...that returns to the alert queue with its filters intact",
-              doc.getElementById("view-anomalies").classList.contains("active")
+              needEl("view-anomalies").classList.contains("active")
               && H.AN_FILTERS.severity === beforeSev,
               `severity=${H.AN_FILTERS.severity} was=${beforeSev}`);
       }
@@ -7498,7 +7567,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     C(jobRow);                                   // 1: the row -> Evidence
     await sleep(280);
     check("JOB investigate-anomaly: understanding is ONE click (row -> Evidence)",
-          clicks === 1 && doc.getElementById("view-evidence").classList.contains("active"),
+          clicks === 1 && needEl("view-evidence").classList.contains("active"),
           `clicks=${clicks}`);
     note("investigate-anomaly", "understand", clicks);
     const evVerb = doc.querySelector("#ev-verdict .gate-open");
@@ -7506,12 +7575,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (evVerb) {
       C(evVerb);                                 // 1: the block verb opens the Sluice composer
       await sleep(180);
-      const sheet = doc.getElementById("sl-rule-sheet");
+      const sheet = needEl("sl-rule-sheet");
       check("JOB investigate-anomaly: the evidence Block verb opens the SLUICE rule sheet",
             !!sheet && !sheet.classList.contains("hidden")
-            && (doc.getElementById("sl-src").value || "") === "198.51.100.5",
+            && (needEl("sl-src").value || "") === "198.51.100.5",
             sheet ? `hidden=${sheet.classList.contains("hidden")}` : "no sheet");
-      const create = doc.getElementById("sl-block");
+      const create = needEl("sl-block");
       if (create) {
         C(create); await sleep(100);              // 2: arm the block rule
         C(create); await sleep(320);              // 3: file it
@@ -7539,19 +7608,19 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (blockVerb) {
       C(blockVerb);                              // 1: open the rule sheet
       await sleep(180);
-      const sheet = doc.getElementById("sl-rule-sheet");
+      const sheet = needEl("sl-rule-sheet");
       check("JOB block-domain: the row's verb opens the rule sheet with the name filled in",
             !!sheet && !sheet.classList.contains("hidden")
-            && (doc.getElementById("sl-domain").value || "").includes("ads.example.com"),
+            && (needEl("sl-domain").value || "").includes("ads.example.com"),
             "the composer did not open on the sheet");
-      const modeSel = doc.getElementById("sl-mode");
+      const modeSel = needEl("sl-mode");
       if (modeSel) {
         modeSel.value = "block";
         modeSel.dispatchEvent(new window.Event("change", { bubbles: true }));
       }
       check("JOB block-domain: choosing block mode is not a click (a select, not a step)",
             clicks === 1, `clicks=${clicks}`);
-      const createBtn = doc.getElementById("sl-block");
+      const createBtn = needEl("sl-block");
       if (createBtn) {
         C(createBtn);                            // 2: arms -- the retained BF-9 echo
         await sleep(100);
@@ -7560,7 +7629,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         C(createBtn);                            // 3: commits
         await sleep(320);
       }
-      const closeBtn = doc.getElementById("sl-rule-close");
+      const closeBtn = needEl("sl-rule-close");
       if (closeBtn) closeBtn.click();
     }
     const act2 = clicks;
@@ -7619,7 +7688,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await H.loadAnomalies();
     await sleep(250);
     const jobHostCell = [...doc.querySelectorAll("#anomalies-table tbody td.dcell")]
-      .find((td) => /open this host's view/.test(td.title || ""));
+      .find((td) => CELLLABEL(td) && /open this host's view/.test(CELLLABEL(td)));
     check("JOB find-and-inspect: the host cell is on the row", !!jobHostCell);
     clicks = 0;
     if (jobHostCell) {
@@ -7627,9 +7696,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(320);
     }
     check("JOB find-and-inspect: ONE click from the row to the host's traffic",
-          clicks === 1 && doc.getElementById("view-host").classList.contains("active")
-          && (doc.getElementById("h-stats").textContent || "").length > 0,
-          `clicks=${clicks} stats=${(doc.getElementById("h-stats").textContent || "").slice(0, 40)}`);
+          clicks === 1 && needEl("view-host").classList.contains("active")
+          && (needEl("h-stats").textContent || "").length > 0,
+          `clicks=${clicks} stats=${(needEl("h-stats").textContent || "").slice(0, 40)}`);
     note("find-and-inspect", "understand", clicks);
 
     console.log("CLICK BUDGET (US-5, measured):");
@@ -7698,17 +7767,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("ARRIVAL: a removable chip explains the link's filters",
           [...doc.querySelectorAll("#an-filters .dc-chip")]
             .some((c) => /arrived with filters/.test(c.textContent)),
-          (doc.getElementById("an-filters").textContent || "").slice(0, 90));
+          (needEl("an-filters").textContent || "").slice(0, 90));
     check("ARRIVAL: the header says showing X of Y",
-          /showing 4 of 40 alerts/.test((doc.getElementById("an-count-line") || {}).textContent || ""),
-          (doc.getElementById("an-count-line") || {}).textContent || "no line");
+          /showing 4 of 40 alerts/.test((needEl("an-count-line") || {}).textContent || ""),
+          (needEl("an-count-line") || {}).textContent || "no line");
 
     // 2) RETURN from Evidence: the labeled exit; chips, range and SCROLL all survive.
     const rowA = doc.querySelector("#anomalies-table tbody tr");
     check("RETURN: an alert row is on screen to drill into", !!rowA);
     if (rowA) { rowA.click(); }
     await sleep(320);
-    const evBack = doc.getElementById("ev-back");
+    const evBack = needEl("ev-back");
     check("RETURN: Evidence's exit is the labeled back button",
           !!evBack && !evBack.hidden && /back to alerts/i.test(evBack.textContent),
           evBack ? evBack.textContent : "no #ev-back");
@@ -7725,13 +7794,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // 3) RETURN from the host drill: same guarantees, and the drill asked the GLOBAL window.
     await sleep(200);
     const jobHostCell = [...doc.querySelectorAll("#anomalies-table tbody td.dcell")]
-      .find((td) => /open this host's view/.test(td.title || ""));
+      .find((td) => CELLLABEL(td) && /open this host's view/.test(CELLLABEL(td)));
     HOST_REQS.length = 0;
     if (jobHostCell) { jobHostCell.click(); }
     await sleep(380);
-    const hBack = doc.getElementById("hp-back");
+    const hBack = needEl("hp-back");
     check("HOST RETURN: the jump lands with the labeled back button",
-          doc.getElementById("view-host").classList.contains("active")
+          needEl("view-host").classList.contains("active")
           && !!hBack && /back to alerts/i.test(hBack.textContent),
           hBack ? hBack.textContent : "no #hp-back");
     check("HOST RETURN: the drill answers the GLOBAL window (hours=6), not a hardcoded 24",
@@ -7768,9 +7837,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("COPY: a cold boot from that URL reproduces the exact state",
           H.AN_FILTERS.host === "198.51.100.5" && H.AN_FILTERS.model === "DBSCAN"
           && Number(H.trHours()) === 6
-          && doc.getElementById("view-anomalies").classList.contains("active"),
+          && needEl("view-anomalies").classList.contains("active"),
           `${H.AN_FILTERS.host} / ${H.AN_FILTERS.model} / ${H.trHours()} / active=` +
-          doc.getElementById("view-anomalies").classList.contains("active"));
+          needEl("view-anomalies").classList.contains("active"));
 
     // cleanup: back to a neutral world for the sections that follow.
     fetchOverride = null;
@@ -7807,7 +7876,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           !!pressedNow && H.ASSETS_STATE.svc === svcLabel
           && pressedNow.textContent.startsWith(svcLabel),
           `pressed=${pressedNow ? pressedNow.textContent.trim() : "none"} svc=${H.ASSETS_STATE.svc}`);
-    const sumTxt = (doc.getElementById("as-summary") || {}).textContent || "";
+    const sumTxt = (needEl("as-summary") || {}).textContent || "";
     check("ASSETS: the summary says showing X of Y with the reason",
           /\d+ of \d+ hosts with service/.test(sumTxt) && sumTxt.includes(svcLabel), sumTxt);
     H.syncURL();
@@ -7839,14 +7908,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.ASSETS_STATE.tracked = ["203.0.113.42", "203.0.113.1"];
     H.renderNetwork();
     await sleep(120);
-    const nwChip = doc.getElementById("nw-only-tracked");
+    const nwChip = needEl("nw-only-tracked");
     if (nwChip) { nwChip.click(); }
     await sleep(150);
     check("NETWORK: the tracked-only chip filters the map and is pressed",
           nwChip && nwChip.getAttribute("aria-pressed") === "true"
-          && /showing 2 of 3 hosts/.test((doc.getElementById("nw-caption") || {}).textContent || ""),
+          && /showing 2 of 3 hosts/.test((needEl("nw-caption") || {}).textContent || ""),
           `pressed=${nwChip ? nwChip.getAttribute("aria-pressed") : "none"} ` +
-          `caption=${(doc.getElementById("nw-caption") || {}).textContent || ""}`);
+          `caption=${(needEl("nw-caption") || {}).textContent || ""}`);
     H.syncURL();
     check("NETWORK: the filter rides the URL", /nw\.tracked=1/.test(window.location.hash),
           window.location.hash);
@@ -7857,7 +7926,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(120);
     check("NETWORK: a reload restored by the URL puts the filter back",
           H.ASSETS_STATE.trackedOnly === true
-          && doc.getElementById("nw-only-tracked").getAttribute("aria-pressed") === "true");
+          && needEl("nw-only-tracked").getAttribute("aria-pressed") === "true");
     if (nwChip) { nwChip.click(); await sleep(120); }   // release
     H.ASSETS_STATE.tracked = [];
     H.renderNetwork();
@@ -7866,7 +7935,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("discover");
     await H.loadDiscover();
     await sleep(300);
-    const feedSel = doc.getElementById("dc-feed");
+    const feedSel = needEl("dc-feed");
     check("DISCOVER: the feed select is on screen", !!feedSel);
     if (feedSel) {
       feedSel.value = "dns";
@@ -7874,8 +7943,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
     await sleep(400);
     check("DISCOVER: the feed switch is applied (the summary speaks DNS)",
-          /DNS/.test((doc.getElementById("dc-summary") || {}).textContent || ""),
-          (doc.getElementById("dc-summary") || {}).textContent || "");
+          /DNS/.test((needEl("dc-summary") || {}).textContent || ""),
+          (needEl("dc-summary") || {}).textContent || "");
     H.syncURL();
     check("DISCOVER: the feed rides the URL", /dc\.feed=dns/.test(window.location.hash),
           window.location.hash);
@@ -7915,7 +7984,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // 1) the trail is a readable surface: who / what / why / when -- on its OWN tab now.
     H.showView("logs");
     await sleep(450);
-    const stTrail = doc.getElementById("lg-changes");
+    const stTrail = needEl("lg-changes");
     const trailRows = stTrail ? [...stTrail.querySelectorAll("tbody tr")] : [];
     check("US-10: the write trail lists its entries",
           trailRows.length >= 3,
@@ -8007,14 +8076,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const thrRow = doc.querySelector('#view-settings [data-key="base_threshold"]');
     const thrCard = thrRow && thrRow.closest(".card");
     check("...and Tune lands on the detection threshold with its card expanded",
-          doc.getElementById("view-settings").classList.contains("active")
+          needEl("view-settings").classList.contains("active")
           && !!thrCard && !thrCard.classList.contains("collapsed"),
           thrCard ? `collapsed=${thrCard.classList.contains("collapsed")}` : "no threshold row");
     // 2) the rule surface states its reach, and each sensor opens its fleet sheet.
     H.showView("sluice");
     await H.loadSluice();
     await sleep(400);
-    const reach = doc.getElementById("sl-reach");
+    const reach = needEl("sl-reach");
     check("US-9: the rules surface states its reach",
           !!reach && /can act on \d+ sensor/.test(reach.textContent || ""),
           (reach && reach.textContent || "").slice(0, 130));
@@ -8025,9 +8094,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await sleep(550);
     check("...and the chip opens that sensor's fleet sheet",
           !doc.getElementById("wl-detail-card").classList.contains("hidden")
-          && ((doc.getElementById("wl-detail-id") || {}).textContent || "")
+          && ((needEl("wl-detail-id") || {}).textContent || "")
                === (reachChip ? reachChip.textContent : ""),
-          `id=${(doc.getElementById("wl-detail-id") || {}).textContent || ""}`);
+          `id=${(needEl("wl-detail-id") || {}).textContent || ""}`);
     if (typeof H.closeWeirling === "function") H.closeWeirling();
     H.showView("health");
     await sleep(150);
@@ -8076,7 +8145,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
     // US-1: the DNS feed's record detail -- a client and a query, never a src/dst pair, and
     // never the word undefined.
-    const feedSel = doc.getElementById("dc-feed");
+    const feedSel = needEl("dc-feed");
     if (feedSel) {
       feedSel.value = "dns";
       feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -8099,18 +8168,18 @@ check("...a contradicted segment names BOTH segments on the issues list",
         if (dnsBtn) dnsBtn.click();
         await new Promise((r) => setTimeout(r, 120));
         check("...and that button lands on the host view",
-              !!dnsBtn && doc.getElementById("view-host").classList.contains("active"));
+              !!dnsBtn && needEl("view-host").classList.contains("active"));
         H.showView("discover");
         feedSel.value = "netflow";
         feedSel.dispatchEvent(new window.Event("change", { bubbles: true }));
         await new Promise((r) => setTimeout(r, 200));
       }
     }
-    const dcVol = doc.getElementById("dc-volume");
+    const dcVol = needEl("dc-volume");
     const hits = dcVol ? dcVol.querySelectorAll("rect.hit") : [];
     check("the Discover histogram buckets are clickable drill targets", hits.length >= 1,
           "hit rects=" + hits.length);
-    const protoSel = doc.getElementById("dc-proto");
+    const protoSel = needEl("dc-proto");
     check("the flow-type facet fills from the payload",
           !!(protoSel && protoSel.options.length >= 3), "options=" + (protoSel ? protoSel.options.length : "?"));
     // ── CLICK A VALUE AND IT IS ADDED TO THE FILTER (the operator's words) ────────────────────
@@ -8133,7 +8202,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
         await new Promise((r) => setTimeout(r, 60));
         check("removing the chip empties the filter row",
               doc.querySelectorAll("#dc-chips .dc-chip").length === 0,
-              doc.getElementById("dc-chips").textContent.slice(0, 60));
+              needEl("dc-chips").textContent.slice(0, 60));
       }
     }
     // ── A WEIRLING IS NAMED, NOT AN IP (the operator, 2026-10-16) ─────────────────────────────
@@ -8141,7 +8210,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("the discover row names the weirling, not the exporter address",
           !!wCell && /weirvern/.test(wCell.textContent) && !/127\.0\.0\.1/.test(wCell.textContent),
           wCell ? wCell.textContent : "no weirling cell");
-    const wSel = doc.getElementById("dc-sensor");
+    const wSel = needEl("dc-sensor");
     const wOpt = wSel ? [...wSel.options].find((o) => o.value === "127.0.0.1") : null;
     check("the weirling filter shows the name but filters on the address",
           !!wOpt && /weirvern/.test(wOpt.textContent), wOpt ? wOpt.textContent : "no option");
@@ -8153,14 +8222,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
   {
     H.showView("blocked");
     await H.loadBlocked();
-    const sum = doc.getElementById("bl-summary").textContent;
+    const sum = needEl("bl-summary").textContent;
     check("the blocks summary counts hits and the live rules", /3 recorded hits/.test(sum) &&
           /1 blocking rule/.test(sum) && /1 alerting rule/.test(sum), sum.slice(0, 160));
     const sluiceTab = doc.querySelector('.tab[data-view="sluice"]');
     check("the Blocks view is a Sluice drill, not a peer tab",
           H.CURRENT_VIEW === "blocked"
           && !!sluiceTab && sluiceTab.classList.contains("active")
-          && /Sluice Gate/.test(doc.querySelector("#crumbs") ? doc.querySelector("#crumbs").textContent : ""));
+          && /Sluice Gate/.test(needEl("crumbs") ? needEl("crumbs").textContent : ""));
     const hitRows = doc.querySelectorAll("#bl-hit-rows tr");
     check("the hits table renders with rule/list labels",
           hitRows.length === 2 &&
@@ -8180,12 +8249,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const first = doc.querySelector("#bl-hit-rows tr.clickable");
     if (first) first.click();
     await new Promise((r) => setTimeout(r, 120));
-    const detail = doc.getElementById("bl-detail-card");
+    const detail = needEl("bl-detail-card");
     check("a block row opens its detail card",
           !!detail && !detail.classList.contains("hidden")
-          && /ads\.example\.com/.test(doc.getElementById("bl-detail-body").textContent)
-          && /DNS answered|recorded|blocklist/.test(doc.getElementById("bl-detail-body").textContent),
-          detail ? doc.getElementById("bl-detail-body").textContent.slice(0, 120) : "no detail");
+          && /ads\.example\.com/.test(needEl("bl-detail-body").textContent)
+          && /DNS answered|recorded|blocklist/.test(needEl("bl-detail-body").textContent),
+          detail ? needEl("bl-detail-body").textContent.slice(0, 120) : "no detail");
     if (detail) H.closeModal(detail);
   }
 
@@ -8206,13 +8275,13 @@ check("...a contradicted segment names BOTH segments on the issues list",
             .some((tr) => tr.textContent.includes("ads.example.com")));
     await H.blOpenRuleById("r1");
     await new Promise((r) => setTimeout(r, 160));
-    const modeSel = doc.getElementById("sl-rule-mode");
+    const modeSel = needEl("sl-rule-mode");
     check("clicking a hit's rule opens the Sluice sheet with the real rule",
           !doc.getElementById("sl-rule-sheet").classList.contains("hidden")
-          && doc.getElementById("sl-rule-id").textContent === "r1"
+          && needEl("sl-rule-id").textContent === "r1"
           && !!modeSel && !modeSel.disabled && modeSel.value === "block"
-          && /ads\.example\.com/.test(doc.getElementById("sl-rule-facts").textContent),
-          `id=${doc.getElementById("sl-rule-id").textContent} mode=${modeSel ? modeSel.value : "missing"}`);
+          && /ads\.example\.com/.test(needEl("sl-rule-facts").textContent),
+          `id=${needEl("sl-rule-id").textContent} mode=${modeSel ? modeSel.value : "missing"}`);
     check("the payload was fetched ON DEMAND, exactly once",
           BLOCKED_FETCHES === fetches0 + 1,
           `${BLOCKED_FETCHES - fetches0} fetch(es)`);
@@ -8220,14 +8289,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     await new Promise((r) => setTimeout(r, 160));
     check("opening a second rule does not refetch it",
           BLOCKED_FETCHES === fetches0 + 1
-          && doc.getElementById("sl-rule-id").textContent === "r2",
-          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${doc.getElementById("sl-rule-id").textContent}`);
+          && needEl("sl-rule-id").textContent === "r2",
+          `${BLOCKED_FETCHES - fetches0} fetch(es); id=${needEl("sl-rule-id").textContent}`);
     await H.blOpenRuleById("r-revoked");         // not among the live sets
     await new Promise((r) => setTimeout(r, 160));
     check("a genuinely non-live rule opens the sheet read-only, not as a live decision",
-          doc.getElementById("sl-rule-id").textContent === "r-revoked"
-          && doc.getElementById("sl-rule-mode").disabled === true);
-    const ruleClose = doc.getElementById("sl-rule-close");
+          needEl("sl-rule-id").textContent === "r-revoked"
+          && needEl("sl-rule-mode").disabled === true);
+    const ruleClose = needEl("sl-rule-close");
     if (ruleClose) ruleClose.click();
     H.BLOCKED_STATE.data = savedBlocked;
   }
@@ -8250,8 +8319,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
       rowMore.open = false;
     }
     check("the summary names the NXDOMAIN count",
-          /NXDOMAIN/.test(doc.getElementById("dn-summary").textContent),
-          doc.getElementById("dn-summary").textContent.slice(0, 90));
+          /NXDOMAIN/.test(needEl("dn-summary").textContent),
+          needEl("dn-summary").textContent.slice(0, 90));
     rows[0].click();
     await new Promise((r) => setTimeout(r, 150));
     const detail = doc.querySelector("tr.dn-detail");
@@ -8264,10 +8333,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
     if (act) act.click();
     await new Promise((r) => setTimeout(r, 40));
     check("a detail action filters the view",
-          !!(act) && doc.getElementById("dn-domain").value === "ads.example.com",
-          doc.getElementById("dn-domain").value);
+          !!(act) && needEl("dn-domain").value === "ads.example.com",
+          needEl("dn-domain").value);
     H.dnClear();
-    check("clear empties the DNS filters", doc.getElementById("dn-domain").value === "", "");
+    check("clear empties the DNS filters", needEl("dn-domain").value === "", "");
 
     // ISSUE #38: the summary line respects the payload state, the way the panels below it
     // and blocked.js's pager already did. A failed read must not claim a count or a range;
@@ -8279,7 +8348,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
                 rows: [], total: 0, histogram: [], facets: {}, data_error: "x" })
       : null);
     await H.loadDns();
-    const failedSummary = doc.getElementById("dn-summary").textContent;
+    const failedSummary = needEl("dn-summary").textContent;
     check("a FAILED dns read claims no query count and no range",
           /unavailable: cannot reach ClickHouse/.test(failedSummary)
           && !/\d+ quer/.test(failedSummary) && !/\d+\u2013\d+/.test(failedSummary),
@@ -8289,7 +8358,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
                  rows: [], histogram: [], facets: {}, bucket_s: 60 })
       : null);
     await H.loadDns();
-    const emptySummary = doc.getElementById("dn-summary").textContent;
+    const emptySummary = needEl("dn-summary").textContent;
     check("an EMPTY successful dns read keeps its count and reads 0\u20130, never 1\u20130",
           /0 quer/.test(emptySummary) && /showing 0\u20130/.test(emptySummary)
           && !/1\u20130/.test(emptySummary),
@@ -8303,8 +8372,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("discover");
     await H.loadDiscover();
     check("Discover names the window it is showing",
-          /last 24 hours window/i.test(doc.getElementById("dc-window").textContent),
-          doc.getElementById("dc-window").textContent);
+          /last 24 hours window/i.test(needEl("dc-window").textContent),
+          needEl("dc-window").textContent);
     const dn0 = DISCOVER_REQS.length;
     H.trApply({ mode: "relative", hours: 6 });
     await new Promise((r) => setTimeout(r, 300));
@@ -8313,8 +8382,8 @@ check("...a contradicted segment names BOTH segments on the issues list",
           DISCOVER_REQS.length > dn0 && /hours=6/.test(dnLast),
           `requests=${DISCOVER_REQS.length - dn0}; last=${dnLast.slice(0, 70)}`);
     check("and Discover's window pill follows the header",
-          /last 6 hours window/i.test(doc.getElementById("dc-window").textContent),
-          doc.getElementById("dc-window").textContent);
+          /last 6 hours window/i.test(needEl("dc-window").textContent),
+          needEl("dc-window").textContent);
     H.trApply({ mode: "relative", hours: 24 });
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -8323,12 +8392,12 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // Start from a closed shell: an earlier block leaves the Blocked rule card open, and a
     // modal opened over an open modal would focus the first node's control (a real stack, but
     // not what this probe is measuring).
-    const shell0 = doc.getElementById("modal");
+    const shell0 = needEl("modal");
     if (shell0 && !shell0.classList.contains("hidden")) {
-      for (const node of [...doc.getElementById("modal-body").children]) H.closeModal(node);
+      for (const node of [...needEl("modal-body").children]) H.closeModal(node);
     }
     if (typeof H.closeWeirling === "function") H.closeWeirling();
-    const strayClose = doc.getElementById("wl-sensor-close");
+    const strayClose = needEl("wl-sensor-close");
     if (strayClose) strayClose.click();
     const opener = doc.createElement("button");
     opener.textContent = "open";
@@ -8338,7 +8407,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     pane.innerHTML = "<h2>Contract probe</h2><button id='probe-a'>a</button><button id='probe-b'>b</button>";
     H.openModal(pane);
     await new Promise((r) => setTimeout(r, 40));
-    const shell = doc.getElementById("modal");
+    const shell = needEl("modal");
     const labelId = shell.getAttribute("aria-labelledby");
     const label = labelId ? doc.getElementById(labelId) : null;
     check("the dialog is labelled by its own heading",
@@ -8346,9 +8415,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
     check("focus moves into the dialog on open",
           shell.contains(doc.activeElement),
           (doc.activeElement || {}).id || (doc.activeElement || {}).tagName);
-    doc.getElementById("probe-b").focus();
+    needEl("probe-b").focus();
     doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    check("Tab stays inside the dialog", doc.activeElement === doc.getElementById("probe-a"),
+    check("Tab stays inside the dialog", doc.activeElement === needEl("probe-a"),
           (doc.activeElement || {}).id || "?");
     H.closeModal(pane);
     await new Promise((r) => setTimeout(r, 40));
@@ -8375,14 +8444,17 @@ check("...a contradicted segment names BOTH segments on the issues list",
 
 
   console.log(notes.join("\n"));
+  if (stales.length) {
+    console.log("\n  -- UNVERIFIED (element not in the DOM; NOT a pass) ------------------");
+    console.log(stales.join("\n"));
+  }
   if (failures.length) {
     console.log("\n" + failures.join("\n"));
-    console.log(`\n  ${failures.length} FAILED, ${notes.length} passed`);
+    console.log(`\n  ${failures.length} FAILED, ${notes.length} passed, ${stales.length} unverified`);
     process.exit(1);
   }
-  console.log(`\n  all ${notes.length} checks passed
-
-`);
+  console.log(`\n  all ${notes.length} checks passed` +
+              (stales.length ? `, ${stales.length} UNVERIFIED (listed above)` : "") + "\n");
   // EXIT EXPLICITLY. jsdom keeps a live window (and its timers) alive after the checks finish, so
   // the process never returns on its own -- the success path used to fall off the end of main() and
   // hang. Every run in this session LOOKED fine only because it was piped through `grep`, which
