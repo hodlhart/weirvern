@@ -346,9 +346,15 @@ function refreshAccountCard() {
   const pw = document.getElementById("st-account-pw");
   if (!note) return;
   if (!AUTH.accounts) {
-    note.textContent = "This deployment has no accounts provisioned: the operator token "
-      + "below is the credential that changes settings. An admin account is created "
-      + "automatically on the deployment's first startup.";
+    // WORDED FROM THE NOTE (WV1-17). "no accounts provisioned" describes a benign first run; an
+    // unreadable store is a different situation that happens to look identical from here.
+    const authWhy = String(AUTH.note || "").trim();
+    note.textContent = authWhy
+      ? `${authWhy} Until the store can be read, reads are served without a session and the `
+        + "operator token below is what changes settings."
+      : "This deployment has no accounts provisioned: the operator token "
+        + "below is the credential that changes settings. An admin account is created "
+        + "automatically on the deployment's first startup.";
     if (pw) pw.classList.add("hidden");
     return;
   }
@@ -5363,9 +5369,41 @@ async function boot() {
   showGate("auth", AUTH.note || "Sign in to view this dashboard.");
 }
 
+/**
+ * Show the server's own `/api/session` note when the console is running without accounts (WV1-17).
+ *
+ * The note says things like "the user store could not be read; no accounts were created this
+ * startup". It reached the screen from exactly one place: the sign-in gate's text. But the gate is
+ * only shown when accounts EXIST and the visitor is not signed in, so the one state that produces
+ * the note -- no readable store -- was the one state that never displayed it. Measured live:
+ * /api/session returned that note and the console showed no trace of it, while Settings said "This
+ * deployment has no accounts provisioned", which describes a benign first run.
+ *
+ * WHY IT MATTERS, and it is not cosmetic: with no readable store `_accounts_on` is False, so
+ * `_require_read` serves every READ without a session (writes stay token-gated). Measured:
+ * /api/settings, /api/system and /api/sluice all returned 200 unauthenticated; /api/users returned
+ * 403. Failing open for reads is a defensible trade only if the operator is told it is happening.
+ */
+function showSessionNote() {
+  if (AUTH.accounts) return;  // there is a gate, and the note belongs to its prompt
+  const note = String(AUTH.note || "").trim();
+  if (!note) return;  // a genuine first run has nothing to report
+  if (document.getElementById("auth-note-banner")) return;
+  const main = document.querySelector("main");
+  if (!main) return;
+  main.prepend(el("div", {
+    class: "banner",
+    attrs: { id: "auth-note-banner", role: "status" },
+    text: "No account store: reads are open. " + note
+      + " Every view on this dashboard can be read without signing in; changing anything still "
+      + "requires the operator token.",
+  }));
+}
+
 /** What runs once there is (or may be) a usable identity: the pre-accounts posture or a
  *  signed-in account, with the forced-change gate in between. */
 async function bootAuthed() {
+  showSessionNote();
   installViewHeaders();
   if (window.MutationObserver && !window.__vhObserver) {
     window.__vhObserver = new MutationObserver(scheduleViewHeaderSync);

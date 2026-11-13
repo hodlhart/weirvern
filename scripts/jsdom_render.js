@@ -190,6 +190,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    chartFrame, svgEl, fmtBytes, el, renderStaleness, renderPager, showEdgeDetail, showNodeDetail, renderNearMisses, renderAlertAudit, settingControl, renderScoreDistribution, ALERTS_STATE, ALERTS_PAGE_SIZE,
                   openModal, closeModal, markFilterCells,
                    AUTH, loadSession, doLogin, doLogout, loadUsers, boot, bootAuthed, showGate,
+                   showSessionNote, refreshAccountCard,
                    wrapTables, wireInfoButtons,
                    refreshChrome, getSession, setSession, createUser, setRole, changePassword,
                    loadIdentity, showIdentityDetail,
@@ -4261,6 +4262,77 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     H.clearGetCache();
     await H.loadDns();   // tidy back to the healthy fixture
     H.clearGetCache();
+  }
+
+  // ── THE SERVER'S NOTE REACHES THE SCREEN WHEN READS ARE OPEN (WV1-17) ───────────────────────
+  //
+  // /api/session returns `note`, which says things like "the user store could not be read; no
+  // accounts were created this startup". It reached the screen from one place only: the sign-in
+  // gate's text. The gate is shown when accounts EXIST and nobody is signed in, so the one state
+  // that PRODUCES the note was the one state that never displayed it -- boot went straight to the
+  // dashboard. Meanwhile Settings said "no accounts provisioned", which describes a benign first
+  // run. With no readable store every READ is served without a session, so failing open silently
+  // is the thing the operator most needs to know.
+  {
+    const NOTE = "the user store could not be read; no accounts were created this startup";
+    const banner = () => doc.getElementById("auth-note-banner");
+    const stash = { accounts: H.AUTH.accounts, note: H.AUTH.note, authenticated: H.AUTH.authenticated };
+
+    // A leftover banner from another block would make every assertion below meaningless.
+    if (banner()) banner().remove();
+    H.AUTH.accounts = false;
+    H.AUTH.authenticated = false;
+    H.AUTH.note = NOTE;
+    H.showSessionNote();
+    const shown = banner() ? String(banner().textContent) : "";
+    check("the server's note is shown when the console runs without accounts",
+          !!banner(), "no #auth-note-banner was prepended");
+    check("...and it repeats what the server actually said",
+          shown.includes(NOTE), `banner=${JSON.stringify(shown.slice(0, 120))}`);
+    check("...and says reads are open rather than implying a normal first run",
+          /reads are open|read without signing in/i.test(shown),
+          `banner=${JSON.stringify(shown.slice(0, 160))}`);
+
+    // THE NEXT THREE CHECKS ASSERT AN ABSENCE, SO THEY PASS VACUOUSLY IF THE FUNCTION RENDERS
+    // NOTHING AT ALL -- measured: with showSessionNote() made a no-op they still pass. They are
+    // meaningful only as companions to the three above, which prove the mechanism does render.
+    // Recorded rather than dressed up: the discrimination for this fix lives in those three.
+    //
+    // Idempotent: boot can run more than once, and two banners stack.
+    const countBefore = doc.querySelectorAll("#auth-note-banner").length;
+    H.showSessionNote();
+    check("...it does not stack a second banner",
+          doc.querySelectorAll("#auth-note-banner").length === countBefore,
+          `banners=${doc.querySelectorAll("#auth-note-banner").length}`);
+
+    // With accounts ON the gate carries the note, and a banner would be wrong.
+    if (banner()) banner().remove();
+    H.AUTH.accounts = true;
+    H.showSessionNote();
+    check("...and nothing is shown when a gate exists",
+          !banner(), "a banner was drawn even though accounts exist");
+
+    // An empty note is a genuine first run: silence is correct.
+    H.AUTH.accounts = false;
+    H.AUTH.note = "";
+    H.showSessionNote();
+    check("...and an empty note draws nothing at all",
+          !banner(), "a banner was drawn with no note to carry");
+
+    // Settings must word its line from the note, not from a fixed sentence.
+    H.AUTH.note = NOTE;
+    H.refreshAccountCard();
+    const sNote = doc.getElementById("st-account-note");
+    const sText = sNote ? String(sNote.textContent) : "";
+    check("...and Settings repeats the reason rather than calling it a first run",
+          sText.includes("user store could not be read"),
+          `settings=${JSON.stringify(sText.slice(0, 160))}`);
+
+    if (banner()) banner().remove();
+    H.AUTH.accounts = stash.accounts;
+    H.AUTH.note = stash.note;
+    H.AUTH.authenticated = stash.authenticated;
+    H.refreshAccountCard();
   }
 
   // ── A DESTRUCTIVE CONTROL IS NOT ONE CLICK (WV1-12, WV1-14) ──────────────────────────────────
