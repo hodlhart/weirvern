@@ -201,7 +201,7 @@ window.__H = { ASSETS_STATE, renderAssets, renderNetwork, renderChips, loadAsset
                    // gets the CACHED payload and its override is never called. Measured as an
                    // empty URL list inside the override. Every stubbed read in this file is
                    // subject to it, which makes this a seam the harness needs, not a convenience.
-                   clearGetCache,
+                   clearGetCache, openRuleSheet,
                    renderSluiceFleet, sluiceDuration, loadBlockingControls,
                    loadWeirlings, renderWeirlings, openWeirling, wireWeirlings, wlAge,
                    paletteOpen, paletteClose, paletteRun, paletteMaxToggle, paletteGlobalKey,
@@ -4145,6 +4145,80 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     H.clearGetCache();
     await H.loadSluice();   // tidy back
     H.clearGetCache();
+  }
+
+  // ── A FAILED LOOKUP MUST NOT BE SHOWN AS A REVOCATION (WV1-08) ──────────────────────────────
+  //
+  // `blocked.js:blOpenRuleById` opens this sheet for a rule id it could not find in the lists the
+  // page holds. It used to set `revoked: true` on the record it fabricated for that case, and the
+  // sheet renders revoked first -- so a transient read failure, or a rule simply absent from a
+  // capped list, told the operator "This rule is revoked ... it cannot be edited", i.e. that
+  // enforcement had ended, when the rule might have been live and blocking.
+  //
+  // The record below is deliberately the OLD one, `revoked: true` AND `lookup_failed: true`, so
+  // this measures the ordering fix in sluice.js rather than the one-word change in blocked.js.
+  {
+    H.openRuleSheet({ rule_id: "no-such-rule", describes: "example.com", domain: "example.com",
+                      mode: "", live: false, revoked: true, origin: "", expires_at: "",
+                      resolved_count: 0, resolved: [], lookup_failed: true, not_live: true });
+    const note = (needEl("sl2-detail-note").textContent || "");
+    check("a failed lookup is not reported as a revocation", !/revoked/i.test(note), note.slice(0, 130));
+    check("...it says the state could not be confirmed instead",
+          /Cannot confirm/i.test(note), note.slice(0, 130));
+    // NOT a search for the words "is live": the disclaimer legitimately says "Nothing is being
+    // claimed about whether it is live", and the first version of this assertion matched that and
+    // failed on correct text. The property that matters is that the note STATES its own uncertainty.
+    check("...and it says outright that it is making no claim about liveness",
+          /no claim|Nothing is being claimed/i.test(note), note.slice(0, 130));
+
+    // The genuinely-absent case must still read as absent, or the fix has traded one wrong
+    // message for another.
+    H.openRuleSheet({ rule_id: "absent", describes: "example.com", domain: "example.com",
+                      mode: "", live: false, revoked: false, origin: "", expires_at: "",
+                      resolved_count: 0, resolved: [], lookup_failed: false, not_live: true });
+    const absentNote = (needEl("sl2-detail-note").textContent || "");
+    check("a rule that is simply not in the live store still says so",
+          /not in the live store/i.test(absentNote), absentNote.slice(0, 130));
+  }
+
+  // ── THE AUTO-BLOCK PAUSE MUST HAVE SOMEWHERE TO SPEAK (WV1-11) ──────────────────────────────
+  //
+  // It passed `autoEl` -- a DIV built with replaceChildren -- as the note element, and
+  // applySluiceSetting deliberately writes nothing when `note.tagName === "DIV"`. So the pause
+  // produced no confirmation and, after the POST, neither the server's note nor an error appeared
+  // anywhere: a refused pause was indistinguishable from a slow one and the banner stayed up.
+  //
+  // ASSERTED ON THE PRESENCE OF THE NOTE ELEMENT, not on a message, because what the fix changes is
+  // that a place to write exists at all. The banner carries three spans when it has one (chip,
+  // description, note) and two when it does not.
+  {
+    H.clearGetCache();
+    fetchOverride = (u) => {
+      const s = String(u);
+      if (s.includes("/api/sluice") && !s.includes("/api/sluice/")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true,
+          gate: { state: "disarmed", backend: "nftables", rules_active: 0, rules_total: 0 },
+          gates: [], blocklists: [], hits: [] }) };
+      }
+      if (s.includes("/api/settings")) {
+        return { ok: true, status: 200, statusText: "OK", json: async () => ({
+          available: true,
+          groups: { detect: [{ key: "sluice_auto_score", value: "0.9" }] } }) };
+      }
+      return null;
+    };
+    await H.loadSluice();
+    const auto = needEl("sl2-auto");
+    const spans = auto.querySelectorAll ? Array.from(auto.querySelectorAll("span")) : [];
+    fetchOverride = null;
+    H.clearGetCache();
+
+    check("the auto-block banner is shown when the threshold is armed",
+          !auto.classList.contains("hidden"), `class=${auto.className || ""}`);
+    check("...and its pause control has a note element to answer in", spans.length >= 3,
+          `${spans.length} span(s) in the banner: ` +
+          JSON.stringify(spans.map((s) => (s.textContent || "").slice(0, 24))));
   }
 
   {
