@@ -205,7 +205,10 @@ async function blOpenRuleById(ruleId, hit) {
   if (typeof openRuleSheet === "function") {
     return openRuleSheet({
       rule_id: ruleId, describes: (hit && hit.domain) || ruleId,
-      domain: (hit && hit.domain) || "", mode: "", live: false, revoked: true,
+      // NOT revoked. A rule we could not find is a rule whose state we do not know; marking it
+      // revoked told the operator enforcement had ended (WV1-08). `not_live` alone keeps the sheet
+      // read-only, which is the only thing this record actually licenses.
+      domain: (hit && hit.domain) || "", mode: "", live: false, revoked: false,
       origin: "", expires_at: "", resolved_count: 0, resolved: [],
       lookup_failed: !d, not_live: true,
     });

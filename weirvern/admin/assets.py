@@ -1215,10 +1215,40 @@ def _asset_change_coverage(client, hours: int) -> dict:
         span,
         "asset-change observations",
     )
+    # ── COVERAGE IS A QUESTION ABOUT THE MONITORED POPULATION (operator directive, 2026-11-12) ──
+    #
+    # `assets` used to be `count()` over the whole registry, so the percentage was computed over
+    # every row the box had ever seen -- internet peers, scanners, one-off lookups. A number
+    # diluted by hosts nobody monitors answers no question an operator has: "have we scanned the
+    # network we said we were watching" is the question, and it needs that network as the
+    # denominator.
+    #
+    # The scope decision is the SAME one scoring and training use (`networks.is_monitored`), so
+    # the two cannot drift apart: a host that is not alertable is not part of scanner coverage
+    # either. Three states, kept distinct:
+    #
+    #   no scopes declared      -> `basis: all`, legacy, everything counts (an upgrade must not
+    #                              silently report 0% before anyone has declared a network)
+    #   scopes, none monitored  -> `basis: none`, an explicit no-monitoring configuration
+    #   monitored scopes exist  -> `basis: monitored`, the real denominator
+    scopes = networks.load_scopes(client)
+    monitored = [s for s in scopes if networks.is_monitored(s)]
+    if not scopes:
+        basis = "all"
+        cond = "1"
+    elif not monitored:
+        basis = "none"
+        cond = "0"
+    else:
+        basis = "monitored"
+        cond = " OR ".join(f"isIPAddressInRange(ip, '{s.cidr}')" for s in monitored)
+
     registry = _rows(
         client,
         "SELECT count() AS assets, countIf(scan_state = 'done') AS scanned, "
-        "       max(last_scan_at) AS last_scan "
+        "       max(last_scan_at) AS last_scan, "
+        f"      countIf({cond}) AS in_scope, "
+        f"      countIf(({cond}) AND scan_state = 'done') AS in_scope_scanned "
         "FROM weirvern.asset_registry FINAL",
         {},
         "asset-change registry coverage",
@@ -1226,17 +1256,27 @@ def _asset_change_coverage(client, hours: int) -> dict:
     if history is None or registry is None:
         return {"available": False, "reason": "the coverage query failed",
                 "observations": 0, "observed_assets": 0, "assets": 0, "scanned": 0,
+                "basis": "all", "in_scope": 0, "in_scope_scanned": 0,
                 "last_observation": "", "last_scan": ""}
     h = history[0] if history else (0, 0, None)
-    r = registry[0] if registry else (0, 0, None)
+    r = registry[0] if registry else (0, 0, 0, 0, 0)
+    total_assets = int(r[0] or 0)
+    total_scanned = int(r[1] or 0)
+    in_scope = int(r[3] or 0)
+    in_scope_scanned = int(r[4] or 0)
     return {
         "available": True,
         "reason": "",
         "observations": int(h[0] or 0),
         "observed_assets": int(h[1] or 0),
         "last_observation": _iso(h[2]),
-        "assets": int(r[0] or 0),
-        "scanned": int(r[1] or 0),
+        # WHAT THE PERCENTAGE IS A PERCENTAGE OF. `assets`/`scanned` stay as the registry-wide
+        # truth so a reader can see the dilution; the UI quotes the in-scope pair.
+        "basis": basis,
+        "assets": total_assets,
+        "scanned": total_scanned,
+        "in_scope": in_scope,
+        "in_scope_scanned": in_scope_scanned,
         "last_scan": _iso(r[2]),
     }
 

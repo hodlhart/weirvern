@@ -257,9 +257,18 @@ function renderSluiceGates(d) {
         el("span", { class: "chip bad", text: "auto-block on" }),
         el("span", { class: "muted", text: `detections at or above ${auto.toFixed(2)} are blocked without review` }),
       );
+      // ── THE PAUSE NEEDED SOMEWHERE TO SPEAK (WV1-11) ───────────────────────────────────────
+      //
+      // This used to pass `autoEl` (a DIV built with replaceChildren) as the note element, and
+      // applySluiceSetting deliberately writes nothing when `note.tagName === "DIV"`. So the pause
+      // produced no confirmation, and after the POST neither the server's note nor an error was
+      // shown anywhere: a refused pause was indistinguishable from a slow one, and the banner
+      // stayed on screen either way. A dedicated span gives it a place to answer.
       const pause = el("button", { class: "quiet", attrs: { type: "button" }, text: "Pause auto-block" });
-      pause.onclick = () => applySluiceSetting("SLUICE_AUTO_SCORE", "0", pause, autoEl);
+      const pauseNote = el("span", { class: "muted", text: "" });
+      pause.onclick = () => applySluiceSetting("SLUICE_AUTO_SCORE", "0", pause, pauseNote);
       autoEl.appendChild(pause);
+      autoEl.appendChild(pauseNote);
     }
   }
   renderSluiceFleet(d.gates || []);
@@ -551,9 +560,23 @@ function sl2OpenDetail(rule) {
   }
   const note = document.getElementById("sl2-detail-note");
   if (note) {
-    note.textContent = rule.revoked
-      ? "This rule is revoked. Its record is kept for audit; it cannot be edited."
-      : (rule.not_live ? "This rule is not in the live store; it is shown as a record only." : "");
+    // ── A FAILED LOOKUP MUST NOT BE SHOWN AS A REVOCATION (WV1-08) ──────────────────────────
+    //
+    // `blocked.js:blOpenRuleById` opens this sheet for a rule id it could not find in the lists
+    // the page holds, and it used to set `revoked: true` on that fabricated record. So a transient
+    // read failure, or a rule simply absent from a capped list, told the operator "This rule is
+    // revoked ... it cannot be edited" -- i.e. that enforcement had ended, when the rule may have
+    // been live and blocking.
+    //
+    // The failed state is checked FIRST, because it is the only one of the three that is a
+    // statement about our knowledge rather than about the rule.
+    note.textContent = rule.lookup_failed
+      ? "Cannot confirm this rule's state: the rule list could not be read, or this rule is not "
+        + "in the list the page holds. Nothing is being claimed about whether it is live. This "
+        + "sheet is read-only because there is no record to edit."
+      : (rule.revoked
+        ? "This rule is revoked. Its record is kept for audit; it cannot be edited."
+        : (rule.not_live ? "This rule is not in the live store; it is shown as a record only." : ""));
   }
   for (const id of ["sl2-mode-save", "sl-rule-delete", "sl-rule-delete-reason", "sl2-detail-mode"]) {
     const field = document.getElementById(id);
