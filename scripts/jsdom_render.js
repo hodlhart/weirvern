@@ -4094,6 +4094,23 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadBlockingControls();   // tidy back to the healthy fixture
   }
 
+  // ── A FAILED SLUICE READ MUST NOT RENDER AS "off" (WV1-07) -- NOT ASSERTED HERE ─────────────
+  //
+  // The fix is in sluice.js (renderSluiceGates branches on d.available === false). This harness
+  // CANNOT measure it: `fetchOverride` was never invoked for the /api/sluice call from
+  // H.loadSluice(), measured by logging every URL the override saw -- the list was empty. The
+  // gate card still re-rendered, from the harness's normal healthy router, so every assertion
+  // read healthy data no matter which stub was installed.
+  //
+  // Three attempts are recorded so the next person does not repeat them: `window.fetch = fn`
+  // (the bundle reads the `fetchOverride` binding, so this does nothing), a stub returning a bare
+  // object (needs {ok, status, json}), and asserting after a sleep (a pending render from an
+  // earlier block overwrites the card, so it must be read immediately after the await).
+  //
+  // Left as a note rather than as failing checks: five red lines asserting a product defect that
+  // was never measured is exactly the false signal this file spent a session removing. Whoever
+  // wires the override to this call site should add the assertions back with it.
+
   // ── THE RULES SURFACE (US-SL1, the operator's rules 1-3 and the absorbed A3) ────────────────
   {
     H.showView("sluice");

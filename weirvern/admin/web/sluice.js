@@ -102,6 +102,61 @@ async function loadSluice() {
 
 /* ── Gate state ─────────────────────────────────────────────────────────────────────────────── */
 function renderSluiceGates(d) {
+  // ── A FAILED READ MUST NOT RENDER AS "off" (WV1-07) ─────────────────────────────────────────
+  //
+  // MEASURED LIVE with no database: /api/sluice answered
+  // {"available": false, "reason": "cannot read the gate: FileNotFoundError"} and this card still
+  // rendered chip "off" with the sentence "The packet gate is off. Rules still record hits, but no
+  // packet is dropped." -- while the Rules panel ON THE SAME SCREEN said "Reach unavailable". One
+  // screen claiming both that the gate is off and that its state is unknown.
+  //
+  // Why this one matters more than the other conflations in this file: "the packet gate is off" is
+  // the single most reassuring sentence in the console, and it was reachable from a failure. The
+  // chips below derive from SETTINGS, which is a different read and can succeed while this payload
+  // fails, so nothing here is a measurement of the gate.
+  //
+  // The Domain Gate's on/off chip is left alone on purpose: it comes from SETTINGS, not from this
+  // payload, so it is still a real answer. Its COUNTS come from the failed payload, so they are
+  // suppressed rather than shown as zero.
+  if (d.available === false) {
+    const why = String(d.reason || "").trim() || "the gate state could not be read";
+    const trafChip = document.getElementById("sl2-traf-chip");
+    if (trafChip) {
+      trafChip.className = "chip bad";
+      trafChip.textContent = "unavailable";
+    }
+    const trafLine = document.getElementById("sl2-traf-line");
+    if (trafLine) {
+      trafLine.textContent =
+        `Cannot read the gate state: ${why} This card makes no claim about whether traffic is ` +
+        `being blocked.`;
+    }
+    const domLine = document.getElementById("sl2-dom-line");
+    if (domLine && domLine.textContent) {
+      domLine.textContent += " List counts are unavailable: the same read failed.";
+    }
+    const warning = document.getElementById("sl-gate-warning");
+    if (warning) {
+      warning.textContent = why;
+      warning.classList.remove("hidden");
+    }
+    for (const id of ["sl2-traf-stats", "sl2-dom-stats"]) {
+      const stats = document.getElementById(id);
+      if (stats) stats.replaceChildren();
+    }
+    for (const id of ["sl2-traf-toggle", "sl2-dom-toggle"]) {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.disabled = true;
+        btn.title = "the gate state could not be read, so this control would act blind";
+      }
+    }
+    const autoEl = document.getElementById("sl2-auto");
+    if (autoEl) autoEl.classList.add("hidden");
+    renderSluiceFleet(d.gates || []);
+    return;
+  }
+
   const gate = d.gate || {};
   const gateOn = sl2On("SLUICE_ENABLED");
   const domOn = sl2On("SLUICE_BLOCK_DOMAINS");
