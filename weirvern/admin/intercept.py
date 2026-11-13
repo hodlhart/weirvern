@@ -771,7 +771,20 @@ class Intercept:
             # Same contract as the path failure below: a refused start leaves NO trace, so the exit
             # cleans up before raising and the exception describes a node actually back to its
             # previous state.
-            withdrawn = remove_forwarding_path(self.plan.iface)
+            # THE TABLE THE INSTALL USED (WV1-23). `remove_forwarding_path` defaults to
+            # POLICY_TABLE (100), and a supervised intercept is never on 100:
+            # siphonnet.policy_table_for(iface) returns 100 + 1 + crc32(iface) % 900. So a
+            # refused start installed the rule and its routes into its own table and then
+            # cleaned table 100, which the install never touched. The table-100 commands
+            # succeed as absence, `withdrawn` comes back empty, and the raised error told
+            # the operator the node was back to its previous state while
+            # `iif <iface> lookup <table>` and the table's routes were still installed.
+            # That leftover sends matching traffic into a table with a gateway route and
+            # no live relay behind it -- the blackhole the forwarding-path checks exist to
+            # prevent, and silent in the exact place these comments promise it is not.
+            # install (793-801) and stop() (885-886) both already branch this way.
+            withdrawn = (remove_forwarding_path(self.plan.iface) if self.table == POLICY_TABLE
+                         else remove_forwarding_path(self.plan.iface, table=self.table))
             unrestored = self._sysctls.restore()
             detail = ""
             if withdrawn or unrestored:
@@ -812,7 +825,20 @@ class Intercept:
             # The failure is still reported as an error (the caller must know the intercept did
             # not arm), but the cleanup happens FIRST so the raised exception describes a node that
             # is actually back to its previous state.
-            withdrawn = remove_forwarding_path(self.plan.iface)
+            # THE TABLE THE INSTALL USED (WV1-23). `remove_forwarding_path` defaults to
+            # POLICY_TABLE (100), and a supervised intercept is never on 100:
+            # siphonnet.policy_table_for(iface) returns 100 + 1 + crc32(iface) % 900. So a
+            # refused start installed the rule and its routes into its own table and then
+            # cleaned table 100, which the install never touched. The table-100 commands
+            # succeed as absence, `withdrawn` comes back empty, and the raised error told
+            # the operator the node was back to its previous state while
+            # `iif <iface> lookup <table>` and the table's routes were still installed.
+            # That leftover sends matching traffic into a table with a gateway route and
+            # no live relay behind it -- the blackhole the forwarding-path checks exist to
+            # prevent, and silent in the exact place these comments promise it is not.
+            # install (793-801) and stop() (885-886) both already branch this way.
+            withdrawn = (remove_forwarding_path(self.plan.iface) if self.table == POLICY_TABLE
+                         else remove_forwarding_path(self.plan.iface, table=self.table))
             unrestored = self._sysctls.restore()
             detail = ""
             if withdrawn or unrestored:

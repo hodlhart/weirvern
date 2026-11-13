@@ -1846,8 +1846,16 @@ def cmd_intercept(args: argparse.Namespace) -> int:
         # capture interface keeps a route and keeps accepting traffic for a segment the
         # operator never asked to be involved in.
         if addr_added:
-            siphonnet.remove_address(iface, our_ip, segment)
-            print(f"  withdrew {our_ip} from {iface}")
+            # "withdrew" IS A CLAIM ABOUT THE HOST (WV1-24). It was printed unconditionally, so a
+            # failed `ip addr del` -- lost CAP_NET_ADMIN, interface gone -- read as a clean
+            # withdrawal while the address stayed on the capture interface with its route.
+            _unwithdrawn = siphonnet.remove_address(iface, our_ip, segment)
+            if _unwithdrawn:
+                _warn(f"{our_ip} is STILL on {iface}: the withdrawal failed. This host keeps a "
+                      f"route and keeps accepting traffic for {segment} until it is removed by "
+                      f"hand. Details: {'; '.join(_unwithdrawn)}")
+            else:
+                print(f"  withdrew {our_ip} from {iface}")
 
 
 def _effective_max_runtime(args: argparse.Namespace) -> int | None:
@@ -1982,7 +1990,16 @@ def _iface_has_address(iface: str, address: str) -> bool:
                       capture_output=True, text=True).stdout
     except OSError:
         return False
-    return address in out
+    # EXACT TOKEN COMPARE, NOT A SUBSTRING (WV1-25). `address in out` answers True for the wrong
+    # question: asking about 198.51.100.1 found the interface's 198.51.100.19, and .100 matched .100
+    # in either direction. The consequence was the one siphonnet.py:880-883 warns about -- the
+    # caller then SKIPPED adding the address and armed the intercept with its our_ip unassigned, so
+    # the poisoning ran without an address to receive the traffic, which takes hosts off the network
+    # instead of relaying them. The real owner of that address also ended up in the skip set.
+    #
+    # `ip -o addr show` prints `inet 198.51.100.19/24 ...`, so compare the address with any prefix
+    # stripped, token by token. Same parse management_addresses uses at intercept.py:156.
+    return any(tok.split("/")[0] == address for tok in out.split())
 
 def _has_cap(name: str) -> bool:
     """Whether this process holds a Linux capability, read from CapEff.

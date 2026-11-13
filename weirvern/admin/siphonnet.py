@@ -900,12 +900,19 @@ def add_address(iface: str, address: str, segment: str) -> tuple[int, str]:
     return rc, out
 
 
-def remove_address(iface: str, address: str, segment: str) -> None:
-    """Withdraw the address this run added. Idempotent, never raises.
+def remove_address(iface: str, address: str, segment: str) -> list[str]:
+    """Withdraw the address this run added. Idempotent, never raises. RETURNS THE FAILURES.
 
     Called on every exit path. Leaving an address behind changes the host's behaviour
     permanently -- a leftover address on the capture interface keeps a route and keeps
     accepting traffic for a segment the operator never asked to be involved in.
+
+    THE RETURN IS THE POINT (WV1-24). This discarded `_run`'s result and returned None while its
+    own docstring described the consequence of leaving the address behind. cli.py then printed
+    "withdrew <ip> from <iface>" on every exit path, so a failed delete -- a lost CAP_NET_ADMIN
+    mid-run, an interface that went away -- read as a clean withdrawal. `_is_absence` exists in this
+    module for exactly this distinction, and `remove_forwarding_path` was already fixed to return
+    its failures under audit F031; this is the same shape, one function over.
     """
     import ipaddress
 
@@ -913,7 +920,17 @@ def remove_address(iface: str, address: str, segment: str) -> None:
         prefix = ipaddress.ip_network(segment, strict=False).prefixlen
     except ValueError:
         prefix = 24
-    _run("ip", "addr", "del", f"{address}/{prefix}", "dev", iface)
+    rc, out = _run("ip", "addr", "del", f"{address}/{prefix}", "dev", iface)
+    if rc == 0 or _is_absence(out):
+        # rc != 0 with "cannot find device" is the teardown running twice, which is normal.
+        return []
+    detail = (out or "").strip() or f"ip exited {rc}"
+    logger.warning(
+        "siphon: the address %s/%s could NOT be withdrawn from %s: %s. A leftover address on the "
+        "capture interface keeps a route and keeps accepting traffic for a segment this run was "
+        "asked to stop handling.", address, prefix, iface, detail,
+    )
+    return [f"remove_address {address}/{prefix} dev {iface}: {detail}"]
 
 
 SYSCTL_WRITE_HINT = (
