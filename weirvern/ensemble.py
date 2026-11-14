@@ -7,9 +7,10 @@ exactly one place and is fully unit-tested.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
-from weirvern.config import ModelConfig, Settings
+from weirvern.config import FUSED_MODEL, ModelConfig, Settings
 from weirvern.features import extract_features
 from weirvern.models.base import BaseDetector
 from weirvern.models.detectors import AdaptiveBaselineDetector
@@ -306,6 +307,15 @@ def severity_basis(score: float, strong_families: int, signature: bool = False,
     return ", ".join(parts)
 
 
+def fusion_excluded(settings: Any) -> set[str]:
+    """Model names the operator has removed from the fusion.
+
+    Kept separate from eligibility on purpose: see the comment on `ml_fusion_exclude` in config.
+    """
+    raw = str(getattr(settings, "ml_fusion_exclude", "") or "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def adaptive_threshold_for(flow: dict[str, Any], base: float) -> float:
     """v18+ pattern-aware sensitivity reduction.
 
@@ -340,6 +350,7 @@ def detect_flows(
     near_misses: list[dict[str, Any]] | None = None,
     eligible: dict[str, bool] | None = None,
     score_population: list[dict[str, Any]] | None = None,
+    calibrated_bar: float | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full ensemble over recent aggregate flows; return verdict rows.
 
@@ -403,12 +414,13 @@ def detect_flows(
 
         # PRD-2: keep the RAW score for every scored window, before the threshold or the
         # agreement gate. Calibration needs the population, not the alert tail.
+        sample: dict[str, Any] | None = None
         if score_population is not None and flow.get("window_start") is not None:
-            score_population.append({
+            sample = {
                 "window_start": flow["window_start"],
                 "src_addr": src,
                 "scores": dict(scores),
-            })
+            }
 
         has_baseline = bool(baseline_det and src in baseline_det.baselines)
         # Weights are applied only in "mean" fusion mode (see fuse_scores).
@@ -416,8 +428,14 @@ def detect_flows(
         if baseline_det is not None:
             weights["adaptive_baseline"] = cfg.weight_baseline if has_baseline else cfg.weight_baseline_missing
 
+        contributing = contributing_scores(scores, eligible)
+        excluded = fusion_excluded(settings)
+        if excluded:
+            # Zeroed rather than deleted, so the evidence record still names every detector that
+            # scored the window while an excluded model cannot win `max` fusion.
+            contributing = {n: (0.0 if n in excluded else s) for n, s in contributing.items()}
         final_score = fuse_scores(
-            contributing_scores(scores, eligible),
+            contributing,
             {n: _weight_of(n, weights) for n in scores},
             mode=cfg.fusion_mode,
         )
@@ -425,7 +443,20 @@ def detect_flows(
         # Damp statistically thin windows (see detection_confidence_factor)
         final_score = round(final_score * detection_confidence_factor(flow, cfg), 4)
 
-        threshold = adaptive_threshold_for(flow, settings.base_threshold)
+        # THE FUSED SCORE JOINS THE POPULATION, because it is the number the decision compares and
+        # therefore the only one a calibrator can turn into an alert budget. Recorded pre-threshold,
+        # like the per-model scores beside it.
+        if sample is not None and score_population is not None:
+            sample["scores"][FUSED_MODEL] = final_score
+            score_population.append(sample)
+
+        if calibrated_bar is not None and math.isfinite(calibrated_bar) and calibrated_bar > 0:
+            # The calibrated threshold IS the chosen alerts-per-day, so no per-window reduction is
+            # applied on top of it: a reduction there would spend a budget nobody selected, which is
+            # how the measured false-alarm rate came to describe a threshold nothing alerted at.
+            threshold = float(calibrated_bar)
+        else:
+            threshold = adaptive_threshold_for(flow, settings.base_threshold)
         bar = strong_signal_threshold(settings)
         # A direct structural signature can corroborate a lone specialist. It is evaluated from
         # the RAW scores: an ineligible model may still be the one that saw the scan, and the
@@ -435,7 +466,12 @@ def detect_flows(
                                             strong_signal=bar)
         if final_score < threshold:
             if signature:
-                final_score = round(max(final_score, max(scores.values())), 4)
+                # RAW scores, minus the fusion exclusions. Eligibility is deliberately ignored here
+                # (a barred model may be the one that saw the scan), but an excluded model must not
+                # come back through this door, or the exclusion would only apply to the fused path
+                # and the score would still be set by the model we removed.
+                restore = max((s for n, s in scores.items() if n not in excluded), default=0.0)
+                final_score = round(max(final_score, restore), 4)
             else:
                 # NEAR MISS (band): scored close to the bar but under it. The band floor is
                 # threshold * near_miss_band -- measured against the threshold this host faced,

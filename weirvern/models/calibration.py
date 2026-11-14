@@ -25,7 +25,7 @@ from clickhouse_connect.driver.client import Client
 
 from weirvern import __version__
 from weirvern.clock import utcnow
-from weirvern.config import Settings
+from weirvern.config import FUSED_MODEL, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,10 @@ def eligibility_from_rows(rows, target_far: float, multiple: float) -> dict[str,
     """
     out: dict[str, bool] = {}
     for model, observed, target in rows:
+        if str(model) == FUSED_MODEL:
+            # The fused score is the decision's own number, not a detector: it can never be
+            # "barred from the fused score" without making the gate circular.
+            continue
         try:
             obs = float(observed)
             tgt = float(target if target is not None else target_far)
@@ -320,6 +324,31 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
             "reference_source": source,
             "model_version": __version__,
         })
+    fused = population.get(FUSED_MODEL) or []
+    if len(fused) >= 20:
+        cal = fit(fused, target)
+        if cal is not None:
+            source = (f"the fused score itself (ml_window_scores), model {__version__}, "
+                      f"last {window_days} days")
+            if cal.saturated:
+                source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target "
+                           f"FAR is below what {cal.sample_count} samples can express")
+            rows.append({
+                "model_name": FUSED_MODEL,
+                "scope": "global",
+                "subject": "the fused score the decision compares",
+                "statistic": cal.statistic,
+                "target_far": cal.target_far,
+                "threshold": cal.threshold,
+                "p50": cal.p50,
+                "p95": cal.p95,
+                "p99": cal.p99,
+                "sample_count": cal.sample_count,
+                "validation_count": cal.validation_count,
+                "observed_far": cal.observed_far,
+                "reference_source": source,
+                "model_version": __version__,
+            })
     if not rows:
         return []
     columns = ["model_name", "scope", "subject", "statistic", "target_far", "threshold",
@@ -341,3 +370,39 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
 
 __all__ = ["Calibration", "MODEL_COLUMNS", "conformal_pvalue", "conformal_threshold",
            "eligibility", "eligibility_from_rows", "fit", "record_population", "run"]
+
+
+def calibrated_bar(client: Client, settings: Settings) -> float | None:
+    """The calibrated threshold for the fused score, or None when there is not a usable one.
+
+    RETURNS NONE RATHER THAN A GUESS. A missing, stale, saturated or unreadable calibration means the
+    caller falls back to its own threshold; inventing a number here would put an unmetered bar in
+    front of every alert while looking exactly like a calibrated one.
+    """
+    max_age_h = float(getattr(settings, "ml_calibration_max_age_hours", 24) or 24)
+    try:
+        res = client.query(
+            "SELECT threshold, reference_source FROM weirvern.ml_calibration FINAL "
+            "WHERE model_name = %(m)s AND computed_at >= now() - INTERVAL %(h)s HOUR "
+            "ORDER BY computed_at DESC LIMIT 1",
+            parameters={"m": FUSED_MODEL, "h": int(max_age_h)},
+        )
+        rows = res.result_rows
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibrated bar unavailable (%s); the decision keeps its own threshold", exc)
+        return None
+    if not rows:
+        return None
+    try:
+        value = float(rows[0][0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    source = str(rows[0][1] or "")
+    if "SATURATED" in source.upper():
+        # A threshold at the reference ceiling cannot be crossed, so using it would silence the
+        # engine and report a met budget. Fall back and let the saturation be visible in the row.
+        logger.warning("calibrated bar ignored: the calibration is saturated (%s)", source)
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value

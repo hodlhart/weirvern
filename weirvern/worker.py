@@ -1977,9 +1977,24 @@ def detection_sweep(client: Client, detectors, settings, cfg: ModelConfig) -> li
             # A failed eligibility read must not stop detection. It DOES mean the gate did not
             # run this sweep; say so rather than silently behaving as if it passed.
             logger.warning("ML eligibility read failed (detection continues, gate skipped): %s", exc)
+    # THE BAR COMES FROM THE CALIBRATION WHEN THERE IS ONE, because a conformal threshold is the
+    # only construction here whose value IS the chosen alerts-per-day. A missing or saturated row
+    # returns None and the decision keeps its own threshold, so this cannot fail closed into a
+    # silent engine without saying so in the log.
+    calibrated_bar = None
+    if getattr(settings, "ml_calibrated_threshold", False):
+        try:
+            from weirvern.models import calibration as _cal  # noqa: PLC0415
+            calibrated_bar = _cal.calibrated_bar(client, settings)
+            logger.info("Alert bar: %s",
+                        f"calibrated {calibrated_bar:.4f}" if calibrated_bar is not None
+                        else f"uncalibrated, base_threshold {settings.base_threshold}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("calibrated bar read failed (using base_threshold): %s", exc)
     score_population: list[dict] = []
     verdicts = ensemble.detect_flows(flows, detectors, settings, cfg, near_misses=near_misses,
-                                      eligible=eligible, score_population=score_population)
+                                      eligible=eligible, score_population=score_population,
+                                      calibrated_bar=calibrated_bar)
     logger.info(
         "Detection sweep: scored %d host-window(s), %d near miss(es), %d verdict(s) above "
         "threshold",
