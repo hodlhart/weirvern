@@ -226,3 +226,217 @@ def test_a_PARTIAL_send_failure_still_returns_what_was_asked(monkeypatch):
     got = ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "198.51.100.50",
                        ["198.51.100.10", "198.51.100.11"], timeout_s=0.1)
     assert got == {}, f"expected an empty-but-asked result, got {got}"
+
+
+# ── WV1-30: ONLY THE HOSTS WE ASKED ──────────────────────────────────────────────────────────
+
+def _arp_reply(sender_ip: str, sender_mac: str) -> bytes:
+    """A 42-byte ARP reply in the layout arp_sweep parses."""
+    import socket as _s
+
+    frame = bytearray(42)
+    frame[12:14] = (0x0806).to_bytes(2, "big")        # ETH_P_ARP
+    frame[20:22] = (2).to_bytes(2, "big")             # op = reply
+    frame[22:28] = bytes(int(x, 16) for x in sender_mac.split(":"))
+    frame[28:32] = _s.inet_aton(sender_ip)
+    frame[38:42] = _s.inet_aton(sender_ip)            # the address the reply is about
+    return bytes(frame)
+
+
+def test_a_reply_from_a_host_we_never_asked_about_is_not_recorded(monkeypatch):
+    """The socket sees every ARP frame on the segment and the loop recorded the sender of each
+    reply without checking it was one of `targets`. A gratuitous reply, a device announcing itself,
+    or a reply to another station's request became a host IN THE PLAN -- and on the whole-segment
+    path there is no `only` filter, so the intercept could poison a host outside the CIDR the
+    operator named and report it as coverage of that CIDR.
+    """
+    asked = ["198.51.100.10", "198.51.100.11"]
+    frames = [_arp_reply("203.0.113.77", "00:00:5e:00:53:aa")]  # NOT a target
+
+    class Sock:
+        def bind(self, *_a):
+            pass
+
+        def settimeout(self, *_a):
+            pass
+
+        def send(self, *_a):
+            pass
+
+        def recv(self, *_a):
+            if frames:
+                return frames.pop()
+            raise OSError(11, "Resource temporarily unavailable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ic.socket, "socket", lambda *a, **k: Sock())
+    monkeypatch.setattr(ic, "read_neighbour_mac", lambda *_a: None)
+
+    got = ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "198.51.100.50", asked, timeout_s=0.2)
+
+    assert "203.0.113.77" not in got, (
+        f"a host outside the named targets was recorded: {got}. It would be poisoned and counted "
+        f"as coverage of the segment the operator named"
+    )
+    assert got == {}, got
+
+
+def test_a_reply_from_a_target_IS_recorded(monkeypatch):
+    """The filter must not throw away the answer we asked for."""
+    frames = [_arp_reply("198.51.100.10", "00:00:5e:00:53:01")]
+
+    class Sock:
+        def bind(self, *_a):
+            pass
+
+        def settimeout(self, *_a):
+            pass
+
+        def send(self, *_a):
+            pass
+
+        def recv(self, *_a):
+            if frames:
+                return frames.pop()
+            raise OSError(11, "Resource temporarily unavailable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ic.socket, "socket", lambda *a, **k: Sock())
+    monkeypatch.setattr(ic, "read_neighbour_mac", lambda *_a: None)
+
+    got = ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "198.51.100.50",
+                       ["198.51.100.10", "198.51.100.11"], timeout_s=0.2)
+    assert got.get("198.51.100.10") == "00:00:5e:00:53:01", got
+
+
+# ── WV1-31: build_plan KEEPS ITS "RETURNS None" PROMISE ─────────────────────────────────────
+
+def test_an_IPv6_SEGMENT_returns_None_instead_of_raising(monkeypatch):
+    """`parse_cidr(segment)` was called on the whole-segment path ABOVE the try/except guarding the
+    very same call, so a v6 segment raised straight out of build_plan -- breaking the docstring's
+    promise that it returns None with a reason logged, which the named-host path keeps for the same
+    input. The refusal text never reached the operator."""
+    monkeypatch.setattr(ic, "read_mac", lambda *_a: "aa:bb:cc:dd:ee:ff")
+
+    got = ic.build_plan("eth1", "2001:db8::/64", "198.51.100.50", "198.51.100.1")
+
+    assert got is None, f"build_plan returned {got!r} for a v6 segment instead of refusing"
+
+
+def test_an_OVERSIZED_segment_returns_None_instead_of_raising(monkeypatch):
+    monkeypatch.setattr(ic, "read_mac", lambda *_a: "aa:bb:cc:dd:ee:ff")
+
+    got = ic.build_plan("eth1", "198.51.100.0/8", "198.51.100.50", "198.51.100.1")
+
+    assert got is None, f"build_plan returned {got!r} for a /8 instead of refusing"
+
+
+# ── WV1-32: A v6 POLICY IS NOT THE HOST'S v4 POLICY ─────────────────────────────────────────
+
+def test_a_v6_ACCEPT_does_not_mask_a_v4_DROP(monkeypatch):
+    """The probe list was tried in order and the first command that SUCCEEDED was taken as the
+    host's FORWARD policy. On a host with ip6tables present and iptables absent, a v6 ACCEPT masked
+    a v4 DROP and the check passed -- the false-pass direction, so the intercept armed and the
+    kernel dropped every relayed packet. The nft fallback already covers the no-iptables host."""
+    import subprocess as _sp
+
+    def fake_run(cmd, **_kw):
+        prog = cmd[0]
+        if prog == "ip6tables":
+            # The REAL `ip6tables -S FORWARD` shape. The first version of this fixture used the
+            # human `iptables -L` form, "Chain FORWARD (policy ACCEPT)", which
+            # _policy_from_forward_listing does not parse -- so it returned "" and the check fell
+            # through to UNKNOWN anyway. Measured: with ip6tables put BACK in the probe list the
+            # test still passed, which is a fixture that cannot see the defect it exists for.
+            return _sp.CompletedProcess(cmd, 0, "-P FORWARD ACCEPT\n")
+        raise FileNotFoundError(prog)   # iptables and nft absent
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+
+    policy, detail = siphonnet.forward_policy()
+
+    assert policy != "ACCEPT", (
+        f"an ip6tables ACCEPT was read as this host's v4 FORWARD policy ({detail!r}). The "
+        f"intercept would arm and the kernel would drop every relayed packet"
+    )
+    assert policy == "UNKNOWN", (
+        f"a host whose v4 policy cannot be read must be UNKNOWN and refused, not assumed: {policy}"
+    )
+
+
+# ── WV1-29: ONE INTERCEPT PER (INTERFACE, TABLE) ────────────────────────────────────────────
+
+def test_a_SECOND_intercept_on_the_same_table_is_refused(tmp_path, monkeypatch):
+    """`ensure_forwarding_path` FLUSHES the policy table and `remove_forwarding_path` DELETES every
+    rule selecting it, so two intercepts sharing a table take each other down: the second flush
+    wipes the first's routes and either teardown deletes the other's rule, leaving traffic routed
+    into a table with no live relay behind it.
+
+    Nothing coordinated this before. The supervised path gives each interface its own table, but
+    every caller that does not pass one shares POLICY_TABLE = 100.
+    """
+    monkeypatch.setattr(ic, "INTERCEPT_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g, **_kw: [])
+    monkeypatch.setattr(ic, "remove_forwarding_path", lambda *a, **k: [])
+
+    first = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+    first._acquire_lock()
+    try:
+        second = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+        with pytest.raises(ic.InterceptError) as exc:
+            second._acquire_lock()
+        text = str(exc.value)
+        assert "policy table 100" in text, text
+        assert "FLUSH" in text or "flush" in text, (
+            f"the refusal must say WHY sharing a table is destructive: {text!r}"
+        )
+    finally:
+        first._release_lock()
+
+
+def test_a_DIFFERENT_table_is_not_blocked(tmp_path, monkeypatch):
+    """A supervised intercept gets its own table, so it must be able to run beside a manual one."""
+    monkeypatch.setattr(ic, "INTERCEPT_LOCK_DIR", str(tmp_path))
+
+    a = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+    b = ic.Intercept(_plan(1273), sender=RecordingSender(), forwarding=READY)
+    a._acquire_lock()
+    try:
+        b._acquire_lock()   # must not raise
+        assert b._lock_fd is not None
+    finally:
+        b._release_lock()
+        a._release_lock()
+
+
+def test_the_lock_is_released_after_stop(tmp_path, monkeypatch):
+    """stop() must free the table, or the next run after a clean exit is refused."""
+    monkeypatch.setattr(ic, "INTERCEPT_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(ic, "ensure_forwarding_path", lambda _i, _g, **_kw: [])
+    monkeypatch.setattr(ic, "remove_forwarding_path", lambda *a, **k: [])
+
+    first = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+    first._acquire_lock()
+    assert first._lock_fd is not None
+
+    first.stop()   # a teardown that holds the lock must free it
+    assert first._lock_fd is None, "stop() did not release the table"
+
+    again = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+    again._acquire_lock()   # must not raise once the first has stopped
+    assert again._lock_fd is not None
+    again._release_lock()
+
+
+def test_an_unwritable_lock_dir_does_not_make_the_host_uninterceptable(tmp_path, monkeypatch):
+    """The lock is coordination, not a safety gate. A read-only /run must degrade to the old
+    behaviour with a warning, not refuse every run on that host."""
+    monkeypatch.setattr(ic, "INTERCEPT_LOCK_DIR", str(tmp_path / "nope" / "deeper"))
+
+    det = ic.Intercept(_plan(POLICY_TABLE), sender=RecordingSender(), forwarding=READY)
+    det._acquire_lock()   # must not raise
+    assert det._lock_fd is None, "no fd should be recorded when the lock could not be created"

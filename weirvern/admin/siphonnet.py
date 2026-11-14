@@ -324,9 +324,16 @@ def forward_policy() -> tuple[str, str]:
     'UNKNOWN' is returned rather than assuming ACCEPT: an unreadable policy is not a permissive
     one, and treating "could not read" as "fine" is how a blackhole looks healthy.
     """
+    # NO ip6tables ENTRY (WV1-32). This list is tried in order and the first command that SUCCEEDS
+    # is taken as the host's FORWARD policy. `ip6tables -S FORWARD` reports the V6 policy of a
+    # DIFFERENT address family, so on a host with ip6tables present and iptables absent a v6 ACCEPT
+    # masked a v4 DROP and the check passed -- the false-pass direction, where the intercept arms and
+    # the kernel then drops every relayed packet. The nft fallback below already covers the host that
+    # has no iptables (it reads the same iptables-nft ruleset), so the ip6tables entry could only
+    # mislead. A host with neither iptables nor nft now reads UNKNOWN and is refused with the remedy
+    # text, which is the safe direction and the one this function already documents.
     for cmd in (
         ["iptables", "-S", "FORWARD"],
-        ["ip6tables", "-S", "FORWARD"],
         ["nft", "-nn", "list", "chain", "ip", "filter", "FORWARD"],
     ):
         try:
