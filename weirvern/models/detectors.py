@@ -29,10 +29,9 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from weirvern import networks
+from weirvern import flow_windows, networks
 from weirvern.config import ModelConfig
 from weirvern.features import DBSCAN_FEATURES, IF_FEATURES, feature_vector
-from weirvern import flow_windows
 from weirvern.models.base import BaseDetector, ModelMetadata
 from weirvern.models.scoring import (
     calibrate_distance,

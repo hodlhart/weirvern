@@ -31,9 +31,9 @@ accepted responsibility for undoing it.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import ipaddress
 import logging
-import fcntl
 import os
 import signal
 import socket
@@ -791,10 +791,8 @@ class Intercept:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             holder = ""
-            try:
+            with contextlib.suppress(OSError):
                 holder = os.pread(fd, 128, 0).decode("utf-8", "replace").strip()
-            except OSError:
-                pass
             os.close(fd)
             raise InterceptError(
                 f"refusing to start a second intercept on {self.plan.iface} with policy table "
@@ -803,25 +801,19 @@ class Intercept:
                 f"either teardown would DELETE the other's rule -- leaving traffic routed into a "
                 f"table with no live relay behind it. Stop the other intercept, or give this one "
                 f"a different --policy-table."
-            )
-        try:
+            ) from None
+        with contextlib.suppress(OSError):
             os.ftruncate(fd, 0)
-        except OSError:
-            pass
         self._lock_fd = fd
 
     def _release_lock(self) -> None:
         """Release the (iface, table) lock. Idempotent, never raises."""
         if self._lock_fd is None:
             return
-        try:
+        with contextlib.suppress(OSError):
             fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.close(self._lock_fd)
-        except OSError:
-            pass
         self._lock_fd = None
 
     def start(self) -> None:
@@ -1034,7 +1026,7 @@ class Intercept:
             # outcome nobody looked at. The watchdog logs the detail; this warns once, here, because
             # a caller reading teardown output should not have to parse another module's log lines.
             restored = self.watchdog.stop()
-            if restored == 0 and getattr(self.watchdog, "restore_attempted", 0):
+            if restored == 0 and getattr(self.watchdog, "restore_attempted", 0) > 0:
                 logger.warning(
                     "NO ARP mapping was restored on %s: every restore frame failed to send, so "
                     "host(s) still believe this box is their gateway. Their entries expire on their "

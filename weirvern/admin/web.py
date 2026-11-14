@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 from weirvern import fleet_store, networks, scan_jobs
 from weirvern.admin import assets as assets_mod
-from weirvern.admin import gui_auth, timewindow, web_api
+from weirvern.admin import gui_auth, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import users as users_mod
@@ -1159,19 +1159,13 @@ def _build_handler(ctx: GuiContext):
             range is a 400 with the reason -- silently falling back to `hours` would answer a
             different question than the one that was asked.
             """
-            hours = _int_arg(query, "hours", default, lo, hi)
-            frm = (query.get("from") or [None])[0]
-            to = (query.get("to") or [None])[0]
-            if not frm and not to:
-                return hours
+            # ONE IMPLEMENTATION (see window_arg above). This method keeps the job it alone can do:
+            # turning the reason into a 400 on THIS response.
             try:
-                since, until = timewindow.parse_range(frm, to)
+                return window_arg(query, default, lo, hi)
             except ValueError as exc:
                 self._error(400, f"bad time range: {exc}")
                 return None
-            timewindow.set_window(since, until)
-            span = (until - since).total_seconds() / 3600.0
-            return max(1, min(hi, int(span) + (1 if span % 1 else 0)))
 
         def _netflow(self, query: dict) -> None:
             """Netflow shape: volume trend, protocols, ports, fan-out, talkers.
@@ -2752,10 +2746,9 @@ def _build_handler(ctx: GuiContext):
             offering a form that cannot work. `_token_role` below answers the separate
             question of whether the break-glass token is presented.
             """
-            sessions = getattr(ctx, "sessions", None)
-            if sessions is None:
-                return None
-            return sessions.get(gui_auth.session_from_request(self))
+            # ONE IMPLEMENTATION (see requestauth). The Flask front door asks the same question
+            # through the same code, so the two surfaces cannot drift apart on who is signed in.
+            return requestauth.identity(ctx, self)
 
         def _token_role(self, *, gated: bool = False) -> str:
             """users_mod.ROLE_ADMIN when this request presents the operator token, else "".
@@ -2769,13 +2762,12 @@ def _build_handler(ctx: GuiContext):
             must count toward the escalating delay. One implementation with a switch, rather than
             two checks that could drift apart.
             """
-            auth = getattr(ctx, "auth", None)
-            if auth is None or not auth.enabled:
-                return ""
-            presented = gui_auth.token_from_request(self)
-            if presented and auth.check(presented, client=self._client_addr() if gated else ""):
-                return users_mod.ROLE_ADMIN
-            return ""
+            # ONE IMPLEMENTATION (see requestauth). `gated` still decides whether the address is
+            # real, because only the gate may count a failure toward the escalating delay.
+            return requestauth.token_role(
+                ctx, self,
+                client=self._client_addr() if gated else "",
+            )
 
         def _caller_role(self) -> tuple[str, str]:
             """(role, via) for this request: ("admin"|"viewer"|"", "session"|"token"|"").
@@ -3141,17 +3133,12 @@ def _build_handler(ctx: GuiContext):
             the password gate: it can reach /api/session and the password route, and every
             other read says why not, so the UI cannot render a dashboard behind the gate.
             """
-            if not _accounts_on(ctx):
+            ok, refusal = requestauth.read_refusal(ctx, self)
+            if ok:
                 return True
-            ident = self._identity()
-            if ident is not None:
-                if ident.must_change:
-                    self._error(403, "a password change is required before using the dashboard")
-                    return False
-                return True
-            if self._token_role():
-                return True
-            self._error(401, "sign in to view this dashboard")
+            if refusal is not None:
+                code, message = refusal
+                self._error(code, message)
             return False
 
         def _require_session(self) -> users_mod.Identity | None:
@@ -3409,23 +3396,10 @@ def _build_handler(ctx: GuiContext):
             a signed-in account refreshing its role, and the break-glass token (reported as an
             admin `via: token` with no username, because that is exactly what it is).
             """
-            ident = self._identity()
-            armed = _accounts_on(ctx)
-            payload: dict = {
-                "accounts": armed,
-                "note": getattr(ctx, "accounts_note", "") or "",
-            }
-            if ident is not None:
-                payload.update({"authenticated": True, "username": ident.username,
-                                "role": ident.role, "must_change": ident.must_change,
-                                "via": "session"})
-            elif self._token_role():
-                payload.update({"authenticated": True, "username": "", "role": users_mod.ROLE_ADMIN,
-                                "must_change": False, "via": "token"})
-            else:
-                payload.update({"authenticated": False, "username": "", "role": "",
-                                "must_change": False, "via": ""})
-            self._json(payload)
+            # ONE IMPLEMENTATION (see requestauth.session_payload). The Flask front door returns
+            # the same payload from the same function, because the console JS renders the `note`
+            # as a banner when accounts are off and two payload builders could disagree about it.
+            self._json(requestauth.session_payload(ctx, self))
 
         def _audit_auth(self, action: str, username: str, reason: str) -> None:
             """Append the authentication fact without ever touching the credential.
@@ -4742,6 +4716,30 @@ def _int_arg(query: dict, name: str, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, value))
+
+
+
+def window_arg(query: dict, default: int, lo: int, hi: int) -> int:
+    """The request's time window: `hours` (relative) or `from`/`to` (absolute).
+
+    The console's global time control sends BOTH: `hours` so every view still has a number to print,
+    and `from`/`to` when the operator chose an absolute range. The absolute pair wins and is
+    installed for the whole request (weirvern/admin/timewindow.py), so every windowed query answers
+    the same stretch of time.
+
+    RAISES ValueError with the reason rather than sending a response, so both the console handler
+    and the Flask front door can use it: one parses and sends a 400, the other returns a 400 body.
+    Silently falling back to `hours` would answer a different question than the one that was asked.
+    """
+    hours = _int_arg(query, "hours", default, lo, hi)
+    frm = (query.get("from") or [None])[0]
+    to = (query.get("to") or [None])[0]
+    if not frm and not to:
+        return hours
+    since, until = timewindow.parse_range(frm, to)
+    timewindow.set_window(since, until)
+    span = (until - since).total_seconds() / 3600.0
+    return max(1, min(hi, int(span) + (1 if span % 1 else 0)))
 
 
 def _float_arg(query: dict, name: str, default: float, lo: float, hi: float) -> float:

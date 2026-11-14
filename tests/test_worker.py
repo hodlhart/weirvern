@@ -1733,6 +1733,9 @@ def test_a_below_threshold_sweep_is_not_confused_with_a_dark_one(monkeypatch, ca
         verdicts = detection_sweep(fake_ch, [StubDetector(0.01)], Settings(), ModelConfig())
 
     text = caplog.text.lower()
+    # The return value and the log must agree: a sweep that scored but produced nothing must return
+    # an empty list AND say so. Asserting only the log left the return unread.
+    assert verdicts == [], f"a sweep below threshold returned {verdicts!r}"
     assert "none above threshold" in text, (
         "a scored sweep with no verdicts must say it scored, so it is not read as a dark sweep"
     )

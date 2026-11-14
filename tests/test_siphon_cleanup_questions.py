@@ -13,7 +13,7 @@ import pytest
 
 from weirvern.admin import intercept as ic
 from weirvern.admin import siphonnet
-from weirvern.admin.intercept import ForwardingState, InterceptError, InterceptPlan, POLICY_TABLE
+from weirvern.admin.intercept import POLICY_TABLE, ForwardingState, InterceptError, InterceptPlan
 
 
 class RecordingSender:

@@ -19,6 +19,12 @@ dependencies = [
     # Certificate signing for the mTLS weirling gateway. It was deliberately not a
     # dependency of the read-only console; the gateway needs CSR parsing and signing.
     "cryptography>=44,<47",
+    # THE SECOND FRONT DOOR (see weirvern/admin/flask_app.py). Flask is NOT a replacement for the
+    # console's http.server handler and does not touch a line of its JavaScript: it is the standard
+    # WSGI stack in front, so routing, TLS and proxy handling stop being hand-rolled, and new routes
+    # can be written against the same payload layer. Bounded like the others so a major bump is a
+    # deliberate act rather than something CI resolves overnight.
+    "flask>=3.0,<4",
 ]
 
 [project.optional-dependencies]
