@@ -3408,22 +3408,17 @@ def _build_handler(ctx: GuiContext):
             even when it fails. A failed audit write must not turn a valid sign-in into an
             error -- the same contract as settings and fleet writes.
             """
-            try:
-                with self._with_client() as ch:
-                    fleet_store.write_audit(
-                        ch, scope="auth", action=action, target=(username or "(empty)"),
-                        reason=reason, actor=(username or "(anonymous)"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("authentication audit write failed: %s", exc)
+            # ONE IMPLEMENTATION (see requestauth.audit_auth), so the rendered UI writes the same
+            # audit fact in the same shape as the API.
+            requestauth.audit_auth(ctx, action, username, reason)
 
         def _login(self) -> None:
             """Verify a username and password, and mint a session.
 
-            The response NEVER says which half was wrong: "no such user" and "wrong password"
-            are one message, because distinguishing them enumerates accounts. Timing is
-            equalised the same way (`users.dummy_verify` runs a real scrypt for unknown
-            usernames). A deployment with NO accounts says so plainly instead -- that is a
-            setup fact its operator needs, not an oracle for an attacker.
+            THE CHECK IS SHARED (see requestauth.authenticate). The console API and the Flask form
+            ask the same function the same question, so they cannot disagree about a password, about
+            timing, or about throttling. Only the TRANSPORT of the answer differs: a token in JSON
+            here, a signed cookie in the rendered UI.
             """
             if not _accounts_on(ctx):
                 note = getattr(ctx, "accounts_note", "") or (
@@ -3434,44 +3429,17 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            username = str(body.get("username") or "").strip().lower()
-            password = str(body.get("password") or "")
-            addr = self._client_addr()
-            throttle = getattr(ctx, "throttle", None)
-
-            store = getattr(ctx, "user_store", None)
-            if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            record = store.find(username) if username else None
-            if record is None:
-                # Equalise the cost of a miss with the cost of a wrong password.
-                users_mod.dummy_verify(password)
-                ok = False
-            else:
-                ok = users_mod.verify_password(password, record.hash)
-            if record is None or not ok:
-                if throttle is not None:
-                    throttle.record_failure(addr)
-                    delay = throttle.delay_for(addr)
-                    if delay:
-                        time.sleep(delay)
-                logger.warning("rejected a sign-in for %r from %s",
-                               username or "(empty)", addr or "unknown")
-                self._audit_auth("login", username, "rejected")
-                return self._json({
-                    "ok": False,
-                    "error": "the username or password is not correct",
-                }, 401)
-            if throttle is not None:
-                throttle.clear(addr)
-            identity = users_mod.Identity(username=record.username, role=record.role,
-                                          must_change=record.must_change)
-            token = ctx.sessions.create(identity)
-            logger.info("signed in %s from %s", record.username, addr or "unknown")
-            self._audit_auth("login", record.username, "signed in")
+            ident, token, error = requestauth.authenticate(
+                ctx,
+                str(body.get("username") or ""),
+                str(body.get("password") or ""),
+                addr=self._client_addr(),
+            )
+            if ident is None:
+                return self._json({"ok": False, "error": error}, 401)
             self._json({
-                "ok": True, "session": token, "username": identity.username,
-                "role": identity.role, "must_change": identity.must_change,
+                "ok": True, "session": token, "username": ident.username,
+                "role": ident.role, "must_change": ident.must_change,
             })
 
         def _logout(self) -> None:

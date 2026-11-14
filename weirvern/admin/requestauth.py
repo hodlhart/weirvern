@@ -138,3 +138,111 @@ def read_refusal(ctx: Any, headers: Any) -> tuple[bool, tuple[int, str] | None]:
     if token_role(ctx, headers):
         return True, None
     return False, (401, "sign in to view this dashboard")
+
+
+# ── the credential check, shared by the console API and the Flask form ────────────────────────
+#
+# The two surfaces must not disagree about whether a password is right, whether a miss costs the
+# same time as a wrong password, or how a failed attempt is throttled. Any of those differing is a
+# security bug in one surface only, which is the worst kind to find later.
+
+def audit_auth(ctx: Any, action: str, username: str, reason: str) -> None:
+    """Append the authentication fact without ever touching the credential.
+
+    A failed audit write must not turn a valid sign-in into an error -- the same contract as
+    settings and fleet writes.
+    """
+    from weirvern import fleet_store
+
+    try:
+        with ctx.connect_factory(ctx.settings) as ch:
+            fleet_store.write_audit(
+                ch, scope="auth", action=action, target=(username or "(empty)"),
+                reason=reason, actor=(username or "(anonymous)"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("authentication audit write failed: %s", exc)
+
+
+def authenticate(ctx: Any, username: str, password: str, *,
+                 addr: str = "") -> tuple[Any, str, str]:
+    """Verify a username and password and mint a session.
+
+    Returns `(identity, token, error)`. On success `error` is "" and the caller decides how to carry
+    the token (a header for the API, a signed cookie for the rendered UI). On failure `identity` is
+    None, `token` is "", and `error` is a sentence safe to show a user.
+
+    THE REFUSAL NEVER SAYS WHICH HALF WAS WRONG: "no such user" and "wrong password" are one
+    message, because distinguishing them enumerates accounts. Timing is equalised the same way
+    (`users.dummy_verify` runs a real scrypt for unknown usernames). A deployment with NO accounts
+    says so plainly instead -- that is a setup fact its operator needs, not an oracle.
+    """
+    import time
+
+    from weirvern.admin import users as users_mod
+
+    name = str(username or "").strip().lower()
+    if not accounts_on(ctx):
+        note = getattr(ctx, "accounts_note", "") or "this deployment has no accounts provisioned"
+        return None, "", f"cannot sign in: {note}"
+
+    store = getattr(ctx, "user_store", None)
+    if store is None:
+        return None, "", "the account store is not available on this GUI"
+    sessions = getattr(ctx, "sessions", None)
+    if sessions is None:
+        return None, "", "this GUI has no session registry"
+    throttle = getattr(ctx, "throttle", None)
+
+    try:
+        record = store.find(name) if name else None
+    except Exception:  # noqa: BLE001
+        logger.warning("the account store could not be read during a sign-in", exc_info=True)
+        return None, "", "the account store could not be read"
+
+    if record is None:
+        users_mod.dummy_verify(password)
+        ok = False
+    else:
+        ok = users_mod.verify_password(password, record.hash)
+
+    if record is None or not ok:
+        if throttle is not None:
+            throttle.record_failure(addr)
+            delay = throttle.delay_for(addr)
+            if delay:
+                time.sleep(delay)
+        logger.warning("rejected a sign-in for %r from %s", name or "(empty)", addr or "unknown")
+        audit_auth(ctx, "login", name, "rejected")
+        return None, "", "the username or password is not correct"
+
+    if throttle is not None:
+        throttle.clear(addr)
+    ident = users_mod.Identity(username=record.username, role=record.role,
+                               must_change=record.must_change)
+    token = sessions.create(ident)
+    logger.info("signed in %s from %s", record.username, addr or "unknown")
+    audit_auth(ctx, "login", record.username, "signed in")
+    return ident, token, ""
+
+
+def create_account(ctx: Any, username: str, password: str, *,
+                   role: str | None = None) -> tuple[Any, str]:
+    """Register an account through the shared store. Returns `(record, error)`.
+
+    Deliberately does NOT let a caller choose a role by default: a self-service register form that
+    accepts `role` from the form would be a privilege-escalation hole. The role comes from the
+    caller, and the Flask route passes the store's default rather than a submitted value.
+    """
+    from weirvern.admin import users as users_mod
+
+    store = getattr(ctx, "user_store", None)
+    if store is None:
+        return None, "the account store is not available on this GUI"
+    try:
+        record = store.create_user(username, role or users_mod.ROLE_VIEWER, password)
+    except Exception as exc:  # noqa: BLE001
+        # `UserError` carries a sentence meant for a user ("a user named 'x' already exists"), so
+        # passing it through is right; anything else is a real fault and must not be dressed up.
+        return None, str(exc) or "the account could not be created"
+    audit_auth(ctx, "register", record.username, "created")
+    return record, ""

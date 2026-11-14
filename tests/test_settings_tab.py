@@ -160,9 +160,16 @@ def test_every_write_route_consults_A_GATE():
         body = src[src.index(f"        def {name}(self"):]
         body = body[:body.index("\n        def ", 10)]
         if name in DOOR:
-            assert "throttle" in body or "Throttle" in body, (
-                "the sign-in route carries no throttle, so passwords can be guessed at wire "
-                "speed"
+            # THE PROPERTY MOVED, IT DID NOT DISAPPEAR. The sign-in route used to contain the
+            # throttle inline; the credential check now lives in `requestauth.authenticate`, shared
+            # with the Flask form, so the throttle is there. Asserting the route's own text would
+            # demand that the logic be duplicated again. What this test still must catch is a sign-in
+            # route that reaches NO throttled path at all, so it accepts either shape and the
+            # behavioural test proves the throttle fires.
+            assert ("throttle" in body or "Throttle" in body
+                    or "requestauth.authenticate(" in body), (
+                "the sign-in route carries no throttle and does not delegate to the shared "
+                "credential check, so passwords can be guessed at wire speed"
             )
             continue
         if name in SESSION_GATED:

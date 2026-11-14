@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Register - Weirvern{% endblock %}
+{% block body %}
+  <h1>Register</h1>
+  <p class="lede">
+    This creates a <strong>{{ role }}</strong> account. The role is not chosen by the form: a
+    self-service registration that accepted a role would be a privilege escalation.
+  </p>
+
+  <div class="card">
+    {% if error %}
+      <p class="bad" role="alert">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="{{ url_for("register") }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required autofocus
+             value="{{ username or "" }}">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required>
+      <label for="password2">Password again</label>
+      <input id="password2" name="password2" type="password" autocomplete="new-password" required>
+      <button type="submit">Create account</button>
+    </form>
+    <p class="note">
+      Passwords are checked against the same rule the console applies, and the account is stored in
+      the same store, so either surface can sign it in.
+    </p>
+  </div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Weirvern{% endblock %}
+{% block body %}
+  <h1>Signed in</h1>
+  <p class="lede">A second surface over the same payload layer the console uses.</p>
+
+  <div class="card">
+    <dl>
+      <dt>Account</dt><dd>{{ current_user }}</dd>
+      <dt>Role</dt><dd>{{ role }}</dd>
+      <dt>Session</dt><dd><code>{{ via }}</code></dd>
+    </dl>
+  </div>
+
+  <h2>What this surface is for</h2>
+  <p class="lede">
+    Forms that a full dashboard suits badly. The console remains the production UI and keeps its own
+    test suite; this is where an action with a few fields and a confirmation lives.
+  </p>
+
+  {% if must_change %}
+    <p class="bad">
+    Forms that a full dashboard suits badly. The console remains the production UI and keeps
+      that is done, so the console will refuse to render a dashboard.
+    </p>
+  {% endif %}
+{% endblock %}
