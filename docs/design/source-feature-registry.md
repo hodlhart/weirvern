@@ -18,6 +18,7 @@ Status vocabulary:
 alert_events | output
 alert_episodes | output
 alert_reviews | output
+block_proposals | feature-now
 asset_changes | output
 asset_findings | output
 asset_observations | join-only

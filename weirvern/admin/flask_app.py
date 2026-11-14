@@ -359,6 +359,104 @@ def create_app(ctx: Any, *, static_dir: Any = None,
             row["hostname"] = web_api._hostname(row.get("src_addr"))
         return jsonify(payload)
 
+    # ── the block proposal form ─────────────────────────────────────────────────────────────────
+    #
+    # THE SAFETY SPLIT LIVES HERE. Proposing writes a row and changes no enforcement. Applying is a
+    # separate POST that a signed-in person drives, and it creates the rule through the same
+    # `sluice_store.create_rule` any other rule uses, so a proposal cannot bypass a validation that a
+    # manual rule would hit.
+    def _proposals_client():
+        return ctx.connect_factory(ctx.settings)
+
+    @app.get("/block")
+    @user_required
+    def block():
+        from weirvern import proposals  # noqa: PLC0415
+
+        error = ""
+        pending, decided = [], []
+        try:
+            with _proposals_client() as client:
+                pending = proposals.load_proposals(client, status=proposals.STATUS_PROPOSED)
+                decided = proposals.load_proposals(client, status=proposals.STATUS_APPLIED)
+                decided += proposals.load_proposals(client, status=proposals.STATUS_DISMISSED)
+        except Exception as exc:  # noqa: BLE001
+            # A failed read says so. An empty queue must not be what a dead database looks like.
+            from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+            error = read_failure(exc)
+        return _render("block.html", error=error, pending=pending, decided=decided[:25],
+                       message="", form=None)
+
+    @app.post("/block")
+    @user_required
+    def block_post():
+        from weirvern import proposals  # noqa: PLC0415
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        if not _csrf_ok():
+            return _render("block.html", error="that form did not come from this page",
+                           pending=[], decided=[], message="", form=None), 400
+        ident = _signed_in()
+        form = {
+            "host": request.form.get("host", ""),
+            "reason": request.form.get("reason", ""),
+            "evidence": request.form.get("evidence", ""),
+            "ttl_minutes": request.form.get("ttl_minutes", "0"),
+        }
+        actor = f"account:{ident.username}" if ident else "unknown"
+        try:
+            with _proposals_client() as client:
+                proposals.create_proposal(client, dict(form, proposed_by=actor))
+        except proposals.ProposalError as exc:
+            # A refusal is the useful answer, and it goes back to the form with the words typed
+            # still in it so the operator can fix it rather than retype it.
+            return _render("block.html", error=str(exc), pending=[], decided=[], message="",
+                           form=form), 400
+        except Exception as exc:  # noqa: BLE001
+            return _render("block.html", error=read_failure(exc), pending=[], decided=[],
+                           message="", form=form), 503
+        return redirect(url_for("block"))
+
+    @app.post("/block/<proposal_id>/apply")
+    @user_required
+    def apply_proposal(proposal_id: str):
+        from weirvern import proposals  # noqa: PLC0415
+
+        if not _csrf_ok():
+            return _render("block.html", error="that form did not come from this page",
+                           pending=[], decided=[], message="", form=None), 400
+        ident = _signed_in()
+        try:
+            with _proposals_client() as client:
+                proposals.apply_proposal(client, proposal_id, by=ident.username)
+        except proposals.ProposalError as exc:
+            return _render("block.html", error=str(exc), pending=[], decided=[], message="",
+                           form=None), 400
+        except Exception as exc:  # noqa: BLE001
+            from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+            return _render("block.html", error=read_failure(exc), pending=[], decided=[],
+                           message="", form=None), 503
+        return redirect(url_for("block"))
+
+    @app.post("/block/<proposal_id>/dismiss")
+    @user_required
+    def dismiss_proposal(proposal_id: str):
+        from weirvern import proposals  # noqa: PLC0415
+
+        if not _csrf_ok():
+            return _render("block.html", error="that form did not come from this page",
+                           pending=[], decided=[], message="", form=None), 400
+        ident = _signed_in()
+        try:
+            with _proposals_client() as client:
+                proposals.dismiss_proposal(client, proposal_id, by=ident.username)
+        except proposals.ProposalError as exc:
+            return _render("block.html", error=str(exc), pending=[], decided=[], message="",
+                           form=None), 400
+        return redirect(url_for("block"))
+
     # ── the console, served unchanged ───────────────────────────────────────────────────────────
     def _static_view(name: str, ctype: str):
         def view():
