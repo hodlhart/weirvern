@@ -55,3 +55,89 @@ def baselines(client: Client) -> dict[str, Any]:
 def detectors(client: Client) -> dict[str, Any]:
     """The detector registry with its catch counts: who owns what, who may page."""
     return status_mod.detectors_overview(client)
+
+
+def models_calibration(client: Client, settings: Any) -> dict[str, Any]:
+    """Shadow calibration readout. A FAILED read is a 200 with `available: false` and the reason."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    try:
+        return web_api.calibration_payload(status_mod.calibration_overview(client, settings))
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": read_failure(exc), "rows": []}
+
+
+def models_shadow(client: Client) -> dict[str, Any]:
+    """Shadow ML channel counts. A failed read is a state, not an empty success."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    try:
+        return status_mod.shadow_overview(client)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": read_failure(exc), "rows": []}
+
+
+def ml_slo(client: Client) -> dict[str, Any]:
+    """The operating numbers, with window/source and explicit not-measured states."""
+    try:
+        from weirvern.models import quality  # noqa: PLC0415
+
+        return quality.report(client)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read the ML SLO report: {exc}",
+                "windows": [], "live_precision": "not measured"}
+
+
+def ml_coverage(client: Client) -> dict[str, Any]:
+    """The source and role truth report; explicitly unavailable rather than empty on failure."""
+    try:
+        from weirvern.models import source_coverage  # noqa: PLC0415
+
+        return source_coverage.collect(client)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read source coverage: {exc}",
+                "sources": [], "roles": {}, "models": [], "promotion_ok": False}
+
+
+# ── reads that come from a FILE, not from ClickHouse ─────────────────────────────────────────
+#
+# These take no client at all, which is why the fetcher signature differs. `_package_root()` matches
+# the path the console computes (`Path(__file__).resolve().parents[2]` from weirvern/admin/web.py) --
+# both modules sit in weirvern/admin, so parents[2] is the checkout root for either.
+
+def _package_root() -> Any:
+    from pathlib import Path  # noqa: PLC0415
+
+    return Path(__file__).resolve().parents[2]
+
+
+def ml_ledger() -> dict[str, Any]:
+    """The append-only decision trail, read-only."""
+    try:
+        from weirvern.models import ledger  # noqa: PLC0415
+
+        path = _package_root() / "docs" / "ledger" / "ml-decisions.jsonl"
+        rows = ledger.read(path)
+        return {"available": bool(rows), "path": str(path), "rows": rows[-20:]}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read the decision ledger: {exc}"}
+
+
+def ml_eval_report() -> dict[str, Any]:
+    """The archived fixed-budget report, read-only."""
+    try:
+        from weirvern.models import eval_report  # noqa: PLC0415
+
+        return eval_report.latest_report(_package_root())
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read the evaluation report: {exc}"}
+
+
+def ml_review() -> dict[str, Any]:
+    """The archived review, read from disk, never recomputed in the GUI."""
+    try:
+        from weirvern.models import review  # noqa: PLC0415
+
+        return review.latest_report(_package_root())
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read the archived review: {exc}"}

@@ -32,17 +32,23 @@ flask = pytest.importorskip("flask")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# ── the work list: path -> the payloads function that now owns it ───────────────────────────
-PORTED: dict[str, str] = {
-    "/api/detectors": "detectors",
+# ── the work list: path -> (fetcher, status function to stub, canned return) ────────────────
+#
+# A canned value can be trivial: both surfaces run the SAME payload function, so equality proves the
+# port regardless of what the stub returns. What it must NOT be is a shape only one side can handle.
+PORTED: dict[str, tuple[str, str | None, object]] = {
+    "/api/detectors": ("detectors", "detectors_overview", {"detectors": [], "catch_counts": {}}),
+    "/api/models/shadow": ("models_shadow", "shadow_overview", {"available": True, "rows": [{"a": 1}]}),
+    "/api/models/calibration": ("models_calibration", "calibration_overview", {"rows": []}),
+    # File-backed reads: no client and no stub, because both surfaces read the same files.
+    "/api/ml/ledger": ("ml_ledger", None, None),
+    "/api/ml/eval-report": ("ml_eval_report", None, None),
+    "/api/ml/review": ("ml_review", None, None),
 }
 
-# The inventory, measured from the console's own dispatch. Used only to report progress.
 CONSOLE_GET_ROUTES = 52
 CONSOLE_POST_ROUTES = 31
 
-
-# ── both surfaces over one context and one stubbed read ─────────────────────────────────────
 
 class _CM:
     def __init__(self, client):
@@ -77,11 +83,7 @@ def _ctx(client):
 
 
 def _legacy_http(port: int, path: str):
-    """GET from the console, treating a refusal as an answer.
-
-    urllib raises on a non-2xx, and a 503 from a failed read IS the thing being compared -- so it has
-    to come back as a status and a body, not an exception.
-    """
+    """GET from the console, treating a refusal as an answer -- a 503 IS the thing being compared."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as resp:
             return resp.status, resp.read()
@@ -95,88 +97,80 @@ def _flask_http(app, path: str):
 
 
 @pytest.fixture
-def both_surfaces():
-    """Start the console on a loopback port and hand back a way to query both."""
-    def build(client):
-        ctx = _ctx(client)
+def surfaces():
+    """Build a console on a loopback port and a Flask app over the same context."""
+    started = []
+
+    def build():
+        ctx = _ctx(object())
         legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
         app = flask_app.create_app(ctx, secret_key="equivalence-test")
         app.config.update(TESTING=True)
+        started.append(legacy)
         return legacy, app
 
-    started = []
     try:
-        yield (lambda client: started.append(build(client)) or started[-1])
+        yield build
     finally:
-        for legacy, _app in started:
+        for legacy in started:
             legacy.stop()
 
 
 # ── the equivalence checks ─────────────────────────────────────────────────────────────────
 
-def test_detectors_answers_identically_on_both_surfaces(both_surfaces, monkeypatch):
-    registered = {"detectors": [], "catch_counts": {"DBSCAN": 3}}
-    monkeypatch.setattr(status_mod, "detectors_overview", lambda c: registered, raising=True)
+@pytest.mark.parametrize("path", sorted(PORTED))
+def test_each_ported_route_answers_identically(path, surfaces, monkeypatch):
+    _fetcher, patch, canned = PORTED[path]
+    if patch:
+        monkeypatch.setattr(status_mod, patch, lambda *a, **k: canned, raising=True)
 
-    legacy, app = both_surfaces(object())
-    lstatus, lbody = _legacy_http(legacy.port, "/api/detectors")
-    fstatus, fbody = _flask_http(app, "/api/detectors")
+    legacy, app = surfaces()
+    lstatus, lbody = _legacy_http(legacy.port, path)
+    fstatus, fbody = _flask_http(app, path)
 
-    assert fstatus == lstatus == 200, (fstatus, lstatus)
+    assert fstatus == lstatus, f"{path}: console {lstatus}, flask {fstatus}"
     assert json.loads(fbody) == json.loads(lbody), (
-        "the ported route drifted from the console. A panel reading one of these keys would render "
-        f"blank with no error.\n  console: {lbody[:300]!r}\n  flask:   {fbody[:300]!r}"
+        f"{path} drifted from the console. A panel reading one of these keys renders blank with no "
+        f"error.\n  console: {lbody[:300]!r}\n  flask:   {fbody[:300]!r}"
     )
 
 
-def test_a_FAILED_read_is_worded_identically(both_surfaces, monkeypatch):
-    """The failure wording is part of the payload contract: the console's own sentence, from
-    `read_failure`, so an operator sees one vocabulary whichever surface answered."""
-    def boom(client):
+@pytest.mark.parametrize("path", sorted(p for p, (_f, patch, _c) in PORTED.items() if patch))
+def test_each_ported_route_words_a_FAILURE_identically(path, surfaces, monkeypatch):
+    """The failure wording is part of the payload contract: one vocabulary whichever surface answered.
+    A missing binary must not be reported as a database fault on either."""
+    def boom(*a, **k):
         raise FileNotFoundError(2, "No such file or directory", "kubectl")
 
-    monkeypatch.setattr(status_mod, "detectors_overview", boom, raising=True)
+    _fetcher, patch, _canned = PORTED[path]
+    monkeypatch.setattr(status_mod, patch, boom, raising=True)
 
-    legacy, app = both_surfaces(object())
-    lstatus, lbody = _legacy_http(legacy.port, "/api/detectors")
-    fstatus, fbody = _flask_http(app, "/api/detectors")
+    legacy, app = surfaces()
+    lstatus, lbody = _legacy_http(legacy.port, path)
+    fstatus, fbody = _flask_http(app, path)
 
-    assert fstatus == lstatus == 503, (fstatus, lstatus)
-    assert json.loads(fbody)["error"] == json.loads(lbody)["error"], (
-        f"different wording: console={lbody[:200]!r} flask={fbody[:200]!r}"
+    assert fstatus == lstatus, f"{path}: console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody), (
+        f"{path} words a failure differently.\n  console: {lbody[:250]!r}\n  flask: {fbody[:250]!r}"
     )
-    assert "ClickHouse" not in json.loads(fbody)["error"], "a missing binary was blamed on the database"
+    blob = json.dumps(json.loads(fbody))
+    assert "ClickHouse" not in blob, f"{path} blamed the database for a missing binary: {blob[:200]}"
 
 
-# ── the guards that keep the port moving ───────────────────────────────────────────────────
+# ── the guards that keep the port honest ───────────────────────────────────────────────────
 
-def test_every_ported_route_has_an_equivalence_check():
-    """A route added to PORTED without a check here would be ported on trust."""
-    src = pathlib.Path(__file__).read_text()
-    for path, fn in PORTED.items():
-        stem = path.rsplit("/", 1)[-1].replace("-", "_").replace(".", "_")
-        assert f"def test_{stem}_answers_identically" in src or stem in src, (
-            f"{path} is listed as ported with no equivalence check"
-        )
-        assert f"def {fn}(" in pathlib.Path(
-            ROOT / "weirvern" / "admin" / "payloads.py").read_text(), (
-            f"{path} names payloads.{fn}, which does not exist"
-        )
+def test_every_port_has_a_fetcher_that_exists():
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    for path, (fetcher, _patch, _canned) in PORTED.items():
+        assert f"def {fetcher}(" in src, f"{path} names payloads.{fetcher}, which does not exist"
 
 
-def test_every_ported_route_is_registered_in_flask():
+def test_every_port_is_routed_by_flask():
     src = (ROOT / "weirvern" / "admin" / "flask_app.py").read_text()
     for path in PORTED:
-        assert f'@app.get("{path}")' in src, f"{path} is in PORTED but Flask does not route it"
+        assert f'@app.get("{path}")' in src, f"{path} is listed as ported but Flask does not route it"
 
 
-def test_the_work_list_is_honest_about_what_is_left():
-    """Reports the remaining count rather than asserting a target. The number must fall, and this
-    test is where a reader can see how far the port has actually got."""
-    remaining_get = CONSOLE_GET_ROUTES - len(
-        [p for p in PORTED if p in {"/api/detectors", "/api/episodes", "/api/baselines",
-                                    "/api/session", "/api/healthz"}]
-    )
-    print(f"\n  ported: {len(PORTED) + 4} of {CONSOLE_GET_ROUTES + CONSOLE_POST_ROUTES} route entries")
-    print(f"  still on the legacy handler: ~{remaining_get} GET reads and {CONSOLE_POST_ROUTES} writes")
-    assert len(PORTED) >= 1
+def test_the_ported_count_only_grows():
+    """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
+    assert len(PORTED) >= 6, f"{len(PORTED)} routes ported; the ratchet must not go backwards"

@@ -366,6 +366,74 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         return _windowed(payloads.episodes)
 
+    # ── the read surface, ported onto the shared payload layer ─────────────────────────────────
+    #
+    # THESE RETURN THE PAYLOAD THE FETCHER BUILT, INCLUDING ITS FAILURE SHAPE. Some console routes
+    # answer a failed read with a 503 and some with a 200 carrying `available: false`; that
+    # difference is deliberate per route (a panel that can still draw around a missing card), and a
+    # port that "tidied" it into one shape would change what the operator sees.
+    def _payload_route(fetcher, *, needs_client=True, settings=False):
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        try:
+            if not needs_client:
+                return jsonify(fetcher())
+            with ctx.connect_factory(ctx.settings) as client:
+                if settings:
+                    return jsonify(fetcher(client, ctx.settings))
+                return jsonify(fetcher(client))
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, read_failure(exc))
+
+    @app.get("/api/models/calibration")
+    @gated
+    def models_calibration():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.models_calibration, settings=True)
+
+    @app.get("/api/models/shadow")
+    @gated
+    def models_shadow():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.models_shadow)
+
+    @app.get("/api/ml/slo")
+    @gated
+    def ml_slo():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_slo)
+
+    @app.get("/api/ml/coverage")
+    @gated
+    def ml_coverage():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_coverage)
+
+    @app.get("/api/ml/ledger")
+    @gated
+    def ml_ledger():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_ledger, needs_client=False)
+
+    @app.get("/api/ml/eval-report")
+    @gated
+    def ml_eval_report():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_eval_report, needs_client=False)
+
+    @app.get("/api/ml/review")
+    @gated
+    def ml_review():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_review, needs_client=False)
+
     @app.get("/api/detectors")
     @gated
     def detectors():
