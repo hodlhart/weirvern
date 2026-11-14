@@ -35,10 +35,21 @@ class headers_only:
     __slots__ = ("headers",)
 
     def __init__(self, source: Any) -> None:
-        # Accept a request object OR a bare headers mapping. `getattr(..., None) or {}` also covers
-        # the duck-typed fakes the account tests build, which carry no headers at all -- reading
-        # `source.headers` eagerly would raise before gui_auth's own try/except could handle it.
-        self.headers = getattr(source, "headers", None) or {}
+        # THREE SHAPES, ALL LEGITIMATE:
+        #   * a request object with `.headers` (http.server, Flask, and the duck-typed fakes);
+        #   * a BARE MAPPING of headers, which is what the Flask surface passes after it folds the
+        #     cookie's token into the header shape;
+        #   * nothing usable, which yields an empty mapping so gui_auth's own try/except handles it
+        #     rather than this raising before it can.
+        #
+        # ONLY LOOKING FOR `.headers` WAS A BUG: a plain dict fell through to {} and every credential
+        # silently vanished, so a signed-in person was told to sign in by the very next request.
+        if hasattr(source, "headers"):
+            self.headers = getattr(source, "headers", None) or {}
+        elif hasattr(source, "get"):
+            self.headers = source
+        else:
+            self.headers = {}
 
 
 def accounts_on(ctx: Any) -> bool:
@@ -246,3 +257,53 @@ def create_account(ctx: Any, username: str, password: str, *,
         return None, str(exc) or "the account could not be created"
     audit_auth(ctx, "register", record.username, "created")
     return record, ""
+
+
+# ── the WRITE gate, shared for the same reason as the read gate ──────────────────────────────
+#
+# Extracted from the console handler rather than rewritten. The ORDER in it was an audit fix
+# (F049): the token is evaluated BEFORE the session, because a request carrying a VIEWER session and
+# a VALID token was refused as a viewer with the token never examined -- same credential, opposite
+# answers, decided by whether the browser happened to be signed in. Reimplementing that order in a
+# second surface would be exactly the drift that fix removed.
+
+def write_refusal(ctx: Any, headers: Any, *,
+                  addr: str = "") -> tuple[bool, tuple[int, str] | None]:
+    """Whether this request may WRITE, and the refusal to send when it may not.
+
+    Two credentials open the write path, both admin-equivalent: a signed-in admin account session,
+    or the deployment operator token (break-glass: it recovers a lost admin password and drives
+    automation).
+
+    `addr` is the caller's real address, and passing it is what makes the token check GATED: a wrong
+    token then counts toward the escalating delay. A caller that passes "" gets the passive probe.
+    That is the same switch the console handler uses, so both surfaces slow a guesser down.
+
+    Returns `(True, None)` to proceed, or `(False, (code, message))`.
+    """
+    auth = getattr(ctx, "auth", None)
+
+    # TOKEN FIRST, regardless of the session. See the note above.
+    if gui_auth.token_from_request(headers_only(headers)) and token_role(ctx, headers, client=addr):
+        return True, None
+
+    ident = identity(ctx, headers)
+    if ident is not None:
+        if ident.must_change:
+            return False, (403, "change your password before changing anything else")
+        if ident.is_admin:
+            return True, None
+        return False, (403, "this account is a viewer: it can read every view but cannot change "
+                            "settings or manage accounts. Ask an admin.")
+
+    if auth is None:
+        return False, (503, "write access is not available: the GUI started without an "
+                            "authentication module")
+    if not getattr(auth, "enabled", False):
+        if accounts_on(ctx):
+            return False, (403, "sign in with an admin account to change settings")
+        return False, (403, getattr(auth, "reason", "") or "write access is disabled")
+
+    # A token is configured but this request did not present a usable one. The response never
+    # distinguishes absent, empty and wrong.
+    return False, (403, "a valid operator token or an admin sign-in is required to change settings")

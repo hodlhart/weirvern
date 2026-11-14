@@ -359,6 +359,83 @@ def create_app(ctx: Any, *, static_dir: Any = None,
             row["hostname"] = web_api._hostname(row.get("src_addr"))
         return jsonify(payload)
 
+    def _auth_headers():
+        """The request's headers, with the COOKIE's session token presented as the session header.
+
+        THIS IS THE SEAM BETWEEN THE TWO CREDENTIAL CARRIERS. The API is header-only by design, and
+        `requestauth` must stay framework-free and cookie-free so that stays true. The rendered UI
+        carries the same registry token in a signed cookie, because a browser has nowhere to put a
+        header. Rather than teach the shared code about cookies, the cookie's token is presented in
+        the header shape it already understands.
+
+        One implementation, two carriers. Without this, a person signed in through the rendered form
+        would be told to sign in by the API on the very next request.
+        """
+        from flask import request as _rq
+
+        from weirvern.admin.gui_auth import SESSION_HEADER  # noqa: PLC0415
+
+        headers = dict(_rq.headers)
+        token = session.get("token") if app.secret_key else None
+        if token and not headers.get(SESSION_HEADER):
+            headers[SESSION_HEADER] = token
+        return headers
+
+    # ── the proposals API, so a remote agent can ask ────────────────────────────────────────────
+    #
+    # `fathom` runs on an analyst's machine and Weirvern runs on the box, so HTTP is the correct
+    # boundary here rather than a compromise. What matters is that the ENDPOINT and the form call the
+    # same `proposals` functions: one reader of the table, one idea of what a status means.
+    #
+    # A proposal is a WRITE (it changes a record) that enforces nothing, so it takes the write gate.
+    @app.get("/api/proposals")
+    def api_proposals():
+        from weirvern import proposals  # noqa: PLC0415
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        ok, refusal = requestauth.read_refusal(ctx, _auth_headers())
+        if not ok:
+            code, message = refusal if refusal is not None else (401, "sign in to view this")
+            return _json_error(code, message)
+        status = request.args.get("status") or None
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                rows = proposals.load_proposals(client, status=status)
+        except proposals.ProposalError as exc:
+            return _json_error(400, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, read_failure(exc))
+        return jsonify({"available": True, "proposals": rows, "total": len(rows)})
+
+    @app.post("/api/proposals")
+    def api_proposals_post():
+        from weirvern import proposals  # noqa: PLC0415
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return _json_error(400, "the body must be a JSON object")
+        # WHO ASKED IS RECORDED, AND A SESSION WINS. An account cannot be impersonated by a body
+        # field, so a signed-in caller's name is taken from the session; a token caller has no
+        # account, and there `proposed_by` is the caller's own label for the automation.
+        ident = requestauth.identity(ctx, _auth_headers())
+        actor = f"account:{ident.username}" if ident else str(
+            body.get("proposed_by") or "agent:unknown")
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                created = proposals.create_proposal(
+                    client, dict(body, proposed_by=actor))
+        except proposals.ProposalError as exc:
+            return _json_error(400, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, read_failure(exc))
+        return jsonify({"ok": True, "proposal": created}), 201
+
     # ── the block proposal form ─────────────────────────────────────────────────────────────────
     #
     # THE SAFETY SPLIT LIVES HERE. Proposing writes a row and changes no enforcement. Applying is a

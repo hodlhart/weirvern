@@ -41,7 +41,10 @@ class _FakeCH:
         self.inserts: list[tuple] = []
 
     def insert(self, table, data, column_names=None):
-        assert table == "weirvern.block_proposals", table
+        if table != "weirvern.block_proposals":
+            # The auth audit writes to another table through the same factory. It is not what these
+            # tests are about, and asserting on it here would make every login look like a defect.
+            return len(data)
         self.inserts.append((table, data, column_names))
         for row in data:
             record = dict(zip(column_names, row, strict=False))
@@ -355,3 +358,62 @@ def test_applying_from_the_form_uses_the_SIGNED_IN_username(monkeypatch):
     assert recorded == [("pp_test", "sam")], (
         "the apply route must attribute the decision to the account that made it"
     )
+
+
+# ── the API, so a remote agent can ask ──────────────────────────────────────────────────────
+
+def test_the_proposals_API_requires_a_credential_to_write():
+    """A proposal is a record change, so it takes the write gate. An open POST would let anything on
+    the network fill the queue with blocking requests."""
+    ch = _FakeCH()
+    ctx = _ctx()                       # accounts exist, no session, no token configured
+    ctx.connect_factory = lambda settings: _CM(ch)
+    app = flask_app.create_app(ctx, secret_key="test-key")
+    app.config.update(TESTING=True)
+
+    got = app.test_client().post("/api/proposals", json={"host": "192.0.2.10",
+                                                         "reason": "a good enough reason"})
+
+    assert got.status_code in (401, 403), got.data[:200]
+    assert not ch.inserts, "an unauthenticated caller stored a proposal"
+
+
+def test_the_proposals_API_accepts_a_signed_in_admin_and_records_the_account():
+    ch = _FakeCH()
+    client = _signed_in_client(_ctx(), ch)
+
+    got = client.post("/api/proposals", json={"host": "ads.example.com",
+                                              "reason": "known ad host",
+                                              "proposed_by": "agent:something-else"})
+
+    assert got.status_code == 201, got.data[:300]
+    stored = next(iter(ch.rows.values()))
+    assert stored["proposed_by"] == "account:sam", (
+        "the body claimed a different proposer and it was believed; an account cannot be "
+        "impersonated by a request field"
+    )
+
+
+def test_the_proposals_API_refuses_an_unusable_target_with_a_reason():
+    ch = _FakeCH()
+    client = _signed_in_client(_ctx(), ch)
+
+    got = client.post("/api/proposals", json={"host": "not a host!!", "reason": "because"})
+
+    assert got.status_code == 400
+    assert "error" in got.get_json()
+    assert not ch.inserts
+
+
+def test_the_proposals_API_lists_what_is_pending(monkeypatch):
+    ch = _FakeCH()
+    client = _signed_in_client(_ctx(), ch)
+    client.post("/api/proposals", json={"host": "192.0.2.10", "reason": "a good enough reason"})
+
+    got = client.get("/api/proposals?status=proposed")
+
+    assert got.status_code == 200
+    body = got.get_json()
+    assert body["available"] is True
+    assert body["total"] == 1
+    assert body["proposals"][0]["host"] == "192.0.2.10"
