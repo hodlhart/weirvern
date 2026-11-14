@@ -2173,6 +2173,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         flowReqs() > n0 && !/[?&]src=/.test(reqAfterRemoval), reqAfterRemoval);
   // A chip the drill cannot express is named in the note, never silently dropped.
   H.NF_FILTERS.push({ field: "client", value: "198.51.100.9", label: "198.51.100.9" });
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadFlowDetail(H.ASSETS_STATE.detailParams);
   await new Promise((r) => setTimeout(r, 80));
   check("a chip the table cannot apply is NAMED in its heading",
@@ -2342,6 +2343,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     fetchOverride = (u) => (String(u).includes("/api/baselines")
       ? Promise.resolve({ ok: false, status: 500, statusText: "Boom", json: async () => ({}) })
       : null);
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadModels();
     await new Promise((r) => setTimeout(r, 220));
     check("a baseline store that cannot be read says so, never 'no baselines'",
@@ -2473,6 +2475,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const wlTableText = () => (H.document.getElementById("wl-table") || {}).textContent || "";
     const revokedBox = H.document.getElementById("wl-revoked");
     revokedBox.checked = true;
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadWeirlings();
     check("ticking include-revoked asks the server for them",
           asked.length > 0 && asked[asked.length - 1].includes("revoked=1"),
@@ -2495,6 +2498,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const textOf = (id) => (H.document.getElementById(id) || {}).textContent || "";
 
     // Netflow talkers: FAILED says why; EMPTY keeps the quiet copy.
+    // CLEAR FIRST: getJSON caches every GET for eight seconds, and /api/netflow was already loaded
+    // earlier in this run, so without this the stub is never consulted and the assertion reads the
+    // cached quiet copy -- which is exactly the "No talkers in this window." it reported.
+    H.clearGetCache();
     fetchOverride = (u) => (String(u).includes("/api/netflow")
       ? serve({ volume: { available: true, reason: "", points: [] },
                 protocols: { available: true, reason: "", points: [] },
@@ -2504,6 +2511,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                            points: [] },
                 noise: {}, data_error: null })
       : null);
+    H.clearGetCache();  // each stubbed re-load needs its own clear
     await H.loadNetflow();
     check("a FAILED talkers read says why instead of reading as a quiet network",
           textOf("nf-talkers").includes("Cannot draw this: the talkers query failed"),
@@ -2516,6 +2524,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
                 talkers: { available: true, reason: "", points: [] },
                 noise: {}, data_error: null })
       : null);
+    H.clearGetCache();  // each stubbed re-load needs its own clear
     await H.loadNetflow();
     check("an EMPTY talkers window keeps the quiet copy",
           textOf("nf-talkers").includes("No talkers in this window"),
@@ -2526,6 +2535,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       ? serve({ available: false, reason: "cannot reach ClickHouse: OperationalError",
                 rows: [], total: 0, histogram: [], facets: {}, data_error: "x" })
       : null);
+    H.clearGetCache();  // each stubbed re-load needs its own clear
     await H.loadDns();
     check("a FAILED dns read says why instead of 'No DNS records in this window'",
           textOf("dn-volume").includes("Cannot draw this: cannot reach ClickHouse"),
@@ -2539,6 +2549,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       ? serve({ available: false, reason: "the events query failed: OperationalError",
                 hits: [], total: 0, blocks: [], alerts: [], gate: {}, data_error: "x" })
       : null);
+    H.clearGetCache();  // each stubbed re-load needs its own clear
     await H.loadBlocked();
     check("a FAILED blocked read says why instead of inviting a new rule",
           textOf("bl-summary").includes("Blocks unavailable")
@@ -2548,6 +2559,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       ? serve({ available: true, reason: "", hits: [], total: 0, blocks: [], alerts: [],
                 gate: {}, data_error: null })
       : null);
+    H.clearGetCache();  // each stubbed re-load needs its own clear
     await H.loadBlocked();
     check("an EMPTY blocked read keeps the real empty copies",
           /0 recorded hits/.test(textOf("bl-summary"))
@@ -3398,6 +3410,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   fetchOverride = null;
 
   H.showView("anomalies");
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadAnomalies();
 
   const anomRows = doc.querySelectorAll("#anomalies-table tbody tr");
@@ -5747,6 +5760,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           needEl("wl-plan-note").textContent);
     // (6) delete: the sensor sheet's Delete posts the echo's reason
     H.showView("weirlings");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadWeirlings();
     await sleep(150);
     const victim = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row):not(.wl-colhead)")]
@@ -5792,7 +5806,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // ── THE BLOCKLIST PANEL (the operator: hagezi lists, custom names, hits) ────────────────────
   {
     H.showView("sluice");
+    H.clearGetCache();
     await H.loadSluice();
+    // EVERY CARD HAS ITS OWN LOADER. `loadSluice()` renders the gates and rules; the blocklist
+    // pane is `loadBlocklistPane()`. This block only ever called the first, so the pane kept
+    // whatever it had from an earlier render -- measured as the "No sources yet - Sync now seeds
+    // the defaults" empty state, which made BOTH checks below fail against a fixture that was
+    // never asked for.
+    // /api/blocklists IS ITS OWN ENDPOINT and the default fixture does not serve it -- the lists
+    // live inside SLUICE_PAYLOAD, which is the combined /api/sluice body. So the pane was reading a
+    // real-but-empty answer and rendering "No sources yet". Stub it from the same fixture rather
+    // than inventing a second copy of the data.
+    const blServe = (payload) => Promise.resolve(
+      { ok: true, status: 200, statusText: "OK", json: async () => payload });
+    H.clearGetCache();
+    fetchOverride = (u) => (String(u).includes("/api/blocklists")
+      ? blServe({ available: true, sources: SLUICE_PAYLOAD.blocklists })
+      : null);
+    await H.loadBlocklistPane();
     const bl = needEl("sl-bl-rows").textContent;
     check("the blocklist panel renders the imported source", /HaGeZi/.test(bl) && /123456/.test(bl),
           bl.slice(0, 110));
@@ -5800,9 +5831,18 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     // hits are read on the Blocked page now. What must stay checkable here: each row is
     // CLICKABLE to toggle the list, and the on/off state is on the row.
     const row0 = doc.querySelector("#sl-bl-rows tr");
-    check("a blocklist row is clickable to turn the list on or off",
-          row0 && row0.classList.contains("clickable") && /on|off/.test(row0.textContent),
-          row0 ? row0.textContent.slice(0, 110) : "(no row)");
+    // RE-AUTHORED FOR WV1-14. This asserted the WHOLE ROW was the toggle, which was the defect:
+    // one cell is `last_error.slice(0, 90)`, so clicking the error text to read or copy it silently
+    // disabled a DNS blocklist. The row is now inert and an explicit button carries the action, so
+    // asserting "clickable" would have demanded the bug back.
+    const blBtn = row0 ? row0.querySelector("button") : null;
+    check("a blocklist row offers an explicit toggle button, and the row is inert",
+          !!row0 && !row0.classList.contains("clickable")
+            && !!blBtn && /turn (on|off)/i.test(String(blBtn.textContent)),
+          row0 ? `class=${JSON.stringify(row0.className)} button=${
+            blBtn ? JSON.stringify(blBtn.textContent) : "none"}` : "(no row)");
+    fetchOverride = null;
+    H.clearGetCache();
   }
 
   // The gate OFF: the same rows must state the reason instead of offering the button.
@@ -5810,6 +5850,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     ? { ok: true, status: 200,
         json: async () => (Object.assign({}, SLUICE_PAYLOAD, { enabled: false })) }
     : null);
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadAnomalies();
   const offBtns = [...doc.querySelectorAll("#anomalies-table .gate-open")];
   const offNotes = [...doc.querySelectorAll("#anomalies-table .gate-off")];
@@ -5830,6 +5871,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   // this stack". The empty case is checked too, because a lookup that finds nothing must SAY it
   // found nothing rather than render an empty box.
   H.showView("identity");
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadIdentity();
   const fpIn = needEl("fp-input");
   const fpGo = needEl("fp-go");
@@ -5869,6 +5911,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   H.showView("overview");
   await new Promise((r) => setTimeout(r, 20));
   H.showView("models");
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadRetrain();
   const mrNote = (needEl("mr-note") || {}).textContent || "";
   check("the retrain panel says what the candidate trained, and on how much",
@@ -5908,6 +5951,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         summary: "0 of 4 detector(s) trained; on 0 host-window(s)",
         report: Object.assign({}, RETRAIN_PAYLOAD.report, { trained_any: false }) }) }
     : null);
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadRetrain();
   check("a candidate that trained NOTHING does not offer Keep",
         needEl("mr-keep").classList.contains("hidden"),
@@ -6243,6 +6287,7 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     }
     return null; // fall through to the real dispatcher
   });
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadIdentity().catch(() => {});
   await new Promise((r) => setTimeout(r, 40));
   // The failure banner lives on <main> (that is where showDataError prepends it), NOT inside the
@@ -6432,6 +6477,7 @@ await H.showView("sluice");
 fetchOverride = (url) => (String(url).includes("/api/sluice")
   ? Promise.reject(new Error("sluice query failed"))
   : null);
+H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
 await H.loadSluice().catch(() => {});
 await new Promise((r) => setTimeout(r, 60));
 // THE LOADER'S CONTRACT, tested directly. The harness's stub dispatcher does not hand a rejected
@@ -7070,6 +7116,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   H.showView("overview");
   await new Promise((r) => setTimeout(r, 20));
   await H.showView("weirlings");
+  H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
   await H.loadWeirlings().catch(() => {});
   await new Promise((r) => setTimeout(r, 80));
   const txt = wlText();
@@ -7214,6 +7261,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const s = needEl("nf-summary").textContent;
     check("a failed netflow load does not leave 'loading…' standing",
           !/loading/i.test(s) && /unavailable/i.test(s), s);
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadNetflow();
     // (this fixture's payload legitimately reports an unavailable volume, so the assertion is
     // that the FAILURE note is gone -- not that any particular success text is present)
@@ -7320,6 +7368,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
             { src_addr: "198.51.100.20", hostname: "host.example", bytes: 123456, flows: 9 }] },
         }) })
       : null);
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadNetflow();
     await sleep(150);
     const tkBar = doc.querySelector("#nf-talkers .bar-row");
@@ -7354,6 +7403,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
     // 4. the sensor's flow trend -> its flows, filtered to the sensor in Discover
     H.showView("weirlings");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadWeirlings();
     await sleep(200);
     const aliveRow = [...doc.querySelectorAll("#wl-table tbody tr:not(.wl-nic-row):not(.wl-colhead)")]
@@ -7465,6 +7515,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           flows: [], errors: null }) })
       : null);
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(250);
     const sevCell = [...doc.querySelectorAll("#anomalies-table tbody tr td")]
@@ -7523,6 +7574,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
                         baseline_comparison: "3.4x the host's normal" }],
           errors: null }) })
       : null);
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadHost("198.51.100.5", 24);
     await sleep(220);
     const destCell = doc.querySelector("#h-dests tbody td.dcell");
@@ -7657,6 +7709,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     fetchOverride = null;
     // 3. the identity detail's exits.
     H.showView("identity");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadIdentity();
     await sleep(180);
     const idRowE = [...doc.querySelectorAll("#id-table tbody tr")]
@@ -7729,6 +7782,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           counts: { expired_rule: 1, stuck_rule: 1, unowned_detector: 1 }, errors: {} }) })
       : null);
     H.showView("health");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAudit();
     await sleep(220);
     const fixBtns = [...doc.querySelectorAll("#audit-table tbody button")];
@@ -7784,6 +7838,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           revoked_reason: "" }) })
       : null);
     H.showView("weirlings");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadWeirlings();
     const revBox = needEl("wl-revoked");
     revBox.checked = true;
@@ -7803,6 +7858,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     revBox.checked = false;
     fetchOverride = null;
     H.showView("health");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAudit();
     await sleep(150);
   }
@@ -7853,6 +7909,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           severity_counts: {}, discipline: null, watch_error: null }) })
       : null);
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(250);
     const exCells = [...doc.querySelectorAll("#anomalies-table tbody td.expander")];
@@ -7881,6 +7938,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     }
     fetchOverride = null;
     H.showView("health");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(120);
   }
@@ -7918,6 +7976,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       ? Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => AN_ONE })
       : null);
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(250);
     const jobRow = doc.querySelector("#anomalies-table tbody tr");
@@ -7984,6 +8043,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
 
     // ── JOB 2: block a domain from where it is seen (verb on the row) ────────────────────────
     H.showView("dns");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadDns();
     await sleep(220);
     const dnsRow = doc.querySelector("#dn-rows tr.dc-row");
@@ -8037,6 +8097,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
       return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => AN_ONE });
     };
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(300);
     const regCell = [...doc.querySelectorAll("#detectors-table tbody .dcell")]
@@ -8072,6 +8133,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
 
     // ── JOB 4: find a host and inspect its traffic (1 click) ─────────────────────────────────
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(250);
     const jobHostCell = [...doc.querySelectorAll("#anomalies-table tbody td.dcell")]
@@ -8145,6 +8207,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     window.location.hash = "#v=anomalies&tr=6&an.host=198.51.100.5&an.model=DBSCAN";
     H.applyURLState();
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(300);
     check("ARRIVAL: the link's filters and range land active",
@@ -8246,6 +8309,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
 
     // A) ASSETS: the service facet filters in place, is PRESSED, rides the URL, survives reload.
     H.showView("assets");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAssets();
     await sleep(300);
     const facet = [...doc.querySelectorAll("#as-facets .dc-chip")];
@@ -8346,6 +8410,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.applyURLState();
     check("DISCOVER: a reload restored by the URL puts the select back",
           feedSel.value === "dns", feedSel.value);
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadDiscover();
     await sleep(250);
     check("...and the request asks for the restored feed",
@@ -8388,6 +8453,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           firstSel ? firstSel.textContent : "none");
     // 2) the settings provenance line links to the entry.
     H.showView("settings");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadSettings();
     await sleep(300);
     const provRow = doc.querySelector('#view-settings [data-key="base_threshold"] .setting-prov');
@@ -8449,6 +8515,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 1) every alert row carries a STABLE reason code and its own Tune verb.
     H.showView("anomalies");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadAnomalies();
     await sleep(300);
     const codeEl = doc.querySelector("#anomalies-table tbody .reason-code");
@@ -8653,6 +8720,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
   {
     fetchOverride = null;
     H.showView("sluice");
+    H.clearGetCache();  // getJSON caches for 8s; the stub is only seen after a clear
     await H.loadSluice();
     const savedBlocked = H.BLOCKED_STATE.data;
     H.BLOCKED_STATE.data = null;                 // the console never visited Blocks
@@ -8730,6 +8798,14 @@ check("...a contradicted segment names BOTH segments on the issues list",
     // an empty successful read must not render the impossible "1\u20130".
     const dnServe = (payload) => Promise.resolve(
       { ok: true, status: 200, statusText: "OK", json: async () => payload });
+    // CLEAR THE CACHE FIRST, OR THE STUB IS NEVER CALLED. getJSON serves every GET for eight
+    // seconds and dedupes in flight, and this block already loaded /api/dns with the healthy
+    // fixture above -- so the stubbed re-load returned the CACHED body, the override was never
+    // consulted, and BOTH assertions below read the healthy summary ("12 queries : 3 NXDOMAIN").
+    // Measured: that is exactly the text they reported. The product code was correct all along
+    // (dnRenderSummary returns early on d.available === false at dnsview.js:62); these two were
+    // harness artifacts, not defects, and they had been counted as failures since the repair.
+    H.clearGetCache();
     fetchOverride = (u) => (String(u).includes("/api/dns")
       ? dnServe({ available: false, reason: "cannot reach ClickHouse: OperationalError",
                 rows: [], total: 0, histogram: [], facets: {}, data_error: "x" })
@@ -8740,6 +8816,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
           /unavailable: cannot reach ClickHouse/.test(failedSummary)
           && !/\d+ quer/.test(failedSummary) && !/\d+\u2013\d+/.test(failedSummary),
           failedSummary.slice(0, 110));
+    H.clearGetCache();   // the same seam: the failed-read payload above is cached
     fetchOverride = (u) => (String(u).includes("/api/dns")
       ? dnServe({ available: true, reason: "", total: 0, limit: 100, offset: 0,
                  rows: [], histogram: [], facets: {}, bucket_s: 60 })
@@ -8751,7 +8828,9 @@ check("...a contradicted segment names BOTH segments on the issues list",
           && !/1\u20130/.test(emptySummary),
           emptySummary.slice(0, 110));
     fetchOverride = null;
+    H.clearGetCache();
     await H.loadDns();
+    H.clearGetCache();
   }
   }
   // ── THE TIME CONTROL REACHES DISCOVER TOO (issue #30) ───────────────────────────────────
