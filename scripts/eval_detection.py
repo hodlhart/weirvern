@@ -307,8 +307,23 @@ def train_detectors(client, cfg_settings, attack_start_minute: int = 0):
     if failures:
         detail = ""
         if "DBSCAN" in failures:
-            detail = (" (DBSCAN needs >=100 rows after its 1-in-5 host sampling; a longer "
-                      "--minutes seed is what adds them)")
+            # WORDED FROM WHAT ACTUALLY HAPPENED (WV1-22). This sent every DBSCAN failure the same
+            # sentence about a row shortfall. Measured on 6d24697: the log said "DBSCAN trained on
+            # 195 rows but found NO CLUSTER CENTRES", and this line said the problem was a floor of
+            # 100 -- so the operator followed a remedy (a longer seed) that does not address what
+            # was reported. 195 rows is already above the floor.
+            outcome = getattr(db_model, "train_outcome", "")
+            if outcome == "insufficient-rows":
+                detail = (" (DBSCAN had fewer than 100 rows after its 1-in-5 host sampling; a "
+                          "longer --minutes seed is what adds them)")
+            elif outcome == "no-dense-structure":
+                detail = (f" (DBSCAN had enough rows but found NO DENSE REGION at "
+                          f"eps={db_model.cfg.dbscan_eps}, min_samples="
+                          f"{db_model.cfg.dbscan_min_samples}. More rows may not help: lower eps or "
+                          f"raise min_samples. The row count is not the problem -- the NO CLUSTER "
+                          f"CENTRES line above states the count it trained on)")
+            else:
+                detail = ""
         return None, ("detector(s) failed to train on the holdout window: "
                       + ", ".join(failures) + detail)
     return detectors, None

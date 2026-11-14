@@ -303,11 +303,25 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
         # comes from _drain_window so the total budget is divided across the batches
         # rather than repeated per batch.
         drain_s = _drain_window(timeout_s, len(targets))
+        # COUNT WHAT WAS ASKED AND WHAT FAILED (WV1-26). Every per-send failure was dropped with no
+        # count, so a sweep where ALL sends failed -- interface down mid-sweep, ENOBUFS, a sandbox
+        # without raw sockets -- fell through to the kernel neighbour table, which on a fresh
+        # interface is empty, and returned a result indistinguishable from "nobody answered".
+        # `find_free_addresses` then offers every address on a populated segment as free, and the
+        # CLI tells the operator the segment may be empty. The docstring above calls a false empty
+        # "the worst lie" and fixed it for the empty-SOURCE case; this is the same shape one level
+        # down, at the send site.
+        attempted = 0
+        send_failures = 0
+        last_send_error = ""
         for start in range(0, len(targets), ARP_BATCH):
             for ip in targets[start:start + ARP_BATCH]:
+                attempted += 1
                 try:
                     sock.send(request_tmpl(ip))
-                except OSError:
+                except OSError as exc:
+                    send_failures += 1
+                    last_send_error = str(exc) or type(exc).__name__
                     continue
             end = time.time() + drain_s
             while time.time() < end:
@@ -338,6 +352,23 @@ def arp_sweep(iface: str, our_mac: str, our_ip: str, targets: list[str],
             mac = read_neighbour_mac(iface, ip)
             if mac:
                 found[ip] = mac
+
+    # A SWEEP THAT COULD NOT ASK IS NOT AN EMPTY SEGMENT (WV1-26). Same refusal, same shape and the
+    # same reason as the unusable-source case above: there is no honest empty answer to "I could not
+    # ask", and the caller cannot tell the difference.
+    if attempted and send_failures == attempted:
+        raise ValueError(
+            f"refusing to report {iface} as empty: all {attempted} ARP request(s) failed to send "
+            f"(last error: {last_send_error}). Nothing was asked, so an empty result would mean "
+            f"'this segment is empty' when it means 'this interface could not transmit' -- and "
+            f"find_free_addresses would then offer every address on a populated segment as free. "
+            f"Check that the interface is up and that this process can open a raw socket on it."
+        )
+    if send_failures:
+        logger.warning(
+            "ARP sweep on %s: %d of %d request(s) failed to send (last error: %s); the result "
+            "covers what was actually asked", iface, send_failures, attempted, last_send_error,
+        )
     return found
 
 

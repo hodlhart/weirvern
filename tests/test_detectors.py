@@ -201,3 +201,58 @@ def test_dbscan_says_so_when_it_finds_no_clusters(tmp_path, caplog):
     assert any("NO CLUSTER CENTRES" in m for m in caplog.messages), (
         "the centreless state must be a WARNING -- it disables the scan-family escalation"
     )
+
+
+# ── A FAILURE MUST SAY WHICH FAILURE IT IS (WV1-22) ─────────────────────────────────────────────
+#
+# train() returns a bare bool and returns False for two unrelated reasons: too few rows, or enough
+# rows with no dense region. Callers could not tell them apart, so the detection-quality gate
+# explained a 195-row failure with "DBSCAN needs >=100 rows" -- a cause its own log line
+# contradicted, sending the operator after a remedy that does not address what was reported.
+
+
+def test_TOO_FEW_ROWS_is_recorded_as_a_row_shortfall(tmp_path, caplog):
+    rows = [(1.0,) * len(DBSCAN_FEATURES)] * 40   # below the 100 floor
+    det = DBSCANDetector(tmp_path, ModelConfig())
+
+    with caplog.at_level("WARNING"):
+        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
+
+    assert det.train_outcome == "insufficient-rows", (
+        f"a row shortfall was recorded as {det.train_outcome!r}; the caller cannot tell it from "
+        f"the opposite case and will explain it with the wrong cause"
+    )
+    assert any("floor 100" in m for m in caplog.messages), (
+        f"the floor must be in the message, or 12 rows and 99 read the same: {caplog.messages}"
+    )
+
+
+def test_ENOUGH_ROWS_WITH_NO_DENSE_REGION_is_a_DIFFERENT_failure(tmp_path, caplog):
+    """The measured case: 195 rows, above the floor, no centres. The remedy is eps/min_samples,
+    not a longer seed."""
+    rng = np.random.default_rng(0)
+    rows = [tuple(rng.normal(10.0, 1.0, len(DBSCAN_FEATURES))) for _ in range(195)]
+    det = DBSCANDetector(tmp_path, ModelConfig())
+
+    with caplog.at_level("WARNING"):
+        assert not det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
+
+    assert det.train_outcome == "no-dense-structure", (
+        f"195 rows above the floor was recorded as {det.train_outcome!r}, which is the state that "
+        f"made the gate blame the row count"
+    )
+    assert not any("Not enough data" in m for m in caplog.messages), (
+        "a row-shortfall warning was emitted for a row count above the floor"
+    )
+
+
+def test_a_HEALTHY_train_is_recorded_as_ok(tmp_path):
+    rng = np.random.default_rng(7)
+    # Three tight, well-separated blobs: DBSCAN finds them at eps=0.6.
+    rows = [tuple(rng.normal(c, 0.01, len(DBSCAN_FEATURES))) for c in (2.0, 20.0, 60.0)
+            for _ in range(60)]
+    det = DBSCANDetector(tmp_path, ModelConfig())
+
+    assert det.train(datetime(2026, 1, 1), datetime(2026, 1, 2), _TrainClient(rows))
+    assert det.train_outcome == "ok", det.train_outcome
+    assert det.cluster_centers, "the fixture should have produced centres"

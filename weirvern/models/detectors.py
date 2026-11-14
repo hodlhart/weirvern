@@ -360,6 +360,12 @@ class DBSCANDetector(BaseDetector):
         super().__init__(model_dir)
         self.cfg = cfg or ModelConfig()
         self.cluster_centers: list[np.ndarray] = []
+        # WHY the last train() returned what it did (WV1-22). train() returns a bare bool, and it
+        # returns False for two unrelated reasons -- too few rows, or enough rows with no dense
+        # region. Callers could not tell them apart, so the detection-quality gate explained a
+        # 195-row failure with "DBSCAN needs >=100 rows", a cause its own log line contradicted.
+        # "" = never trained, "ok", "insufficient-rows", "no-dense-structure".
+        self.train_outcome = ""
         self.preprocessor = RobustPreprocessor()
         # Percentile calibration of training distances to the nearest centre (set at
         # train time). See calibrate_distance for why the old fixed /5.0 had to go.
@@ -407,7 +413,13 @@ class DBSCANDetector(BaseDetector):
         """
         data = client.query(q, settings=QUERY_SETTINGS).result_rows
         if len(data) < 100:
-            logger.warning("Not enough data for %s (%d rows)", self.name, len(data))
+            self.train_outcome = "insufficient-rows"
+            # The floor belongs in the message: a reader who sees only "not enough data" cannot
+            # tell 12 rows from 99, and the remedy (a longer seed) depends on the gap.
+            logger.warning(
+                "Not enough data for %s: %d rows after the 1-in-5 host sampling, floor 100. A "
+                "longer seed window is what adds them.", self.name, len(data),
+            )
             return False
         Xs = self.preprocessor.fit_transform(np.asarray(data, dtype=float))
         labels = DBSCAN(eps=self.cfg.dbscan_eps, min_samples=self.cfg.dbscan_min_samples).fit_predict(Xs)
@@ -461,6 +473,7 @@ class DBSCANDetector(BaseDetector):
         # artifact -- the metrics retain clusters=0 -- but every score is "no opinion", so
         # returning True made reports and ml_models history count a detector that cannot
         # score. This is the same "trained" lie F023 fixed for the other detectors.
+        self.train_outcome = "ok" if self.cluster_centers else "no-dense-structure"
         return bool(self.cluster_centers)
 
     def predict(self, flow: dict[str, Any], features: dict[str, float] | None = None) -> float:

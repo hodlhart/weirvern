@@ -151,3 +151,78 @@ def test_the_presence_check_compares_exact_addresses(monkeypatch, present, asked
         f"asked whether {asked} is on the interface carrying {present}: got {got}, expected "
         f"{expected}. A substring match answers the wrong question and skips add_address"
     )
+
+
+# ── WV1-26: A SWEEP THAT COULD NOT ASK IS NOT AN EMPTY SEGMENT ───────────────────────────────
+
+def test_a_sweep_where_EVERY_send_failed_refuses_instead_of_reporting_empty(monkeypatch):
+    """Every per-send failure was dropped with no count, so a sweep where ALL sends failed -- an
+    interface down mid-sweep, ENOBUFS, a sandbox without raw sockets -- fell through to the kernel
+    neighbour table, which on a fresh interface is empty, and returned a result indistinguishable
+    from "nobody answered". `find_free_addresses` then offers every address on a populated segment
+    as free, and the CLI tells the operator the segment may be empty.
+
+    The module's own docstring calls a false empty "the worst lie" and fixed it for the empty-SOURCE
+    case. This is the same shape one level down, at the send site.
+    """
+    class DeadSock:
+        def bind(self, *_a):
+            pass
+
+        def settimeout(self, *_a):
+            pass
+
+        def send(self, *_a):
+            raise OSError(105, "No buffer space available")   # ENOBUFS
+
+        def recv(self, *_a):
+            raise OSError(11, "Resource temporarily unavailable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ic.socket, "socket", lambda *a, **k: DeadSock())
+    # No neighbour entries either, so the fallback cannot rescue the result.
+    monkeypatch.setattr(ic, "read_neighbour_mac", lambda *_a: None)
+
+    with pytest.raises(ValueError) as exc:
+        ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "198.51.100.50",
+                     ["198.51.100.10", "198.51.100.11"], timeout_s=0.1)
+
+    text = str(exc.value)
+    assert "could not transmit" in text or "failed to send" in text, text
+    assert "No buffer space available" in text, (
+        f"the underlying send error must survive, or the operator cannot act on it: {text!r}"
+    )
+
+
+def test_a_PARTIAL_send_failure_still_returns_what_was_asked(monkeypatch):
+    """One dead send out of three must not refuse the whole sweep -- the result covers what was
+    actually asked, which is still information."""
+    class HalfSock:
+        def __init__(self):
+            self.n = 0
+
+        def bind(self, *_a):
+            pass
+
+        def settimeout(self, *_a):
+            pass
+
+        def send(self, *_a):
+            self.n += 1
+            if self.n == 1:
+                raise OSError(105, "No buffer space available")
+
+        def recv(self, *_a):
+            raise OSError(11, "Resource temporarily unavailable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ic.socket, "socket", lambda *a, **k: HalfSock())
+    monkeypatch.setattr(ic, "read_neighbour_mac", lambda *_a: None)
+
+    got = ic.arp_sweep("eth1", "aa:bb:cc:dd:ee:ff", "198.51.100.50",
+                       ["198.51.100.10", "198.51.100.11"], timeout_s=0.1)
+    assert got == {}, f"expected an empty-but-asked result, got {got}"
