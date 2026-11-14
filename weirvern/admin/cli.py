@@ -830,6 +830,38 @@ def cmd_tune(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port: int) -> int:
+    """Serve the Flask surface. OPT-IN, because switching the dashboard's transport is a decision.
+
+    THE TWO SERVERS ARE DIFFERENT PRODUCTS RIGHT NOW, and pretending otherwise would be the bug.
+    The hand-rolled handler serves the full dashboard: every API route, the TLS-from-its-own-CA path,
+    the /panic no-JS fallback, the static allow-list. The Flask app serves the rendered pages (login,
+    register, the block proposal form) and the routes that have been migrated onto the shared payload
+    layer. Running `gui --flask` therefore gives the RENDERED UI, not the full console.
+
+    That is why it is a flag and not a replacement: a deployment can run both, on different ports,
+    while routes move across one at a time. Nothing about the default changes.
+
+    The signing key is required for the cookie the rendered pages need. Without it the pages refuse
+    and say so, and the JSON routes still work, because they authenticate by header.
+    """
+    from weirvern.admin import flask_app, web
+
+    if not os.environ.get("WEIRVERN_FLASK_SECRET"):
+        print(_c("dim", "    flask: no WEIRVERN_FLASK_SECRET set -- the rendered pages will refuse "
+                        "to sign a session cookie and will say so. The JSON routes still work."))
+
+    ctx = web.build_context(admin_client, settings, pdir, namespace)
+    app = flask_app.create_app(ctx)
+    print(_c("bold", f"Weirvern Flask surface on http://{host}:{port}"))
+    print(_c("dim", "    rendered pages: /login /register /home /block"))
+    print(_c("dim", "    JSON: /api/healthz /api/session /api/episodes /api/baselines /api/proposals"))
+    # Werkzeug's own server, single-process. A deployment puts gunicorn or waitress in front; this
+    # exists so the surface can be started and driven without adding a WSGI server as a dependency.
+    app.run(host=host, port=port, threaded=True, use_reloader=False)
+    return EXIT_OK
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     """Serve the web dashboard.
 
@@ -885,6 +917,8 @@ def cmd_gui(args: argparse.Namespace) -> int:
                         "report cluster access as unavailable"))
 
     try:
+        if getattr(args, "flask", False):
+            return _run_flask(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
         return web.run(admin_client, settings, pdir, NAMESPACE, host=host, port=port)
     except OSError as exc:
         # The common case is a port already in use, and saying which port is far
@@ -1456,6 +1490,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bind address (default 127.0.0.1, or $GUI_HOST)")
     s.add_argument("--port", type=int, default=None,
                    help="port (default 8088, or $GUI_PORT)")
+    s.add_argument("--flask", action="store_true",
+                   help="serve the Flask surface (rendered pages + proposals API) instead of the "
+                        "hand-rolled dashboard server")
     s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("prune", help="apply the per-component disk caps")
