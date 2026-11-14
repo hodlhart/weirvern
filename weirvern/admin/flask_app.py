@@ -10,7 +10,17 @@ JavaScript. The 900-odd checks in `scripts/jsdom_render.js` keep measuring the c
 before, because the console is served unchanged. A big-bang port would have thrown that away to gain
 a framework.
 
-THE STRANGLER. Routes are migrated one at a time. A route is written here natively, against the same
+THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API routes and the
+dashboard's own JavaScript calls 59 of them. This app serves 6. Replacing the console outright would
+therefore load the page and break 53 endpoints, with every panel reporting "no such endpoint" -- a
+regression dressed as a migration.
+
+So the front door FORWARDS what it has not taken over. With `proxy_to` set, any path this app does not
+own is passed to the legacy server, which keeps running on loopback inside the same process. Flask owns
+the rendered pages and the migrated routes; everything else behaves exactly as before. Routes cross one
+at a time and the dashboard never notices.
+
+Routes are migrated one at a time. A route is written here natively, against the same
 `web_api` payload functions and the same `status_mod` fetchers, and only then is it retired from the
 old handler. The console API stays on its own port until every route it serves has a tested
 replacement, so nothing is half-migrated at any point.
@@ -65,8 +75,8 @@ def _json_error(code: int, message: str) -> tuple[Response, int]:
     return jsonify({"error": message, "code": code}), code
 
 
-def create_app(ctx: Any, *, static_dir: Any = None,
-               secret_key: str | None = None) -> Flask:
+def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = None,
+               proxy_to: str = "") -> Flask:
     """Build the Flask app over an assembled GuiContext.
 
     Takes the same `ctx` the console handler takes, so both surfaces share one connection factory,
@@ -356,6 +366,20 @@ def create_app(ctx: Any, *, static_dir: Any = None,
 
         return _windowed(payloads.episodes)
 
+    @app.get("/api/detectors")
+    @gated
+    def detectors():
+        """The detector registry. Same fetcher the console uses; the registry carries no operator
+        data, only which detectors exist and what they caught."""
+        from weirvern.admin import payloads  # noqa: PLC0415
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                return jsonify(payloads.detectors(client))
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, read_failure(exc))
+
     @app.get("/api/baselines")
     @gated
     def baselines():
@@ -566,11 +590,48 @@ def create_app(ctx: Any, *, static_dir: Any = None,
     for path, (name, ctype) in STATIC_FILES.items():
         app.add_url_rule(path, endpoint=f"static::{path}", view_func=_static_view(name, ctype))
 
+    def _passthrough():
+        """Forward this request to the legacy server and return its response verbatim.
+
+        THE HEADERS COME BACK AS-IS, deliberately: the console sets its own security headers and its
+        own content types, and a proxy that rewrote them would be a second opinion about them. The body
+        is returned unmodified for the same reason -- re-serialising JSON would risk changing what a
+        client sees, which is the drift this whole exercise exists to avoid.
+        """
+        import urllib.error  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        target = proxy_to.rstrip("/") + request.full_path.rstrip("?")
+        body = request.get_data() or None
+        forwarded = {k: v for k, v in request.headers.items()
+                     if k.lower() not in ("host", "content-length", "connection")}
+        req = urllib.request.Request(target, data=body, headers=forwarded, method=request.method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return Response(resp.read(), status=resp.status,
+                                headers={k: v for k, v in resp.headers.items()
+                                         if k.lower() not in ("transfer-encoding", "connection",
+                                                              "content-length")})
+        except urllib.error.HTTPError as exc:
+            # A refusal from the console is a real answer, not a proxy failure. Pass it through so a
+            # 401 from the old handler still reads as a 401 to the browser.
+            return Response(exc.read(), status=exc.code,
+                            headers={k: v for k, v in exc.headers.items()
+                                     if k.lower() not in ("transfer-encoding", "connection",
+                                                          "content-length")})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("passthrough to %s failed: %s", target, exc)
+            return _json_error(502, f"the console backend did not answer: {type(exc).__name__}")
+
     @app.errorhandler(404)
     def not_found(_exc):
-        # The console is a hash-router app: every view lives at "/" and the fragment never reaches
-        # the server. An unknown path serves the shell, exactly as the old handler does -- but an
-        # unknown API path must still 404, or a typo'd endpoint would answer HTML.
+        # WITH A PASSTHROUGH CONFIGURED, an unrouted path is not a 404 -- it is a route this app has
+        # not taken over yet, and the legacy server still serves it.
+        if proxy_to:
+            return _passthrough()
+        # Without one, the console is a hash-router app: every view lives at "/" and the fragment
+        # never reaches the server, so an unknown path serves the shell -- but an unknown API path
+        # must still 404, or a typo'd endpoint would answer HTML.
         if request.path.startswith("/api/"):
             return _json_error(404, f"no such endpoint: {request.path}")
         return _static_view(*STATIC_FILES["/"])()

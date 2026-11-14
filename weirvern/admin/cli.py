@@ -852,10 +852,21 @@ def _run_flask(admin_client, settings, pdir, namespace: str, *, host: str, port:
                         "to sign a session cookie and will say so. The JSON routes still work."))
 
     ctx = web.build_context(admin_client, settings, pdir, namespace)
-    app = flask_app.create_app(ctx)
-    print(_c("bold", f"Weirvern Flask surface on http://{host}:{port}"))
+
+    # THE LEGACY SERVER KEEPS RUNNING, ON LOOPBACK, INSIDE THIS PROCESS. It is not a second front
+    # door: it is bound to 127.0.0.1 on an ephemeral port and nothing outside can reach it. Flask
+    # forwards to it whatever it has not taken over, which is how the console's other 78 API routes
+    # keep working while they are migrated one at a time. Serving them from Flask today is not
+    # possible -- it has 6 of the 84, and the dashboard calls 59.
+    legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
+    proxy_to = f"http://127.0.0.1:{legacy.port}"
+    print(_c("dim", f"    console routes still served by the legacy handler at {proxy_to}"))
+
+    app = flask_app.create_app(ctx, proxy_to=proxy_to)
+    print(_c("bold", f"Weirvern on http://{host}:{port}"))
     print(_c("dim", "    rendered pages: /login /register /home /block"))
     print(_c("dim", "    JSON: /api/healthz /api/session /api/episodes /api/baselines /api/proposals"))
+    print(_c("dim", "    everything else is passed through to the console unchanged"))
     # Werkzeug's own server, single-process. A deployment puts gunicorn or waitress in front; this
     # exists so the surface can be started and driven without adding a WSGI server as a dependency.
     app.run(host=host, port=port, threaded=True, use_reloader=False)

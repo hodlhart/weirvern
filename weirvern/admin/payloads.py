@@ -50,3 +50,8 @@ def baselines(client: Client) -> dict[str, Any]:
     baseline yet" need different words on screen and only the server knows which is true.
     """
     return web_api.baselines_payload(status_mod.baselines_overview(client))
+
+
+def detectors(client: Client) -> dict[str, Any]:
+    """The detector registry with its catch counts: who owns what, who may page."""
+    return status_mod.detectors_overview(client)
