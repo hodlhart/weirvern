@@ -24,10 +24,23 @@ from weirvern.ensemble import detect_flows, fusion_excluded
 from weirvern.models import calibration
 
 
+def _fixed(value):
+    """A predict that always returns `value`.
+
+    Bound through a factory rather than a bare lambda in a comprehension, because a lambda defined
+    inside a loop captures the loop variable: if two detectors disagreed, both would end up returning
+    the last score. ruff's B023 is pointing at a real bug in a test that would then pass while
+    measuring nothing.
+    """
+    def predict(*_a, **_k):
+        return value
+    return predict
+
+
 def _det(**scores) -> list:
     """Detectors that return a fixed score each, named as the ensemble names them."""
-    return [SimpleNamespace(name=name.replace("_", " "), predict=(lambda v: (lambda *a, **k: v))(v))
-            for name, v in scores.items()]
+    return [SimpleNamespace(name=name.replace("_", " "), predict=_fixed(value))
+            for name, value in scores.items()]
 
 
 FLOW = {
