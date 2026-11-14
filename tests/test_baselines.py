@@ -119,7 +119,11 @@ def test_the_route_reads_through_the_context_manager():
     seg = src.split("def _baselines(self)", 1)[1].split("\n        def ", 1)[0]
     assert "with self._with_client() as client:" in seg, \
         "the handler must read through the shared client context, like its neighbours"
-    assert "baselines_overview" in seg
+    # THE FETCHER MOVED, THE PROPERTY DID NOT. It used to be called inline here; it now lives in
+    # `payloads.baselines`, shared with the Flask surface, so the handler delegates. Asserting the
+    # old name would demand the duplication back. What this test still must catch is a handler that
+    # bypasses the shared fetcher, so either shape is accepted.
+    assert "baselines_overview" in seg or "payloads.baselines(" in seg
 
 
 def test_the_card_exists_and_its_header_matches_its_rows():

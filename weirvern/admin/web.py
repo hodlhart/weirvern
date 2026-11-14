@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 from weirvern import fleet_store, networks, scan_jobs
 from weirvern.admin import assets as assets_mod
-from weirvern.admin import gui_auth, requestauth, timewindow, web_api
+from weirvern.admin import gui_auth, payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
 from weirvern.admin import status as status_mod
 from weirvern.admin import users as users_mod
@@ -802,14 +802,12 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    payload = status_mod.episodes_recent(client, hours=hours, limit=limit)
+                    # THE FETCH AND THE FORMAT ARE SHARED (weirvern/admin/payloads.py). The Flask
+                    # surface calls this same function, so the two queues cannot disagree about a
+                    # hostname or a payload key.
+                    payload = payloads.episodes(client, hours=hours, limit=limit)
             except Exception as exc:  # noqa: BLE001
                 return self._error(503, read_failure(exc))
-            # The queue's Host column is the fact (the address); Hostname is the convenience.
-            # Resolve it here, next to the anomaly route, so both tables use the same cached
-            # reverse-DNS path. A missing name is an empty cell, never an invented label.
-            for row in payload.get("episodes", []):
-                row["hostname"] = web_api._hostname(row.get("src_addr"))
             self._json(payload)
 
         def _panic(self) -> None:
@@ -1064,11 +1062,13 @@ def _build_handler(ctx: GuiContext):
             missing rather than rendering as an empty list."""
             try:
                 with self._with_client() as client:
-                    data = status_mod.baselines_overview(client)
+                    # SHARED WITH THE FLASK SURFACE (payloads.baselines).
+                    payload = payloads.baselines(client)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"available": False,
-                                   "reason": read_failure(exc)})
-            self._json(web_api.baselines_payload(data))
+                # A FAILED read is a 200 with available: false and the reason, like every other
+                # panel: an error page for one card would take down the views around it.
+                return self._json({"available": False, "reason": read_failure(exc)})
+            self._json(payload)
 
         def _model_retrain(self) -> None:
             """The last forced retrain: what state it is in, and what it produced.

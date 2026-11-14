@@ -37,7 +37,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 
-from weirvern.admin import requestauth, web_api
+from weirvern.admin import requestauth
 
 logger = logging.getLogger(__name__)
 
@@ -321,55 +321,65 @@ def create_app(ctx: Any, *, static_dir: Any = None,
         return _render("home.html")
 
     # ── a data route, migrated in full ──────────────────────────────────────────────────────────
-    @app.get("/api/episodes")
-    @gated
-    def episodes():
-        """One row per incident. The first route migrated, and deliberately a small one.
+    def _windowed(call):
+        """Parse the window arguments and run `call(client, hours, limit)`, shared by data routes.
 
-        It is the shape every future route here takes: parse the arguments, take one client from
-        the shared factory, call the same fetcher the console calls, format with the same payload
-        function, and report a failure through `read_failure` so the wording does not depend on
-        which surface answered.
+        THE ARGUMENT PARSING IS SHARED TOO, not just the fetching. `_int_arg` and `window_arg` are the
+        console's own, and `window_arg` raises rather than sending so this surface turns the reason
+        into its own 400 body. Two parsers would let the surfaces disagree about what a usable range
+        is, which is the same drift one layer up.
         """
-        from weirvern.admin import status as status_mod  # noqa: PLC0415
-        from weirvern.admin.web import (  # noqa: PLC0415
-            _int_arg,
-            read_failure,  # noqa: PLC0415
-            window_arg,
-        )
+        from weirvern.admin.web import _int_arg, read_failure, window_arg  # noqa: PLC0415
 
         query = request.args.to_dict(flat=False)
         limit = _int_arg(query, "limit", 100, 1, 1000)
         try:
-            # The SAME parser the console uses (web.window_arg). It raises rather than sending, so
-            # this surface turns the reason into its own 400 body and the two cannot disagree about
-            # what a usable range is.
             hours = window_arg(query, 24, 1, 24 * 14)
         except ValueError as exc:
             return _json_error(400, f"bad time range: {exc}")
         try:
             with ctx.connect_factory(ctx.settings) as client:
-                payload = status_mod.episodes_recent(client, hours=hours, limit=limit)
+                return jsonify(call(client, hours=hours, limit=limit))
         except Exception as exc:  # noqa: BLE001
             # Worded by what was observed, not by the layer assumed to have failed (WV1-20).
             return _json_error(503, read_failure(exc))
-        # The Host column is the fact (the address); the hostname is the convenience. Same cached
-        # reverse-DNS path the console uses, so the two tables cannot disagree about a name.
-        for row in payload.get("episodes", []):
-            row["hostname"] = web_api._hostname(row.get("src_addr"))
-        return jsonify(payload)
+
+    @app.get("/api/episodes")
+    @gated
+    def episodes():
+        """One row per incident. The shape every migrated route takes.
+
+        NO FETCHING AND NO FORMATTING HERE. `payloads.episodes` owns both, and the console calls the
+        same function, so this surface cannot render a table the console renders differently.
+        """
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _windowed(payloads.episodes)
+
+    @app.get("/api/baselines")
+    @gated
+    def baselines():
+        """The per-host baseline snapshot, from the same fetcher the console uses."""
+        from weirvern.admin import payloads  # noqa: PLC0415
+        from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                return jsonify(payloads.baselines(client))
+        except Exception as exc:  # noqa: BLE001
+            return _json_error(503, read_failure(exc))
+
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 
-        THIS IS THE SEAM BETWEEN THE TWO CREDENTIAL CARRIERS. The API is header-only by design, and
-        `requestauth` must stay framework-free and cookie-free so that stays true. The rendered UI
-        carries the same registry token in a signed cookie, because a browser has nowhere to put a
-        header. Rather than teach the shared code about cookies, the cookie's token is presented in
-        the header shape it already understands.
+        THE SEAM BETWEEN THE TWO CREDENTIAL CARRIERS, and it was briefly lost to a careless edit.
+        The API is header-only by design and `requestauth` must stay cookie-free, but the rendered UI
+        carries the same registry token in a signed cookie. Rather than teach the shared code about
+        cookies, the cookie's token is presented in the header shape it already understands.
 
-        One implementation, two carriers. Without this, a person signed in through the rendered form
-        would be told to sign in by the API on the very next request.
+        Without this, a person signed in through the rendered form is told to sign in by the very
+        next API request.
         """
         from flask import request as _rq
 
