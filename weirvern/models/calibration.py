@@ -51,6 +51,23 @@ class Calibration:
     p95: float
     p99: float
     statistic: str = "conformal"
+    # THE CEILING IS THE POINT. A target FAR is only expressible down to 1/(n+1) of the reference:
+    # with 6,489 scores and a 1% target the threshold lands on the top few samples, and when it
+    # lands AT the maximum nothing in the population can ever exceed it. Recording the ceiling lets
+    # a caller tell "no alerts because the network is quiet" from "no alerts because the bar is
+    # above every score the detector produces", which is the same defect shape this project keeps
+    # finding: a failure rendered as a benign state.
+    ceiling: float = float("nan")
+
+    @property
+    def saturated(self) -> bool:
+        """True when the fitted threshold is at or above every reference score.
+
+        The target false-alarm rate is then below what this sample can express, and a decision
+        that uses this threshold will fire on nothing until the population grows or the target is
+        relaxed. It is not an error: it is a measurement that has run out of resolution.
+        """
+        return bool(math.isfinite(self.ceiling) and self.threshold >= self.ceiling)
 
 
 def _clean(scores: Iterable[float]) -> np.ndarray:
@@ -100,6 +117,7 @@ def fit(reference: Iterable[float], target_far: float) -> Calibration | None:
         p50=float(np.percentile(ref, 50)),
         p95=float(np.percentile(ref, 95)),
         p99=float(np.percentile(ref, 99)),
+        ceiling=float(ref.max()),
     )
 
 
@@ -208,18 +226,29 @@ def record_population(client: Client, population: Iterable[dict], *,
     return len(rows)
 
 
-def _population_scores(client: Client, days: int) -> dict[str, list[float]]:
+def _population_scores(client: Client, days: int,
+                       model_version: str | None = None) -> dict[str, list[float]]:
     """All scored host-window scores per model, deduped by the Replacing table.
+
+    SCOPED TO `model_version` WHEN GIVEN, and that scoping is a correctness requirement rather than
+    a tidiness one. A reference that spans a model or aggregation change calibrates today's detector
+    against an older engine's distribution, so the threshold it produces is a mixture of two regimes
+    and belongs to neither. Measured on the live engine: the population carried rows from eight
+    distinct versions inside one rolling week, and restricting the reference to post-change scores
+    moved the 1% threshold from 0.8165 to 0.7327 while the highest score the current engine had
+    produced was 0.853, which is the difference between an engine that can alert and one that cannot.
 
     A deployment that has not applied 038 yet has no population; return an empty mapping so
     `run` takes its named fallback instead of failing the whole shadow pass.
     """
+    sql = ("SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
+           "WHERE computed_at >= now() - INTERVAL %(d)s DAY")
+    params: dict[str, object] = {"d": int(days)}
+    if model_version:
+        sql += " AND model_version = %(v)s"
+        params["v"] = str(model_version)
     try:
-        res = client.query(
-            "SELECT model_name, score FROM weirvern.ml_window_scores FINAL "
-            "WHERE computed_at >= now() - INTERVAL %(d)s DAY",
-            parameters={"d": int(days)},
-        )
+        res = client.query(sql, parameters=params)
     except Exception as exc:  # noqa: BLE001
         logger.warning("calibration population unavailable (%s); using named fallback", exc)
         return {}
@@ -256,11 +285,12 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
     target = float(getattr(settings, "ml_target_far", 0.01) or 0.01)
     window_days = int(days if days is not None else
                       getattr(settings, "ml_calibration_days", 7) or 7)
-    population = _population_scores(client, window_days)
+    population = _population_scores(client, window_days, __version__)
     rows: list[dict] = []
     for model_name, column in MODEL_COLUMNS:
         scores = population.get(model_name) or []
-        source = f"all scored host-windows (ml_window_scores), last {window_days} days"
+        source = (f"all scored host-windows (ml_window_scores), model {__version__}, "
+                  f"last {window_days} days")
         subject = "all scored host-windows"
         if len(scores) < 20:
             scores = _score_rows(client, column, days=30)
@@ -269,6 +299,11 @@ def run(client: Client, settings: Settings, *, days: int | None = None) -> list[
         cal = fit(scores, target)
         if cal is None:
             continue
+        if cal.saturated:
+            # Say so where an operator reads it, rather than storing a threshold that silently
+            # cannot be crossed and leaving the cause to be rediscovered.
+            source += (f"; SATURATED at the reference ceiling ({cal.ceiling:.4f}): the target FAR "
+                       f"is below what {cal.sample_count} samples can express")
         rows.append({
             "model_name": model_name,
             "scope": "global",
