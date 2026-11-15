@@ -1075,6 +1075,257 @@ def anomalies(client: Client, *, limit: int, min_score: float, hours: int, host:
         watch_error=watch_err, total_unfiltered=total_unfiltered)
 
 
+def sluice(with_client: Any, *, hours: int, settings: Any) -> dict[str, Any]:
+    """Every rule (live AND lapsed), the gate's state, and the static policy table.
+
+    TAKES A CONNECTION FACTORY because the policies and the effective settings are STATIC: they are
+    populated even when the database is unreachable, so an operator can read what each level does
+    without a working cluster. A fetcher handed an open client would lose that the moment the
+    connect failed, which is the exact case this payload exists to describe.
+
+    BOTH RULE SETS, deliberately: "this rule exists but is not enforced" and "this rule does not
+    exist" are different statements, and showing only live rules would make a lapsed block look
+    DELETED -- the question an operator asks after a block stops working.
+    """
+    import datetime as _dt  # noqa: PLC0415
+
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    payload: dict = {
+        "available": False, "reason": "", "rules": [], "live": 0, "gate": {},
+        "policies": {}, "criticality": "", "enabled": False, "iface": "",
+        "hits_hours": hours,
+    }
+    # The policies are STATIC, so they are populated even when the database is unreachable.
+    try:
+        from weirvern.sluice import CRITICALITY_POLICIES  # noqa: PLC0415
+
+        payload["policies"] = {
+            k: {"label": v["label"], "description": v["description"],
+                "ttl_minutes": v["ttl_minutes"], "min_severity": v["min_severity"],
+                "min_confidence": v["min_confidence"]}
+            for k, v in CRITICALITY_POLICIES.items()
+        }
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        payload["criticality"] = str(settings.sluice_criticality)
+        payload["enabled"] = bool(settings.sluice_enabled)
+        payload["iface"] = str(settings.sluice_iface or settings.zeek_iface or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    payload["blocklists"] = []
+    payload["hits"] = []
+    try:
+        from weirvern import blocklists, sluice_store  # noqa: PLC0415
+
+        with with_client() as client:
+            rules = sluice_store.load_all_rules(client)
+            gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+            # The imported lists and the recent domain hits ride the same payload: "what would be
+            # caught" and "what was caught" in one place, each degrading on its own.
+            try:
+                payload["blocklists"] = blocklists.load_sources(client)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("blocklist sources unavailable: %s", exc)
+            try:
+                # SAME WINDOW AS THE BLOCKS DRILL (SL3). "Recent" is not a window: the overview
+                # chip and the ledger must count the same interval, or the operator sees 5 hits on
+                # one surface and 0 on the other and cannot tell which is current.
+                hit_rows = client.query(
+                    "SELECT ts, rule_id, domain, query, src_addr "
+                    "FROM weirvern.sluice_events WHERE kind = 'dns' "
+                    f"AND ts >= now() - INTERVAL {int(hours)} HOUR "
+                    "ORDER BY ts DESC LIMIT 50").result_rows
+                payload["hits"] = [
+                    {"ts": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                     "rule_id": str(r[1]), "domain": str(r[2]), "query": str(r[3]),
+                     "client": str(r[4])}
+                    for r in hit_rows]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("domain hits unavailable: %s", exc)
+            # ONE RULE STORE, MANY GATES: every box that can enforce reports its own row, so the
+            # operator sees who is actually filtering (and who has stopped).
+            fleet_gates = sluice_store.load_gate_states(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sluice view unavailable: %s", exc)
+        return {**payload, "available": False,
+                "reason": f"cannot read the gate: {type(exc).__name__}"}
+
+    now = _dt.datetime.now(_dt.UTC)
+    rows = []
+    for r in rules:
+        exp = r.expires_at
+        if exp is not None and exp.tzinfo is None:
+            # ClickHouse can hand back naive values; comparing one to an aware `now` RAISES, and
+            # the row would then render as neither live nor lapsed.
+            exp = exp.replace(tzinfo=_dt.UTC)
+        rows.append({
+            "rule_id": r.rule_id, "describes": r.describes(),
+            # What the sentence means: a name rule's enforcement is its resolved addresses, and
+            # alert-mode rules never reach the kernel (US-SL1).
+            "domain": r.domain, "mode": r.mode,
+            "resolved": len(r.resolved_ips or []),
+            "src_cidr": r.src_cidr, "dst_cidr": r.dst_cidr, "protocol": r.protocol,
+            "dst_port": r.dst_port, "direction": r.direction, "reason": r.reason,
+            "origin": r.origin, "severity": r.severity, "created_by": r.created_by,
+            "origin_ref": r.origin_ref, "live": r.is_live(now),
+            "revoked": r.revoked_at is not None,
+            # A PARKED RULE (schema/017): deliberately switched off, reversible, still listed.
+            "disabled": r.disabled_at is not None,
+            "expires_at": exp.isoformat() if exp else "",
+            # SECONDS, not a timestamp: the GUI should not do clock arithmetic against a server it
+            # may not share a timezone with, and a NEGATIVE value is a meaningful answer ("lapsed
+            # N seconds ago") rather than an error.
+            "expires_in_s": int((exp - now).total_seconds()) if exp else None,
+        })
+    # A GATE THAT STOPPED IS ITS OWN STATE, not an absent one. Four missed intervals is the
+    # threshold: the cadence is minutes, and one slow cycle is not news.
+    try:
+        stale_after = max(180, 4 * int(settings.sluice_interval_s))
+    except Exception:  # noqa: BLE001
+        stale_after = 180
+    payload.update({
+        "available": True, "rules": rows,
+        "live": sum(1 for r in rows if r["live"]), "gate": gate,
+        **web_api.gates_payload(fleet_gates, _gate_sensor_name(), stale_after, now),
+    })
+    return payload
+
+
+def settings_payload(*, settings: Any, backend: Any, config_client: Any = None,
+                     auth: Any = None, role: str = "", via: str = "", identity: Any = None,
+                     accounts_on: bool = False) -> dict[str, Any]:
+    """The effective configuration, plus whether THIS caller may change it.
+
+    THE LIVE CLUSTER CONFIG IS THE SOURCE, not this pod's startup environment: a settings change
+    restarts the WORKER, not the GUI, so the pod env freezes at its start and the tab would report
+    stale values through a demonstrably live intercept. When the cluster is unreachable the pod env
+    remains the honest fallback, and rows keep their provenance labels.
+
+    THE REQUEST-SCOPED FACTS ARRIVE AS ARGUMENTS (role, identity, accounts_on, auth) rather than
+    being re-derived here: they belong to the request, and the two surfaces compute them from the
+    same shared helpers.
+    """
+    from weirvern.admin import cluster_config as cc  # noqa: PLC0415
+
+    configmap = None
+    client = config_client
+    try:
+        if client is None:
+            client = cc.ClusterConfig()
+        configmap = client.read()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("settings: live ConfigMap unavailable (%s); showing this process's view", exc)
+    try:
+        # The backend is passed so the VERSION row reports the running image tag rather than the
+        # package's own literal, which had drifted (0.4.0 vs 0.5.6).
+        payload = status_mod.settings_overview(
+            settings=settings, backend=backend, configmap=configmap
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("settings view unavailable: %s", exc)
+        return {"available": False, "groups": {},
+                "reason": f"could not read the configuration: {type(exc).__name__}"}
+
+    # US-10: the GUI-write provenance, per key. Read from the ConfigMap annotation the apply path
+    # maintains; unreadable provenance is simply absent (the rows keep their values and lose the
+    # "set via GUI" line).
+    provenance: dict = {}
+    if client is not None:
+        try:
+            raw = client.configmap_annotation(cc.GUI_WRITE_ANNOTATION)
+            parsed = json.loads(raw) if raw else {}
+            if isinstance(parsed, dict):
+                provenance = {k: v for k, v in parsed.items()
+                              if isinstance(v, dict) and "value" in v}
+        except Exception:  # noqa: BLE001
+            provenance = {}
+    payload["provenance"] = provenance
+
+    # Whether THIS caller may offer writes, and why not when they may not. Sent with every read so
+    # the panel can DISABLE rather than hide: a control that vanishes teaches nothing, a disabled
+    # one with a stated reason tells the operator what to do.
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    if not accounts_on:
+        # Pre-accounts posture: the token is the whole story, as before.
+        payload["writes"] = {
+            "enabled": bool(auth and auth.enabled),
+            "reason": (auth.reason if auth else
+                       "authentication is not available in this build"),
+        }
+    elif identity is not None and identity.must_change:
+        payload["writes"] = {
+            "enabled": False,
+            "reason": "change your password before changing settings",
+        }
+    elif role == users_mod.ROLE_ADMIN:
+        payload["writes"] = {"enabled": True, "reason": ""}
+    elif role == users_mod.ROLE_VIEWER:
+        payload["writes"] = {
+            "enabled": False,
+            "reason": "this account is a viewer: it can read every view but not change "
+                      "settings. Ask an admin, or sign in as one.",
+        }
+    else:
+        payload["writes"] = {
+            "enabled": False,
+            "reason": "sign in with an admin account to change settings.",
+        }
+    # WHO the settings write gate sees, so the panel names the caller rather than saying "an
+    # operator": the audit trail starts with the page saying who you are.
+    payload["caller"] = {"username": (identity.username if identity else ""),
+                         "role": role, "via": via}
+
+    # The editable keys, so the UI offers exactly what the server will accept -- derived here
+    # rather than duplicated in JavaScript.
+    try:
+        from weirvern.admin.cluster_config import (  # noqa: PLC0415
+            EDITABLE_KEYS,
+            SETTING_CONTROLS,
+            to_row_key,
+        )
+
+        # LOWER-CASED TO MATCH THE ROW KEYS. EDITABLE_KEYS are the ConfigMap's own key names
+        # (BASE_THRESHOLD) because that is what an apply writes; the rows the GUI renders use
+        # lowercase Settings attribute names. Sending the upper-case form made the intersection
+        # the front end computes empty, so EVERY field rendered read-only and Apply was disabled
+        # forever. Normalise here, at the boundary, so the two vocabularies meet in one place.
+        payload["editable_keys"] = [to_row_key(k) for k in EDITABLE_KEYS]
+        payload["controls"] = {to_row_key(k): dict(v) for k, v in SETTING_CONTROLS.items()}
+
+        # THE DRIFT WARNING (audit F016): for every key the GUI has written whose manifest value
+        # would override it, the operator gets the value they chose, when, and the fact that a
+        # deploy can take it away. The computation lives in `settings_drift`, not here: an earlier
+        # version computed it inline and the tests reimplemented it, so breaking the expression
+        # left the suite green.
+        try:
+            from weirvern.admin.cluster_config import ClusterConfig  # noqa: PLC0415
+
+            drift = [
+                {**row, "key": to_row_key(row["key"])}
+                for row in ClusterConfig(configmap="weirvern-env").settings_drift()
+            ]
+            payload["gui_written"] = drift
+            if drift:
+                payload["gui_written_note"] = (
+                    "These keys were set through this page, not by k8s/*.yaml. "
+                    "`kubectl apply -k` restores the manifest's value, so a deploy reverts "
+                    "them. Re-apply the setting after a deploy, or put it in "
+                    "k8s/20-configmap-env.yaml to make it permanent."
+                )
+        except Exception:  # noqa: BLE001
+            # The warning is advisory. A cluster that cannot be read must still render the page,
+            # since that is how an operator would diagnose it.
+            payload["gui_written"] = []
+    except Exception:  # noqa: BLE001
+        payload["editable_keys"] = []
+        payload["controls"] = {}
+    return payload
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415

@@ -160,6 +160,13 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
     # feed=dns on purpose: it takes the OTHER branch, which is the one with different arguments.
     "/api/discover": ("discover", "weirvern.admin.payloads.discover",
                       {"available": True, "rows": []}, "?hours=6&feed=dns&addr=203.0.113.9"),
+    # The two largest reads. `sluice` takes a connection factory and `settings` takes the
+    # request-scoped role/identity, so both are stubbed at the FETCHER: the surface contract being
+    # compared is which fetcher runs and what body it answers with.
+    "/api/sluice": ("sluice", "weirvern.admin.payloads.sluice",
+                    {"available": True, "rules": []}, "?hours=6"),
+    "/api/settings": ("settings_payload", "weirvern.admin.payloads.settings_payload",
+                      {"available": True, "groups": {}}, ""),
 }
 
 
@@ -323,7 +330,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 48, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 50, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────

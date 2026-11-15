@@ -65,8 +65,9 @@ def test_a_settings_apply_writes_one_audit_row_PER_KEY():
 
 
 def test_the_settings_payload_carries_provenance():
-    src = (PY / "admin" / "web.py").read_text()
-    seg = src.split("def _settings(self, query: dict) -> None:", 1)[1].split("def _settings_plan", 1)[0]
+    src = (PY / "admin" / "payloads.py").read_text()
+    # THE PROVENANCE READ MOVED into payloads.settings_payload with the port.
+    seg = src.split("def settings_payload(", 1)[1].split("\ndef ", 1)[0]
     assert "GUI_WRITE_ANNOTATION" in seg
     assert 'payload["provenance"] = provenance' in seg
 

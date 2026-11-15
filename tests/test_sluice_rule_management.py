@@ -121,8 +121,10 @@ def test_the_schema_file_adds_the_column_idempotently():
 def test_the_routes_and_serializer_carry_the_new_state():
     body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     assert '"/api/sluice/rule/disabled"' in body
-    assert '"disabled": r.disabled_at is not None' in body
     assert "revoke_rules(" in body, "the revoke route must accept a selection"
+    # THE SERIALISER MOVED into payloads.sluice with the port; the state it must carry did not.
+    payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    assert '"disabled": r.disabled_at is not None' in payloads
 
 
 def test_the_view_has_no_checkbox_furniture_and_one_rule_sheet():

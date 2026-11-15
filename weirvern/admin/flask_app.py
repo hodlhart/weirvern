@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 51 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 53 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -433,25 +433,25 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = failure(exc)
         return jsonify(payload), code
 
-    def _caller_role() -> str:
-        """The caller's role, with the console's precedence: TOKEN first, then session.
+    def _caller_role() -> tuple[str, str]:
+        """(role, via) for this request, with the console's precedence: TOKEN first, then session.
 
         THE ORDER IS LOAD-BEARING (audit F049). The console once returned the session's role without
         consulting the token, so the same valid token was accepted or refused depending on whether
         the browser happened to be signed in as a viewer. Reimplementing that order differently here
         is exactly the drift the fix removed, so this asks the same two shared helpers in the same
-        sequence.
+        sequence, and reports WHICH credential answered for the settings caller line.
         """
         from weirvern.admin import users as users_mod  # noqa: PLC0415
 
         headers = _auth_headers()
         role = requestauth.token_role(ctx, headers, client=request.remote_addr or "")
         if role:
-            return role
+            return role, "token"
         ident = requestauth.identity(ctx, headers)
         if ident is not None:
-            return users_mod.ROLE_ADMIN if ident.is_admin else users_mod.ROLE_VIEWER
-        return ""
+            return (users_mod.ROLE_ADMIN if ident.is_admin else users_mod.ROLE_VIEWER), "session"
+        return "", ""
 
     @app.get("/api/audit")
     @gated
@@ -942,7 +942,7 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         from weirvern.admin import payloads, requestauth  # noqa: PLC0415
         from weirvern.admin import users as users_mod  # noqa: PLC0415
 
-        if _caller_role() != users_mod.ROLE_ADMIN:
+        if _caller_role()[0] != users_mod.ROLE_ADMIN:
             return _json_error(403, "admin access is required to view accounts")
         return jsonify(payloads.users_list(
             store=getattr(ctx, "user_store", None),
@@ -981,6 +981,36 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except ValueError as exc:
             return _json_error(400, str(exc))
         return _soft_route(payloads.discover, payloads.discover_failure, hours=hours, **args)
+
+    @app.get("/api/sluice")
+    @gated
+    def sluice():
+        """A CONNECTION FACTORY again: the policy table and the effective settings render even when
+        the database is unreachable, which is the state this payload exists to describe."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return jsonify(payloads.sluice(lambda: ctx.connect_factory(ctx.settings),
+                                       hours=hours, settings=ctx.settings))
+
+    @app.get("/api/settings")
+    @gated
+    def settings_view():
+        """Named `settings_view`, not `settings`: a view function called `settings` would shadow the
+        keyword the payload call uses, and the next reader would have to work out which is which.
+        """
+        from weirvern.admin import payloads, requestauth  # noqa: PLC0415
+
+        role, via = _caller_role()
+        ident = requestauth.identity(ctx, _auth_headers())
+        return jsonify(payloads.settings_payload(
+            settings=ctx.settings, backend=ctx.backend,
+            config_client=getattr(ctx, "config_client", None),
+            auth=getattr(ctx, "auth", None), role=role, via=via, identity=ident,
+            accounts_on=requestauth.accounts_on(ctx)))
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
