@@ -125,12 +125,23 @@ def test_the_interval_comes_from_settings_not_a_hardcoded_default():
 
 
 def test_the_web_route_passes_its_settings_through():
-    """The route must supply the interval it actually runs with."""
+    """The route must supply the interval it actually runs with.
+
+    THE CALL MOVED during the Flask port, so the assertion follows it rather than pinning the old
+    location: the handler passes `ctx.settings` to the shared fetcher, and the fetcher passes it to
+    `model_overview`. Both halves are asserted, because a default slipping in at either end produces
+    the same disagreement with the worker.
+    """
     from pathlib import Path
 
-    web = (Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web.py").read_text()
-    assert "model_overview(client, hours=hours, settings=ctx.settings)" in web, (
-        "the /api/models route does not pass settings, so the panel falls back to the default "
+    admin = Path(__file__).resolve().parent.parent / "weirvern" / "admin"
+    web = (admin / "web.py").read_text()
+    payloads = (admin / "payloads.py").read_text()
+    assert "payloads.models(client, hours=hours, settings=ctx.settings)" in web, (
+        "the /api/models route does not pass settings to the shared fetcher"
+    )
+    assert "model_overview(client, hours=hours, settings=settings)" in payloads, (
+        "the fetcher does not pass settings, so the panel falls back to the default "
         "interval and can disagree with the worker"
     )
 

@@ -326,6 +326,187 @@ def networks_failure(exc: BaseException) -> dict[str, Any]:
             "scopes": [], "summary": {}, "counts_available": False}
 
 
+# ── panel reads: one fetch each, with the console's own failure shape ───────────────────────
+
+def write_trail(client: Client, *, scope: str, action: str, target: str,
+                limit: int) -> dict[str, Any]:
+    """The write trail, newest first, with its filter menus derived from the table itself.
+
+    NO failure dict: the console has no try around `read_audit`, so an exception becomes the server's
+    own 500 with `internal error: ...`. That shape is preserved by leaving this raising and letting
+    each surface's global handler answer, rather than inventing a 200 the operator never saw.
+    """
+    from weirvern import fleet_store  # noqa: PLC0415
+
+    rows, reason = fleet_store.read_audit(client, scope=scope, action=action, target=target,
+                                         limit=limit)
+    facets: dict[str, list[str]] = {"scopes": [], "actions": []}
+    if not reason:
+        try:
+            facets["scopes"] = sorted({
+                str(r[0]) for r in client.query(
+                    "SELECT DISTINCT scope FROM weirvern.fleet_audit"
+                ).result_rows})
+            facets["actions"] = sorted({
+                str(r[0]) for r in client.query(
+                    "SELECT DISTINCT action FROM weirvern.fleet_audit"
+                ).result_rows})
+        except Exception:  # noqa: BLE001
+            facets = {"scopes": [], "actions": []}
+    return {"available": not reason, "reason": reason, "rows": rows,
+            "scopes": facets["scopes"], "actions": facets["actions"]}
+
+
+def blocklists(client: Client) -> dict[str, Any]:
+    """The blocklist pane: every source with its state, plus the custom names.
+
+    Custom names ride along so the pane shows the whole watch set in one place, wherever it lives in
+    the page.
+    """
+    from weirvern import blocklists as blocklists_mod  # noqa: PLC0415
+
+    sources = blocklists_mod.load_sources(client)
+    custom_rows = client.query(
+        "SELECT domain FROM weirvern.blocklist_domains "
+        "WHERE source_id = 'custom' GROUP BY domain ORDER BY domain "
+        "LIMIT 500").result_rows
+    return {"available": True, "reason": "", "sources": sources,
+            "custom": [str(r[0]) for r in custom_rows]}
+
+
+def blocklists_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/blocklists."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("blocklists unavailable: %s", exc)
+    return {"available": False, "sources": [], "custom": [], "reason": read_failure(exc)}
+
+
+def models(client: Client, *, hours: int, settings: Any) -> dict[str, Any]:
+    """Model overview: training history, score spread, agreement, deviations.
+
+    THE MODEL REGISTRY IS ITS OWN READ. A broken card query must not hide the training history, and a
+    broken history must not make the cards look absent, so the registry failure is carried in the
+    payload as `model_cards_available: false` with its own reason instead of taking the route down.
+    """
+    data = status_mod.model_overview(client, hours=hours, settings=settings)
+    try:
+        from weirvern.models import cards as cards_mod  # noqa: PLC0415
+
+        data["model_cards"] = cards_mod.current_cards(client)
+        data["model_cards_available"] = True
+    except Exception as card_exc:  # noqa: BLE001
+        data["model_cards"] = []
+        data["model_cards_available"] = False
+        data["model_cards_reason"] = f"cannot read the model registry: {card_exc}"
+    return web_api.models_payload(data)
+
+
+def models_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/models: 200 with the reason, never a 503."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("model overview unavailable: %s", exc)
+    return {"available": False, "reason": read_failure(exc)}
+
+
+def scanner(client: Client) -> dict[str, Any]:
+    """Scanner readiness for the hub and every registered sensor.
+
+    A SENSOR WITH NO ROW IS NOT "basic". It is "not_reported", which is a different fact and needs
+    the setup sheet rather than a clean-looking profile, so the missing rows are filled with that
+    state and the install command for the OS the sensor reported.
+    """
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    status_rows = client.query(
+        "SELECT sensor_id, profile, nmap_available, nmap_version, nmap_path, "
+        "nse_available, os_id, os_version, detail, last_check "
+        "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
+    ).result_rows
+    registered = client.query(
+        "SELECT sensor_id FROM weirvern.weirlings FINAL "
+        "WHERE revoked_at IS NULL AND enabled = 1 ORDER BY sensor_id"
+    ).result_rows
+
+    status: dict[str, dict[str, Any]] = {}
+    for row in status_rows:
+        sid = str(row[0] or "")
+        status[sid] = {
+            "sensor_id": sid,
+            "profile": str(row[1] or "basic"),
+            "nmap_available": bool(row[2]),
+            "nmap_version": str(row[3] or ""),
+            "nmap_path": str(row[4] or ""),
+            "nse_available": bool(row[5]),
+            "os_id": str(row[6] or ""),
+            "os_version": str(row[7] or ""),
+            "detail": str(row[8] or ""),
+            "last_check": (row[9].isoformat() if hasattr(row[9], "isoformat")
+                           else str(row[9] or "")),
+            "state": "reported",
+        }
+    for row in registered:
+        sid = str(row[0] or "")
+        status.setdefault(sid, {
+            "sensor_id": sid, "profile": "unknown", "nmap_available": False,
+            "nmap_version": "", "nmap_path": "", "nse_available": False,
+            "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
+            "last_check": "", "state": "not_reported",
+        })
+
+    commands = {
+        "debian": "sudo apt-get update && sudo apt-get install -y nmap",
+        "ubuntu": "sudo apt-get update && sudo apt-get install -y nmap",
+        "linuxmint": "sudo apt-get update && sudo apt-get install -y nmap",
+        "fedora": "sudo dnf install -y nmap",
+        "rhel": "sudo dnf install -y nmap",
+        "centos": "sudo dnf install -y nmap",
+        "rocky": "sudo dnf install -y nmap",
+        "almalinux": "sudo dnf install -y nmap",
+        "alpine": "sudo apk add nmap",
+        "arch": "sudo pacman -S --noconfirm nmap",
+        "darwin": "brew install nmap",
+    }
+    for item in status.values():
+        item["install_command"] = commands.get(str(item.get("os_id") or "").lower(), "")
+        item["install_url"] = "https://nmap.org/download.html"
+    sensors = sorted(status.values(),
+                     key=lambda item: (item["state"] != "reported", item["sensor_id"]))
+    return {"available": True, "reason": "", "sensors": sensors, "count": len(sensors),
+            "local_sensor": _gate_sensor_name()}
+
+
+def scanner_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/scanner, including its truncated message."""
+    logger.warning("scanner readiness unavailable: %s", exc)
+    return {"available": False,
+            "reason": f"scanner readiness could not be read: {str(exc)[:200]}",
+            "sensors": [], "count": 0}
+
+
+def system_payload(*, sensor: str) -> dict[str, Any]:
+    """The sensor host's CPU, memory and interface counters, read from procfs.
+
+    A process-level read, not a database query, so an unavailable database cannot make the system
+    cards disappear. A remote sensor has not reported host counters, and saying so is better than
+    presenting the hub's numbers under another sensor's name.
+    """
+    from weirvern.admin import system_metrics  # noqa: PLC0415
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    if sensor and sensor != _gate_sensor_name():
+        return {
+            "available": False, "sensor": sensor,
+            "reason": f"{sensor} has not reported host CPU, memory or interface counters",
+            "history": [], "interfaces": [],
+        }
+    payload = system_metrics.sample()
+    if sensor:
+        payload["sensor"] = sensor
+    return payload
+
+
 # ── windowed reads: the arguments are part of the contract ──────────────────────────────────
 
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:

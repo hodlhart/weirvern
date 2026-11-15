@@ -864,33 +864,13 @@ def _build_handler(ctx: GuiContext):
             history. The filter menus are derived from the table itself (distinct scopes and
             actions), so a scope can never be offered that no row has.
             """
-            scope_f = (query.get("scope") or [""])[0].strip()[:32]
-            action_f = (query.get("action") or [""])[0].strip()[:32]
-            target_f = (query.get("target") or [""])[0].strip()[:128]
-            try:
-                limit = max(1, min(int((query.get("limit") or ["50"])[0]), 200))
-            except (TypeError, ValueError):
-                limit = 50
-            from weirvern import fleet_store  # noqa: PLC0415
-
+            args = write_trail_args(query)
             with self._with_client() as client:
-                rows, reason = fleet_store.read_audit(
-                    client, scope=scope_f, action=action_f, target=target_f, limit=limit)
-                facets: dict[str, list[str]] = {"scopes": [], "actions": []}
-                if not reason:
-                    try:
-                        facets["scopes"] = sorted({
-                            str(r[0]) for r in client.query(
-                                "SELECT DISTINCT scope FROM weirvern.fleet_audit"
-                            ).result_rows})
-                        facets["actions"] = sorted({
-                            str(r[0]) for r in client.query(
-                                "SELECT DISTINCT action FROM weirvern.fleet_audit"
-                            ).result_rows})
-                    except Exception:  # noqa: BLE001
-                        facets = {"scopes": [], "actions": []}
-            self._json({"available": not reason, "reason": reason, "rows": rows,
-                        "scopes": facets["scopes"], "actions": facets["actions"]})
+                # SHARED WITH THE FLASK SURFACE (payloads.write_trail). No try, deliberately: this
+                # route has always answered an exception with the server's own 500, and the port
+                # does not get to invent a 200 the operator never saw.
+                payload = payloads.write_trail(client, **args)
+            self._json(payload)
 
         def _audit(self) -> None:
             """The pipeline's self-audit read (BF-13). Read-only like the rest of the surface."""
@@ -1040,21 +1020,13 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 with self._with_client() as client:
-                    data = status_mod.model_overview(client, hours=hours, settings=ctx.settings)
-                    # PR-1: the registry is its own read. A broken card query must not hide the
-                    # training history, and a broken history must not make the cards look absent.
-                    try:
-                        from weirvern.models import cards as _cards  # noqa: PLC0415
-                        data["model_cards"] = _cards.current_cards(client)
-                        data["model_cards_available"] = True
-                    except Exception as card_exc:  # noqa: BLE001
-                        data["model_cards"] = []
-                        data["model_cards_available"] = False
-                        data["model_cards_reason"] = f"cannot read the model registry: {card_exc}"
+                    # SHARED WITH THE FLASK SURFACE (payloads.models): the registry read and its
+                    # own failure state travel with the overview, so a broken card query cannot
+                    # hide the training history on one surface and not the other.
+                    payload = payloads.models(client, hours=hours, settings=ctx.settings)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"available": False,
-                                   "reason": read_failure(exc)})
-            self._json(web_api.models_payload(data))
+                return self._json(payloads.models_failure(exc))
+            self._json(payload)
 
         def _baselines(self) -> None:
             """The per-host baseline snapshot: the latest row per host, when it refreshed,
@@ -1497,20 +1469,10 @@ def _build_handler(ctx: GuiContext):
             remote sensor has not reported host counters, and saying so is better than
             presenting the hub's numbers under another sensor's name.
             """
-            from weirvern.admin import system_metrics
-
-            raw = query.get("sensor")
-            sensor = str(raw[0] if isinstance(raw, list) and raw else (raw or "")).strip()
-            if sensor and sensor != _gate_sensor_name():
-                return self._json({
-                    "available": False, "sensor": sensor,
-                    "reason": f"{sensor} has not reported host CPU, memory or interface counters",
-                    "history": [], "interfaces": [],
-                })
-            payload = system_metrics.sample()
-            if sensor:
-                payload["sensor"] = sensor
-            self._json(payload)
+            sensor = str(_first(query, "sensor", "") or "").strip()
+            # SHARED WITH THE FLASK SURFACE (payloads.system_payload), including the non-local
+            # sensor branch: the hub's numbers must never render under another sensor's name.
+            self._json(payloads.system_payload(sensor=sensor))
 
         def _update(self, query: dict) -> None:
             """Release metadata for Settings → Software update.
@@ -2034,68 +1996,12 @@ def _build_handler(ctx: GuiContext):
             """
             try:
                 with self._with_client() as client:
-                    status_rows = client.query(
-                        "SELECT sensor_id, profile, nmap_available, nmap_version, nmap_path, "
-                        "nse_available, os_id, os_version, detail, last_check "
-                        "FROM weirvern.scanner_status FINAL ORDER BY sensor_id"
-                    ).result_rows
-                    registered = client.query(
-                        "SELECT sensor_id FROM weirvern.weirlings FINAL "
-                        "WHERE revoked_at IS NULL AND enabled = 1 ORDER BY sensor_id"
-                    ).result_rows
+                    # SHARED WITH THE FLASK SURFACE (payloads.scanner): a sensor with no row is
+                    # "not_reported", never a clean-looking profile.
+                    payload = payloads.scanner(client)
             except Exception as exc:  # noqa: BLE001
-                return self._json({
-                    "available": False,
-                    "reason": f"scanner readiness could not be read: {str(exc)[:200]}",
-                    "sensors": [], "count": 0,
-                })
-
-            status: dict[str, dict] = {}
-            for row in status_rows:
-                sid = str(row[0] or "")
-                status[sid] = {
-                    "sensor_id": sid,
-                    "profile": str(row[1] or "basic"),
-                    "nmap_available": bool(row[2]),
-                    "nmap_version": str(row[3] or ""),
-                    "nmap_path": str(row[4] or ""),
-                    "nse_available": bool(row[5]),
-                    "os_id": str(row[6] or ""),
-                    "os_version": str(row[7] or ""),
-                    "detail": str(row[8] or ""),
-                    "last_check": row[9].isoformat() if hasattr(row[9], "isoformat") else str(row[9] or ""),
-                    "state": "reported",
-                }
-            for row in registered:
-                sid = str(row[0] or "")
-                status.setdefault(sid, {
-                    "sensor_id": sid, "profile": "unknown", "nmap_available": False,
-                    "nmap_version": "", "nmap_path": "", "nse_available": False,
-                    "os_id": "", "os_version": "", "detail": "no scanner status reported yet",
-                    "last_check": "", "state": "not_reported",
-                })
-
-            commands = {
-                "debian": "sudo apt-get update && sudo apt-get install -y nmap",
-                "ubuntu": "sudo apt-get update && sudo apt-get install -y nmap",
-                "linuxmint": "sudo apt-get update && sudo apt-get install -y nmap",
-                "fedora": "sudo dnf install -y nmap",
-                "rhel": "sudo dnf install -y nmap",
-                "centos": "sudo dnf install -y nmap",
-                "rocky": "sudo dnf install -y nmap",
-                "almalinux": "sudo dnf install -y nmap",
-                "alpine": "sudo apk add nmap",
-                "arch": "sudo pacman -S --noconfirm nmap",
-                "darwin": "brew install nmap",
-            }
-            for item in status.values():
-                item["install_command"] = commands.get(str(item.get("os_id") or "").lower(), "")
-                item["install_url"] = "https://nmap.org/download.html"
-            sensors = sorted(status.values(), key=lambda item: (item["state"] != "reported", item["sensor_id"]))
-            self._json({
-                "available": True, "reason": "", "sensors": sensors, "count": len(sensors),
-                "local_sensor": _gate_sensor_name(),
-            })
+                return self._json(payloads.scanner_failure(exc))
+            self._json(payload)
 
         def _weirlings_probe_get(self, query: dict) -> None:
             """Read one queued/complete capture probe. A read: no login required."""
@@ -2363,18 +2269,12 @@ def _build_handler(ctx: GuiContext):
             A read; the toggle is the only write. Custom names ride along so the pane shows the
             whole watch set in one place, wherever it lives in the page."""
             try:
-                from weirvern import blocklists  # noqa: PLC0415
                 with self._with_client() as client:
-                    sources = blocklists.load_sources(client)
-                    custom_rows = client.query(
-                        "SELECT domain FROM weirvern.blocklist_domains "
-                        "WHERE source_id = 'custom' GROUP BY domain ORDER BY domain "
-                        "LIMIT 500").result_rows
+                    # SHARED WITH THE FLASK SURFACE (payloads.blocklists).
+                    payload = payloads.blocklists(client)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"available": False, "sources": [], "custom": [],
-                                   "reason": read_failure(exc)})
-            self._json({"available": True, "reason": "", "sources": sources,
-                        "custom": [str(r[0]) for r in custom_rows]})
+                return self._json(payloads.blocklists_failure(exc))
+            self._json(payload)
 
         def _blocklists_enable(self) -> None:
             """Click a list on or off (the operator, 2026-10-16). A WRITE: what the deployment
@@ -4681,6 +4581,21 @@ def _int_arg(query: dict, name: str, default: int, lo: int, hi: int) -> int:
         return default
     return max(lo, min(hi, value))
 
+
+
+def write_trail_args(query: dict) -> dict:
+    """The write trail's filters, parsed once for both surfaces.
+
+    THE TRUNCATION IS PART OF THE CONTRACT: scope and action are cut to 32 characters and target to
+    128 before they reach the query, so an over-long value is bounded rather than refused. The limit
+    defaults and clamps rather than rejecting, like every other numeric argument here.
+    """
+    return {
+        "scope": (_first(query, "scope", "") or "").strip()[:32],
+        "action": (_first(query, "action", "") or "").strip()[:32],
+        "target": (_first(query, "target", "") or "").strip()[:128],
+        "limit": _int_arg(query, "limit", 50, 1, 200),
+    }
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

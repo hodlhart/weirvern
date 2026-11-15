@@ -93,6 +93,19 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                       {"available": True, "hosts": []}, ""),
     "/api/networks": ("networks_overview", "weirvern.networks.overview",
                       {"available": True, "scopes": [{"cidr": "10.0.0.0/8"}]}, "?hours=6"),
+    # The panel reads whose fetch has more than one query: the FETCHER is the stub, because stubbing
+    # one inner function would leave the others running against the placeholder client and land both
+    # surfaces in the failure path. Argument parsing is pinned separately, by the recorder tests.
+    "/api/write-trail": ("write_trail", "weirvern.fleet_store.read_audit",
+                         ([{"scope": "networks"}], ""), "?scope=networks&limit=5"),
+    "/api/blocklists": ("blocklists", "weirvern.admin.payloads.blocklists",
+                        {"available": True, "sources": [], "custom": []}, ""),
+    "/api/models": ("models", "weirvern.admin.payloads.models",
+                    {"available": True, "run_count": 0}, "?hours=12"),
+    "/api/scanner": ("scanner", "weirvern.admin.payloads.scanner",
+                     {"available": True, "sensors": [], "count": 0}, ""),
+    "/api/system": ("system_payload", "weirvern.admin.payloads.system_payload",
+                    {"available": True, "history": []}, "?sensor="),
 }
 
 
@@ -173,6 +186,11 @@ def surfaces():
         legacy = web.GuiServer(ctx, host="127.0.0.1", port=0).start_background()
         app = flask_app.create_app(ctx, secret_key="equivalence-test")
         app.config.update(TESTING=True)
+        # THE CONSOLE ANSWERS AN UNCAUGHT EXCEPTION WITH ITS OWN JSON 500, and Flask's test client
+        # otherwise re-raises it instead of letting the app's handler answer. Turning propagation
+        # off is what lets the failure half of an equivalence test compare the two bodies, rather
+        # than comparing one JSON body with a traceback.
+        app.config["PROPAGATE_EXCEPTIONS"] = False
         started.append(legacy)
         return legacy, app
 
@@ -251,7 +269,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 22, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 27, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -333,5 +351,48 @@ def test_an_absolute_range_is_honoured_identically_on_both_surfaces(surfaces, mo
     hours = [c.get("hours") for c in rec.seen]
     assert hours == [6, 6], (
         f"the absolute range resolved differently on the two surfaces: {hours}"
+    )
+
+
+def test_the_models_window_defaults_and_clamps_identically(surfaces, monkeypatch):
+    """`/api/models` defaults to 72 hours and its ceiling is 30 days, not the usual 14.
+
+    The shared `window_arg` is used with DIFFERENT bounds per route, so the number that matters is
+    the one the fetcher receives, not the shape of the parser.
+    """
+    rec = _Recorder({"available": True})
+    _patch(monkeypatch, "weirvern.admin.payloads.models", rec)
+    legacy, app = surfaces()
+
+    for query in ("?hours=banana", "?hours=9999"):
+        _legacy_http(legacy.port, "/api/models" + query)
+        _flask_http(app, "/api/models" + query)
+
+    hours = [c.get("hours") for c in rec.seen]
+    assert hours == [72, 72, 720, 720], (
+        f"the two surfaces disagreed about the models window: {hours}"
+    )
+
+
+def test_the_write_trail_bounds_its_filters_identically(surfaces, monkeypatch):
+    """`limit` clamps to 200 and `scope` is TRUNCATED to 32 characters, on both surfaces.
+
+    Truncation rather than refusal is the console's contract for this route, so the assertion is on
+    the value the audit read received. A surface that refused the long scope would need its own
+    error body, which is a different answer to the same request.
+    """
+    rec = _Recorder(([], ""))
+    _patch(monkeypatch, "weirvern.fleet_store.read_audit", rec)
+    legacy, app = surfaces()
+
+    long_scope = "s" * 40
+    query = f"?scope={long_scope}&limit=9999"
+    _legacy_http(legacy.port, "/api/write-trail" + query)
+    _flask_http(app, "/api/write-trail" + query)
+
+    seen = rec.seen
+    assert [c.get("limit") for c in seen] == [200, 200], f"the limit clamp differs: {seen}"
+    assert [len(str(c.get("scope"))) for c in seen] == [32, 32], (
+        f"the scope truncation differs: {seen}"
     )
 

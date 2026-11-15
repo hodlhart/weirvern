@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 25 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 30 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -135,6 +135,23 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return view(*args, **kwargs)
 
         return wrapper
+
+    @app.errorhandler(Exception)
+    def internal_error(exc):
+        """An uncaught exception answers the CONSOLE's 500 body, never Flask's HTML page.
+
+        The console wraps every request in a handler that writes
+        `{"error": "internal error: ...", "code": 500}`. A route that raises on one surface and
+        renders an HTML error page on the other is a difference a client can see, and it would make
+        the failure half of every equivalence test compare two different vocabularies. Routes such as
+        `/api/write-trail` deliberately have no catch of their own, so this is their only answer.
+        """
+        from werkzeug.exceptions import HTTPException  # noqa: PLC0415
+
+        if isinstance(exc, HTTPException):
+            return exc
+        logger.warning("GUI request failed: %s", exc)
+        return _json_error(500, f"internal error: {exc}")
 
     # ── read-exempt routes ──────────────────────────────────────────────────────────────────────
     # The console's READ_EXEMPT tuple is exactly these two: a browser needs to know whether to draw
@@ -585,6 +602,55 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         hours = web._int_arg(request.args, "hours", 24, 1, 168)
         return _soft_route(payloads.networks_overview, payloads.networks_failure, hours=hours)
+
+    @app.get("/api/system")
+    @gated
+    def system():
+        """A procfs read, not a database read: no client and no ClickHouse in the path."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        sensor = str(web._first(request.args, "sensor", "") or "").strip()
+        return jsonify(payloads.system_payload(sensor=sensor))
+
+    @app.get("/api/write-trail")
+    @gated
+    def write_trail():
+        """No catch, deliberately: the console answers an exception here with its own 500 body.
+
+        Inventing a 200 or a 503 would be a change to what the operator sees, and the app's error
+        handler already reproduces the console's wording.
+        """
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        args = web.write_trail_args(request.args)
+        with ctx.connect_factory(ctx.settings) as client:
+            return jsonify(payloads.write_trail(client, **args))
+
+    @app.get("/api/blocklists")
+    @gated
+    def blocklists():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _soft_route(payloads.blocklists, payloads.blocklists_failure)
+
+    @app.get("/api/scanner")
+    @gated
+    def scanner():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _soft_route(payloads.scanner, payloads.scanner_failure)
+
+    @app.get("/api/models")
+    @gated
+    def models():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 72, 1, 24 * 30)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.models, payloads.models_failure, hours=hours,
+                           settings=ctx.settings)
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
