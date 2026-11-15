@@ -249,6 +249,11 @@ function renderSluiceGates(d) {
 
   // The one automatic enforcement threshold; visible and stoppable.
   const auto = Number(sl2Setting("SLUICE_AUTO_SCORE") || 0) || 0;
+  // THE HEADER PILL IS THE OTHER HALF OF THIS CONTROL, and it used to refresh only at boot, so
+  // arming the threshold from Settings left the loud signal off screen until a reload. Passing the
+  // value here keeps the card and the pill in step, which is the contract the pill's own comment
+  // states.
+  if (typeof refreshAutoBlockPill === "function") refreshAutoBlockPill(auto);
   const autoEl = document.getElementById("sl2-auto");
   if (autoEl) {
     autoEl.classList.toggle("hidden", !(auto > 0));
@@ -426,21 +431,33 @@ function renderSluiceRules(d) {
 
 /** US-3: an audit receipt or palette result lands on the rule row. */
 let SL2_FLASH_PENDING = "";
+let SL2_FLASH_TIMER = null;
 function sluiceHighlightRule(ruleId) {
   SL2_FLASH_PENDING = String(ruleId);
   sluiceApplyFlash();
-  setTimeout(() => { if (SL2_FLASH_PENDING === String(ruleId)) SL2_FLASH_PENDING = ""; }, 2500);
+  // A RELOAD CAN LAND AFTER THIS CALL and replace the rows, so the id has to outlive the render
+  // that will consume it. It used to be dropped after 2.5s whether or not a row had been
+  // painted, so a fix clicked from the audit could visibly do nothing: the highlight landed on
+  // rows that a load already in flight then replaced.
+  if (SL2_FLASH_TIMER) clearTimeout(SL2_FLASH_TIMER);
+  SL2_FLASH_TIMER = setTimeout(() => { SL2_FLASH_PENDING = ""; }, 8000);
 }
 
 function sluiceApplyFlash() {
   if (!SL2_FLASH_PENDING) return;
-  const row = [...document.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")]
-    .find((tr) => tr.getAttribute("data-rule-id") === SL2_FLASH_PENDING);
+  const all = [...document.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")];
+  const row = all.find((tr) => tr.getAttribute("data-rule-id") === SL2_FLASH_PENDING);
   if (!row) return;
   row.classList.add("flash-hit");
   try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* optional */ }
-  setTimeout(() => row.classList.remove("flash-hit"), 1800);
-  SL2_FLASH_PENDING = "";
+  // THE PENDING ID SURVIVES THE PAINT. Clearing it here was the defect: the class went onto one
+  // set of rows, and the reload already in flight replaced them with no id left for the new
+  // rows to inherit.
+  if (SL2_FLASH_TIMER) clearTimeout(SL2_FLASH_TIMER);
+  SL2_FLASH_TIMER = setTimeout(() => {
+    SL2_FLASH_PENDING = "";
+    row.classList.remove("flash-hit");
+  }, 1800);
 }
 
 /* ── Rule sheet ─────────────────────────────────────────────────────────────────────────────── */

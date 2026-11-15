@@ -92,7 +92,7 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
     "/api/identity": ("host_identity", "weirvern.admin.status.host_identity_view",
                       {"available": True, "hosts": []}, ""),
     "/api/networks": ("networks_overview", "weirvern.networks.overview",
-                      {"available": True, "scopes": [{"cidr": "10.0.0.0/8"}]}, "?hours=6"),
+                      {"available": True, "scopes": [{"cidr": "198.51.100.0/8"}]}, "?hours=6"),
     # The panel reads whose fetch has more than one query: the FETCHER is the stub, because stubbing
     # one inner function would leave the others running against the placeholder client and land both
     # surfaces in the failure path. Argument parsing is pinned separately, by the recorder tests.

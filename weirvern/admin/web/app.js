@@ -3933,14 +3933,13 @@ function showDataError(msg) {
   }));
 }
 function clearError() {
-  // BOTH banners, not just one. showError() creates #err-banner and showDataError() creates
-  // #data-banner, but this only removed the first -- so a data error stayed pinned to the top of
-  // the page after the operator moved to another view, describing a tab they had left. Either id
-  // may or may not exist, hence the loop rather than two lookups.
-  for (const id of ["err-banner", "data-banner"]) {
-    const b = document.getElementById(id);
-    if (b) b.remove();
-  }
+  // THE FETCH BANNER ONLY. #data-banner belongs to showDataError, and every view loader calls
+  // this on a successful read, so clearing both here deleted the outage banner a DIFFERENT view
+  // had just raised for a read it could not complete -- measured: an unreadable registry raised
+  // its warning and lost it again inside the same refresh, once per cycle, while staying
+  // unreadable. A view that can read again clears its own data banner with showDataError(null).
+  const b = document.getElementById("err-banner");
+  if (b) b.remove();
 }
 
 /**
@@ -5199,6 +5198,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // answer. A wrong token simply leaves the gate up (the next read refuses), so nothing
     // here claims success on the browser's behalf.
     try {
+      // A CREDENTIAL RETRY MUST NOT READ A CACHED REFUSAL. The wrong-token attempt cached the
+      // session answer for eight seconds, so entering the RIGHT token straight after it was
+      // refused by the cache rather than by the server -- the one screen where a stale "no" is
+      // most costly.
+      clearGetCache();
       await loadSession();
       if (AUTH.authenticated) {
         await bootAuthed();

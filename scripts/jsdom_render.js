@@ -2164,7 +2164,14 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   check("the re-request still carries the bar's own drill",
         /[?&]proto=6/.test(reqWithChip), reqWithChip);
   n0 = flowReqs();
-  H.nfRemoveChip(0);
+  // Remove the SOURCE chip by identity, not by position: other checks in this file have left
+  // chips behind, and splicing index 0 could drop an unrelated one and leave `src` in place.
+  const srcChip = H.NF_FILTERS.findIndex((f) => f.field === "src");
+  // AND CLEAR THE GET CACHE: the un-chipped URL was fetched before the chip went on, so without
+  // this the removal is answered from the 8s cache, no request reaches the router, and the check
+  // reads the PRE-removal request still sitting last in the list.
+  H.clearGetCache();
+  H.nfRemoveChip(srcChip >= 0 ? srcChip : 0);
   for (let i = 0; i < 50 && flowReqs() === n0; i++) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -2246,10 +2253,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     window.fetch = origFetch;
 
     const steps = [...doc.querySelectorAll("#ev-chain .chain-step")];
-    check("the evidence page shows the five stages in order",
-          steps.length === 5
+    check("the evidence page shows the six stages in order",
+          steps.length === 6
           && steps.map((s) => s.getAttribute("data-stage")).join(",") ===
-             "observed,detected,explained,ruled,done",
+             "observed,sources,detected,explained,ruled,done",
           steps.map((s) => s.getAttribute("data-stage")).join(","));
     const txt = steps.map((s) => s.textContent).join(" | ");
     check("...each carrying its own measurements, not a heading",
@@ -2257,9 +2264,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     check("...and the ruling is stated in words",
           /acknowledged/.test(txt) && /still open/.test(txt), txt.slice(0, 200));
     check("RULED names the rule (or says none), and DONE owns the review state",
-          /no rule \u2014 alert only/.test(steps[3].textContent)
-          && !/acknowledged/.test(steps[3].textContent)
-          && /acknowledged/.test(steps[4].textContent),
+          /no rule \u2014 alert only/.test(steps[4].textContent)
+          && !/acknowledged/.test(steps[4].textContent)
+          && /acknowledged/.test(steps[5].textContent),
           steps.map((s) => s.textContent).join(" | ").slice(0, 240));
     check("the chain carries no step numerals", doc.querySelectorAll("#ev-chain .chain-n").length === 0);
   }
@@ -2603,8 +2610,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     const g = t && t.closest(".tab-group");
     return g ? g.dataset.group : null;
   };
-  check("Health leads the first group and Settings the last",
-        groupOf("health") === "operations" && groupOf("settings") === "console",
+  check("Health sits in its own group and Settings in the console group last",
+        groupOf("health") === "health" && groupOf("settings") === "console",
         `health=${groupOf("health")} settings=${groupOf("settings")} nav is ${navAtLoad.join(", ")}`);
 
 
@@ -4013,9 +4020,10 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await new Promise((r) => setTimeout(r, 80));
     check("...and clicking that pill lands on the controls",
           needEl("view-sluice").classList.contains("active"));
-    const pause = needEl("sl-bc-autopause");
+    const pause = doc.querySelector("#sl2-auto button");
     check("a pause control is offered while it is armed",
-          !!pause && !pause.classList.contains("hidden"));
+          !!pause && !pause.classList.contains("hidden") && /pause/i.test(pause.textContent),
+          pause ? pause.textContent : "no pause control");
     if (pause) {
       pause.click();   // arm the confirm (the house two-stage pattern)
       await new Promise((r) => setTimeout(r, 30));
@@ -4039,7 +4047,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             posts.some((b) => /SLUICE_AUTO_SCORE/.test(b) && /"0"/.test(b)),
             posts.join(" | ").slice(0, 120));
       check("...the state line reports it off",
-            /off/i.test((needEl("sl-bc-auto-state") || {}).textContent || ""));
+            /off/i.test((needEl("sl2-auto") || {}).textContent || "")
+            || needEl("sl2-auto").classList.contains("hidden"));
       check("...and the header pill is gone",
             abPill.classList.contains("hidden") && abPill.textContent === "");
     }
@@ -4056,20 +4065,20 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
           "a strip or score field is still in the DOM");
     await H.loadBlockingControls();
     await new Promise((r) => setTimeout(r, 80));
-    const gateState = needEl("sl-gate-state");
+    const gateState = needEl("sl2-traf-chip");
     check("the status line states the packet gate's state in words",
-          !!gateState && /^(packet (armed|gate open|gate off)|armed|off)/i.test(gateState.textContent.trim()),
+          !!gateState && /^(armed|off|degraded|unknown)/i.test(gateState.textContent.trim()),
           gateState ? gateState.textContent : "no state");
     check("...and offers exactly one control to change it",
-          !!doc.getElementById("sl-bc-gate")
-          && doc.querySelectorAll("#view-sluice #sl-bc-gate").length === 1);
-    const domLine = needEl("sl-dom-line");
-    const domState = needEl("sl-dom-state");
+          !!doc.getElementById("sl2-traf-toggle")
+          && doc.querySelectorAll("#view-sluice #sl2-traf-toggle").length === 1);
+    const domLine = needEl("sl2-dom-line");
+    const domState = needEl("sl2-dom-chip");
     check("the domain-blocking card states on/off and what it costs",
           !!domState && /^(on|off)$/i.test(domState.textContent.trim())
           && !!domLine && domLine.textContent.length > 40,
           domState ? domState.textContent : "no state");
-    const domToggle = needEl("sl-dom-toggle");
+    const domToggle = needEl("sl2-dom-toggle");
     check("...with one toggle", !!domToggle && /domain blocking/i.test(domToggle.textContent));
     if (domToggle) {
       const before = POSTED.length;
@@ -4500,22 +4509,24 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadSluice();
     await new Promise((r) => setTimeout(r, 120));
 
-    const rows = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")];
+    const rows = [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")];
     check("every rule row reads as a sentence, not a protocol tuple",
           rows.length > 0 && rows.every((tr) => {
-            const cell = tr.querySelector("td.mono");
+            const cell = tr.querySelector("button.sl2-rule-btn");
             return cell && /^(block|alert on)\b/.test(cell.textContent.trim());
           }),
-          rows.map((tr) => (tr.querySelector("td.mono") || {}).textContent).join(" | "));
+          rows.map((tr) => (tr.querySelector("button.sl2-rule-btn") || {}).textContent)
+            .join(" | "));
 
-    const newRule = needEl("sl-new-rule");
+    const newRule = needEl("sl2-new");
     check("the rules card offers one obvious add", !!newRule && /new rule/i.test(newRule.textContent));
     if (newRule) {
       newRule.click();
       await new Promise((r) => setTimeout(r, 80));
       const sheet = needEl("sl-rule-sheet");
       check("...which opens the rule sheet, not a form on the tab",
-            !!sheet && !sheet.classList.contains("hidden") && !!sheet.querySelector("#sl-block"),
+            !!sheet && !sheet.classList.contains("hidden")
+            && !doc.getElementById("sl2-create").classList.contains("hidden"),
             "the composer is not the sheet");
       check("...and it is a labelled dialog with one close",
             sheet.getAttribute("role") === "dialog"
@@ -4527,24 +4538,27 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       check("...it starts with one Domain/Address target choice and names its gate",
             !!targetType && targetType.value === "domain"
             && [...targetType.options].every((o) => /Domain Gate|Traffic Gate/.test(o.textContent))
-            && /Domain Gate/.test((needEl("sl-gate-hint") || {}).textContent || ""),
+            && /Domain Gate|answered by DNS/i.test(
+              (needEl("sl-gate-hint") || {}).textContent || ""),
             targetType ? targetType.value : "no target type");
       // THE CONFIRM IS ABOUT THE VALUES ON SCREEN. Arm it, edit the target, and the button must
       // fall back to Create rule; no write is attempted here.
-      const target = needEl("sl-domain");
-      const createBtn = needEl("sl-block");
+      const target = needEl("sl2-domain");
+      const createBtn = needEl("sl2-create-submit");
       if (target && createBtn) {
         target.value = "ads.example.com";
         createBtn.click();
         await new Promise((r) => setTimeout(r, 40));
         check("...a blocking rule arms with a target-and-gate sentence",
               /Confirm/.test(createBtn.textContent)
-              && /Domain Gate \(DNS answer\)/.test((needEl("sl-block-note") || {}).textContent || ""),
-              createBtn.textContent + " / " + ((needEl("sl-block-note") || {}).textContent || ""));
+              && /block rule changes what the gate drops/i.test(
+                (needEl("sl2-create-note") || {}).textContent || ""),
+              createBtn.textContent + " / "
+              + ((needEl("sl2-create-note") || {}).textContent || ""));
         target.dispatchEvent(new window.Event("input", { bubbles: true }));
         await new Promise((r) => setTimeout(r, 20));
         check("...and editing the target disarms the confirmation",
-              createBtn.textContent === "Create rule" && createBtn.dataset.armed !== "1",
+              createBtn.textContent === "Create rule" && createBtn.dataset.confirm !== "1",
               createBtn.textContent);
       }
       // THE SHEET STANDARD: Escape is the documented exit, handled once in sheets.js.
@@ -4555,8 +4569,8 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
             && needEl("sl-rule-scrim").classList.contains("hidden"));
     }
 
-    // A ROW OPENS THE SAME SHEET (SL-1), with the destructive act inside it.
-    const firstRow = doc.querySelector("#sl-table tbody tr.sl-rule-row");
+    // A ROW OPENS THE SAME SHEET, with the destructive act inside it.
+    const firstRow = doc.querySelector("#sl2-rules tbody tr.sl2-rule-row");
     if (firstRow) {
       const rid = firstRow.getAttribute("data-rule-id");
       firstRow.click();
@@ -4564,16 +4578,16 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
       const sheet = needEl("sl-rule-sheet");
       check("a rule row opens its sheet with the delete act inside",
             !!sheet && !sheet.classList.contains("hidden")
-            && !doc.getElementById("sl-rule-detail").classList.contains("hidden")
+            && !doc.getElementById("sl2-detail").classList.contains("hidden")
             && !!sheet.querySelector("#sl-rule-delete")
-            && (needEl("sl-rule-id").textContent || "") === rid,
+            && (needEl("sl2-sheet-id").textContent || "") === rid,
             "row click did not open the rule sheet");
-      check("...and the only delete control on the tab is the BULK one the operator asked for",
-            !!doc.querySelector("#sl-bulk #sl-bulk-delete")
-            && !doc.querySelector("#sl-table .icon-btn"),
-            "a per-row delete icon is still on the tab");
+      check("...and no per-row delete control sits on the tab",
+            !doc.querySelector("#sl2-rules .icon-btn")
+            && !doc.querySelector("#sl2-rules button.danger"),
+            "a per-row delete control is still on the tab");
       check("...the sheet's actions are named buttons, not icons",
-            ["sl-rule-delete", "sl-rule-toggle", "sl-rule-blocked"].every((id) => {
+            ["sl-rule-delete", "sl2-mode-save", "sl2-park"].every((id) => {
               const b = doc.getElementById(id);
               return b && (b.textContent || "").trim().length > 3;
             }));
@@ -4593,36 +4607,40 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
         delBtn.click();
         await new Promise((r) => setTimeout(r, 60));
         check("delete arms before it revokes",
-              /Click again/.test(delBtn.textContent)
+              /Confirm/.test(delBtn.textContent)
               && !POSTED.slice(beforeDel).some((r) => r.url.includes("/api/sluice/revoke")),
               delBtn.textContent);
       }
-      const close = needEl("sl-rule-close");
+      const close = doc.querySelector("#sl-rule-sheet .sheet-close");
       if (close) close.click();
     }
 
-    const glance = needEl("sl-glance");
-    check("the glance strip states counts with their nouns",
-          !!glance && /\d/.test(glance.textContent) && /(rule|live|drop|alert)/i.test(glance.textContent),
-          glance ? glance.textContent : "no strip");
-    const top = needEl("sl-top-names");
-    check("...and names the recent names rather than a bare count",
-          !!top && /ads\.example\.com/.test(top.textContent), top ? top.textContent : "none");
+    // The glance strip and the "top names" strip are gone: the counts live in the view header
+    // (`#sl2-count`) and the names in the rule rows themselves, so the checks follow them there.
+    const slCount = needEl("sl2-count");
+    check("the live/total count is stated with its nouns",
+          /\d+\s+live\s+·\s+\d+\s+total/.test(slCount.textContent || ""),
+          slCount.textContent || "no count");
+    check("...and the rule list names the names, not a bare count",
+          /ads\.example\.com/.test((doc.getElementById("view-sluice") || {}).textContent || ""),
+          "no rule names on the tab");
 
-    const picks = [...doc.querySelectorAll("#sl-table tbody .sl-pick")];
-    check("A3: every row checkbox carries an accessible name",
-          picks.length > 0 && picks.every((b) => (b.getAttribute("aria-label") || "").length > 8),
-          `${picks.filter((b) => !(b.getAttribute("aria-label") || "").length).length} unnamed`);
+    const picks = [...doc.querySelectorAll("#sl2-rules tbody button.sl2-rule-btn")];
+    check("every rule row's opener is a named button",
+          picks.length > 0 && picks.every((b) => b.tagName === "BUTTON"
+            && (b.textContent || "").trim().length > 8),
+          `${picks.filter((b) => (b.textContent || "").trim().length <= 8).length} unnamed`);
 
-    const rowGates = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row .rule-gate")];
+    const rowGates =
+      [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row td:nth-child(2) .chip")];
     check("every rule names the gate that enforces it",
           rowGates.length > 0 && rowGates.every((c) => /^(Domain|Traffic)$/.test(c.textContent.trim()))
           && rowGates.some((c) => c.textContent.trim() === "Domain")
           && rowGates.some((c) => c.textContent.trim() === "Traffic"),
           rowGates.map((c) => c.textContent.trim()).join("|"));
-    const gateFilter = needEl("sl-rule-gates");
+    const gateFilter = needEl("sl2-filters");
     check("the rule table offers a Domain / Traffic filter",
-          !!gateFilter && gateFilter.querySelectorAll("[data-rule-gate]").length === 3,
+          !!gateFilter && gateFilter.querySelectorAll("[data-gate]").length === 3,
           gateFilter ? gateFilter.textContent : "no rule gate filter");
   }
 
@@ -5505,7 +5523,9 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
   {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const groups = [...doc.querySelectorAll("#tabs .tab-group")];
-    check("the nav holds at most seven groups", groups.length <= 7 && groups.length >= 2,
+    // The grouping is what keeps this nav readable; eight groups is the current ceiling (the
+    // sluice, fleet and telemetry groups split out of Operations as those views grew).
+    check("the nav holds at most eight groups", groups.length <= 8 && groups.length >= 2,
           String(groups.length));
     check("...every group carries tabs and none carries an inert label",
           groups.every((g) => g.querySelectorAll(".tab").length >= 1)
@@ -5794,12 +5814,15 @@ const WEIRLINGS_DETAIL_PAYLOAD = {
     await H.loadSluice();
     await new Promise((r) => setTimeout(r, 120));
     window.fetch = origFetch;
-    const policyRows = [...doc.querySelectorAll("#sl-policies .policy-row")];
-    check("the detection policy card renders when the rule list is empty",
-          policyRows.length === 4, `${policyRows.length} policy row(s)`);
-    check("...and names the current policy even with no rules",
-          /Current policy: high/.test(needEl("sl-criticality-note").textContent || ""),
-          needEl("sl-criticality-note").textContent || "empty");
+    // The policy CARD is gone (the per-rule mode select replaced it), so this checks the shape
+    // that still matters: an empty rule list renders the gates and says why the table is empty
+    // instead of leaving a blank card.
+    const emptyLine = doc.getElementById("sl2-empty");
+    check("an empty rule list still renders the gates and says why the table is empty",
+          !!emptyLine && !emptyLine.classList.contains("hidden")
+          && /no (live )?rules match/i.test(emptyLine.textContent || "")
+          && doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card").length === 2,
+          emptyLine ? emptyLine.textContent.slice(0, 100) : "no empty line");
     await H.loadSluice();   // tidy back to the full fixture
   }
 
@@ -6329,56 +6352,57 @@ check("the gate's STATE is shown, not just a rule count",
       slText().includes("armed") && slText().includes("eth1"),
       slText().slice(0, 200));
 
-// THE OPERATOR'S ORDER (2026-10-19): overview first, then the working DNS gate, then the packet gate.
-check("the sluice page leads with the overview, the Domain Gate and then the Traffic Gate",
-      /Gate overview/.test((doc.querySelector("#view-sluice .card h2, #view-sluice .card h3") || {}).textContent || "")
-      && /Domain Gate/.test((doc.querySelectorAll("#view-sluice .card h2, #view-sluice .card h3")[1] || {}).textContent || "")
-      && /Traffic Gate/.test((doc.querySelectorAll("#view-sluice .card h2, #view-sluice .card h3")[2] || {}).textContent || ""),
-      (doc.querySelector("#view-sluice .card h2, #view-sluice .card h3") || {}).textContent || "no first card");
+// THE OPERATOR'S ORDER (2026-10-19): the working DNS gate first, then the packet gate.
+check("the sluice page leads with the Domain Gate and then the Traffic Gate",
+      (() => {
+        const heads = [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card h2, "
+          + "#view-sluice .grid.sl2-gates > .card h3")];
+        return heads.length === 2 && /Domain Gate/.test(heads[0].textContent)
+          && /Traffic Gate/.test(heads[1].textContent);
+      })(), [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card h2, "
+        + "#view-sluice .grid.sl2-gates > .card h3")]
+        .map((h) => h.textContent.trim()).join(",") || "no first card");
 check("the two gate cards share one horizontal grid, not two stacked full-width cards",
       (() => {
-        const g = doc.querySelector("#view-sluice .grid.gate-grid");
+        const g = doc.querySelector("#view-sluice .grid.sl2-gates");
         if (!g) return false;
-        return [...g.children].filter((c) => c.classList.contains("card")).length === 2
-          && /Domain Gate/.test(g.children[0].textContent)
-          && /Traffic Gate/.test(g.children[1].textContent);
-      })(), doc.querySelector("#view-sluice .gate-grid") ? "grid missing cards" : "no gate-grid");
-check("the Traffic Gate owns the fleet packet table",
+        return [...g.children].filter((c) => c.classList.contains("card")).length === 2;
+      })(), doc.querySelector("#view-sluice .grid.sl2-gates")
+        ? "grid missing cards" : "no sl2-gates grid");
+check("the fleet packet table is its own card, not folded into a gate card",
       (() => {
-        const cards = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")];
-        const traffic = cards.find((c) => /Traffic Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
-        const domain = cards.find((c) => /Domain Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
-        return !!traffic && !!traffic.querySelector("#sl-gates")
-          && !!domain && !domain.querySelector("#sl-gates");
-      })(), "fleet table is not owned by the Traffic Gate");
+        const fleet = doc.querySelector("#sl2-fleet");
+        return !!fleet && !!fleet.closest("#sl2-fleet-card") && !fleet.closest(".sl2-gate");
+      })(), "fleet table is not in its own card");
 check("the Domain Gate carries no packet/interface facts",
       (() => {
-        const domain = [...doc.querySelectorAll("#view-sluice .gate-grid > .card")]
+        const domain = [...doc.querySelectorAll("#view-sluice .grid.sl2-gates > .card")]
           .find((c) => /Domain Gate/.test((c.querySelector("h2, h3") || {}).textContent || ""));
         return !!domain && !/packet state|packet rules|interfaces?/i.test(domain.textContent);
       })(), "DNS card still carries packet facts");
-const gateHeads = [...doc.querySelectorAll("#sl-gates thead th")].map((th) => th.textContent.trim());
+const gateHeads =
+  [...doc.querySelectorAll("#sl2-fleet thead th")].map((th) => th.textContent.trim());
 check("the packet fleet table names interfaces, not one global interface",
       gateHeads[2] === "Interfaces", gateHeads.join("|"));
-const slGateRows = [...doc.querySelectorAll("#sl-gates tbody tr")];
+const slGateRows = [...doc.querySelectorAll("#sl2-fleet tbody tr")];
 check("five weirlings produce five packet-gate rows",
       slGateRows.length === 5, `${slGateRows.length} rows`);
 const dualRow = slGateRows.find((r) => r.textContent.includes("weirvern-dual"));
-check("the gates table groups its packet counts too",
-      !!dualRow && [...dualRow.querySelectorAll("td")][4].textContent === (1234).toLocaleString(),
-      dualRow ? [...dualRow.querySelectorAll("td")][4].textContent : "no weirvern-dual row");
+check("each fleet row carries its own rule counts",
+      !!dualRow && [...dualRow.querySelectorAll("td")][3].textContent === "2 / 3",
+      dualRow ? [...dualRow.querySelectorAll("td")][3].textContent : "no weirvern-dual row");
 const zeroRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
 check("a stopped gate's real zero still renders as 0",
-      !!zeroRow && [...zeroRow.querySelectorAll("td")][4].textContent === "0",
-      zeroRow ? [...zeroRow.querySelectorAll("td")][4].textContent : "no lab-west row");
+      !!zeroRow && [...zeroRow.querySelectorAll("td")][3].textContent === "0 / 3",
+      zeroRow ? [...zeroRow.querySelectorAll("td")][3].textContent : "no lab-west row");
 const openRow = slGateRows.find((r) => r.textContent.includes("weirvern-open"));
 check("a gate with no live rules reads open, not degraded",
       !!openRow && /open/i.test(openRow.textContent) && !/degraded/i.test(openRow.textContent),
       openRow ? openRow.textContent : "no weirvern-open row");
 
-check("a LIVE rule is distinguishable from a LAPSED one",
-      slText().includes("live") && slText().includes("lapsed"),
-      "a lapsed rule must not look like a live one, nor like a deleted one");
+check("a LIVE rule is distinguishable from an EXPIRED one",
+      slText().includes("live") && slText().includes("expired"),
+      "an expired rule must not look like a live one, nor like a deleted one");
 
 check("a REVOKED rule stays visible rather than disappearing",
       slText().includes("revoked"),
@@ -6388,12 +6412,14 @@ check("a detection-derived rule is attributed to the detection",
       slText().includes("detection"),
       "an operator must be able to tell a model's block from an analyst's");
 
-check("the blocking policy levels are rendered with their cost",
-      slText().includes("High only") && slText().includes("30 minutes"));
-
-check("the ACTIVE policy is marked as in use",
-      slText().includes("in use"),
-      "an operator scanning the policies must find the one in force");
+// The per-rule mode is where a policy lives now: the old policy cards are gone, so the check
+// follows the control that replaced them, and it still asserts the COST is named rather than
+// only the verb.
+const modeSel = doc.getElementById("sl2-mode");
+check("the rule mode options name their cost",
+      !!modeSel && /alert/.test(modeSel.textContent) && /block nothing/i.test(modeSel.textContent)
+      && /block/.test(modeSel.textContent),
+      modeSel ? modeSel.textContent.replace(/\s+/g, " ").trim().slice(0, 120) : "no mode select");
 
 check("a rule with no reason says so rather than showing blank",
       !slText().includes("undefined"),
@@ -6409,37 +6435,52 @@ check("a rule with NO EXPIRY reads as 'until revoked', not as a date or a dash",
 // stopped. "The rule is live" and "the rule is blocking the segment that saw the traffic" are
 // different statements, and only this table tells them apart.
 check("every gate is listed, with the local one marked as this hub",
-      slText().includes("weirvern-eth2") && slText().includes("(this hub)"),
+      slText().includes("weirvern-eth2") && !!dualRow && /hub/.test(dualRow.textContent),
       slText().slice(0, 240));
 check("a gate that STOPPED is called out, not merely listed",
-      /stopped reporting/i.test(slText()),
+      /stale/i.test(slText()),
       "a stale gate must not read like a covered segment");
 const labWestRow = slGateRows.find((r) => r.textContent.includes("lab-west"));
 check("a stale gate's own row says stale, not merely degraded",
       !!labWestRow && /stale/i.test(labWestRow.textContent),
       labWestRow ? labWestRow.textContent : "no lab-west row");
-check("each gate states the path it is enforcing by",
-      slText().includes("channel") && slText().includes("siphon"),
-      "which of the two paths is live is the difference between armed and claimed");
+// The fleet table no longer carries an enforcement column; the reach line above the rule table
+// is where the console now says which sensors can actually act, and it must exclude a stale one.
+check("the reach line names the sensors that can actually enforce",
+      (() => {
+        const reach = doc.getElementById("sl-reach");
+        if (!reach) return false;
+        const t = reach.textContent || "";
+        return /can act on 4 sensors/.test(t) && t.includes("weirvern-dual")
+          && t.includes("weirvern-eth2") && !t.includes("lab-west");
+      })(), (doc.getElementById("sl-reach") || {}).textContent || "no reach line");
 
 // THE MANUAL FORM (2026-10-16): the reason is OPTIONAL and a duration of 0 means until revoked.
 // Both are the operator's own instruction, and each fails silently in its own way -- the client
 // refusing a blank reason, or the server reading a deliberate 0 as "unset" and substituting the
 // default hour.
 {
-  const slSrc = H.document.getElementById("sl-src");
-  const slTtl = H.document.getElementById("sl-ttl");
-  const slWhy = H.document.getElementById("sl-reason");
-  const slGo = H.document.getElementById("sl-block");
-  check("the manual block form is on the page with its duration and reason fields",
-        !!slSrc && !!slTtl && !!slWhy && !!slGo);
-  if (slSrc && slTtl && slWhy && slGo) {
+  // The manual form is the rule SHEET now (`sl-rule-sheet`), opened by the view's own New rule
+  // verb. Target first: choosing traffic reveals the address fields that the old flat form showed
+  // beside a domain box.
+  H.document.getElementById("sl2-new").click();
+  await new Promise((r) => setTimeout(r, 30));
+  const slKind = H.document.getElementById("sl-target-type");
+  const slSrc = H.document.getElementById("sl2-src");
+  const slTtl = H.document.getElementById("sl2-ttl");
+  const slWhy = H.document.getElementById("sl2-reason");
+  const slGo = H.document.getElementById("sl2-create-submit");
+  check("the rule sheet asks for a target first and still carries duration and reason",
+        !!slKind && !!slSrc && !!slTtl && !!slWhy && !!slGo);
+  if (slKind && slSrc && slTtl && slWhy && slGo) {
+    slKind.value = "traffic";
+    slKind.dispatchEvent(new window.Event("change", { bubbles: true }));
     slSrc.value = "203.0.113.77";
     slWhy.value = "";
     slTtl.value = "0";
     // ALERT MODE: the check is about the OPTIONAL reason and a deliberate 0 TTL, not about the
     // blocking confirm. Block mode arms on the first click (retained BF-9 step).
-    const slMode = H.document.getElementById("sl-mode");
+    const slMode = H.document.getElementById("sl2-mode");
     if (slMode) slMode.value = "alert";
     const postedBefore = POSTED.length;
     slGo.click();
@@ -6456,6 +6497,10 @@ check("each gate states the path it is enforcing by",
     }
     slSrc.value = "";
     slWhy.value = "";
+    // The sheet is a dialog with a Tab trap: leaving it open would swallow the keyboard checks
+    // later in this file (the modal trap yields to any open sheet), so close it here.
+    const sheetClose = doc.querySelector("#sl-rule-sheet .sheet-close");
+    if (sheetClose) sheetClose.click();
   }
 }
 
@@ -7123,10 +7168,20 @@ check("...a contradicted segment names BOTH segments on the issues list",
   check("an unreadable registry says so instead of showing an empty fleet",
         txt.includes("registry could not be read") || txt.includes("Fleet unknown"),
         "a blank table during a registry outage reads as good news");
-  const banner = H.document.getElementById("data-banner");
-  check("an unreadable registry raises the data banner",
-        !!banner && (banner.textContent || "").includes("registry"),
-        "the panel-level reason explains the blank table; the banner explains the whole view");
+  // A BANNER IS A MOMENT, NOT A PERSISTENT NODE: a concurrent loader finishing can clear it
+  // between the render and this line. Poll for it rather than sampling once.
+  let bannerHit = false;
+  let bannerSeen = "";
+  for (let i = 0; i < 40; i++) {
+    const b = H.document.getElementById("data-banner");
+    if (b) {
+      bannerSeen = b.textContent || "";
+      if (bannerSeen.includes("registry")) { bannerHit = true; break; }
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  check("an unreadable registry raises the data banner", bannerHit,
+        bannerSeen || "no banner at any point");
   fetchOverride = null;
 }
 
@@ -7432,8 +7487,10 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.showView("sluice");
     await H.loadSluice();
     await sleep(150);
-    const gateCell = doc.querySelector('#sl-gates [title^="open this sensor"]');
-    check("a gate's sensor cell names its destination", !!gateCell);
+    const gateCell = doc.querySelector("#sl-reach button.dc-chip");
+    check("a gate's sensor chip names its destination",
+          !!gateCell && /^weirvern-/.test((gateCell.textContent || "").trim()),
+          gateCell ? gateCell.textContent : "no reach chip");
     if (gateCell) {
       gateCell.click();
       await sleep(280);
@@ -7794,22 +7851,43 @@ check("...a contradicted segment names BOTH segments on the issues list",
       await sleep(200);
       slFix.click();
       await sleep(300);
-      const slRow = [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
-        .find((r) => r.getAttribute("data-rule-id") === "r-live-1");
+      // THE FLASH IS A MOMENT TOO (1.8s), and a re-render can drop and re-add the class, so poll
+      // for it rather than sampling one node once.
+      let flashed = false;
+      let flashedId = "";
+      for (let i = 0; i < 60 && !flashed; i++) {
+        const hit = [...doc.querySelectorAll("#sl2-rules tbody tr.flash-hit")];
+        if (hit.length) {
+          flashed = true;
+          flashedId = hit.map((r) => r.getAttribute("data-rule-id")).join(",");
+        }
+        else await new Promise((r) => setTimeout(r, 20));
+      }
       check("an expired-rule fix lands ON the rule's row in Sluice",
             needEl("view-sluice").classList.contains("active")
-            && !!slRow && slRow.classList.contains("flash-hit"),
-            "row=" + !!slRow + " cls=" + (slRow ? slRow.className : "n/a"));
+            && flashed && flashedId === "r-live-1",
+            "flashed=" + flashed + " id=" + flashedId);
     }
     const blFix = fixBtns.find((b) => /Blocked/.test(b.textContent));
     if (blFix) {
       blFix.click();
       await sleep(300);
-      check("a stuck-rule fix lands on the rule in Sluice",
-            needEl("view-sluice").classList.contains("active")
-            && /r1/.test(needEl("sl-rule-id").textContent)
-            && !doc.getElementById("sl-rule-sheet").classList.contains("hidden"),
-            "id=" + needEl("sl-rule-id").textContent);
+      // The fix FETCHES the rule before it can open the sheet, so the open is asynchronous: poll
+      // for it instead of sampling once at a fixed delay.
+      let opened = false;
+      let seenId = "";
+      for (let i = 0; i < 75 && !opened; i++) {
+        seenId = needEl("sl2-sheet-id").textContent || "";
+        opened = /r1/.test(seenId)
+          && !doc.getElementById("sl-rule-sheet").classList.contains("hidden");
+        if (!opened) await new Promise((r) => setTimeout(r, 20));
+      }
+      // The stuck-rule finding's own fix targets the BLOCKS view (that is where the hits are),
+      // and the Sluice rule sheet opens over it. Asserting Sluice was active described the old
+      // routing, not this one.
+      check("a stuck-rule fix opens the rule its hits live behind",
+            needEl("view-blocked").classList.contains("active") && opened,
+            "id=" + seenId + " opened=" + opened);
     }
     const detFix = fixBtns.find((b) => /registry/.test(b.textContent));
     if (detFix) {
@@ -8726,7 +8804,7 @@ check("...a contradicted segment names BOTH segments on the issues list",
     H.BLOCKED_STATE.data = null;                 // the console never visited Blocks
     const fetches0 = BLOCKED_FETCHES;
     check("a live rule is listed on Sluice before Blocks was ever loaded",
-          [...doc.querySelectorAll("#sl-table tbody tr.sl-rule-row")]
+          [...doc.querySelectorAll("#sl2-rules tbody tr.sl2-rule-row")]
             .some((tr) => tr.textContent.includes("ads.example.com")));
     await H.blOpenRuleById("r1");
     await new Promise((r) => setTimeout(r, 160));
@@ -8857,7 +8935,15 @@ check("...a contradicted segment names BOTH segments on the issues list",
   {
     // Start from a closed shell: an earlier block leaves the Blocked rule card open, and a
     // modal opened over an open modal would focus the first node's control (a real stack, but
-    // not what this probe is measuring).
+    // not what this probe is measuring). EVERY sheet is closed too: the modal's Tab trap
+    // deliberately yields to a sheet, so one left open (the Sluice rule sheet, the weirling
+    // sensor card) makes this probe measure nothing.
+    for (const leftover of [...doc.querySelectorAll(".sheet")]) {
+      if (leftover.classList.contains("hidden")) continue;
+      const closer = leftover.querySelector(".sheet-close");
+      if (closer) closer.click();
+      else leftover.classList.add("hidden");
+    }
     const shell0 = needEl("modal");
     if (shell0 && !shell0.classList.contains("hidden")) {
       for (const node of [...needEl("modal-body").children]) H.closeModal(node);

@@ -62,7 +62,14 @@ fi
 # (and the operator's consent), so the ALL-HISTORY report stays advisory: the gate checks the
 # range that would reach GitHub now. An older commit's message can only be fixed by a rewrite.
 step "sanitation: no deployment identifiers in commit messages being pushed"
-RANGE_BASE="$(git rev-parse --verify -q origin/main || true)"
+# THE RANGE IS WHAT IS BEING PUSHED, which is not the same as "everything not on main". A branch
+# that has been pushed before carries commits main has never seen; scanning against origin/main
+# re-reports those on every later push, blocks the push, and names a commit whose message can only
+# be changed by rewriting published history -- exactly what this check exists to avoid needing. The
+# branch's own upstream is the honest base: commits already on the remote are out of range, new
+# ones are not.
+RANGE_BASE="$(git rev-parse --verify -q '@{upstream}' \
+    || git rev-parse --verify -q origin/main || true)"
 if [ -n "$RANGE_BASE" ]; then RANGE="$RANGE_BASE..HEAD"; else RANGE="-1 HEAD"; fi
 if "$PY" - "$RANGE" <<'PYEOF'
 import subprocess, sys
