@@ -1363,6 +1363,160 @@ def sluice_rule_disabled_failure(exc: BaseException) -> tuple[int, dict[str, Any
     return 502, {"error": f"could not change the rule: {type(exc).__name__}", "code": 502}
 
 
+def blocklist_sync(client: Client) -> tuple[int, dict[str, Any]]:
+    """Sync every ENABLED source now. Slow on purpose: it fetches megabytes.
+
+    THE CUSTOM LIST IS SKIPPED because it is not a feed: it is the names the operator typed, and
+    fetching it would replace them with whatever a URL answered.
+    """
+    from weirvern import blocklists  # noqa: PLC0415
+
+    try:
+        blocklists.ensure_default_sources(client)
+        results = []
+        for src in blocklists.load_sources(client):
+            if not src["enabled"] or src["source_id"] == "custom":
+                continue
+            results.append({"source_id": src["source_id"],
+                            **blocklists.sync_source(client, src)})
+    except Exception as exc:  # noqa: BLE001
+        return blocklist_sync_failure(exc)
+    return 200, {"ok": True, "results": results}
+
+
+def blocklist_source_add(client: Client, *, url: str, name: str,
+                         fmt: str) -> tuple[int, dict[str, Any]]:
+    """Add a URL source, with its format named and validated by the store.
+
+    THE FORMAT IS REQUIRED ON PURPOSE: a list with no stated format imports nothing and looks like a
+    broken list. `domains` is the default; hosts and dnsmasq are accepted; Adblock and RPZ are refused
+    with the reason, which arrives as a ValueError from the store.
+    """
+    from weirvern import blocklists  # noqa: PLC0415
+
+    try:
+        src = blocklists.add_source(client, url, name=name, fmt=fmt)
+    except ValueError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return blocklist_source_failure(exc)
+    return 200, {"ok": True, "source": src,
+                 "note": "added. Sync now to fetch it; importing records names, it does not block them."}
+
+
+def blocklist_custom(client: Client, *, action: str,
+                     domain: str) -> tuple[int, dict[str, Any]]:
+    """Add or remove one operator-entered name, validated like a domain rule."""
+    from weirvern import blocklists  # noqa: PLC0415
+    from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+    try:
+        if action == "remove":
+            name = blocklists.remove_custom_domain(client, domain)
+        else:
+            name = blocklists.add_custom_domain(client, domain)
+    except SluiceError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return blocklist_custom_failure(exc)
+    return 200, {"ok": True, "action": action, "domain": name}
+
+
+def blocklist_enable(client: Client, *, source_id: str,
+                     enabled: bool) -> tuple[int, dict[str, Any]]:
+    """Click a list on or off. A WRITE: what the deployment watches changes.
+
+    Off drops the list's names from the watch set at the next load, so the note says WHICH direction
+    the operator just moved -- "saved" would leave them guessing whether the list is being used.
+    """
+    from weirvern import blocklists  # noqa: PLC0415
+
+    try:
+        src = blocklists.set_source_enabled(client, source_id, enabled)
+    except ValueError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return blocklist_enable_failure(exc)
+    return 200, {"ok": True, "source": src,
+                 "note": ("on \u2014 its names join the watch set at the next load"
+                          if enabled else
+                          "off \u2014 its names leave the watch set at the next load")}
+
+
+def network_scope_save(client: Client, body: dict) -> tuple[int, dict[str, Any]]:
+    """Create or update one operator-declared network scope, then answer with the whole overview.
+
+    THE BODY IS PASSED THROUGH, not pre-parsed: `networks.save_scope` owns the field rules and raises
+    ValueError with the sentence the form shows, so a second parser here would be free to disagree
+    with it. The overview rides the answer because the page re-renders from it.
+    """
+    from weirvern import networks  # noqa: PLC0415
+
+    try:
+        scope = networks.save_scope(client, body)
+        payload = networks.overview(client, hours=24)
+    except ValueError as exc:
+        return 400, {"error": str(exc), "code": 400}
+    except Exception as exc:  # noqa: BLE001
+        return network_save_failure(exc)
+    payload["ok"] = True
+    payload["scope"] = scope.public()
+    return 200, payload
+
+
+def network_scope_delete(client: Client, scope_id: str) -> tuple[int, dict[str, Any]]:
+    """Retire one scope with a tombstone; the history remains until the merge window."""
+    from weirvern import networks  # noqa: PLC0415
+
+    try:
+        removed = networks.delete_scope(client, scope_id)
+        payload = networks.overview(client, hours=24)
+    except ValueError as exc:
+        return 400, {"error": str(exc), "code": 400}
+    except Exception as exc:  # noqa: BLE001
+        return network_delete_failure(exc)
+    payload["ok"] = bool(removed)
+    return 200, payload
+
+
+def blocklist_sync_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    logger.warning("blocklist sync failed: %s", exc)
+    return 502, {"error": f"the sync failed: {type(exc).__name__}", "code": 502}
+
+
+def blocklist_source_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    logger.warning("blocklist source add failed: %s", exc)
+    return 502, {"error": f"the list could not be added: {type(exc).__name__}", "code": 502}
+
+
+def blocklist_custom_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    logger.warning("blocklist custom change failed: %s", exc)
+    return 502, {"error": f"the change failed: {type(exc).__name__}", "code": 502}
+
+
+def blocklist_enable_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """The 503-with-`{"ok": false}` shape this route has always used, read_failure wording included."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    return 503, {"ok": False, "error": read_failure(exc)}
+
+
+def network_save_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """A 500 carrying the FIRST 200 CHARACTERS of the reason, as the console does.
+
+    The truncation is deliberate there: a driver message can run to a page, and the form has one line
+    for it. Truncating differently on one surface (or not at all) would make the same failure look
+    like two.
+    """
+    logger.warning("network scope save failed: %s", exc)
+    return 500, {"error": f"could not save the network scope: {str(exc)[:200]}", "code": 500}
+
+
+def network_delete_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    logger.warning("network scope delete failed: %s", exc)
+    return 500, {"error": f"could not delete the network scope: {str(exc)[:200]}", "code": 500}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

@@ -1593,20 +1593,13 @@ def _build_handler(ctx: GuiContext):
             """Sync every enabled source NOW. Slow on purpose: it fetches megabytes."""
             if not self._authorize():
                 return
-            from weirvern import blocklists  # noqa: PLC0415
             try:
                 with self._with_client() as client:
-                    blocklists.ensure_default_sources(client)
-                    results = []
-                    for src in blocklists.load_sources(client):
-                        if not src["enabled"] or src["source_id"] == "custom":
-                            continue
-                        results.append({"source_id": src["source_id"],
-                                        **blocklists.sync_source(client, src)})
+                    # SHARED WITH THE FLASK SURFACE (payloads.blocklist_sync), status included.
+                    code, payload = payloads.blocklist_sync(client)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("blocklist sync failed: %s", exc)
-                return self._error(502, f"the sync failed: {type(exc).__name__}")
-            self._json({"ok": True, "results": results})
+                code, payload = payloads.blocklist_sync_failure(exc)
+            self._json(payload, code)
 
         def _blocklists_get(self) -> None:
             """The blocklist pane: every source with its state, plus the custom names.
@@ -1622,31 +1615,24 @@ def _build_handler(ctx: GuiContext):
             self._json(payload)
 
         def _blocklists_enable(self) -> None:
-            """Click a list on or off (the operator, 2026-10-16). A WRITE: what the deployment
-            watches changes, and off drops the list's names from the watch set at the next load."""
+            """Click a list on or off (the operator, 2026-10-16). A WRITE: what the deployment watches
+            changes, and off drops the list's names from the watch set at the next load."""
             if not self._authorize():
                 return
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            from weirvern import blocklists  # noqa: PLC0415
-
-            source_id = str(body.get("source_id") or "").strip()
-            enabled = body.get("enabled")
-            if not source_id or not isinstance(enabled, bool):
-                return self._error(400, "source_id and a boolean enabled are required")
+            try:
+                args = blocklist_enable_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    src = blocklists.set_source_enabled(client, source_id, enabled)
-            except ValueError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.blocklist_enable(client, **args)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": read_failure(exc)}, 503)
-            self._json({"ok": True, "source": src,
-                        "note": ("on \u2014 its names join the watch set at the next load"
-                                 if enabled else
-                                 "off \u2014 its names leave the watch set at the next load")})
+                code, payload = payloads.blocklist_enable_failure(exc)
+            self._json(payload, code)
 
         def _sluice_rule_domain(self) -> None:
             """Rename a rule -- including adding a `*.` marker. Stored as typed; subdomains were
@@ -1671,11 +1657,11 @@ def _build_handler(ctx: GuiContext):
             self._json(payload, code)
 
         def _blocklists_source(self) -> None:
-            """Add a URL source, with its format named and validated.
+            """Add a URL source, with its format named and validated (by the store).
 
-            The form is deliberately explicit: a list with no stated format imports nothing and
-            looks like a broken list. The common one-domain-per-line shape is the default; hosts
-            and dnsmasq are accepted; Adblock/RPZ are refused with the reason.
+            The form is deliberately explicit: a list with no stated format imports nothing and looks
+            like a broken list. The common one-domain-per-line shape is the default; hosts and dnsmasq
+            are accepted; Adblock/RPZ are refused with the reason.
             """
             if not self._authorize():
                 return
@@ -1683,21 +1669,16 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            from weirvern import blocklists  # noqa: PLC0415
+            try:
+                args = blocklist_source_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    src = blocklists.add_source(
-                        client, str(body.get("url") or ""),
-                        name=str(body.get("name") or ""),
-                        fmt=str(body.get("format") or "domains"),
-                    )
-            except ValueError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.blocklist_source_add(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("blocklist source add failed: %s", exc)
-                return self._error(502, f"the list could not be added: {type(exc).__name__}")
-            self._json({"ok": True, "source": src,
-                        "note": "added. Sync now to fetch it; importing records names, it does not block them."})
+                code, payload = payloads.blocklist_source_failure(exc)
+            self._json(payload, code)
 
         def _blocklists_custom(self) -> None:
             """Add or remove one operator-entered name. Validated like a domain rule."""
@@ -1707,25 +1688,16 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            from weirvern import blocklists  # noqa: PLC0415
-            from weirvern.sluice import SluiceError  # noqa: PLC0415
-
-            action = str(body.get("action") or "add").strip().lower()
-            domain = str(body.get("domain") or "").strip()
-            if action not in ("add", "remove"):
-                return self._error(400, f"action must be add or remove, not {action!r}")
+            try:
+                args = blocklist_custom_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    if action == "remove":
-                        name = blocklists.remove_custom_domain(client, domain)
-                    else:
-                        name = blocklists.add_custom_domain(client, domain)
-            except SluiceError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.blocklist_custom(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("blocklist custom change failed: %s", exc)
-                return self._error(502, f"the change failed: {type(exc).__name__}")
-            self._json({"ok": True, "action": action, "domain": name})
+                code, payload = payloads.blocklist_custom_failure(exc)
+            self._json(payload, code)
 
         def _sluice_rule_mode(self) -> None:
             """Change a rule's mode in place -- the Blocked tab's "open the rule and modify it".
@@ -3260,22 +3232,24 @@ def _build_handler(ctx: GuiContext):
             self._json(payload)
 
         def _networks_save(self) -> None:
-            """Create or update one operator-declared network scope."""
+            """Create or update one operator-declared network scope.
+
+            THE BODY GOES TO THE STORE UNPARSED (payloads.network_scope_save): `save_scope` owns the
+            field rules, so a second parser here would be free to disagree with the sentences the form
+            shows.
+            """
             if not self._authorize():
                 return
             try:
                 body = self._read_body()
-                with self._with_client() as client:
-                    scope = networks.save_scope(client, body)
-                    payload = networks.overview(client, hours=24)
             except ValueError as exc:
                 return self._error(400, str(exc))
+            try:
+                with self._with_client() as client:
+                    code, payload = payloads.network_scope_save(client, body)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("network scope save failed: %s", exc)
-                return self._error(500, f"could not save the network scope: {str(exc)[:200]}")
-            payload["ok"] = True
-            payload["scope"] = scope.public()
-            self._json(payload)
+                code, payload = payloads.network_save_failure(exc)
+            self._json(payload, code)
 
         def _networks_delete(self) -> None:
             """Retire one scope with a tombstone; the history remains until the merge window."""
@@ -3283,16 +3257,15 @@ def _build_handler(ctx: GuiContext):
                 return
             try:
                 body = self._read_body()
-                with self._with_client() as client:
-                    removed = networks.delete_scope(client, str(body.get("id") or ""))
-                    payload = networks.overview(client, hours=24)
             except ValueError as exc:
                 return self._error(400, str(exc))
+            try:
+                with self._with_client() as client:
+                    code, payload = payloads.network_scope_delete(
+                        client, str(body.get("id") or ""))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("network scope delete failed: %s", exc)
-                return self._error(500, f"could not delete the network scope: {str(exc)[:200]}")
-            payload["ok"] = bool(removed)
-            self._json(payload)
+                code, payload = payloads.network_delete_failure(exc)
+            self._json(payload, code)
 
         def _settings(self, query: dict) -> None:
             """The effective configuration, plus whether this client may CHANGE it.
@@ -4004,6 +3977,29 @@ def sluice_rule_disabled_args(body: dict) -> dict:
     if not rule_id and not ids:
         raise ValueError("rule_id (or rule_ids) is required")
     return {"rule_id": rule_id, "rule_ids": ids, "disabled": bool(body.get("disabled"))}
+
+
+def blocklist_source_args(body: dict) -> dict:
+    """A URL, a display name and a FORMAT. The store validates all three and names what it refuses."""
+    return {"url": str(body.get("url") or ""), "name": str(body.get("name") or ""),
+            "fmt": str(body.get("format") or "domains")}
+
+
+def blocklist_custom_args(body: dict) -> dict:
+    """`add` or `remove`, and the name. Any other action is a 400 that quotes what arrived."""
+    action = str(body.get("action") or "add").strip().lower()
+    if action not in ("add", "remove"):
+        raise ValueError(f"action must be add or remove, not {action!r}")
+    return {"action": action, "domain": str(body.get("domain") or "").strip()}
+
+
+def blocklist_enable_args(body: dict) -> dict:
+    """A source id and a REAL boolean: `"true"` from a query string is not a state the store can set."""
+    source_id = str(body.get("source_id") or "").strip()
+    enabled = body.get("enabled")
+    if not source_id or not isinstance(enabled, bool):
+        raise ValueError("source_id and a boolean enabled are required")
+    return {"source_id": source_id, "enabled": enabled}
 
 
 def sensor_addresses(ctx) -> list[str]:

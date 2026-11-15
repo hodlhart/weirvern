@@ -690,6 +690,14 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/sluice/rule/domain": ("sluice_rule_domain", "weirvern.admin.payloads.sluice_rule_domain"),
     "/api/sluice/rule/disabled": ("sluice_rule_disabled",
                                   "weirvern.admin.payloads.sluice_rule_disabled"),
+    "/api/blocklists/sync": ("blocklist_sync", "weirvern.admin.payloads.blocklist_sync"),
+    "/api/blocklists/source": ("blocklist_source_add",
+                              "weirvern.admin.payloads.blocklist_source_add"),
+    "/api/blocklists/custom": ("blocklist_custom", "weirvern.admin.payloads.blocklist_custom"),
+    "/api/blocklists/enable": ("blocklist_enable", "weirvern.admin.payloads.blocklist_enable"),
+    "/api/networks/save": ("network_scope_save", "weirvern.admin.payloads.network_scope_save"),
+    "/api/networks/delete": ("network_scope_delete",
+                             "weirvern.admin.payloads.network_scope_delete"),
 }
 
 
@@ -706,7 +714,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 15, (
+    assert len(PORTED_WRITES) >= 21, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1240,3 +1248,131 @@ def test_the_sluice_rule_edits_answer_identically(surfaces, monkeypatch):
         {"rule_id": "rule-x", "error": "rule-x was revoked while you were selecting"}], body
     assert body["note"].startswith("re-enabled;"), body
     assert sluice, "the patches above must target the real module"
+
+
+def test_the_blocklist_and_network_writes_answer_identically(surfaces, monkeypatch):
+    """Six routes with one shape: sync, add a source, edit the custom list, toggle a list, save and
+    delete a network scope.
+
+    THREE FAILURE SHAPES, ALL PRESERVED. A refused source or a bad action is a 400 saying
+    `{"ok": false}`; a toggle that fails on the store is a 503 that ALSO says `{"ok": false}` with the
+    read_failure wording; and a network scope that cannot be written is a 500 carrying only the first
+    200 characters of the reason, because the form has one line for it.
+    """
+    import types
+
+    from weirvern import blocklists, networks, sluice
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ctx.settings = types.SimpleNamespace(sluice_iface="eth0", zeek_iface="", mgmt_iface="eth1",
+                                         sluice_interval_s=15)
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    def _same(path, payload, expected):
+        raw = b"" if payload is None else json.dumps(payload).encode()
+        (ls, lb) = _post_legacy(legacy.port, path, raw)
+        (fs, fb) = _post_flask(app, path, raw)
+        assert ls == fs == expected, (
+            f"{path} {payload}: console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}")
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:240]!r}\n  flask:   {fb[:240]!r}")
+        return json.loads(fb)
+
+    # ── sync ──────────────────────────────────────────────────────────────────────────────────
+    synced: list = []
+    _patch(monkeypatch, "weirvern.blocklists.ensure_default_sources", lambda client: None)
+    _patch(monkeypatch, "weirvern.blocklists.load_sources",
+           lambda client: [{"source_id": "ad", "enabled": True},
+                           {"source_id": "custom", "enabled": True},
+                           {"source_id": "off", "enabled": False}])
+    _patch(monkeypatch, "weirvern.blocklists.sync_source",
+           lambda client, src: (synced.append(src["source_id"]) or {"added": 2}))
+    body = _same("/api/blocklists/sync", None, 200)
+    # THE CUSTOM LIST IS NOT A FEED: syncing it would replace typed names with a URL's answer.
+    assert body == {"ok": True, "results": [{"source_id": "ad", "added": 2}]}, body
+    assert synced == ["ad", "ad"], synced
+
+    # ── add a source ──────────────────────────────────────────────────────────────────────────
+    def _refuse(client, url, name="", fmt="domains"):
+        raise ValueError("the list is in Adblock format, which this importer cannot read")
+
+    _patch(monkeypatch, "weirvern.blocklists.add_source", _refuse)
+    body = _same("/api/blocklists/source", {"url": "https://lists.example/x.txt"}, 400)
+    assert body["ok"] is False and "Adblock" in body["error"], body
+    assert "code" not in body, "a store refusal must not grow a code key"
+
+    _patch(monkeypatch, "weirvern.blocklists.add_source",
+           lambda client, url, name="", fmt="domains": {"source_id": "ad", "url": url,
+                                                        "format": fmt})
+    body = _same("/api/blocklists/source",
+                 {"url": "https://lists.example/x.txt", "format": "domains"}, 200)
+    assert body["source"]["format"] == "domains" and "Sync now" in body["note"], body
+
+    # ── the custom list ──────────────────────────────────────────────────────────────────────
+    body = _same("/api/blocklists/custom", {"action": "erase", "domain": "x"}, 400)
+    assert body == {"error": "action must be add or remove, not 'erase'", "code": 400}, body
+
+    def _bad_name(client, domain):
+        raise sluice.SluiceError("that is not a domain name")
+
+    _patch(monkeypatch, "weirvern.blocklists.add_custom_domain", _bad_name)
+    body = _same("/api/blocklists/custom", {"action": "add", "domain": "nope"}, 400)
+    assert body == {"ok": False, "error": "that is not a domain name"}, body
+
+    _patch(monkeypatch, "weirvern.blocklists.remove_custom_domain",
+           lambda client, domain: domain)
+    body = _same("/api/blocklists/custom", {"action": "remove", "domain": "bad.example"}, 200)
+    assert body == {"ok": True, "action": "remove", "domain": "bad.example"}, body
+
+    # ── toggle a list ────────────────────────────────────────────────────────────────────────
+    body = _same("/api/blocklists/enable", {"source_id": "ad", "enabled": "yes"}, 400)
+    assert body == {"error": "source_id and a boolean enabled are required", "code": 400}, body
+
+    _patch(monkeypatch, "weirvern.blocklists.set_source_enabled",
+           lambda client, sid, enabled: {"source_id": sid, "enabled": enabled})
+    on = _same("/api/blocklists/enable", {"source_id": "ad", "enabled": True}, 200)
+    assert on["note"].startswith("on \u2014 its names join"), on
+    off = _same("/api/blocklists/enable", {"source_id": "ad", "enabled": False}, 200)
+    assert off["note"].startswith("off \u2014 its names leave"), off
+
+    def _enable_boom(client, sid, enabled):
+        raise RuntimeError("the table is gone")
+
+    _patch(monkeypatch, "weirvern.blocklists.set_source_enabled", _enable_boom)
+    body = _same("/api/blocklists/enable", {"source_id": "ad", "enabled": True}, 503)
+    # The 503 keeps the read_failure wording, which NAMES the layer that failed and the exception.
+    assert body["ok"] is False and body["error"].startswith("could not read the data:"), body
+
+    # ── network scopes ──────────────────────────────────────────────────────────────────────
+    _patch(monkeypatch, "weirvern.networks.overview",
+           lambda client, hours=24: {"scopes": [], "hours": hours})
+
+    def _scope_refuse(client, body):
+        raise ValueError("a scope needs a name")
+
+    _patch(monkeypatch, "weirvern.networks.save_scope", _scope_refuse)
+    body = _same("/api/networks/save", {"name": ""}, 400)
+    assert body == {"error": "a scope needs a name", "code": 400}, body
+
+    _patch(monkeypatch, "weirvern.networks.save_scope",
+           lambda client, body: types.SimpleNamespace(public=lambda: {"id": "n1",
+                                                                     "name": body.get("name")}))
+    body = _same("/api/networks/save", {"name": "home"}, 200)
+    assert body["ok"] is True and body["scope"] == {"id": "n1", "name": "home"}, body
+
+    # THE 500 KEEPS THE CONSOLE'S 200-CHARACTER CUT.
+    _patch(monkeypatch, "weirvern.networks.delete_scope",
+           lambda client, sid: (_ for _ in ()).throw(RuntimeError("x" * 400)))
+    body = _same("/api/networks/delete", {"id": "n1"}, 500)
+    assert len(body["error"]) == len("could not delete the network scope: ") + 200, len(body["error"])
+
+    _patch(monkeypatch, "weirvern.networks.delete_scope", lambda client, sid: False)
+    body = _same("/api/networks/delete", {"id": "n1"}, 200)
+    assert body["ok"] is False and body["scopes"] == [], body
+
+    _patch(monkeypatch, "weirvern.networks.delete_scope", lambda client, sid: True)
+    body = _same("/api/networks/delete", {"id": "n1"}, 200)
+    assert body["ok"] is True, body
+    assert blocklists and networks, "the patches above must target the real modules"

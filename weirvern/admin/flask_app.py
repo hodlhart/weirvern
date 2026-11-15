@@ -1374,6 +1374,84 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = payloads.sluice_rule_disabled_failure(exc)
         return jsonify(payload), code
 
+    # ── the blocklist and network writes: one uniform shape, six routes ─────────────────────────
+
+    def _write_json(parse, call, failure, *, needs_body: bool = True):
+        """The shape these six share: gate, body, fields, one client, one fetcher.
+
+        ORDER IS THE CONTRACT and it is the console's: the gate before the body (`write_refusal`), the
+        body before the fields, and the fields before the database is opened. `parse` raises ValueError
+        for the house 400; `failure` answers what the fetcher could not, including a failed CONNECTION,
+        because the console wraps the connection in the same try.
+        """
+        from weirvern.admin import requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        args: dict = {}
+        if needs_body:
+            try:
+                body = web.json_body(request.get_data(cache=False))
+            except ValueError as exc:
+                return _json_error(400, str(exc))
+            try:
+                args = parse(body)
+            except ValueError as exc:
+                return _json_error(400, str(exc))
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = call(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/blocklists/sync")
+    def blocklist_sync():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        # NO BODY: the sync takes no input, and the console never reads one.
+        return _write_json(lambda body: {}, payloads.blocklist_sync,
+                           payloads.blocklist_sync_failure, needs_body=False)
+
+    @app.post("/api/blocklists/source")
+    def blocklist_source():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        return _write_json(web.blocklist_source_args, payloads.blocklist_source_add,
+                           payloads.blocklist_source_failure)
+
+    @app.post("/api/blocklists/custom")
+    def blocklist_custom():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        return _write_json(web.blocklist_custom_args, payloads.blocklist_custom,
+                           payloads.blocklist_custom_failure)
+
+    @app.post("/api/blocklists/enable")
+    def blocklist_enable():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        return _write_json(web.blocklist_enable_args, payloads.blocklist_enable,
+                           payloads.blocklist_enable_failure)
+
+    @app.post("/api/networks/save")
+    def networks_save():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        # THE BODY GOES THROUGH WHOLE: networks.save_scope owns the field rules.
+        return _write_json(lambda body: {"body": body}, payloads.network_scope_save,
+                           payloads.network_save_failure)
+
+    @app.post("/api/networks/delete")
+    def networks_delete():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _write_json(lambda body: {"scope_id": str(body.get("id") or "")},
+                           payloads.network_scope_delete, payloads.network_delete_failure)
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 
