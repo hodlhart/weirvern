@@ -195,6 +195,7 @@ log-only alerting):
 kubectl -n weirvern create secret generic weirvern-secrets \
   --from-literal=CLICKHOUSE_PASSWORD="$(openssl rand -base64 24)" \
   --from-literal=WEIRVERN_GUI_TOKEN="$(openssl rand -base64 24)" \
+  --from-literal=WEIRVERN_FLASK_SECRET="$(openssl rand -base64 32)" \
   --from-literal=PUSHOVER_USER_KEY='' \
   --from-literal=PUSHOVER_API_TOKEN=''
 ```
@@ -204,6 +205,26 @@ Read the break-glass token again with:
 ```sh
 kubectl -n weirvern get secret weirvern-secrets -o jsonpath='{.data.WEIRVERN_GUI_TOKEN}' | base64 -d
 ```
+
+The dashboard also needs `WEIRVERN_FLASK_SECRET`, which signs its session cookie and is declared on
+the GUI container as a required key: a Secret without it refuses to start that pod and names the key,
+rather than serving a login page that reads "the rendered UI is disabled" while the pod reports
+Ready. An install from before the switch must add it, and restart the pod so it takes effect (a
+Secret reaches the process at container start):
+
+```sh
+kubectl -n weirvern patch secret weirvern-secrets --type merge \
+  -p "{\"data\":{\"WEIRVERN_FLASK_SECRET\":\"$(openssl rand -base64 32 | base64 -w0)\"}}"
+kubectl -n weirvern rollout restart deploy/weirvern-gui
+kubectl -n weirvern exec deploy/weirvern-gui -- printenv WEIRVERN_FLASK_SECRET
+```
+
+The restart is not tidiness: a Secret's values reach the process at container start, so the running
+pod keeps the environment it booted with until it restarts, and the second command proves the new
+value is in it.
+
+The dashboard itself runs on Flask behind waitress, with every API route served by that app; nothing
+is proxied to an older handler.
 
 ## Security and trust
 

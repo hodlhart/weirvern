@@ -334,10 +334,18 @@ def test_the_last_resort_recovery_command_uses_real_api_names():
 # The discovery was confusing enough that I first suspected a token baked into the IMAGE -- which
 # would have been a public credential -- before checking timestamps showed the mundane cause.
 def test_the_readme_says_the_restart_is_required():
-    """Documenting the patch without the restart hands the operator a token that does not work."""
+    """Documenting the patch without the restart hands the operator a token that does not work.
+
+    THERE ARE TWO PATCH COMMANDS NOW (the operator token and the Flask signing key), so the block
+    under test is the one that patches the TOKEN -- anchoring on the first occurrence would have this
+    check assert about whichever block a doc edit happened to place first.
+    """
     text = _docs_text()
-    idx = text.index("patch secret weirvern-secrets")
-    window = text[idx: idx + 900]
+    windows = [text[i:i + 900] for i in range(len(text))
+               if text.startswith("patch secret weirvern-secrets", i)]
+    windows = [w for w in windows if "WEIRVERN_GUI_TOKEN" in w]
+    assert windows, "the README no longer shows how to set the operator token"
+    window = windows[0]
     assert "rollout restart deploy/weirvern-gui" in window, (
         "the README's set-a-token command omits the restart, so the token it writes is rejected by "
         "the running pod until something else restarts it"
