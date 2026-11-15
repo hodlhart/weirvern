@@ -1049,17 +1049,13 @@ def _build_handler(ctx: GuiContext):
             an error page for one card would take down the views around it, and an empty report
             would read as "nothing has been trained".
             """
-            from weirvern.models import actions  # noqa: PLC0415
-
             try:
                 with self._with_client() as client:
-                    row = actions.latest(client, actions.RETRAIN)
-                    decision = (actions.latest(client, actions.KEEP)
-                                or actions.latest(client, actions.TRASH))
+                    # SHARED WITH THE FLASK SURFACE (payloads.model_retrain).
+                    payload = payloads.model_retrain(client)
             except Exception as exc:  # noqa: BLE001
-                return self._json(web_api.retrain_payload(
-                    None, None, available=False, reason=read_failure(exc)))
-            self._json(web_api.retrain_payload(row, decision))
+                return self._json(payloads.model_retrain_failure(exc))
+            self._json(payload)
 
         def _model_retrain_write(self) -> None:
             """File a retrain, or judge the candidate it produced.
@@ -1338,27 +1334,17 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            domain = (query.get("domain") or [""])[0].strip()
-            if len(domain) > 200:
-                return self._error(400, "the domain filter is implausibly long")
-            bl_client = (query.get("client") or [""])[0].strip()
-            if len(bl_client) > 64:
-                return self._error(400, "the client filter is implausibly long")
-            offset = _int_arg(query, "offset", 0, 0, 1000000)
-            limit = _int_arg(query, "limit", 200, 1, 500)
             try:
-                from weirvern import sluice_store  # noqa: PLC0415
+                args = blocked_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            try:
                 with self._with_client() as client:
-                    gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
-                    payload = soc_mod.blocked_view(
-                        client, hours=hours, domain=domain, client_ip=bl_client,
-                        limit=limit, offset=offset, gate=gate,
-                    )
+                    # SHARED WITH THE FLASK SURFACE (payloads.blocked): the gate state is read
+                    # beside the hits, so the tab cannot show one without the other.
+                    payload = payloads.blocked(client, hours=hours, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("blocked view unavailable: %s", exc)
-                return self._json({"available": False, "hits": [], "reason":
-                                   read_failure(exc),
-                                   "data_error": str(exc)})
+                return self._json(payloads.blocked_failure(exc))
             self._json(payload)
 
         def _dns_reverse(self, query: dict) -> None:
@@ -1400,20 +1386,9 @@ def _build_handler(ctx: GuiContext):
             Read-only: this answers "is there a newer release" and never changes the running
             deployment. Applying an update remains a pipeline operation, not an HTTP verb.
             """
-            from weirvern.admin import update as update_mod
-
-            try:
-                current = status_mod._running_version(ctx.backend)
-            except Exception:  # noqa: BLE001
-                from weirvern import __version__  # noqa: PLC0415
-
-                current = __version__
-            raw = query.get("refresh")
-            refresh = str(raw[0] if isinstance(raw, list) and raw else (raw or "")).lower() in {
-                "1", "true", "yes", "on",
-            }
-            self._json(update_mod.check(current, refresh=refresh))
-
+            # SHARED WITH THE FLASK SURFACE (payloads.update_meta), including the version fallback
+            # when the backend cannot report one.
+            self._json(payloads.update_meta(ctx.backend, refresh=update_refresh(query)))
 
         def _health(self, query: dict) -> None:
             """DEEP health: the checks, ingestion trend, table sizes, and the sensor.
@@ -1582,29 +1557,16 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            tracked = [h.strip() for h in (query.get("host") or []) if h.strip()]
-            for addr in tracked:
-                if len(addr) > 64 or not all(c.isalnum() or c in ".:-_" for c in addr):
-                    return self._error(400, f"host does not look like an address: {addr!r}")
-            if len(tracked) > 64:
-                return self._error(400, "too many hosts to track (limit 64)")
+            try:
+                tracked = graph_hosts(query.get("host") or [])
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    if tracked:
-                        payload = assets_mod.top_edges_for(client, tracked, hours=hours)
-                        # top_edges_for answers "which edges touch these hosts"; the graph view
-                        # also wants the node set even when an edge is missing, so the
-                        # selection is echoed back for the UI to draw as selected.
-                        payload.setdefault("tracked", tracked)
-                    else:
-                        payload = assets_mod.connection_graph(client, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.graph).
+                    payload = payloads.graph(client, hours=hours, tracked=tracked)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("graph unavailable: %s", exc)
-                return self._json({
-                    "available": False, "nodes": [], "edges": [],
-                    "reason": read_failure(exc),
-                    "data_error": str(exc),
-                })
+                return self._json(payloads.graph_failure(exc))
             self._json(payload)
 
         def _host_identity(self) -> None:
@@ -2493,37 +2455,19 @@ def _build_handler(ctx: GuiContext):
             chart needs to be useful. `log` names a label from soc.ZEEK_LOGS; anything else is
             rejected rather than interpolated, because the table name reaches the SQL text.
             """
-            label = (query.get("log") or [""])[0].strip()
-            if not label:
-                return self._error(400, "log is required, e.g. /api/zeeklog?log=ssl")
-            allowed = dict(soc_mod.ZEEK_LOGS)
-            table = allowed.get(label)
-            if not table:
-                return self._error(
-                    400, f"unknown log {label!r}; expected one of: {', '.join(sorted(allowed))}"
-                )
+            try:
+                args = zeeklog_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            filters: dict[str, str] = {"log": label}
-            for key in ("service", "query"):
-                raw = (query.get(key) or [""])[0].strip()
-                if not raw:
-                    continue
-                if len(raw) > 253:
-                    return self._error(400, f"{key} is too long to filter on")
-                filters[key] = raw
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.zeek_log_hosts(client, table=table, label=label,
-                                                      hours=hours, filters=filters)
+                    # SHARED WITH THE FLASK SURFACE (payloads.zeeklog).
+                    payload = payloads.zeeklog(client, hours=hours, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("zeek log detail unavailable: %s", exc)
-                return self._json({
-                    "available": False, "points": [], "log": label,
-                    "reason": read_failure(exc),
-                    "data_error": str(exc),
-                })
+                return self._json(payloads.zeeklog_failure(exc, label=args["label"]))
             self._json(payload)
 
         # -- writes ---------------------------------------------------------
@@ -4661,6 +4605,68 @@ def findings_args(query: dict) -> dict:
     except (TypeError, ValueError):
         raise ValueError("limit must be an integer") from None
     return {"ip": ip, "severity": severity, "limit": limit}
+
+
+def graph_hosts(values) -> list[str]:
+    """The tracked-host selection for /api/graph, from a LIST of repeated query values.
+
+    TAKES THE LIST, NOT THE QUERY. The console's `parse_qs` hands a list for a repeated key and
+    Flask's `MultiDict` needs `getlist` to produce one, so a parser that read `query.get("host")`
+    would see only the first value on the framework side. The two call sites pass different things
+    and this function is the seam.
+    """
+    tracked = [str(v).strip() for v in values if str(v).strip()]
+    for addr in tracked:
+        if not _address_ok(addr):
+            raise ValueError(f"host does not look like an address: {addr!r}")
+    # An unbounded IN list is a way to make the database do arbitrary work from an HTTP request.
+    if len(tracked) > 64:
+        raise ValueError("too many hosts to track (limit 64)")
+    return tracked
+
+
+def blocked_args(query: dict) -> dict:
+    """The Blocked tab's filters and paging."""
+    domain = str(_first(query, "domain", "") or "").strip()
+    if len(domain) > 200:
+        raise ValueError("the domain filter is implausibly long")
+    client_ip = str(_first(query, "client", "") or "").strip()
+    if len(client_ip) > 64:
+        raise ValueError("the client filter is implausibly long")
+    return {"domain": domain, "client_ip": client_ip,
+            "offset": _int_arg(query, "offset", 0, 0, 1000000),
+            "limit": _int_arg(query, "limit", 200, 1, 500)}
+
+
+def zeeklog_args(query: dict) -> dict:
+    """`log`, its table from the allow-list, and the optional service/query filters.
+
+    THE TABLE NAME IS RESOLVED HERE, from `soc.ZEEK_LOGS`, because it reaches the SQL text. A parser
+    that passed the label through would let a request choose a table.
+    """
+    label = str(_first(query, "log", "") or "").strip()
+    if not label:
+        raise ValueError("log is required, e.g. /api/zeeklog?log=ssl")
+    allowed = dict(soc_mod.ZEEK_LOGS)
+    table = allowed.get(label)
+    if not table:
+        raise ValueError(
+            f"unknown log {label!r}; expected one of: {', '.join(sorted(allowed))}")
+    filters: dict[str, str] = {"log": label}
+    for key in ("service", "query"):
+        raw = str(_first(query, key, "") or "").strip()
+        if not raw:
+            continue
+        if len(raw) > 253:
+            raise ValueError(f"{key} is too long to filter on")
+        filters[key] = raw
+    return {"table": table, "label": label, "filters": filters}
+
+
+def update_refresh(query: dict) -> bool:
+    """The `refresh` flag on the update card. No strip: the console has always compared as-is."""
+    raw = str(_first(query, "refresh", "") or "").lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

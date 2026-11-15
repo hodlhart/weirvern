@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 39 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 44 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -783,6 +783,72 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except ValueError as exc:
             return _json_error(400, str(exc))
         return _soft_route(payloads.findings, payloads.findings_failure, **args)
+
+    @app.get("/api/models/retrain")
+    @gated
+    def model_retrain():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _soft_route(payloads.model_retrain, payloads.model_retrain_failure)
+
+    @app.get("/api/graph")
+    @gated
+    def graph():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        # getlist, not get: a repeated `host` is the whole point of the tracked selection, and a
+        # scalar read would silently track only the first address.
+        try:
+            tracked = web.graph_hosts(request.args.getlist("host"))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.graph, payloads.graph_failure, hours=hours, tracked=tracked)
+
+    @app.get("/api/blocked")
+    @gated
+    def blocked():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            args = web.blocked_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.blocked, payloads.blocked_failure, hours=hours, **args)
+
+    @app.get("/api/zeeklog")
+    @gated
+    def zeeklog():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        # The console resolves the log label BEFORE the window, so a bad log is answered as such
+        # even when the window is bad too.
+        try:
+            args = web.zeeklog_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        failure = functools.partial(payloads.zeeklog_failure, label=args["label"])
+        return _soft_route(payloads.zeeklog, failure, hours=hours, **args)
+
+    @app.get("/api/update")
+    @gated
+    def update():
+        """No client and no catch: the console lets an exception become its own 500 body."""
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        return jsonify(payloads.update_meta(ctx.backend,
+                                           refresh=web.update_refresh(request.args)))
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

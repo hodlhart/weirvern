@@ -130,6 +130,16 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                           {"hosts": []}, "?ja4=t13d1516h2_abc"),
     "/api/findings": ("findings", "weirvern.admin.payloads.findings",
                       {"available": True, "findings": []}, "?severity=high&limit=5"),
+    "/api/models/retrain": ("model_retrain", "weirvern.admin.payloads.model_retrain",
+                            {"available": True}, ""),
+    "/api/graph": ("graph", "weirvern.admin.payloads.graph",
+                   {"available": True, "nodes": [], "edges": []}, "?hours=6"),
+    "/api/blocked": ("blocked", "weirvern.admin.payloads.blocked",
+                     {"available": True, "hits": []}, "?hours=6&limit=5"),
+    "/api/zeeklog": ("zeeklog", "weirvern.admin.payloads.zeeklog",
+                     {"available": True, "points": []}, "?log=ssl&hours=6"),
+    "/api/update": ("update_meta", "weirvern.admin.payloads.update_meta",
+                    {"available": True, "current": "0.0.0"}, "?refresh=1"),
 }
 
 
@@ -293,7 +303,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 36, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 41, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -441,6 +451,11 @@ REFUSALS = [
     ("/api/fingerprints", "?ja4=###"),
     ("/api/findings", "?severity=bogus"),
     ("/api/findings", "?limit=abc"),
+    ("/api/zeeklog", ""),
+    ("/api/zeeklog", "?log=bogus"),
+    ("/api/graph", "?host=bad%20host!"),
+    ("/api/blocked", "?domain=" + "a" * 201),
+    ("/api/blocked", "?client=" + "a" * 65),
 ]
 
 
@@ -500,4 +515,27 @@ def test_the_findings_filters_parse_identically_and_the_limit_is_NOT_clamped(sur
         f"the findings limit is not supposed to be clamped: {seen}"
     )
     assert [c.get("ip") for c in seen] == ["203.0.113.9", "203.0.113.9"]
+
+
+def test_the_graph_tracked_selection_survives_repetition_on_both_surfaces(surfaces, monkeypatch):
+    """`?host=A&host=B` must reach the fetcher as TWO addresses, not one.
+
+    THIS IS THE QUERY-SHAPE TRAP AGAIN, in a place bytes cannot see it. The console's `parse_qs`
+    hands a list for a repeated key; Flask's `MultiDict.get` returns the FIRST scalar. A parser that
+    read `query.get("host")` would silently track one host and render a graph that looks like the
+    operator's selection while ignoring most of it. The route uses `getlist`, and this asserts the
+    two surfaces hand the fetcher the same list.
+    """
+    rec = _Recorder({"available": True, "nodes": [], "edges": []})
+    _patch(monkeypatch, "weirvern.admin.payloads.graph", rec)
+    legacy, app = surfaces()
+
+    q = "?hours=6&host=203.0.113.9&host=203.0.113.10"
+    _legacy_http(legacy.port, "/api/graph" + q)
+    _flask_http(app, "/api/graph" + q)
+
+    tracked = [c.get("tracked") for c in rec.seen]
+    assert tracked == [["203.0.113.9", "203.0.113.10"], ["203.0.113.9", "203.0.113.10"]], (
+        f"a repeated host was collapsed on one surface: {tracked}"
+    )
 

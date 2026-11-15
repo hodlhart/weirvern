@@ -690,6 +690,129 @@ def findings_failure(exc: BaseException) -> dict[str, Any]:
             "reason": "the data could not be read"}
 
 
+def model_retrain(client: Client) -> dict[str, Any]:
+    """The last forced retrain: what state it is in, and what it produced.
+
+    A FAILED read is a 200 with `available: false` and the reason, like every other panel: an error
+    page for one card would take down the views around it, and an empty report would read as
+    "nothing has been trained".
+    """
+    from weirvern.models import actions  # noqa: PLC0415
+
+    try:
+        row = actions.latest(client, actions.RETRAIN)
+        decision = (actions.latest(client, actions.KEEP)
+                    or actions.latest(client, actions.TRASH))
+    except Exception as exc:  # noqa: BLE001
+        return model_retrain_failure(exc)
+    return web_api.retrain_payload(row, decision)
+
+
+def model_retrain_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/models/retrain."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("model retrain state unavailable: %s", exc)
+    return web_api.retrain_payload(None, None, available=False, reason=read_failure(exc))
+
+
+def graph(client: Client, *, hours: int, tracked: list[str]) -> dict[str, Any]:
+    """The connection graph, optionally restricted to the tracked hosts.
+
+    AN EMPTY SELECTION MEANS NO RESTRICTION and returns the whole graph, which is what an operator
+    expects from a cleared multi-select. The selection is echoed back when it is non-empty, so the UI
+    can draw it as selected even when an edge is missing.
+    """
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    try:
+        if tracked:
+            payload = assets_mod.top_edges_for(client, tracked, hours=hours)
+            payload.setdefault("tracked", tracked)
+            return payload
+        return assets_mod.connection_graph(client, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return graph_failure(exc)
+
+
+def graph_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/graph."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("graph unavailable: %s", exc)
+    return {"available": False, "nodes": [], "edges": [],
+            "reason": read_failure(exc), "data_error": str(exc)}
+
+
+def blocked(client: Client, *, hours: int, domain: str, client_ip: str, limit: int,
+            offset: int) -> dict[str, Any]:
+    """The Blocked tab: hits, live blocks, live alerts and the gate state, in one read."""
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    try:
+        gate = sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+        return soc_mod.blocked_view(
+            client, hours=hours, domain=domain, client_ip=client_ip,
+            limit=limit, offset=offset, gate=gate,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return blocked_failure(exc)
+
+
+def blocked_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/blocked."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("blocked view unavailable: %s", exc)
+    return {"available": False, "hits": [], "reason": read_failure(exc),
+            "data_error": str(exc)}
+
+
+def zeeklog(client: Client, *, hours: int, table: str, label: str,
+            filters: dict) -> dict[str, Any]:
+    """Per-log detail for ONE Zeek log, for click-through from the Zeek view.
+
+    `table` is resolved from the label ALLOW-LIST before it ever reaches the SQL text, which is why
+    the parser returns both: the table name is never interpolated from the request.
+    """
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        return soc_mod.zeek_log_hosts(client, table=table, label=label, hours=hours,
+                                      filters=filters)
+    except Exception as exc:  # noqa: BLE001
+        return zeeklog_failure(exc, label=label)
+
+
+def zeeklog_failure(exc: BaseException, *, label: str = "") -> dict[str, Any]:
+    """The console's own failure shape for /api/zeeklog, naming the log that was asked for."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("zeek log detail unavailable: %s", exc)
+    return {"available": False, "points": [], "log": label,
+            "reason": read_failure(exc), "data_error": str(exc)}
+
+
+def update_meta(backend: Any, *, refresh: bool) -> dict[str, Any]:
+    """Release metadata for Settings -> Software update.
+
+    READ-ONLY: this answers "is there a newer release" and never changes the running deployment.
+    Applying an update remains a pipeline operation, not an HTTP verb. A backend that cannot report
+    its version falls back to the package version rather than failing the card.
+    """
+    from weirvern.admin import update as update_mod  # noqa: PLC0415
+
+    try:
+        current = status_mod._running_version(backend)
+    except Exception:  # noqa: BLE001
+        from weirvern import __version__  # noqa: PLC0415
+
+        current = __version__
+    return update_mod.check(current, refresh=refresh)
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415

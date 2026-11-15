@@ -182,26 +182,40 @@ def test_the_route_paths_match_what_the_frontend_fetches():
 
 
 def test_each_new_route_validates_its_input_before_querying():
-    """The handlers must reject bad input rather than pass it into a query.
+    """The routes must reject bad input rather than pass it into a query.
 
     `/api/zeeklog` is the one that matters most: its log label selects a TABLE NAME, so an
-    unvalidated value would be interpolated into SQL. The check is that the handler resolves
-    the label through ZEEK_LOGS rather than using it directly.
+    unvalidated value would be interpolated into SQL.
+
+    THE CHECK MOVED WITH THE PARSER. When the routes crossed to Flask the validation was extracted
+    into `zeeklog_args` and `graph_hosts`, which BOTH surfaces call, so asserting on the handler body
+    would now demand the old copy stay there and forbid the port. The property is unchanged: the
+    label is resolved through ZEEK_LOGS, and the tracked-host list is validated and capped.
     """
     src = (WEB.parent / "web.py").read_text()
-    i = src.find("def _zeeklog")
-    assert i > 0, "_zeeklog handler not found"
-    body = src[i : i + 1800]
-    assert "ZEEK_LOGS" in body, (
+
+    i = src.find("def zeeklog_args(")
+    assert i > 0, "the zeeklog parser not found"
+    parser = src[i:src.index("\ndef ", i + 10)]
+    assert "ZEEK_LOGS" in parser, (
         "the log label must be resolved through soc.ZEEK_LOGS, not interpolated into the SQL: "
         "the table name reaches an f-string in soc.zeek_log_hosts"
     )
-    assert "allowed.get(label)" in body, "the label is not looked up in the allow-list"
+    assert "allowed.get(label)" in parser, "the label is not looked up in the allow-list"
 
-    j = src.find("def _graph")
-    graph = src[j : j + 1800]
+    j = src.find("def graph_hosts(")
+    assert j > 0, "the graph parser not found"
+    graph = src[j:src.index("\ndef ", j + 10)]
     assert "too many hosts" in graph, "the tracked-host list must be capped"
     assert "does not look like an address" in graph, "tracked hosts must be validated"
+
+    # And the handlers must still go THROUGH the parsers: a shared helper nobody calls is no guard.
+    for handler_name, parser_name in (("def _zeeklog", "zeeklog_args("),
+                                      ("def _graph", "graph_hosts(")):
+        k = src.find(handler_name)
+        assert k > 0, f"{handler_name} not found"
+        body = src[k:src.index("\n        def ", k + 12)]
+        assert parser_name in body, f"{handler_name} does not use its shared parser"
 
 
 def test_soc_refuses_a_label_and_table_that_disagree():
