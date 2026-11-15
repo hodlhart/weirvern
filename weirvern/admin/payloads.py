@@ -976,6 +976,93 @@ def users_list(*, store: Any, accounts_on: bool, note: str) -> dict[str, Any]:
             "roles": list(users_mod.ROLES)}
 
 
+ACCOUNTS_UNAVAILABLE = "the account store is not available on this GUI"
+
+
+def user_create(store: Any, *, username: str, role: str, password: str,
+                must_change: bool) -> tuple[int, dict[str, Any]]:
+    """Create an account. Admin only; the caller checks the role.
+
+    THE STORE DECIDES THE POLICY -- a duplicate name, a password under the floor, a role outside
+    ROLES -- and this function only turns its answer into the console's status and body. The 400 for
+    a UserError carries no `code` key; that shape is the console's and is preserved.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    try:
+        record = store.create_user(username, role, password, must_change=must_change)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not create the account: {exc}", "code": 502}
+    logger.info("created account %s with role %s", record.username, record.role)
+    return 200, {"ok": True, "user": record.public()}
+
+
+def user_role(store: Any, sessions: Any, *, username: str, role: str) -> tuple[int, dict[str, Any]]:
+    """Change an account's role, revoking its sessions only when the role actually CHANGED.
+
+    THE BEFORE-ROLE IS READ AS A STRING, BEFORE THE WRITE. `find()` returns the store's LIVE record
+    and `set_role` mutates it in place, so reading the record's role afterwards always says
+    "unchanged"; and a no-op that revokes signs the operator out of the tab they are working in,
+    which reads as the change having failed (reported live: "I can't change admin to admin").
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    try:
+        existing = store.find(username)
+        before_role = existing.role if existing is not None else None
+        store.set_role(username, role)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not change the role: {exc}", "code": 502}
+    # An open tab keeps acting under the old role until its session is dropped, so a real change
+    # revokes immediately; a no-op changed nothing and revokes nothing.
+    if before_role is not None and before_role != role and sessions is not None:
+        sessions.revoke_user(username)
+    logger.info("role for %s set to %s", username, role)
+    return 200, {"ok": True, "username": username, "role": role}
+
+
+def user_delete(store: Any, sessions: Any, *, username: str) -> tuple[int, dict[str, Any]]:
+    """Delete an account. The store refuses to remove the last admin."""
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    try:
+        store.delete_user(username)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not delete the account: {exc}", "code": 502}
+    if sessions is not None:
+        sessions.revoke_user(username)
+    logger.info("deleted account %s", username)
+    return 200, {"ok": True, "username": username}
+
+
+def user_reset(store: Any, sessions: Any, *, username: str,
+               password: str) -> tuple[int, dict[str, Any]]:
+    """Set a temporary password for another account and hold it at the password gate.
+
+    The lost-password path that keeps this usable without email: an admin mints a password and hands
+    it over, and the account must replace it at next sign-in.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    try:
+        store.set_password(username, password, must_change=True)
+    except users_mod.UserError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": f"could not reset the password: {exc}", "code": 502}
+    if sessions is not None:
+        sessions.revoke_user(username)
+    logger.info("password reset for %s (must change at next sign-in)", username)
+    return 200, {"ok": True, "username": username,
+                 "note": "the account must change this password at next sign-in"}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

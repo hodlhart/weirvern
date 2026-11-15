@@ -2755,58 +2755,30 @@ def _build_handler(ctx: GuiContext):
                 return self._error(400, str(exc))
             store = getattr(ctx, "user_store", None)
             if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            try:
-                record = store.create_user(
-                    str(body.get("username") or ""),
-                    str(body.get("role") or users_mod.ROLE_VIEWER),
-                    str(body.get("password") or ""),
-                    must_change=bool(body.get("must_change")),
-                )
-            except users_mod.UserError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not create the account: {exc}")
-            logger.info("created account %s with role %s", record.username, record.role)
-            self._json({"ok": True, "user": record.public()})
+                return self._error(503, payloads.ACCOUNTS_UNAVAILABLE)
+            # SHARED WITH THE FLASK SURFACE (payloads.user_create), status included.
+            code, payload = payloads.user_create(store, **user_write_args(body, kind="create"))
+            self._json(payload, code)
 
         def _users_role(self) -> None:
-            """Change an account's role. Admin only, and the last admin is protected by the
-            store: demoting the only admin would leave nobody able to manage accounts."""
+            """Change an account's role. Admin only.
+
+            The last admin is protected by the STORE, not here: demoting the only admin would leave
+            nobody able to manage accounts. The no-op rule (a role change that changes nothing must
+            revoke nothing) lives in payloads.user_role, shared with the Flask surface.
+            """
             if not self._authorize():
                 return
             try:
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            username = str(body.get("username") or "").strip().lower()
-            role = str(body.get("role") or "")
             store = getattr(ctx, "user_store", None)
             if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            try:
-                # The ROLE STRING, captured before the write: `find()` returns the store's
-                # live record, and set_role mutates it in place -- comparing the record's
-                # role AFTER the call would always say "unchanged". (Caught by the test for
-                # exactly this: the comparison must be between strings.)
-                existing = store.find(username)
-                before_role = existing.role if existing is not None else None
-                store.set_role(username, role)
-            except users_mod.UserError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not change the role: {exc}")
-            # An open tab keeps acting under the old role until its session is dropped, so a role
-            # CHANGE revokes the account's sessions immediately. A NO-OP -- setting the role the
-            # account already has -- changed nothing and must revoke nothing: it used to sign the
-            # operator out of the very tab they were working in, which reads as the change having
-            # failed (reported live: "I can't change admin to admin").
-            if before_role is not None and before_role != role:
-                sessions = getattr(ctx, "sessions", None)
-                if sessions is not None:
-                    sessions.revoke_user(username)
-            logger.info("role for %s set to %s", username, role)
-            self._json({"ok": True, "username": username, "role": role})
+                return self._error(503, payloads.ACCOUNTS_UNAVAILABLE)
+            code, payload = payloads.user_role(
+                store, getattr(ctx, "sessions", None), **user_write_args(body, kind="role"))
+            self._json(payload, code)
 
         def _users_delete(self) -> None:
             """Delete an account. Admin only; the last admin cannot be deleted (store guard)."""
@@ -2816,28 +2788,19 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            username = str(body.get("username") or "").strip().lower()
             store = getattr(ctx, "user_store", None)
             if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            try:
-                store.delete_user(username)
-            except users_mod.UserError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not delete the account: {exc}")
-            sessions = getattr(ctx, "sessions", None)
-            if sessions is not None:
-                sessions.revoke_user(username)
-            logger.info("deleted account %s", username)
-            self._json({"ok": True, "username": username})
+                return self._error(503, payloads.ACCOUNTS_UNAVAILABLE)
+            code, payload = payloads.user_delete(
+                store, getattr(ctx, "sessions", None), **user_write_args(body, kind="delete"))
+            self._json(payload, code)
 
         def _users_reset(self) -> None:
             """Set a new password for ANOTHER account, and force a change at next sign-in.
 
-            The lost-password path that keeps this feature usable without email: an admin
-            mints a temporary password and hands it over, and the account is held at the
-            password gate until its owner replaces it.
+            The lost-password path that keeps this feature usable without email: an admin mints a
+            temporary password and hands it over, and the account is held at the password gate until
+            its owner replaces it.
             """
             if not self._authorize():
                 return
@@ -2845,23 +2808,12 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            username = str(body.get("username") or "").strip().lower()
-            password = str(body.get("password") or "")
             store = getattr(ctx, "user_store", None)
             if store is None:
-                return self._error(503, "the account store is not available on this GUI")
-            try:
-                store.set_password(username, password, must_change=True)
-            except users_mod.UserError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
-            except Exception as exc:  # noqa: BLE001
-                return self._error(502, f"could not reset the password: {exc}")
-            sessions = getattr(ctx, "sessions", None)
-            if sessions is not None:
-                sessions.revoke_user(username)
-            logger.info("password reset for %s (must change at next sign-in)", username)
-            self._json({"ok": True, "username": username,
-                        "note": "the account must change this password at next sign-in"})
+                return self._error(503, payloads.ACCOUNTS_UNAVAILABLE)
+            code, payload = payloads.user_reset(
+                store, getattr(ctx, "sessions", None), **user_write_args(body, kind="reset"))
+            self._json(payload, code)
 
         def _review(self) -> None:
             """Record an analyst's disposition of one anomaly (ack / resolve / false-positive).
@@ -4117,6 +4069,30 @@ def review_args(body: dict) -> dict:
         raise ValueError("'window_start' and 'src_addr' are required")
     return {"window_start": window_start, "src_addr": src_addr, "state": state,
             "note": note, "adjustment": body.get("adjustment")}
+
+
+def user_write_args(body: dict, *, kind: str) -> dict:
+    """The account write's fields. `kind` is one of create, role, delete, reset.
+
+    CREATE KEEPS THE NAME AS TYPED; every other kind strips and lowercases it. The store normalises
+    on create anyway, and changing the other three would alter which row a name matches. The role
+    defaults to viewer on create and is NOT defaulted on role, where an empty string is the store's
+    to reject with its own sentence.
+    """
+    raw_name = str(body.get("username") or "")
+    if kind == "create":
+        return {
+            "username": raw_name,
+            "role": str(body.get("role") or users_mod.ROLE_VIEWER),
+            "password": str(body.get("password") or ""),
+            "must_change": bool(body.get("must_change")),
+        }
+    username = raw_name.strip().lower()
+    if kind == "role":
+        return {"username": username, "role": str(body.get("role") or "")}
+    if kind == "reset":
+        return {"username": username, "password": str(body.get("password") or "")}
+    return {"username": username}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

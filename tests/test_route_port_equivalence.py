@@ -275,6 +275,10 @@ def surfaces():
         # than comparing one JSON body with a traceback.
         app.config["PROPAGATE_EXCEPTIONS"] = False
         started.append(legacy)
+        # THE CONTEXT IS SHARED by both surfaces, and a test that wants an account store installed
+        # has to reach it. GuiServer does not keep one, so the fixture hands it back here rather
+        # than making callers rebuild it.
+        legacy.ctx = ctx  # type: ignore[attr-defined]
         return legacy, app
 
     try:
@@ -672,6 +676,10 @@ def test_the_users_read_is_admin_gated_identically_and_answers_when_granted(surf
 PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/watch": ("watch", "weirvern.admin.payloads.watch"),
     "/api/review": ("review", "weirvern.admin.payloads.review"),
+    "/api/users/create": ("user_create", "weirvern.admin.payloads.user_create"),
+    "/api/users/role": ("user_role", "weirvern.admin.payloads.user_role"),
+    "/api/users/delete": ("user_delete", "weirvern.admin.payloads.user_delete"),
+    "/api/users/reset": ("user_reset", "weirvern.admin.payloads.user_reset"),
 }
 
 
@@ -688,7 +696,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 2, (
+    assert len(PORTED_WRITES) >= 6, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -811,3 +819,115 @@ def test_the_review_write_answers_identically(surfaces, monkeypatch):
     assert json.loads(fb) == json.loads(lb)
     assert json.loads(fb).get("adjustment"), "the adjustment is missing from the answer"
     assert len(adjustments) == 2, adjustments
+
+
+def test_the_account_writes_answer_identically(surfaces, monkeypatch):
+    """Create, role, delete and reset: same store calls, same statuses, same words.
+
+    THE NO-OP ROLE CHANGE IS THE CASE WORTH PINNING. Setting the role an account already has must
+    revoke NOTHING -- a revoke signs the operator out of the tab they are working in, which reads as
+    the change having failed. The store's `find()` returns its LIVE record and `set_role` mutates it
+    in place, so this stub mutates in place too; a port that read the role after the write would
+    revoke on every call and the difference shows up here.
+    """
+    import types
+
+    from weirvern.admin import users as users_mod
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    calls: list = []
+    revoked: list = []
+    roles = {"alice": "viewer", "bob": "admin"}
+
+    class _Record:
+        def __init__(self, username, role):
+            self.username = username
+            self.role = role
+
+        def public(self):
+            return {"username": self.username, "role": self.role}
+
+    class _Store:
+        def create_user(self, username, role, password, must_change=False):
+            calls.append(("create", username, role, password, must_change))
+            return _Record(username, role)
+
+        def find(self, username):
+            return _Record(username, roles[username]) if username in roles else None
+
+        def set_role(self, username, role):
+            calls.append(("role", username, role))
+            roles[username] = role  # in place, like the real store
+
+        def delete_user(self, username):
+            calls.append(("delete", username))
+            roles.pop(username, None)
+
+        def set_password(self, username, password, must_change=False):
+            calls.append(("password", username, password, must_change))
+
+    ctx.user_store = _Store()
+    ctx.sessions = types.SimpleNamespace(revoke_user=lambda u: revoked.append(u) or 0)
+
+    def _compare(path, payload):
+        """Run the same request on both surfaces from the same starting state."""
+        def one(surface):
+            del calls[:], revoked[:]
+            roles.clear()
+            roles.update({"alice": "viewer", "bob": "admin"})
+            raw = json.dumps(payload).encode()
+            if surface == "console":
+                status, body = _post_legacy(legacy.port, path, raw)
+            else:
+                status, body = _post_flask(app, path, raw)
+            return status, body, list(calls), list(revoked)
+
+        ls, lb, lcalls, lrevoked = one("console")
+        fs, fb, fcalls, frevoked = one("flask")
+        assert fs == ls, f"{path} {payload}: console {ls}, flask {fs}"
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:200]!r}\n  flask:   {fb[:200]!r}")
+        assert fcalls == lcalls, (
+            f"{path} {payload}: the surfaces touched the store differently.\n"
+            f"  console: {lcalls}\n  flask:   {fcalls}")
+        assert frevoked == lrevoked, (
+            f"{path} {payload}: the surfaces revoked different sessions.\n"
+            f"  console: {lrevoked}\n  flask:   {frevoked}")
+        return json.loads(fb)
+
+    # 1. Create: the record's public() rides the answer.
+    body = _compare("/api/users/create",
+                    {"username": "carol", "role": "viewer", "password": "long enough to pass"})
+    assert body["user"] == {"username": "carol", "role": "viewer"}
+
+    # 2. A real role change revokes; setting the SAME role revokes nothing.
+    _compare("/api/users/role", {"username": "alice", "role": "admin"})
+    assert revoked == ["alice"]
+    _compare("/api/users/role", {"username": "bob", "role": "admin"})
+    assert revoked == [], "a no-op role change signed the operator out"
+
+    # 3. Delete and reset both revoke.
+    _compare("/api/users/delete", {"username": "alice"})
+    assert revoked == ["alice"]
+    _compare("/api/users/reset", {"username": "bob", "password": "temporary one"})
+    assert revoked == ["bob"]
+
+    # 4. A store refusal is a 400 carrying the store's own sentence and NO code key.
+    def refuse(username, role, password, must_change=False):
+        raise users_mod.UserError("the password must be at least 12 characters")
+
+    ctx.user_store.create_user = refuse
+    body = _compare("/api/users/create",
+                    {"username": "dave", "role": "viewer", "password": "short"})
+    assert body == {"ok": False, "error": "the password must be at least 12 characters"}
+
+    # 5. No store at all is a 503 BEFORE the body is validated, as on the console.
+    ctx.user_store = None
+    ls, lb = _post_legacy(legacy.port, "/api/users/create", b"{}")
+    fs, fb = _post_flask(app, "/api/users/create", b"{}")
+    assert fs == ls == 503, f"console {ls}, flask {fs}"
+    assert json.loads(fb) == json.loads(lb)

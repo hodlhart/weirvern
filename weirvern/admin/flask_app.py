@@ -1103,6 +1103,59 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             code, payload = payloads.review_failure(exc)
         return jsonify(payload), code
 
+    # ── the account writes: one shape, four field sets ─────────────────────────────────────────
+
+    def _account_write(kind: str, fetcher):
+        """Create / role / delete / reset share their gate, body and store check.
+
+        THE STORE CHECK COMES BEFORE THE FIELDS ARE USED, on both surfaces: a GUI built without an
+        account store answers 503 whatever the body says, which is the console's order.
+        """
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        store = getattr(ctx, "user_store", None)
+        if store is None:
+            return _json_error(503, payloads.ACCOUNTS_UNAVAILABLE)
+        args = web.user_write_args(body, kind=kind)
+        if kind == "create":
+            code, payload = fetcher(store, **args)
+        else:
+            code, payload = fetcher(store, getattr(ctx, "sessions", None), **args)
+        return jsonify(payload), code
+
+    @app.post("/api/users/create")
+    def users_create():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _account_write("create", payloads.user_create)
+
+    @app.post("/api/users/role")
+    def users_role():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _account_write("role", payloads.user_role)
+
+    @app.post("/api/users/delete")
+    def users_delete():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _account_write("delete", payloads.user_delete)
+
+    @app.post("/api/users/reset")
+    def users_reset():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _account_write("reset", payloads.user_reset)
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 
