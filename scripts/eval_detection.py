@@ -377,23 +377,14 @@ def run_detection(client, cfg_settings, window_minutes: int,
     return verdicts, None
 
 
-def wait_for_aggregates(client, *, timeout_s: int = 180) -> tuple[int, str]:
-    """Wait until the aggregate table STOPS GROWING before anything reads it.
-
-    ISSUE #2, MEASURED (2026-10-16). The old wait broke on the FIRST non-zero count:
-    the seed inserts in 20k-row chunks and the MVs fire per insert, so `count() > 0` only
-    means the first chunk landed. Training and the sweep then ran against a table that was
-    still filling -- WHICH windows existed differed run to run, which is the coin toss
-    behind detection-quality flipping PASS/FAIL on identical eval code. The rule now: the
-    count must be STABLE across three consecutive polls before anything reads the table,
-    and a table that never settles is a STATED failure, not a shrug.
-    """
+def _settle_table(client, table: str, *, timeout_s: int) -> tuple[int, str]:
+    """Wait until ONE table's row count stops growing, or report why it did not."""
     from weirvern import db  # noqa: PLC0415 -- function-local, like this file's other helpers
 
     stable, last, t0 = 0, -1, time.time()
     while time.time() - t0 < timeout_s:
         rows = db.fetch_rows(
-            client, "SELECT count(), max(window_start) FROM weirvern.flows_aggregated")
+            client, f"SELECT count(), max(window_start) FROM weirvern.{table}")
         count = int(rows[0][0]) if rows else 0
         if count == last and count > 0:
             stable += 1
@@ -403,8 +394,32 @@ def wait_for_aggregates(client, *, timeout_s: int = 180) -> tuple[int, str]:
             stable = 0
         last = count
         time.sleep(0.5)
-    return last, (f"flows_aggregated did not settle within {timeout_s}s (count={last}); "
+    return last, (f"{table} did not settle within {timeout_s}s (count={last}); "
                   f"refusing to train or sweep against a half-filled table")
+
+
+def wait_for_aggregates(client, *, timeout_s: int = 180) -> tuple[int, str]:
+    """Wait until the aggregate tables STOP GROWING before anything reads them.
+
+    ISSUE #2, MEASURED (2026-10-16). The old wait broke on the FIRST non-zero count:
+    the seed inserts in 20k-row chunks and the MVs fire per insert, so `count() > 0` only
+    means the first chunk landed. Training and the sweep then ran against a table that was
+    still filling -- WHICH windows existed differed run to run, which is the coin toss
+    behind detection-quality flipping PASS/FAIL on identical eval code. The rule now: the
+    count must be STABLE across three consecutive polls before anything reads the table,
+    and a table that never settles is a STATED failure, not a shrug.
+    """
+    agg, err = _settle_table(client, "flows_aggregated", timeout_s=timeout_s)
+    if err:
+        return agg, err
+    # THE DETECTORS READ `flows_window`, NOT `flows_aggregated` (the branch moved them onto the
+    # folded rollup). Settling only the table they no longer read let training start while the
+    # rollup was still short: the symptom was DBSCAN "trained on 195 rows but found NO CLUSTER
+    # CENTRES" on a dataset that has dense structure once the rollup has finished filling.
+    _, win_err = _settle_table(client, "flows_window", timeout_s=timeout_s)
+    if win_err:
+        return agg, win_err
+    return agg, ""
 
 
 def _reset_sweep_state(client, model_dir) -> None:
@@ -469,7 +484,10 @@ def main() -> int:
         print(f"  ! schema bootstrap said: {exc} -- continuing if tables already exist")
 
     # Start clean so a re-run is deterministic. The harness owns this database.
-    for t in ("flows", "flows_aggregated", "flows_aggregated_diversity",
+    # `flows_window` IS IN THIS LIST because the detectors train on it. Leaving it out made a
+    # re-run inherit rows the previous run had written, which is the non-determinism this
+    # truncate exists to remove.
+    for t in ("flows", "flows_aggregated", "flows_window", "flows_aggregated_diversity",
               "flows_aggregated_temporal"):
         with contextlib.suppress(Exception):
             client.command(f"TRUNCATE TABLE IF EXISTS weirvern.{t}")
