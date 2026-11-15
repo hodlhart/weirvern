@@ -582,7 +582,13 @@ function renderNetwork() {
   const win = document.getElementById("nw-window");
   if (win) {
     const h = d.hours || ASSETS_STATE.hours;
-    win.textContent = `${h}h window` + (d.truncated ? `, ${d.total_edges} total connections` : "");
+    // A GRAPH DRAWN OVER A NARROWER WINDOW SAYS SO. The server reports the window it could afford
+    // (`hours`) beside the one that was asked for (`narrowed_from`); the pair is printed because a
+    // 24h request that silently drew 1h would misreport how far back the map reaches.
+    const narrowed = d.narrowed_from
+      ? ` (the ${d.narrowed_from}h aggregate did not finish, showing the last ${h}h)` : "";
+    win.textContent = `${h}h window` + narrowed
+      + (d.truncated ? `, ${d.total_edges} total connections` : "");
   }
 
   const nodes0 = d.nodes || [];

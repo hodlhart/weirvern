@@ -758,6 +758,26 @@ def asset_inventory(client, hours: int = 24, limit: int = 200) -> dict:
 GRAPH_MAX_SECONDS = 25
 
 
+def _window_ladder(hours: int) -> list[tuple[int, int]]:
+    """Windows to try for an edge aggregate, widest first, with each one's execution budget.
+
+    THE OPERATOR ASKED FOR A WINDOW, so answering a different one silently would be a lie. But an
+    empty panel is not the truthful answer either. The caller reports the window it actually covers
+    (`hours`) alongside the one it could not (`narrowed_from`), and the panel prints both.
+
+    MEASURED ON THE LIVE DEPLOYMENT (2026-11-15, 276M flows/day): 24h of raw flows aggregates in
+    0.3s to 108s depending on ingestion load, 6h in ~13s, 1h in ~1.5s. The ladder gives a busy
+    segment a graph it can draw instead of a refusal.
+    """
+    wanted = max(1, int(hours))
+    ladder: list[tuple[int, int]] = []
+    for h in (wanted, max(1, wanted // 4), 1):
+        if any(h == seen for seen, _ in ladder):
+            continue
+        ladder.append((h, GRAPH_MAX_SECONDS if h == wanted else max(8, GRAPH_MAX_SECONDS // 2)))
+    return ladder
+
+
 def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     """Nodes and edges for the Network view's connection graph.
 
@@ -785,8 +805,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
     # 5-tuple is the flow's own identity; keep it through the aggregate and merge only the
     # exact reverse tuple.
     scan = max(int(limit) * 4, 1200)
-    edges = _rows(
-        client,
+    edges_sql = (
         "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
         "       sum(bytes) AS bytes, count() AS flows, "
         "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
@@ -798,17 +817,24 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
-        "ORDER BY bytes DESC LIMIT %(n)s",
-        {**timewindow.w(hours), "n": scan},
-        "connection graph",
-        settings={"max_execution_time": GRAPH_MAX_SECONDS},
+        "ORDER BY bytes DESC LIMIT %(n)s"
     )
+    edges = None
+    used_hours = int(hours)
+    for attempt_hours, budget in _window_ladder(hours):
+        edges = _rows(
+            client, edges_sql, {**timewindow.w(attempt_hours), "n": scan},
+            "connection graph", settings={"max_execution_time": budget},
+        )
+        if edges is not None:
+            used_hours = attempt_hours
+            break
     if edges is None:
         return _unavailable(
             f"the connection query did not finish within {GRAPH_MAX_SECONDS}s for a {hours}h "
-            f"window, or it failed (the worker log names the query). The graph reads raw flows, so "
-            f"a wide window on a busy segment is expensive: narrow the window, or track specific "
-            f"hosts, and try again."
+            f"window, nor for the narrower windows tried after it, or it failed (the worker log "
+            f"names the query). The graph reads raw flows, so a wide window on a busy segment is "
+            f"expensive: narrow the window, or track specific hosts, and try again."
         )
 
     # A conversation is the unordered port pair; the raw rows are its two directions.
@@ -821,7 +847,7 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "  AND src_addr != '' AND dst_addr != '' AND src_addr != dst_addr "
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " ",
-        {**timewindow.w(hours)},
+        {**timewindow.w(used_hours)},
         "connection graph (total)",
         settings={"max_execution_time": GRAPH_MAX_SECONDS},
     )
@@ -921,11 +947,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         node["degree_norm"] = node["degree"] / max_degree if max_degree else 0.0
         node["bytes_norm"] = node["bytes"] / max_bytes
 
-    status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=hours)
-    return {
+    status_available, status_reason = attach_host_status(client, nodes, out_edges, hours=used_hours)
+    payload = {
         "available": True,
         "reason": "",
-        "hours": hours,
+        "hours": used_hours,
         "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
         "edges": out_edges,
         "total_edges": total,
@@ -933,6 +959,11 @@ def connection_graph(client, hours: int = 24, limit: int = 400) -> dict:
         "status_available": status_available,
         "status_reason": status_reason,
     }
+    if used_hours != int(hours):
+        # Named, not silent: the panel prints both windows so a narrowed graph is never mistaken
+        # for the one the operator asked for.
+        payload["narrowed_from"] = int(hours)
+    return payload
 
 
 
@@ -1139,8 +1170,7 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
     if not addrs:
         return _unavailable("no hosts selected (an empty selection shows the whole graph)",
                             nodes=[], edges=[])
-    edges = _rows(
-        client,
+    tracked_sql = (
         "SELECT src_addr, dst_addr, src_port, dst_port, proto, "
         "       sum(bytes) AS bytes, count() AS flows, "
         "       min(timestamp) AS first_seen, max(timestamp) AS last_seen, "
@@ -1152,12 +1182,26 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
         "  AND " + addressing.sql_host("src_addr") + " "
         "  AND " + addressing.sql_host("dst_addr") + " "
         "GROUP BY src_addr, dst_addr, src_port, dst_port, proto "
-        "ORDER BY bytes DESC LIMIT %(n)s",
-        {**timewindow.w(hours), "n": limit, "a": tuple(addrs)},
-        "tracked-host edges",
+        "ORDER BY bytes DESC LIMIT %(n)s"
     )
+    # THE SAME LADDER AS THE WHOLE GRAPH. A tracked query is not cheap: the address filter cannot
+    # prune an ORDER BY (timestamp, src_addr) table, so it still scans the window (measured 52s for
+    # one host over 24h).
+    edges = None
+    used_hours = int(hours)
+    for attempt_hours, budget in _window_ladder(hours):
+        edges = _rows(
+            client, tracked_sql, {**timewindow.w(attempt_hours), "n": limit, "a": tuple(addrs)},
+            "tracked-host edges", settings={"max_execution_time": budget},
+        )
+        if edges is not None:
+            used_hours = attempt_hours
+            break
     if edges is None:
-        return _unavailable("the tracked-host query failed")
+        return _unavailable(
+            f"the tracked-host query did not finish within {GRAPH_MAX_SECONDS}s for a {hours}h "
+            f"window, nor for the narrower windows tried after it. Narrow the window and try again."
+        )
 
     nodes: dict[str, dict] = {}
 
@@ -1202,11 +1246,14 @@ def top_edges_for(client, addrs: list[str], hours: int = 24, limit: int = 200) -
             src_node["hops"] = hops
             src_node["ttl"] = e["ttl_max"]
 
-    status_available, status_reason = attach_host_status(client, nodes, out, hours=hours)
-    return {"available": True, "reason": "", "hours": hours, "tracked": list(addrs),
-            "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
-            "edges": out, "status_available": status_available,
-            "status_reason": status_reason}
+    status_available, status_reason = attach_host_status(client, nodes, out, hours=used_hours)
+    payload = {"available": True, "reason": "", "hours": used_hours, "tracked": list(addrs),
+               "nodes": sorted(nodes.values(), key=lambda n: n["degree"], reverse=True),
+               "edges": out, "status_available": status_available,
+               "status_reason": status_reason}
+    if used_hours != int(hours):
+        payload["narrowed_from"] = int(hours)
+    return payload
 
 
 def _iso(value: Any) -> str:

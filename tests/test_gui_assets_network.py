@@ -23,6 +23,7 @@ without a browser or a cluster.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from pathlib import Path
 
@@ -866,3 +867,55 @@ def test_the_connection_graph_is_bounded_and_says_so():
     # The sentence names the limit AND the action, or the operator is left staring at a blank panel.
     assert f"{assets.GRAPH_MAX_SECONDS}s" in out["reason"], out["reason"]
     assert "narrow the window" in out["reason"], out["reason"]
+
+class _TimingOutOnWide:
+    """Answers only when the window is narrow enough, the way a loaded ClickHouse behaves."""
+
+    def __init__(self, widest_failing_hours=24):
+        self.widest_failing_hours = widest_failing_hours
+        self.attempts = []
+
+    def query(self, sql, parameters=None, settings=None):
+        since = (parameters or {}).get("since")
+        self.attempts.append((since, (settings or {}).get("max_execution_time")))
+        if len(self.attempts) == 1:
+            raise RuntimeError("Code: 159. DB::Exception: Timeout exceeded")
+        if "uniqExact" in sql:
+            return type("R", (), {"result_rows": [(2,)]})()
+        if "GROUP BY src_addr, dst_addr" in sql:
+            ts = _dt.datetime(2026, 1, 1)
+            return type("R", (), {"result_rows": [
+                ("198.51.100.10", "198.51.100.20", 51515, 443, 6,
+                 1000, 4, ts, ts, 64, 64),
+            ]})()
+        return type("R", (), {"result_rows": []})()
+
+
+def test_a_graph_that_cannot_afford_the_window_draws_a_narrower_one_and_says_so():
+    """A 24h aggregate that will not finish must not leave the panel empty.
+
+    MEASURED (2026-11-15): the same 24h query took 103s and 108s on consecutive requests. The
+    operator asked for 24h, so answering 1h silently would misreport the network; answering
+    nothing leaves a dead panel. The payload names BOTH windows, and the panel prints the pair.
+    """
+    client = _TimingOutOnWide()
+    out = assets.connection_graph(client, hours=24)
+    assert out["available"] is True, out
+    assert out["hours"] == 6, out
+    assert out["narrowed_from"] == 24, out
+    # The second attempt used a smaller budget AND a different window.
+    assert client.attempts[0][1] == assets.GRAPH_MAX_SECONDS
+    assert len(client.attempts) > 1
+    assert "narrowed_from" in ASSETS_JS, "the panel never prints the window it actually drew"
+
+
+def test_the_tracked_graph_climbs_the_same_ladder():
+    """A tracked query cannot prune either: the address filter sits beside an ORDER BY timestamp.
+
+    Measured at 52s for ONE tracked host over 24h, so it takes the same ladder rather than a
+    separate policy that would drift from the whole-graph one.
+    """
+    client = _TimingOutOnWide()
+    out = assets.top_edges_for(client, ["198.51.100.10"], hours=24)
+    assert out["available"] is True, out
+    assert out["hours"] == 6 and out["narrowed_from"] == 24, out
