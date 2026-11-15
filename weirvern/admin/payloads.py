@@ -509,6 +509,119 @@ def system_payload(*, sensor: str) -> dict[str, Any]:
 
 # ── windowed reads: the arguments are part of the contract ──────────────────────────────────
 
+def netflow(client: Client, *, hours: int, filters: dict) -> dict[str, Any]:
+    """Netflow shape: volume trend, protocols, ports, fan-out, talkers.
+
+    EVERY SUB-QUERY REPORTS ITS OWN STATE and a failure in one does not take the others down, so the
+    charts beside a missing one still render. That is why the failure payload keeps a full shape
+    rather than collapsing to a single reason.
+    """
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        volume = soc_mod.flow_volume_series(client, hours=hours, filters=filters)
+        proto = soc_mod.protocol_mix(client, hours=hours, filters=filters)
+        ports = soc_mod.top_ports(client, hours=hours, filters=filters)
+        spread = soc_mod.destination_spread(client, hours=hours, filters=filters)
+        talkers = status_mod.top_talkers(client, hours=hours, limit=12, filters=filters)
+        # The host lists are filtered; this says by how much, so a reader can tell "a quiet segment"
+        # from "a noisy one with the noise hidden".
+        noise = status_mod.noise_flows(client, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return netflow_failure(exc)
+    return web_api.netflow_payload(volume, proto, ports, spread, talkers, noise=noise)
+
+
+def netflow_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/netflow."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("netflow view unavailable: %s", exc)
+    empty = {"available": False, "reason": "the data could not be read", "points": []}
+    return {"volume": dict(empty), "protocols": dict(empty), "ports": dict(empty),
+            "spread": dict(empty),
+            "talkers": {"available": False, "points": [], "reason": read_failure(exc)},
+            "noise": {}, "data_error": read_failure(exc)}
+
+
+def zeek(client: Client, *, hours: int, filters: dict) -> dict[str, Any]:
+    """Zeek shape: per-log counts, protocol timeline, services, DNS names.
+
+    The counts helper reports a table it could not count SEPARATELY from a table with no rows,
+    because those are different facts and conflating them is how an empty panel comes to look like a
+    quiet network.
+    """
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        counts = soc_mod.zeek_counts(client, hours=hours, filters=filters)
+        timeline = soc_mod.zeek_timeline(client, hours=hours, filters=filters)
+        services = soc_mod.zeek_services(client, hours=hours, filters=filters)
+        dns = soc_mod.zeek_dns_names(client, hours=hours, filters=filters)
+    except Exception as exc:  # noqa: BLE001
+        return zeek_failure(exc)
+    payload = web_api.zeek_payload(counts, timeline, services, dns)
+    payload["filters"] = filters
+    return payload
+
+
+def zeek_failure(exc: BaseException, *, filters: dict | None = None) -> dict[str, Any]:
+    """The console's own failure shape for /api/zeek, filters included.
+
+    THE FILTERS ARE PART OF THE FAILURE PAYLOAD: the panel still shows what was asked for, so the
+    reader can tell a bad window from a bad filter. The builder takes them because `_soft_route` can
+    only pass the exception; the route binds them with `functools.partial`.
+    """
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("zeek view unavailable: %s", exc)
+    empty = {"available": False, "reason": "the data could not be read", "points": []}
+    return {"counts": dict(empty), "timeline": dict(empty), "services": dict(empty),
+            "dns": dict(empty), "filters": filters or {}, "data_error": read_failure(exc)}
+
+
+def flows(client: Client, *, hours: int, port: int | None, proto: int | None,
+          src: str, dst: str) -> dict[str, Any]:
+    """The hosts behind one destination port, one IP protocol, or one address."""
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        return soc_mod.flows_matching(client, port=port, proto=proto, src=src, dst=dst,
+                                      hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return flows_failure(exc)
+
+
+def flows_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/flows."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("flow drill-down unavailable: %s", exc)
+    return {"available": False, "points": [], "reason": read_failure(exc),
+            "data_error": str(exc)}
+
+
+def dns(client: Client, *, hours: int, domain: str, client_ip: str, qtype: int | None,
+        rcode: int | None, limit: int, offset: int) -> dict[str, Any]:
+    """The DNS view: Q/A rows, filters, histogram and facets."""
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        return soc_mod.dns_rows(client, hours=hours, domain=domain, client_ip=client_ip,
+                                qtype=qtype, rcode=rcode, limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        return dns_failure(exc)
+
+
+def dns_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/dns."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("dns view unavailable: %s", exc)
+    return {"available": False, "rows": [], "reason": read_failure(exc),
+            "data_error": str(exc)}
+
+
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
     """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
     import logging  # noqa: PLC0415

@@ -325,12 +325,16 @@ def test_the_flow_drilldown_demands_a_filter_and_the_route_enforces_it():
         assert word in d["reason"], f"the refusal does not name {word!r}: {d['reason']}"
 
     src = (WEB.parent / "web.py").read_text()
-    i = src.find("def _flows")
-    assert i > 0, "_flows handler not found"
-    # Sliced to the handler's END, not a fixed window: a growing handler must not silently
-    # outrun the assertion (issue #31 grew it, and the window would have done exactly that).
-    body = src[i:src.index("\n        def ", i + 10)]
-    assert "port, proto or src is required" in body, "the route does not require a filter"
+    # THE REFUSAL MOVED to the shared parser when the route crossed to Flask, so the sentence lives
+    # in `flows_args` now and BOTH surfaces call it. The handler must still use it: an assertion on
+    # the handler's own text would demand the old copy stay and forbid the port.
+    i = src.find("def flows_args(")
+    assert i > 0, "the shared flows parser not found"
+    parser = src[i:src.index("\ndef ", i + 10)]
+    assert "port, proto or src is required" in parser, "the route does not require a filter"
+    handler = src[src.find("def _flows"):]
+    handler = handler[:handler.index("\n        def ", 12)]
+    assert "flows_args(" in handler, "the handler does not use the shared parser"
 
 
 def test_the_flow_drilldown_reports_truncation_and_the_total():

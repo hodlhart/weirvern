@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 30 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 34 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -651,6 +651,76 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             return _json_error(400, f"bad time range: {exc}")
         return _soft_route(payloads.models, payloads.models_failure, hours=hours,
                            settings=ctx.settings)
+
+    # ── the windowed read families: same parsers, same fetchers, same 400 wording ──────────────
+    #
+    # THE CONSOLE PARSES `hours` BEFORE ITS FILTERS, so a request that is bad in both ways answers
+    # the time-range sentence. These routes keep that order; swapping it would change which 400 a
+    # caller sees for the same URL.
+
+    @app.get("/api/netflow")
+    @gated
+    def netflow():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            filters = web.netflow_filters(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.netflow, payloads.netflow_failure, hours=hours,
+                           filters=filters)
+
+    @app.get("/api/zeek")
+    @gated
+    def zeek():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            filters = web.zeek_filters(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        # `partial` binds the filters into the failure payload: the panel still shows what was
+        # asked for, and `_soft_route` can only hand the builder an exception.
+        failure = functools.partial(payloads.zeek_failure, filters=filters)
+        return _soft_route(payloads.zeek, failure, hours=hours, filters=filters)
+
+    @app.get("/api/flows")
+    @gated
+    def flows():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            args = web.flows_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.flows, payloads.flows_failure, hours=hours, **args)
+
+    @app.get("/api/dns")
+    @gated
+    def dns():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        try:
+            args = web.dns_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.dns, payloads.dns_failure, hours=hours, **args)
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

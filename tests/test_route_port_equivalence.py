@@ -106,6 +106,17 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                      {"available": True, "sensors": [], "count": 0}, ""),
     "/api/system": ("system_payload", "weirvern.admin.payloads.system_payload",
                     {"available": True, "history": []}, "?sensor="),
+    # The windowed families: the fetcher composes several queries, so it is the stub; the argument
+    # parsing is pinned separately by the refusal and paging checks below.
+    "/api/netflow": ("netflow", "weirvern.admin.payloads.netflow",
+                     {"volume": {"available": True, "points": []}}, "?hours=6&proto=6"),
+    "/api/zeek": ("zeek", "weirvern.admin.payloads.zeek",
+                  {"counts": {"available": True, "points": []}, "filters": {}},
+                  "?hours=6&log=conn"),
+    "/api/flows": ("flows", "weirvern.admin.payloads.flows",
+                   {"available": True, "points": []}, "?hours=6&port=443"),
+    "/api/dns": ("dns", "weirvern.admin.payloads.dns",
+                 {"available": True, "rows": []}, "?hours=6"),
 }
 
 
@@ -269,7 +280,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 27, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 31, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -395,4 +406,54 @@ def test_the_write_trail_bounds_its_filters_identically(surfaces, monkeypatch):
     assert [len(str(c.get("scope"))) for c in seen] == [32, 32], (
         f"the scope truncation differs: {seen}"
     )
+
+
+# ── the windowed families refuse rather than clamp, and the sentence is the contract ─────────
+#
+# A clamped filter would answer a different question silently, which is the failure this console
+# keeps finding. So the console answers 400 for each of these, and the port has to reproduce the
+# words -- including the odd "does not look like a number" an OUT-OF-RANGE qtype gets. Improving the
+# wording during a port would make the two surfaces disagree about the same bad request.
+
+REFUSALS = [
+    ("/api/netflow", "?proto=999"),
+    ("/api/flows", ""),
+    ("/api/dns", "?qtype=abc"),
+    ("/api/dns", "?qtype=99999"),
+    ("/api/zeek", "?log=bogus"),
+]
+
+
+@pytest.mark.parametrize("path,query", REFUSALS)
+def test_a_refused_filter_is_worded_identically(path, query, surfaces):
+    legacy, app = surfaces()
+    lstatus, lbody = _legacy_http(legacy.port, path + query)
+    fstatus, fbody = _flask_http(app, path + query)
+
+    assert fstatus == lstatus == 400, f"{path}{query}: console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody), (
+        f"{path}{query} is refused with different words.\n"
+        f"  console: {lbody[:200]!r}\n  flask:   {fbody[:200]!r}"
+    )
+
+
+def test_the_dns_filters_and_paging_reach_the_fetcher_identically(surfaces, monkeypatch):
+    """The clamped paging and the parsed qtype/rcode, compared at the fetcher, not the response.
+
+    `offset` clamps at a million and `limit` at 500, and qtype/rcode become INTEGERS here. A surface
+    that passed the raw strings would still render a page, from a different query.
+    """
+    rec = _Recorder({"available": True, "rows": []})
+    _patch(monkeypatch, "weirvern.admin.payloads.dns", rec)
+    legacy, app = surfaces()
+
+    q = "?offset=999999999&limit=9999&qtype=1&rcode=3&domain=example.com&client=203.0.113.9"
+    _legacy_http(legacy.port, "/api/dns" + q)
+    _flask_http(app, "/api/dns" + q)
+
+    seen = rec.seen
+    assert [(c.get("offset"), c.get("limit")) for c in seen] == [(1000000, 500), (1000000, 500)]
+    assert [(c.get("qtype"), c.get("rcode")) for c in seen] == [(1, 3), (1, 3)]
+    assert [c.get("domain") for c in seen] == ["example.com", "example.com"]
+    assert [c.get("client_ip") for c in seen] == ["203.0.113.9", "203.0.113.9"]
 

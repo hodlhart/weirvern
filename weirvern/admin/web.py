@@ -1151,42 +1151,21 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard
-            # it should filter that entire dashboard"): one source address, one protocol, one
-            # destination port -- every panel below receives them, and the aggregate-backed
-            # panels switch to the raw table when proto/port demand it (soc.flow_filter).
-            filters = {"src": (query.get("src") or [""])[0].strip(),
-                       "dst": (query.get("dst") or [""])[0].strip(),
-                       "proto": (query.get("proto") or [""])[0].strip(),
-                       "dport": (query.get("dport") or [""])[0].strip()}
-            for key in ("src", "dst"):
-                if len(filters[key]) > 64:
-                    return self._error(400, f"{key} filter is implausibly long")
-            for key, hi in (("proto", 255), ("dport", 65535)):
-                if filters[key] and (not filters[key].isdigit() or int(filters[key]) > hi):
-                    return self._error(400, f"{key} must be a number <= {hi}")
-            empty = {"available": False, "reason": "the data could not be read", "points": []}
+            # THE DASHBOARD-WIDE FILTER (the operator, 2026-10-16: "if i click in any dashboard it
+            # should filter that entire dashboard"): one source address, one protocol, one
+            # destination port -- every panel below receives them, and the aggregate-backed panels
+            # switch to the raw table when proto/port demand it (soc.flow_filter).
+            try:
+                filters = netflow_filters(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    volume = soc_mod.flow_volume_series(client, hours=hours, filters=filters)
-                    proto = soc_mod.protocol_mix(client, hours=hours, filters=filters)
-                    ports = soc_mod.top_ports(client, hours=hours, filters=filters)
-                    spread = soc_mod.destination_spread(client, hours=hours, filters=filters)
-                    talkers = status_mod.top_talkers(client, hours=hours, limit=12,
-                                                     filters=filters)
-                    # The host lists are filtered; this says by how much, so a reader can tell
-                    # "a quiet segment" from "a noisy one with the noise hidden".
-                    noise = status_mod.noise_flows(client, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.netflow).
+                    payload = payloads.netflow(client, hours=hours, filters=filters)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("netflow view unavailable: %s", exc)
-                return self._json({"volume": empty, "protocols": empty, "ports": empty,
-                                   "spread": empty,
-                                   "talkers": {"available": False, "points": [],
-                                               "reason": read_failure(exc)},
-                                   "noise": {},
-                                   "data_error": read_failure(exc)})
-            self._json(web_api.netflow_payload(volume, proto, ports, spread, talkers,
-                                              noise=noise))
+                return self._json(payloads.netflow_failure(exc))
+            self._json(payload)
 
         def _zeek(self, query: dict) -> None:
             """Zeek shape: per-log counts, protocol timeline, services, DNS names.
@@ -1198,31 +1177,16 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            empty = {"available": False, "reason": "the data could not be read", "points": []}
-            filters: dict[str, str] = {}
-            for key in ("log", "service", "query", "host"):
-                raw = (query.get(key) or [""])[0].strip()
-                if not raw:
-                    continue
-                limit = 64 if key == "host" else 253
-                if len(raw) > limit:
-                    return self._error(400, f"{key} is too long to filter on")
-                filters[key] = raw
-            if filters.get("log") and filters["log"] not in dict(soc_mod.ZEEK_LOGS):
-                return self._error(400, f"unknown log {filters['log']!r}")
+            try:
+                filters = zeek_filters(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    counts = soc_mod.zeek_counts(client, hours=hours, filters=filters)
-                    timeline = soc_mod.zeek_timeline(client, hours=hours, filters=filters)
-                    services = soc_mod.zeek_services(client, hours=hours, filters=filters)
-                    dns = soc_mod.zeek_dns_names(client, hours=hours, filters=filters)
+                    # SHARED WITH THE FLASK SURFACE (payloads.zeek).
+                    payload = payloads.zeek(client, hours=hours, filters=filters)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("zeek view unavailable: %s", exc)
-                return self._json({"counts": empty, "timeline": empty, "services": empty,
-                                   "dns": empty, "filters": filters,
-                                   "data_error": read_failure(exc)})
-            payload = web_api.zeek_payload(counts, timeline, services, dns)
-            payload["filters"] = filters
+                return self._json(payloads.zeek_failure(exc, filters=filters))
             self._json(payload)
 
         def _flows(self, query: dict) -> None:
@@ -1235,35 +1199,16 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            # -1 means "not supplied". Declared as Optional because the sentinel is replaced by
-            # None before use, and leaving the variable typed `int` while assigning None is the
-            # mismatch mypy flags.
-            port_raw = _int_arg(query, "port", -1, -1, 65535)
-            proto_raw = _int_arg(query, "proto", -1, -1, 255)
-            port: int | None = port_raw if port_raw >= 0 else None
-            proto: int | None = proto_raw if proto_raw >= 0 else None
-            # The source-address chip (issue #31). BOUND into the query like every filter;
-            # an implausibly long value is REFUSED, never truncated.
-            src = str((query.get("src") or [""])[0]).strip()
-            dst = str((query.get("dst") or [""])[0]).strip()
-            for key, value in (("src", src), ("dst", dst)):
-                if len(value) > 64:
-                    return self._error(400, f"{key} filter is implausibly long")
-            if port is None and proto is None and not src and not dst:
-                return self._error(400,
-                                   "port, proto or src is required (dst is also accepted), "
-                                   "e.g. /api/flows?port=443")
+            try:
+                args = flows_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    payload = soc_mod.flows_matching(client, port=port, proto=proto, src=src,
-                                                     dst=dst, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.flows).
+                    payload = payloads.flows(client, hours=hours, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("flow drill-down unavailable: %s", exc)
-                return self._json({
-                    "available": False, "points": [],
-                    "reason": read_failure(exc),
-                    "data_error": str(exc),
-                })
+                return self._json(payloads.flows_failure(exc))
             self._json(payload)
 
         def _discover_trends(self, query: dict) -> None:
@@ -1376,41 +1321,16 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            domain = (query.get("domain") or [""])[0].strip()
-            client = (query.get("client") or [""])[0].strip()
-            qtype_raw = (query.get("qtype") or [""])[0].strip()
-            rcode_raw = (query.get("rcode") or [""])[0].strip()
-            offset = _int_arg(query, "offset", 0, 0, 1000000)
-            limit = _int_arg(query, "limit", 100, 1, 500)
-            if len(domain) > 200 or len(client) > 64:
-                return self._error(400, "domain or client filter is implausibly long")
-            qtype: int | None = None
-            rcode: int | None = None
-            for raw, name, lo, hi, slot in ((qtype_raw, "qtype", 0, 65535, "qtype"),
-                                            (rcode_raw, "rcode", 0, 255, "rcode")):
-                if not raw:
-                    continue
-                try:
-                    value = int(raw)
-                    if not lo <= value <= hi:
-                        raise ValueError
-                except ValueError:
-                    return self._error(400, f"{name} does not look like a number: {raw!r}")
-                if slot == "qtype":
-                    qtype = value
-                else:
-                    rcode = value
             try:
-                with self._with_client() as client_db:
-                    payload = soc_mod.dns_rows(
-                        client_db, hours=hours, domain=domain, client_ip=client,
-                        qtype=qtype, rcode=rcode, limit=limit, offset=offset,
-                    )
+                args = dns_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            try:
+                with self._with_client() as client:
+                    # SHARED WITH THE FLASK SURFACE (payloads.dns).
+                    payload = payloads.dns(client, hours=hours, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("dns view unavailable: %s", exc)
-                return self._json({"available": False, "rows": [], "reason":
-                                   read_failure(exc),
-                                   "data_error": str(exc)})
+                return self._json(payloads.dns_failure(exc))
             self._json(payload)
 
         def _blocked(self, query: dict) -> None:
@@ -4596,6 +4516,98 @@ def write_trail_args(query: dict) -> dict:
         "target": (_first(query, "target", "") or "").strip()[:128],
         "limit": _int_arg(query, "limit", 50, 1, 200),
     }
+
+
+def netflow_filters(query: dict) -> dict[str, str]:
+    """The dashboard-wide flow filters, validated once for both surfaces.
+
+    RAISES ValueError with the console's own sentence: its handler turns that into `_error(400, ...)`
+    and the Flask route into `{"error", "code"}` with the same words. A filter that cannot be parsed
+    is REFUSED, never dropped, because dropping it would show more traffic than was asked for.
+    """
+    filters = {"src": str(_first(query, "src", "") or "").strip(),
+               "dst": str(_first(query, "dst", "") or "").strip(),
+               "proto": str(_first(query, "proto", "") or "").strip(),
+               "dport": str(_first(query, "dport", "") or "").strip()}
+    for key in ("src", "dst"):
+        if len(filters[key]) > 64:
+            raise ValueError(f"{key} filter is implausibly long")
+    for key, hi in (("proto", 255), ("dport", 65535)):
+        raw = filters[key]
+        if raw and (not raw.isdigit() or int(raw) > hi):
+            raise ValueError(f"{key} must be a number <= {hi}")
+    return filters
+
+
+def zeek_filters(query: dict) -> dict[str, str]:
+    """The Zeek filters, validated against the log list the read layer actually knows."""
+    filters: dict[str, str] = {}
+    for key in ("log", "service", "query", "host"):
+        raw = str(_first(query, key, "") or "").strip()
+        if not raw:
+            continue
+        limit = 64 if key == "host" else 253
+        if len(raw) > limit:
+            raise ValueError(f"{key} is too long to filter on")
+        filters[key] = raw
+    if filters.get("log") and filters["log"] not in dict(soc_mod.ZEEK_LOGS):
+        raise ValueError(f"unknown log {filters['log']!r}")
+    return filters
+
+
+def flows_args(query: dict) -> dict:
+    """The flow drill-down's selectors: port, protocol or an address, and one of them is required.
+
+    -1 is the "not supplied" sentinel for the numeric pair, which is why it is replaced by None
+    before the fetcher sees it.
+    """
+    port_raw = _int_arg(query, "port", -1, -1, 65535)
+    proto_raw = _int_arg(query, "proto", -1, -1, 255)
+    port: int | None = port_raw if port_raw >= 0 else None
+    proto: int | None = proto_raw if proto_raw >= 0 else None
+    src = str(_first(query, "src", "") or "").strip()
+    dst = str(_first(query, "dst", "") or "").strip()
+    for key, value in (("src", src), ("dst", dst)):
+        if len(value) > 64:
+            raise ValueError(f"{key} filter is implausibly long")
+    if port is None and proto is None and not src and not dst:
+        raise ValueError("port, proto or src is required (dst is also accepted), "
+                         "e.g. /api/flows?port=443")
+    return {"port": port, "proto": proto, "src": src, "dst": dst}
+
+
+def dns_args(query: dict) -> dict:
+    """The DNS view's filters and paging, parsed once for both surfaces.
+
+    qtype and rcode are REFUSED when they do not parse, and the sentence is the console's own,
+    including the odd case of an out-of-range value: it says "does not look like a number" rather
+    than inventing a second wording. Reproduced rather than tidied.
+    """
+    domain = str(_first(query, "domain", "") or "").strip()
+    client_ip = str(_first(query, "client", "") or "").strip()
+    qtype_raw = str(_first(query, "qtype", "") or "").strip()
+    rcode_raw = str(_first(query, "rcode", "") or "").strip()
+    offset = _int_arg(query, "offset", 0, 0, 1000000)
+    limit = _int_arg(query, "limit", 100, 1, 500)
+    if len(domain) > 200 or len(client_ip) > 64:
+        raise ValueError("domain or client filter is implausibly long")
+    qtype: int | None = None
+    rcode: int | None = None
+    for raw, name, lo, hi in ((qtype_raw, "qtype", 0, 65535), (rcode_raw, "rcode", 0, 255)):
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+            if not lo <= value <= hi:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"{name} does not look like a number: {raw!r}") from None
+        if name == "qtype":
+            qtype = value
+        else:
+            rcode = value
+    return {"domain": domain, "client_ip": client_ip, "qtype": qtype, "rcode": rcode,
+            "offset": offset, "limit": limit}
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:
