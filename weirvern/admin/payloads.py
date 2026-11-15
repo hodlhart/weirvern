@@ -141,3 +141,100 @@ def ml_review() -> dict[str, Any]:
         return review.latest_report(_package_root())
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "reason": f"cannot read the archived review: {exc}"}
+
+
+# ── the pipeline's own health and audit views ───────────────────────────────────────────────
+#
+# Three different failure shapes live in this block, and each is preserved exactly. `audit` raises so
+# the route answers 503; `sluice_state` and `asset_posture` answer 200 with `available: false` so a
+# partial page still draws. Collapsing them into one shape would change what an operator sees.
+
+def audit(client: Client) -> dict[str, Any]:
+    """The pipeline's self-audit read. Raises, so the caller answers 503."""
+    return status_mod.pipeline_audit(client)
+
+
+def sluice_state(client: Client) -> dict[str, Any]:
+    """Just the gate's state, for a cheap poll on a short interval."""
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    try:
+        return sluice_store.load_gate_state(client, sensor=_gate_sensor_name())
+    except Exception as exc:  # noqa: BLE001
+        # The exception TYPE, not its message: this payload is polled every few seconds and a raw
+        # message would put a stack fragment on the wire repeatedly.
+        return {"available": False, "reason": f"cannot read the gate: {type(exc).__name__}"}
+
+
+def asset_posture(client: Client) -> dict[str, Any]:
+    """The shadow asset-posture scorer's state. Advisory, and a fixed shape when it cannot read."""
+    import logging  # noqa: PLC0415
+
+    from weirvern.admin import assets as assets_mod  # noqa: PLC0415
+
+    logger = logging.getLogger(__name__)
+    try:
+        return assets_mod.asset_posture_overview(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("asset posture unavailable: %s", exc)
+        return {"available": False, "reason": "the data could not be read",
+                "model_version": "asset-posture-1", "scored": 0, "total_changes": 0,
+                "bands": {}, "last_scored": ""}
+
+
+def ml_ripple(client: Client) -> dict[str, Any]:
+    """The latest fused ripple evaluation; unavailable is a named state, never an empty list."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    try:
+        return status_mod.ripple_overview(client)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": read_failure(exc), "rows": [], "pageable": False,
+                "counts": {}, "contributors": [], "scales": [], "families": [], "unknown": []}
+
+
+def ml_data_contract(client: Client) -> dict[str, Any]:
+    """What 'covered' means, measured against the live tables."""
+    try:
+        from weirvern.models import data_contract  # noqa: PLC0415
+
+        return data_contract.inventory(client)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot read the data contract: {exc}",
+                "sources": [], "families": [], "gaps": [], "hosts": [],
+                "population": {}, "promotion_ok": False}
+
+
+# ── windowed reads: the arguments are part of the contract ──────────────────────────────────
+
+def discover_trends(client: Client, hours: int) -> dict[str, Any]:
+    """The Flows header's three feed trends: NetFlow, Zeek and DNS."""
+    import logging  # noqa: PLC0415
+
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger = logging.getLogger(__name__)
+    try:
+        return soc_mod.discover_trends(client, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("feed trends unavailable: %s", exc)
+        return {"available": False, "feeds": {}, "reason": read_failure(exc),
+                "data_error": str(exc)}
+
+
+def dns_reverse(client: Client, ip: str, hours: int) -> dict[str, Any]:
+    """Which names pointed at this address, inside the window."""
+    import logging  # noqa: PLC0415
+
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger = logging.getLogger(__name__)
+    try:
+        return soc_mod.dns_reverse_for(client, ip, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reverse lookup unavailable: %s", exc)
+        return {"available": False, "domains": [], "reason": read_failure(exc)}
+

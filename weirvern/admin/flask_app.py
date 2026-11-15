@@ -385,6 +385,71 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
         except Exception as exc:  # noqa: BLE001
             return _json_error(503, read_failure(exc))
 
+    @app.get("/api/audit")
+    @gated
+    def audit():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.audit)
+
+    @app.get("/api/sluice/state")
+    @gated
+    def sluice_state():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.sluice_state)
+
+    @app.get("/api/asset-posture")
+    @gated
+    def asset_posture():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.asset_posture)
+
+    @app.get("/api/ml/ripple")
+    @gated
+    def ml_ripple():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_ripple)
+
+    @app.get("/api/ml/data-contract")
+    @gated
+    def ml_data_contract():
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return _payload_route(payloads.ml_data_contract)
+
+    @app.get("/api/discover/trends")
+    @gated
+    def discover_trends():
+        """Windowed through `window_arg`, the SAME parser the console uses.
+
+        A bad `hours` is a 400 with the parser's own sentence on both surfaces. Falling back to the
+        default would answer a different question than the one asked, silently.
+        """
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(lambda client: payloads.discover_trends(client, hours))
+
+    @app.get("/api/dns/reverse")
+    @gated
+    def dns_reverse():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        ip = (request.args.get("ip") or "").strip()
+        if not ip or len(ip) > 64:
+            return _json_error(400, "give an address: /api/dns/reverse?ip=...")
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _payload_route(lambda client: payloads.dns_reverse(client, ip, hours))
+
     @app.get("/api/models/calibration")
     @gated
     def models_calibration():

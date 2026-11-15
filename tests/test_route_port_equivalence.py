@@ -17,6 +17,7 @@ is asserted at the end so the number can only fall as routes cross.
 
 from __future__ import annotations
 
+import importlib
 import json
 import pathlib
 import urllib.error
@@ -25,25 +26,45 @@ import urllib.request
 import pytest
 
 from weirvern.admin import flask_app, web
-from weirvern.admin import status as status_mod
 
 flask = pytest.importorskip("flask")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# ── the work list: path -> (fetcher, status function to stub, canned return) ────────────────
+# ── the work list: path -> (fetcher, dotted patch target or None, canned return, query) ──────
+#
+# The patch target is DOTTED because ported routes no longer all read the same module: the gate state
+# comes from `sluice_store`, asset posture from `admin.assets`, the data contract from
+# `models.data_contract`. Naming the module in the entry is what lets one parametrised test cover all
+# of them instead of growing a bespoke test per route.
 #
 # A canned value can be trivial: both surfaces run the SAME payload function, so equality proves the
 # port regardless of what the stub returns. What it must NOT be is a shape only one side can handle.
-PORTED: dict[str, tuple[str, str | None, object]] = {
-    "/api/detectors": ("detectors", "detectors_overview", {"detectors": [], "catch_counts": {}}),
-    "/api/models/shadow": ("models_shadow", "shadow_overview", {"available": True, "rows": [{"a": 1}]}),
-    "/api/models/calibration": ("models_calibration", "calibration_overview", {"rows": []}),
+PORTED: dict[str, tuple[str, str | None, object, str]] = {
+    "/api/detectors": ("detectors", "weirvern.admin.status.detectors_overview",
+                       {"detectors": [], "catch_counts": {}}, ""),
+    "/api/models/shadow": ("models_shadow", "weirvern.admin.status.shadow_overview",
+                           {"available": True, "rows": [{"a": 1}]}, ""),
+    "/api/models/calibration": ("models_calibration", "weirvern.admin.status.calibration_overview",
+                                {"rows": []}, ""),
+    "/api/audit": ("audit", "weirvern.admin.status.pipeline_audit", {"checks": []}, ""),
+    "/api/ml/ripple": ("ml_ripple", "weirvern.admin.status.ripple_overview",
+                       {"rows": [], "counts": {}}, ""),
+    "/api/sluice/state": ("sluice_state", "weirvern.sluice_store.load_gate_state",
+                          {"available": True, "gate": "on"}, ""),
+    "/api/asset-posture": ("asset_posture", "weirvern.admin.assets.asset_posture_overview",
+                           {"available": True, "scored": 3, "bands": {}}, ""),
+    "/api/ml/data-contract": ("ml_data_contract", "weirvern.models.data_contract.inventory",
+                              {"available": True, "sources": []}, ""),
+    "/api/discover/trends": ("discover_trends", "weirvern.admin.soc.discover_trends",
+                             {"available": True, "feeds": {}}, "?hours=6"),
+    "/api/dns/reverse": ("dns_reverse", "weirvern.admin.soc.dns_reverse_for",
+                         {"available": True, "domains": ["example.com"]}, "?ip=203.0.113.9&hours=6"),
     # File-backed reads: no client and no stub, because both surfaces read the same files.
-    "/api/ml/ledger": ("ml_ledger", None, None),
-    "/api/ml/eval-report": ("ml_eval_report", None, None),
-    "/api/ml/review": ("ml_review", None, None),
+    "/api/ml/ledger": ("ml_ledger", None, None, ""),
+    "/api/ml/eval-report": ("ml_eval_report", None, None, ""),
+    "/api/ml/review": ("ml_review", None, None, ""),
 }
 
 CONSOLE_GET_ROUTES = 52
@@ -118,15 +139,25 @@ def surfaces():
 
 # ── the equivalence checks ─────────────────────────────────────────────────────────────────
 
+def _patch(monkeypatch, dotted: str, value):
+    """Patch a dotted target, failing loudly if the target moved.
+
+    `raising=True` matters: a silently-created attribute would make both surfaces read a stub that
+    the shipping code never consults, and the comparison would pass while proving nothing.
+    """
+    module, _, attr = dotted.rpartition(".")
+    monkeypatch.setattr(importlib.import_module(module), attr, value, raising=True)
+
+
 @pytest.mark.parametrize("path", sorted(PORTED))
 def test_each_ported_route_answers_identically(path, surfaces, monkeypatch):
-    _fetcher, patch, canned = PORTED[path]
+    _fetcher, patch, canned, query = PORTED[path]
     if patch:
-        monkeypatch.setattr(status_mod, patch, lambda *a, **k: canned, raising=True)
+        _patch(monkeypatch, patch, lambda *a, **k: canned)
 
     legacy, app = surfaces()
-    lstatus, lbody = _legacy_http(legacy.port, path)
-    fstatus, fbody = _flask_http(app, path)
+    lstatus, lbody = _legacy_http(legacy.port, path + query)
+    fstatus, fbody = _flask_http(app, path + query)
 
     assert fstatus == lstatus, f"{path}: console {lstatus}, flask {fstatus}"
     assert json.loads(fbody) == json.loads(lbody), (
@@ -135,19 +166,20 @@ def test_each_ported_route_answers_identically(path, surfaces, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("path", sorted(p for p, (_f, patch, _c) in PORTED.items() if patch))
+@pytest.mark.parametrize(
+    "path", sorted(p for p, (_f, patch, _c, _q) in PORTED.items() if patch))
 def test_each_ported_route_words_a_FAILURE_identically(path, surfaces, monkeypatch):
     """The failure wording is part of the payload contract: one vocabulary whichever surface answered.
     A missing binary must not be reported as a database fault on either."""
     def boom(*a, **k):
         raise FileNotFoundError(2, "No such file or directory", "kubectl")
 
-    _fetcher, patch, _canned = PORTED[path]
-    monkeypatch.setattr(status_mod, patch, boom, raising=True)
+    _fetcher, patch, _canned, query = PORTED[path]
+    _patch(monkeypatch, patch, boom)
 
     legacy, app = surfaces()
-    lstatus, lbody = _legacy_http(legacy.port, path)
-    fstatus, fbody = _flask_http(app, path)
+    lstatus, lbody = _legacy_http(legacy.port, path + query)
+    fstatus, fbody = _flask_http(app, path + query)
 
     assert fstatus == lstatus, f"{path}: console {lstatus}, flask {fstatus}"
     assert json.loads(fbody) == json.loads(lbody), (
@@ -161,7 +193,7 @@ def test_each_ported_route_words_a_FAILURE_identically(path, surfaces, monkeypat
 
 def test_every_port_has_a_fetcher_that_exists():
     src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
-    for path, (fetcher, _patch, _canned) in PORTED.items():
+    for path, (fetcher, _p, _c, _q) in PORTED.items():
         assert f"def {fetcher}(" in src, f"{path} names payloads.{fetcher}, which does not exist"
 
 
@@ -173,4 +205,87 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 6, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 13, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+
+
+# ── argument parsing is part of the contract ────────────────────────────────────────────────
+#
+# `_int_arg` CLAMPS and DEFAULTS rather than rejecting, deliberately: the docstring says a client
+# asking for limit=99999 gets the maximum, which protects the database without an error. So the thing
+# to pin is not a 400 (neither surface raises one) but that both surfaces hand the SAME number to the
+# fetcher. Comparing response bytes alone would prove nothing here, because the stub ignores its
+# arguments -- so the stub records what it was given and the assertions are on those values.
+
+class _Recorder:
+    def __init__(self, value=None):
+        self.value = value if value is not None else {"feeds": {}}
+        self.seen: list[dict] = []
+
+    def __call__(self, *_a, **kwargs):
+        self.seen.append(dict(kwargs))
+        return self.value
+
+
+def test_a_malformed_window_falls_back_to_the_default_on_both_surfaces(surfaces, monkeypatch):
+    rec = _Recorder()
+    _patch(monkeypatch, "weirvern.admin.soc.discover_trends", rec)
+    legacy, app = surfaces()
+
+    lstatus, lbody = _legacy_http(legacy.port, "/api/discover/trends?hours=banana")
+    fstatus, fbody = _flask_http(app, "/api/discover/trends?hours=banana")
+
+    assert fstatus == lstatus == 200, f"console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody)
+    assert [c.get("hours") for c in rec.seen] == [24, 24], (
+        f"the two surfaces disagreed about the default: {rec.seen}"
+    )
+
+
+def test_an_out_of_range_window_is_clamped_identically_on_both_surfaces(surfaces, monkeypatch):
+    rec = _Recorder()
+    _patch(monkeypatch, "weirvern.admin.soc.discover_trends", rec)
+    legacy, app = surfaces()
+
+    _legacy_http(legacy.port, "/api/discover/trends?hours=9999")
+    _flask_http(app, "/api/discover/trends?hours=9999")
+
+    hours = [c.get("hours") for c in rec.seen]
+    assert hours == [336, 336], (
+        f"the clamp differs between surfaces, so one asks the database for a different range: {hours}"
+    )
+
+
+def test_a_reverse_lookup_without_an_address_is_refused_identically(surfaces):
+    """This one DOES refuse, and the wording is part of what a caller sees."""
+    legacy, app = surfaces()
+
+    lstatus, lbody = _legacy_http(legacy.port, "/api/dns/reverse")
+    fstatus, fbody = _flask_http(app, "/api/dns/reverse")
+
+    assert fstatus == lstatus == 400, f"console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody)
+
+
+def test_an_absolute_range_is_honoured_identically_on_both_surfaces(surfaces, monkeypatch):
+    """`from`/`to` win over `hours`, and the span becomes the window.
+
+    THIS PATH HAD NO TEST UNTIL A MUTATION SHOWED IT: restoring the old scalar indexing left the whole
+    suite green, because every existing case went through `hours`. The defect it hides is the same one,
+    and worse here: `"2026-11-13T00:00:00"[0]` is `"2"`, so the absolute range would have been parsed
+    from a single character.
+    """
+    rec = _Recorder()
+    _patch(monkeypatch, "weirvern.admin.soc.discover_trends", rec)
+    legacy, app = surfaces()
+
+    q = "?from=2026-11-13T00:00:00&to=2026-11-13T06:00:00"
+    lstatus, lbody = _legacy_http(legacy.port, "/api/discover/trends" + q)
+    fstatus, fbody = _flask_http(app, "/api/discover/trends" + q)
+
+    assert fstatus == lstatus == 200, f"console {lstatus}, flask {fstatus}: {lbody[:160]!r}"
+    assert json.loads(fbody) == json.loads(lbody)
+    hours = [c.get("hours") for c in rec.seen]
+    assert hours == [6, 6], (
+        f"the absolute range resolved differently on the two surfaces: {hours}"
+    )
+

@@ -4672,6 +4672,29 @@ def _build_handler(ctx: GuiContext):
     return Handler
 
 
+def _first(query: dict, name: str, default=None):
+    """The first value for `name`, accepting BOTH query shapes this project passes around.
+
+    THE CONSOLE AND FLASK HAND OVER DIFFERENT THINGS. The console parses with `parse_qs`, which gives
+    a dict of LISTS, so `query.get(name)[0]` is the value. Flask's `request.args` is a MultiDict whose
+    `.get` returns a SCALAR, and `"9999"[0]` is `"9"`, not an error. Measured consequence: `?hours=9999`
+    reached the fetcher as 336 hours on the console and as 9 hours on the new surface, so the same URL
+    asked the database for two different time ranges. A silent divergence, not a crash, which is why it
+    is normalised here once instead of being remembered at every call site.
+    """
+    value = query.get(name)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    try:
+        return value[0] if len(value) else default
+    except TypeError:
+        return value
+
+
 def _int_arg(query: dict, name: str, default: int, lo: int, hi: int) -> int:
     """Parse and CLAMP an integer query parameter.
 
@@ -4679,8 +4702,9 @@ def _int_arg(query: dict, name: str, default: int, lo: int, hi: int) -> int:
     maximum allowed, which is friendlier than an error and still protects the
     database from an unbounded scan.
     """
+    raw = _first(query, name)
     try:
-        value = int((query.get(name) or [default])[0])
+        value = int(default if raw is None else raw)
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, value))
@@ -4700,8 +4724,8 @@ def window_arg(query: dict, default: int, lo: int, hi: int) -> int:
     Silently falling back to `hours` would answer a different question than the one that was asked.
     """
     hours = _int_arg(query, "hours", default, lo, hi)
-    frm = (query.get("from") or [None])[0]
-    to = (query.get("to") or [None])[0]
+    frm = _first(query, "from")
+    to = _first(query, "to")
     if not frm and not to:
         return hours
     since, until = timewindow.parse_range(frm, to)
@@ -4711,8 +4735,11 @@ def window_arg(query: dict, default: int, lo: int, hi: int) -> int:
 
 
 def _float_arg(query: dict, name: str, default: float, lo: float, hi: float) -> float:
+    """Parse and clamp a float query parameter. Normalised through `_first` for the same reason
+    `_int_arg` is: `"0.5"[0]` is `"0"`, so a scalar query value would have clamped to zero."""
+    raw = _first(query, name)
     try:
-        value = float((query.get(name) or [default])[0])
+        value = float(default if raw is None else raw)
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, value))
