@@ -133,10 +133,14 @@ def test_the_reason_vocabulary_matches_what_the_worker_writes():
 def test_the_health_payload_carries_the_audit_in_every_shape():
     """Threaded through /api/health: present on success, present-and-unavailable on
     failure. A key that exists only on success makes `d.alerts` undefined on the error
-    path, and the panel silently renders nothing."""
-    src = (ROOT / "weirvern" / "admin" / "web.py").read_text()
+    path, and the panel silently renders nothing.
+
+    THE FETCH MOVED into `payloads.health_deep` when the route crossed to Flask, so the scan follows
+    it there. What must stay true is the shape, not the file.
+    """
+    src = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
     i = src.index("SOC-8: the alert audit")
-    region = src[i:i + 900]
+    region = src[i:i + 600]
     assert "alert_audit" in region and "audit" in region
     # The error return path must carry it too.
     j = src.index('"alerts": audit,')

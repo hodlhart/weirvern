@@ -11,7 +11,7 @@ before, because the console is served unchanged. A big-bang port would have thro
 a framework.
 
 THE STRANGLER, AND WHY IT NEEDS A PASSTHROUGH. The console serves 84 distinct API paths (53 GET
-reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 44 of
+reads, 34 POST entries) and the dashboard's own JavaScript calls 59 of them. This app serves 49 of
 the reads natively. Replacing the console outright would therefore load the page and break every
 endpoint not yet crossed, with each panel reporting "no such endpoint" -- a regression dressed as a
 migration.
@@ -417,6 +417,41 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
                 return jsonify(fetcher(client, **kwargs))
         except Exception as exc:  # noqa: BLE001
             return jsonify(failure(exc))
+
+    def _status_route(fetcher, failure, **kwargs):
+        """A read that answers with a STATUS of its own, not always 200.
+
+        The capture-probe read is the case: a missing request is a 404 with its own body and a
+        failed read a 503, and either one answered as a 200 would tell the operator the wrong thing
+        about which happened. The fetcher returns `(status, payload)` so the two surfaces cannot
+        disagree about the code any more than about the body.
+        """
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = fetcher(client, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = failure(exc)
+        return jsonify(payload), code
+
+    def _caller_role() -> str:
+        """The caller's role, with the console's precedence: TOKEN first, then session.
+
+        THE ORDER IS LOAD-BEARING (audit F049). The console once returned the session's role without
+        consulting the token, so the same valid token was accepted or refused depending on whether
+        the browser happened to be signed in as a viewer. Reimplementing that order differently here
+        is exactly the drift the fix removed, so this asks the same two shared helpers in the same
+        sequence.
+        """
+        from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+        headers = _auth_headers()
+        role = requestauth.token_role(ctx, headers, client=request.remote_addr or "")
+        if role:
+            return role
+        ident = requestauth.identity(ctx, headers)
+        if ident is not None:
+            return users_mod.ROLE_ADMIN if ident.is_admin else users_mod.ROLE_VIEWER
+        return ""
 
     @app.get("/api/audit")
     @gated
@@ -849,6 +884,70 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
 
         return jsonify(payloads.update_meta(ctx.backend,
                                            refresh=web.update_refresh(request.args)))
+
+    @app.get("/api/overview")
+    @gated
+    def overview():
+        """The landing payload. It takes a CONNECTION FACTORY: the service list is read before the
+        database is touched, so a database that will not connect still leaves the page a true fact.
+        """
+        from weirvern.admin import payloads  # noqa: PLC0415
+
+        return jsonify(payloads.overview(
+            lambda: ctx.connect_factory(ctx.settings), backend=ctx.backend,
+            settings=ctx.settings, user_store=getattr(ctx, "user_store", None),
+            capabilities=ctx.capabilities))
+
+    @app.get("/api/health")
+    @gated
+    def health():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            hours = web.window_arg(request.args, 24, 1, 24 * 14)
+        except ValueError as exc:
+            return _json_error(400, f"bad time range: {exc}")
+        return _soft_route(payloads.health_deep, payloads.health_deep_failure, hours=hours,
+                           settings=ctx.settings,
+                           user_store=getattr(ctx, "user_store", None))
+
+    @app.get("/api/weirlings/detail")
+    @gated
+    def weirlings_detail():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            sensor_id = web.weirlings_detail_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _soft_route(payloads.weirlings_detail, payloads.weirlings_detail_failure,
+                           sensor_id=sensor_id)
+
+    @app.get("/api/weirlings/probe")
+    @gated
+    def weirlings_probe():
+        from weirvern.admin import payloads, web  # noqa: PLC0415
+
+        try:
+            request_id = web.weirlings_probe_args(request.args)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        return _status_route(payloads.weirlings_probe, payloads.weirlings_probe_failure,
+                             request_id=request_id)
+
+    @app.get("/api/users")
+    @gated
+    def users():
+        """Admin-only by CONTENT, not by method: the account list is not monitoring data."""
+        from weirvern.admin import payloads, requestauth  # noqa: PLC0415
+        from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+        if _caller_role() != users_mod.ROLE_ADMIN:
+            return _json_error(403, "admin access is required to view accounts")
+        return jsonify(payloads.users_list(
+            store=getattr(ctx, "user_store", None),
+            accounts_on=requestauth.accounts_on(ctx),
+            note=getattr(ctx, "accounts_note", "") or ""))
 
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.

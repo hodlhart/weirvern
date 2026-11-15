@@ -661,47 +661,12 @@ def _build_handler(ctx: GuiContext):
             return ctx.connect_factory(ctx.settings)
 
         def _overview(self) -> None:
-            services = []
-            if ctx.backend is not None:
-                try:
-                    services = ctx.backend.ps()
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("backend.ps failed: %s", exc)
-
-            report = None
-            anomalies: list = []
-            # A STATE, NOT AN EMPTY LIST (issue #13): if the read below fails, the payload says
-            # so; an empty list would render as a quiet network.
-            talkers: dict = {"available": False, "reason": "the overview read did not run",
-                             "points": []}
-            sensor: dict = {}
-            data_error = None
-            try:
-                with self._with_client() as client:
-                    report = status_mod.collect_health(
-                        client, ctx.settings,
-                        user_store=getattr(ctx, "user_store", None),
-                    )
-                    anomalies = status_mod.anomalies_detailed(client, limit=25)
-                    talkers = status_mod.top_talkers(client, limit=10)
-                    # What the sensor reports about itself. Separate from the health
-                    # checks above, which answer "is data flowing", not "what is the
-                    # sensor doing" -- and for siphon that distinction is the whole point:
-                    # a dead intercept still has its mode in the ConfigMap.
-                    sensor = status_mod.sensor_status(client)
-            except Exception as exc:  # noqa: BLE001
-                # WARNING, not debug, and surfaced in the payload. This was debug
-                # originally, and the effect was a page that rendered every panel
-                # empty with no explanation anywhere -- the in-cluster pod was
-                # trying to shell out to kubectl for a tunnel it did not need, and
-                # nothing in the UI or the logs said so.
-                data_error = str(exc)[:300]
-                logger.warning("overview data unavailable: %s", exc)
-
-            payload = web_api.overview_payload(
-                services, report, anomalies, talkers, ctx.capabilities, sensor=sensor)
-            payload["data_error"] = data_error
-            self._json(payload)
+            # SHARED WITH THE FLASK SURFACE (payloads.overview). It takes `_with_client` rather than
+            # an open client because the service list is read BEFORE the database is touched, and a
+            # database that will not connect must still leave the page something true to say.
+            self._json(payloads.overview(
+                self._with_client, backend=ctx.backend, settings=ctx.settings,
+                user_store=getattr(ctx, "user_store", None), capabilities=ctx.capabilities))
 
         def _anomalies(self, query: dict) -> None:
             limit = _int_arg(query, "limit", 100, 1, 1000)
@@ -1401,32 +1366,15 @@ def _build_handler(ctx: GuiContext):
             hours = self._window_arg(query, 24, 1, 24 * 14)
             if hours is None:
                 return
-            empty = {"available": False, "reason": "the data could not be read", "points": []}
-            report = None
-            sensor: dict = {}
-            ingest, sizes = empty, empty
-            audit: dict = {"available": False, "reason": "the data could not be read",
-                           "by_reason": [], "recent": [], "suppressed": 0,
-                           "total": 0, "truncated": False, "names": {}}
             try:
                 with self._with_client() as client:
-                    report = status_mod.collect_health(
-                        client, ctx.settings,
-                        user_store=getattr(ctx, "user_store", None),
-                    )
-                    sensor = status_mod.sensor_status(client)
-                    ingest = soc_mod.ingestion_series(client, hours=hours)
-                    sizes = soc_mod.table_sizes(client)
-                    # SOC-8: the alert audit rides on the health payload -- it is the same
-                    # question ("is the system doing what it should") and it does not
-                    # deserve a route of its own that nobody would look at.
-                    audit = soc_mod.alert_audit(client, hours=hours)
+                    # SHARED WITH THE FLASK SURFACE (payloads.health_deep).
+                    payload = payloads.health_deep(
+                        client, settings=ctx.settings,
+                        user_store=getattr(ctx, "user_store", None), hours=hours)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("health view unavailable: %s", exc)
-                return self._json({"health": None, "ingest": empty, "tables": empty,
-                                   "sensor": {}, "alerts": audit,
-                                   "data_error": read_failure(exc)})
-            self._json(web_api.health_deep_payload(report, ingest, sizes, sensor, audit))
+                return self._json(payloads.health_deep_failure(exc))
+            self._json(payload)
 
         def _assets(self, query: dict) -> None:
             """The asset inventory: every host seen, with a per-host summary.
@@ -1878,35 +1826,18 @@ def _build_handler(ctx: GuiContext):
 
         def _weirlings_probe_get(self, query: dict) -> None:
             """Read one queued/complete capture probe. A read: no login required."""
-            from weirvern import probe_store  # noqa: PLC0415
-
-            request_id = str((query.get("request") or [""])[0]).strip()
-            if not request_id:
-                return self._error(400, "a request id is required: /api/weirlings/probe?request=ID")
+            try:
+                request_id = weirlings_probe_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    row = probe_store.get_request(client, request_id)
+                    # SHARED WITH THE FLASK SURFACE (payloads.weirlings_probe). It returns a STATUS
+                    # too: a missing request is a 404, a failed read a 503.
+                    code, payload = payloads.weirlings_probe(client, request_id=request_id)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False,
-                                   "error": f"the probe could not be read: {str(exc)[:200]}"}, 503)
-            if row is None:
-                return self._json({"ok": False, "error": "no such capture probe"}, 404)
-            result = None
-            if row.get("result"):
-                try:
-                    result = json.loads(str(row["result"]))
-                except ValueError:
-                    result = None
-            return self._json({
-                "ok": True,
-                "request_id": row["request_id"],
-                "sensor_id": row["sensor_id"],
-                "iface": row.get("iface", ""),
-                "seconds": int(row.get("seconds") or 0),
-                "status": row.get("status", ""),
-                "result": result,
-                "error": row.get("error", ""),
-            })
+                code, payload = payloads.weirlings_probe_failure(exc)
+            self._json(payload, code)
 
         def _weirlings_probe_post(self) -> None:
             """Queue a READ-ONLY capture-liveness probe for a remote weirling.
@@ -1988,32 +1919,17 @@ def _build_handler(ctx: GuiContext):
             Reads through the same payload builder as the list, so the detail panel and the
             row it was opened from can never disagree about one sensor.
             """
-            sensor_id = str((query.get("sensor") or [""])[0]).strip()
-            if not sensor_id:
-                return self._error(400, "a sensor id is required: /api/weirlings/detail?sensor=NAME")
+            try:
+                sensor_id = weirlings_detail_args(query)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    row = fleet_store.classify_one(client, sensor_id)
+                    # SHARED WITH THE FLASK SURFACE (payloads.weirlings_detail).
+                    payload = payloads.weirlings_detail(client, sensor_id=sensor_id)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("weirlings detail unavailable: %s", exc)
-                return self._json({
-                    "available": False,
-                    "reason": f"the sensor could not be read: {str(exc)[:200]}",
-                    "sensor": None,
-                })
-            if row is None:
-                # Deliberately a 200 with `available: true` and a null sensor: "there is no
-                # such sensor" is an ANSWER, not a failure, and rendering it as an error would
-                # send the operator looking for an outage.
-                return self._json({
-                    "available": True, "reason": None, "sensor": None,
-                    "note": (f"no sensor named {sensor_id!r} is registered or reporting. It may "
-                             f"have been revoked, or the spelling may differ."),
-                })
-            # Same local marker as the list, from the same source: the drill-down decides from
-            # it whether to mount the sensor's settings or the note saying where they are.
-            row["local"] = (row.get("sensor_id") == _gate_sensor_name())
-            self._json({"available": True, "reason": None, "sensor": row})
+                return self._json(payloads.weirlings_detail_failure(exc))
+            self._json(payload)
 
         def _sluice_block(self) -> None:
             """Create a blocking rule.
@@ -3245,13 +3161,12 @@ def _build_handler(ctx: GuiContext):
             role, _via = self._caller_role()
             if role != users_mod.ROLE_ADMIN:
                 return self._error(403, "admin access is required to view accounts")
-            store = getattr(ctx, "user_store", None)
-            if store is None or not _accounts_on(ctx):
-                return self._json({"available": False, "users": [],
-                                   "reason": getattr(ctx, "accounts_note", "")
-                                   or "no accounts provisioned"})
-            self._json({"available": True, "users": store.public_users(),
-                        "roles": list(users_mod.ROLES)})
+            # SHARED WITH THE FLASK SURFACE (payloads.users_list). The ROLE GATE stays here and on
+            # the route: the fetcher answers "what are the accounts", not "who may see them".
+            self._json(payloads.users_list(
+                store=getattr(ctx, "user_store", None),
+                accounts_on=_accounts_on(ctx),
+                note=getattr(ctx, "accounts_note", "") or ""))
 
         def _users_create(self) -> None:
             """Create an account. Admin only."""
@@ -4667,6 +4582,22 @@ def update_refresh(query: dict) -> bool:
     """The `refresh` flag on the update card. No strip: the console has always compared as-is."""
     raw = str(_first(query, "refresh", "") or "").lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def weirlings_detail_args(query: dict) -> str:
+    """`sensor` for the drill-down."""
+    sensor_id = str(_first(query, "sensor", "") or "").strip()
+    if not sensor_id:
+        raise ValueError("a sensor id is required: /api/weirlings/detail?sensor=NAME")
+    return sensor_id
+
+
+def weirlings_probe_args(query: dict) -> str:
+    """`request` for the capture-probe read."""
+    request_id = str(_first(query, "request", "") or "").strip()
+    if not request_id:
+        raise ValueError("a request id is required: /api/weirlings/probe?request=ID")
+    return request_id
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

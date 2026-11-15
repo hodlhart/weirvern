@@ -140,6 +140,21 @@ PORTED: dict[str, tuple[str, str | None, object, str]] = {
                      {"available": True, "points": []}, "?log=ssl&hours=6"),
     "/api/update": ("update_meta", "weirvern.admin.payloads.update_meta",
                     {"available": True, "current": "0.0.0"}, "?refresh=1"),
+    # The landing views and the fleet drill-downs. `users` is admin-gated, so WITHOUT a granted
+    # role this entry exercises the 403 both surfaces must word the same; the granted path has its
+    # own test below, because a gate that refuses first would hide the payload entirely.
+    "/api/overview": ("overview", "weirvern.admin.payloads.overview",
+                      {"services": [], "data_error": None}, ""),
+    "/api/health": ("health_deep", "weirvern.admin.payloads.health_deep",
+                    {"health": None, "ingest": {}, "tables": {}, "sensor": {}, "alerts": {}},
+                    "?hours=6"),
+    "/api/weirlings/detail": ("weirlings_detail", "weirvern.admin.payloads.weirlings_detail",
+                              {"available": True, "sensor": None}, "?sensor=hub"),
+    # The status is part of the canned value: this route answers 404 and 503, not only 200.
+    "/api/weirlings/probe": ("weirlings_probe", "weirvern.admin.payloads.weirlings_probe",
+                             (200, {"ok": True}), "?request=r1"),
+    "/api/users": ("users_list", "weirvern.admin.payloads.users_list",
+                   {"available": True, "users": []}, ""),
 }
 
 
@@ -303,7 +318,7 @@ def test_every_port_is_routed_by_flask():
 
 def test_the_ported_count_only_grows():
     """A ratchet on progress, not a target: if a route moves BACK to the legacy handler, this notices."""
-    assert len(PORTED) >= 41, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
+    assert len(PORTED) >= 46, f"{len(PORTED)} routes ported; the ratchet must not go backwards"
 
 
 # ── argument parsing is part of the contract ────────────────────────────────────────────────
@@ -456,6 +471,8 @@ REFUSALS = [
     ("/api/graph", "?host=bad%20host!"),
     ("/api/blocked", "?domain=" + "a" * 201),
     ("/api/blocked", "?client=" + "a" * 65),
+    ("/api/weirlings/detail", ""),
+    ("/api/weirlings/probe", ""),
 ]
 
 
@@ -538,4 +555,46 @@ def test_the_graph_tracked_selection_survives_repetition_on_both_surfaces(surfac
     assert tracked == [["203.0.113.9", "203.0.113.10"], ["203.0.113.9", "203.0.113.10"]], (
         f"a repeated host was collapsed on one surface: {tracked}"
     )
+
+
+def test_the_capture_probe_status_travels_on_both_surfaces(surfaces, monkeypatch):
+    """A missing probe is a 404 with its own body, not a 200 carrying an error string.
+
+    THE STATUS IS PART OF THE ANSWER. This route uses three of them (200, 404, 503) and a port that
+    answered 200 for all three would leave the caller's error handling reading the wrong branch.
+    """
+    _patch(monkeypatch, "weirvern.admin.payloads.weirlings_probe",
+           lambda *a, **k: (404, {"ok": False, "error": "no such capture probe"}))
+    legacy, app = surfaces()
+
+    lstatus, lbody = _legacy_http(legacy.port, "/api/weirlings/probe?request=r1")
+    fstatus, fbody = _flask_http(app, "/api/weirlings/probe?request=r1")
+
+    assert fstatus == lstatus == 404, f"console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody)
+
+
+def test_the_users_read_is_admin_gated_identically_and_answers_when_granted(surfaces, monkeypatch):
+    """The 403 comes first and is worded the same; the granted read then returns the same payload.
+
+    THE GATE IS THE INTERESTING HALF. `/api/users` checks a ROLE on top of the read gate, and a
+    surface that checked it differently would leak the account list to a viewer. The role is granted
+    here through `requestauth.token_role`, the shared helper BOTH surfaces ask, so neither gets a
+    private path to "admin".
+    """
+    legacy, app = surfaces()
+
+    lstatus, lbody = _legacy_http(legacy.port, "/api/users")
+    fstatus, fbody = _flask_http(app, "/api/users")
+    assert fstatus == lstatus == 403, f"console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody)
+
+    _patch(monkeypatch, "weirvern.admin.requestauth.token_role", lambda *a, **k: "admin")
+    rec = _Recorder({"available": True, "users": [{"username": "sam"}]})
+    _patch(monkeypatch, "weirvern.admin.payloads.users_list", rec)
+
+    lstatus, lbody = _legacy_http(legacy.port, "/api/users")
+    fstatus, fbody = _flask_http(app, "/api/users")
+    assert fstatus == lstatus == 200, f"console {lstatus}, flask {fstatus}"
+    assert json.loads(fbody) == json.loads(lbody)
 

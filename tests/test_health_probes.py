@@ -751,6 +751,11 @@ def test_the_probe_row_is_PRESENT_even_with_no_store():
 def test_the_GUI_health_routes_pass_the_store():
     """A probe nothing feeds is the same silence in a new shape.
 
+    THE CALL MOVED into `payloads.health_deep` when the route crossed to Flask, so the scan covers
+    BOTH modules: the fetcher must pass `user_store` to `collect_health`, and each surface must pass
+    it to the fetcher. Without either half the probe reports "not probed" in the very process that
+    HAS a store.
+
     Checked with `ast` rather than by searching lines: my first version looked for `user_store` on the
     SAME LINE as the call, and a later reformat (for a line-length rule) moved the argument onto its
     own line -- so the test failed on a change that was correct. A source-text assertion that depends
@@ -759,27 +764,47 @@ def test_the_GUI_health_routes_pass_the_store():
     import ast
     import pathlib as _p
 
-    src = (_p.Path(__file__).resolve().parent.parent / "weirvern" / "admin" / "web.py").read_text()
-    tree = ast.parse(src)
-    gui_calls = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        fn = node.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-        if name != "collect_health":
-            continue
-        rendered = ast.unparse(node)
-        if "ctx" in rendered:
-            gui_calls.append(node)
+    admin = _p.Path(__file__).resolve().parent.parent / "weirvern" / "admin"
 
-    assert gui_calls, "no GUI collect_health call sites found in web.py"
-    for node in gui_calls:
+    # 1. The fetcher must thread the store into the health collector.
+    collector_calls = []
+    for name in ("web.py", "payloads.py"):
+        tree = ast.parse((admin / name).read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            fname = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if fname == "collect_health":
+                collector_calls.append((name, node))
+    assert collector_calls, "no collect_health call sites found"
+    for name, node in collector_calls:
         kws = {k.arg for k in node.keywords}
         assert "user_store" in kws, (
-            f"a GUI health route does not pass the account store, so the probe reports 'not probed' "
-            f"in the very process that HAS one: {ast.unparse(node)}"
+            f"{name} does not pass the account store, so the probe reports 'not probed' in the "
+            f"very process that HAS one: {ast.unparse(node)}"
         )
+
+    # 2. Each surface must hand it to the shared fetcher. In web.py that is a direct call; in
+    #    flask_app.py it is the first argument of `_soft_route`, so both shapes are matched.
+    for name in ("web.py", "flask_app.py"):
+        tree = ast.parse((admin / name).read_text())
+        fetches = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for target in [node.func, *node.args[:1]]:
+                tname = (target.attr if isinstance(target, ast.Attribute)
+                         else getattr(target, "id", ""))
+                if tname == "health_deep":
+                    fetches.append(node)
+                    break
+        assert fetches, f"{name} does not route /api/health through payloads.health_deep"
+        for node in fetches:
+            kws = {k.arg for k in node.keywords}
+            assert "user_store" in kws, (
+                f"{name}'s health route does not pass the account store: {ast.unparse(node)}"
+            )
 
 # ── issue #29: the volume evidence is READ, and a failed read is on the record ───────────────
 

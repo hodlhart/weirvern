@@ -22,6 +22,7 @@ console keeps serving everything not yet moved.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -811,6 +812,168 @@ def update_meta(backend: Any, *, refresh: bool) -> dict[str, Any]:
 
         current = __version__
     return update_mod.check(current, refresh=refresh)
+
+
+def health_deep(client: Client, *, settings: Any, user_store: Any, hours: int) -> dict[str, Any]:
+    """DEEP health: the checks, the ingestion trend, table sizes, the sensor, and the alert audit.
+
+    NOT the liveness probe. /api/healthz answers without touching the database so a slow database
+    cannot restart the GUI; this one reads it, because "is data still arriving" cannot be answered
+    otherwise.
+    """
+    from weirvern.admin import soc as soc_mod  # noqa: PLC0415
+
+    try:
+        report = status_mod.collect_health(client, settings, user_store=user_store)
+        sensor = status_mod.sensor_status(client)
+        ingest = soc_mod.ingestion_series(client, hours=hours)
+        sizes = soc_mod.table_sizes(client)
+        # SOC-8: the alert audit rides on the health payload. It answers the same question ("is the
+        # system doing what it should") and does not deserve a route nobody would look at.
+        audit = soc_mod.alert_audit(client, hours=hours)
+    except Exception as exc:  # noqa: BLE001
+        return health_deep_failure(exc)
+    return web_api.health_deep_payload(report, ingest, sizes, sensor, audit)
+
+
+def health_deep_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/health: a full shape, with `health: null`."""
+    from weirvern.admin.web import read_failure  # noqa: PLC0415
+
+    logger.warning("health view unavailable: %s", exc)
+    empty = {"available": False, "reason": "the data could not be read", "points": []}
+    audit = {"available": False, "reason": "the data could not be read", "by_reason": [],
+             "recent": [], "suppressed": 0, "total": 0, "truncated": False, "names": {}}
+    return {"health": None, "ingest": dict(empty), "tables": dict(empty), "sensor": {},
+            "alerts": audit, "data_error": read_failure(exc)}
+
+
+def overview(with_client: Any, *, backend: Any, settings: Any, user_store: Any,
+             capabilities: Any) -> dict[str, Any]:
+    """The landing payload: services, health report, recent anomalies, talkers and the sensor.
+
+    TAKES A CONNECTION FACTORY, NOT A CLIENT, and that is deliberate: the service list comes from
+    the backend and is read BEFORE the database is touched, so a database that will not connect
+    still leaves the page with something true to say. A fetcher handed an open client would lose
+    that half the moment the connect failed.
+    """
+    services: list = []
+    if backend is not None:
+        try:
+            services = backend.ps()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("backend.ps failed: %s", exc)
+
+    report = None
+    anomalies: list = []
+    # A STATE, NOT AN EMPTY LIST (issue #13): if the read below fails, the payload says so; an
+    # empty list would render as a quiet network.
+    talkers: dict = {"available": False, "reason": "the overview read did not run", "points": []}
+    sensor: dict = {}
+    data_error = None
+    try:
+        with with_client() as client:
+            report = status_mod.collect_health(client, settings, user_store=user_store)
+            anomalies = status_mod.anomalies_detailed(client, limit=25)
+            talkers = status_mod.top_talkers(client, limit=10)
+            # What the sensor reports about itself: separate from the health checks above, which
+            # answer "is data flowing", not "what is the sensor doing".
+            sensor = status_mod.sensor_status(client)
+    except Exception as exc:  # noqa: BLE001
+        # WARNING, not debug, and surfaced in the payload. This was debug once, and the effect was
+        # a page that rendered every panel empty with no explanation anywhere.
+        data_error = str(exc)[:300]
+        logger.warning("overview data unavailable: %s", exc)
+
+    payload = web_api.overview_payload(
+        services, report, anomalies, talkers, capabilities, sensor=sensor)
+    payload["data_error"] = data_error
+    return payload
+
+
+def weirlings_detail(client: Client, *, sensor_id: str) -> dict[str, Any]:
+    """One sensor, for the drill-down, through the same classifier the list uses."""
+    from weirvern import fleet_store  # noqa: PLC0415
+    from weirvern.admin.web import _gate_sensor_name  # noqa: PLC0415
+
+    try:
+        row = fleet_store.classify_one(client, sensor_id)
+    except Exception as exc:  # noqa: BLE001
+        return weirlings_detail_failure(exc)
+    if row is None:
+        # DELIBERATELY A 200 with `available: true` and a null sensor: "there is no such sensor" is
+        # an ANSWER, not a failure, and an error would send the operator looking for an outage.
+        return {
+            "available": True, "reason": None, "sensor": None,
+            "note": (f"no sensor named {sensor_id!r} is registered or reporting. It may "
+                     f"have been revoked, or the spelling may differ."),
+        }
+    # Same local marker as the list, from the same source: the drill-down decides from it whether
+    # to mount the sensor's settings or the note saying where they are.
+    row["local"] = (row.get("sensor_id") == _gate_sensor_name())
+    return {"available": True, "reason": None, "sensor": row}
+
+
+def weirlings_detail_failure(exc: BaseException) -> dict[str, Any]:
+    """The console's own failure shape for /api/weirlings/detail."""
+    logger.warning("weirlings detail unavailable: %s", exc)
+    return {"available": False,
+            "reason": f"the sensor could not be read: {str(exc)[:200]}",
+            "sensor": None}
+
+
+def weirlings_probe(client: Client, *, request_id: str) -> tuple[int, dict[str, Any]]:
+    """Read one queued or complete capture probe.
+
+    RETURNS (STATUS, PAYLOAD), because this route's contract is not one status: a missing request is
+    a 404 with its own body, a failed read a 503, and a found one a 200. Collapsing that into one
+    code would tell the operator the wrong thing about which of the three happened.
+    """
+    from weirvern import probe_store  # noqa: PLC0415
+
+    try:
+        row = probe_store.get_request(client, request_id)
+    except Exception as exc:  # noqa: BLE001
+        return weirlings_probe_failure(exc)
+    if row is None:
+        return 404, {"ok": False, "error": "no such capture probe"}
+    result = None
+    if row.get("result"):
+        try:
+            result = json.loads(str(row["result"]))
+        except ValueError:
+            result = None
+    return 200, {
+        "ok": True,
+        "request_id": row["request_id"],
+        "sensor_id": row["sensor_id"],
+        "iface": row.get("iface", ""),
+        "seconds": int(row.get("seconds") or 0),
+        "status": row.get("status", ""),
+        "result": result,
+        "error": row.get("error", ""),
+    }
+
+
+def weirlings_probe_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """The console's own failure for a probe read: 503 with its own body, not the house error shape."""
+    logger.warning("capture probe read failed: %s", exc)
+    return 503, {"ok": False, "error": f"the probe could not be read: {str(exc)[:200]}"}
+
+
+def users_list(*, store: Any, accounts_on: bool, note: str) -> dict[str, Any]:
+    """Every account, for an admin. Reads are admin-only: the account list is not monitoring data.
+
+    The ROLE GATE lives in the caller, not here: this function answers "what are the accounts", and
+    both surfaces check the role before calling it.
+    """
+    from weirvern.admin import users as users_mod  # noqa: PLC0415
+
+    if store is None or not accounts_on:
+        return {"available": False, "users": [],
+                "reason": note or "no accounts provisioned"}
+    return {"available": True, "users": store.public_users(),
+            "roles": list(users_mod.ROLES)}
 
 
 def discover_trends(client: Client, hours: int) -> dict[str, Any]:
