@@ -1164,6 +1164,125 @@ def password_change(ctx: Any, ident: Any, *, current: str,
                  "note": "password changed; sign in again with the new one"}
 
 
+def scan_job_create(client: Client, *, ip: str) -> tuple[int, dict[str, Any]]:
+    """Queue one host scan for the scanner to claim under a lease.
+
+    THE TABLE MAY NOT EXIST YET, and that is a named condition rather than a fault: a deployment on
+    an older scanner answers 503 with the version that introduced the table. An ACTIVE job is not an
+    error either -- it answers `already: true` with the job that is running, so a double click does
+    not queue a second scan.
+    """
+    from weirvern import scan_jobs  # noqa: PLC0415
+
+    try:
+        asset = scan_jobs.find_asset(client, ip)
+        if asset is None:
+            return 404, {"error": f"{ip} is not in the asset registry", "code": 404}
+        active = scan_jobs.active_for_asset(client, str(asset["asset_key"]))
+        if active is not None:
+            return 200, {"ok": True, "job_id": str(active["job_id"]), "ip": ip,
+                         "state": str(active["state"]), "already": True}
+        job = scan_jobs.create_job(client, asset, requested_by="operator")
+    except Exception as exc:  # noqa: BLE001
+        return scan_job_failure(exc)
+    logger.info("manual scan queued for %s (%s)", ip, job["job_id"])
+    return 200, {"ok": True, "job_id": str(job["job_id"]), "ip": ip,
+                 "state": "queued", "already": False}
+
+
+def sluice_block(client: Client, *, by: str, src_cidr: str, dst_cidr: str, domain: str,
+                 mode: str, protocol: str, dst_port: int, direction: str, ttl_minutes: int,
+                 reason: str, origin: str,
+                 interval_s: int) -> tuple[int, dict[str, Any]]:
+    """Record a blocking rule and describe what will happen next.
+
+    THE NOTE IS PART OF THE ANSWER. The gate arms on its own interval, so the operator is told when
+    enforcement picks the rule up rather than being left to assume the block is instant; an indefinite
+    rule says it stays until revoked, because "recorded" alone reads as a bounded block; and ALERT
+    mode says nothing will actually be dropped, which is the difference between a block and a tally.
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+    from weirvern.sluice import SluiceError  # noqa: PLC0415
+
+    try:
+        rule = sluice_store.create_rule(
+            client, src_cidr=src_cidr, dst_cidr=dst_cidr, domain=domain, mode=mode,
+            protocol=protocol, dst_port=dst_port, direction=direction,
+            ttl_minutes=ttl_minutes, created_by=by, reason=reason, origin=origin,
+        )
+    except SluiceError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return sluice_block_failure(exc)
+    return 200, {
+        "ok": True, "rule_id": rule.rule_id, "describes": rule.describes(),
+        "expires_at": rule.expires_at.isoformat() if rule.expires_at else "",
+        "note": (f"recorded; enforcement picks it up within {int(interval_s)}s"
+                 + ("" if rule.expires_at else "; it stays until it is revoked")
+                 + (" — ALERT mode: hits are recorded, nothing is blocked"
+                    if rule.mode == "alert" else "")),
+    }
+
+
+def scan_job_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """The console's own failure shape: a table that is not there yet is a NAMED condition.
+
+    Used both inside the fetcher and by a surface whose CONNECTION failed -- the console wraps the
+    connection in the same try, so an unreachable cluster has always answered this sentence.
+    """
+    logger.warning("scan job request failed: %s", exc)
+    return 503, {"error": "the scan-job table is not ready; deploy scanner 0.14.13", "code": 503}
+
+
+def sluice_block_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """A rule that could not be recorded, named by the exception's TYPE and not its message.
+
+    The type is what the console reports: a driver message can carry the cluster's internals, and the
+    operator cannot act on it.
+    """
+    logger.warning("sluice block failed: %s", exc)
+    return 502, {"error": f"could not record the rule: {type(exc).__name__}", "code": 502}
+
+
+def sluice_revoke_failure(exc: BaseException) -> tuple[int, dict[str, Any]]:
+    """A rule that could not be revoked, same contract as sluice_block_failure."""
+    logger.warning("sluice revoke failed: %s", exc)
+    return 502, {"error": f"could not revoke the rule: {type(exc).__name__}", "code": 502}
+
+
+def sluice_revoke(client: Client, *, rule_id: str, rule_ids: list[str], reason: str, by: str,
+                  interval_s: int) -> tuple[int, dict[str, Any]]:
+    """Stop enforcing a rule, keeping the RECORD.
+
+    The audit trail of what was blocked and why must not be destroyed by the act of unblocking it --
+    that record is what an incident review reads, which is why the store soft-deletes.
+
+    A BULK REVOKE REPORTS PER-ID FAILURES rather than swallowing them (`revoke_rules`), so a selection
+    of ten rules with one bad id answers with what happened to each.
+
+    `reason` is validated by the caller and, as on the console, NOT passed to the store: the route has
+    always required it and never recorded it. Preserved rather than changed here -- adding a column is
+    a schema decision, not a port.
+    """
+    from weirvern import sluice_store  # noqa: PLC0415
+
+    try:
+        if rule_ids:
+            try:
+                out = sluice_store.revoke_rules(client, rule_ids, by=by)
+            except sluice_store.SluiceError as exc:
+                return 400, {"error": str(exc), "code": 400}
+            return 200, {"ok": True, **out,
+                         "note": f"revoked; enforcement stops within {int(interval_s)}s"}
+        ok = sluice_store.revoke_rule(client, rule_id, by=by)
+    except Exception as exc:  # noqa: BLE001
+        return sluice_revoke_failure(exc)
+    if not ok:
+        return 404, {"ok": False, "error": f"no rule with id {rule_id!r}"}
+    return 200, {"ok": True, "rule_id": rule_id,
+                 "note": f"revoked; enforcement stops within {int(interval_s)}s"}
+
+
 def discover(client: Client, *, hours: int, feed: str, proto: int | None, addr: str,
              sensor: str, port: int | None, offset: int, limit: int,
              src: list, dst: list, sport: list, dport: list) -> dict[str, Any]:

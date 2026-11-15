@@ -52,9 +52,10 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from weirvern import fleet_store, networks, scan_jobs
+from weirvern import fleet_store, networks
 from weirvern.admin import assets as assets_mod
 from weirvern.admin import payloads, requestauth, timewindow, web_api
 from weirvern.admin import soc as soc_mod
@@ -1330,29 +1331,19 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            raw_ip = str(body.get("ip") or "").strip()
             try:
-                ipaddress.ip_address(raw_ip)
-            except ValueError:
-                return self._error(400, "'ip' must be a single IP address")
+                args = scan_job_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
             try:
                 with self._with_client() as client:
-                    asset = scan_jobs.find_asset(client, raw_ip)
-                    if asset is None:
-                        return self._error(404, f"{raw_ip} is not in the asset registry")
-                    active = scan_jobs.active_for_asset(client, str(asset["asset_key"]))
-                    if active is not None:
-                        return self._json({
-                            "ok": True, "job_id": str(active["job_id"]),
-                            "ip": raw_ip, "state": str(active["state"]), "already": True,
-                        })
-                    job = scan_jobs.create_job(client, asset, requested_by="operator")
+                    # SHARED WITH THE FLASK SURFACE (payloads.scan_job_create), status included. The
+                    # CONNECTION is inside the try for the same reason: the console has always
+                    # answered an unreachable cluster with the same "table is not ready" sentence.
+                    code, payload = payloads.scan_job_create(client, **args)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("scan job request failed: %s", exc)
-                return self._error(503, "the scan-job table is not ready; deploy scanner 0.14.13")
-            logger.info("manual scan queued for %s (%s)", raw_ip, job["job_id"])
-            self._json({"ok": True, "job_id": str(job["job_id"]), "ip": raw_ip,
-                        "state": "queued", "already": False})
+                code, payload = payloads.scan_job_failure(exc)
+            self._json(payload, code)
 
         def _graph(self, query: dict) -> None:
             """The connection graph: nodes and edges, optionally restricted to tracked hosts.
@@ -1570,9 +1561,10 @@ def _build_handler(ctx: GuiContext):
             Body: {"src_cidr", "dst_cidr", "protocol", "dst_port", "direction", "ttl_minutes",
                    "reason"}
 
-            THE REFUSALS MATTER MORE THAN THE WRITE. A rule that blocks the wrong thing takes a
-            network down, so every predicate is checked here and returned as a sentence the operator
-            can act on -- rather than as a 500 from a layer that cannot explain itself.
+            THE REFUSALS LIVE IN sluice_block_args (shared with the Flask surface), because a rule
+            that blocks the wrong thing takes a network down and every predicate has to answer with a
+            sentence the operator can act on rather than a 500 from a layer that cannot explain
+            itself. Two 400 shapes come out of it and both are preserved.
             """
             if not self._authorize():
                 return
@@ -1580,91 +1572,22 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-
-            from weirvern import sluice_store  # noqa: PLC0415
-            from weirvern.sluice import SluiceError, parse_cidr, refuse_reason  # noqa: PLC0415
-
-            src_raw = str(body.get("src_cidr") or "").strip()
-            dst_raw = str(body.get("dst_cidr") or "").strip()
-            domain_raw = str(body.get("domain") or "").strip()
-            mode_raw = str(body.get("mode") or "block").strip().lower()
-            protocol = str(body.get("protocol") or "").strip().lower()
-            direction = str(body.get("direction") or "forward").strip().lower()
             try:
-                dst_port = int(body.get("dst_port") or 0)
-            except (TypeError, ValueError):
-                return self._error(400, "dst_port must be a number")
-            # 0 IS A VALUE, NOT AN ABSENCE. `or 60` read a deliberate 0 as "unset" and silently
-            # substituted an hour -- the one input an operator reaching for "block it
-            # indefinitely" is most likely to send. Absent or blank still defaults to 60.
-            raw_ttl = body.get("ttl_minutes")
-            try:
-                ttl = 60 if raw_ttl is None or raw_ttl == "" else int(raw_ttl)
-            except (TypeError, ValueError):
-                return self._error(400, "ttl_minutes must be a number")
-
-            if domain_raw:
-                # A DOMAIN RULE NAMES A NAME, NOT ADDRESSES. The address refusals below guard
-                # address predicates and do not apply; validate_domain (called by create_rule)
-                # owns the name's checks -- one place for the form, this route and any importer.
-                src = dst = ""
-                why = ""
-            else:
-                try:
-                    src = parse_cidr(src_raw, "source")
-                    dst = parse_cidr(dst_raw, "destination")
-                except SluiceError as exc:
-                    return self._json({"ok": False, "error": str(exc)}, 400)
-
-                why = refuse_reason(
-                    src_cidr=src, dst_cidr=dst, direction=direction,
-                    iface=str(ctx.settings.sluice_iface or ctx.settings.zeek_iface or ""),
-                    mgmt_iface=str(ctx.settings.mgmt_iface or ""),
-                    sensor_addrs=self._sensor_addresses(), protocol=protocol, dst_port=dst_port,
-                )
-                if why:
-                    return self._json({"ok": False, "error": why}, 400)
-
-            # OPTIONAL, by the operator's own instruction (2026-10-16). A reason is still the only
-            # record of WHY, so a DERIVED block always writes one (derived_rules_for_detections)
-            # and the form pre-fills the field from the alert; a manual block left blank records an
-            # EMPTY reason rather than a placeholder, because a placeholder in an audit row reads
-            # like a fact.
-            reason = str(body.get("reason") or "").strip()
-            # WHERE THE RULE CAME FROM (the operator, 2026-10-16: the Blocked page lists blocks
-            # "with the reason in the table, like ML, custom, dns"). "dns" is a rule pushed from
-            # the DNS tab; "manual" is the Sluice form. Detection-derived rules are stamped by
-            # the derivation path itself, never by a caller.
-            origin_raw = str(body.get("origin") or "manual").strip().lower()
-            origin = origin_raw if origin_raw in ("manual", "dns") else "manual"
-
+                args, refusal = sluice_block_args(
+                    body, settings=ctx.settings, sensor_addrs=sensor_addresses(ctx))
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            if refusal:
+                return self._json({"ok": False, "error": refusal}, 400)
+            ident = self._identity()
             try:
                 with self._with_client() as client:
-                    ident = self._identity()
-                    rule = sluice_store.create_rule(
-                        client, src_cidr=src, dst_cidr=dst, domain=domain_raw, mode=mode_raw,
-                        protocol=protocol, dst_port=dst_port, direction=direction,
-                        ttl_minutes=ttl, created_by=(ident.username if ident else "operator"),
-                        reason=reason, origin=origin,
-                    )
-            except SluiceError as exc:
-                return self._json({"ok": False, "error": str(exc)}, 400)
+                    code, payload = payloads.sluice_block(
+                        client, by=(ident.username if ident else "operator"), **args,
+                        interval_s=int(ctx.settings.sluice_interval_s))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("sluice block failed: %s", exc)
-                return self._error(502, f"could not record the rule: {type(exc).__name__}")
-
-            self._json({
-                "ok": True, "rule_id": rule.rule_id, "describes": rule.describes(),
-                "expires_at": rule.expires_at.isoformat() if rule.expires_at else "",
-                # The gate arms on its own interval, so say so rather than letting the operator
-                # assume the block is instant. An indefinite rule says so as well: "recorded" on
-                # its own would read as a bounded block like every other one.
-                "note": (f"recorded; enforcement picks it up within "
-                         f"{int(ctx.settings.sluice_interval_s)}s"
-                         + ("" if rule.expires_at else "; it stays until it is revoked")
-                         + (" — ALERT mode: hits are recorded, nothing is blocked"
-                            if rule.mode == "alert" else "")),
-            })
+                code, payload = payloads.sluice_block_failure(exc)
+            self._json(payload, code)
 
         def _blocklists_sync(self) -> None:
             """Sync every enabled source NOW. Slow on purpose: it fetches megabytes."""
@@ -1850,7 +1773,9 @@ def _build_handler(ctx: GuiContext):
             """Stop enforcing a rule, keeping the RECORD.
 
             The audit trail of what was blocked and why must not be destroyed by the act of
-            unblocking it -- that record is what an incident review reads.
+            unblocking it -- that record is what an incident review reads. The store soft-deletes;
+            the shared fetcher (payloads.sluice_revoke) reports per-id failures on a bulk revoke
+            rather than swallowing them.
             """
             if not self._authorize():
                 return
@@ -1858,40 +1783,19 @@ def _build_handler(ctx: GuiContext):
                 body = self._read_body()
             except ValueError as exc:
                 return self._error(400, str(exc))
-            rule_id = str(body.get("rule_id") or "").strip()
-            ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
-            if not rule_id and not ids:
-                return self._error(400, "rule_id (or rule_ids, for a bulk revoke) is required")
-            # BF-9: unblocking what the gate was holding is a destructive decision; the reason
-            # is required and lands in the write trail with the actor and the time.
-            reason = str(body.get("reason") or "").strip()
-            if not reason:
-                return self._error(400, "a reason is required to revoke a rule; it is recorded "
-                                        "with your name and the time")
-            from weirvern import sluice_store  # noqa: PLC0415
+            try:
+                args = sluice_revoke_args(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            ident = self._identity()
             try:
                 with self._with_client() as client:
-                    ident = self._identity()
-                    by = ident.username if ident else "operator"
-                    if ids:
-                        # A SELECTION, not a rule: the same soft-delete applied to each id,
-                        # with refusals reported instead of swallowed (revoke_rules).
-                        try:
-                            out = sluice_store.revoke_rules(client, ids, by=by)
-                        except sluice_store.SluiceError as exc:
-                            return self._error(400, str(exc))
-                        return self._json({"ok": True, **out,
-                                           "note": "revoked; enforcement stops within "
-                                                   f"{int(ctx.settings.sluice_interval_s)}s"})
-                    ok = sluice_store.revoke_rule(client, rule_id, by=by)
+                    code, payload = payloads.sluice_revoke(
+                        client, by=(ident.username if ident else "operator"), **args,
+                        interval_s=int(ctx.settings.sluice_interval_s))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("sluice revoke failed: %s", exc)
-                return self._error(502, f"could not revoke the rule: {type(exc).__name__}")
-            if not ok:
-                return self._json({"ok": False, "error": f"no rule with id {rule_id!r}"}, 404)
-            self._json({"ok": True, "rule_id": rule_id,
-                        "note": f"revoked; enforcement stops within "
-                                f"{int(ctx.settings.sluice_interval_s)}s"})
+                code, payload = payloads.sluice_revoke_failure(exc)
+            self._json(payload, code)
 
         def _sluice_rule_disabled(self) -> None:
             """Park a rule or put it back (the operator, 2026-10-16).
@@ -1933,69 +1837,8 @@ def _build_handler(ctx: GuiContext):
                                   f"{int(ctx.settings.sluice_interval_s)}s"})
 
         def _sensor_addresses(self) -> list[str]:
-            """This host's own addresses, for the self-block check.
-
-            Best-effort BY DESIGN: if they cannot be determined the check is SKIPPED, not failed. A
-            self-block check that errored would refuse every rule on a host where the lookup is
-            unavailable, which is worse than occasionally missing one -- the operator still sees the
-            rule in the list and can revoke it.
-
-            ── BUT `getaddrinfo(gethostname())` IS NOT THE HOST'S ADDRESSES (glm-5.3 review) ───────
-
-            That call is the whole derivation, and inside a pod it resolves to the POD's address. So
-            the two addresses that MUST NOT be blockable -- the management address this tool is
-            reached on, and the gateway whose loss takes the segment down -- were never in the list,
-            and the self-block check could not refuse them. MEASURED: on this cluster the pod resolves
-            to a 10.42.x address while the management address is entirely different, so blocking the
-            management interface would have been accepted.
-
-            The intercept path already reads exactly these (see intercept.py's never-intercept roles:
-            our_ip, gateway_ip, MGMT_ADDR), so this adds them from the same settings rather than
-            inventing a second source. `sluice_iface`'s own address is included too, since a rule
-            matching the capture interface's address would block this host's own traffic.
-            """
-            import socket  # noqa: PLC0415
-            out: list[str] = []
-
-            def _add(addr: object) -> None:
-                a = str(addr or "").strip()
-                if a and a not in out:
-                    out.append(a)
-
-            # 1. What the hostname resolves to -- the only source the previous version had.
-            try:
-                for info in socket.getaddrinfo(socket.gethostname(), None):
-                    _add(info[4][0])
-            except OSError:
-                pass
-
-            # 2. The roles this tool must never block, from the settings the rest of the product
-            #    already trusts. Same values the intercept's never-intercept check uses.
-            try:
-                for attr in ("mgmt_addr", "ours", "our_ip", "gateway", "gateway_ip",
-                             "mgmt_iface_addr"):
-                    _add(getattr(ctx.settings, attr, ""))
-            except Exception:  # noqa: BLE001
-                pass
-
-            # 3. The product's OWN host-address probe. `probe_local()` runs the embedded stdlib probe
-            #    and reports this host's addresses; `ProbeResult.host_addresses` carries them as of the
-            #    fix in interfaces.py, because until now the probe computed them and `parse_probe`
-            #    dropped them -- which is why callers had to invent a worse source.
-            #
-            #    This is the right source rather than a second derivation: it is the same probe the
-            #    interface view and the capture-port validation already use, so "this host's addresses"
-            #    has one definition in the product instead of one per caller.
-            try:
-                from weirvern.admin import interfaces as ifaces_mod  # noqa: PLC0415
-
-                for a in ifaces_mod.probe_local(timeout=5).host_addresses or []:
-                    _add(a)
-            except Exception:  # noqa: BLE001
-                # Same best-effort contract as above: an unavailable lookup skips the check rather
-                # than refusing every rule.
-                pass
-            return out
+            """This host's own addresses, for the self-block check (see sensor_addresses)."""
+            return sensor_addresses(ctx)
 
         def _zeeklog(self, query: dict) -> None:
             """Per-log detail for ONE Zeek log, for click-through from the Zeek view.
@@ -4059,6 +3902,140 @@ def user_write_args(body: dict, *, kind: str) -> dict:
     if kind == "reset":
         return {"username": username, "password": str(body.get("password") or "")}
     return {"username": username}
+
+
+def scan_job_args(body: dict) -> dict:
+    """One address, and it must be ONE address: a range or a name is a 400 with a sentence."""
+    raw_ip = str(body.get("ip") or "").strip()
+    try:
+        ipaddress.ip_address(raw_ip)
+    except ValueError as exc:
+        raise ValueError("'ip' must be a single IP address") from exc
+    return {"ip": raw_ip}
+
+
+def sluice_block_args(body: dict, *, settings: Any,
+                      sensor_addrs: list[str]) -> tuple[dict, str | None]:
+    """The block form, validated in the console's ORDER, and the rule predicates that refuse it.
+
+    TWO 400 SHAPES COME OUT OF HERE and they are not interchangeable: a malformed NUMBER raises
+    ValueError and becomes the house `{"error", "code"}` body, while a refused RULE returns its
+    sentence (the form renders `{"ok": false, "error"}` inline beside the fields). Collapsing them
+    would change a body a client reads.
+
+    THE REFUSALS MATTER MORE THAN THE WRITE: a rule that blocks the wrong thing takes a network down,
+    so every predicate answers with something the operator can act on rather than a 500 from a layer
+    that cannot explain itself.
+    """
+    from weirvern.sluice import SluiceError, parse_cidr, refuse_reason  # noqa: PLC0415
+
+    src_raw = str(body.get("src_cidr") or "").strip()
+    dst_raw = str(body.get("dst_cidr") or "").strip()
+    domain_raw = str(body.get("domain") or "").strip()
+    mode_raw = str(body.get("mode") or "block").strip().lower()
+    protocol = str(body.get("protocol") or "").strip().lower()
+    direction = str(body.get("direction") or "forward").strip().lower()
+    try:
+        dst_port = int(body.get("dst_port") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("dst_port must be a number") from exc
+    # 0 IS A VALUE, NOT AN ABSENCE. `or 60` read a deliberate 0 as "unset" and silently substituted an
+    # hour -- the one input an operator reaching for "block it indefinitely" is most likely to send.
+    raw_ttl = body.get("ttl_minutes")
+    try:
+        ttl = 60 if raw_ttl is None or raw_ttl == "" else int(raw_ttl)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ttl_minutes must be a number") from exc
+
+    if domain_raw:
+        # A DOMAIN RULE NAMES A NAME, NOT ADDRESSES: the address predicates do not apply, and
+        # validate_domain (called by create_rule) owns the name's checks -- one place for the form,
+        # this route and any importer.
+        src = dst = ""
+        why = ""
+    else:
+        try:
+            src = parse_cidr(src_raw, "source")
+            dst = parse_cidr(dst_raw, "destination")
+        except SluiceError as exc:
+            return {}, str(exc)
+        why = refuse_reason(
+            src_cidr=src, dst_cidr=dst, direction=direction,
+            iface=str(settings.sluice_iface or settings.zeek_iface or ""),
+            mgmt_iface=str(settings.mgmt_iface or ""),
+            sensor_addrs=sensor_addrs, protocol=protocol, dst_port=dst_port)
+        if why:
+            return {}, why
+
+    # OPTIONAL, by the operator's own instruction (2026-10-16). A reason is still the only record of
+    # WHY, so a DERIVED block always writes one; a manual block left blank records an EMPTY reason
+    # rather than a placeholder, because a placeholder in an audit row reads like a fact.
+    reason = str(body.get("reason") or "").strip()
+    # WHERE THE RULE CAME FROM: "dns" is a rule pushed from the DNS tab, "manual" is the Sluice form.
+    # Detection-derived rules are stamped by the derivation path itself, never by a caller.
+    origin_raw = str(body.get("origin") or "manual").strip().lower()
+    origin = origin_raw if origin_raw in ("manual", "dns") else "manual"
+    return {
+        "src_cidr": src, "dst_cidr": dst, "domain": domain_raw, "mode": mode_raw,
+        "protocol": protocol, "dst_port": dst_port, "direction": direction,
+        "ttl_minutes": ttl, "reason": reason, "origin": origin,
+    }, None
+
+
+def sluice_revoke_args(body: dict) -> dict:
+    """A rule id or a selection, plus the reason this route has always required."""
+    rule_id = str(body.get("rule_id") or "").strip()
+    ids = [str(x or "").strip() for x in (body.get("rule_ids") or []) if str(x or "").strip()]
+    if not rule_id and not ids:
+        raise ValueError("rule_id (or rule_ids, for a bulk revoke) is required")
+    # BF-9: unblocking what the gate was holding is a destructive decision, so the reason is required.
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("a reason is required to revoke a rule; it is recorded with your name and "
+                         "the time")
+    return {"rule_id": rule_id, "rule_ids": ids, "reason": reason}
+
+
+def sensor_addresses(ctx) -> list[str]:
+    """This host's own addresses, for the self-block check.
+
+    Best-effort BY DESIGN: if they cannot be determined the check is SKIPPED, not failed. A self-block
+    check that errored would refuse every rule on a host where the lookup is unavailable, which is
+    worse than occasionally missing one -- the operator still sees the rule and can revoke it.
+
+    `getaddrinfo(gethostname())` ALONE IS NOT THE HOST'S ADDRESSES: inside a pod it resolves to the
+    POD's address, so the two addresses that must never be blockable -- the management address and the
+    gateway -- were never in the list. The roles are added from the same settings the intercept's
+    never-intercept check reads, plus `probe_local().host_addresses`, so "this host's addresses" has
+    one definition in the product instead of one per caller.
+    """
+    import socket  # noqa: PLC0415
+
+    out: list[str] = []
+
+    def _add(addr: object) -> None:
+        a = str(addr or "").strip()
+        if a and a not in out:
+            out.append(a)
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            _add(info[4][0])
+    except OSError:
+        pass
+    try:
+        for attr in ("mgmt_addr", "ours", "our_ip", "gateway", "gateway_ip", "mgmt_iface_addr"):
+            _add(getattr(ctx.settings, attr, ""))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from weirvern.admin import interfaces as ifaces_mod  # noqa: PLC0415
+
+        for a in ifaces_mod.probe_local(timeout=5).host_addresses or []:
+            _add(a)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def window_arg(query: dict, default: int, lo: int, hi: int) -> int:

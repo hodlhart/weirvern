@@ -121,7 +121,12 @@ def test_the_schema_file_adds_the_column_idempotently():
 def test_the_routes_and_serializer_carry_the_new_state():
     body = (ROOT / "weirvern" / "admin" / "web.py").read_text()
     assert '"/api/sluice/rule/disabled"' in body
-    assert "revoke_rules(" in body, "the revoke route must accept a selection"
+    # THE REVOKE MOVED into payloads.sluice_revoke with the port; the route must still go through it
+    # and the shared fetcher must still accept a selection.
+    assert "payloads.sluice_revoke(" in body, "the revoke route must use the shared fetcher"
+    revoke = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
+    revoke = revoke.split("def sluice_revoke(", 1)[1].split("\ndef ", 1)[0]
+    assert "revoke_rules(" in revoke, "the revoke path must accept a selection"
     # THE SERIALISER MOVED into payloads.sluice with the port; the state it must carry did not.
     payloads = (ROOT / "weirvern" / "admin" / "payloads.py").read_text()
     assert '"disabled": r.disabled_at is not None' in payloads

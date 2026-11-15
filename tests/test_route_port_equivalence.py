@@ -683,6 +683,9 @@ PORTED_WRITES: dict[str, tuple[str, str]] = {
     "/api/login": ("login", "weirvern.admin.payloads.login"),
     "/api/logout": ("logout", "weirvern.admin.payloads.logout"),
     "/api/password": ("password_change", "weirvern.admin.payloads.password_change"),
+    "/api/scan-jobs": ("scan_job_create", "weirvern.admin.payloads.scan_job_create"),
+    "/api/sluice/block": ("sluice_block", "weirvern.admin.payloads.sluice_block"),
+    "/api/sluice/revoke": ("sluice_revoke", "weirvern.admin.payloads.sluice_revoke"),
 }
 
 
@@ -699,7 +702,7 @@ def test_every_write_port_is_routed_by_flask():
 
 
 def test_the_ported_write_count_only_grows():
-    assert len(PORTED_WRITES) >= 9, (
+    assert len(PORTED_WRITES) >= 12, (
         f"{len(PORTED_WRITES)} writes ported; the ratchet must not go backwards")
 
 
@@ -1034,3 +1037,115 @@ def test_the_session_writes_answer_identically(surfaces, monkeypatch):
                           ("revoke_user", "viewer"),
                           ("password", "viewer", "new-one", False),
                           ("revoke_user", "viewer")], revocations
+
+
+def test_the_sluice_and_scan_writes_answer_identically(surfaces, monkeypatch):
+    """Rules that can take a network down, and a scan queue: same refusals, same order, same notes.
+
+    TWO 400 SHAPES, PINNED APART. A malformed NUMBER is the house `{"error", "code"}` body; a REFUSED
+    RULE is `{"ok": false, "error"}` with the sentence the form renders inline. A port that collapsed
+    them would look tidy and change what the operator sees.
+    """
+    import types
+
+    from weirvern import sluice, sluice_store
+
+    legacy, app = surfaces()
+    ctx = legacy.ctx
+    ctx.settings = types.SimpleNamespace(
+        sluice_iface="eth0", zeek_iface="", mgmt_iface="eth1", sluice_interval_s=15)
+    ident = types.SimpleNamespace(is_admin=True, must_change=False, username="sam", role="admin")
+    _patch(monkeypatch, "weirvern.admin.requestauth.identity", lambda *a, **k: ident)
+
+    def _no_probe(**kwargs):
+        raise RuntimeError("no probe in this test")
+
+    _patch(monkeypatch, "weirvern.admin.interfaces.probe_local", _no_probe)
+
+    def _both(path, payload):
+        raw = json.dumps(payload).encode()
+        return (_post_legacy(legacy.port, path, raw), _post_flask(app, path, raw))
+
+    def _same(path, payload, expected):
+        (ls, lb), (fs, fb) = _both(path, payload)
+        assert ls == fs == expected, f"{path} {payload}: console {ls}, flask {fs}: {lb[:200]!r} / {fb[:200]!r}"
+        assert json.loads(fb) == json.loads(lb), (
+            f"{path} {payload} drifted.\n  console: {lb[:220]!r}\n  flask:   {fb[:220]!r}")
+        return json.loads(fb)
+
+    # ── scan jobs ──────────────────────────────────────────────────────────────────────────────
+    body = _same("/api/scan-jobs", {"ip": "203.0.113.300"}, 400)
+    assert body["error"] == "'ip' must be a single IP address", body
+
+    _patch(monkeypatch, "weirvern.scan_jobs.find_asset", lambda client, ip: None)
+    _same("/api/scan-jobs", {"ip": "203.0.113.5"}, 404)
+
+    _patch(monkeypatch, "weirvern.scan_jobs.find_asset",
+           lambda client, ip: {"asset_key": "asset-1"})
+    _patch(monkeypatch, "weirvern.scan_jobs.active_for_asset",
+           lambda client, key: {"job_id": 7, "state": "running"})
+    body = _same("/api/scan-jobs", {"ip": "203.0.113.5"}, 200)
+    assert body == {"ok": True, "job_id": "7", "ip": "203.0.113.5",
+                    "state": "running", "already": True}, body
+
+    _patch(monkeypatch, "weirvern.scan_jobs.active_for_asset", lambda client, key: None)
+    _patch(monkeypatch, "weirvern.scan_jobs.create_job",
+           lambda client, asset, requested_by="": {"job_id": 9})
+    body = _same("/api/scan-jobs", {"ip": "203.0.113.5"}, 200)
+    assert body == {"ok": True, "job_id": "9", "ip": "203.0.113.5",
+                    "state": "queued", "already": False}, body
+
+    # ── sluice: block ──────────────────────────────────────────────────────────────────────────
+    _patch(monkeypatch, "weirvern.sluice.parse_cidr", lambda raw, role: raw or "203.0.113.0/24")
+    _patch(monkeypatch, "weirvern.sluice.refuse_reason", lambda **kw: "")
+
+    body = _same("/api/sluice/block", {"src_cidr": "203.0.113.0/24", "dst_port": "abc"}, 400)
+    assert "dst_port must be a number" in body["error"] and body["code"] == 400, body
+
+    body = _same("/api/sluice/block", {"src_cidr": "203.0.113.0/24", "ttl_minutes": "soon"}, 400)
+    assert "ttl_minutes must be a number" in body["error"], body
+
+    rule = types.SimpleNamespace(
+        rule_id="rule-1", mode="block",
+        expires_at=__import__("datetime").datetime(2026, 11, 15, 12, 0),
+        describes=lambda: "203.0.113.0/24 -> any tcp/443",
+    )
+    _patch(monkeypatch, "weirvern.sluice_store.create_rule", lambda client, **kw: rule)
+    body = _same("/api/sluice/block", {"src_cidr": "203.0.113.0/24", "dst_port": 443}, 200)
+    assert body["rule_id"] == "rule-1" and body["note"].startswith("recorded;"), body
+    assert "ALERT mode" not in body["note"], body
+
+    # A refused rule is the OTHER 400 shape: `{"ok": false, "error"}` and nothing else.
+    _patch(monkeypatch, "weirvern.sluice.refuse_reason",
+           lambda **kw: "refusing to block the management address 203.0.113.2")
+    body = _same("/api/sluice/block", {"src_cidr": "203.0.113.2", "dst_port": 443}, 400)
+    assert body == {"ok": False,
+                    "error": "refusing to block the management address 203.0.113.2"}, body
+
+    # Indefinite and ALERT-mode rules say so; the note is part of the contract.
+    _patch(monkeypatch, "weirvern.sluice.refuse_reason", lambda **kw: "")
+    indefinite = types.SimpleNamespace(rule_id="rule-2", mode="alert", expires_at=None,
+                                       describes=lambda: "dns name")
+    _patch(monkeypatch, "weirvern.sluice_store.create_rule", lambda client, **kw: indefinite)
+    body = _same("/api/sluice/block", {"domain": "example.com"}, 200)
+    assert "it stays until it is revoked" in body["note"], body
+    assert "ALERT mode" in body["note"], body
+
+    # ── sluice: revoke ─────────────────────────────────────────────────────────────────────────
+    body = _same("/api/sluice/revoke", {"rule_id": "rule-1"}, 400)
+    assert "a reason is required" in body["error"], body
+
+    _patch(monkeypatch, "weirvern.sluice_store.revoke_rule", lambda client, rid, by="": False)
+    body = _same("/api/sluice/revoke", {"rule_id": "rule-9", "reason": "false positive"}, 404)
+    assert body == {"ok": False, "error": "no rule with id 'rule-9'"}, body
+
+    _patch(monkeypatch, "weirvern.sluice_store.revoke_rule", lambda client, rid, by="": True)
+    body = _same("/api/sluice/revoke", {"rule_id": "rule-1", "reason": "false positive"}, 200)
+    assert body["rule_id"] == "rule-1" and "within 15s" in body["note"], body
+
+    _patch(monkeypatch, "weirvern.sluice_store.revoke_rules",
+           lambda client, ids, by="": {"revoked": list(ids), "missing": ["rule-x"]})
+    body = _same("/api/sluice/revoke",
+                 {"rule_ids": ["rule-1", "rule-x"], "reason": "cleanup"}, 200)
+    assert body["revoked"] == ["rule-1", "rule-x"] and body["missing"] == ["rule-x"], body
+    assert sluice and sluice_store, "the patches above must target the real modules"

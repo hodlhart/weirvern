@@ -1205,6 +1205,92 @@ def create_app(ctx: Any, *, static_dir: Any = None, secret_key: str | None = Non
             new=str(body.get("new") or ""))
         return jsonify(payload), code
 
+    # ── the sluice and scan-job writes: rules that can take a network down ──────────────────────
+    #
+    # THESE CHECK THEIR PREDICATES BEFORE THE DATABASE IS OPENED, on both surfaces: a refused rule
+    # answers 400 with the sentence the form shows inline, and never reaches a query.
+
+    @app.post("/api/scan-jobs")
+    def scan_job_create():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.scan_job_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.scan_job_create(client, **args)
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.scan_job_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/sluice/block")
+    def sluice_block():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args, rule_refusal = web.sluice_block_args(
+                body, settings=ctx.settings, sensor_addrs=web.sensor_addresses(ctx))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        if rule_refusal:
+            return jsonify({"ok": False, "error": rule_refusal}), 400
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.sluice_block(
+                    client, by=(ident.username if ident else "operator"), **args,
+                    interval_s=int(ctx.settings.sluice_interval_s))
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.sluice_block_failure(exc)
+        return jsonify(payload), code
+
+    @app.post("/api/sluice/revoke")
+    def sluice_revoke():
+        from weirvern.admin import payloads, requestauth, web  # noqa: PLC0415
+
+        ok, refusal = requestauth.write_refusal(ctx, _auth_headers(),
+                                                addr=request.remote_addr or "")
+        if not ok:
+            code, message = refusal if refusal is not None else (403, "write access is required")
+            return _json_error(code, message)
+        try:
+            body = web.json_body(request.get_data(cache=False))
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        try:
+            args = web.sluice_revoke_args(body)
+        except ValueError as exc:
+            return _json_error(400, str(exc))
+        ident = requestauth.identity(ctx, _auth_headers())
+        try:
+            with ctx.connect_factory(ctx.settings) as client:
+                code, payload = payloads.sluice_revoke(
+                    client, by=(ident.username if ident else "operator"), **args,
+                    interval_s=int(ctx.settings.sluice_interval_s))
+        except Exception as exc:  # noqa: BLE001
+            code, payload = payloads.sluice_revoke_failure(exc)
+        return jsonify(payload), code
+
     def _auth_headers():
         """The request's headers, with the COOKIE's session token presented as the session header.
 

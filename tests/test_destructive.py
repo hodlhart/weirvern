@@ -80,8 +80,13 @@ def test_revoke_demands_a_reason_on_both_surfaces():
     assert 'revoking a registration is a decision' in rev, "the refusal stopped naming why"
     # the sluice-revoke guard, on its own handler
     sl = src.split("def _sluice_revoke", 1)[1].split("def ", 1)[0]
-    assert 'if not reason:' in sl, "the sluice-revoke reason guard vanished"
-    assert 'a reason is required to revoke a rule' in sl, "the refusal stopped naming why"
+    # THE GUARD MOVED into web.sluice_revoke_args when the Flask surface began serving the route;
+    # asserting the handler's text would demand the logic be duplicated again. The handler must still
+    # ASK the shared guard, and the condition and sentence are pinned where they now live.
+    assert "sluice_revoke_args(" in sl, "the sluice-revoke route no longer asks the shared guard"
+    guard = src.split("def sluice_revoke_args(", 1)[1].split("\ndef ", 1)[0]
+    assert 'if not reason:' in guard, "the sluice-revoke reason guard vanished"
+    assert 'a reason is required to revoke a rule' in guard, "the refusal stopped naming why"
 
 
 def test_keep_and_trash_demand_a_note():
